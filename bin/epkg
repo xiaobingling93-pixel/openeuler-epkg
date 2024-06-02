@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+PROJECT_DIR=$(dirname $(dirname $(realpath $0)))
+source $PROJECT_DIR/lib/paths.sh
+source $PROJECT_DIR/lib/env.sh
+source $PROJECT_DIR/lib/init.sh
+source $PROJECT_DIR/lib/package.sh
+source $PROJECT_DIR/lib/epkg-rc.sh
+
+env=$(get_active_env)
+set_epkg_env_dirs
+
+cmd=$1
+shift
+case $cmd in
+	"help")
+		cat <<-EOF
+Usage:
+epkg install [--env ENV] PACKAGE
+epkg remove [--env ENV] PACKAGE
+epkg upgrade [PACKAGE]
+
+epkg search PACKAGE
+epkg list
+
+epkg env list
+epkg env create|remove ENV
+epkg env activate ENV
+epkg env enable|disable ENV
+epkg env history ENV
+epkg env rollback ENV
+EOF
+		exit
+		;;
+
+	"install")
+		install_package "$@"
+		;;
+	"remove")
+		remove_package "$@"
+		;;
+	"upgrade")
+		upgrade_package "$@"
+		;;
+	"search")
+		search_package "$@"
+		;;
+	"list")
+		list_packages "$@"
+		;;
+	"init")
+		epkg_init "$@"
+		;;
+	"env")
+		subcmd=$1
+		shift
+		case $subcmd in
+			"list")
+				list_environments
+				;;
+			"create")
+				create_environment "$@"
+				;;
+			"remove")
+				remove_environment "$@"
+				;;
+			"activate")
+				activate_environment "$@"
+				;;
+			"enable")
+				__epkg_enable_environment "$@"
+				;;
+			"disable")
+				__epkg_disable_environment "$@"
+				;;
+			"history")
+				env_history "$@"
+				;;
+			"rollback")
+				env_rollback "$@"
+				;;
+			*)
+				echo "Usage: epkg env [list|create|remove|activate|enable|disable|history|rollback]"
+				;;
+		esac
+		;;
+	*)
+		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|help]"
+		;;
+esac
