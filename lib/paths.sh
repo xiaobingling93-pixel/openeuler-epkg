@@ -18,6 +18,25 @@ init_paths() {
 	mkdir -p $EPKG_META_DIR/enabled-envs
 	mkdir -p $EPKG_STORE_ROOT
 	mkdir -p $EPKG_PKG_CACHE_DIR
+	init_opt_dir
+}
+
+# In normal user installation, cannot write to /opt dir.
+# So need redirect /opt accesses to $HOME/.epkg/opt
+init_opt_dir() {
+	mkdir -p /opt/epkg/store 2>/dev/null
+	if [  -d /opt/epkg/store ]; then
+		# prepare for mount --bind $HOME/.epkg/store /opt/epkg/store
+		:
+	else
+		# prepare for mount --bind $HOME/.epkg/opt /opt
+		mkdir -p $HOME_EPKG/opt/epkg
+		ln -s $HOME_EPKG/store $HOME_EPKG/opt/epkg/store
+
+		# Pitfall: the other /opt/* will be hidden by the mount.
+		# Fortunately they'll normally only be accessed by the software
+		# installed in /opt.
+	fi
 }
 
 set_epkg_env_dirs() {
