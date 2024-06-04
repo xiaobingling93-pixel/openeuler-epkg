@@ -109,7 +109,7 @@ handle_exec() {
 	local file_type=$(file $path)
 
 	case $file_type in
-		*ELF 64-bit LSB shared object*)
+		'ELF 64-bit LSB shared object')
 			handle_elf;;
 		*)
 			return 1
