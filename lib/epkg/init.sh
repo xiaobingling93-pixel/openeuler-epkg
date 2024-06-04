@@ -52,6 +52,7 @@ append_user_rc() {
 		echo "epkg is already initialized in '$rc_path'"
 	else
 		echo '$HOME/.epkg/meta/shell-path.sh' >> "$rc_path"
+		echo '$EPKG_RC' >> "$rc_path"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
 }

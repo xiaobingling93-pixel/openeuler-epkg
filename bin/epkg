@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 PROJECT_DIR=$(dirname $(dirname $(realpath $0)))
-source $PROJECT_DIR/lib/paths.sh
-source $PROJECT_DIR/lib/env.sh
-source $PROJECT_DIR/lib/init.sh
-source $PROJECT_DIR/lib/package.sh
-source $PROJECT_DIR/lib/epkg-rc.sh
+source $PROJECT_DIR/lib/epkg/paths.sh
+source $PROJECT_DIR/lib/epkg/env.sh
+source $PROJECT_DIR/lib/epkg/init.sh
+source $PROJECT_DIR/lib/epkg/package.sh
+source $PROJECT_DIR/lib/epkg/epkg-rc.sh
 
 env=$(get_active_env)
 set_epkg_env_dirs

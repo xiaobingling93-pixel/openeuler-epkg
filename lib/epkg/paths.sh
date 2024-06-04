@@ -11,6 +11,7 @@ EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
 
 EPKG_ENV=$EPKG_ENVS_ROOT/epkg/env-current
 EPKG_EXEC=$EPKG_ENV/usr/bin/epkg
+EPKG_RC=$EPKG_ENV/usr/lib/epkg/epkg-rc.sh
 FAKEROOT_EXEC=$EPKG_ENV/usr/bin/fakeroot
 ELFLOADER_EXEC=$EPKG_ENV/usr/bin/elf-loader
 
