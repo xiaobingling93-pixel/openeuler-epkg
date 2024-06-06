@@ -36,7 +36,7 @@ determine_installation_candidates() {
 
 invoke_dnf_installation() {
 	echo "Invoking DNF installation..."
-	$FAKEROOT_EXEC dnf -y --installroot "$CURRENT_ENV" --downloadonly --downloaddir="$EPKG_PKG_CACHE_DIR" install "$@" > $CURRENT_ENV/tmp/dnf_output.txt
+	$FAKEROOT_EXEC dnf -v -y --installroot "$CURRENT_ENV" --downloadonly --downloaddir="$EPKG_PKG_CACHE_DIR" install "$@" > $CURRENT_ENV/tmp/dnf_output.txt
 }
 
 # intput line:
