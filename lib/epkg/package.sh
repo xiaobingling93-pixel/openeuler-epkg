@@ -53,15 +53,21 @@ parse_dnf_output() {
 		package_info=${package_info% will be installed}
 		[ "$package_info" = "$line" ] && continue
 
+		# basesystem.noarch 12-3.oe2203sp3
+		# =>
+		# basesystem-12-3.oe2203sp3.noarch.rpm
 		# Extract package name, version, and architecture
-		local package_name=${package_info%% *}
+		local package_name=${package_info%%\.*}
+		package_info=${package_info#*\.}
+		local package_arch=${package_info%% *}
 		package_info=${package_info#* }
 		local package_version=${package_info%% *}
-		package_info=${package_info#* }
-		local package_arch=${package_info%% *}
 
 		# Format output filename
-		local filename="${package_name}-${package_version}.${package_arch}.rpm"
+		[ -n "$package_name" ] && [ -n "$package_version" ] && [ -n "$package_arch" ] && {
+
+			local filename="${package_name}-${package_version}.${package_arch}.rpm"
+		}
 
 		package_names_to_install="$package_names_to_install"$'\n'"$package_name"
 		package_files_to_install="$package_files_to_install"$'\n'"$filename"
