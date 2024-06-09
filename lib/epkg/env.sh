@@ -9,10 +9,10 @@ list_environments() {
 create_environment() {
 	local env=$1
 
-	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/env-1"
-	ln -sT env-1            "$EPKG_ENVS_ROOT/$env/env-current"
+	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
+	ln -sT profile-1        "$EPKG_ENVS_ROOT/$env/profile-current"
 
-	mkdir "$EPKG_ENVS_ROOT/$env/env-1/tmp"
+	mkdir "$EPKG_ENVS_ROOT/$env/profile-1/tmp"
 
 	__epkg_enable_environment $env
 	__epkg_activate_environment $env

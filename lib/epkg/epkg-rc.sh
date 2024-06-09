@@ -22,7 +22,7 @@ EOM
 
 __epkg_add_path() {
 	local env=$1
-	local env_dir='$HOME/.epkg/envs/'"$env"'/env-current'
+	local env_dir='$HOME/.epkg/envs/'"$env"'/profile-current'
 	local dir
 	for dir in usr/bin bin
 	do

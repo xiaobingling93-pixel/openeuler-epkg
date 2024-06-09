@@ -9,11 +9,11 @@ EPKG_STORE_ROOT=$HOME_EPKG/store
 
 EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
 
-EPKG_ENV=$EPKG_ENVS_ROOT/epkg/env-current
-EPKG_EXEC=$EPKG_ENV/usr/bin/epkg
-EPKG_RC=$EPKG_ENV/usr/lib/epkg/epkg-rc.sh
-FAKEROOT_EXEC=$EPKG_ENV/usr/bin/fakeroot
-ELFLOADER_EXEC=$EPKG_ENV/usr/bin/elf-loader
+COMMON_PROFILE_LINK=$EPKG_ENVS_ROOT/common/profile-current
+EPKG_EXEC=$COMMON_PROFILE_LINK/usr/bin/epkg
+EPKG_RC=$COMMON_PROFILE_LINK/usr/lib/epkg/epkg-rc.sh
+FAKEROOT_EXEC=$COMMON_PROFILE_LINK/usr/bin/fakeroot
+ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
 
 init_paths() {
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
@@ -43,8 +43,8 @@ init_opt_dir() {
 set_epkg_env_dirs() {
 	local env=$1
 
-	ENV_LINK=$EPKG_ENVS_ROOT/$env/env-current
-	CURRENT_ENV=$(realpath $ENV_LINK)
-	RPMDB_DIR=$CURRENT_ENV/var/lib/rpm
-	EPKG_VARLIB_DIR=$CURRENT_ENV/var/lib/epkg
+	CURRENT_PROFILE_LINK=$EPKG_ENVS_ROOT/$env/profile-current
+	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
+	RPMDB_DIR=$CURRENT_PROFILE_DIR/var/lib/rpm
+	EPKG_VARLIB_DIR=$CURRENT_PROFILE_DIR/var/lib/epkg
 }

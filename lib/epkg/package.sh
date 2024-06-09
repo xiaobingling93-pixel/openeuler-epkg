@@ -36,7 +36,7 @@ determine_installation_candidates() {
 
 invoke_dnf_installation() {
 	echo "Invoking DNF installation..."
-	$FAKEROOT_EXEC dnf -v -y --installroot "$CURRENT_ENV" --downloadonly --downloaddir="$EPKG_PKG_CACHE_DIR" install "$@" > $CURRENT_ENV/tmp/dnf_output.txt
+	$FAKEROOT_EXEC dnf -v -y --installroot "$CURRENT_PROFILE_DIR" --downloadonly --downloaddir="$EPKG_PKG_CACHE_DIR" install "$@" > $CURRENT_PROFILE_DIR/tmp/dnf_output.txt
 }
 
 # intput line:
@@ -71,7 +71,7 @@ parse_dnf_output() {
 
 		package_names_to_install="$package_names_to_install"$'\n'"$package_name"
 		package_files_to_install="$package_files_to_install"$'\n'"$filename"
-	done < $CURRENT_ENV/tmp/dnf_output.txt
+	done < $CURRENT_PROFILE_DIR/tmp/dnf_output.txt
 }
 
 run_rpm_installation() {
@@ -100,14 +100,14 @@ create_symlinks() {
 		[ -d "$file" ] && continue
 
 		# Create parent directory if it doesn't exist
-		mkdir -p "$CURRENT_ENV/$(dirname "$file")"
+		mkdir -p "$CURRENT_PROFILE_DIR/$(dirname "$file")"
 
 		if [ "${file#*/bin/}" != "$file" ]; then
 			handle_exec "$path" && continue
 		fi
 
 		# Create symlink
-		ln -s "$path" "$CURRENT_ENV/$file"
+		ln -s "$path" "$CURRENT_PROFILE_DIR/$file"
 	done <<< "$files"
 }
 
@@ -127,9 +127,9 @@ handle_elf() {
 	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
-	cp $ELFLOADER_EXEC $CURRENT_ENV/$file
-	replace_string $CURRENT_ENV/$file $id1 $path
-	replace_string $CURRENT_ENV/$file $id2 $CURRENT_ENV
+	cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$file
+	replace_string $CURRENT_PROFILE_DIR/$file $id1 $path
+	replace_string $CURRENT_PROFILE_DIR/$file $id2 $CURRENT_PROFILE_DIR
 }
 
 replace_string() {
@@ -152,7 +152,7 @@ upgrade_package() {
 }
 
 search_package() {
-	dnf --installroot "$CURRENT_ENV" search "$@"
+	dnf --installroot "$CURRENT_PROFILE_DIR" search "$@"
 }
 
 list_packages() {
