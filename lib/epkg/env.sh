@@ -15,7 +15,7 @@ create_environment() {
 	mkdir "$EPKG_ENVS_ROOT/$env/env-1/tmp"
 
 	__epkg_enable_environment $env
-	activate_environment $env
+	__epkg_activate_environment $env
 
 	echo "Environment '$env' created."
 }

@@ -56,7 +56,7 @@ __epkg_enable_environment() {
 	ln -s "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/enabled-envs/$env"
 	__epkg_update_path
 
-	echo "Environment $env added to PATH."
+	echo "Environment '$env' added to PATH."
 }
 
 __epkg_disable_environment() {
@@ -65,7 +65,7 @@ __epkg_disable_environment() {
 	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
 	__epkg_update_path
 
-	echo "Environment $env removed from PATH."
+	echo "Environment '$env' removed from PATH."
 }
 
 __epkg_activate_environment() {
@@ -74,7 +74,7 @@ __epkg_activate_environment() {
 	export EPKG_ENV_NAME=$env
 	__epkg_update_path
 
-	echo "Environment $env activated."
+	echo "Environment '$env' activated."
 }
 
 __epkg_deactivate_environment() {
@@ -83,7 +83,7 @@ __epkg_deactivate_environment() {
 	unset EPKG_ENV_NAME
 	__epkg_update_path
 
-	echo "Environment $env deactivated."
+	echo "Environment '$env' deactivated."
 }
 
 epkg() {

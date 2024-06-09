@@ -7,11 +7,13 @@ source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
 
-get_active_env "$@"
-set_epkg_env_dirs
-
 cmd=$1
 shift
+
+get_active_env "$@"
+[ "$cmd" = 'init' ] ||
+set_epkg_env_dirs $env
+
 case $cmd in
 	"help")
 		cat <<-EOF
@@ -64,14 +66,17 @@ EOF
 			"remove")
 				remove_environment "$@"
 				;;
-			"activate")
-				activate_environment "$@"
-				;;
 			"enable")
 				__epkg_enable_environment "$@"
 				;;
 			"disable")
 				__epkg_disable_environment "$@"
+				;;
+			"activate")
+				__epkg_activate_environment "$@"
+				;;
+			"deactivate")
+				__epkg_deactivate_environment "$@"
 				;;
 			"history")
 				env_history "$@"
@@ -80,7 +85,7 @@ EOF
 				env_rollback "$@"
 				;;
 			*)
-				echo "Usage: epkg env [list|create|remove|activate|enable|disable|history|rollback]"
+				echo "Usage: epkg env [list|create|remove|enable|disable|activate|deactivate|history|rollback]"
 				;;
 		esac
 		;;
