@@ -24,8 +24,9 @@ __epkg_add_path() {
 	local env=$1
 	local env_dir='$HOME/.epkg/envs/'"$env"'/env-current'
 	local dir
-	for dir in usr/sbin usr/bin sbin bin
+	for dir in usr/bin bin
 	do
+		[ "${path#*$env_dir/$dir}" = "$path" ] &&
 		path="$env_dir/$dir:$path"
 	done
 }
