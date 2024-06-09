@@ -68,6 +68,24 @@ remove_environment() {
 	mv "$EPKG_ENVS_ROOT/$env" "$EPKG_ENVS_ROOT/.$env"
 }
 
+# setup env variable
+get_active_env() {
+	env="$*"
+	env="${env#*--env }"
+
+	[ "$env" != "$*" ] && {
+		env=${env%% *}
+		return
+	}
+
+	[ -n "$EPKG_ENV_NAME" ] && {
+		env=$EPKG_ENV_NAME
+		return
+	}
+
+	env=main
+}
+
 env_history() {
 	local env=$1
 

@@ -7,7 +7,7 @@ source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
 
-env=$(get_active_env)
+get_active_env "$@"
 set_epkg_env_dirs
 
 cmd=$1
