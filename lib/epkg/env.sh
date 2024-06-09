@@ -68,19 +68,6 @@ remove_environment() {
 	mv "$EPKG_ENVS_ROOT/$env" "$EPKG_ENVS_ROOT/.$env"
 }
 
-# active environment for install/remove/upgrade
-activate_environment() {
-	local env=$1
-
-	rm -f                "$EPKG_CONFIG_DIR/activate-env"
-	ln -s "../envs/$env" "$EPKG_CONFIG_DIR/activate-env"
-}
-
-# Get current active environment for install/remove/upgrade
-get_active_env() {
-	readlink "$EPKG_CONFIG_DIR/activate-env"
-}
-
 env_history() {
 	local env=$1
 

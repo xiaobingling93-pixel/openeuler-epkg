@@ -20,19 +20,30 @@ export PATH="$path\$PATH"
 EOM
 }
 
+__epkg_add_path() {
+	local env=$1
+	local env_dir='$HOME/.epkg/envs/'"$env"'/env-current'
+	local dir
+	for dir in usr/sbin usr/bin sbin bin
+	do
+		path="$env_dir/$dir:$path"
+	done
+}
+
 __epkg_update_path() {
 	local file
 	local path=
+
+	__epkg_add_path common
+
 	for file in $EPKG_CONFIG_DIR/enabled-envs/*
 	do
-		local env=${file##*/}
-		local env_dir='$HOME/.epkg/envs/'"$env"'/env-current'
-		local dir
-		for dir in usr/sbin usr/bin sbin bin
-		do
-			path="$env_dir/$dir:$path"
-		done
+		__epkg_add_path ${file##*/}
 	done
+
+	if [ -n "$EPKG_ENV_NAME" ]; then
+		__epkg_add_path $EPKG_ENV_NAME
+	fi
 
 	__epkg_create_path_rc "$path"
 	__epkg_rehash
@@ -56,6 +67,24 @@ __epkg_disable_environment() {
 	echo "Environment $env removed from PATH."
 }
 
+__epkg_activate_environment() {
+	local env=$1
+
+	export EPKG_ENV_NAME=$env
+	__epkg_update_path
+
+	echo "Environment $env activated."
+}
+
+__epkg_deactivate_environment() {
+	local env=$EPKG_ENV_NAME
+
+	unset EPKG_ENV_NAME
+	__epkg_update_path
+
+	echo "Environment $env deactivated."
+}
+
 epkg() {
 	local cmd="$1"
 	local env="$2"
@@ -67,6 +96,12 @@ epkg() {
 			;;
 		disable)
 			__epkg_disable_environment $env
+			;;
+		activate)
+			__epkg_activate_environment $env
+			;;
+		deactivate)
+			__epkg_deactivate_environment
 			;;
 		*)
 			command epkg "$@"
