@@ -17,7 +17,7 @@ epkg_init() {
 	done
 
 	init_paths
-	create_environment epkg     # package manage tools
+	create_environment common   # package manage tools etc.
 	create_environment main     # main user environment
 	__epkg_update_path
 	init_rc
