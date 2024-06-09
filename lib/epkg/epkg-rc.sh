@@ -14,7 +14,7 @@ __epkg_rehash() {
 __epkg_create_path_rc() {
 	local path="$1"
 
-	cat > $EPKG_CONFIG_DIR/shell-path.sh <<EOM
+	cat > $EPKG_CONFIG_DIR/shell-add-path.sh <<EOM
 ## auto managed by 'epkg init|enable|disable'
 export PATH="$path\$PATH"
 EOM
