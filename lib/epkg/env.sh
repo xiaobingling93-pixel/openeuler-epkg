@@ -72,13 +72,13 @@ remove_environment() {
 activate_environment() {
 	local env=$1
 
-	rm -f                "$EPKG_META_DIR/activate-env"
-	ln -s "../envs/$env" "$EPKG_META_DIR/activate-env"
+	rm -f                "$EPKG_CONFIG_DIR/activate-env"
+	ln -s "../envs/$env" "$EPKG_CONFIG_DIR/activate-env"
 }
 
 # Get current active environment for install/remove/upgrade
 get_active_env() {
-	readlink "$EPKG_META_DIR/activate-env"
+	readlink "$EPKG_CONFIG_DIR/activate-env"
 }
 
 env_history() {

@@ -3,7 +3,7 @@
 OPT_EPKG=/opt/epkg
 HOME_EPKG=$HOME/.epkg
 
-EPKG_META_DIR=$HOME_EPKG/meta
+EPKG_CONFIG_DIR=$HOME_EPKG/config
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_STORE_ROOT=$HOME_EPKG/store
 
@@ -16,7 +16,7 @@ FAKEROOT_EXEC=$EPKG_ENV/usr/bin/fakeroot
 ELFLOADER_EXEC=$EPKG_ENV/usr/bin/elf-loader
 
 init_paths() {
-	mkdir -p $EPKG_META_DIR/enabled-envs
+	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 	mkdir -p $EPKG_STORE_ROOT
 	mkdir -p $EPKG_PKG_CACHE_DIR
 	init_opt_dir
