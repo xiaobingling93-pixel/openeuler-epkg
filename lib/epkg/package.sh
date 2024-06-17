@@ -10,7 +10,7 @@ install_package() {
 
 	record_cached_packages
 	invoke_dnf_installation "$@"
-	parse_dnf_output
+	parse_dnf5_output
 	record_newly_downloaded_packages
 	determine_installation_candidates
 	run_rpm_installation
@@ -36,7 +36,13 @@ determine_installation_candidates() {
 
 invoke_dnf_installation() {
 	echo "Invoking DNF installation..."
-	$FAKEROOT_EXEC dnf -v -y --installroot "$CURRENT_PROFILE_DIR" --downloadonly --downloaddir="$EPKG_PKG_CACHE_DIR" install "$@" > $CURRENT_PROFILE_DIR/tmp/dnf_output.txt
+	# download rpms
+	$FAKEROOT_EXEC $COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 download "$@" --destdir="$EPKG_PKG_CACHE_DIR" --resolve --alldeps --installroot "$CURRENT_PROFILE_DIR"
+	# generate solver.result
+	local _pwd=$(pwd)
+	cd $COMMON_PROFILE_LINK
+	$FAKEROOT_EXEC $COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 install -y "$@" --debugsolver --assumeno --installroot "$CURRENT_PROFILE_DIR"
+	cd ${_pwd}
 }
 
 # intput line:
@@ -74,22 +80,54 @@ parse_dnf_output() {
 	done < $CURRENT_PROFILE_DIR/tmp/dnf_output.txt
 }
 
+#install NetworkManager-libnm-1:1.26.2-4.oe1.aarch64@local
+#install abattis-cantarell-fonts-0.201-1.oe1.noarch@local
+#install acl-2.2.53-8.oe1.aarch64@local
+parse_dnf5_output() {
+	package_files_to_install=
+	package_names_to_install=
+
+	while IFS= read -r line; do
+		local package_info=${line##* }
+		[ "$package_info" = "$line" ] && continue
+		package_info=${package_info%%@*}
+		local package_arch=${package_info##*.}
+		local package_name=${package_info%-*-*}
+		local temp=${package_info#$package_name-}
+		local package_version=${temp%.$package_arch}
+		package_version=${package_version#*:}
+		local filename="${package_name}-${package_version}.${package_arch}.rpm"
+
+		[ -n "$filename" ] && {
+			package_names_to_install="$package_names_to_install"$'\n'"$package_name"
+			package_files_to_install="$package_files_to_install"$'\n'"$filename"
+		}
+
+	done < $COMMON_PROFILE_LINK/debugdata/packages/solver.result
+}
+
 run_rpm_installation() {
 	echo "Running RPM installation..."
 	(
 	cd "$EPKG_PKG_CACHE_DIR" || exit
 
 	# Install the newly downloaded packages in db and filesystem
-	rpm -i $install_complete_packages --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT" --noscripts
+	[ -n "$install_complete_packages" ] && {
+		$COMMON_PROFILE_LINK/bin/rpm -i $install_complete_packages --root "$EPKG_STORE_ROOT" --noscripts
+	}
+	local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
 
 	# For packages whose files are already in filesystem, call rpm with --justdb
-	rpm -i $install_updatedb_packages --dbpath "$RPMDB_DIR" --justdb
+	[ -n "$install_updatedb_packages" ] && {
+		$COMMON_PROFILE_LINK/bin/rpm -i $install_updatedb_packages --dbpath "$rpmdb_dir" --justdb
+	}
 )
 }
 
 create_symlinks() {
 	# Run rpm -ql to list the files installed by the packages
-	local files=$(rpm --dbpath "$RPMDB_DIR" -ql "$@")
+	local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
+	local files=$($COMMON_PROFILE_LINK/bin/rpm --dbpath "$rpmdb_dir" -ql "$@")
 	local file
 	local path
 
@@ -98,6 +136,9 @@ create_symlinks() {
 	while IFS= read -r file; do
 		path=$EPKG_STORE_ROOT/$file
 		[ -d "$file" ] && continue
+		[[ "$file" =~ "is not installed" ]] && {
+			continue
+		}
 
 		# Create parent directory if it doesn't exist
 		mkdir -p "$CURRENT_PROFILE_DIR/$(dirname "$file")"
@@ -152,7 +193,7 @@ upgrade_package() {
 }
 
 search_package() {
-	dnf --installroot "$CURRENT_PROFILE_DIR" search "$@"
+	$COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 --installroot "$CURRENT_PROFILE_DIR" search "$@"
 }
 
 list_packages() {
