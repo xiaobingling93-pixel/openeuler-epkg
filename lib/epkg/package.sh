@@ -136,7 +136,12 @@ create_symlinks() {
 	while IFS= read -r file; do
 		path=$EPKG_STORE_ROOT/$file
 		[ -d "$file" ] && continue
+
 		[[ "$file" =~ "is not installed" ]] && {
+			continue
+		}
+
+		[[ "$file" =~ "contains no files" ]] && {
 			continue
 		}
 
@@ -148,6 +153,7 @@ create_symlinks() {
 		fi
 
 		# Create symlink
+		[ -e "$CURRENT_PROFILE_DIR/$file" ] && continue
 		ln -s "$path" "$CURRENT_PROFILE_DIR/$file"
 	done <<< "$files"
 }
