@@ -86,6 +86,66 @@ __epkg_deactivate_environment() {
 	echo "Environment '$env' deactivated."
 }
 
+
+__fix_rootfs_needed() {
+	local envrootfs="$1"
+	mkdir -p "$envrootfs/tmp"
+	find "$envrootfs" -type f -executable -exec file {} + | grep ELF | cut -d: -f1 > "$envrootfs/tmp/elf_files"
+	local whitelist="linux-vdso.so.1 statically"
+	while read elf_file; do
+		# Add your code here to process each ELF file in envrootfs
+		# echo "Processing ELF file: $elf_file"
+		# 查看elf_file文件的so，并解析出实际的名称
+		dependencies=$(ldd "$elf_file" | awk '{print $1}')
+		for dependency in $dependencies
+		do
+			if [[ " ${whitelist[@]} " =~ " ${dependency} " ]]; then
+				continue
+			fi
+			# Find the actual path of the dependency in envrootfs
+			actual_path=$(grep "$(basename $dependency)" "$envrootfs/tmp/elf_files" | grep "usr/lib" | head -n1)
+			if [ -n "$actual_path" ]; then
+				patchelf --replace-needed "$dependency" "$actual_path" "$elf_file"
+				continue
+			fi
+
+			# 如果不存在就直接查找
+			actual_path=$(find "$envrootfs" -name "$(basename $dependency)" | grep "usr/lib" | head -n1)
+			if [ -n "$actual_path" ]; then
+				patchelf --replace-needed "$dependency" "$actual_path" "$elf_file"
+			else
+				echo "Dependency $dependency not found in envrootfs."
+			fi
+		
+		done
+	done  < "$envrootfs/tmp/elf_files"
+	rm -rf "$envrootfs/tmp/elf_files"
+}
+
+# 重定向指定文件的依赖到rootfs中
+__fix_file_needed() {
+	local whitelist="linux-vdso.so.1 statically"
+	local rootfs="$1"
+	local elf_file="$2"
+	dependencies=$(ldd "$elf_file" | awk '{print $1}')
+
+	for dependency in $dependencies
+	do
+		if [[ " ${whitelist[@]} " =~ " ${dependency} " ]]; then
+				continue
+		fi
+		# Find the actual path of the dependency in rootfs
+		actual_path=$(find "$rootfs" -name "$(basename $dependency)" | grep "usr/lib" | head -n1)
+		if [ -n "$actual_path" ]; then
+			patchelf --replace-needed "$dependency" "$actual_path" "$elf_file"
+		else
+			echo "Dependency $dependency not found in envrootfs."
+		fi
+	
+	done
+
+}
+
 epkg() {
 	local cmd="$1"
 	local env="$2"
