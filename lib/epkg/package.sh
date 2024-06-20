@@ -135,7 +135,11 @@ create_symlinks() {
 	#
 	while IFS= read -r file; do
 		path=$EPKG_STORE_ROOT/$file
-		[ -d "$file" ] && continue
+		[ -d "$path" ] && {
+			continue
+		}
+
+		$COMMON_PROFILE_LINK/bin/ls $path &> /dev/null || continue
 
 		[[ "$file" =~ "is not installed" ]] && {
 			continue
@@ -146,37 +150,35 @@ create_symlinks() {
 		}
 
 		# Create parent directory if it doesn't exist
-		mkdir -p "$CURRENT_PROFILE_DIR/$(dirname "$file")"
+		tfile=${file#/*/*/*/*/}
+		$COMMON_PROFILE_LINK/bin/mkdir -p "$CURRENT_PROFILE_DIR/$(dirname "$tfile")"
 
 		if [ "${file#*/bin/}" != "$file" ]; then
 			handle_exec "$path" && continue
 		fi
 
 		# Create symlink
-		[ -e "$CURRENT_PROFILE_DIR/$file" ] && continue
-		ln -s "$path" "$CURRENT_PROFILE_DIR/$file"
+		[ -e "$CURRENT_PROFILE_DIR/$tfile" ] && continue
+		$COMMON_PROFILE_LINK/bin/ln -s "$path" "$CURRENT_PROFILE_DIR/$tfile"
 	done <<< "$files"
 }
 
 handle_exec() {
-	local file_type=$(file $path)
-
-	case $file_type in
-		'ELF 64-bit LSB shared object')
-			handle_elf;;
-		*)
-			return 1
-			;;
-	esac
+	local file_type=$($COMMON_PROFILE_LINK/bin/file $path)
+	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
+		handle_elf
+	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
+		handle_elf
+	fi
 }
 
 handle_elf() {
 	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
-	cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$file
-	replace_string $CURRENT_PROFILE_DIR/$file $id1 $path
-	replace_string $CURRENT_PROFILE_DIR/$file $id2 $CURRENT_PROFILE_DIR
+	$COMMON_PROFILE_LINK/bin/cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$tfile
+	replace_string $CURRENT_PROFILE_DIR/$tfile $id1 $path
+	replace_string $CURRENT_PROFILE_DIR/$tfile $id2 $CURRENT_PROFILE_DIR
 }
 
 replace_string() {
