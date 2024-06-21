@@ -13,6 +13,13 @@ create_environment() {
 	ln -sT profile-1        "$EPKG_ENVS_ROOT/$env/profile-current"
 
 	mkdir "$EPKG_ENVS_ROOT/$env/profile-1/tmp"
+	mkdir "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"
+	mkdir "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"
+	mkdir "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib64"
+
+	ln -sT  "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"  "$EPKG_ENVS_ROOT/$env/profile-1/bin"
+	ln -sT  "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"  "$EPKG_ENVS_ROOT/$env/profile-1/lib"
+	ln -sT  "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib64"  "$EPKG_ENVS_ROOT/$env/profile-1/lib64"
 
 	__epkg_enable_environment $env
 	__epkg_activate_environment $env

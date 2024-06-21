@@ -138,7 +138,6 @@ create_symlinks() {
 		[ -d "$path" ] && {
 			continue
 		}
-
 		$COMMON_PROFILE_LINK/bin/ls $path &> /dev/null || continue
 
 		[[ "$file" =~ "is not installed" ]] && {
@@ -177,8 +176,8 @@ handle_elf() {
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
 	$COMMON_PROFILE_LINK/bin/cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$tfile
-	replace_string $CURRENT_PROFILE_DIR/$tfile $id1 $path
-	replace_string $CURRENT_PROFILE_DIR/$tfile $id2 $CURRENT_PROFILE_DIR
+	replace_string "$CURRENT_PROFILE_DIR/$tfile" "$id1" "$CURRENT_PROFILE_DIR"
+	replace_string "$CURRENT_PROFILE_DIR/$tfile" "$id2" "$path"
 }
 
 replace_string() {
