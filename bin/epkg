@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 
 PROJECT_DIR=$(dirname $(dirname $(realpath $0)))
 source $PROJECT_DIR/lib/epkg/paths.sh

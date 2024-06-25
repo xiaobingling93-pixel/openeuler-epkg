@@ -37,7 +37,8 @@ determine_installation_candidates() {
 invoke_dnf_installation() {
 	echo "Invoking DNF installation..."
 	# download rpms
-	$FAKEROOT_EXEC $COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 download "$@" --destdir="$EPKG_PKG_CACHE_DIR" --resolve --alldeps --installroot "$CURRENT_PROFILE_DIR"
+	$FAKEROOT_EXEC $COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 download "$@" --destdir="$EPKG_PKG_CACHE_DIR" --resolve --installroot "$CURRENT_PROFILE_DIR"
+
 	# generate solver.result
 	local _pwd=$(pwd)
 	cd $COMMON_PROFILE_LINK
@@ -113,7 +114,7 @@ run_rpm_installation() {
 
 	# Install the newly downloaded packages in db and filesystem
 	[ -n "$install_complete_packages" ] && {
-		$COMMON_PROFILE_LINK/bin/rpm -i $install_complete_packages --root "$EPKG_STORE_ROOT" --noscripts
+		$COMMON_PROFILE_LINK/bin/rpm -i $install_complete_packages --root "$EPKG_STORE_ROOT" --noscripts --nodeps
 	}
 	local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
 
@@ -150,7 +151,7 @@ create_symlinks() {
 
 		# Create parent directory if it doesn't exist
 		tfile=${file#/*/*/*/*/}
-		$COMMON_PROFILE_LINK/bin/mkdir -p "$CURRENT_PROFILE_DIR/$(dirname "$tfile")"
+		$COMMON_PROFILE_LINK/bin/mkdir -p "$CURRENT_PROFILE_DIR/$($COMMON_PROFILE_LINK/bin/dirname "$tfile")"
 
 		if [ "${file#*/bin/}" != "$file" ]; then
 			handle_exec "$path" && continue
@@ -158,6 +159,7 @@ create_symlinks() {
 
 		# Create symlink
 		[ -e "$CURRENT_PROFILE_DIR/$tfile" ] && continue
+		[[ "$tfile" =~  "etc/yum.repos.d" ]] && continue
 		$COMMON_PROFILE_LINK/bin/ln -s "$path" "$CURRENT_PROFILE_DIR/$tfile"
 	done <<< "$files"
 }
@@ -204,5 +206,5 @@ search_package() {
 }
 
 list_packages() {
-	rpm -qa --dbpath "$RPMDB_DIR"
+	$COMMON_PROFILE_LINK/bin/rpm -qa --dbpath "$RPMDB_DIR"
 }
