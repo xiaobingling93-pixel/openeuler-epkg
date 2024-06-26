@@ -187,9 +187,9 @@ replace_string() {
 	local long_id="$2"
 	local str="$3"
 
-	local position=$(grep -m1 -oba "$long_id" $binary_file | cut -d ":" -f 1)
+	local position=$(/usr/bin/grep -m1 -oba "$long_id" $binary_file | $COMMON_PROFILE_LINK/bin/cut -d ":" -f 1)
 	[ -n "$position" ] && {
-		echo -en "$str\0" | dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
+		$COMMON_PROFILE_LINK/bin/echo -en "$str\0" | $COMMON_PROFILE_LINK/bin/dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
 	}
 }
 
