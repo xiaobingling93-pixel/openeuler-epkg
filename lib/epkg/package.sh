@@ -188,7 +188,9 @@ replace_string() {
 	local str="$3"
 
 	local position=$(grep -m1 -oba "$long_id" $binary_file | cut -d ":" -f 1)
-	echo -en "$str\0" | dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
+	[ -n "$position" ] && {
+		echo -en "$str\0" | dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
+	}
 }
 
 ######### END install_package() #########
