@@ -114,13 +114,13 @@ run_rpm_installation() {
 
 	# Install the newly downloaded packages in db and filesystem
 	[ -n "$install_complete_packages" ] && {
-		$COMMON_PROFILE_LINK/bin/rpm -i $install_complete_packages --root "$EPKG_STORE_ROOT" --noscripts --nodeps
+		$COMMON_PROFILE_LINK/bin/rpm -i $install_complete_packages --root "$EPKG_STORE_ROOT" --noscripts --nodeps --dbpath "$RPMDB_DIR"
 	}
-	local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
+	#local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
 
 	# For packages whose files are already in filesystem, call rpm with --justdb
 	[ -n "$install_updatedb_packages" ] && {
-		$COMMON_PROFILE_LINK/bin/rpm -i $install_updatedb_packages --dbpath "$rpmdb_dir" --justdb
+		$COMMON_PROFILE_LINK/bin/rpm -i $install_updatedb_packages --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT" --justdb
 	}
 )
 }
@@ -208,5 +208,5 @@ search_package() {
 }
 
 list_packages() {
-	$COMMON_PROFILE_LINK/bin/rpm -qa --dbpath "$RPMDB_DIR"
+	$COMMON_PROFILE_LINK/bin/rpm -qa --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT"
 }
