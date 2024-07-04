@@ -127,8 +127,7 @@ run_rpm_installation() {
 
 create_symlinks() {
 	# Run rpm -ql to list the files installed by the packages
-	local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
-	local files=$($COMMON_PROFILE_LINK/bin/rpm --dbpath "$rpmdb_dir" -ql "$@")
+	local files=$($COMMON_PROFILE_LINK/bin/rpm --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT" -ql "$@")
 	local file
 	local path
 
