@@ -66,7 +66,7 @@ prepare_rootfs() {
 		echo "No $EPKG_ROOTFS_TAR_NAME exist!"
 		retrun
 	fi
-	tar -zxvf $EPKG_TMP/$EPKG_ROOTFS_TAR_NAME -C $EPKG_TMP
+	tar -zxvf $EPKG_TMP/$EPKG_ROOTFS_TAR_NAME -C $EPKG_TMP > /dev/null
 	cp -ar $EPKG_TMP/epkg_rootfs/* "$EPKG_ENVS_ROOT/common/profile-1"
 	__fix_rootfs_needed $EPKG_ENVS_ROOT/common/profile-1/
 }
