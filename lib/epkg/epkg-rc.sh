@@ -46,6 +46,7 @@ __epkg_update_path() {
 		__epkg_add_path $EPKG_ENV_NAME
 	fi
 
+	path=$path:$HOME/epkg_manager/bin
 	__epkg_create_path_rc "$path"
 	__epkg_rehash
 }
