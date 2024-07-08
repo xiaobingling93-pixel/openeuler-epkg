@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-EPKG_TMP=/tmp/
+EPKG_TMP=/tmp/$HOME
 EPKG_ROOTFS_TAR_NAME="epkg_rootfs.tar.gz"
 
 epkg_init() {
