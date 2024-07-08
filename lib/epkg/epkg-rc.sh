@@ -46,7 +46,12 @@ __epkg_update_path() {
 		__epkg_add_path $EPKG_ENV_NAME
 	fi
 
-	path=$HOME/epkg_manager/bin:$path
+	if echo "$path" | grep -q "epkg_manager"; then
+		echo "PATH contained epkg_manager/bin "
+	else
+		path=$HOME/epkg_manager/bin:$path
+	fi
+	
 	__epkg_create_path_rc "$path"
 	__epkg_rehash
 }
