@@ -9,7 +9,7 @@ source $PROJECT_DIR/lib/epkg/epkg-rc.sh
 
 cmd=$1
 shift
-
+echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
 get_active_env "$@"
 [ "$cmd" = 'init' ] ||
 set_epkg_env_dirs $env
@@ -62,9 +62,15 @@ EOF
 				;;
 			"create")
 				create_environment "$@"
+				echo "re-open shell"
+				source $RC_PATH
+				bash
 				;;
 			"remove")
 				remove_environment "$@"
+				echo "re-open shell"
+				source $RC_PATH
+				bash
 				;;
 			"enable")
 				__epkg_enable_environment "$@"
@@ -73,10 +79,14 @@ EOF
 				__epkg_disable_environment "$@"
 				;;
 			"activate")
-				__epkg_activate_environment "$@"
+				activate_environment "$@"
+				echo "re-open shell"
+				source $RC_PATH
+				bash
 				;;
 			"deactivate")
 				__epkg_deactivate_environment "$@"
+				bash
 				;;
 			"history")
 				env_history "$@"

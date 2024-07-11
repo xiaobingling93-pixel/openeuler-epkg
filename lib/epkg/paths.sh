@@ -14,6 +14,19 @@ EPKG_EXEC=$COMMON_PROFILE_LINK/usr/bin/epkg
 EPKG_RC=$COMMON_PROFILE_LINK/usr/lib/epkg/epkg-rc.sh
 FAKEROOT_EXEC=$COMMON_PROFILE_LINK/usr/bin/fakeroot
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
+shell=$(basename "$SHELL")
+case "$shell" in
+	"bash")
+		RC_PATH="$HOME/.bashrc"
+		;;
+	"zsh")
+		RC_PATH="$HOME/.zshrc"
+		;;
+	*)
+		echo "Unsupported shell: $shell"
+		exit 1
+		;;
+esac
 
 init_paths() {
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
@@ -47,4 +60,9 @@ set_epkg_env_dirs() {
 	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
 	RPMDB_DIR=$CURRENT_PROFILE_DIR/var/lib/rpm
 	EPKG_VARLIB_DIR=$CURRENT_PROFILE_DIR/var/lib/epkg
+
+	echo "set CURRENT_PROFILE_LINK: $CURRENT_PROFILE_LINK"
+	echo "set CURRENT_PROFILE_DIR: $CURRENT_PROFILE_DIR"
+	echo "set RPMDB_DIR: $RPMDB_DIR"
+	echo "set EPKG_VARLIB_DIR: $EPKG_VARLIB_DIR"
 }

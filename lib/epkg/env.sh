@@ -4,6 +4,7 @@ list_environments() {
 	# List all environments
 	echo "Available environments:"
 	ls "$EPKG_ENVS_ROOT"
+	echo "You are in [$EPKG_ENV_NAME] now"
 }
 
 create_environment() {
@@ -27,6 +28,23 @@ create_environment() {
 	__epkg_activate_environment $env
 
 	echo "Environment '$env' created."
+}
+
+
+activate_environment() {
+	local env=$1
+
+	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
+
+	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"
+	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/sbin"
+	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"
+	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib64"
+
+	__epkg_enable_environment $env
+	__epkg_activate_environment $env
+
+	echo "Environment '$env' activated."
 }
 
 # create YUM --installroot directory structure

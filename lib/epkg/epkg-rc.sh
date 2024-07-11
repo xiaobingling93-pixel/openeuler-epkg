@@ -10,6 +10,21 @@ __epkg_rehash() {
 	fi
 }
 
+# update EPKG_ENV_NAME to user shell rc file
+_update_epkg_env_name() {
+	local env=$1
+	local shell
+
+	if grep -q "EPKG_ENV_NAME" $RC_PATH; then
+		sed -i "s/^export EPKG_ENV_NAME=.*$/export EPKG_ENV_NAME=$env/" $RC_PATH
+	else
+		echo "export EPKG_ENV_NAME=$env" >> "$RC_PATH"
+	fi
+
+	echo "update_epkg_env_name:"
+	cat $RC_PATH
+}
+
 # initialize PATH to epkg packages for bash/zsh shell
 __epkg_create_path_rc() {
 	local path="$1"
@@ -22,6 +37,10 @@ EOM
 
 __epkg_add_path() {
 	local env=$1
+	if echo "$PATH" | grep -q "$env"; then
+		echo "PATH contained $env "
+	fi
+
 	local env_dir='$HOME/.epkg/envs/'"$env"'/profile-current'
 	local dir
 	for dir in usr/bin bin
@@ -32,6 +51,7 @@ __epkg_add_path() {
 }
 
 __epkg_update_path() {
+	echo "Upadte path"
 	local file
 	local path=
 
@@ -79,6 +99,7 @@ __epkg_activate_environment() {
 
 	export EPKG_ENV_NAME=$env
 	__epkg_update_path
+	_update_epkg_env_name $env
 
 	echo "Environment '$env' activated."
 }

@@ -28,24 +28,7 @@ epkg_init() {
 }
 
 init_rc() {
-	local shell
-
-	shell=$(basename "$SHELL")
-
-	local rc_path
-	case "$shell" in
-		"bash")
-			rc_path="$HOME/.bashrc"
-			;;
-		"zsh")
-			rc_path="$HOME/.zshrc"
-			;;
-		*)
-			echo "Unsupported shell: $shell"
-			return 1
-			;;
-	esac
-	append_user_rc "$rc_path"
+	append_user_rc "$RC_PATH"
 }
 
 # append content to user shell rc file
