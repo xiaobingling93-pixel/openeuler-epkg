@@ -3,10 +3,10 @@
 OPT_EPKG=/opt/epkg
 HOME_EPKG=$HOME/.epkg
 
+export PROJECT_DIR=$HOME/epkg_manager
 EPKG_CONFIG_DIR=$HOME_EPKG/config
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_STORE_ROOT=$HOME_EPKG/store
-
 EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
 
 COMMON_PROFILE_LINK=$EPKG_ENVS_ROOT/common/profile-current
@@ -17,10 +17,12 @@ ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
 shell=$(basename "$SHELL")
 case "$shell" in
 	"bash")
-		RC_PATH="$HOME/.bashrc"
+		RC_PATH=$HOME/.bashrc
+		PROFILE_PATH=$HOME/.bash_profile
 		;;
 	"zsh")
-		RC_PATH="$HOME/.zshrc"
+		RC_PATH=$HOME/.zshrc
+		PROFILE_PATH=$HOME/.zprofile
 		;;
 	*)
 		echo "Unsupported shell: $shell"
@@ -60,9 +62,4 @@ set_epkg_env_dirs() {
 	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
 	RPMDB_DIR=$CURRENT_PROFILE_DIR/var/lib/rpm
 	EPKG_VARLIB_DIR=$CURRENT_PROFILE_DIR/var/lib/epkg
-
-	echo "set CURRENT_PROFILE_LINK: $CURRENT_PROFILE_LINK"
-	echo "set CURRENT_PROFILE_DIR: $CURRENT_PROFILE_DIR"
-	echo "set RPMDB_DIR: $RPMDB_DIR"
-	echo "set EPKG_VARLIB_DIR: $EPKG_VARLIB_DIR"
 }

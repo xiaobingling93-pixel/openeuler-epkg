@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 
 install_package() {
+	echo "Sure to install? (y: continue, others: exit)"
+	read choice
+	if [ "$choice" != "y" ]; then
+		return
+	fi
+
 	local downloaded_packages
 	local downloaded_packages2
 	local package_files_to_install

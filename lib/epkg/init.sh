@@ -21,13 +21,16 @@ epkg_init() {
 
 	init_paths
 	create_environment common   # package manage tools etc.
+	__epkg_enable_environment common
 	create_environment main     # main user environment
-	__epkg_update_path
+	__epkg_enable_environment main
 	init_rc
 	prepare_rootfs
 }
 
 init_rc() {
+	cp -rf $PROJECT_DIR/lib/* $EPKG_ENVS_ROOT/common/profile-current/usr/lib/
+	cp $PROJECT_DIR/bin/epkg $EPKG_ENVS_ROOT/common/profile-current/usr/bin/
 	append_user_rc "$RC_PATH"
 }
 
@@ -38,8 +41,8 @@ append_user_rc() {
 	if grep -qF "shell-add-path.sh" "$rc_path"; then
 		echo "epkg is already initialized in '$rc_path'"
 	else
-		echo 'source $HOME/.epkg/config/shell-add-path.sh' >> "$rc_path"
-		#echo "source $EPKG_RC" >> "$rc_path"
+		echo "source $HOME/.epkg/config/shell-add-path.sh" >> "$rc_path"
+		echo "source $EPKG_RC" >> "$rc_path"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
 }

@@ -2,14 +2,20 @@
 
 list_environments() {
 	# List all environments
-	echo "Available environments:"
-	ls "$EPKG_ENVS_ROOT"
+	echo "Available environments(sort by time):"
+	all_envs=$(ls -lt $EPKG_ENVS_ROOT | grep '^d' | awk '{print $9}')
+	echo "$all_envs"
 	echo "You are in [$EPKG_ENV_NAME] now"
 }
 
 create_environment() {
 	local env=$1
-
+	local env_existed=
+	_check_env_existed $env
+	if [ $env_existed = 1 ]; then
+		echo "$env already existed"
+		exit 0
+	fi
 	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
 	ln -sT profile-1        "$EPKG_ENVS_ROOT/$env/profile-current"
 
@@ -24,9 +30,7 @@ create_environment() {
 	ln -sT  "usr/lib"  "$EPKG_ENVS_ROOT/$env/profile-1/lib"
 	ln -sT  "usr/lib64"  "$EPKG_ENVS_ROOT/$env/profile-1/lib64"
 
-	__epkg_enable_environment $env
 	__epkg_activate_environment $env
-
 	echo "Environment '$env' created."
 }
 
@@ -41,9 +45,7 @@ activate_environment() {
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib64"
 
-	__epkg_enable_environment $env
 	__epkg_activate_environment $env
-
 	echo "Environment '$env' activated."
 }
 
@@ -81,7 +83,7 @@ EOL
 	cat > "$installroot/etc/yum.repos.d/local.repo" <<EOL
 [local]
 name=Local openEuler OS Repository
-baseurl=file:///srv/os-repo/epkg/openEuler-20.03-LTS-SP1/OS/aarch64
+baseurl=file:///srv/os-repo/epkg/openeuler/openEuler-20.03-LTS-SP1/OS/aarch64
 enabled=1
 gpgcheck=0
 EOL
@@ -91,8 +93,14 @@ EOL
 
 remove_environment() {
 	local env=$1
-
+	local env_existed=
+	_check_env_existed $env
+	if [ $env_existed = 0 ]; then
+		echo "$env no exist"
+		exit 0
+	fi
 	mv "$EPKG_ENVS_ROOT/$env" "$EPKG_ENVS_ROOT/.$env"
+	# set_epkg_env_dirs main
 }
 
 # setup env variable

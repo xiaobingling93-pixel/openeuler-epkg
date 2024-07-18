@@ -1,11 +1,11 @@
 #!/usr/bin/bash
-
-PROJECT_DIR=$(dirname $(dirname $(realpath $0)))
+export PROJECT_DIR=$HOME/epkg_manager
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh
 source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
+
 
 cmd=$1
 shift
@@ -28,6 +28,7 @@ epkg list
 epkg env list
 epkg env create|remove ENV
 epkg env activate ENV
+epkg env deactivate
 epkg env enable|disable ENV
 epkg env history ENV
 epkg env rollback ENV
@@ -62,15 +63,9 @@ EOF
 				;;
 			"create")
 				create_environment "$@"
-				echo "re-open shell"
-				source $RC_PATH
-				bash
 				;;
 			"remove")
 				remove_environment "$@"
-				echo "re-open shell"
-				source $RC_PATH
-				bash
 				;;
 			"enable")
 				__epkg_enable_environment "$@"
@@ -80,13 +75,9 @@ EOF
 				;;
 			"activate")
 				activate_environment "$@"
-				echo "re-open shell"
-				source $RC_PATH
-				bash
 				;;
 			"deactivate")
 				__epkg_deactivate_environment "$@"
-				bash
 				;;
 			"history")
 				env_history "$@"

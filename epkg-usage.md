@@ -1,7 +1,8 @@
 # epkg 使用指南
 
 ## 介绍
-本文介绍EPKG包管理器工作环境初始化以及基本功能如何使用
+本文介绍EPKG包管理器工作环境如何初始化，以及基本功能如何使用。
+本文涉及操作结果截图均以root用户为例。
 
 ## 安装教程
 Step 1. 准备一个linux虚拟机/容器环境：
@@ -22,7 +23,6 @@ Step 3. 准备epkg下载&初始化脚本：
 Step 4. 初始化epkg包管理器最小环境：
 
     sh downloader.sh
-    Note: 支持root及非root用户执行
 
 
 ## EPKG包管理器使用说明
@@ -39,10 +39,13 @@ Usage:
     epkg env create|remove ENV
     epkg env activate ENV
     epkg env enable|disable ENV
-    epkg env history ENV
-    epkg env rollback ENV
+    epkg env history ENV （开发中...）
+    epkg env rollback ENV （开发中...）
 
 ### 查询已安装软件
+功能描述：
+
+    查询当前所在环境中，已经安装的软件包信息
 命令：
 
     epkg list
@@ -71,6 +74,10 @@ Usage:
     zip-3.0-26.oe1.aarch64
 
 ### 查询未安装软件
+功能描述：
+
+    基于当前所在环境已挂载repo源，查询指定软件信息
+
 命令：
 
     epkg search ${package_name}
@@ -88,6 +95,10 @@ Usage:
     vim-minimal.aarch64: This package provides the basic and minimal functionalities of vim editor.
 
 ### 安装软件
+功能描述：
+
+    在当前所在环境安装软件（建议操作前确认当前所在环境）
+
 命令：
 
     epkg install ${package_name}
@@ -119,6 +130,10 @@ Usage:
     basesystem                          noarch        12-2.oe1             local              0.0   B
  
 ### 列出环境列表
+功能描述：
+
+    列出当前epkg所有环境（$EPKG_ENVS_ROOT目录下），及当前处于哪个环境
+
 命令：
 
     epkg env list
@@ -126,12 +141,18 @@ Usage:
 返回示例：
 
     [root@19e784a5bc38 bin]# epkg env list
-    Available environments:
-    common  main
+    Available environments(sort by time):
+    w1
+    main
+    common
     You are in [main] now
 
  
 ### 创建环境
+功能描述：
+
+    创建新环境（创建成功后，默认激活新环境，即切换进新环境；但是不全局使能）
+
 命令：
 
     epkg env create ${env_name}
@@ -145,7 +166,11 @@ Usage:
     Environment 'work1' created.
     re-open shell
 
-### 使能/切换环境
+### 激活环境
+功能描述：
+
+    激活指定环境，刷新EPKG_ENV_NAME和RPMDB_DIR（用于安装软件至指定环境时，指向--dbpath），刷新PATH，包含指定环境及common环境，并将指定环境设为第一优先级
+
 命令：
 
     epkg env activate ${env_name}
@@ -155,4 +180,58 @@ Usage:
     [root@9d991d463f89 bin]# epkg env activate main
     YUM --installroot directory structure created successfully in: /root/.epkg/envs/main/profile-1
     Environment 'main' activated.
+    re-open shell
+
+### 取消激活环境
+功能描述：
+
+    取消激活指定环境，刷新EPKG_ENV_NAME和RPMDB_DIR，刷新PATH，默认指向main环境
+
+命令：
+
+    epkg env deactivat ${env_name}
+
+返回示例：
+
+    [root@398ec57ce780 bin]# epkg env deactivate w1
+    Environment 'w1' deactivated.
+    re-open shell
+
+
+### 使能环境
+功能描述：
+
+    使能指定环境，持久化刷新PATH，包含epkg所有已使能环境，并将指定环境设为第一优先级
+
+命令：
+
+    epkg env enable ${env_name}
+
+返回示例：
+
+    [root@5042ae77dd75 bin]# epkg env enable lkp
+    add common to path
+    add main to path
+    add xsl to path
+    add lkp to path
+    Environment 'lkp' added to PATH.
+    re-open shell
+
+### 取消使能环境
+功能描述：
+
+    去使能指定环境，持久化刷新PATH，包含除指定环境外的epkg所有已使能环境
+
+命令：
+
+    epkg env disable ${env_name}
+
+返回示例：
+
+    [root@69393675945d /]# epkg env disable w4
+    Warning: Don't try to disable current env!
+    Warning: you are trying to disable current env!
+    sure to continue? (y: continue, others: exit)
+    y
+    Environment 'w4' removed from PATH.
     re-open shell
