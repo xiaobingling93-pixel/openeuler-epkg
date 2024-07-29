@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-export PROJECT_DIR=$HOME/epkg_manager
+if [ -d "$COMMON_PROFILE_LINK" ]; then
+	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
+else
+	export PROJECT_DIR=/tmp/$USER/epkg_manager
+fi
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh
 
@@ -13,19 +17,6 @@ __epkg_rehash() {
 	fi
 }
 
-_init_current_rc() {
-	local path=
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-	path=$path:$ORIGIN_PATH
-	__epkg_add_path common
-
-	if ! echo "$path" | grep -q -F "epkg_manager"; then
-		path=$path:$HOME/epkg_manager/bin
-	fi
-
-	export PATH=$path
-}
 
 # update EPKG_ENV_NAME to user shell rc file
 _update_epkg_env_name() {
@@ -38,7 +29,6 @@ _update_epkg_env_name() {
 		echo "export EPKG_ENV_NAME=$env" >> "$RC_PATH"
 	fi
 
-	echo "update_epkg_env_name"
 }
 
 # initialize PATH to epkg packages for bash/zsh shell
@@ -65,7 +55,6 @@ __epkg_add_path() {
 	done
 
 	echo "Add $env_to_add to path"
-	echo "path: $path"
 }
 
 __epkg_update_path() {
@@ -87,11 +76,11 @@ __epkg_update_path() {
 __epkg_enable_environment() {
 	local env=$1
 	local path=
-	local env_enabled=
+
 
 	_check_env_enabled $env
-	if [ $env_enabled = 1 ]; then
-		echo "$env already enabled"
+	if [ $? -eq 0 ]; then
+		echo "$env already enabled!"
 		return
 	fi
 
@@ -108,21 +97,11 @@ __epkg_enable_environment() {
 __epkg_disable_environment() {
 	local env=$1
 	local path=
-	local env_enabled=
 
 	_check_env_enabled $env
-	if [ $env_enabled = 0 ]; then
-		echo "$env already disabled"
+	if [ $? -eq 1 ]; then
+		echo "$env already disabled!"
 		return
-	fi
-
-	if [ $env = $EPKG_ENV_NAME ]; then
-		echo "Warning: you are trying to disable current env!"
-		echo "sure to continue? (y: continue, others: exit)"
-		read choice
-		if [ "$choice" != "y" ]; then
-			return
-		fi
 	fi
 
 	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
@@ -171,19 +150,17 @@ _check_env_existed() {
 	local env=$1
 	all_envs=$(ls -lt $EPKG_ENVS_ROOT | grep '^d' | awk '{print $9}')
 	if echo "$all_envs" | grep -q -F "$env"; then
-		env_existed=1
-		return
+		return 0
 	fi
-	env_existed=0
+	return 1
 }
 
 _check_env_enabled() {
 	local env=$1
 	if [ -L "$EPKG_CONFIG_DIR/enabled-envs/$env" ]; then
-		env_enabled=1
-		return
+		return 0
 	fi
-	env_enabled=0
+	return 1
 }
 
 __fix_rootfs_needed() {
@@ -191,6 +168,7 @@ __fix_rootfs_needed() {
 	mkdir -p "$envrootfs/tmp"
 	find "$envrootfs" -type f -executable -exec file {} + | grep ELF | cut -d: -f1 > "$envrootfs/tmp/elf_files"
 	local whitelist="linux-vdso.so.1 statically"
+
 	while read elf_file; do
 		# Add your code here to process each ELF file in envrootfs
 		# echo "Processing ELF file: $elf_file"
@@ -204,14 +182,16 @@ __fix_rootfs_needed() {
 			# Find the actual path of the dependency in envrootfs
 			actual_path=$(grep "$(basename $dependency)" "$envrootfs/tmp/elf_files" | grep "usr/lib" | head -n1)
 			if [ -n "$actual_path" ]; then
-				patchelf --replace-needed "$dependency" "$actual_path" "$elf_file"
+				patchelf --replace-needed "$dependency" "$actual_path" "$elf_file" || \
+				echo "patchelf failed, elf_file: $elf_file; dependency: $dependency; actual_path: $actual_path"
 				continue
 			fi
 
 			# 如果不存在就直接查找
 			actual_path=$(find "$envrootfs" -name "$(basename $dependency)" | grep "usr/lib" | head -n1)
 			if [ -n "$actual_path" ]; then
-				patchelf --replace-needed "$dependency" "$actual_path" "$elf_file"
+				patchelf --replace-needed "$dependency" "$actual_path" "$elf_file" || \
+				echo "patchelf failed, elf_file: $elf_file; dependency: $dependency; actual_path: $actual_path"
 			else
 				echo "Dependency $dependency not found in envrootfs."
 			fi
@@ -236,7 +216,8 @@ __fix_file_needed() {
 		# Find the actual path of the dependency in rootfs
 		actual_path=$(find "$rootfs" -name "$(basename $dependency)" | grep "usr/lib" | head -n1)
 		if [ -n "$actual_path" ]; then
-			patchelf --replace-needed "$dependency" "$actual_path" "$elf_file"
+			patchelf --replace-needed "$dependency" "$actual_path" "$elf_file" || \
+				echo "patchelf failed, elf_file: $elf_file; dependency: $dependency; actual_path: $actual_path"
 		else
 			echo "Dependency $dependency not found in envrootfs."
 		fi
@@ -246,6 +227,11 @@ __fix_file_needed() {
 }
 
 epkg() {
+	if [ $EPKG_INITIALIZED != "yes" ]; then
+		echo "Warning: epkg has not been initialized"
+		echo "please execute: epkg init"
+		return 1
+	fi
 	local cmd="$1"
 	local env="$2"
 	local HOME_EPKG=$HOME/.epkg

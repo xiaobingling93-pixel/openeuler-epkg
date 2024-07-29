@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 EPKG_TMP=/tmp/$USER
-EPKG_ROOTFS_TAR_NAME="epkg_rootfs.tar.gz"
+EPKG_ROOTFS_TAR_NAME="epkg_rootfs"
 
 epkg_init() {
 	local reverse=false
@@ -31,28 +31,29 @@ epkg_init() {
 init_rc() {
 	cp -rf $PROJECT_DIR/lib/* $EPKG_ENVS_ROOT/common/profile-current/usr/lib/
 	cp $PROJECT_DIR/bin/epkg $EPKG_ENVS_ROOT/common/profile-current/usr/bin/
-	append_user_rc "$RC_PATH"
+	append_user_rc
 }
 
 # append content to user shell rc file
 append_user_rc() {
-	local rc_path="$1"
-
-	if grep -qF "shell-add-path.sh" "$rc_path"; then
-		echo "epkg is already initialized in '$rc_path'"
+	if grep -qF "shell-add-path.sh" "$RC_PATH"; then
+		echo "epkg is already initialized in '$RC_PATH'"
 	else
-		echo "source $HOME/.epkg/config/shell-add-path.sh" >> "$rc_path"
-		echo "source $EPKG_RC" >> "$rc_path"
+		echo "source $HOME/.epkg/config/shell-add-path.sh" >> "$RC_PATH"
+		echo "source $EPKG_RC" >> "$RC_PATH"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
 }
 
 prepare_rootfs() {
-	if [ ! -f $EPKG_TMP/$EPKG_ROOTFS_TAR_NAME ]; then
+	if [ ! -d $EPKG_TMP/$EPKG_ROOTFS_TAR_NAME ]; then
 		echo "No $EPKG_ROOTFS_TAR_NAME exist!"
-		retrun
+		retrun 1
 	fi
-	tar -zxvf $EPKG_TMP/$EPKG_ROOTFS_TAR_NAME -C $EPKG_TMP > /dev/null
+
 	cp -ar $EPKG_TMP/epkg_rootfs/* "$EPKG_ENVS_ROOT/common/profile-1"
 	__fix_rootfs_needed $EPKG_ENVS_ROOT/common/profile-1/
+	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
+
+	return 0
 }

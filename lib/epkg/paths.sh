@@ -3,13 +3,19 @@
 OPT_EPKG=/opt/epkg
 HOME_EPKG=$HOME/.epkg
 
-export PROJECT_DIR=$HOME/epkg_manager
 EPKG_CONFIG_DIR=$HOME_EPKG/config
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_STORE_ROOT=$HOME_EPKG/store
 EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
 
 COMMON_PROFILE_LINK=$EPKG_ENVS_ROOT/common/profile-current
+
+if [ -d "$COMMON_PROFILE_LINK" ]; then
+	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
+else
+	export PROJECT_DIR=/tmp/$USER/epkg_manager
+fi
+
 EPKG_EXEC=$COMMON_PROFILE_LINK/usr/bin/epkg
 EPKG_RC=$COMMON_PROFILE_LINK/usr/lib/epkg/epkg-rc.sh
 FAKEROOT_EXEC=$COMMON_PROFILE_LINK/usr/bin/fakeroot
@@ -57,7 +63,6 @@ init_opt_dir() {
 
 set_epkg_env_dirs() {
 	local env=$1
-
 	CURRENT_PROFILE_LINK=$EPKG_ENVS_ROOT/$env/profile-current
 	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
 	RPMDB_DIR=$CURRENT_PROFILE_DIR/var/lib/rpm

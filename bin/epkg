@@ -1,11 +1,14 @@
 #!/usr/bin/bash
-export PROJECT_DIR=$HOME/epkg_manager
+if [ -d "$COMMON_PROFILE_LINK" ]; then
+	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
+else
+	export PROJECT_DIR=/tmp/$USER/epkg_manager
+fi
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh
 source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
-
 
 cmd=$1
 shift
@@ -13,6 +16,14 @@ echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
 get_active_env "$@"
 [ "$cmd" = 'init' ] ||
 set_epkg_env_dirs $env
+
+if [ $cmd != "init" ]; then
+	if [ $EPKG_INITIALIZED != "yes" ]; then
+		echo "Warning: epkg has not been initialized"
+		echo "please execute: epkg init"
+		return 1
+	fi
+fi
 
 case $cmd in
 	"help")
@@ -26,12 +37,12 @@ epkg search PACKAGE
 epkg list
 
 epkg env list
-epkg env create|remove ENV
-epkg env activate ENV
-epkg env deactivate
-epkg env enable|disable ENV
-epkg env history ENV
-epkg env rollback ENV
+epkg [env] create|remove ENV
+epkg [env] activate ENV
+epkg [env] deactivate
+epkg [env] enable|disable ENV
+epkg [env] history ENV
+epkg [env] rollback ENV
 EOF
 		exit
 		;;
@@ -91,6 +102,6 @@ EOF
 		esac
 		;;
 	*)
-		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|help]"
+		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|enable|disable|activate|deactivate|history|rollback|help]"
 		;;
 esac

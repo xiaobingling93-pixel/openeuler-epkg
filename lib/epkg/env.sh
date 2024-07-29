@@ -10,12 +10,13 @@ list_environments() {
 
 create_environment() {
 	local env=$1
-	local env_existed=
+
 	_check_env_existed $env
-	if [ $env_existed = 1 ]; then
-		echo "$env already existed"
-		exit 0
+	if [ $? -eq 0 ]; then
+		echo "$env already existed!"
+		return
 	fi
+
 	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
 	ln -sT profile-1        "$EPKG_ENVS_ROOT/$env/profile-current"
 
@@ -93,14 +94,14 @@ EOL
 
 remove_environment() {
 	local env=$1
-	local env_existed=
+
 	_check_env_existed $env
-	if [ $env_existed = 0 ]; then
-		echo "$env no exist"
-		exit 0
+	if [ $? -eq 1 ]; then
+		echo "$env no existed!"
+		return
 	fi
+	
 	mv "$EPKG_ENVS_ROOT/$env" "$EPKG_ENVS_ROOT/.$env"
-	# set_epkg_env_dirs main
 }
 
 # setup env variable

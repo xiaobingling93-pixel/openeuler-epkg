@@ -1,46 +1,49 @@
 # epkg 使用指南
 
 ## 介绍
-本文介绍EPKG包管理器工作环境如何初始化，以及基本功能如何使用。
-本文涉及操作结果截图均以root用户为例。
+本文介绍EPKG包管理器工作环境如何初始化，以及基本功能如何使用。本文涉及操作结果示例均以非root用户为例。
 
 ## 安装教程
-Step 1. 准备一个linux虚拟机/容器环境：
+Step 1. 准备linux虚拟机/容器环境，安装fakeroot
 
-    Note：如果使用容器，建议采用openEuler 2203 LTS SP3版本docker image:
+    Note：如果使用容器，需要特权:
 
-        docker run --privileged -v --name ${自定义容器name} -itd openEuler-22.03-LTS-SP3
+        docker run --privileged -v --name ${自定义容器name} -itd ${imageid}
 
-Step 2. 安装依赖组件：
+Step 2. 准备epkg下载脚本：
 
-    dnf install patchelf findutils tar fakeroot file vim -y
+    cd /tmp/
+    curl -O https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems1/repositories/epkg/epkg_downloader.sh
 
-Step 3. 准备epkg下载&初始化脚本：
 
-    cd /home/
-    curl -O https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems1/repositories/epkg/downloader.sh
+Step 3. 执行脚本，并指定epkg包管理器默认用户，这里以small_leek为例
 
-Step 4. 初始化epkg包管理器最小环境：
+    sh epkg_downloader.sh small_leek
 
-    sh downloader.sh
+Step 4. 切换为small_leek用户，执行初始化脚本：
+
+    su - small_leek
+    cd
+    sh epkg_initial.sh
 
 
 ## EPKG包管理器使用说明
 Usage:
-    
-    epkg install [--env ENV] PACKAGE
-    epkg remove [--env ENV] PACKAGE（开发中...）
-    epkg upgrade [PACKAGE] （开发中...）
+
+    epkg install [--env ENV] PACKAGE （开发中...）
+    epkg remove [--env ENV] PACKAGE （开发中...）
+    epkg upgrade [PACKAGE]
 
     epkg search PACKAGE
     epkg list
 
     epkg env list
-    epkg env create|remove ENV
-    epkg env activate ENV
-    epkg env enable|disable ENV
-    epkg env history ENV （开发中...）
-    epkg env rollback ENV （开发中...）
+    epkg [env] create|remove ENV
+    epkg [env] activate ENV
+    epkg [env] deactivate
+    epkg [env] enable|disable ENV
+    epkg [env] history ENV （开发中...）
+    epkg [env] rollback ENV （开发中...）
 
 ### 查询已安装软件
 功能描述：
@@ -52,7 +55,7 @@ Usage:
 
 返回示例：
 
-    [root@19e784a5bc38 bin]# epkg list
+    [small_leek@19e784a5bc38 bin]# epkg list
     tzdata-2020a-8.oe1.noarch
     openEuler-gpg-keys-1.0-3.0.oe1.aarch64
     openEuler-repos-1.0-3.0.oe1.aarch64
@@ -84,7 +87,7 @@ Usage:
 
 返回示例：
 
-    [root@19e784a5bc38 bin]# epkg search vim
+    [small_leek@19e784a5bc38 bin]# epkg search vim
     Updating and loading repositories:
     Repositories loaded.
     Matched fields: name, summary
@@ -105,7 +108,7 @@ Usage:
 
 返回示例：
 
-    [root@19e784a5bc38 bin]# epkg install dos2unix
+    [small_leek@19e784a5bc38 bin]# epkg install dos2unix
     Invoking DNF installation...
     Updating and loading repositories:
     Repositories loaded.
@@ -140,7 +143,7 @@ Usage:
 
 返回示例：
 
-    [root@19e784a5bc38 bin]# epkg env list
+    [small_leek@19e784a5bc38 bin]# epkg env list
     Available environments(sort by time):
     w1
     main
@@ -155,11 +158,11 @@ Usage:
 
 命令：
 
-    epkg env create ${env_name}
+    epkg create ${env_name}
 
 返回示例：
 
-    [root@b0e608264355 bin]# epkg env create work1
+    [small_leek@b0e608264355 bin]# epkg create work1
     YUM --installroot directory structure created successfully in: /root/.epkg/envs/work1/profile-1
     Environment 'work1' added to PATH.
     Environment 'work1' activated.
@@ -173,11 +176,11 @@ Usage:
 
 命令：
 
-    epkg env activate ${env_name}
+    epkg activate ${env_name}
 
 返回示例：
 
-    [root@9d991d463f89 bin]# epkg env activate main
+    [small_leek@9d991d463f89 bin]# epkg activate main
     YUM --installroot directory structure created successfully in: /root/.epkg/envs/main/profile-1
     Environment 'main' activated.
     re-open shell
@@ -189,11 +192,11 @@ Usage:
 
 命令：
 
-    epkg env deactivat ${env_name}
+    epkg deactivat ${env_name}
 
 返回示例：
 
-    [root@398ec57ce780 bin]# epkg env deactivate w1
+    [small_leek@398ec57ce780 bin]# epkg deactivate w1
     Environment 'w1' deactivated.
     re-open shell
 
@@ -205,11 +208,11 @@ Usage:
 
 命令：
 
-    epkg env enable ${env_name}
+    epkg enable ${env_name}
 
 返回示例：
 
-    [root@5042ae77dd75 bin]# epkg env enable lkp
+    [small_leek@5042ae77dd75 bin]# epkg enable lkp
     add common to path
     add main to path
     add xsl to path
@@ -224,11 +227,11 @@ Usage:
 
 命令：
 
-    epkg env disable ${env_name}
+    epkg disable ${env_name}
 
 返回示例：
 
-    [root@69393675945d /]# epkg env disable w4
+    [small_leek@69393675945d /]# epkg disable w4
     Warning: Don't try to disable current env!
     Warning: you are trying to disable current env!
     sure to continue? (y: continue, others: exit)

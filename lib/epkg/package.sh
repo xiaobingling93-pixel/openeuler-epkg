@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 
 install_package() {
-	echo "Sure to install? (y: continue, others: exit)"
-	read choice
-	if [ "$choice" != "y" ]; then
-		return
-	fi
-
 	local downloaded_packages
 	local downloaded_packages2
 	local package_files_to_install
@@ -19,6 +13,11 @@ install_package() {
 	parse_dnf5_output
 	record_newly_downloaded_packages
 	determine_installation_candidates
+	echo "Sure to install? (y: continue, others: exit)"
+	read choice
+	if [ "$choice" != "y" ]; then
+		return
+	fi
 	run_rpm_installation
 	create_symlinks $package_names_to_install
 }
