@@ -12,7 +12,9 @@ json_file=$(mktemp)
 
 dnf download $rpm_package
 dnf repoquery --requires "$rpm_package" > "$requires_file"
+
 cat $requires_file
+
 
 declare -A file_deps
 declare -A so_deps
@@ -31,6 +33,11 @@ while read -r dep; do
         bin_deps["$dep"]=1
     fi
 done < "$requires_file"
+
+echo "cat deps"
+echo "sonames: $so_deps"
+echo "bin_deps: $bin_deps"
+echo "file_deps: $file_deps"
 
 get_sha256() {
     local rpm_name="$1"
@@ -59,7 +66,6 @@ for dep in "${!file_deps[@]}"; do
         echo "download rpm dep: $rpm_name"
         dnf download $rpm_name
         sha256=$(get_sha256 "$rpm_name")
-        echo "get sha256 for $rpm_name: $sha256"
         rpm_info[$sha256]+="$rpm_name|files|$dep "
     else
         rpm_info["unknown"]+="$rpm_name|files|$dep "
@@ -72,7 +78,6 @@ for dep in "${!so_deps[@]}"; do
         echo "download rpm dep: $rpm_name"
         dnf download $rpm_name
         sha256=$(get_sha256 "$rpm_name")
-        echo "get sha256 for $rpm_name: $sha256"
         rpm_info[$sha256]+="$rpm_name|sonames|$dep "
     else
         rpm_info["unknown"]+="$rpm_name|sonames|$dep "
@@ -86,7 +91,6 @@ for dep in "${!bin_deps[@]}"; do
         echo "download rpm dep: $rpm_name"
         dnf download $rpm_name
         sha256=$(get_sha256 "$rpm_name")
-        echo "get sha256 for $rpm_name: $sha256"
         rpm_info[$sha256]+="$rpm_name|binaries|$dep "
     else
         rpm_info["unknown"]+="$rpm_name|binaries|$dep "
@@ -94,52 +98,32 @@ for dep in "${!bin_deps[@]}"; do
 done
 
 
-# 初始化 JSON 数据
-json="{"
+echo "{" > "$json_file"
 
-# 提取和分割数据
-for key in "${!rpm_info[@]}"; do
-    data="${rpm_info[$key]}"
-    IFS=' ' read -r -a entries <<< "$data"
-    
-    # 提取 pkgname
-    pkgname=${entries[0]%%|*}
-    
-    # 存储 files，sonames 和 binaries
-    files=()
-    sonames=()
-    binaries=()
-    for entry in "${entries[@]:1}"; do
-        IFS='|' read -r category value <<< "$entry"
-        case "$category" in
-            "files")
-                sonames+=("${value}")
-                ;;
-            "sonames")
-                sonames+=("${value}")
-                ;;
-            "binaries")
-                binaries+=("${value}")
-                ;;
-        esac
-    done
-    
-    # 格式化 sonames 和 binaries
-    files_json=$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)
-    sonames_json=$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)
-    binaries_json=$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)
-    
-    # 将数据添加到 JSON 对象中
-    json+="\"$key\": {
-        \"pkgname\": \"$pkgname\",
-        \"files\": $files_json,
-        \"sonames\": $sonames_json,
-        \"binaries\": $binaries_json
-    },"
+for sha256 in "${!rpm_info[@]}"; do
+    IFS='|' read -r rpm_name type dep <<<"${rpm_info[$sha256]}"
+    case $type in
+        "files")
+            files="[$dep]"
+            ;;
+        "sonames")
+            files=""
+            sonames="[$dep]"
+            ;;
+        "binaries")
+            files=""
+            binaries="[$dep]"
+            ;;
+    esac
+    echo "\"$sha256\": {\"pkgname\": \"$rpm_name\", \"files\": $files, \"sonames\": $sonames, \"binaries\": $binaries}," >> "$json_file"
 done
 
-# 关闭 JSON 对象
-json+="}"
+sed -i '$ s/,$//' "$json_file"
 
-# 打印 JSON 数据
-echo "$json" | jq '.'
+echo "}" >> "$json_file"
+
+
+cat "$json_file"
+
+
+rm "$requires_file" "$dependencies_file" "$json_file"
