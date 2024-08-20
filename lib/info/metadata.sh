@@ -12,9 +12,7 @@ json_file=$(mktemp)
 
 dnf download $rpm_package
 dnf repoquery --requires "$rpm_package" > "$requires_file"
-
 cat $requires_file
-
 
 declare -A file_deps
 declare -A so_deps
@@ -33,11 +31,6 @@ while read -r dep; do
         bin_deps["$dep"]=1
     fi
 done < "$requires_file"
-
-echo "cat deps"
-echo "sonames: $so_deps"
-echo "bin_deps: $bin_deps"
-echo "file_deps: $file_deps"
 
 get_sha256() {
     local rpm_name="$1"
@@ -101,32 +94,52 @@ for dep in "${!bin_deps[@]}"; do
 done
 
 
-echo "{" > "$json_file"
+# 初始化 JSON 数据
+json="{"
 
-for sha256 in "${!rpm_info[@]}"; do
-    IFS='|' read -r rpm_name type dep <<<"${rpm_info[$sha256]}"
-    case $type in
-        "files")
-            files="[$dep]"
-            ;;
-        "sonames")
-            files=""
-            sonames="[$dep]"
-            ;;
-        "binaries")
-            files=""
-            binaries="[$dep]"
-            ;;
-    esac
-    echo "\"$sha256\": {\"pkgname\": \"$rpm_name\", \"files\": $files, \"sonames\": $sonames, \"binaries\": $binaries}," >> "$json_file"
+# 提取和分割数据
+for key in "${!rpm_info[@]}"; do
+    data="${rpm_info[$key]}"
+    IFS=' ' read -r -a entries <<< "$data"
+    
+    # 提取 pkgname
+    pkgname=${entries[0]%%|*}
+    
+    # 存储 files，sonames 和 binaries
+    files=()
+    sonames=()
+    binaries=()
+    for entry in "${entries[@]:1}"; do
+        IFS='|' read -r category value <<< "$entry"
+        case "$category" in
+            "files")
+                sonames+=("${value}")
+                ;;
+            "sonames")
+                sonames+=("${value}")
+                ;;
+            "binaries")
+                binaries+=("${value}")
+                ;;
+        esac
+    done
+    
+    # 格式化 sonames 和 binaries
+    files_json=$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)
+    sonames_json=$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)
+    binaries_json=$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)
+    
+    # 将数据添加到 JSON 对象中
+    json+="\"$key\": {
+        \"pkgname\": \"$pkgname\",
+        \"files\": $files_json,
+        \"sonames\": $sonames_json,
+        \"binaries\": $binaries_json
+    },"
 done
 
-sed -i '$ s/,$//' "$json_file"
+# 关闭 JSON 对象
+json+="}"
 
-echo "}" >> "$json_file"
-
-
-cat "$json_file"
-
-
-rm "$requires_file" "$dependencies_file" "$json_file"
+# 打印 JSON 数据
+echo "$json" | jq '.'
