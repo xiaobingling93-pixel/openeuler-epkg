@@ -9,97 +9,109 @@ fi
 echo "Start to generate metadata for $1"
 rpm_package="$1"
 requires_file=$(mktemp)
+provides_file=$(mktemp)
 dependencies_file=$(mktemp)
 json_file=$(mktemp)
-declare -A file_deps
-declare -A so_deps
-declare -A bin_deps
-declare -A rpm_info
+declare -A file_requirements
+declare -A so_requirements
+declare -A bin_requirements
+declare -A requirement_rpm_info
+declare -A rpm_provides_info
 
 download_input_rpm() {
     dnf download $rpm_package
 }
 
+query_rpm_name() {
+    local input_item=$1
+    if [[ "/bin/sh" == $input_item ]];then
+        input_item="bash"
+    fi
+    # rpm_name_epoch=$(dnf repoquery --whatprovides "$input_item" | awk -F ':' '{print $1}')
+    # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-11.oe2203sp3.aarch64，需要依次解析各个字段
+    full_rpm_name=$(dnf repoquery --whatprovides "$input_item")
+    IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
+    rpm_name=${rpm_name_epoch%-*}
+    epoch=${rpm_name_epoch##*-}
+    version=${version_release_dist_arch%-*}
+    release_dist_arch=${version_release_dist_arch##*-}
+    IFS='.' read -r release dist arch <<< $release_dist_arch
+    rpm_file_name="$rpm_name-$version_release_dist_arch.rpm"
+    echo "$rpm_name $rpm_file_name"
+}
+
 query_requirements() {
     dnf repoquery --requires "$rpm_package" > "$requires_file"
+    echo "==============Requirements:"
     cat $requires_file
 }
 
-classify_deps() {
-    while read -r dep; do
-    echo "read dep: $dep"
-    if [[ "$dep" =~ \.so ]]; then
-        echo "catch soname: $dep"
-        so_deps["$dep"]=1
-    elif [[ "$dep" =~ / ]]; then
-        echo "catch file: $dep"
-        file_deps["$dep"]=1
-    else
-        echo "catch binary: $dep"
-        bin_deps["$dep"]=1
-    fi
+classify_requirements() {
+    while read -r requirement; do
+        if [[ "$requirement" =~ \.so ]]; then
+            so_requirements["$requirement"]=1
+        elif [[ "$requirement" =~ / ]]; then
+            file_requirements["$requirement"]=1
+        else
+            bin_requirements["$requirement"]=1
+        fi
     done < "$requires_file"
 }
 
-get_sha256() {
-    local rpm_name="$1"
-    rpm_file_name=$(ls | grep "^${rpm_name}.*\.rpm$")
-    sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
-    echo $sha256
+update_requirement_checksum() {
+    local requirement=$1
+    local type=$2
+
+    result=$(query_rpm_name $requirement)
+    IFS=' ' read -r rpm_name rpm_file_name <<< $result
+    if [ -n "$rpm_file_name" ];then
+        if [[ ! -f "$rpm_file_name" ]]; then
+            dnf download $rpm_name
+        fi
+        sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
+        echo "get sha256 for $rpm_name: $sha256"
+        requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
+    else
+        requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
+    fi
 }
 
-get_package_info() {
-    local rpm_name="$1"
-    local sha256=$(get_sha256 "$rpm_name")
-    local files=$(rpm -ql "$rpm_name" | jq -R . | jq -s .)
-    local sonames=$(rpm -q --requires "$rpm_name" | grep 'so' | jq -R . | jq -s .)
-    local binaries=$(rpm -q --filesbypackage "$rpm_name" | grep 'bin' | jq -R . | jq -s .)
-    echo "{\"hash\": \"$sha256\", \"pkgname\": \"$rpm_name\", \"files\": $files, \"sonames\": $sonames, \"binaries\": $binaries}"
+get_provides () {
+    rpm_file_name=$(ls | grep "^${rpm_package}.*\.rpm$")
+    rpm -qp --provides $rpm_file_name > $provides_file
+    echo "===============Provides:"
+    cat $provides_file
 }
 
-convert_to_json(){
-    local key="$1"
-    local data="$2"
-    local json=""
-    IFS=' ' read -r -a entries <<< "$data"
-    local pkgname=${entries[0]%%|*}
-    local files=()
-    local sonames=()
-    local binaries=()
+init_rpm_provides_info_info() {
+    while read -r provide; do
+        if [[ "$provide" =~ \.so ]]; then
+            rpm_provides_info["$provide"]="soname"
+        elif [[ "$provide" =~ / ]]; then
+            rpm_provides_info["$provide"]="file"
+        else
+            rpm_provides_info["$provide"]="binary"
+        fi
+    done < "$provides_file"
+}
 
-    for entry in "${entries[@]}"; do
-        IFS='|' read -r pkgname category value <<< "$entry"
-        echo "$pkgname=======$category======$value"
-        case "$category" in
-            "files")
-                files+=("${value}")
-                ;;
-            "sonames")
-                sonames+=("${value}")
-                ;;
-            "binaries")
-                binaries+=("${value}")
-                ;;
-        esac
+init_requirement_rpm_info() {
+    requirement_rpm_info["unknown"]=""
+
+    for requirement in "${!file_requirements[@]}"; do
+        update_requirement_checksum $requirement file
     done
 
-    local files_json=$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)
-    local sonames_json=$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)
-    local binaries_json=$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)
+    for requirement in "${!so_requirements[@]}"; do
+        update_requirement_checksum $requirement soname
+    done
 
-    json+="\"$key\": {
-        \"pkgname\": \"$pkgname\",
-        \"files\": $files_json,
-        \"sonames\": $sonames_json,
-        \"binaries\": $binaries_json
-    }"
-
-    json+=""
-    echo "$json"
-    json_data=$json
+    for requirement in "${!bin_requirements[@]}"; do
+        update_requirement_checksum $requirement binary
+    done
 }
 
-convert_to_json_by_jq () {
+convert_requiremennts_to_json () {
     local key="$1"
     local data="$2"
     IFS=' ' read -r -a entries <<< "$data"
@@ -111,13 +123,13 @@ convert_to_json_by_jq () {
         IFS='|' read -r pkgname category value <<< "$entry"
         echo "$pkgname=======$category======$value"
         case "$category" in
-            "files")
+            "file")
                 files+=("${value}")
                 ;;
-            "sonames")
+            "soname")
                 sonames+=("${value}")
                 ;;
-            "binaries")
+            "binary")
                 binaries+=("${value}")
                 ;;
         esac
@@ -144,74 +156,75 @@ convert_to_json_by_jq () {
     json_data=$json
 }
 
-init_rpm_info_with_check_sum() {
-    rpm_info["unknown"]=""
+convert_provides_to_json () {
+    local files=()
+    local sonames=()
+    local binaries=()
 
-    for dep in "${!file_deps[@]}"; do
-        if [[ "/bin/sh" == $dep ]];then
-            rpm_name="bash"
-        else
-            rpm_name=$(dnf repoquery --whatprovides "$dep" | awk -F '-' '{print $1}')
-        fi
-        if [ -n "$rpm_name" ];then
-            echo "download rpm dep: $rpm_name"
-            dnf download $rpm_name
-            sha256=$(get_sha256 "$rpm_name")
-            echo "get sha256 for $rpm_name: $sha256"
-            rpm_info[$sha256]+="$rpm_name|files|$dep "
-        else
-            rpm_info["unknown"]+="$rpm_name|files|$dep "
-        fi
+    for provide in "${!rpm_provides_info[@]}"; do
+        type=${rpm_provides_info[$provide]}
+        echo "provide: $provide; type: $type"
+        case "$type" in
+            "file")
+                files+=("${provide}")
+                ;;
+            "soname")
+                sonames+=("${provide}")
+                ;;
+            "binary")
+                binaries+=("${provide}")
+                ;;
+        esac
     done
 
-    for dep in "${!so_deps[@]}"; do
-        rpm_name=$(dnf repoquery --whatprovides "$dep" | awk -F '-' '{print $1}')
-        if [ -n "$rpm_name" ];then
-            echo "download rpm dep: $rpm_name"
-            dnf download $rpm_name
-            sha256=$(get_sha256 "$rpm_name")
-            echo "get sha256 for $rpm_name: $sha256"
-            rpm_info[$sha256]+="$rpm_name|sonames|$dep "
-        else
-            rpm_info["unknown"]+="$rpm_name|sonames|$dep "
-        fi
-    done
-
-    for dep in "${!bin_deps[@]}"; do
-        rpm_name=$(dnf repoquery --whatprovides "$dep" | awk -F '-' '{print $1}')
-        if [ -n "$rpm_name" ];then
-            echo "download rpm dep: $rpm_name"
-            dnf download $rpm_name
-            sha256=$(get_sha256 "$rpm_name")
-            echo "get sha256 for $rpm_name: $sha256"
-            rpm_info[$sha256]+="$rpm_name|binaries|$dep "
-        else
-            rpm_info["unknown"]+="$rpm_name|binaries|$dep "
-        fi
-    done
+    # 创建 JSON 对象
+    local json=$(jq -n \
+        --argjson files "$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)" \
+        --argjson sonames "$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)" \
+        --argjson binaries "$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)" \
+        '{
+            provides: {
+                    files: $files,
+                    sonames: $sonames,
+                    binaries: $binaries
+            }
+        }'
+    )
+    json_data=$json
 }
 
-generate_metadata_json_by_jq() {
+generate_metadata_json() {
     output_json=$(jq -n '{}')
-    for key in "${!rpm_info[@]}"; do
-        data=${rpm_info[$key]}
-        echo "data: $data"
-        convert_to_json_by_jq "$key" "${rpm_info[$key]}"
+    for key in "${!requirement_rpm_info[@]}"; do
+        data=${requirement_rpm_info[$key]}
+        convert_requiremennts_to_json "$key" "${requirement_rpm_info[$key]}"
         output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
     done
+
+    convert_provides_to_json
+    output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
+
     output_file="output.json"
     echo "$output_json" | jq '.' > "$output_file"
     echo "JSON has been written to $output_file"
-
 }
 
-# step 1
+# step 1 download rpm
 download_input_rpm
-# step 2
+
+# step 2 query original requires and provides info of rpm
 query_requirements
-# step 3
-classify_deps
+get_provides
+echo "========Query original requires and provides info Done========"
+
+# step 3 
+classify_requirements
+echo "========Classify original requires info Done========"
+
 # step 4
-init_rpm_info_with_check_sum
+init_requirement_rpm_info
+init_rpm_provides_info_info
+echo "========Turn original requires and provides info to array Done========"
+
 # step 5
-generate_metadata_json_by_jq
+generate_metadata_json
