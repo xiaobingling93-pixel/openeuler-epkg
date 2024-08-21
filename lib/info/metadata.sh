@@ -1,13 +1,16 @@
 #!/bin/bash
-json_data=""
 
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <rpm-package>"
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 <rpm-package> <output dir>"
     exit 1
 fi
 
 echo "Start to generate metadata for $1"
+json_data=""
+rpm_hash=""
 rpm_package="$1"
+output_dir="$2"
+
 requires_file=$(mktemp)
 provides_file=$(mktemp)
 dependencies_file=$(mktemp)
@@ -203,7 +206,8 @@ convert_package_info_to_json () {
         fi
         sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
-        
+        # update output_dir
+        output_dir="$output_dir/$sha256-$rpm_name-$version-$release_dist_arch"
     else
         echo "=============Warning: invalid package input: $rpm_package"
         return 0
@@ -247,10 +251,18 @@ generate_metadata_json () {
     # 获取并解析provides信息
     convert_provides_to_json
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
-
-    output_file="output.json"
+    output_file="metadata.json"
     echo "$output_json" | jq '.' > "$output_file"
     echo "JSON has been written to $output_file"
+}
+
+restore_metadata_json() {
+    # 检查目录是否存在
+    if [ ! -d "$output_dir" ]; then
+        # 目录不存在，创建它
+        mkdir -p "$output_dir"
+    fi
+    mv "metadata.json" $output_dir
 }
 
 # step 1 download rpm
