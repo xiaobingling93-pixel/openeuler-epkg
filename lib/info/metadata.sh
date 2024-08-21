@@ -18,9 +18,6 @@ declare -A bin_requirements
 declare -A requirement_rpm_info
 declare -A rpm_provides_info
 
-download_input_rpm() {
-    dnf download $rpm_package
-}
 
 query_rpm_name() {
     local input_item=$1
@@ -35,9 +32,10 @@ query_rpm_name() {
     epoch=${rpm_name_epoch##*-}
     version=${version_release_dist_arch%-*}
     release_dist_arch=${version_release_dist_arch##*-}
+    arch=${version_release_dist_arch##*.}
     IFS='.' read -r release dist arch <<< $release_dist_arch
     rpm_file_name="$rpm_name-$version_release_dist_arch.rpm"
-    echo "$rpm_name $rpm_file_name"
+    echo "$rpm_name $rpm_file_name $epoch $version $release_dist_arch $arch"
 }
 
 query_requirements() {
@@ -46,7 +44,18 @@ query_requirements() {
     cat $requires_file
 }
 
-classify_requirements() {
+get_provides () {
+    rpm_file_name=$(ls | grep "^${rpm_package}.*\.rpm$")
+    rpm -qp --provides $rpm_file_name > $provides_file
+    echo "===============Provides:"
+    cat $provides_file
+}
+
+download_input_rpm () {
+    dnf download $rpm_package
+}
+
+classify_requirements () {
     while read -r requirement; do
         if [[ "$requirement" =~ \.so ]]; then
             so_requirements["$requirement"]=1
@@ -58,12 +67,12 @@ classify_requirements() {
     done < "$requires_file"
 }
 
-update_requirement_checksum() {
+update_requirement_checksum () {
     local requirement=$1
     local type=$2
 
     result=$(query_rpm_name $requirement)
-    IFS=' ' read -r rpm_name rpm_file_name <<< $result
+    IFS=' ' read -r rpm_name rpm_file_name epoch version release_dist_arch arch<<< $result
     if [ -n "$rpm_file_name" ];then
         if [[ ! -f "$rpm_file_name" ]]; then
             dnf download $rpm_name
@@ -76,14 +85,7 @@ update_requirement_checksum() {
     fi
 }
 
-get_provides () {
-    rpm_file_name=$(ls | grep "^${rpm_package}.*\.rpm$")
-    rpm -qp --provides $rpm_file_name > $provides_file
-    echo "===============Provides:"
-    cat $provides_file
-}
-
-init_rpm_provides_info_info() {
+init_rpm_provides_info_info () {
     while read -r provide; do
         if [[ "$provide" =~ \.so ]]; then
             rpm_provides_info["$provide"]="soname"
@@ -95,7 +97,7 @@ init_rpm_provides_info_info() {
     done < "$provides_file"
 }
 
-init_requirement_rpm_info() {
+init_requirement_rpm_info () {
     requirement_rpm_info["unknown"]=""
 
     for requirement in "${!file_requirements[@]}"; do
@@ -121,7 +123,6 @@ convert_requiremennts_to_json () {
     local binaries=()
     for entry in "${entries[@]}"; do
         IFS='|' read -r pkgname category value <<< "$entry"
-        echo "$pkgname=======$category======$value"
         case "$category" in
             "file")
                 files+=("${value}")
@@ -193,14 +194,57 @@ convert_provides_to_json () {
     json_data=$json
 }
 
-generate_metadata_json() {
+convert_package_info_to_json () {
+    result=$(query_rpm_name $rpm_package)
+    IFS=' ' read -r rpm_name rpm_file_name epoch version release_dist_arch arch<<< $result
+    if [ -n "$rpm_file_name" ];then
+        if [[ ! -f "$rpm_file_name" ]]; then
+            dnf download $rpm_name
+        fi
+        sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
+        echo "get sha256 for $rpm_name: $sha256"
+        
+    else
+        echo "=============Warning: invalid package input: $rpm_package"
+        exit 0
+    fi
+    # 创建 JSON 对象
+    local json=$(jq -n \
+        --arg name "$rpm_name" \
+        --arg epoch "$epoch" \
+        --arg version "$version" \
+        --arg release "$release_dist_arch" \
+        --arg hash "$sha256" \
+        --arg arch "$arch" \
+        '{
+            package: {
+                    name: $name,
+                    epoch: $epoch,
+                    version: $version,
+                    release: $release,
+                    hash: $sha256,
+                    arch: $arch
+            }
+        }'
+    )
+    json_data=$json
+}
+
+generate_metadata_json () {
     output_json=$(jq -n '{}')
+
+    # 获取并解析rpm包信息
+    convert_package_info_to_json
+    output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
+    
+    # 获取并解析requires信息
     for key in "${!requirement_rpm_info[@]}"; do
         data=${requirement_rpm_info[$key]}
         convert_requiremennts_to_json "$key" "${requirement_rpm_info[$key]}"
         output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
     done
 
+    # 获取并解析provides信息
     convert_provides_to_json
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
 
