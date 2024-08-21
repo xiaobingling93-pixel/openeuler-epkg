@@ -1,7 +1,7 @@
 #!/bin/bash
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <rpm-package> <output dir>"
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <rpm-package> $1 <output dir>  $2 <store rpms>"
     exit 1
 fi
 
@@ -10,6 +10,7 @@ json_data=""
 rpm_hash=""
 rpm_package="$1"
 output_dir="$2"
+store_rpms="$3"
 
 requires_file=$(mktemp)
 provides_file=$(mktemp)
@@ -55,7 +56,7 @@ get_provides () {
 }
 
 download_input_rpm () {
-    dnf download $rpm_package
+    dnf download --destdir=$store_rpms $rpm_package
 }
 
 classify_requirements () {
@@ -78,7 +79,7 @@ update_requirement_checksum () {
     IFS=' ' read -r rpm_name rpm_file_name epoch version release_dist_arch arch<<< $result
     if [ -n "$rpm_file_name" ];then
         if [[ ! -f "$rpm_file_name" ]]; then
-            dnf download $rpm_name
+            dnf download --dest=$store_rpms $rpm_name
         fi
         sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
@@ -202,7 +203,7 @@ convert_package_info_to_json () {
     IFS=' ' read -r rpm_name rpm_file_name epoch version release_dist_arch arch<<< $result
     if [ -n "$rpm_file_name" ];then
         if [[ ! -f "$rpm_file_name" ]]; then
-            dnf download $rpm_name
+            dnf download --dest=$store_rpms $rpm_name
         fi
         sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"

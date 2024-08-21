@@ -8,21 +8,22 @@ fi
 rpm_list=$1
 
 # 设置要检查的目录路径
-DIRECTORY="$HOME/epkg_metadata/"
+store_metadata="$HOME/epkg_metadata/"
+store_rpms=""$HOME/tmprpms/""
+
 
 # 检查目录是否存在
-if [ ! -d "$DIRECTORY" ]; then
-  # 目录不存在，创建它
-  mkdir -p "$DIRECTORY"
-  echo "Directory $DIRECTORY created."
-else
-  # 目录已经存在
-  echo "Directory $DIRECTORY already exists."
+if [ ! -d "$store_metadata" ]; then
+  mkdir -p "$store_metadata"
+fi
+
+if [ ! -d "$store_rpms" ]; then
+  mkdir -p "$store_rpms"
 fi
 
 # 汇总生成2203sp3OS的所有metadata.json
 # 读取文件并遍历每一行
 while IFS= read -r package; do
     echo "$package"
-    sh metadata.sh $package $DIRECTORY
+    sh metadata.sh $package $store_metadata $store_rpms
 done < $rpm_list
