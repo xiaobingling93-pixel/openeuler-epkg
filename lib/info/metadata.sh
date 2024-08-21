@@ -83,7 +83,7 @@ update_requirement_checksum () {
         if [[ ! -f "$file_name" ]]; then
             dnf download --dest=$store_rpms $rpm_name
         fi
-        sha256=$(sha256sum $file_name | awk '{print $1}')
+        sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
     else
@@ -207,7 +207,7 @@ convert_package_info_to_json () {
         if [[ ! -f "$file_name" ]]; then
             dnf download --dest=$store_rpms $rpm_name
         fi
-        sha256=$(sha256sum $file_name | awk '{print $1}')
+        sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         # update output_dir
         output_dir="$output_dir/$sha256-$rpm_name-$version-$release_dist_arch"
