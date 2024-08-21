@@ -285,5 +285,8 @@ echo "========Turn original requires and provides info to array Done========"
 # step 5
 generate_metadata_json
 
+# step 6
+restore_metadata_json
+
 # 清理临时文件
 rm "$requires_file" "$dependencies_file" "$provides_file"
