@@ -226,7 +226,7 @@ convert_package_info_to_json () {
                     epoch: $epoch,
                     version: $version,
                     release: $release,
-                    hash: $sha256,
+                    hash: $hash,
                     arch: $arch
             }
         }'
