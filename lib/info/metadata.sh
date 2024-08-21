@@ -6,11 +6,13 @@ if [ "$#" -ne 3 ]; then
 fi
 
 echo "Start to generate metadata for $1"
-json_data=""
-rpm_hash=""
 rpm_package="$1"
 output_dir="$2"
 store_rpms="$3"
+
+json_data=""
+rpm_hash=""
+rpm_file_name=""
 
 requires_file=$(mktemp)
 provides_file=$(mktemp)
@@ -21,7 +23,6 @@ declare -A so_requirements
 declare -A bin_requirements
 declare -A requirement_rpm_info
 declare -A rpm_provides_info
-
 
 query_rpm_name() {
     local input_item=$1
@@ -38,8 +39,8 @@ query_rpm_name() {
     release_dist_arch=${version_release_dist_arch##*-}
     arch=${version_release_dist_arch##*.}
     IFS='.' read -r release dist arch <<< $release_dist_arch
-    rpm_file_name="$rpm_name-$version_release_dist_arch.rpm"
-    echo "$rpm_name $rpm_file_name $epoch $version $release_dist_arch $arch"
+    file_name="$rpm_name-$version_release_dist_arch.rpm"
+    echo "$rpm_name $file_name $epoch $version $release_dist_arch $arch"
 }
 
 query_requirements() {
@@ -49,8 +50,9 @@ query_requirements() {
 }
 
 get_provides () {
-    rpm_file_name=$(ls | grep "^${rpm_package}.*\.rpm$")
-    rpm -qp --provides $rpm_file_name > $provides_file
+    result=$(query_rpm_name $rpm_package)
+    IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
+    rpm -qp --provides $store_rpms/$file_name > $provides_file
     echo "===============Provides:"
     cat $provides_file
 }
@@ -76,12 +78,12 @@ update_requirement_checksum () {
     local type=$2
 
     result=$(query_rpm_name $requirement)
-    IFS=' ' read -r rpm_name rpm_file_name epoch version release_dist_arch arch<<< $result
-    if [ -n "$rpm_file_name" ];then
-        if [[ ! -f "$rpm_file_name" ]]; then
+    IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
+    if [ -n "$file_name" ];then
+        if [[ ! -f "$file_name" ]]; then
             dnf download --dest=$store_rpms $rpm_name
         fi
-        sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
+        sha256=$(sha256sum $file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
     else
@@ -200,12 +202,12 @@ convert_provides_to_json () {
 
 convert_package_info_to_json () {
     result=$(query_rpm_name $rpm_package)
-    IFS=' ' read -r rpm_name rpm_file_name epoch version release_dist_arch arch<<< $result
-    if [ -n "$rpm_file_name" ];then
-        if [[ ! -f "$rpm_file_name" ]]; then
+    IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
+    if [ -n "$file_name" ];then
+        if [[ ! -f "$file_name" ]]; then
             dnf download --dest=$store_rpms $rpm_name
         fi
-        sha256=$(sha256sum $rpm_file_name | awk '{print $1}')
+        sha256=$(sha256sum $file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         # update output_dir
         output_dir="$output_dir/$sha256-$rpm_name-$version-$release_dist_arch"
