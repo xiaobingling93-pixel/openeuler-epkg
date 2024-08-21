@@ -11,7 +11,7 @@ rpm_package="$1"
 requires_file=$(mktemp)
 provides_file=$(mktemp)
 dependencies_file=$(mktemp)
-json_file=$(mktemp)
+
 declare -A file_requirements
 declare -A so_requirements
 declare -A bin_requirements
@@ -206,7 +206,7 @@ convert_package_info_to_json () {
         
     else
         echo "=============Warning: invalid package input: $rpm_package"
-        exit 0
+        return 0
     fi
     # 创建 JSON 对象
     local json=$(jq -n \
@@ -272,3 +272,6 @@ echo "========Turn original requires and provides info to array Done========"
 
 # step 5
 generate_metadata_json
+
+# 清理临时文件
+rm "$requires_file" "$dependencies_file" "$provides_file"
