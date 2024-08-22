@@ -53,7 +53,7 @@ query_provides () {
     result=$(query_rpm_name $rpm_package)
     IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
     if [[ ! -f "$file_name" ]]; then
-        dnf repoquery --provides "$rpm_package" > "$requires_file"
+        dnf repoquery --provides "$rpm_package" > "$provides_file"
     else
         rpm -qp --provides $store_rpms/$file_name > $provides_file
     fi
