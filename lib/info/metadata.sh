@@ -309,7 +309,7 @@ echo "========Json has been generated========="
 
 # step 6
 restore_metadata_json
-echo "********JSON has been moved to $output_file**********"
+echo "********JSON has been moved to $output_dir**********"
 
 #step 7 clean
 clean_tmp_files
