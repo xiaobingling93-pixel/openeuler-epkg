@@ -5,7 +5,7 @@ if [ "$#" -ne 3 ]; then
     exit 1
 fi
 
-echo "Start to generate metadata for $1"
+echo "*************Start to generate metadata for $1*****************"
 rpm_package="$1"
 output_dir="$2"
 store_rpms="$3"
@@ -58,17 +58,21 @@ get_provides () {
 }
 
 download_input_rpm () {
-    dnf download --destdir=$store_rpms $rpm_package
+    dnf download --destdir=$store_rpms $rpm_package 2>/dev/null
 }
 
 classify_requirements () {
     while read -r requirement; do
+	requirement="${requirement%% =*}"
         if [[ "$requirement" =~ \.so ]]; then
             so_requirements["$requirement"]=1
+	    echo "catch so requirement: $requirement"
         elif [[ "$requirement" =~ / ]]; then
             file_requirements["$requirement"]=1
+	    echo "catch file requirement: $requirement"
         else
             bin_requirements["$requirement"]=1
+	    echo "catch binary requirement: $requirement"
         fi
     done < "$requires_file"
 }
@@ -79,13 +83,16 @@ update_requirement_checksum () {
 
     result=$(query_rpm_name $requirement)
     IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
+    echo "update_requirement_checksum:  $rpm_name  $file_name"
     if [ -n "$file_name" ];then
         if [[ ! -f "$file_name" ]]; then
-            dnf download --dest=$store_rpms $rpm_name
+            dnf download --dest=$store_rpms $rpm_name 2>/dev/null
         fi
         sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
+	xx="$requirement_rpm_info[$sha256]"
+	echo "update_requirement_checksum: $xx"
     else
         requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
     fi
@@ -129,6 +136,7 @@ convert_requiremennts_to_json () {
     local binaries=()
     for entry in "${entries[@]}"; do
         IFS='|' read -r pkgname category value <<< "$entry"
+	echo "convert_requiremennts_to_json: $pkgname  $category   $value"
         case "$category" in
             "file")
                 files+=("${value}")
@@ -170,7 +178,7 @@ convert_provides_to_json () {
 
     for provide in "${!rpm_provides_info[@]}"; do
         type=${rpm_provides_info[$provide]}
-        echo "provide: $provide; type: $type"
+        echo "convert_provides_to_json provide: $provide; type: $type"
         case "$type" in
             "file")
                 files+=("${provide}")
@@ -205,7 +213,7 @@ convert_package_info_to_json () {
     IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
     if [ -n "$file_name" ];then
         if [[ ! -f "$file_name" ]]; then
-            dnf download --dest=$store_rpms $rpm_name
+            dnf download --dest=$store_rpms $rpm_name 2>/dev/null
         fi
         sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
@@ -256,7 +264,8 @@ generate_metadata_json () {
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
     output_file="metadata.json"
     echo "$output_json" | jq '.' > "$output_file"
-    echo "JSON has been written to $output_file"
+    echo "metadata.json: "
+    echo "$output_json" | jq '.'
 }
 
 restore_metadata_json() {
@@ -266,6 +275,15 @@ restore_metadata_json() {
         mkdir -p "$output_dir"
     fi
     mv "metadata.json" $output_dir
+}
+
+clean_tmp_files() {
+    rm "$requires_file" "$dependencies_file" "$provides_file"
+    unset file_requirements
+    unset so_requirements
+    unset bin_requirements
+    unset requirement_rpm_info
+    unset rpm_provides_info    
 }
 
 # step 1 download rpm
@@ -287,9 +305,12 @@ echo "========Turn original requires and provides info to array Done========"
 
 # step 5
 generate_metadata_json
+echo "========Json has been generated========="
 
 # step 6
 restore_metadata_json
+echo "********JSON has been moved to $output_file**********"
 
-# 清理临时文件
-rm "$requires_file" "$dependencies_file" "$provides_file"
+#step 7 clean
+clean_tmp_files
+

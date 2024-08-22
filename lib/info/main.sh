@@ -8,8 +8,8 @@ fi
 rpm_list=$1
 
 # 设置要检查的目录路径
-store_metadata="$HOME/epkg_metadata/"
-store_rpms=""$HOME/tmprpms/""
+store_metadata="/srv/os-repo/epkg/openeuler/openEuler-22.03-LTS-SP3/OS/aarch64/pkg-info/"
+store_rpms="$HOME/tmprpms/"
 
 
 # 检查目录是否存在
