@@ -29,7 +29,7 @@ query_rpm_name() {
     if [[ "/bin/sh" == $input_item ]];then
         input_item="bash"
     fi
-    # rpm_name_epoch=$(dnf repoquery --whatprovides "$input_item" | awk -F ':' '{print $1}')
+
     # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-11.oe2203sp3.aarch64，需要依次解析各个字段
     full_rpm_name=$(dnf repoquery --whatprovides "$input_item")
     IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
@@ -49,10 +49,14 @@ query_requirements() {
     cat $requires_file
 }
 
-get_provides () {
+query_provides () {
     result=$(query_rpm_name $rpm_package)
     IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
-    rpm -qp --provides $store_rpms/$file_name > $provides_file
+    if [[ ! -f "$file_name" ]]; then
+        dnf repoquery --provides "$rpm_package" > "$requires_file"
+    else
+        rpm -qp --provides $store_rpms/$file_name > $provides_file
+    fi
     echo "===============Provides:"
     cat $provides_file
 }
@@ -63,16 +67,16 @@ download_input_rpm () {
 
 classify_requirements () {
     while read -r requirement; do
-    requirement="${requirement%% [=<>]*}"
+        requirement="${requirement%% [=<>]*}"
         if [[ "$requirement" =~ \.so ]]; then
             so_requirements["$requirement"]=1
-	    echo "catch so requirement: $requirement"
+	        echo "catch so requirement: $requirement"
         elif [[ "$requirement" =~ / ]]; then
             file_requirements["$requirement"]=1
-	    echo "catch file requirement: $requirement"
+	        echo "catch file requirement: $requirement"
         else
             bin_requirements["$requirement"]=1
-	    echo "catch binary requirement: $requirement"
+	        echo "catch binary requirement: $requirement"
         fi
     done < "$requires_file"
 }
@@ -91,8 +95,6 @@ update_requirement_checksum () {
         sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
-	xx="$requirement_rpm_info[$sha256]"
-	echo "update_requirement_checksum: $xx"
     else
         requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
     fi
@@ -112,15 +114,12 @@ init_rpm_provides_info_info () {
 
 init_requirement_rpm_info () {
     requirement_rpm_info["unknown"]=""
-
     for requirement in "${!file_requirements[@]}"; do
         update_requirement_checksum $requirement file
     done
-
     for requirement in "${!so_requirements[@]}"; do
         update_requirement_checksum $requirement soname
     done
-
     for requirement in "${!bin_requirements[@]}"; do
         update_requirement_checksum $requirement binary
     done
@@ -136,7 +135,7 @@ convert_requiremennts_to_json () {
     local binaries=()
     for entry in "${entries[@]}"; do
         IFS='|' read -r pkgname category value <<< "$entry"
-	echo "convert_requiremennts_to_json: $pkgname  $category   $value"
+	    echo "convert_requiremennts_to_json: $pkgname  $category   $value"
         case "$category" in
             "file")
                 files+=("${value}")
@@ -262,16 +261,14 @@ generate_metadata_json () {
     # 获取并解析provides信息
     convert_provides_to_json
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
+
     output_file="metadata.json"
     echo "$output_json" | jq '.' > "$output_file"
-    echo "metadata.json: "
     echo "$output_json" | jq '.'
 }
 
 restore_metadata_json() {
-    # 检查目录是否存在
     if [ ! -d "$output_dir" ]; then
-        # 目录不存在，创建它
         mkdir -p "$output_dir"
     fi
     mv "metadata.json" $output_dir
@@ -291,7 +288,7 @@ download_input_rpm
 
 # step 2 query original requires and provides info of rpm
 query_requirements
-get_provides
+query_provides
 echo "========Query original requires and provides info Done========"
 
 # step 3 
@@ -313,4 +310,3 @@ echo "********JSON has been moved to $output_dir**********"
 
 #step 7 clean
 clean_tmp_files
-
