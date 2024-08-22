@@ -63,7 +63,7 @@ download_input_rpm () {
 
 classify_requirements () {
     while read -r requirement; do
-	requirement="${requirement%% =*}"
+    requirement="${requirement%% [=<>]*}"
         if [[ "$requirement" =~ \.so ]]; then
             so_requirements["$requirement"]=1
 	    echo "catch so requirement: $requirement"
