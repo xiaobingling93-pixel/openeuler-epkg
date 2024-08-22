@@ -7,7 +7,7 @@ fi
 
 echo "*************Start to generate metadata for $1*****************"
 rpm_package="$1"
-output_dir="$2"
+output_dir="$2/$rpm_package/"
 store_rpms="$3"
 
 json_data=""
@@ -250,7 +250,7 @@ generate_metadata_json () {
     # 获取并解析rpm包信息
     convert_package_info_to_json
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
-    
+
     # 获取并解析requires信息
     for key in "${!requirement_rpm_info[@]}"; do
         data=${requirement_rpm_info[$key]}
