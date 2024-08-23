@@ -281,6 +281,7 @@ restore_metadata_json() {
             mkdir -p "$abnormal_output_dir"
         fi
         mv "package.json" $abnormal_output_dir
+        echo "-------Get abnormal requires for $rpm_package, move json to $abnormal_output_dir"
         echo "$rpm_package" >> ./need_check
         return
     fi
@@ -288,6 +289,7 @@ restore_metadata_json() {
         mkdir -p "$output_dir"
     fi
     mv "package.json" $output_dir
+    echo "********JSON has been moved to $output_dir**********"
 }
 
 clean_tmp_files() {
@@ -322,7 +324,6 @@ echo "========Json has been generated========="
 
 # step 6
 restore_metadata_json
-echo "********JSON has been moved to $output_dir**********"
 
 #step 7 clean
 clean_tmp_files
