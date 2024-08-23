@@ -33,7 +33,10 @@ query_rpm_name() {
     fi
 
     # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-11.oe2203sp3.aarch64，需要依次解析各个字段
-    full_rpm_name=$(dnf repoquery --whatprovides "$input_item")
+    full_rpm_name=$(dnf repoquery --whatprovides "$input_item" --repo "epkg-2203sp3")
+    if [[ "$full_rpm_name" == "" ]]; then
+        full_rpm_name=$(dnf repoquery --whatprovides "$input_item" --repo "everything")
+    fi
     IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
     rpm_name=${rpm_name_epoch%-*}
     epoch=${rpm_name_epoch##*-}
