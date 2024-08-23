@@ -7,12 +7,14 @@ fi
 
 echo "*************Start to generate metadata for $1*****************"
 rpm_package="$1"
-output_dir="$2/$rpm_package/"
+output_dir="$2"
+abnormal_output_dir="$output_dir/wait_for_check"
 store_rpms="$3"
 
 json_data=""
 rpm_hash=""
 rpm_file_name=""
+has_unknown_requires=0
 
 requires_file=$(mktemp)
 provides_file=$(mktemp)
@@ -89,14 +91,19 @@ update_requirement_checksum () {
     IFS=' ' read -r rpm_name file_name epoch version release_dist_arch arch<<< $result
     echo "update_requirement_checksum:  $rpm_name  $file_name"
     if [ -n "$file_name" ];then
-        if [[ ! -f "$file_name" ]]; then
-            dnf download --dest=$store_rpms $rpm_name 2>/dev/null
+        dnf download --dest=$store_rpms $rpm_name 2>/dev/null
+        if [[ ! -f "$store_rpms/$file_name" ]]; then
+            echo "-----------Warning: no rpm found for $rpm_name"
+            requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
+            has_unknown_requires=1
+            return
         fi
         sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
         echo "get sha256 for $rpm_name: $sha256"
         requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
     else
         requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
+        has_unknown_requires=1
     fi
 }
 
@@ -268,6 +275,15 @@ generate_metadata_json () {
 }
 
 restore_metadata_json() {
+    if [[ "$has_unknown_requires" -eq 1 ]];then
+        abnormal_output_dir="$abnormal_output_dir/$rpm_package"
+        if [ ! -d "$abnormal_output_dir" ]; then
+            mkdir -p "$abnormal_output_dir"
+        fi
+        mv "package.json" $abnormal_output_dir
+        echo "$rpm_package" >> ./need_check
+        return
+    fi
     if [ ! -d "$output_dir" ]; then
         mkdir -p "$output_dir"
     fi
