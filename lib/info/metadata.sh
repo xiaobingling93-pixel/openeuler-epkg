@@ -262,7 +262,7 @@ generate_metadata_json () {
     convert_provides_to_json
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
 
-    output_file="metadata.json"
+    output_file="package.json"
     echo "$output_json" | jq '.' > "$output_file"
     echo "$output_json" | jq '.'
 }
@@ -271,7 +271,7 @@ restore_metadata_json() {
     if [ ! -d "$output_dir" ]; then
         mkdir -p "$output_dir"
     fi
-    mv "metadata.json" $output_dir
+    mv "package.json" $output_dir
 }
 
 clean_tmp_files() {
