@@ -1,0 +1,22 @@
+{
+    "channel":{
+        "0":{
+            "name": "xxxx",
+            "os_version": "openEuler-22.03-LTS-SP3",
+            "remote": "1",
+            "url": "http://repo.openeuler.org/epkg/channel/openEuler-22.03-LTS-SP3/baseos/$basearch/",
+            "enabled": "1",
+            "gpgcheck": "1",
+            "gpgkey": "http://repo.openeuler.org/openEuler-24.03-LTS/everything/$basearch/RPM-GPG-KEY-openEuler"
+        },
+        "1":{
+            "name": "epkg_oe_2203sp3_os",
+            "os_version": "openEuler-22.03-LTS-SP3",
+            "remote": "0",
+            "url": "/srv/os-repo/epkg/openeuler/openEuler-22.03-LTS-SP3/OS/aarch64/",
+            "enabled": "1",
+            "gpgcheck": "0",
+            "gpgkey": ""
+        }
+    }
+}
