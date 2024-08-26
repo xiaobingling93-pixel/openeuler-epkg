@@ -76,7 +76,7 @@ find_pkg_metadata_json() {
             fi
         done
     else
-        result=$(find $search_dir -type d -name "$epkg_hash*" -exec basename {} \; | head -n 1)
+        result=$(find $search_dir -type d -name "$epkg_hash*" | head -n 1)
         if [[ $result != "" ]]; then
             echo "$result/package.json"
             return
