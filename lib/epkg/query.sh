@@ -214,7 +214,13 @@ show_package_file_list() {
         channel_name=$name
         pkg_info_path="$channel_url/pkg-info"
         pkg_metadata_file_path="$(find_pkg_metadata_json $query_name $pkg_info_path "")"
-        pkg_store_file_name="${pkg_metadata_file_path%-*}.epkg"
+        echo "pkg_metadata_file_path: $pkg_metadata_file_path"
+
+        pkg_metadata_file_parent_dir=$(dirname "$pkg_metadata_file_path")
+        pkg_metadata_file_parent_dir=$(basename "$pkg_metadata_file_parent_dir")
+        echo "pkg_metadata_file_parent_dir: $pkg_metadata_file_parent_dir"
+        pkg_store_file_name="${pkg_metadata_file_parent_dir%-*}.epkg"
+        echo "pkg_store_file_name: $pkg_store_file_name"
 
         # get hash and first 2 char
         package_hash=$(jq -r '.package.hash' "$pkg_metadata_file_path")
