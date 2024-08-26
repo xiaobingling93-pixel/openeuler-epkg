@@ -60,7 +60,10 @@ find_pkg_metadata_json() {
     local pkg_name=$1
     local search_dir=$2
     find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
+        # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11-oe2203sp3-aarch64
         dir_name=$(basename "$dir")
+        dir_name=${dir_name%-*}
+        dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         rpm_name=${dir_name#*-}
@@ -83,7 +86,7 @@ get_requires() {
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path)"
     echo "find_pkg_metadata_json: $pkg_metadata_file_path"
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
-        echo "-------Warning: no package.json for $pkg_name"
+        # echo "-------Warning: no package.json for $pkg_name"
         return
     fi
 
@@ -93,7 +96,7 @@ get_requires() {
         pkgname=$(echo "$entry" | jq -r '.value.pkgname')
         # 忽略unkonwn的requirement
         if [[ $key == "unknown" ]] || [[ $pkgname == "" ]];then
-            echo "-------Warning: abnormal requirement [$key]---[$pkgname]"
+            # echo "-------Warning: abnormal requirement [$key]---[$pkgname]"
             continue
         fi
         
