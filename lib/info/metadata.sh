@@ -141,7 +141,7 @@ init_requirement_rpm_info () {
 }
 
 convert_requiremennts_to_json () {
-    local key="$1"
+    local rpm_hash="$1"
     local data="$2"
     IFS=' ' read -r -a entries <<< "$data"
     local pkgname=${entries[0]%%|*}
@@ -150,7 +150,7 @@ convert_requiremennts_to_json () {
     local binaries=()
     for entry in "${entries[@]}"; do
         IFS='|' read -r pkgname category value <<< "$entry"
-	    echo "convert_requiremennts_to_json: $pkgname  $category   $value"
+	    # echo "convert_requiremennts_to_json: $pkgname  $category   $value"
         case "$category" in
             "file")
                 files+=("${value}")
@@ -166,14 +166,14 @@ convert_requiremennts_to_json () {
 
     # 创建 JSON 对象
     local json=$(jq -n \
-        --arg key "$key" \
+        --arg rpm_hash "$rpm_hash" \
         --arg pkgname "$pkgname" \
         --argjson files "$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)" \
         --argjson sonames "$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)" \
         --argjson binaries "$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)" \
         '{
             requires: {
-                ($key): {
+                ($rpm_hash): {
                     pkgname: $pkgname,
                     files: $files,
                     sonames: $sonames,

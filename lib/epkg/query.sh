@@ -155,10 +155,6 @@ accurate_query_requires() {
         channel_name=$name
         get_requires $package_name $channel_url $channel_name $channel_index
     done
-    # 打印当前元组的内容
-    for key in "${!requires_array[@]}"; do
-        echo "$key: ${requires_array[$key]}"
-    done
 }
 
 # 模糊查询
@@ -175,17 +171,21 @@ fuzzy_query_requires() {
             get_requires $package_name $channel_url $channel_name $channel_index
         done < "$packages_file"
     done
-    # 打印当前元组的内容
+}
+
+show_require_list() {
     for key in "${!requires_array[@]}"; do
         echo "$key: ${requires_array[$key]}"
     done
 }
-
+    
 # step 1 加载本地的epkg channel配置
 load_enabled_channel_conf
 
-# case1: 精确查询
+# API: 精确查询
 accurate_query_requires
 
-# case2: 模糊查询
+# API: 模糊查询
 fuzzy_query_requires
+
+show_require_list
