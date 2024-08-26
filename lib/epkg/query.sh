@@ -143,6 +143,25 @@ find_pkg_names() {
     cat $packages_file
 }
 
+find_epkg_pacakge_file() {
+    local channel_url=$1
+    local package_hash=$2
+    local search_dir="$channel_url/store"
+
+    find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
+        dir_name=$(basename "$dir")
+        dir_name=${dir_name%-*}
+        dir_name=${dir_name%-*}
+        dir_name=${dir_name%-*}
+        dir_name=${dir_name%-*}
+        epkg_name=${dir_name#*-}
+        if [[ $epkg_name == $query_name ]]; then
+            echo "$epkg_name" >> $packages_file
+        fi
+    done
+    cat $packages_file
+}
+
 # 精准查询
 accurate_query_requires() {
     local package_name=$query_name
@@ -155,6 +174,7 @@ accurate_query_requires() {
         channel_name=$name
         get_requires $package_name $channel_url $channel_name $channel_index
     done
+    show_require_list
 }
 
 # 模糊查询
@@ -171,6 +191,7 @@ fuzzy_query_requires() {
             get_requires $package_name $channel_url $channel_name $channel_index
         done < "$packages_file"
     done
+    show_require_list
 }
 
 show_require_list() {
@@ -178,14 +199,45 @@ show_require_list() {
         echo "$key: ${requires_array[$key]}"
     done
 }
+
+show_package_file_list() {
+    local pkg_info_path=
+    local pkg_store_file_path=
+    local pkg_metadata_file_path=
+    local pkg_store_file_name=
+    # 获取所有channel的key，并按大小倒序排序
+    channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
+    # 打印关联数组的内容，按照倒序的键顺序
+    for channel_index in $channel_indexs; do
+        IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
+        channel_url=$url
+        channel_name=$name
+        pkg_info_path="$channel_url/pkg-info"
+        pkg_metadata_file_path="$(find_pkg_metadata_json $query_name $pkg_info_path "")"
+        pkg_store_file_name="${pkg_metadata_file_path%-*}.epkg"
+
+        # get hash and first 2 char
+        package_hash=$(jq -r '.package.hash' "$pkg_metadata_file_path")
+        first_two=${package_hash:0:2}
+
+        pkg_store_file_path=$channel_url/store/$first_two/$pkg_store_file_name
+        tar --use-compress-program=zstd -xvf $pkg_store_file_path ./info/files
+        echo "The files list of $:"
+        cat ./info/files
+        
+    done
+}
     
 # step 1 加载本地的epkg channel配置
 load_enabled_channel_conf
 
-# API: 精确查询
-accurate_query_requires
+# # API: 精确查询
+# accurate_query_requires
 
-# API: 模糊查询
-fuzzy_query_requires
+# # API: 模糊查询
+# fuzzy_query_requires
 
-show_require_list
+# API: 查询files信息
+
+
+show_package_file_list
