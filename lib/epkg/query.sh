@@ -2,7 +2,7 @@
 
 
 if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <rpm_name/rpm_name*>"
+    echo "Usage: $0 <epkg_name/epkg_name*>"
     exit 1
 fi
 
@@ -59,19 +59,29 @@ load_enabled_channel_conf() {
 find_pkg_metadata_json() {
     local pkg_name=$1
     local search_dir=$2
-    find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
-        # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11-oe2203sp3-aarch64
-        dir_name=$(basename "$dir")
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        rpm_name=${dir_name#*-}
-        if [[ $rpm_name == "$pkg_name" ]]; then
-            echo "$dir/package.json"
+    local epkg_hash=$3
+
+    if [[ $epkg_hash == "" ]]; then
+        find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
+            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11-oe2203sp3-aarch64
+            dir_name=$(basename "$dir")
+            dir_name=${dir_name%-*}
+            dir_name=${dir_name%-*}
+            dir_name=${dir_name%-*}
+            dir_name=${dir_name%-*}
+            epkg_name=${dir_name#*-}
+            if [[ $epkg_name == "$pkg_name" ]]; then
+                echo "$dir/package.json"
+                return
+            fi
+        done
+    else
+        result=$(find $search_dir -type d -name "$epkg_hash*" -exec basename {} \; | head -n 1)
+        if [[ $result != "" ]]; then
+            echo "$result/package.json"
             return
         fi
-    done
+    fi
     echo ""
 }
 
@@ -83,7 +93,7 @@ get_requires() {
     local pkg_info_path="$channel_url/pkg-info"
 
     # echo "get requires for $pkg_name, from $pkg_info_path"
-    pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path)"
+    pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
     # echo "find_pkg_metadata_json: $pkg_metadata_file_path"
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
         # echo "-------Warning: no package.json for $pkg_name"
@@ -92,20 +102,20 @@ get_requires() {
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
-        key=$(echo "$entry" | jq -r '.key')
+        epkg_hash=$(echo "$entry" | jq -r '.key')
         pkgname=$(echo "$entry" | jq -r '.value.pkgname')
         # 忽略unkonwn的requirement
-        if [[ $key == "unknown" ]] || [[ $pkgname == "" ]];then
-            # echo "-------Warning: abnormal requirement [$key]---[$pkgname]"
+        if [[ $epkg_hash == "unknown" ]] || [[ $pkgname == "" ]];then
+            # echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
             continue
         fi
         
         # 如果当前requirement已经被查询过，则跳过
-        if [[ -n "${requires_array[$key]+x}" ]]; then
+        if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue
         else
-            requires_array["$key"]="$pkgname $channel_index $channel_name"
-            new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path)"
+            requires_array["$epkg_hash"]="$pkgname $channel_index $channel_name"
+            new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
             else
@@ -125,9 +135,9 @@ find_pkg_names() {
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
-        rpm_name=${dir_name#*-}
-        if [[ $rpm_name == $query_name ]]; then
-            echo "$rpm_name" >> $packages_file
+        epkg_name=${dir_name#*-}
+        if [[ $epkg_name == $query_name ]]; then
+            echo "$epkg_name" >> $packages_file
         fi
     done
     cat $packages_file
