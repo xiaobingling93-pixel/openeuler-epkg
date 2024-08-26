@@ -82,9 +82,9 @@ get_requires() {
     local channel_index=$4
     local pkg_info_path="$channel_url/pkg-info"
 
-    echo "get requires for $pkg_name, from $pkg_info_path"
+    # echo "get requires for $pkg_name, from $pkg_info_path"
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path)"
-    echo "find_pkg_metadata_json: $pkg_metadata_file_path"
+    # echo "find_pkg_metadata_json: $pkg_metadata_file_path"
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
         # echo "-------Warning: no package.json for $pkg_name"
         return
@@ -121,6 +121,8 @@ find_pkg_names() {
     local search_dir="$channel_url/pkg-info"
     find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
         dir_name=$(basename "$dir")
+        dir_name=${dir_name%-*}
+        dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         rpm_name=${dir_name#*-}
