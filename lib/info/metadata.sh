@@ -31,6 +31,24 @@ declare -A bin_requirements
 declare -A requirement_rpm_info
 declare -A rpm_provides_info
 
+
+check_metadata_json_exist() {
+    result=$(query_rpm_name $rpm_package)
+    IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
+    rpm_file_name=$file_name
+    rpm_hash=$(sha256sum $store_rpms/$rpm_file_name | awk '{print $1}')
+    output_dir="$output_dir/$rpm_hash-$rpm_name-$version-$release-$dist"
+    if [[ -f "$output_dir/package.json" ]]; then
+        return 1
+    fi
+    rpm_epoch=$epoch
+    rpm_version=$version
+    rpm_release=$release
+    rpm_dist=$dist
+    rpm_arch=$arch
+    return 0
+}
+
 query_rpm_name() {
     local input_item=$1
     if [[ "/bin/sh" == $input_item ]];then
@@ -94,25 +112,38 @@ classify_requirements () {
 update_requirement_checksum () {
     local requirement=$1
     local type=$2
-
-    result=$(query_rpm_name "$requirement")
-    IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
-    echo "update_requirement_checksum:  $requirement $rpm_name  $file_name"
-    if [ -n "$file_name" ];then
-        dnf download --dest=$store_rpms $rpm_name --repo "epkg_2203sp3_os" 2>/dev/null
-        if [[ ! -f "$store_rpms/$file_name" ]]; then
-            echo "-----------Warning: no rpm found for $rpm_name"
-            requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
-            has_unknown_requires=1
-            return
-        fi
-        sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
-        echo "get sha256 for $rpm_name: $sha256"
-        requirement_rpm_info[$sha256]+="$rpm_name|$type|$requirement "
+    local requirement_array
+    # 考虑有这种require场景：(docker-runc or runc)
+    if [[  "$requirement" == *" or "* ]];then
+        echo "----------Requirement contains or: $requirement"
+        cleaned="${requirement//(/}"
+        cleaned="${cleaned//)/}"
+        IFS=' ' read -r -a requirement_array <<< "$cleaned"
     else
-        requirement_rpm_info["unknown"]+="$rpm_name|$type|$requirement "
-        has_unknown_requires=1
+        requirement_array=("$requirement")
     fi
+    
+    for element in "${requirement_array[@]}"; do
+        if [[ $element != "or" ]];then
+            result=$(query_rpm_name "$element")
+            IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
+            if [ -n "$file_name" ];then
+                dnf download --dest=$store_rpms $rpm_name --repo "epkg_2203sp3_os" 2>/dev/null
+                if [[ ! -f "$store_rpms/$file_name" ]]; then
+                    echo "-----------Warning: no rpm found for $rpm_name"
+                    continue
+                fi
+                sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
+                echo "get sha256 for $rpm_name: $sha256"
+                requirement_rpm_info[$sha256]+="$rpm_name|$type|$element "
+                return
+            fi
+        fi
+    done
+    if [[ $requirement_rpm_info[$sha256] == "" ]];then
+        requirement_rpm_info["unknown"]+="unknown|$type|$requirement "
+        has_unknown_requires=1
+    fi    
 }
 
 init_rpm_provides_info_info () {
@@ -295,24 +326,6 @@ clean_tmp_files() {
     unset bin_requirements
     unset requirement_rpm_info
     unset rpm_provides_info    
-}
-
-check_metadata_json_exist() {
-    result=$(query_rpm_name $rpm_package)
-    IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
-    # update rpm_file_name/rpm_hash/output_dir for input rpm_package
-    rpm_file_name=$file_name
-    rpm_hash=$(sha256sum $store_rpms/$rpm_file_name | awk '{print $1}')
-    output_dir="$output_dir/$rpm_hash-$rpm_name-$version-$release-$dist"
-    if [[ -f "$output_dir/package.json" ]]; then
-        return 1
-    fi
-    rpm_epoch=$epoch
-    rpm_version=$version
-    rpm_release=$release
-    rpm_dist=$dist
-    rpm_arch=$arch
-    return 0
 }
 
 # step 1 download rpm
