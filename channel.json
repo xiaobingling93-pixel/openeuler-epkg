@@ -13,7 +13,7 @@
             "name": "epkg_oe_2203sp3_os",
             "os_version": "openEuler-22.03-LTS-SP3",
             "remote": "0",
-            "url": "/srv/os-repo/epkg/openeuler/openEuler-22.03-LTS-SP3/OS/aarch64/",
+            "url": "/srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/os/aarch64/",
             "enabled": "1",
             "gpgcheck": "0",
             "gpgkey": ""

@@ -95,9 +95,9 @@ update_requirement_checksum () {
     local requirement=$1
     local type=$2
 
-    result=$(query_rpm_name $requirement)
+    result=$(query_rpm_name "$requirement")
     IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
-    echo "update_requirement_checksum:  $rpm_name  $file_name"
+    echo "update_requirement_checksum:  $requirement $rpm_name  $file_name"
     if [ -n "$file_name" ];then
         dnf download --dest=$store_rpms $rpm_name --repo "epkg_2203sp3_os" 2>/dev/null
         if [[ ! -f "$store_rpms/$file_name" ]]; then
@@ -130,13 +130,13 @@ init_rpm_provides_info_info () {
 init_requirement_rpm_info () {
     requirement_rpm_info["unknown"]=""
     for requirement in "${!file_requirements[@]}"; do
-        update_requirement_checksum $requirement file
+        update_requirement_checksum "$requirement" file
     done
     for requirement in "${!so_requirements[@]}"; do
-        update_requirement_checksum $requirement soname
+        update_requirement_checksum "$requirement" soname
     done
     for requirement in "${!bin_requirements[@]}"; do
-        update_requirement_checksum $requirement binary
+        update_requirement_checksum "$requirement" binary
     done
 }
 
@@ -150,7 +150,7 @@ convert_requiremennts_to_json () {
     local binaries=()
     for entry in "${entries[@]}"; do
         IFS='|' read -r pkgname category value <<< "$entry"
-	    # echo "convert_requiremennts_to_json: $pkgname  $category   $value"
+	    echo "convert_requiremennts_to_json: $pkgname  $category   $value"
         case "$category" in
             "file")
                 files+=("${value}")
@@ -297,14 +297,13 @@ clean_tmp_files() {
     unset rpm_provides_info    
 }
 
-
 check_metadata_json_exist() {
     result=$(query_rpm_name $rpm_package)
     IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
     # update rpm_file_name/rpm_hash/output_dir for input rpm_package
     rpm_file_name=$file_name
     rpm_hash=$(sha256sum $store_rpms/$rpm_file_name | awk '{print $1}')
-    output_dir="$output_dir/$rpm_hash-$rpm_name-$version-$release-$dist-$arch"
+    output_dir="$output_dir/$rpm_hash-$rpm_name-$version-$release-$dist"
     if [[ -f "$output_dir/package.json" ]]; then
         return 1
     fi

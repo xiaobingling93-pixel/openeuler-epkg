@@ -63,9 +63,8 @@ find_pkg_metadata_json() {
 
     if [[ $epkg_hash == "" ]]; then
         find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
-            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11-oe2203sp3-aarch64
+            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11-oe2203sp3
             dir_name=$(basename "$dir")
-            dir_name=${dir_name%-*}
             dir_name=${dir_name%-*}
             dir_name=${dir_name%-*}
             dir_name=${dir_name%-*}
@@ -134,7 +133,6 @@ find_pkg_names() {
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
         epkg_name=${dir_name#*-}
         if [[ $epkg_name == $query_name ]]; then
             echo "$epkg_name" >> $packages_file
@@ -143,24 +141,6 @@ find_pkg_names() {
     cat $packages_file
 }
 
-find_epkg_pacakge_file() {
-    local channel_url=$1
-    local package_hash=$2
-    local search_dir="$channel_url/store"
-
-    find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
-        dir_name=$(basename "$dir")
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        epkg_name=${dir_name#*-}
-        if [[ $epkg_name == $query_name ]]; then
-            echo "$epkg_name" >> $packages_file
-        fi
-    done
-    cat $packages_file
-}
 
 # 精准查询
 accurate_query_requires() {
@@ -225,21 +205,21 @@ show_package_file_list() {
         pkg_metadata_file_path="$(find_pkg_metadata_json $query_name $pkg_info_path "")"
         echo "pkg_metadata_file_path: $pkg_metadata_file_path"
 
-        pkg_metadata_file_parent_dir=$(dirname "$pkg_metadata_file_path")
-        pkg_metadata_file_parent_dir=$(basename "$pkg_metadata_file_parent_dir")
-        echo "pkg_metadata_file_parent_dir: $pkg_metadata_file_parent_dir"
-        pkg_store_file_name="${pkg_metadata_file_parent_dir%-*}.epkg"
+        read name hash version release dist <<< $(jq -r '.package | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
+        echo "Hash: $hash"
+        echo "Version: $version"
+        echo "Release: $release"
+        echo "Dist: $dist"
+        first_two=${hash:0:2}
+        # b976e8f53bddb31373d7ba3ccf9dc20fd2af0e553fbda299261ba4843346e646-CUnit-2.1.3-24.oe2203sp3.epkg
+        pkg_store_file_name="$hash-$name-$version-$release.$dist.epkg"
         echo "pkg_store_file_name: $pkg_store_file_name"
-
-        # get hash and first 2 char
-        package_hash=$(jq -r '.package.hash' "$pkg_metadata_file_path")
-        first_two=${package_hash:0:2}
 
         pkg_store_file_path=$channel_url/store/$first_two/$pkg_store_file_name
         tar --use-compress-program=zstd -xvf $pkg_store_file_path ./info/files
-        echo "The files list of $:"
+        echo "The files list of $name:"
         cat ./info/files
-        
+        rm -rf ./info
     done
 }
 
