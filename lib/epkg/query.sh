@@ -165,6 +165,9 @@ find_epkg_pacakge_file() {
 # 精准查询
 accurate_query_requires() {
     local package_name=$query_name
+
+    # step 1 加载本地的epkg channel配置
+    load_enabled_channel_conf
     # 获取所有channel的key，并按大小倒序排序
     channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
     # 打印关联数组的内容，按照倒序的键顺序
@@ -179,8 +182,11 @@ accurate_query_requires() {
 
 # 模糊查询
 fuzzy_query_requires() {
+    # step 1 加载本地的epkg channel配置
+    load_enabled_channel_conf
+
     # 获取所有channel的key，并按大小倒序排序
-    channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
+    local channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
     # 打印关联数组的内容，按照倒序的键顺序
     for channel_index in $channel_indexs; do
         IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
@@ -205,6 +211,9 @@ show_package_file_list() {
     local pkg_store_file_path=
     local pkg_metadata_file_path=
     local pkg_store_file_name=
+    
+    # step 1 加载本地的epkg channel配置
+    load_enabled_channel_conf
     # 获取所有channel的key，并按大小倒序排序
     channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
     # 打印关联数组的内容，按照倒序的键顺序
@@ -233,9 +242,6 @@ show_package_file_list() {
         
     done
 }
-    
-# step 1 加载本地的epkg channel配置
-load_enabled_channel_conf
 
 # # API: 精确查询
 # accurate_query_requires
@@ -244,6 +250,4 @@ load_enabled_channel_conf
 # fuzzy_query_requires
 
 # API: 查询files信息
-
-
-show_package_file_list
+# show_package_file_list

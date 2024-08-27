@@ -9,6 +9,7 @@ source $PROJECT_DIR/lib/epkg/env.sh
 source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
+source $PROJECT_DIR/lib/epkg/query.sh
 
 cmd=$1
 shift
@@ -64,6 +65,9 @@ EOF
 		;;
 	"init")
 		epkg_init "$@"
+		;;
+	"show")
+		show_package "$@"
 		;;
 	"env")
 		subcmd=$1
