@@ -68,14 +68,14 @@ query_rpm_name() {
 }
 
 query_requirements() {
-    dnf repoquery --requires "$rpm_package" --repo "epkg_2203sp3_os" > "$requires_file"
+    dnf repoquery --requires "$rpm_package" > "$requires_file"
     echo "==============Requirements:"
     cat $requires_file
 }
 
 query_provides () {
     if [[ ! -f "$rpm_file_name" ]]; then
-        dnf repoquery --provides "$rpm_package" --repo "epkg_2203sp3_os" > "$provides_file"
+        dnf repoquery --provides "$rpm_package" > "$provides_file"
     else
         rpm -qp --provides $store_rpms/$rpm_file_name > $provides_file
     fi
@@ -84,7 +84,7 @@ query_provides () {
 }
 
 download_input_rpm () {
-    dnf download --destdir=$store_rpms $rpm_package --repo "epkg_2203sp3_os" 2>/dev/null
+    dnf download --destdir=$store_rpms $rpm_package 2>/dev/null
 }
 
 classify_requirements () {
@@ -122,7 +122,7 @@ update_requirement_checksum () {
             result=$(query_rpm_name "$element")
             IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
             if [ -n "$file_name" ];then
-                dnf download --dest=$store_rpms $rpm_name --repo "epkg_2203sp3_os" 2>/dev/null
+                dnf download --dest=$store_rpms $rpm_name 2>/dev/null
                 if [[ ! -f "$store_rpms/$file_name" ]]; then
                     echo "-----------Warning: no rpm found for $rpm_name"
                     continue
