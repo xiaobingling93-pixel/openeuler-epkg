@@ -62,7 +62,7 @@ find_pkg_metadata_json() {
     local epkg_hash=$3
 
     if [[ $epkg_hash == "" ]]; then
-        find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
+        find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$pkg_name*"| while read -r dir; do
             # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11.oe2203sp3
             dir_name=$(basename "$dir")
             dir_name=${dir_name%.*}
@@ -128,9 +128,9 @@ get_requires() {
 find_pkg_names() {
     local channel_url=$1
     local search_dir="$channel_url/pkg-info"
-    find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
+    find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$query_name*" | while read -r dir; do
         dir_name=$(basename "$dir")
-        dir_name=${dir_name%-*}
+        dir_name=${dir_name%.*}
         dir_name=${dir_name%-*}
         dir_name=${dir_name%-*}
         epkg_name=${dir_name#*-}
