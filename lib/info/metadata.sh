@@ -8,6 +8,7 @@ fi
 echo "*************Start to generate metadata for $1*****************"
 rpm_package="$1"
 output_dir="$2"
+output_dir
 abnormal_output_dir="$output_dir/wait_for_check"
 store_rpms="$3"
 
@@ -49,6 +50,27 @@ check_metadata_json_exist() {
     return 0
 }
 
+query_require_hash() {
+    local pkg_name=$1
+    local search_dir=$2
+
+    find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$pkg_name*"| while read -r dir; do
+        # ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11.oe2203sp3
+        dir_name=$(basename "$dir")
+        hash=${dir_name%%-*}
+        dir_name=${dir_name%.*}
+        dir_name=${dir_name%-*}
+        dir_name=${dir_name%-*}
+        epkg_name=${dir_name#*-}
+        if [[ $epkg_name == "$pkg_name" ]]; then
+            echo "$hash"
+            return
+        fi
+    done
+    echo ""
+}
+
+
 query_rpm_name() {
     local input_item=$1
     if [[ "/bin/sh" == $input_item ]];then
@@ -56,7 +78,7 @@ query_rpm_name() {
     fi
 
     # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-1.1.oe2203sp3.aarch64，需要依次解析各个字段
-    full_rpm_name=$(dnf repoquery --whatprovides "$input_item")
+    full_rpm_name=$(dnf repoquery --whatprovides "$input_item" 2>/dev/null)
     IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
     rpm_name=${rpm_name_epoch%-*}
     epoch=${rpm_name_epoch##*-}
@@ -74,14 +96,14 @@ query_rpm_name() {
 }
 
 query_requirements() {
-    dnf repoquery --requires "$rpm_package" > "$requires_file"
+    dnf repoquery --requires "$rpm_package" > "$requires_file" 2>/dev/null
     echo "==============Requirements:"
     cat $requires_file
 }
 
 query_provides () {
     if [[ ! -f "$rpm_file_name" ]]; then
-        dnf repoquery --provides "$rpm_package" > "$provides_file"
+        dnf repoquery --provides "$rpm_package" > "$provides_file" 2>/dev/null
     else
         rpm -qp --provides $store_rpms/$rpm_file_name > $provides_file
     fi
@@ -113,6 +135,8 @@ update_requirement_checksum () {
     local requirement=$1
     local type=$2
     local requirement_array
+    local sha256=""
+    local valid_check_sum="no"
     # 考虑有这种require场景：(docker-runc or runc)
     if [[  "$requirement" == *" or "* ]];then
         echo "----------Requirement contains or: $requirement"
@@ -128,19 +152,26 @@ update_requirement_checksum () {
             result=$(query_rpm_name "$element")
             IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
             if [ -n "$file_name" ];then
-                dnf download --dest=$store_rpms $rpm_name 2>/dev/null
-                if [[ ! -f "$store_rpms/$file_name" ]]; then
-                    echo "-----------Warning: no rpm found for $rpm_name"
-                    continue
+                sha256=$(query_require_hash $rpm_name $output_parent_dir)
+                if [[ -n "$sha256" ]];then
+                    echo "----------hash from existed package.json"
+                    valid_check_sum="yes"
+                else
+                    dnf download --dest=$store_rpms $rpm_name 2>/dev/null
+                    if [[ ! -f "$store_rpms/$file_name" ]]; then
+                        echo "-----------Warning: no rpm found for $rpm_name"
+                        continue
+                    fi
+                    sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
+                    valid_check_sum="yes"
                 fi
-                sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
-                echo "get sha256 for $rpm_name: $sha256"
+                echo "$rpm_name: $sha256"
                 requirement_rpm_info[$sha256]+="$rpm_name|$type|$element "
                 return
             fi
         fi
     done
-    if [[ $requirement_rpm_info[$sha256] == "" ]];then
+    if [[ $valid_check_sum == "no" ]];then
         requirement_rpm_info["unknown"]+="unknown|$type|$requirement "
         has_unknown_requires=1
     fi    
