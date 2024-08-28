@@ -63,9 +63,9 @@ find_pkg_metadata_json() {
 
     if [[ $epkg_hash == "" ]]; then
         find "$search_dir" -maxdepth 1 -mindepth 1 -type d | while read -r dir; do
-            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11-oe2203sp3
+            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11.oe2203sp3
             dir_name=$(basename "$dir")
-            dir_name=${dir_name%-*}
+            dir_name=${dir_name%.*}
             dir_name=${dir_name%-*}
             dir_name=${dir_name%-*}
             epkg_name=${dir_name#*-}

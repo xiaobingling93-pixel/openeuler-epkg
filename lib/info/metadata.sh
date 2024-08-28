@@ -37,7 +37,7 @@ check_metadata_json_exist() {
     IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
     rpm_file_name=$file_name
     rpm_hash=$(sha256sum $store_rpms/$rpm_file_name | awk '{print $1}')
-    output_dir="$output_dir/$rpm_hash-$rpm_name-$version-$release-$dist"
+    output_dir="$output_dir/$rpm_hash-$rpm_name-$version-$release.$dist"
     if [[ -f "$output_dir/package.json" ]]; then
         return 1
     fi
