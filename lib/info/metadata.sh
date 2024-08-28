@@ -8,7 +8,7 @@ fi
 echo "*************Start to generate metadata for $1*****************"
 rpm_package="$1"
 output_dir="$2"
-output_dir
+output_parent_dir=$2
 abnormal_output_dir="$output_dir/wait_for_check"
 store_rpms="$3"
 
