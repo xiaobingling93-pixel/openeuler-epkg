@@ -55,14 +55,20 @@ query_rpm_name() {
         input_item="bash"
     fi
 
-    # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-11.oe2203sp3.aarch64，需要依次解析各个字段
+    # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-1.1.oe2203sp3.aarch64，需要依次解析各个字段
     full_rpm_name=$(dnf repoquery --whatprovides "$input_item")
     IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
     rpm_name=${rpm_name_epoch%-*}
     epoch=${rpm_name_epoch##*-}
     version=${version_release_dist_arch%-*}
     release_dist_arch=${version_release_dist_arch##*-}
-    IFS='.' read -r release dist arch <<< $release_dist_arch
+
+    # 使用参数扩展提取最后一个点后的内容
+    arch=${release_dist_arch##*.}
+    release_dist=${release_dist_arch%.*}
+    dist=${release_dist##*.}
+    release=${release_dist%.*}
+    
     file_name="$rpm_name-$version_release_dist_arch.rpm"
     echo "$rpm_name $file_name $epoch $version $release $dist $arch"
 }
