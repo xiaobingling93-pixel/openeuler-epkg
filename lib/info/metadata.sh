@@ -115,6 +115,11 @@ download_input_rpm () {
     dnf download --destdir=$store_rpms $rpm_package 2>/dev/null
 }
 
+# 待处理场景
+# case1：(tpm2-abrmd-selinux >= 2.3.3-2 if selinux-policy)、(corosync >= 3.0 if pacemaker)
+# case2：(libknet1-plugins-all if corosync)
+# case3：(python3.11dist(pyparsing) < 3 or python3.11dist(pyparsing) >= 3.0)
+# case4：(npm(async) >= 1.5.0 with npm(async) < 2)
 classify_requirements () {
     while read -r requirement; do
         requirement="${requirement%% [=<>]*}"
