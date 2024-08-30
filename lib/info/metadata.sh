@@ -140,8 +140,8 @@ update_requirement_checksum () {
     # case1：(docker-runc or runc)
     if [[  "$requirement" == *" or "* ]];then
         echo "----------Requirement contains or: $requirement"
-        cleaned="${requirement//(/}"
-        cleaned="${cleaned//)/}"
+        cleaned="${requirement/(/}"
+        cleaned="${cleaned%\)*}"
         IFS=' ' read -r -a requirement_array <<< "$cleaned"
     # case2：(npm(async) >= 1.5.0 with npm(async) < 2)
     elif [[  "$requirement" == *" with "* ]];then
