@@ -115,14 +115,9 @@ download_input_rpm () {
     dnf download --destdir=$store_rpms $rpm_package 2>/dev/null
 }
 
-# 待处理场景
-# case1：(tpm2-abrmd-selinux >= 2.3.3-2 if selinux-policy)、(corosync >= 3.0 if pacemaker)
-# case2：(libknet1-plugins-all if corosync)
-# case3：(python3.11dist(pyparsing) < 3 or python3.11dist(pyparsing) >= 3.0)
-# case4：(npm(async) >= 1.5.0 with npm(async) < 2)
+
 classify_requirements () {
     while read -r requirement; do
-        requirement="${requirement%% [=<>]*}"
         if [[ "$requirement" =~ \.so ]]; then
             so_requirements["$requirement"]=1
 	        echo "catch so requirement: $requirement"
@@ -142,19 +137,32 @@ update_requirement_checksum () {
     local requirement_array
     local sha256=""
     local valid_check_sum="no"
-    # 考虑有这种require场景：(docker-runc or runc)
+    # case1：(docker-runc or runc)
     if [[  "$requirement" == *" or "* ]];then
         echo "----------Requirement contains or: $requirement"
         cleaned="${requirement//(/}"
         cleaned="${cleaned//)/}"
         IFS=' ' read -r -a requirement_array <<< "$cleaned"
+    # case2：(npm(async) >= 1.5.0 with npm(async) < 2)
+    elif [[  "$requirement" == *" with "* ]];then
+        cleaned="${requirement/(/}"
+        cleaned="${cleaned%\)*}"
+        split_strings=$(echo "$cleaned" | awk -F ' with ' '{print $1 ";" $2}')
+        IFS=';' read -r -a requirement_array <<< "$split_strings"
+    # case3: (tpm2-abrmd-selinux >= 2.3.3-2 if selinux-policy)
+    elif [[  "$requirement" == *" if "* ]];then
+        echo "----------Requirement contains if: $requirement, return"
+        return
     else
         requirement_array=("$requirement")
     fi
+
+    printf "%s " "${requirement_array[@]}"
     
     for element in "${requirement_array[@]}"; do
         if [[ $element != "or" ]];then
             result=$(query_rpm_name "$element")
+            echo "query rpm info for $element: $result"
             IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
             if [ -n "$file_name" ];then
                 sha256=$(query_require_hash $rpm_name $output_parent_dir)
