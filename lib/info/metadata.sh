@@ -179,13 +179,13 @@ update_requirement_checksum () {
                     valid_check_sum="yes"
                 fi
                 echo "$rpm_name: $sha256"
-                requirement_rpm_info[$sha256]+="$rpm_name|$type|$element "
+                requirement_rpm_info[$sha256]+="$rpm_name|$type|$element;"
                 return
             fi
         fi
     done
     if [[ $valid_check_sum == "no" ]];then
-        requirement_rpm_info["unknown"]+="unknown|$type|$requirement "
+        requirement_rpm_info["unknown"]+="unknown|$type|$requirement;"
         has_unknown_requires=1
     fi    
 }
@@ -218,7 +218,7 @@ init_requirement_rpm_info () {
 convert_requiremennts_to_json () {
     local rpm_hash="$1"
     local data="$2"
-    IFS=' ' read -r -a entries <<< "$data"
+    IFS=';' read -r -a entries <<< "$data"
     local pkgname=${entries[0]%%|*}
     local files=()
     local sonames=()
