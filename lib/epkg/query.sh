@@ -1,14 +1,7 @@
 #!/usr/bin/bash
 
-
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <epkg_name/epkg_name*>"
-    exit 1
-fi
-
 CHANNEL_CONF_PATH="/etc/epkg-confs/channel.json"
 
-query_name=$1
 packages_file=$(mktemp)
 declare -A requires_array
 declare -A channel_array
@@ -91,9 +84,7 @@ get_requires() {
     local channel_index=$4
     local pkg_info_path="$channel_url/pkg-info"
 
-    # echo "get requires for $pkg_name, from $pkg_info_path"
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
-    # echo "find_pkg_metadata_json: $pkg_metadata_file_path"
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
         # echo "-------Warning: no package.json for $pkg_name"
         return
@@ -102,18 +93,18 @@ get_requires() {
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
         epkg_hash=$(echo "$entry" | jq -r '.key')
-        pkgname=$(echo "$entry" | jq -r '.value.pkgname')
-        # 忽略unkonwn的requirement
-        if [[ $epkg_hash == "unknown" ]] || [[ $pkgname == "" ]];then
-            # echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
-            continue
-        fi
-        
         # 如果当前requirement已经被查询过，则跳过
         if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue
         else
-            requires_array["$epkg_hash"]="$pkgname $channel_index $channel_name"
+            pkgname=$(echo "$entry" | jq -r '.value.pkgname')
+            echo "        $pkgname $epkg_hash"
+
+            if [[ $epkg_hash == "unknown" ]] || [[ $pkgname == "" ]];then
+                echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
+                continue
+            fi
+            requires_array["$epkg_hash"]="$pkgname   $channel_name"
             new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
@@ -127,8 +118,9 @@ get_requires() {
 
 find_pkg_names() {
     local channel_url=$1
+    local query_name=$2
     local search_dir="$channel_url/pkg-info"
-    find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$query_name*" | while read -r dir; do
+    find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$query_name" | while read -r dir; do
         dir_name=$(basename "$dir")
         dir_name=${dir_name%.*}
         dir_name=${dir_name%-*}
@@ -138,14 +130,12 @@ find_pkg_names() {
             echo "$epkg_name" >> $packages_file
         fi
     done
-    cat $packages_file
 }
 
 
 # 精准查询
 accurate_query_requires() {
-    local package_name=$query_name
-
+    local package_name=$1
     # step 1 加载本地的epkg channel配置
     load_enabled_channel_conf
     # 获取所有channel的key，并按大小倒序排序
@@ -162,6 +152,7 @@ accurate_query_requires() {
 
 # 模糊查询
 fuzzy_query_requires() {
+    local query_name=$1
     # step 1 加载本地的epkg channel配置
     load_enabled_channel_conf
 
@@ -172,7 +163,9 @@ fuzzy_query_requires() {
         IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
         channel_url=$url
         channel_name=$name
-        find_pkg_names $channel_url
+        find_pkg_names $channel_url $query_name
+        related_pkgs="$(cat $packages_file)"
+        echo "Find related pakcges: [$related_pkgs]"
         while read -r package_name; do
             get_requires $package_name $channel_url $channel_name $channel_index
         done < "$packages_file"
@@ -181,12 +174,15 @@ fuzzy_query_requires() {
 }
 
 show_require_list() {
+    echo "All of requires:"
+    echo "                                 HASH                                PACKAGE  CHANNEL"
     for key in "${!requires_array[@]}"; do
-        echo "$key: ${requires_array[$key]}"
+        echo "$key ${requires_array[$key]}"
     done
 }
 
 show_package_file_list() {
+    local query_name=$1
     local pkg_info_path=
     local pkg_store_file_path=
     local pkg_metadata_file_path=
@@ -196,7 +192,7 @@ show_package_file_list() {
     load_enabled_channel_conf
     # 获取所有channel的key，并按大小倒序排序
     channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
-    # 打印关联数组的内容，按照倒序的键顺序
+
     for channel_index in $channel_indexs; do
         IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
         channel_url=$url
@@ -223,11 +219,19 @@ show_package_file_list() {
     done
 }
 
+query_requires() {
+    local query_name=$1
+    if echo "$query_name" | grep -q '\*'; then
+        fuzzy_query_requires $query_name
+    else
+        accurate_query_requires $query_name
+    fi
+}
 # # API: 精确查询
-# accurate_query_requires
+# accurate_query_requires $1
 
 # # API: 模糊查询
-# fuzzy_query_requires
+# fuzzy_query_requires $1
 
 # API: 查询files信息
-# show_package_file_list
+# show_package_file_list $1

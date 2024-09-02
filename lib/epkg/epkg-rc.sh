@@ -77,7 +77,6 @@ __epkg_enable_environment() {
 	local env=$1
 	local path=
 
-
 	_check_env_enabled $env
 	if [ $? -eq 0 ]; then
 		echo "$env already enabled!"
@@ -90,7 +89,6 @@ __epkg_enable_environment() {
 	__epkg_create_path_rc "$path"
 	__epkg_rehash
 	source $RC_PATH
-
 	echo "Environment '$env' added to PATH."
 }
 
