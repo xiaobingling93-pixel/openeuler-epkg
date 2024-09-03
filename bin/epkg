@@ -30,6 +30,7 @@ case $cmd in
 	"help")
 		cat <<-EOF
 Usage:
+epkg update
 epkg install [--env ENV] PACKAGE
 epkg remove [--env ENV] PACKAGE
 epkg upgrade [PACKAGE]
@@ -50,6 +51,9 @@ EOF
 
 	"install")
 		install_package "$@"
+		;;
+	"update")
+		update_repo_index
 		;;
 	"remove")
 		remove_package "$@"

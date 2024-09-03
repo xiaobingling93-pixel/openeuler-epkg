@@ -8,6 +8,15 @@
             "enabled": "1",
             "gpgcheck": "0",
             "gpgkey": ""
+        },
+        "2":{
+            "name": "epkg_oe_2203_everything",
+            "os_version": "openEuler-22.03",
+            "remote": "false",
+            "url": "/srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/everything/aarch64",
+            "enabled": "1",
+            "gpgcheck": "0",
+            "gpgkey": ""
         }
     }
 }
