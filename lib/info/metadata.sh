@@ -149,7 +149,7 @@ update_requirement_checksum () {
                     echo "----------hash from existed package.json"
                     valid_check_sum="yes"
                 else
-                    dnf download --dest=$store_rpms $rpm_name-$version 2>/dev/null
+                    dnf download --dest=$store_rpms $rpm_name-$version-$release.$dist 2>/dev/null
                     if [[ ! -f "$store_rpms/$file_name" ]]; then
                         echo "-----------Warning: no rpm found for $rpm_name"
                         continue

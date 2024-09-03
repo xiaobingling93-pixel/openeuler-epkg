@@ -4,28 +4,18 @@
 本文介绍EPKG包管理器工作环境如何初始化，以及基本功能如何使用。本文涉及操作结果示例均以非root用户为例。
 
 ## 安装教程
-Step 1. 准备linux虚拟机/容器环境，安装fakeroot
-
-    Note：如果使用容器，需要特权:
-
-        docker run --privileged -v --name ${自定义容器name} -itd ${imageid}
-
-Step 2. 准备epkg下载脚本：
-
+方法1：
+    // epkg下载脚本
     cd /tmp/
-    curl -O https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems1/repositories/epkg/epkg_downloader.sh
-
-
-Step 3. 执行脚本，并指定epkg包管理器默认用户，这里以small_leek为例
-
-    sh epkg_downloader.sh small_leek
-
-Step 4. 切换为small_leek用户，执行初始化脚本：
-
-    su - small_leek
-    cd
-    sh epkg_initial.sh
-
+    curl -O https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems1/repositories/epkg/epkg_downloader.sh | bash -
+    bash // 重新执行.bashrc, 获得新的PATH
+    epkg install $package
+    
+方法2：
+    sudo yum install epkg
+    epkg init
+    bash // 重新执行.bashrc, 获得新的PATH
+    epkg install $package
 
 ## EPKG包管理器使用说明
 Usage:
