@@ -53,7 +53,7 @@ EOF
 		install_package "$@"
 		;;
 	"update")
-		update_repo_index
+		update-repo-index
 		;;
 	"remove")
 		remove_package "$@"
