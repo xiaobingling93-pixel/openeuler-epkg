@@ -1,0 +1,10 @@
+# openEuler-22.03-LTS-SP3
+
+/srv/os-repo/openeuler/openEuler-22.03-LTS-SP3/OS/aarch64                /srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/os/aarch64
+# /srv/os-repo/openeuler/openEuler-22.03-LTS-SP3/OS/x86_64                /srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/OS/x86_64
+/srv/os-repo/openeuler/openEuler-22.03-LTS-SP3/everything/aarch64        /srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/everything/aarch64
+# /srv/os-repo/openeuler/openEuler-22.03-LTS-SP3/everything/x86_64        /srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/everything/x86_64
+
+# /srv/os-repo/openeuler/openEuler-22.03-LTS-SP3/update/aarch64                /srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/update/aarch64
+# /srv/os-repo/openeuler/openEuler-22.03-LTS-SP3/update/x86_64                /srv/os-repo/epkg/channel/openeuler-22.03-lts-sp3/update/x86_64
+

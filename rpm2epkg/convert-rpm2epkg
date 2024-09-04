@@ -1,0 +1,64 @@
+#!/bin/bash
+
+#[[ $# -eq 3 ]] || {
+#	echo 'Rpm file and source rpm file path is required'
+
+#	exit 99
+#}
+
+rpm_file=$1
+epkg_repo_path=$2
+rpm_file_name=${rpm_file##*/}
+
+epkg_conversion_dir="${HOME}/epkg_conversion"
+
+init_conversion_dirs()
+{
+	rm -rf ${epkg_conversion_dir}/*
+
+	mkdir -p ${epkg_conversion_dir}/{fso,info}
+	mkdir -p ${epkg_conversion_dir}/info/pgp
+	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files,runtimePhase.sh}
+}
+
+decompress_rpm()
+{
+	rpm2cpio ${rpm_file} | cpio -idm --quiet -D ${epkg_conversion_dir}/fso/ 2>/dev/null
+}
+
+generate_files()
+{
+	find ${epkg_conversion_dir}/fso/ -mindepth 1 -exec stat --format='%n mode=%a size=%s mtime=%Y' {} \; > ${epkg_conversion_dir}/info/files
+
+	sed -i "s|^${epkg_conversion_dir}/fso/||" ${epkg_conversion_dir}/info/files
+}
+
+generate_epkg_name()
+{
+	local rpm_hash
+	local rpm_name
+	local rpm_ver
+	local rpm_rel
+
+	read rpm_hash _var <<< $(sha256sum ${rpm_file} 2>/dev/null)
+	read rpm_name rpm_ver rpm_rel <<< $(rpm -qp --qf '%{NAME} %{version} %{release}' ${rpm_file} 2>/dev/null)
+
+	epkg_name="${rpm_hash}-${rpm_name}-${rpm_ver}-${rpm_rel}.epkg"
+}
+
+compress_epkg()
+{
+	mkdir -p ${epkg_repo_path}/store/${epkg_name:0:2}/
+	tar --zstd -cvf ${epkg_repo_path}/store/${epkg_name:0:2}/${epkg_name} -C ${epkg_conversion_dir} .
+}
+
+init_conversion_dirs
+decompress_rpm
+generate_files
+generate_epkg_name
+compress_epkg
+
+# list files in .epkg
+# 	tar --use-compress-program=zstd -tf 5f30b3324db2276a16f83c1839e8b04a-bash-5.1.8-12.oe2203sp3.epkg
+# extract specified file in .epkg
+# 	tar --use-compress-program=zstd -xvf 5f30b3324db2276a16f83c1839e8b04a-bash-5.1.8-12.oe2203sp3.epkg ./info/files

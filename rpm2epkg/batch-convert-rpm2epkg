@@ -1,0 +1,104 @@
+#!/bin/bash
+
+repos_list_file=$1
+
+loop_convert_repos()
+{
+	while read rpm_repo_path result_repo_path
+	do
+		# for comment line
+		[[ ${rpm_repo_path} =~ ^\ *#.*$ ]] && continue
+		# for empty lines
+		[[ -z ${rpm_repo_path} ]] && continue
+
+		[[ -z ${result_repo_path} ]] && {
+			echo "Rpm repo path not specified for ${rpm_repo_path}"
+			continue
+		}
+
+		loop_convert_epkg ${rpm_repo_path/%\/Packages\/*/''} ${result_repo_path}
+
+		create_erepo $result_repo_path
+	done < ${repos_list_file}
+}
+
+loop_convert_epkg()
+{
+	return
+
+	local rpm_repo=$1
+	local result_repo_path=$2
+
+	[[ -d ${result_repo_path}/store ]] || {
+		mkdir -p ${result_repo_path}/store
+	}
+
+	for rpm in $(find ${rpm_repo} -name "*.rpm")
+	do
+		[[ $rpm =~ '.rpm' ]] || continue
+		# skip conversion for .src.rpm
+		[[ $rpm =~ 'src.rpm' ]] && continue
+
+		# local rpm_file=${rpm_repo}/Packages/${rpm}
+		echo "converting rpm:	${rpm}"
+
+		# for some rpms, the checkout source rpm file not exist or was an empty dir
+		# in this case, just treat the rpm file  itself as its src rpm file
+
+		# for static repo, skip conversion for rpms which has already do the conversion
+		# [[ -e ${result_repo_path}/Packages/${rpm_file_name} ]] && continue
+
+		/usr/bin/convert-rpm2epkg ${rpm} ${result_repo_path}
+	done
+}
+
+create_erepo()
+{
+	local repo_path=$1
+
+	[[ -z $(find ${repo_path}/store -name *.epkg -exec echo {} \; -quit) ]] && {
+		echo "No epkg package found!"
+		echo "Please correct the repo path and try again!"
+
+		exit 1
+	}
+
+	# clean outdated repo metadata
+	rm -rf ${repo_path}/{pkg-info,pkg-info.tar.zst,store-paths,metadata.json} 2>/dev/null
+
+	# re-init repo metadata dir tree
+	mkdir -p ${repo_path}/{pkg-info,store-paths}
+	touch ${repo_path}/metadata.json
+
+	for epkg_file in $(find ${repo_path}/store -name *.epkg)
+	do
+		epkg_file_name=$(basename ${epkg_file})
+		epkgs_metadata_path=${repo_path}/pkg-info/${epkg_file_name:0:2}/${epkg_file_name%.*}
+		initial_release_dir=${repo_path}/store-paths
+		initial_release_file=${initial_release_dir}/initial-release
+
+		mkdir -p ${epkgs_metadata_path}
+		mkdir -p ${initial_release_dir}
+
+		echo ${epkg_file_name%.*} >> ${initial_release_file}
+		tar --use-compress-program=zstd -xf ${epkg_file} -C ${epkgs_metadata_path}/ ./info/package.json --strip-components=2
+	done
+
+	tar --use-compress-program=zstd -cf ${repo_path}/pkg-info.tar.zstd -C ${repo_path} pkg-info
+	zstd --rm ${initial_release_file}
+}
+
+[[ -z $repos_list_file ]] && {
+	echo "Please specify the repo list file."
+	echo "the file content line should be like:"
+	echo "	'''"
+	echo '	${repo_url1} ${local_repo_path1}'
+	echo '	${repo_url2} ${local_repo_path2}'
+	echo "	... ..."
+	echo "	'''"
+
+	exit 1
+}
+
+loop_convert_repos
+wait

@@ -1,0 +1,21 @@
+#!/bin/bash
+# SPDX-License-Identifier: MulanPSL-2.0+
+# Copyright (c) 2020 Huawei Technologies Co., Ltd. All rights reserved.
+# frozen_string_literal: true
+
+repo_list_file_name=$1
+
+cmd=(
+  docker run
+  --name=convert-epkg-${repo_list_file_name}
+  --user root
+  --rm
+  -v /etc/localtime:/etc/localtime:ro
+  -v /srv/os-repo:/srv/os-repo
+  -v /srv/log:/srv/log
+  -v $HOME/epkg_manager/rpm2epkg/rpm2epkg-repos-list/:/repos-list/
+  convert-epkg:latest
+  /usr/bin/batch-conbert-rpm2epkg /repos-list/${repo_list_file_name}
+)
+
+"${cmd[@]}"
