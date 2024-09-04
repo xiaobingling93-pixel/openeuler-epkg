@@ -57,8 +57,3 @@ decompress_rpm
 generate_files
 generate_epkg_name
 compress_epkg
-
-# list files in .epkg
-# 	tar --use-compress-program=zstd -tf 5f30b3324db2276a16f83c1839e8b04a-bash-5.1.8-12.oe2203sp3.epkg
-# extract specified file in .epkg
-# 	tar --use-compress-program=zstd -xvf 5f30b3324db2276a16f83c1839e8b04a-bash-5.1.8-12.oe2203sp3.epkg ./info/files
