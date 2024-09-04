@@ -36,17 +36,9 @@ loop_convert_epkg()
 	for rpm in $(find ${rpm_repo} -name "*.rpm")
 	do
 		[[ $rpm =~ '.rpm' ]] || continue
-		# skip conversion for .src.rpm
 		[[ $rpm =~ 'src.rpm' ]] && continue
 
-		# local rpm_file=${rpm_repo}/Packages/${rpm}
 		echo "converting rpm:	${rpm}"
-
-		# for some rpms, the checkout source rpm file not exist or was an empty dir
-		# in this case, just treat the rpm file  itself as its src rpm file
-
-		# for static repo, skip conversion for rpms which has already do the conversion
-		# [[ -e ${result_repo_path}/Packages/${rpm_file_name} ]] && continue
 
 		/usr/bin/convert-rpm2epkg ${rpm} ${result_repo_path}
 	done
