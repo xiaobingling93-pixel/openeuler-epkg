@@ -1,4 +1,6 @@
 #!/bin/bash
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+source "$SCRIPT_DIR/../lib/epkg/hash.sh"
 
 if [ "$#" -ne 3 ]; then
     echo "Usage: $0 <rpm-package> $1 <output dir>  $2 <store rpms>"
@@ -15,21 +17,17 @@ json_data=""
 full_rpm_names=()
 has_unknown_requires=0
 
-check_rpm_exist() {
-    query_rpm_names $rpm_package
-    if [[ -z ${#full_rpm_names[@]} ]]; then
-        return 1
-    else
-        return 0
-    fi
-}
 
 query_rpm_names() {
-    local input_item=$1
-    if [[ "/bin/sh" == $input_item ]];then
-        input_item="bash"
+    local input_item=$rpm_package
+
+    epoch=$(rpm -qp --qf %{epoch} "$input_item" 2>/dev/null)
+    if [[ "$epoch" == "(none)" ]]; then
+        epoch="0"
     fi
-    rpm_names=$(dnf repoquery --whatprovides "$input_item" 2>/dev/null)
+    rpm_names=$(rpm -qp --qf '%{NAME}-'$epoch':%{version}-%{release}.%{arch}' "$input_item" 2>/dev/null)
+    # rpm_names=$(dnf repoquery --whatprovides "$input_item_noext" 2>/dev/null)
+
     IFS=$'\n' read -r -d '' -a full_rpm_names <<< "$rpm_names"
 }
 
@@ -88,13 +86,15 @@ query_provides () {
     else
         rpm -qp --provides $store_rpms/$package_file_name > $provides_file
     fi
+    # rpm -ql $store_rpms/$package_file_name >> $provides_file
     echo "===============Provides:"
     cat $provides_file
 }
  
-download_input_rpm () {
-    local package=$1
-    dnf download --destdir=$store_rpms $package 2>/dev/null
+cp_input_rpm () {
+    # local package=$1
+    # dnf download --destdir=$store_rpms $package 2>/dev/null
+    cp $rpm_package "$store_rpms"
 }
 
 classify_requirements () {
@@ -154,7 +154,8 @@ update_requirement_checksum () {
                         echo "-----------Warning: no rpm found for $rpm_name"
                         continue
                     fi
-                    sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
+                    # sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
+                    sha256=$(rpm_hash "${store_rpms}/${file_name}")
                     valid_check_sum="yes"
                 fi
                 echo "$rpm_name: $sha256"
@@ -226,14 +227,15 @@ convert_requiremennts_to_json () {
         --argjson sonames "$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)" \
         --argjson binaries "$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)" \
         '{
-            requires: {
-                ($package_hash): {
+            requires: [
+                {
+                    hash: $package_hash,
                     pkgname: $pkgname,
                     files: $files,
                     sonames: $sonames,
                     binaries: $binaries
                 }
-            }
+            ]
         }'
     )
     json_data=$json
@@ -277,6 +279,7 @@ convert_provides_to_json () {
 }
 
 convert_package_info_to_json () {
+    echo "$@"
     local package=$1
     local package_hash=$2
     local package_epoch=$3
@@ -284,7 +287,7 @@ convert_package_info_to_json () {
     local package_release=$5
     local package_dist=$6
     local package_arch=$7
-    IFS=' ' read -r package package_hash package_epoch package_version package_release package_dist package_arch<<< $result
+    # IFS=' ' read -r package package_hash package_epoch package_version package_release package_dist package_arch<<< $result
     # 创建 JSON 对象
     local json=$(jq -n \
         --arg name "$package" \
@@ -295,22 +298,21 @@ convert_package_info_to_json () {
         --arg dist "$package_dist" \
         --arg arch "$package_arch" \
         '{
-            package: {
-                    name: $name,
-                    hash: $hash,
-                    epoch: $epoch,
-                    version: $version,
-                    release: $release,
-                    dist: $dist,
-                    arch: $arch
-            }
+            name: $name,
+            hash: $hash,
+            epoch: $epoch,
+            version: $version,
+            release: $release,
+            dist: $dist,
+            arch: $arch,
+            requires: []
         }'
     )
     json_data=$json
 }
 
 generate_metadata_json () {
-    local package_elements=$1
+    local package_elements=$@
     output_json=$(jq -n '{}')
 
     # 获取并解析rpm包信息
@@ -324,7 +326,7 @@ generate_metadata_json () {
     for key in "${!requirement_rpm_info[@]}"; do
         data=${requirement_rpm_info[$key]}
         convert_requiremennts_to_json "$key" "${requirement_rpm_info[$key]}"
-        output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
+        output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '.requires += $new_obj.requires')
     done
 
     # 获取并解析provides信息
@@ -363,6 +365,7 @@ clean_tmp_files() {
     unset bin_requirements
     unset requirement_rpm_info
     unset rpm_provides_info    
+    unset rpm_hashs
 }
 
 process_all_rpms() {
@@ -378,6 +381,7 @@ process_all_rpms() {
         declare -A bin_requirements
         declare -A requirement_rpm_info
         declare -A rpm_provides_info
+        declare -A rpm_hashs
 
         IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $element
         package=${rpm_name_epoch%-*}
@@ -390,18 +394,23 @@ process_all_rpms() {
         package_release=${release_dist%.*}
         package_file_name="$package-$version_release_dist_arch.rpm"
         echo "$package $package_file_name $package_epoch $package_version $package_release $package_dist $package_arch"
+        # 暂停执行，等待用户输入
         
         # step 1 download rpm
-        download_input_rpm $package-$package_version
+        cp_input_rpm
 
         # step 2 check rpm's sha256 and package.json existed or not
-        package_hash=$(sha256sum $store_rpms/$package_file_name | awk '{print $1}')
-        store_dir="$output_dir/$package_hash-$package-$package_version-$package_release.$package_dist"
+        # package_hash=$(sha256sum $store_rpms/$package_file_name | awk '{print $1}')
+        package_hash=$(rpm_hash $store_rpms/$package_file_name)
+        echo $package_hash
+    
+        store_dir="$output_dir/$package_hash"__"$package"__"$package_version"__"$package_release"."$package_dist"
+        # store_dir="$output_dir"
         if [[ -f "$store_dir/package.json" ]]; then
             echo "==========$store_dir/package.json already existed"
             continue
         fi
-        
+
         # step 3 query original requires and provides info of rpm
         query_requirements $package
         query_provides $package_file_name $package
@@ -426,11 +435,12 @@ process_all_rpms() {
 
         #step 7 clean
         clean_tmp_files
+        read "222"
     done
 }
 
 # step 1: check rpm exist or not
-check_rpm_exist
+query_rpm_names
 if [[ $status -eq 0 ]]; then
     echo "-----------Found rpms for $rpm_package:"
     for element in "${full_rpm_names[@]}"; do

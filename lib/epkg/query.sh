@@ -1,6 +1,7 @@
 #!/usr/bin/bash
 
 CHANNEL_CONF_PATH="/etc/epkg-confs/channel.json"
+CHANNEL_CONF_PATH="$HOME/.epkg/channel.json"
 
 packages_file=$(mktemp)
 declare -A requires_array
@@ -92,7 +93,7 @@ get_requires() {
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
-        epkg_hash=$(echo "$entry" | jq -r '.key')
+        epkg_hash=$(echo "$entry" | jq -r '.value.pkgname')
         # 如果当前requirement已经被查询过，则跳过
         if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue

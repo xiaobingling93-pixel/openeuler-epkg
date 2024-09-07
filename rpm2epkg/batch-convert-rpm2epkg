@@ -18,14 +18,12 @@ loop_convert_repos()
 
 		loop_convert_epkg ${rpm_repo_path/%\/Packages\/*/''} ${result_repo_path}
 
-		create_erepo $result_repo_path
+		create_epkg_repo $result_repo_path
 	done < ${repos_list_file}
 }
 
 loop_convert_epkg()
 {
-	return
-
 	local rpm_repo=$1
 	local result_repo_path=$2
 
@@ -40,11 +38,11 @@ loop_convert_epkg()
 
 		echo "converting rpm:	${rpm}"
 
-		/usr/bin/convert-rpm2epkg ${rpm} ${result_repo_path}
+		./convert-rpm2epkg ${rpm} ${result_repo_path}
 	done
 }
 
-create_erepo()
+create_epkg_repo()
 {
 	local repo_path=$1
 

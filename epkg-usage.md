@@ -28,12 +28,12 @@ Usage:
     epkg list
 
     epkg env list
-    epkg [env] create|remove ENV
-    epkg [env] activate ENV
-    epkg [env] deactivate
-    epkg [env] enable|disable ENV
-    epkg [env] history ENV （开发中...）
-    epkg [env] rollback ENV （开发中...）
+    epkg env create|remove ENV
+    epkg env activate ENV
+    epkg env deactivate
+    epkg env enable|disable ENV
+    epkg env history ENV （开发中...）
+    epkg env rollback ENV （开发中...）
 
 ### 查询已安装软件
 功能描述：

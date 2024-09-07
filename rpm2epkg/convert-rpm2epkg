@@ -5,6 +5,8 @@
 
 #	exit 99
 #}
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+source "$SCRIPT_DIR/../lib/epkg/hash.sh"
 
 rpm_file=$1
 epkg_repo_path=$2
@@ -31,6 +33,11 @@ generate_files()
 	find ${epkg_conversion_dir}/fso/ -mindepth 1 -exec stat --format='%n mode=%a size=%s mtime=%Y' {} \; > ${epkg_conversion_dir}/info/files
 
 	sed -i "s|^${epkg_conversion_dir}/fso/||" ${epkg_conversion_dir}/info/files
+	# 生成package.json
+	./gen-package.sh $rpm_file ${epkg_conversion_dir}/info/ /tmp/rpm
+	# 将package.json 复制一份到 ${epkg_repo_path}/pkg-info中，并命名为${rpm_hash}__${rpm_name}__${rpm_ver}__${rpm_rel}.json
+	read rpm_name rpm_ver rpm_rel <<< $(rpm -qp --qf '%{NAME} %{version} %{release}' ${rpm_file} 2>/dev/null)
+	cp ${epkg_conversion_dir}/info/ ${epkg_repo_path}/pkg-info/${rpm_hash}__${rpm_name}__${rpm_ver}__${rpm_rel}.json
 }
 
 generate_epkg_name()
@@ -40,10 +47,11 @@ generate_epkg_name()
 	local rpm_ver
 	local rpm_rel
 
-	read rpm_hash _var <<< $(sha256sum ${rpm_file} 2>/dev/null)
+	# 将hash改为hash.sh中的计算方法
+	rpm_hash=rpm_hash ${rpm_file}
 	read rpm_name rpm_ver rpm_rel <<< $(rpm -qp --qf '%{NAME} %{version} %{release}' ${rpm_file} 2>/dev/null)
 
-	epkg_name="${rpm_hash}-${rpm_name}-${rpm_ver}-${rpm_rel}.epkg"
+	epkg_name="${rpm_hash}"__"${rpm_name}"__"${rpm_ver}"__"${rpm_rel}.epkg"
 }
 
 compress_epkg()
