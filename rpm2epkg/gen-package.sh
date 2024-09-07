@@ -405,10 +405,10 @@ process_all_rpms() {
         echo $package_hash
     
         # store_dir="$output_dir/$package_hash"__"$package"__"$package_version"__"$package_release"."$package_dist"
-        # store_dir="$output_dir"
-        if [[ -f "$output_dir/package.json" ]]; then
+        store_dir="$output_dir"
+        if [[ -f "$store_dir/package.json" ]]; then
             echo "==========$store_dir/package.json already existed"
-            rm "$output_dir/package.json"
+            rm "$store_dir/package.json"
         fi
 
         # step 3 query original requires and provides info of rpm
