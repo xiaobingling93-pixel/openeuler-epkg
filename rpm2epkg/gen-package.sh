@@ -435,7 +435,6 @@ process_all_rpms() {
 
         #step 7 clean
         clean_tmp_files
-        read "222"
     done
 }
 
