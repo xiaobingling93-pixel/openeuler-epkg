@@ -9,31 +9,31 @@ cache_repo_index()
 
 	# clean old metadata files and re-init metadata dir
 	rm -rf ${local_cache_path} && \
-	mkdir -p ${local_cache_path}/store-paths
+	mkdir -p ${local_cache_path}/repodata
 
 
 	# sync repo metadata from local path
 	[[ $repo_url =~ ^/ ]] && {
-		cp -r $repo_url/store-paths/initial-release.zst ${local_cache_path}/store-paths/
-		cp -r $repo_url/pkg-info.tar.zst ${local_cache_path}/
-		cp -r $repo_url/metadata.json ${local_cache_path}/
+		cp -r $repo_url/repodata/store-paths.zst ${local_cache_path}/repodata/
+		cp -r $repo_url/repodata/pkg-info.zst ${local_cache_path}/
+		cp -r $repo_url/repodata/index.yaml ${local_cache_path}/
 	}
 
 	# sync repo metadata from http urls
 	[[ $repo_url =~ ^http ]] && {
-		wget --tries=3 -q $repo_url/store-paths/initial-release.zst -O ${local_cache_path}/store-paths/initial-release.zst.tmp && \
-		mv ${local_cache_path}/store-paths/initial-release.zst.tmp ${local_cache_path}/store-paths/initial-release.zst
+		wget --tries=3 -q $repo_url/repodata/store-paths.zst -O ${local_cache_path}/repodata/store-paths.zst.tmp && \
+		mv ${local_cache_path}/repodata/store-paths.zst.tmp ${local_cache_path}/store-paths/initial-release.zst
 
-		wget --tries=3 -q $repo_url/pkg-info.tar.zst -O ${local_cache_path}/pkg-info.tar.zst.tmp && \
-		mv ${local_cache_path}/pkg-info.tar.zst.tmp ${local_cache_path}/pkg-info.tar.zst
+		wget --tries=3 -q $repo_url/repodata/pkg-info.zst -O ${local_cache_path}/repodata/pkg-info.zst.tmp && \
+		mv ${local_cache_path}/repodata/pkg-info.tar.zst.tmp ${local_cache_path}/repodata/pkg-info.zst
 
-		wget --tries=3 -q $repo_url/metadata.json -O ${local_cache_path}/metadata.json.tmp && \
-		mv ${local_cache_path}/metadata.json.tmp ${local_cache_path}/metadata.json
+		wget --tries=3 -q $repo_url/repodata/index.yaml -O ${local_cache_path}/repodata/index.yaml.tmp && \
+		mv ${local_cache_path}/repodata/index.yaml.tmp ${local_cache_path}/repodata/index.yaml
 	}
 
-	[[ -f ${local_cache_path}/store-paths/initial-release.zst ]] && \
-	[[ -f ${local_cache_path}/pkg-info.tar.zst ]] && \
-	[[ -f ${local_cache_path}/metadata.json ]] || {
+	[[ -f ${local_cache_path}/repodata/store-paths.zst ]] && \
+	[[ -f ${local_cache_path}/repodata/pkg-info.zst ]] && \
+	[[ -f ${local_cache_path}/repodata/index.yaml ]] || {
 		echo "Failed to sync metadata for repo:"
 		echo "	${repo_url}"
 
@@ -43,8 +43,8 @@ cache_repo_index()
 	}
 
 	# cached medatata file should be decompressed
-	zstd -d ${local_cache_path}/store-paths/initial-release.zst
-	tar --use-compress-program=zstd -xf ${local_cache_path}/pkg-info.tar.zst -C ${local_cache_path}/
+	zstd -d ${local_cache_path}/repodata/store-paths.zst
+	tar --use-compress-program=zstd -xf ${local_cache_path}/repodata/pkg-info.zst -C ${local_cache_path}/
 }
 
 loop_cache_repos()
