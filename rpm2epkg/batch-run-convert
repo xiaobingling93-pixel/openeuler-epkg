@@ -13,9 +13,9 @@ cmd=(
   -v /etc/localtime:/etc/localtime:ro
   -v /srv/os-repo:/srv/os-repo
   -v /srv/log:/srv/log
-  -v $HOME/epkg_manager/rpm2epkg/rpm2epkg-repos-list/:/repos-list/
+  -v $HOME/epkg_manager/:/root/epkg_manager
   convert-epkg:latest
-  /usr/bin/batch-conbert-rpm2epkg /repos-list/${repo_list_file_name}
+  /root/epkg_manager/rpm2epkg/batch-conbert-rpm2epkg /root/epkg_manager/rpm2epkg/rpm2epkg-repos-list/${repo_list_file_name}
 )
 
 "${cmd[@]}"

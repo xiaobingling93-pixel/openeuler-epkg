@@ -1,3 +1,4 @@
 # openEuler-24.09-rc2
 
-/srv/os-repo/openeuler/openEuler-24.09/OS/aarch64		/tmp/epkg/channel/openEuler-24.09/OS/
+/srv/os-repo/openeuler/openEuler-24.09/OS/aarch64		/srv/os-repo/epkg2/channel/openEuler-24.09/OS/aarch64
+/srv/os-repo/openeuler/openEuler-24.09/everything/aarch64	/srv/os-repo/epkg2/channel/openEuler-24.09/everything/aarch64
