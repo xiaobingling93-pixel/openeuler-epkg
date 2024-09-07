@@ -45,7 +45,7 @@ generate_epkg_name()
 	local rpm_rel
 
 	# 将hash改为hash.sh中的计算方法
-	rpm_hash=rpm_hash ${rpm_file}
+	rpm_hash=$(rpm_hash ${rpm_file})
 	read rpm_name rpm_ver rpm_rel <<< $(rpm -qp --qf '%{NAME} %{version} %{release}' ${rpm_file} 2>/dev/null)
 
 	epkg_name="${rpm_hash}"__"${rpm_name}"__"${rpm_ver}"__"${rpm_rel}.epkg"
