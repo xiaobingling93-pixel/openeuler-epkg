@@ -95,7 +95,7 @@ get_requires() {
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
-        epkg_hash=$(echo "$entry" | jq -r '.value.pkgname')
+        epkg_hash=$(echo "$entry" | jq -r '.value.hash')
         # 如果当前requirement已经被查询过，则跳过
         if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue
@@ -107,7 +107,7 @@ get_requires() {
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
                 continue
             fi
-            requires_array["$epkg_hash"]="$pkgname   $channel_name"
+            requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/"
             new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
