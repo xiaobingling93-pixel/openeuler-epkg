@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Store hash results in a key-value format
+declare -A rpm_hash_cache
+
 calculate_base32_hash() {
     local input_file=$1
 
@@ -18,9 +21,16 @@ calculate_base32_hash() {
 
 rpm_hash() 
 {
+    
     local rpm_file=$1
-    local temp_cpio=$(mktemp)
 
+    # Check if the hash for this rpm_file is already calculated
+    if [[ -n "${rpm_hash_cache[$rpm_file]}" ]]; then
+        echo "${rpm_hash_cache[$rpm_file]}"
+        return
+    fi
+
+    local temp_cpio=$(mktemp)
     # Convert RPM to CPIO
     rpm2cpio "$rpm_file" > "$temp_cpio"
 
@@ -29,6 +39,8 @@ rpm_hash()
 
     # Remove temporary CPIO file
     rm "$temp_cpio"
+    # Store the result in the cache
+    rpm_hash_cache[$rpm_file]=$hash
 
     echo "$hash"
 }
