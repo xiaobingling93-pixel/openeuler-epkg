@@ -404,9 +404,9 @@ process_all_rpms() {
         package_hash=$(rpm_hash $store_rpms/$package_file_name)
         echo $package_hash
     
-        store_dir="$output_dir/$package_hash"__"$package"__"$package_version"__"$package_release"."$package_dist"
+        # store_dir="$output_dir/$package_hash"__"$package"__"$package_version"__"$package_release"."$package_dist"
         # store_dir="$output_dir"
-        if [[ -f "$store_dir/package.json" ]]; then
+        if [[ -f "$output_dir/package.json" ]]; then
             echo "==========$store_dir/package.json already existed"
             continue
         fi

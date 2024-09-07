@@ -39,6 +39,7 @@ loop_convert_epkg()
 		echo "converting rpm:	${rpm}"
 
 		./convert-rpm2epkg ${rpm} ${result_repo_path}
+		exit 0
 	done
 }
 
