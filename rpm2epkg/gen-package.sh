@@ -408,7 +408,7 @@ process_all_rpms() {
         # store_dir="$output_dir"
         if [[ -f "$output_dir/package.json" ]]; then
             echo "==========$store_dir/package.json already existed"
-            continue
+            rm "$output_dir/package.json"
         fi
 
         # step 3 query original requires and provides info of rpm
