@@ -1,5 +1,7 @@
 #!/usr/bin/bash
 
+# 6a6cca66c56a8c39c1714e26be632d1b24f766a0b4e003d59205d852a45520b3
+
 CHANNEL_CONF_PATH="/etc/epkg-confs/channel.json"
 CHANNEL_CONF_PATH="$HOME/.epkg/channel.json"
 

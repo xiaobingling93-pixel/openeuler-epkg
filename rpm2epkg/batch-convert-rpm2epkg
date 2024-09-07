@@ -39,7 +39,7 @@ loop_convert_epkg()
 		echo "converting rpm:	${rpm}"
 
 		./convert-rpm2epkg ${rpm} ${result_repo_path}
-		exit 0
+		return
 	done
 }
 
@@ -55,27 +55,28 @@ create_epkg_repo()
 	}
 
 	# clean outdated repo metadata
-	rm -rf ${repo_path}/{pkg-info,pkg-info.tar.zst,store-paths,metadata.json} 2>/dev/null
+	rm -rf ${repo_path}/{pkg-info,pkg-info.zst,repodata,metadata.json} 2>/dev/null
 
 	# re-init repo metadata dir tree
-	mkdir -p ${repo_path}/{pkg-info,store-paths}
-	touch ${repo_path}/metadata.json
+	mkdir -p ${repo_path}/{pkg-info,repodata}
+	touch ${repo_path}/repodata/index.yaml
 
 	for epkg_file in $(find ${repo_path}/store -name *.epkg)
 	do
 		epkg_file_name=$(basename ${epkg_file})
-		epkgs_metadata_path=${repo_path}/pkg-info/${epkg_file_name:0:2}/${epkg_file_name%.*}
-		initial_release_dir=${repo_path}/store-paths
-		initial_release_file=${initial_release_dir}/initial-release
-
+		epkgs_metadata_path=${repo_path}/pkg-info/${epkg_file_name:0:2}/
 		mkdir -p ${epkgs_metadata_path}
-		mkdir -p ${initial_release_dir}
+
+		epkgs_metadata_file=${repo_path}/pkg-info/${epkg_file_name:0:2}/${epkg_file_name%.*}.json
+		repodata_dir=${repo_path}/repodata
+		initial_release_file=${repodata_dir}/store-paths
+		mkdir -p ${repodata_dir}
 
 		echo ${epkg_file_name%.*} >> ${initial_release_file}
-		tar --use-compress-program=zstd -xf ${epkg_file} -C ${epkgs_metadata_path}/ ./info/package.json --strip-components=2
+		tar --use-compress-program=zstd -xf ${epkg_file} ./info/package.json --strip-components=2 > ${epkgs_metadata_file}
 	done
 
-	tar --use-compress-program=zstd -cf ${repo_path}/pkg-info.tar.zstd -C ${repo_path} pkg-info
+	tar --use-compress-program=zstd -cf ${repo_path}/pkg-info.zstd -C ${repo_path} pkg-info
 	zstd --rm ${initial_release_file}
 }
 

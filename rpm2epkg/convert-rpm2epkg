@@ -18,21 +18,21 @@ init_conversion_dirs()
 {
 	rm -rf ${epkg_conversion_dir}/*
 
-	mkdir -p ${epkg_conversion_dir}/{fso,info}
+	mkdir -p ${epkg_conversion_dir}/{fs,info}
 	mkdir -p ${epkg_conversion_dir}/info/pgp
 	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files,runtimePhase.sh}
 }
 
 decompress_rpm()
 {
-	rpm2cpio ${rpm_file} | cpio -idm --quiet -D ${epkg_conversion_dir}/fso/ 2>/dev/null
+	rpm2cpio ${rpm_file} | cpio -idm --quiet -D ${epkg_conversion_dir}/fs/ 2>/dev/null
 }
 
 generate_files()
 {
-	find ${epkg_conversion_dir}/fso/ -mindepth 1 -exec stat --format='%n mode=%a size=%s mtime=%Y' {} \; > ${epkg_conversion_dir}/info/files
+	find ${epkg_conversion_dir}/fs/ -mindepth 1 -exec stat --format='%n mode=%a size=%s mtime=%Y' {} \; > ${epkg_conversion_dir}/info/files
 
-	sed -i "s|^${epkg_conversion_dir}/fso/||" ${epkg_conversion_dir}/info/files
+	sed -i "s|^${epkg_conversion_dir}/fs/||" ${epkg_conversion_dir}/info/files
 	# 生成package.json
 	./gen-package.sh $rpm_file ${epkg_conversion_dir}/info/ /tmp/rpm
 }
@@ -51,7 +51,8 @@ generate_epkg_name()
 	epkg_name="${rpm_hash}"__"${rpm_name}"__"${rpm_ver}"__"${rpm_rel}.epkg"
 
 	mkdir -p ${epkg_repo_path}/pkg-info/
-	cp ${epkg_conversion_dir}/info/package.json ${epkg_repo_path}/pkg-info/${rpm_hash}__${rpm_name}__${rpm_ver}__${rpm_rel}.json
+	# epkg_json_name=${rpm_hash}__${rpm_name}__${rpm_ver}__${rpm_rel}.json
+	# cp ${epkg_conversion_dir}/info/package.json ${epkg_repo_path}/pkg-info/${epkg_json_name:0:2}/${epkg_json_name}
 }
 
 compress_epkg()
