@@ -76,7 +76,7 @@ create_epkg_repo()
 		tar --use-compress-program=zstd -xf ${epkg_file} ./info/package.json --strip-components=2 > ${epkgs_metadata_file}
 	done
 
-	tar --use-compress-program=zstd -cf ${repo_path}/repodata/pkg-info.zstd -C ${repo_path} pkg-info
+	tar --use-compress-program=zstd -cf ${repo_path}/repodata/pkg-info.zst -C ${repo_path} pkg-info
 	zstd --rm ${initial_release_file}
 }
 
