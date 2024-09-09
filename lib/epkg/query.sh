@@ -88,15 +88,26 @@ get_requires() {
     local channel_url=$2
     local channel_name=$3
     local channel_index=$4
-    local pkg_info_path="$channel_url/pkg-info"
+    local pkg_info_path="$channel_url/pkg-info" # 需要改为环境中的路径
     local store_path="$channel_url/store"
 
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
     local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
-    
+
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
         # echo "-------Warning: no package.json for $pkg_name"
         return
+    fi
+
+    local pkg_hash=$(jq -r '.hash' "$pkg_metadata_file_path")
+
+    if [[ -z "$pkg_hash" || "$pkg_hash" == "null" ]]; then
+        echo "-------Warning: Unable to extract hash for $pkg_name"
+        return
+    fi
+
+    if [[ -z "${requires_array[$pkg_hash]+x}" ]]; then
+        requires_array["$pkg_hash"]="${pkg_name}   ${channel_url}/store/${pkg_epkg_name:0:2}/${pkg_epkg_name%.*}.epkg"
     fi
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
@@ -113,7 +124,7 @@ get_requires() {
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
                 continue
             fi
-            requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${pkg_epkg_name:0:2}/${pkg_epkg_name%.*}.epkg"
+            # requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${pkg_epkg_name:0:2}/${pkg_epkg_name%.*}.epkg"
             new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
