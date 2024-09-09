@@ -2,7 +2,9 @@
 
 # 6a6cca66c56a8c39c1714e26be632d1b24f766a0b4e003d59205d852a45520b3
 
+# 获取当前环境的channel
 CHANNEL_CONF_PATH="/etc/epkg-confs/channel.json"
+# 获取环境中的repo的信息
 CHANNEL_CONF_PATH="$HOME/.epkg/channel.json"
 
 packages_file=$(mktemp)
@@ -53,27 +55,28 @@ load_enabled_channel_conf() {
 }
 
 find_pkg_metadata_json() {
-    local pkg_name=$1
+    local pkg_name="__"$1"__"
     local search_dir=$2
     local epkg_hash=$3
 
     if [[ $epkg_hash == "" ]]; then
-        find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$pkg_name*"| while read -r dir; do
-            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11.oe2203sp3
+        find "$search_dir" -maxdepth 2 -mindepth 1 -type f -name "*$pkg_name*"| while read -r dir; do
+            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db__fftw-libs__3.3.8__11.oe2203sp3
             dir_name=$(basename "$dir")
-            dir_name=${dir_name%.*}
-            dir_name=${dir_name%-*}
-            dir_name=${dir_name%-*}
-            epkg_name=${dir_name#*-}
-            if [[ $epkg_name == "$pkg_name" ]]; then
-                echo "$dir/package.json"
+            # dir_name=${dir_name%.*}
+            # dir_name=${dir_name%-*}
+            # dir_name=${dir_name%-*}
+            # epkg_name=${dir_name#*-}
+            IFS='__' read -ra parts <<< "$dir_name"
+            if [[ "${parts[2]}" == "$pkg_name" ]]; then
+                echo "$dir"
                 return
             fi
         done
     else
-        result=$(find $search_dir -type d -name "$epkg_hash*" | head -n 1)
+        result=$(find $search_dir -type f -name "$epkg_hash*" | head -n 1)
         if [[ $result != "" ]]; then
-            echo "$result/package.json"
+            echo "$result"
             return
         fi
     fi
@@ -86,8 +89,11 @@ get_requires() {
     local channel_name=$3
     local channel_index=$4
     local pkg_info_path="$channel_url/pkg-info"
+    local store_path="$channel_url/store"
 
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
+    local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
+    
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
         # echo "-------Warning: no package.json for $pkg_name"
         return
@@ -107,7 +113,7 @@ get_requires() {
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
                 continue
             fi
-            requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/"
+            requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${epkg_hash:0:2}/${pkg_epkg_name%.*}.epkg"
             new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
