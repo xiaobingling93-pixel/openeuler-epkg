@@ -68,7 +68,7 @@ find_pkg_metadata_json() {
             # dir_name=${dir_name%-*}
             # epkg_name=${dir_name#*-}
             IFS='__' read -ra parts <<< "$dir_name"
-            if [[ "${parts[2]}" == "$pkg_name" ]]; then
+            if [[ "__${parts[2]}__" == "$pkg_name" ]]; then
                 echo "$dir"
                 return
             fi
@@ -113,7 +113,7 @@ get_requires() {
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
                 continue
             fi
-            requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${epkg_hash:0:2}/${pkg_epkg_name%.*}.epkg"
+            requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${pkg_epkg_name:0:2}/${pkg_epkg_name%.*}.epkg"
             new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
