@@ -10,6 +10,7 @@ source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
 source $PROJECT_DIR/lib/epkg/query.sh
+source $PROJECT_DIR/lib/epkg/cache-repo.sh
 
 cmd=$1
 shift
@@ -53,7 +54,7 @@ EOF
 		install_package "$@"
 		;;
 	"update")
-		update-repo-index
+		cache_repo
 		;;
 	"remove")
 		remove_package "$@"
