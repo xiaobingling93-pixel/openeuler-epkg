@@ -60,33 +60,44 @@ loop_cache_repos()
 	local repo_enable_code
 	local repo_url
 
-	for i in $(echo ${channel_conf_content} | jq '.channel | keys[]')
+	for channel in $(echo ${channel_conf_content} | jq '. | keys[]')
 	do
 		# channel_content=$(echo "${channel_conf_content}" | jq '.channel['"$i"']')
-		channel_content=$(echo "${channel_conf_content}" | jq '.channel['"$i"']')
+		channel_content=$(echo "${channel_conf_content}" | jq '.['"${channel}"']')
+		[[ ${channel_content} == null ]] && continue
 
-		[[ ${channel_content} == null ]] && break
+		for repo in $(echo ${channel_content} | jq '. | keys[]')
+		do
+			repo_content=$(echo "${channel_content}" | jq '.["'${repo//\"/}'"]')
+			[[ ${repo_content} == null ]] && continue
 
-		repo_name=$(echo ${channel_content} | jq '.name' | tr -d '"')
-		repo_enable_code=$(echo ${channel_content} | jq '.enabled' | tr -d '"')
+			repo_enable_code=$(echo ${repo_content} | jq '.enabled' | tr -d '"')
 
-		# skip cache metadata for disabled repos
-		[[ ${repo_enable_code} == 1 ]] || continue
+			# skip cache metadata for disabled repos
+			[[ ${repo_enable_code} == 1 ]] || continue
 
-		repo_url=$(echo ${channel_content} | jq '.url' | tr -d '"')
+			repo_url=$(echo ${repo_content} | jq '.url' | tr -d '"')
 
-		[[ -z ${repo_url} ]] && continue
+			[[ -z ${repo_url} ]] && continue
 
-		cache_repo_index $repo_name $repo_url
+			cache_repo_index $repo $repo_url
+		done
 	done
 }
 
 cache_repo()
 {
-	CHANNEL_CONF_PATH=${CHANNEL_CONF_PATH:-/etc/epkg-confs}
+	CHANNEL_CONF_PATH=${CHANNEL_CONF_PATH:-/etc/epkg}
 
 	for repo_conf_file in $(find ${CHANNEL_CONF_PATH} -name *.json)
 	do
+		jq empty ${repo_conf_file} || {
+			echo "Epkg channel conf file not in format json: ${repo_conf_file}"
+			echo "Fix up and try again."
+
+			continue
+		}
+
 		loop_cache_repos ${repo_conf_file}
 	done
 }
