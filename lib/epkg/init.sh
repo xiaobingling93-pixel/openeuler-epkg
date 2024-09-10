@@ -31,6 +31,7 @@ epkg_init() {
 init_rc() {
 	cp -rf $PROJECT_DIR/lib/* $EPKG_ENVS_ROOT/common/profile-current/usr/lib/
 	cp $PROJECT_DIR/bin/epkg $EPKG_ENVS_ROOT/common/profile-current/usr/bin/
+	cp $PROJECT_DIR/channel.json $HOME_EPKG/
 	append_user_rc
 }
 

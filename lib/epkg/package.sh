@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
 
+. ./query.sh
+
 install_package() {
 	local downloaded_packages
 	local downloaded_packages2
-	local package_files_to_install
 	local newly_downloaded_packages
-	local install_complete_packages
-	local install_updatedb_packages
-
 	record_cached_packages
-	invoke_dnf_installation "$@"
-	parse_dnf5_output
+	download_packages "$@"
 	record_newly_downloaded_packages
-	determine_installation_candidates
-	echo "Sure to install? (y: continue, others: exit)"
-	read choice
-	if [ "$choice" != "y" ]; then
-		return
-	fi
-	run_rpm_installation
-	create_symlinks $package_names_to_install
+	uncompress_packages
+	create_profile_symlinks
 }
 
 record_cached_packages() {
@@ -33,143 +24,80 @@ record_newly_downloaded_packages() {
 	newly_downloaded_packages=$(comm -13 <(echo "$downloaded_packages") <(echo "$downloaded_packages2"))
 }
 
-determine_installation_candidates() {
-	# echo "Determining installation candidates..."
-	install_complete_packages="$newly_downloaded_packages"
-	install_updatedb_packages=$(comm -13 <(echo "$newly_downloaded_packages") <(echo "$package_files_to_install"))
+
+download_packages() {
+	local requires=$(accurate_query_requires $1)
+	local packges_info=${requires#*PACKAGE  CHANNEL}
+	local packages_url=""
+	local count=0
+	for ite in $packges_info;
+	do
+		count=$((count + 1))
+		if ((count % 3 == 0)); then
+			packages_url+="$ite "
+		fi
+	done
+
+	for package_url in $packages_url;
+	do
+		$COMMON_PROFILE_LINK/bin/cp  "$package_url" "$EPKG_PKG_CACHE_DIR"
+	done
 }
 
-invoke_dnf_installation() {
-	echo "Invoking DNF installation..."
-	# download rpms
-	$FAKEROOT_EXEC $COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 download "$@" --destdir="$EPKG_PKG_CACHE_DIR" --resolve --installroot "$CURRENT_PROFILE_DIR"
-
-	# generate solver.result
-	local _pwd=$(pwd)
-	cd $COMMON_PROFILE_LINK
-	$FAKEROOT_EXEC $COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 install -y "$@" --debugsolver --assumeno --installroot "$CURRENT_PROFILE_DIR"
-	cd ${_pwd}
+uncompress_packages() {
+	for package in $newly_downloaded_packages;
+	do
+		local package_full_name=${package%.*}
+		local tar_dir="$EPKG_STORE_ROOT/$package_full_name"
+		mkdir -p "$tar_dir"
+		$COMMON_PROFILE_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package -C $tar_dir
+	done
 }
 
-# intput line:
-# ---> Package pcre2.aarch64 10.42-1.oe2309 will be installed
-# output package_files_to_install:
-# pcre2-10.42-1.oe2309.aarch64.rpm
-parse_dnf_output() {
-	package_files_to_install=
-	package_names_to_install=
-
-	while IFS= read -r line; do
-		# Remove leading '---> Package ' and trailing ' will be installed'
-		local package_info=${line#*Package }
-		package_info=${package_info% will be installed}
-		[ "$package_info" = "$line" ] && continue
-
-		# basesystem.noarch 12-3.oe2203sp3
-		# =>
-		# basesystem-12-3.oe2203sp3.noarch.rpm
-		# Extract package name, version, and architecture
-		local package_name=${package_info%%\.*}
-		package_info=${package_info#*\.}
-		local package_arch=${package_info%% *}
-		package_info=${package_info#* }
-		local package_version=${package_info%% *}
-
-		# Format output filename
-		[ -n "$package_name" ] && [ -n "$package_version" ] && [ -n "$package_arch" ] && {
-
-			local filename="${package_name}-${package_version}.${package_arch}.rpm"
-		}
-
-		package_names_to_install="$package_names_to_install"$'\n'"$package_name"
-		package_files_to_install="$package_files_to_install"$'\n'"$filename"
-	done < $CURRENT_PROFILE_DIR/tmp/dnf_output.txt
+create_profile_symlinks() {
+	for package in $newly_downloaded_packages;
+	do
+		local package_full_name=${package%.*}
+		local fs_dir="$EPKG_STORE_ROOT/$package_full_name/fs"
+		local fs_files=$(find $fs_dir -type f)
+		create_symlink_by_fs
+	done
 }
 
-#install NetworkManager-libnm-1:1.26.2-4.oe1.aarch64@local
-#install abattis-cantarell-fonts-0.201-1.oe1.noarch@local
-#install acl-2.2.53-8.oe1.aarch64@local
-parse_dnf5_output() {
-	package_files_to_install=
-	package_names_to_install=
-
-	while IFS= read -r line; do
-		local package_info=${line##* }
-		[ "$package_info" = "$line" ] && continue
-		package_info=${package_info%%@*}
-		local package_arch=${package_info##*.}
-		local package_name=${package_info%-*-*}
-		local temp=${package_info#$package_name-}
-		local package_version=${temp%.$package_arch}
-		package_version=${package_version#*:}
-		local filename="${package_name}-${package_version}.${package_arch}.rpm"
-
-		[ -n "$filename" ] && {
-			package_names_to_install="$package_names_to_install"$'\n'"$package_name"
-			package_files_to_install="$package_files_to_install"$'\n'"$filename"
-		}
-
-	done < $COMMON_PROFILE_LINK/debugdata/packages/solver.result
-}
-
-run_rpm_installation() {
-	echo "Running RPM installation..."
-	(
-	cd "$EPKG_PKG_CACHE_DIR" || exit
-
-	# Install the newly downloaded packages in db and filesystem
-	[ -n "$install_complete_packages" ] && {
-		$COMMON_PROFILE_LINK/bin/rpm -i $install_complete_packages --root "$EPKG_STORE_ROOT" --noscripts --nodeps --dbpath "$RPMDB_DIR"
-	}
-	#local rpmdb_dir=$EPKG_STORE_ROOT/var/lib/rpm
-
-	# For packages whose files are already in filesystem, call rpm with --justdb
-	[ -n "$install_updatedb_packages" ] && {
-		$COMMON_PROFILE_LINK/bin/rpm -i $install_updatedb_packages --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT" --justdb
-	}
-)
-}
-
-create_symlinks() {
-	# Run rpm -ql to list the files installed by the packages
-	local files=$($COMMON_PROFILE_LINK/bin/rpm --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT" -ql "$@")
+create_symlink_by_fs() {
+	local rfs
 	local file
-	local path
 
-	# Create directories and symlinks in the specified env_root directory
-	#
-	while IFS= read -r file; do
-		path=$EPKG_STORE_ROOT/$file
-		[ -d "$path" ] && {
-			continue
-		}
-		$COMMON_PROFILE_LINK/bin/ls $path &> /dev/null || continue
+	# fs_file=/tmp/epkg-cache/xxx/fs/etc/ima/digest_lists/0-metadata_list-compact-info-7.0.3-3.oe2409.aarch64
+	while IFS= read -r fs_file; do
+		rfs_file=${fs_file#$fs_dir}
 
-		[[ "$file" =~ "is not installed" ]] && {
-			continue
-		}
-
-		[[ "$file" =~ "contains no files" ]] && {
-			continue
-		}
+		$COMMON_PROFILE_LINK/bin/ls $fs_file &> /dev/null || continue
 
 		# Create parent directory if it doesn't exist
-		tfile=${file#/*/*/*/*/}
-		$COMMON_PROFILE_LINK/bin/mkdir -p "$CURRENT_PROFILE_DIR/$($COMMON_PROFILE_LINK/bin/dirname "$tfile")"
+		$COMMON_PROFILE_LINK/bin/mkdir -p "$CURRENT_PROFILE_DIR/$($COMMON_PROFILE_LINK/bin/dirname "$rfs_file")"
 
-		if [ "${file#*/bin/}" != "$file" ]; then
-			handle_exec "$path" && continue
+		#if [ "${fs_file}" == *"/bin/"* ]; then
+		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
+			handle_exec "$fs_file" && continue
 		fi
 
-		# Create symlink
-		[ -e "$CURRENT_PROFILE_DIR/$tfile" ] && continue
-		[[ "$tfile" =~  "etc/yum.repos.d" ]] && continue
-		$COMMON_PROFILE_LINK/bin/ln -s "$path" "$CURRENT_PROFILE_DIR/$tfile"
-	done <<< "$files"
+		if [[ "${fs_file}" == *"/etc/"* ]]; then
+			$COMMON_PROFILE_LINK/bin/cp $fs_file $CURRENT_PROFILE_DIR/$rfs_file
+			continue
+		fi
+
+		[ -e "$CURRENT_PROFILE_DIR/$rfs_file" ] && continue
+		#[ -e "$CURRENT_PROFILE_DIR/$rfs_file" ] && rm -rf $CURRENT_PROFILE_DIR/$rfs_file
+
+		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
+
+		$COMMON_PROFILE_LINK/bin/ln -s "$fs_file" "$CURRENT_PROFILE_DIR/$rfs_file"
+	done <<< "$fs_files"
 }
 
 handle_exec() {
-	local file_type=$($COMMON_PROFILE_LINK/bin/file $path)
+	local file_type=$($COMMON_PROFILE_LINK/bin/file $1)
 	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
 		handle_elf
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
@@ -181,9 +109,9 @@ handle_elf() {
 	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
-	$COMMON_PROFILE_LINK/bin/cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$tfile
-	replace_string "$CURRENT_PROFILE_DIR/$tfile" "$id1" "$CURRENT_PROFILE_DIR"
-	replace_string "$CURRENT_PROFILE_DIR/$tfile" "$id2" "$path"
+	$COMMON_PROFILE_LINK/bin/cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$rfs_file
+	replace_string "$CURRENT_PROFILE_DIR/$rfs_file" "$id1" "$CURRENT_PROFILE_DIR"
+	replace_string "$CURRENT_PROFILE_DIR/$rfs_file" "$id2" "$fs_file"
 }
 
 replace_string() {
@@ -197,6 +125,7 @@ replace_string() {
 	}
 }
 
+
 ######### END install_package() #########
 
 remove_package() {
@@ -208,9 +137,9 @@ upgrade_package() {
 }
 
 search_package() {
-	$COMMON_PROFILE_LINK/lib/ld-linux-aarch64.so.1 $COMMON_PROFILE_LINK/bin/dnf5 --installroot "$CURRENT_PROFILE_DIR" search "$@"
+	:
 }
 
 list_packages() {
-	$COMMON_PROFILE_LINK/bin/rpm -qa --dbpath "$RPMDB_DIR" --root "$EPKG_STORE_ROOT"
+	:
 }
