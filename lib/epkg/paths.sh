@@ -13,7 +13,7 @@ COMMON_PROFILE_LINK=$EPKG_ENVS_ROOT/common/profile-current
 if [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 else
-	export PROJECT_DIR=/tmp/$USER/epkg_manager
+	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1
 fi
 
 EPKG_EXEC=$COMMON_PROFILE_LINK/usr/bin/epkg
