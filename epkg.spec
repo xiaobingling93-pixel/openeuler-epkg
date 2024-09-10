@@ -11,6 +11,7 @@ Requires:       coreutils
 Requires:       patchelf
 Requires:       grep
 Requires:       findutils
+Requires:       tar
 
 %description
 epkg is a new type of software package format developed by the openEuler community. It supports multiple environments and versions, addressing software package compatibility issues.

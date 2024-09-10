@@ -3,54 +3,27 @@
 # 6a6cca66c56a8c39c1714e26be632d1b24f766a0b4e003d59205d852a45520b3
 
 # 获取当前环境的channel
-CHANNEL_CONF_PATH="/etc/epkg-confs/channel.json"
-# 获取环境中的repo的信息
+CHANNEL_CONF_PATH="/etc/epkg/channel.json"
+# 获取环境中的repo的信息，如果没有则
 CHANNEL_CONF_PATH="$HOME/.epkg/channel.json"
 
 packages_file=$(mktemp)
 declare -A requires_array
 declare -A channel_array
 
-load_channel_conf() {
-    json="$(cat $CHANNEL_CONF_PATH)"
-    # 使用 jq 解析 JSON 并将其转换为键值对
-    # 遍历 "channel" 中的每个元组
-    for index in $(echo "$json" | jq -r '.channel | keys[]'); do
-        echo "Processing channel[$index]"
-        # 解析当前元组的键值对
-        while IFS="=" read -r key value; do
-            # 将键名加上前缀以区分不同的元组
-            full_key="channel_${index}_${key}"
-            channel_array[$full_key]=$value
-        done < <(echo "$json" | jq -r ".channel[\"$index\"] | to_entries[] | \"\(.key)=\(.value)\"")
-        # 打印当前元组的内容
-        for key in "${!channel_array[@]}"; do
-            if [[ $key == ${index}_* ]]; then
-                echo "$key: ${channel_array[$key]}"
-            fi
-        done
-        echo ""
-    done
-}
 
 load_enabled_channel_conf() {
     json=$(cat $CHANNEL_CONF_PATH)
-    enabled_data=$(echo "$json" | jq -c '
-        .channel |
-        to_entries |
-        map(select(.value.enabled == "1")) |
-        from_entries
-    ')
+    enabled_data=$(echo "$json" | jq -c '[.. | objects | select(.enabled == "1")]')
     
     while IFS= read -r item; do
         key=$(echo "$item" | jq -r '.key')
         name=$(echo "$item" | jq -r '.value.name')
-        os_version=$(echo "$item" | jq -r '.value.os_version')
-        remote=$(echo "$item" | jq -r '.value.remote')
+        channel=$(echo "$item" | jq -r '.value.channel')
         url=$(echo "$item" | jq -r '.value.url')
         gpgcheck=$(echo "$item" | jq -r '.value.gpgcheck')
         gpgkey=$(echo "$item" | jq -r '.value.gpgkey')
-        channel_array[$key]="$name,$os_version,$remote,$url,$gpgcheck,$gpgkey"
+        channel_array[$key]="$name,$channel,$url,$gpgcheck,$gpgkey"
     done < <(echo "$enabled_data" | jq -c 'to_entries[]')
 }
 
@@ -162,7 +135,7 @@ accurate_query_requires() {
     channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
     # 打印关联数组的内容，按照倒序的键顺序
     for channel_index in $channel_indexs; do
-        IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
+        IFS=',' read -r name channel url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
         channel_url=$url
         channel_name=$name
         get_requires $package_name $channel_url $channel_name $channel_index
@@ -180,7 +153,7 @@ fuzzy_query_requires() {
     local channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
     # 打印关联数组的内容，按照倒序的键顺序
     for channel_index in $channel_indexs; do
-        IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
+        IFS=',' read -r name channel url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
         channel_url=$url
         channel_name=$name
         find_pkg_names $channel_url $query_name
@@ -214,7 +187,7 @@ show_package_file_list() {
     channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
 
     for channel_index in $channel_indexs; do
-        IFS=',' read -r name os_version remote url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
+        IFS=',' read -r name channel url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
         channel_url=$url
         channel_name=$name
         pkg_info_path="$channel_url/pkg-info"
@@ -240,6 +213,7 @@ show_package_file_list() {
 }
 
 query_requires() {
+    # 同步repo仓库
     local query_name=$1
     if echo "$query_name" | grep -q '\*'; then
         fuzzy_query_requires $query_name
