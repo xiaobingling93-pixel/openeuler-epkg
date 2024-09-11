@@ -55,7 +55,7 @@ init_repo_conf()
 
 	local channel
 	local repo
-	read channel repo <<< $(echo ${channel_repo//\// })
+	read channel repo <<< ${channel_repo//\// }
 	
 	init_channel_repo ${env} ${channel} ${repo}
 }
