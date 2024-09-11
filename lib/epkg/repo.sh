@@ -59,3 +59,21 @@ init_repo_conf()
 	
 	init_channel_repo ${env} ${channel} ${repo}
 }
+
+list_repos()
+{
+	for channel_json in /etc/epkg/channel.json ${HOME}/.epkg/envs/common/profile1/etc/epkg/channel.json
+	do
+		[[ -f ${channel_json} ]] || continue
+
+		echo "-------------------------------------------------------------------------------------------------------------------------"
+		printf "%-30s | %-15s | %-70s\n" "channel" "repo" "url"
+		printf "%-30s | %-15s | %-70s\n" "------------------------------" "---------------" "----------------------------------------------------------------------"
+
+		# jq -r 'to_entries[] | "\(.key) \(.value | to_entries[] | "\(.key) \(.value.url)")"' "${channel_json}"
+		jq -r 'to_entries[] | "\(.key) \(.value | to_entries[] | "\(.key) \(.value.url)")"' "${channel_json}" | while read -r channel repo url; do
+    			printf "%-30s | %-15s | %-70s\n" "$channel" "$repo" "$url"
+		done
+		echo "-------------------------------------------------------------------------------------------------------------------------"
+	done
+}
