@@ -26,11 +26,11 @@ mkdir -p $RPM_BUILD_ROOT%{_libdir}/%{name}
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/%{name}
 
 # Create a temporary directory structure
-mkdir -p $RPM_BUILD_ROOT%{_datadir}/%{name}/temp_install/{bin,lib}
+mkdir -p $RPM_BUILD_ROOT%{_datadir}/%{name}/temp_install/usr/{bin,lib}
 
 # Copy files to the temporary directory
-cp -a %{_builddir}/%{name}-%{version}/bin/* $RPM_BUILD_ROOT%{_datadir}/%{name}/temp_install/bin
-cp -a %{_builddir}/%{name}-%{version}/lib/* $RPM_BUILD_ROOT%{_datadir}/%{name}/temp_install/lib
+cp -a %{_builddir}/%{name}-%{version}/bin/* $RPM_BUILD_ROOT%{_datadir}/%{name}/temp_install/usr/bin/
+cp -a %{_builddir}/%{name}-%{version}/lib/* $RPM_BUILD_ROOT%{_datadir}/%{name}/temp_install/usr/lib/
 install -m 644 channel.json $RPM_BUILD_ROOT%{_sysconfdir}/%{name}/channel.json
 
 
@@ -41,7 +41,7 @@ mkdir -p "$USER_HOME/.epkg/envs/common/profile-1"
 cp -R %{_datadir}/%{name}/temp_install/* "$USER_HOME/.epkg/envs/common/profile-1/"
 chown -R $CURRENT_USER:$CURRENT_USER "$USER_HOME/.epkg"
 rm -rf %{_datadir}/%{name}/temp_install
-ln -sf "$USER_HOME/.epkg/envs/common/profile-1/bin/epkg" /bin/epkg
+ln -sf "$USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg" /bin/epkg
 
 %files
 %{_datadir}/%{name}
