@@ -72,16 +72,16 @@ list_repos()
 		l_length=150
 		# case the l_length exceeds the screen width, the length of screen is printed
 		l_length=$(( l_length < t_width ? l_length : t_width ))
-		eval printf '%.0s-' {1..${l_length}}
+		printf '%.0s-' $(seq 1 ${l_length})
 		printf '\n'
 		printf "%-30s | %-15s | %-10s\n" "channel" "repo" "url"
-		eval printf '%.0s-' {1..${l_length}}
+		printf '%.0s-' $(seq 1 ${l_length})
 		printf '\n'
 
 		jq -r 'to_entries[] | "\(.key) \(.value | to_entries[] | "\(.key) \(.value.url)")"' "${channel_json}" | while read -r channel repo url; do
     			printf "%-30s | %-15s | %-1s\n" "$channel" "$repo" "$url"
 		done
-		eval printf '%.0s-' {1..${l_length}}
+		printf '%.0s-' $(seq 1 ${l_length})
 		printf '\n'
 	done
 }
