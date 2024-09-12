@@ -11,16 +11,16 @@ list_environments() {
 create_environment() {
 	local env=$1
 
-	_check_env_existed $env
-	if [ $? -eq 0 ]; then
-		echo "$env already existed!"
-		return
-	fi
+	#_check_env_existed $env
+	#if [ $? -eq 0 ]; then
+	#	echo "$env already existed!"
+	#	return
+	#fi
 
-	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
+	#create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
+	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/tmp"
 	ln -sT profile-1        "$EPKG_ENVS_ROOT/$env/profile-current"
 
-	mkdir "$EPKG_ENVS_ROOT/$env/profile-1/tmp"
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/sbin"
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"
@@ -38,8 +38,6 @@ create_environment() {
 
 activate_environment() {
 	local env=$1
-
-	create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
 
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"
 	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/sbin"

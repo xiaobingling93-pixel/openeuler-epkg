@@ -3,6 +3,7 @@
 OPT_EPKG=/opt/epkg
 HOME_EPKG=$HOME/.epkg
 
+EPKG_TEMP=$HOME_EPKG/.temp
 EPKG_CONFIG_DIR=$HOME_EPKG/config
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_STORE_ROOT=$HOME_EPKG/store
@@ -37,6 +38,7 @@ case "$shell" in
 esac
 
 init_paths() {
+	mkdir -p $EPKG_TEMP
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 	mkdir -p $EPKG_STORE_ROOT
 	mkdir -p $EPKG_PKG_CACHE_DIR

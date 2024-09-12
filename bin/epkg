@@ -2,7 +2,7 @@
 if [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 else
-	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1
+	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
 fi
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh
@@ -14,16 +14,15 @@ source $PROJECT_DIR/lib/epkg/cache-repo.sh
 
 cmd=$1
 shift
-echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
-get_active_env "$@"
-[ "$cmd" = 'init' ] ||
-set_epkg_env_dirs $env
 
-if [ $cmd != "init" ]; then
-	if [ $EPKG_INITIALIZED != "yes" ]; then
+if [[ "$cmd" != "init" && "$cmd" != '-h' && "$cmd" != '--help' ]]; then
+	echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
+	get_active_env "$@"
+	[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
+	if [ "$EPKG_INITIALIZED" != "yes" ]; then
 		echo "Warning: epkg has not been initialized"
 		echo "please execute: epkg init"
-		return 1
+		exit 1
 	fi
 fi
 
