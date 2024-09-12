@@ -62,7 +62,7 @@ init_repo_conf()
 
 list_repos()
 {
-	for channel_json in /etc/epkg/channel.json ${HOME}/.epkg/envs/common/profile1/etc/epkg/channel.json
+	for channel_json in /etc/epkg/channel.json ${HOME}/.epkg/envs/common/profile-profile1/etc/epkg/channel.json
 	do
 		[[ -f ${channel_json} ]] || continue
 
@@ -83,5 +83,7 @@ list_repos()
 		done
 		printf '%.0s-' $(seq 1 ${l_length})
 		printf '\n'
+
+		break
 	done
 }
