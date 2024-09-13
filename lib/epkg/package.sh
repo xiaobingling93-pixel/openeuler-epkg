@@ -3,29 +3,15 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 source "$SCRIPT_DIR/../lib/epkg/query.sh"
 
 install_package() {
+	# /root/.cache/epkg/packages/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
+	# /root/.epkg/store/Z7YEZKCXLA5AAMBOV6ZXCG77MZSLMKIM__libev__4.33__4.oe2409/
 	#ROOTFS_LINK=$COMMON_PROFILE_LINK
 	ROOTFS_LINK=""
-	local downloaded_packages
-	local downloaded_packages2
-	local newly_downloaded_packages
-	record_cached_packages
+	local require_packages
 	download_packages "$@"
-	record_newly_downloaded_packages
 	uncompress_packages
 	create_profile_symlinks
 }
-
-record_cached_packages() {
-	# echo "Recording currently cached packages..."
-	downloaded_packages=$(ls "$EPKG_PKG_CACHE_DIR")
-}
-
-record_newly_downloaded_packages() {
-	# echo "Recording newly downloaded packages..."
-	downloaded_packages2=$(ls "$EPKG_PKG_CACHE_DIR")
-	newly_downloaded_packages=$(comm -13 <(echo "$downloaded_packages") <(echo "$downloaded_packages2"))
-}
-
 
 download_packages() {
 	local requires=$(accurate_query_requires $1)
@@ -37,6 +23,7 @@ download_packages() {
 		count=$((count + 1))
 		if ((count % 3 == 0)); then
 			packages_url+="$ite "
+			require_packages+="$(/bin/basename $ite .epkg) "
 		fi
 	done
 
@@ -48,21 +35,21 @@ download_packages() {
 }
 
 uncompress_packages() {
-	for package in $newly_downloaded_packages;
+	for package in $require_packages;
 	do
-		local package_full_name=${package%.*}
-		local tar_dir="$EPKG_STORE_ROOT/$package_full_name"
+		local tar_dir="$EPKG_STORE_ROOT/$package"
+		[ -d $tar_dir ] && continue
+
 		$ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package -C $tar_dir
+		$ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir
 	done
 }
 
 create_profile_symlinks() {
-	for package in $newly_downloaded_packages;
+	for package in $require_packages;
 	do
-		local package_full_name=${package%.*}
-		echo "start install $package_full_name"
-		local fs_dir="$EPKG_STORE_ROOT/$package_full_name/fs"
+		echo "start install $package"
+		local fs_dir="$EPKG_STORE_ROOT/$package/fs"
 		local fs_files=$(find $fs_dir \( -type f -o -type l \))
 		create_symlink_by_fs
 	done
