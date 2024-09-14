@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 if [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
-else
-	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1
 fi
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh

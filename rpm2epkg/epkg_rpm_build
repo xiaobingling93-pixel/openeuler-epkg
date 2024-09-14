@@ -1,0 +1,35 @@
+#!/bin/bash
+# SPDX-License-Identifier: MulanPSL-2.0+
+# Copyright (c) 2020 Huawei Technologies Co., Ltd. All rights reserved.
+# frozen_string_literal: true
+
+#!/bin/bash
+set -x
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+PROJECT_DIR=$(realpath "$SCRIPT_DIR/..")
+
+cd "${PROJECT_DIR}"
+
+TAR_DIR="epkg-0.1.0"
+
+rm -rf "${TAR_DIR}"
+rm -rf "${TAR_DIR}.tar.gz"
+
+mkdir -p "${TAR_DIR}"
+
+cp -r "${PROJECT_DIR}/bin" "${TAR_DIR}/"
+cp -r "${PROJECT_DIR}/lib" "${TAR_DIR}/"
+cp "${PROJECT_DIR}/channel.json" "${TAR_DIR}/"
+
+tar -czvf "${TAR_DIR}.tar.gz" "${TAR_DIR}"
+
+# 构建软件包
+yum install rpmdevtools -y
+rpmdev-setuptree
+
+cd $HOME/rpmbuild
+cp "${PROJECT_DIR}/${TAR_DIR}.tar.gz" SOURCES/
+cp "${PROJECT_DIR}/epkg.spec" SPECS/
+rpmbuild -ba SPECS/epkg.spec
+
+cp RPMS/$(arch)/epkg*.rpm "${PROJECT_DIR}"

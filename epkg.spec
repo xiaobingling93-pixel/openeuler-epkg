@@ -43,7 +43,14 @@ cp -R %{_datadir}/%{name}/temp_install/* "$USER_HOME/.epkg/envs/common/profile-1
 chown -R $CURRENT_USER:$CURRENT_USER "$USER_HOME/.epkg"
 rm -rf %{_datadir}/%{name}/temp_install
 ln -sf "$USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg" /bin/epkg
+
+mkdir -p "$USER_HOME/.epkg/envs/common/profile-1/etc/epkg/"
 cp %{_sysconfdir}/%{name}/channel.json "$USER_HOME/.epkg/envs/common/profile-1/etc/epkg/channel.json"
+
+%postun
+rm -rf "$USER_HOME/.epkg/"
+rm -rf "$USER_HOME/.cache/epkg"
+rm -rf /etc/epkg/channel.json
 
 %files
 %{_datadir}/%{name}
