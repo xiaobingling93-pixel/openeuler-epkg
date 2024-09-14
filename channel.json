@@ -3,7 +3,7 @@
         "OS":{
             "name": "OS",
             "channel": "openEuler-24.09",
-            "url": "/srv/os-repo/epkg2/channel/openEuler-24.09/OS/aarch64/",
+            "url": "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/OS/aarch64/",
             "enabled": "1",
             "gpgcheck": "0",
             "gpgkey": ""
@@ -11,25 +11,25 @@
         "everything":{
             "name": "everything",
             "channel": "openEuler-24.09",
-            "url": "/srv/os-repo/epkg2/channel/openEuler-24.09/everything/aarch64",
+            "url": "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64/",
             "enabled": "1",
             "gpgcheck": "0",
             "gpgkey": ""
         }
     },
-    "openEuler-22.03-LTS-SP4":{
+    "openEuler-22.03-LTS-SP3":{
         "OS":{
             "name": "OS",
             "channel": "openEuler-22.03-LTS-SP4",
-            "url": "/srv/os-repo/epkg/channel/openEuler-22.03-LTS-SP4/OS/aarch64/",
+            "url": "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-22.03-LTS-SP3/OS/aarch64/",
             "enabled": "0",
             "gpgcheck": "0",
             "gpgkey": ""
         },
         "everything":{
             "name": "everything",
-            "channel": "openEuler-24.09",
-            "url": "/srv/os-repo/epkg/channel/openEuler-22.03-LTS-SP4/everything/aarch64",
+            "channel": "openEuler-22.03-LTS-SP3",
+            "url": "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-22.03-LTS-SP3/everything/aarch64/",
             "enabled": "0",
             "gpgcheck": "0",
             "gpgkey": ""

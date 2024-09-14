@@ -3,9 +3,9 @@
 # 6a6cca66c56a8c39c1714e26be632d1b24f766a0b4e003d59205d852a45520b3
 
 # 获取当前环境的channel
-CHANNEL_CONF_PATH="/etc/epkg/channel.json"
+# CHANNEL_CONF_PATH="/etc/epkg/channel.json"
 # 获取环境中的repo的信息，如果没有则
-CHANNEL_CONF_PATH="$HOME/.epkg/channel.json"
+# CHANNEL_CONF_PATH="$HOME/.epkg/channel.json"
 
 packages_file=$(mktemp)
 declare -A requires_array
@@ -13,6 +13,8 @@ declare -A channel_array
 
 
 load_enabled_channel_conf() {
+    echo "$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
+    CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
     json=$(cat $CHANNEL_CONF_PATH)
     enabled_data=$(echo "$json" | jq -c '[.. | objects | select(.enabled == "1")]')
     
@@ -29,7 +31,9 @@ load_enabled_channel_conf() {
 
 find_pkg_metadata_json() {
     local pkg_name="__"$1"__"
-    local search_dir=$2
+    local repo_url=$2
+    local search_dir=$HOME/.cache/epkg/channel/${repo_url##*/channel/}
+    # local search_dir=$2
     local epkg_hash=$3
 
     if [[ $epkg_hash == "" ]]; then
