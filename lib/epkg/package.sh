@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 source "$SCRIPT_DIR/../lib/epkg/query.sh"
+source "$SCRIPT_DIR/../lib/epkg/cache-repo.sh"
 
 install_package() {
+	cache_repo
 	# /root/.cache/epkg/packages/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
 	# /root/.epkg/store/Z7YEZKCXLA5AAMBOV6ZXCG77MZSLMKIM__libev__4.33__4.oe2409/
 	#ROOTFS_LINK=$COMMON_PROFILE_LINK
@@ -30,7 +32,8 @@ download_packages() {
 	for package_url in $packages_url;
 	do
 		echo "start download $package_url"
-		$ROOTFS_LINK/bin/cp  "$package_url" "$EPKG_PKG_CACHE_DIR"
+		#$ROOTFS_LINK/bin/cp  "$package_url" "$EPKG_PKG_CACHE_DIR"
+		$ROOTFS_LINK/bin/curl -# -o "$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"  "$package_url"  --retry 5
 	done
 }
 
@@ -38,7 +41,7 @@ uncompress_packages() {
 	for package in $require_packages;
 	do
 		local tar_dir="$EPKG_STORE_ROOT/$package"
-		[ -d $tar_dir ] && continue
+		#[ -d $tar_dir/fs ] && continue
 
 		$ROOTFS_LINK/bin/mkdir -p "$tar_dir"
 		$ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir

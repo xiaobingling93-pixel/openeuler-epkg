@@ -6,7 +6,7 @@ init_channel_repo()
 	local channel=$2
 	local repo=$3
 
-	local env_channel_json=${HOME}/.epkg/envs/${env}/profile1/etc/epkg/channel.json
+	local env_channel_json=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.json
 	local tmp_env_channel_json=/tmp/channel.json
 
 	[[ -d $(dirname ${env_channel_json}) ]] || mkdir -p $(dirname ${env_channel_json})
