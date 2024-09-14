@@ -4,6 +4,7 @@ if [ -d "$COMMON_PROFILE_LINK" ]; then
 fi
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh
+source $PROJECT_DIR/lib/epkg/repo.sh
 
 __epkg_rehash() {
 	if [ -n "${ZSH_VERSION}" ]; then
@@ -234,7 +235,20 @@ epkg() {
 	local EPKG_CONFIG_DIR=$HOME_EPKG/config
 	case "$cmd" in
 		create)
+			echo $env
 			create_environment $env
+			shift
+			shift
+			subcmd=$1
+			shift
+			case $subcmd in 
+				"--repo")
+					init_channel_repo $env ${1%/*} ${1#*/}
+					;;
+				*)
+					init_channel_repo $env openEuler-24.09
+					;;
+			esac
 			;;
 		enable)
 			__epkg_enable_environment $env
