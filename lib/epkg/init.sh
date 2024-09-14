@@ -62,11 +62,11 @@ create_rootfs_symlinks() {
 
 prepare_epkg_rootfs() {
 	# download epkg_rootfs
-	#curl -o $EPKG_TMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
+	curl -o $EPKG_TEMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
 	chmod a+x $EPKG_TEMP/elf-loader
 	/bin/cp $EPKG_TEMP/elf-loader $EPKG_ENVS_ROOT/common/profile-1/usr/bin/
 
-	#curl -o $EPKG_TMP/store.zst https://repo.oepkgs.net/openeuler/epkg/rootfs/store.zst --retry 5
+	curl -o $EPKG_TEMP/store.zst https://repo.oepkgs.net/openeuler/epkg/rootfs/store.zst --retry 5
 	# uncompress epkg_rootfs
 	which /bin/tar
 	/bin/tar --zstd -xf $EPKG_TEMP/store.zst -C $HOME_EPKG
