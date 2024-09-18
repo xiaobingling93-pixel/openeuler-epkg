@@ -19,21 +19,28 @@
 
 ## EPKG包管理器使用说明
 Usage:
-
+    epkg install PACKAGE 
     epkg install [--env ENV] PACKAGE （开发中...）
     epkg remove [--env ENV] PACKAGE （开发中...）
-    epkg upgrade [PACKAGE]
+    epkg upgrade [PACKAGE] （开发中...）
 
-    epkg search PACKAGE
-    epkg list
+    epkg search PACKAGE （开发中...）
+    epkg list （开发中...）
 
     epkg env list
-    epkg env create|remove ENV
-    epkg env activate ENV
-    epkg env deactivate
-    epkg env enable|disable ENV
+    epkg create|remove ENV
+    epkg activate ENV
+    epkg deactivate ENV
+    epkg enable|disable ENV
     epkg env history ENV （开发中...）
     epkg env rollback ENV （开发中...）
+
+软件包安装：
+    epkg create $env // 创建环境
+    epkg install $package // 在环境中安装软件包
+
+    epkg create $env2 --repo $repo // 创建环境2，指定repo
+    epkg install $package // 在环境2中安装软件包
 
 ### 查询已安装软件
 功能描述：

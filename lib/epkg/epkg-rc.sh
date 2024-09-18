@@ -148,7 +148,7 @@ __epkg_deactivate_environment() {
 _check_env_existed() {
 	local env=$1
 	all_envs=$(ls -lt $EPKG_ENVS_ROOT | grep '^d' | awk '{print $9}')
-	if echo "$all_envs" | grep -q -F "$env"; then
+	if echo "$all_envs" | grep -q -F -- "$env"; then
 		return 0
 	fi
 	return 1

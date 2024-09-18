@@ -100,6 +100,7 @@ remove_environment() {
 	fi
 	
 	mv "$EPKG_ENVS_ROOT/$env" "$EPKG_ENVS_ROOT/.$env"
+	echo "$env remove success!"
 }
 
 # setup env variable
