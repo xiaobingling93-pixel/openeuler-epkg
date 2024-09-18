@@ -62,14 +62,15 @@ create_rootfs_symlinks() {
 
 prepare_epkg_rootfs() {
 	# download epkg_rootfs
-	curl -o $EPKG_TEMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
+	curl -# -o $EPKG_TEMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
 	chmod a+x $EPKG_TEMP/elf-loader
 	/bin/cp $EPKG_TEMP/elf-loader $EPKG_ENVS_ROOT/common/profile-1/usr/bin/
 
-	curl -o $EPKG_TEMP/store.zst https://repo.oepkgs.net/openeuler/epkg/rootfs/store.zst --retry 5
+	echo "download epkg rootfs"
+	curl -# -o $EPKG_TEMP/store.zst https://repo.oepkgs.net/openeuler/epkg/rootfs/store.zst --retry 5
 	# uncompress epkg_rootfs
-	# which /bin/tar
-	/bin/tar --zstd -xf $EPKG_TEMP/store.zst -C $HOME_EPKG
+	echo "install epkg rootfs, it will take 3min, please wait patiently.."
+	/bin/tar --zstd -xf $EPKG_TEMP/store.zst -C $HOME_EPKG &> /dev/null
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
 	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
