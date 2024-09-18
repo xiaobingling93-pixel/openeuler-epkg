@@ -11,6 +11,7 @@ source $PROJECT_DIR/lib/epkg/package.sh
 source $PROJECT_DIR/lib/epkg/epkg-rc.sh
 source $PROJECT_DIR/lib/epkg/query.sh
 source $PROJECT_DIR/lib/epkg/cache-repo.sh
+source $PROJECT_DIR/lib/epkg/repo.sh
 
 cmd=$1
 shift
@@ -122,6 +123,19 @@ EOF
 				;;
 			*)
 				echo "Usage: epkg env [list|create|remove|enable|disable|activate|deactivate|history|rollback]"
+				;;
+		esac
+		;;
+
+	"repo")
+		subcmd=$1
+		shift
+		case $subcmd in
+			"list")
+				list_repos
+				;;
+			*)
+				echo "Usage: epkg repo [list]"
 				;;
 		esac
 		;;
