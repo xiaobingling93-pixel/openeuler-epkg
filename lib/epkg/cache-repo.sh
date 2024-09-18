@@ -27,13 +27,13 @@ cache_repo_index()
 
 	# sync repo metadata from http urls
 	[[ $repo_url =~ ^http ]] && {
-		wget --tries=3 -q $repo_url/repodata/store-paths.zst -O ${local_cache_path}/repodata/store-paths.zst.tmp && \
+		curl -# -o ${local_cache_path}/repodata/store-paths.zst.tmp $repo_url/repodata/store-paths.zst --retry 5 && \
 		mv ${local_cache_path}/repodata/store-paths.zst.tmp ${local_cache_path}/repodata/store-paths.zst
 
-		wget --tries=3 -q $repo_url/repodata/pkg-info.zst -O ${local_cache_path}/repodata/pkg-info.zst.tmp && \
+		curl -# -o ${local_cache_path}/repodata/pkg-info.zst.tmp $repo_url/repodata/pkg-info.zst --retry 5 && \
 		mv ${local_cache_path}/repodata/pkg-info.zst.tmp ${local_cache_path}/repodata/pkg-info.zst
 
-		wget --tries=3 -q $repo_url/repodata/index.yaml -O ${local_cache_path}/repodata/index.yaml.tmp && \
+		curl -# -o ${local_cache_path}/repodata/index.yaml.tmp $repo_url/repodata/index.yaml --retry 5 &&\
 		mv ${local_cache_path}/repodata/index.yaml.tmp ${local_cache_path}/repodata/index.yaml
 	}
 

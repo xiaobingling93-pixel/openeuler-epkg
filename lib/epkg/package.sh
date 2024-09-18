@@ -44,7 +44,7 @@ uncompress_packages() {
 		#[ -d $tar_dir/fs ] && continue
 
 		$ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir
+		$ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
 	done
 }
 
@@ -84,7 +84,7 @@ create_symlink_by_fs() {
 		fi
 
 		if [[ "${fs_file}" == *"/etc/"* ]]; then
-			$ROOTFS_LINK/bin/cp $fs_file $CURRENT_PROFILE_DIR/$rfs_file
+			$ROOTFS_LINK/bin/cp -r $fs_file $CURRENT_PROFILE_DIR/$rfs_file &> /dev/null
 			continue
 		fi
 

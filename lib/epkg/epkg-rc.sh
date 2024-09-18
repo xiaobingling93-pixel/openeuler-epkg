@@ -245,7 +245,11 @@ epkg() {
 			shift
 			case $subcmd in 
 				"--repo")
-					init_channel_repo $env ${1%/*} ${1#*/}
+					if [[ "$1" == *"/"* ]];then
+						init_channel_repo $env ${1%/*} ${1#*/}
+					else
+						init_channel_repo $env $1
+					fi
 					;;
 				*)
 					init_channel_repo $env openEuler-24.09
