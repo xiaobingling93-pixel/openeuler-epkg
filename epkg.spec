@@ -53,7 +53,7 @@ USER_HOME=$(eval echo ~$CURRENT_USER)
 rm -rf "$USER_HOME/.epkg/"
 rm -rf "$USER_HOME/.cache/epkg"
 rm -rf /etc/epkg/channel.json
-sed -i '/\/root\/\.epkg/d; /EPKG_INITIALIZED=yes/d' ~/.bashrc
+sed -i '/.epkg/d; /EPKG_INITIALIZED=yes/d' ~/.bashrc
 
 %files
 %{_datadir}/%{name}
