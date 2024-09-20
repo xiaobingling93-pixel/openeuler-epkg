@@ -41,16 +41,19 @@ USER_HOME=$(eval echo ~$CURRENT_USER)
 mkdir -p "$USER_HOME/.epkg/envs/common/profile-1"
 cp -R %{_datadir}/%{name}/temp_install/* "$USER_HOME/.epkg/envs/common/profile-1/"
 chown -R $CURRENT_USER:$CURRENT_USER "$USER_HOME/.epkg"
-rm -rf %{_datadir}/%{name}/temp_install
+# rm -rf %{_datadir}/%{name}/temp_install
 ln -sf "$USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg" /bin/epkg
 
 mkdir -p "$USER_HOME/.epkg/envs/common/profile-1/etc/epkg/"
 cp /etc/epkg/channel.json "$USER_HOME/.epkg/envs/common/profile-1/etc/epkg/"
 
 %postun
+CURRENT_USER=${SUDO_USER:-root}
+USER_HOME=$(eval echo ~$CURRENT_USER)
 rm -rf "$USER_HOME/.epkg/"
 rm -rf "$USER_HOME/.cache/epkg"
 rm -rf /etc/epkg/channel.json
+sed -i '/\/root\/\.epkg/d; /EPKG_INITIALIZED=yes/d' ~/.bashrc
 
 %files
 %{_datadir}/%{name}
