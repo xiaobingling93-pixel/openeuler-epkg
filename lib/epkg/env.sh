@@ -3,9 +3,11 @@
 list_environments() {
 	# List all environments
 	echo "Available environments(sort by time):"
-	all_envs=$(ls -lt $EPKG_ENVS_ROOT | grep '^d' | awk '{print $9}')
-	echo "$all_envs"
-	echo "You are in [$EPKG_ENV_NAME] now"
+	all_envs=$(ls -t $EPKG_ENVS_ROOT)
+	echo "Environment          Status"
+	echo "---------------------"
+	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_ENV_NAME'" ? "Y" : "")}' | column -t
+	# echo "You are in [$EPKG_ENV_NAME] now"
 }
 
 create_environment() {

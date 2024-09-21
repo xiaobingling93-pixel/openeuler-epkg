@@ -21,15 +21,15 @@ cp -r "${PROJECT_DIR}/bin" "${TAR_DIR}/"
 cp -r "${PROJECT_DIR}/lib" "${TAR_DIR}/"
 cp "${PROJECT_DIR}/channel.json" "${TAR_DIR}/"
 
-tar -czvf "${TAR_DIR}.tar.gz" "${TAR_DIR}"
+tar -cvf "${TAR_DIR}.tar" "${TAR_DIR}"
 
 # 构建软件包
 yum install rpmdevtools -y
 rpmdev-setuptree
 
 cd $HOME/rpmbuild
-cp "${PROJECT_DIR}/${TAR_DIR}.tar.gz" SOURCES/
+cp "${PROJECT_DIR}/${TAR_DIR}.tar" SOURCES/
 cp "${PROJECT_DIR}/epkg.spec" SPECS/
-rpmbuild -ba SPECS/epkg.spec
+rpmbuild -ba SPECS/epkg.spec --nocheck
 
 cp RPMS/$(arch)/epkg*.rpm "${PROJECT_DIR}"

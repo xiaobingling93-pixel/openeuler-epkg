@@ -12,7 +12,8 @@
     epkg install $package
     
 方法2：
-    sudo yum install epkg
+    wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm
+    sudo yum install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
     epkg init
     bash // 重新执行.bashrc, 获得新的PATH
     epkg install $package
