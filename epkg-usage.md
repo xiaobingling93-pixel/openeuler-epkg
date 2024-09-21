@@ -3,22 +3,65 @@
 ## 介绍
 本文介绍EPKG包管理器工作环境如何初始化，以及基本功能如何使用。本文涉及操作结果示例均以非root用户为例。
 
+## 快速上手
+
+下面的实例介绍了安装不同软件包版本的方式
+
+```bash
+# 下载epkg
+ wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm && sudo yum -y install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
+
+# 初始化epkg
+epkg init
+bash // 重新执行.bashrc, 获得新的PATH
+
+# 创建环境1
+epkg create t1
+epkg install tree
+tree --version
+which tree
+
+# 查看repo
+[root@vm-4p64g ~]# epkg repo list
+------------------------------------------------------------------------------------------------------------------------------------------------------
+channel                        | repo            | url
+------------------------------------------------------------------------------------------------------------------------------------------------------
+openEuler-22.03-LTS-SP3        | OS              | https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-22.03-LTS-SP3/OS/aarch64/
+openEuler-24.09                | everything      | https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64/
+openEuler-24.09                | OS              | https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/OS/aarch64/
+------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# 创建环境2, 指定repo
+epkg create t2 --repo openEuler-22.03-LTS-SP3
+epkg install tree 
+tree --version
+which tree
+
+# 切换回环境1
+epkg activate t1
+```
+
+
+
 ## 安装教程
-方法1：
-    // epkg下载脚本
-    cd /tmp/
-    curl -O https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems1/repositories/epkg/epkg_downloader.sh | bash -
-    bash // 重新执行.bashrc, 获得新的PATH
-    epkg install $package
-    
-方法2：
-    wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm
-    sudo yum install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
-    epkg init
-    bash // 重新执行.bashrc, 获得新的PATH
-    epkg install $package
+```bash
+# 下载epkg
+wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm
+sudo yum install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
+# 或执行 
+curl -sSL https://repo.oepkgs.net/openeuler/epkg/rootfs/downloader.sh -o /tmp/
+
+# 初始化epkg
+epkg init
+bash // 重新执行.bashrc, 获得新的PATH
+
+# 创建环境
+epkg creat $env 
+epkg install $package 
+```
 
 ## EPKG包管理器使用说明
+
 Usage:
     epkg install PACKAGE 
     epkg install [--env ENV] PACKAGE （开发中...）
@@ -27,7 +70,7 @@ Usage:
 
     epkg search PACKAGE （开发中...）
     epkg list （开发中...）
-
+    
     epkg env list
     epkg create|remove ENV
     epkg activate ENV
@@ -123,13 +166,13 @@ Usage:
     Updating and loading repositories:
     Repositories loaded.
     Debug data written to "/root/.epkg/envs/common/profile-1/debugdata"
-
+    
     Package                             Arch          Version              Repository         Size
     Installing:
     dos2unix                            aarch64       7.4.1-1.oe1          local              578.6 KiB
     Installing dependencies:
     basesystem                          noarch        12-2.oe1             local              0.0   B
- 
+
 ### 列出环境列表
 功能描述：
 
@@ -149,6 +192,7 @@ Usage:
     You are in [main] now
 
  
+
 ### 创建环境
 功能描述：
 
