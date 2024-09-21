@@ -53,7 +53,7 @@ create_rootfs_symlinks() {
 	for pkg in $(ls $HOME_EPKG/store/);
 	do
 		local fs_dir="$HOME_EPKG/store/$pkg/fs"
-		local fs_files=$(find $fs_dir \( -type f -o -type l \))
+		local fs_files=$(/bin/find $fs_dir \( -type f -o -type l \))
 		create_symlink_by_fs
 	done
 	ROOTFS_LINK=$COMMON_PROFILE_LINK

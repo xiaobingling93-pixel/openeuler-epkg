@@ -40,7 +40,7 @@ init_paths() {
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 	mkdir -p $EPKG_STORE_ROOT
 	mkdir -p $EPKG_PKG_CACHE_DIR
-	init_opt_dir
+	#init_opt_dir
 }
 
 # In normal user installation, cannot write to /opt dir.

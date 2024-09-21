@@ -53,7 +53,7 @@ create_profile_symlinks() {
 	do
 		echo "start install $package"
 		local fs_dir="$EPKG_STORE_ROOT/$package/fs"
-		local fs_files=$(find $fs_dir \( -type f -o -type l \))
+		local fs_files=$($ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		create_symlink_by_fs
 	done
 }
