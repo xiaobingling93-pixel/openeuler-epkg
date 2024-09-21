@@ -51,7 +51,25 @@ EOF
 		;;
 
 	"install")
-		install_package "$@"
+		installroot=""
+		package_arr=()
+		while [[ $# -gt 0 ]];do
+			case "$1" in
+				--installroot=*)
+					installroot="${1#*=}"
+					shift
+					;;
+				*)
+					package_arr+=("$1")
+					shift
+					;;
+			esac
+		done
+		if [ ${#package_arr[@]} -eq 0 ]; then
+			echo "No Packages specified." >&2
+			exit 1
+		fi
+		install_package
 		;;
 	"update")
 		cache_repo

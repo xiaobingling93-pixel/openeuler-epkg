@@ -67,10 +67,10 @@ prepare_epkg_rootfs() {
 	/bin/cp $EPKG_TEMP/elf-loader $EPKG_ENVS_ROOT/common/profile-1/usr/bin/
 
 	echo "download epkg rootfs"
-	curl -# -o $EPKG_TEMP/store.zst https://repo.oepkgs.net/openeuler/epkg/rootfs/store.zst --retry 5
+	curl -# -o $EPKG_TEMP/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	/bin/tar --zstd -xf $EPKG_TEMP/store.zst -C $HOME_EPKG &> /dev/null
+	/bin/tar -xf $EPKG_TEMP/store.tar.gz -C $HOME_EPKG &> /dev/null
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
 	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH

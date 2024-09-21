@@ -7,28 +7,55 @@ install_package() {
 	cache_repo
 	# /root/.cache/epkg/packages/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
 	# /root/.epkg/store/Z7YEZKCXLA5AAMBOV6ZXCG77MZSLMKIM__libev__4.33__4.oe2409/
-	#ROOTFS_LINK=$COMMON_PROFILE_LINK
-	ROOTFS_LINK=""
+	ROOTFS_LINK=$COMMON_PROFILE_LINK
+	#ROOTFS_LINK=""
 	local require_packages
-	download_packages "$@"
+	local packages_url=""
+	local uncompress_dir
+	local symlink_dir
+	local opt_store="opt/store"
+	if [ -z "$installroot" ]; then
+		uncompress_dir="$EPKG_STORE_ROOT"
+		symlink_dir="$CURRENT_PROFILE_DIR"
+	else
+		uncompress_dir="$installroot/$opt_store"
+		symlink_dir="$installroot"
+		$ROOTFS_LINK/bin/mkdir -p $symlink_dir/usr/{bin,sbin,lib,lib64}
+		$ROOTFS_LINK/bin/ln -sT "usr/lib" "$symlink_dir/lib"
+		$ROOTFS_LINK/bin/ln -sT "usr/lib64" "$symlink_dir/lib64"
+		$ROOTFS_LINK/bin/ln -sT "usr/bin" "$symlink_dir/bin"
+		$ROOTFS_LINK/bin/ln -sT "usr/sbin" "$symlink_dir/sbin"
+
+	fi
+	for dpk in ${package_arr[@]}
+	do
+		query_package_requires "$dpk"
+	done
+	download_packages
 	uncompress_packages
 	create_profile_symlinks
 }
 
-download_packages() {
+query_package_requires() {
 	local requires=$(accurate_query_requires $1)
 	local packges_info=${requires#*PACKAGE  CHANNEL}
-	local packages_url=""
 	local count=0
 	for ite in $packges_info;
 	do
 		count=$((count + 1))
 		if ((count % 3 == 0)); then
-			packages_url+="$ite "
-			require_packages+="$(/bin/basename $ite .epkg) "
+			local pkg_name=$($ROOTFS_LINK/bin/basename $ite .epkg)
+			if [[ "$require_packages" ==  *"$pkg_name"* ]];then
+				continue
+			else
+				require_packages+="$pkg_name "
+				packages_url+="$ite "
+			fi
 		fi
 	done
+}
 
+download_packages() {
 	for package_url in $packages_url;
 	do
 		echo "start download $package_url"
@@ -40,7 +67,7 @@ download_packages() {
 uncompress_packages() {
 	for package in $require_packages;
 	do
-		local tar_dir="$EPKG_STORE_ROOT/$package"
+		local tar_dir="$uncompress_dir/$package"
 		#[ -d $tar_dir/fs ] && continue
 
 		$ROOTFS_LINK/bin/mkdir -p "$tar_dir"
@@ -52,7 +79,7 @@ create_profile_symlinks() {
 	for package in $require_packages;
 	do
 		echo "start install $package"
-		local fs_dir="$EPKG_STORE_ROOT/$package/fs"
+		local fs_dir="$uncompress_dir/$package/fs"
 		local fs_files=$($ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		create_symlink_by_fs
 	done
@@ -72,7 +99,7 @@ create_symlink_by_fs() {
 		$ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
 
 		# Create parent directory if it doesn't exist
-		$ROOTFS_LINK/bin/mkdir -p "$CURRENT_PROFILE_DIR/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
+		$ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
 
 		#if [ "${fs_file}" == *"/bin/"* ]; then
 		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
@@ -84,15 +111,20 @@ create_symlink_by_fs() {
 		fi
 
 		if [[ "${fs_file}" == *"/etc/"* ]]; then
-			$ROOTFS_LINK/bin/cp -r $fs_file $CURRENT_PROFILE_DIR/$rfs_file &> /dev/null
+			$ROOTFS_LINK/bin/cp -r $fs_file $symlink_dir/$rfs_file &> /dev/null
 			continue
 		fi
 
-		[ -e "$CURRENT_PROFILE_DIR/$rfs_file" ] && continue
+		[ -e "$symlink_dir/$rfs_file" ] && continue
 
 		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
 
-		$ROOTFS_LINK/bin/ln -s "$fs_file" "$CURRENT_PROFILE_DIR/$rfs_file"
+		if [ -z "$installroot" ]; then
+			$ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file"
+		else
+			$ROOTFS_LINK/bin/ln -s "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+		fi
+
 	done <<< "$fs_files"
 }
 
@@ -111,9 +143,14 @@ handle_elf() {
 	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
-	$ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $CURRENT_PROFILE_DIR/$rfs_file
-	replace_string "$CURRENT_PROFILE_DIR/$rfs_file" "$id1" "$CURRENT_PROFILE_DIR"
-	replace_string "$CURRENT_PROFILE_DIR/$rfs_file" "$id2" "$fs_file"
+	$ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$rfs_file
+	if [ -z "$installroot" ]; then
+		replace_string "$symlink_dir/$rfs_file" "$id1" "$symlink_dir"
+		replace_string "$symlink_dir/$rfs_file" "$id2" "$fs_file"
+	else
+		replace_string "$symlink_dir/$rfs_file" "$id1" "/"
+		replace_string "$symlink_dir/$rfs_file" "$id2" "${fs_file#$installroot}"
+	fi
 }
 
 replace_string() {
