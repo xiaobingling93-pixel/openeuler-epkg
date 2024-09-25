@@ -136,6 +136,8 @@ handle_exec() {
 		handle_elf
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
 		handle_elf
+	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
+		$ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
 	fi
 }
 
