@@ -50,6 +50,7 @@ wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm
 sudo yum install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
 # 或执行 
 curl -sSL https://repo.oepkgs.net/openeuler/epkg/rootfs/downloader.sh -o /tmp/
+bash /tmp/downloader.sh 
 
 # 初始化epkg
 epkg init
@@ -86,57 +87,6 @@ Usage:
     epkg create $env2 --repo $repo // 创建环境2，指定repo
     epkg install $package // 在环境2中安装软件包
 
-### 查询已安装软件
-功能描述：
-
-    查询当前所在环境中，已经安装的软件包信息
-命令：
-
-    epkg list
-
-返回示例：
-
-    [small_leek@19e784a5bc38 bin]# epkg list
-    tzdata-2020a-8.oe1.noarch
-    openEuler-gpg-keys-1.0-3.0.oe1.aarch64
-    openEuler-repos-1.0-3.0.oe1.aarch64
-    openEuler-release-20.03LTS_SP1-38.oe1.aarch64
-    setup-2.13.7-1.oe1.noarch
-    ncurses-base-6.2-1.oe1.noarch
-    ncurses-libs-6.2-1.oe1.aarch64
-    libselinux-3.1-1.oe1.aarch64
-    filesystem-3.14-1.oe1.aarch64
-    basesystem-12-2.oe1.noarch
-    bash-5.0-14.oe1.aarch64
-    glibc-common-2.28-49.oe1.aarch64
-    glibc-2.28-49.oe1.aarch64
-    libsepol-3.1-1.oe1.aarch64
-    readline-8.0-3.oe1.aarch64
-    pcre2-10.35-1.oe1.aarch64
-    bzip2-1.0.8-3.oe1.aarch64
-    unzip-6.0-45.oe1.aarch64
-    zip-3.0-26.oe1.aarch64
-
-### 查询未安装软件
-功能描述：
-
-    基于当前所在环境已挂载repo源，查询指定软件信息
-
-命令：
-
-    epkg search ${package_name}
-
-返回示例：
-
-    [small_leek@19e784a5bc38 bin]# epkg search vim
-    Updating and loading repositories:
-    Repositories loaded.
-    Matched fields: name, summary
-    vim-X11.aarch64: Vim for the X Window System i.e.gvim
-    vim-common.aarch64: This contains some common files to use vim editor.
-    vim-enhanced.aarch64: This is a package containing enhanced vim editor.
-    vim-filesystem.noarch: The vim filesystem.
-    vim-minimal.aarch64: This package provides the basic and minimal functionalities of vim editor.
 
 ### 安装软件
 功能描述：
@@ -148,30 +98,81 @@ Usage:
     epkg install ${package_name}
 
 返回示例：
-
-    [small_leek@19e784a5bc38 bin]# epkg install dos2unix
-    Invoking DNF installation...
-    Updating and loading repositories:
-    Repositories loaded.
-    Downloading Packages:
-    basesystem-0:12-2.oe1.noarch                   100% |   0.0   B/s |   0.0   B |  00m00s
-    >>> Already downloaded
-    bash-0:5.0-14.oe1.aarch64                      100% |   0.0   B/s |   0.0   B |  00m00s
-    >>> Already downloaded
-    filesystem-0:3.14-1.oe1.aarch64                100% |   0.0   B/s |   0.0   B |  00m00s
-    >>> Already downloaded
-    glibc-0:2.28-49.oe1.aarch64
-    >>> Already downloaded
-    dos2unix-0:7.4.1-1.oe1.aarch64                 100% |   3.3 MiB/s | 191.8 KiB |  00m00s
-    Updating and loading repositories:
-    Repositories loaded.
-    Debug data written to "/root/.epkg/envs/common/profile-1/debugdata"
-    
-    Package                             Arch          Version              Repository         Size
-    Installing:
-    dos2unix                            aarch64       7.4.1-1.oe1          local              578.6 KiB
-    Installing dependencies:
-    basesystem                          noarch        12-2.oe1             local              0.0   B
+```
+[root@2d785c36ee2e /]# epkg activate t1
+Add common to path
+Add t1 to path
+Environment 't1' activated.
+Environment 't1' activated.
+[root@2d785c36ee2e /]# epkg install tree
+EPKG_ENV_NAME: t1
+Caching repodata for: "OS"
+Cache for "OS" already exists. Skipping...
+Caching repodata for: "OS"
+Cache for "OS" already exists. Skipping...
+Caching repodata for: "everything"
+Cache for "everything" already exists. Skipping...
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/FF/FFCRTKRFGFQ6S2YVLOSUF6PHSMRP7A2N__ncurses-libs__6.4__8.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/D5/D5BOEFTRBNV3E4EXBVXDSRNTIGLGWVB7__glibc-all-langpacks__2.38__34.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/VX/VX6SUOPGEVDWF6E5M2XBV53VS7IXSFM5__openEuler-repos__1.0__3.3.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/LO/LO6RYZTBB2Q7ZLG6SWSICKGTEHUTBWUA__libselinux__3.5__3.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/EP/EPIEEK2P5IUPO4PIOJ2BXM3QPEFTZUCT__basesystem__12__3.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/2G/2GYDDYVWYYIDGOLGTVUACSBHYVRCRJH3__setup__2.14.5__2.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/HC/HCOKXTWQQUPCFPNI7DMDC6FGSDOWNACC__glibc__2.38__34.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/OJ/OJQAHJTY3Y7MZAXETYMTYRYSFRVVLPDC__glibc-common__2.38__34.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/FJ/FJXG3K2TSUYXNU4SES2K3YSTA3AHHUMB__tree__2.1.1__1.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/KD/KDYRBN74LHKSZISTLMYOMTTFVLV4GPYX__readline__8.2__2.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/MN/MNJPSSBS4OZJL5EB6YKVFLMV4TGVBUBA__tzdata__2024a__2.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/S4/S4FBO2SOMG3GKP5OMDWP4XN5V4FY7OY5__bash__5.2.21__1.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/EJ/EJGRNRY5I6XIDBWL7H5BNYJKJLKANVF6__libsepol__3.5__3.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/TZ/TZRQZRU2PNXQXHRE32VCADWGLQG6UL36__bc__1.07.1__12.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/WY/WYMBYMCARHXD62ZNUMN3GQ34DIWMIQ4P__filesystem__3.16__6.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/KQ/KQ2UE3U5VFVAQORZS4ZTYCUM4QNHBYZ7__openEuler-release__24.09__55.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/HD/HDTOK5OTTFFKSTZBBH6AIAGV4BTLC7VT__openEuler-gpg-keys__1.0__3.3.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/EB/EBLBURHOKKIUEEFHZHMS2WYF5OOKB4L3__pcre2__10.42__8.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/YW/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start download https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/everything/aarch64//store/E4/E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409.epkg
+############################################################################################################################################################################################################### 100.0%
+start install FFCRTKRFGFQ6S2YVLOSUF6PHSMRP7A2N__ncurses-libs__6.4__8.oe2409
+start install D5BOEFTRBNV3E4EXBVXDSRNTIGLGWVB7__glibc-all-langpacks__2.38__34.oe2409
+start install VX6SUOPGEVDWF6E5M2XBV53VS7IXSFM5__openEuler-repos__1.0__3.3.oe2409
+start install LO6RYZTBB2Q7ZLG6SWSICKGTEHUTBWUA__libselinux__3.5__3.oe2409
+start install EPIEEK2P5IUPO4PIOJ2BXM3QPEFTZUCT__basesystem__12__3.oe2409
+start install 2GYDDYVWYYIDGOLGTVUACSBHYVRCRJH3__setup__2.14.5__2.oe2409
+start install HCOKXTWQQUPCFPNI7DMDC6FGSDOWNACC__glibc__2.38__34.oe2409
+start install OJQAHJTY3Y7MZAXETYMTYRYSFRVVLPDC__glibc-common__2.38__34.oe2409
+start install FJXG3K2TSUYXNU4SES2K3YSTA3AHHUMB__tree__2.1.1__1.oe2409
+start install KDYRBN74LHKSZISTLMYOMTTFVLV4GPYX__readline__8.2__2.oe2409
+start install MNJPSSBS4OZJL5EB6YKVFLMV4TGVBUBA__tzdata__2024a__2.oe2409
+start install S4FBO2SOMG3GKP5OMDWP4XN5V4FY7OY5__bash__5.2.21__1.oe2409
+start install EJGRNRY5I6XIDBWL7H5BNYJKJLKANVF6__libsepol__3.5__3.oe2409
+start install TZRQZRU2PNXQXHRE32VCADWGLQG6UL36__bc__1.07.1__12.oe2409
+start install WYMBYMCARHXD62ZNUMN3GQ34DIWMIQ4P__filesystem__3.16__6.oe2409
+start install KQ2UE3U5VFVAQORZS4ZTYCUM4QNHBYZ7__openEuler-release__24.09__55.oe2409
+start install HDTOK5OTTFFKSTZBBH6AIAGV4BTLC7VT__openEuler-gpg-keys__1.0__3.3.oe2409
+start install EBLBURHOKKIUEEFHZHMS2WYF5OOKB4L3__pcre2__10.42__8.oe2409
+start install YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409
+start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
+```
 
 ### 列出环境列表
 功能描述：
