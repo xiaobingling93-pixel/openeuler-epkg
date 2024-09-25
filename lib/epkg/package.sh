@@ -86,16 +86,18 @@ create_profile_symlinks() {
 }
 
 create_symlink_by_fs() {
+	if [ -z "$symlink_dir" ] || [ "$symlink_dir" = "/" ]; then
+		echo "symlink_dir can't be empty or /."
+		exit 1
+	fi
+
 	local rfs
 	local file
 
 	# fs_file=/tmp/epkg-cache/xxx/fs/etc/ima/digest_lists/0-metadata_list-compact-info-7.0.3-3.oe2409.aarch64
 	while IFS= read -r fs_file; do
 		rfs_file=${fs_file#$fs_dir}
-		local whitelist="/bin /sbin /lib /lib64"
-		if [[ " ${whitelist[@]} " =~ " ${rfs_file} " ]]; then
-			continue
-		fi
+
 		$ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
 
 		# Create parent directory if it doesn't exist

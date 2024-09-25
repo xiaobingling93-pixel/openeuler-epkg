@@ -50,6 +50,8 @@ append_user_rc() {
 
 create_rootfs_symlinks() {
 	ROOTFS_LINK=""
+	uncompress_dir="$EPKG_STORE_ROOT"
+	symlink_dir="$CURRENT_PROFILE_DIR"
 	for pkg in $(ls $HOME_EPKG/store/);
 	do
 		local fs_dir="$HOME_EPKG/store/$pkg/fs"
