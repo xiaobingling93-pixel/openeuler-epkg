@@ -8,7 +8,6 @@ Source0:        %{name}-%{version}.tar
 
 Requires:       jq
 Requires:       coreutils
-Requires:       patchelf
 Requires:       grep
 Requires:       findutils
 Requires:       tar

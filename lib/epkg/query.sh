@@ -184,11 +184,12 @@ show_package_file_list() {
     local pkg_store_file_path=
     local pkg_metadata_file_path=
     local pkg_store_file_name=
-    
+    declare -A epkg_array
+
     # step 1 加载本地的epkg channel配置
     load_enabled_channel_conf
     # 获取所有channel的key，并按大小倒序排序
-    channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
+    channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | /bin/sort -nr)
 
     for channel_index in $channel_indexs; do
         IFS=',' read -r name channel url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
@@ -198,21 +199,28 @@ show_package_file_list() {
         pkg_metadata_file_path="$(find_pkg_metadata_json $query_name $pkg_info_path "")"
         echo "pkg_metadata_file_path: $pkg_metadata_file_path"
 
-        read name hash version release dist <<< $(jq -r '.package | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
+        read name hash version release dist <<< $(jq -r '. | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
+               # b976e8f53bddb31373d7ba3ccf9dc20fd2af0e553fbda299261ba4843346e646-CUnit-2.1.3-24.oe2203sp3.epkg
+        pkg_store_file_name="$hash"__"$name"__"$version"__"$release.$dist.epkg"
+
+        if [[ -n "${epkg_array[$pkg_store_file_name]}" ]]; then
+            continue
+        else
+        	epkg_array[$pkg_store_file_name]=1
+        fi
         echo "Hash: $hash"
         echo "Version: $version"
         echo "Release: $release"
         echo "Dist: $dist"
         first_two=${hash:0:2}
-        # b976e8f53bddb31373d7ba3ccf9dc20fd2af0e553fbda299261ba4843346e646-CUnit-2.1.3-24.oe2203sp3.epkg
-        pkg_store_file_name="$hash-$name-$version-$release.$dist.epkg"
-        echo "pkg_store_file_name: $pkg_store_file_name"
 
-        pkg_store_file_path=$channel_url/store/$first_two/$pkg_store_file_name
-        tar --use-compress-program=zstd -xvf $pkg_store_file_path ./info/files
+        echo "pkg_store_file_name: $pkg_store_file_name"
+        echo "$channel_url/store/$first_two/$pkg_store_file_name"
+        curl -# -o /tmp/$pkg_store_file_name $channel_url/store/$first_two/$pkg_store_file_name
+        #pkg_store_file_path=$channel_url/store/$first_two/$pkg_store_file_name
+        pkg_store_file_path=/tmp/$pkg_store_file_name
         echo "The files list of $name:"
-        cat ./info/files
-        rm -rf ./info
+        tar --use-compress-program=zstd -xOf $pkg_store_file_path ./info/files | /bin/cat
     done
 }
 
