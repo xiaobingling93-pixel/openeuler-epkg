@@ -7,8 +7,8 @@ install_package() {
 	cache_repo
 	# /root/.cache/epkg/packages/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
 	# /root/.epkg/store/Z7YEZKCXLA5AAMBOV6ZXCG77MZSLMKIM__libev__4.33__4.oe2409/
-	ROOTFS_LINK=$COMMON_PROFILE_LINK
-	#ROOTFS_LINK=""
+	#ROOTFS_LINK=$COMMON_PROFILE_LINK
+	ROOTFS_LINK=""
 	local require_packages
 	local packages_url=""
 	local uncompress_dir

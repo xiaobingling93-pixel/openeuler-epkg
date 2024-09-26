@@ -92,9 +92,15 @@ loop_cache_repos()
 
 cache_repo()
 {
-	CHANNEL_CONF_PATH=${CHANNEL_CONF_PATH:-/etc/epkg}
+	local old_path=$PATH
+	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+	if [ -z "$CURRENT_PROFILE_DIR" ]; then
+		local channel_conf_dir=/etc/epkg
+	else
+		local channel_conf_dir=$CURRENT_PROFILE_DIR/etc/epkg
+	fi
 
-	for repo_conf_file in $(find ${CHANNEL_CONF_PATH} -name *.json)
+	for repo_conf_file in $(find ${channel_conf_dir} -name *.json)
 	do
 		jq empty ${repo_conf_file} || {
 			echo "Epkg channel conf file not in format json: ${repo_conf_file}"
@@ -105,4 +111,5 @@ cache_repo()
 
 		loop_cache_repos ${repo_conf_file}
 	done
+	export PATH=$old_path
 }
