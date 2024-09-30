@@ -210,7 +210,6 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     Environment 'work1' added to PATH.
     Environment 'work1' activated.
     Environment 'work1' created.
-    re-open shell
 
 ### 激活环境
 功能描述：
@@ -226,7 +225,6 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     [small_leek@9d991d463f89 bin]# epkg activate main
     YUM --installroot directory structure created successfully in: /root/.epkg/envs/main/profile-1
     Environment 'main' activated.
-    re-open shell
 
 ### 取消激活环境
 功能描述：
@@ -241,7 +239,6 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
     [small_leek@398ec57ce780 bin]# epkg deactivate w1
     Environment 'w1' deactivated.
-    re-open shell
 
 
 ### 使能环境
@@ -261,7 +258,6 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     add xsl to path
     add lkp to path
     Environment 'lkp' added to PATH.
-    re-open shell
 
 ### 取消使能环境
 功能描述：
@@ -280,4 +276,3 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     sure to continue? (y: continue, others: exit)
     y
     Environment 'w4' removed from PATH.
-    re-open shell
