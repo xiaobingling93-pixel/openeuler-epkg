@@ -12,6 +12,8 @@ list_environments() {
 
 create_environment() {
 	local env=$1
+	local curr_env_root=
+	__get_curr_env_root $env
 
 	#_check_env_existed $env
 	#if [ $? -eq 0 ]; then
@@ -20,34 +22,49 @@ create_environment() {
 	#fi
 
 	#create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/tmp"
-	ln -sT profile-1        "$EPKG_ENVS_ROOT/$env/profile-current"
+	mkdir -p "$curr_env_root/$env/profile-1/tmp"
+	ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
 
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/sbin"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib64"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
 
-	ln -sT  "usr/bin"  "$EPKG_ENVS_ROOT/$env/profile-1/bin"
-	ln -sT  "usr/sbin"  "$EPKG_ENVS_ROOT/$env/profile-1/sbin"
-	ln -sT  "usr/lib"  "$EPKG_ENVS_ROOT/$env/profile-1/lib"
-	ln -sT  "usr/lib64"  "$EPKG_ENVS_ROOT/$env/profile-1/lib64"
+	ln -sT  "$curr_env_root/$env/profile-1/usr/bin"  "$curr_env_root/$env/profile-1/bin"
+	ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
+	ln -sT  "$curr_env_root/$env/profile-1/usr/lib"  "$curr_env_root/$env/profile-1/lib"
+	ln -sT  "$curr_env_root/$env/profile-1/usr/lib64"  "$curr_env_root/$env/profile-1/lib64"
 
 	__epkg_activate_environment $env
 	echo "Environment '$env' created."
 }
 
-
 activate_environment() {
 	local env=$1
+	local curr_env_root=
+	__get_curr_env_root $env
 
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/bin"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/sbin"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib"
-	mkdir -p "$EPKG_ENVS_ROOT/$env/profile-1/usr/lib64"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
+	mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
 
 	__epkg_activate_environment $env
 	echo "Environment '$env' activated."
+}
+
+remove_environment() {
+	local env=$1
+	local curr_env_root=
+	__get_curr_env_root $env
+	_check_env_existed $env
+	if [ $? -eq 1 ]; then
+		echo "$env no existed!"
+		return
+	fi
+	
+	mv "$curr_env_root/$env" "$curr_env_root/.$env"
+	echo "$env remove success!"
 }
 
 # create YUM --installroot directory structure
@@ -90,19 +107,6 @@ gpgcheck=0
 EOL
 
 	echo "YUM --installroot directory structure created successfully in: $installroot"
-}
-
-remove_environment() {
-	local env=$1
-
-	_check_env_existed $env
-	if [ $? -eq 1 ]; then
-		echo "$env no existed!"
-		return
-	fi
-	
-	mv "$EPKG_ENVS_ROOT/$env" "$EPKG_ENVS_ROOT/.$env"
-	echo "$env remove success!"
 }
 
 # setup env variable

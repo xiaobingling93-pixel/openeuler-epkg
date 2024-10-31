@@ -31,9 +31,9 @@ epkg_init() {
 }
 
 init_rc() {
-	cp -rf $PROJECT_DIR/lib/* $EPKG_ENVS_ROOT/common/profile-current/usr/lib/ &> /dev/null
-	cp $PROJECT_DIR/bin/epkg $EPKG_ENVS_ROOT/common/profile-current/usr/bin/ &> /dev/null
-	cp $PROJECT_DIR/../etc/epkg/channel.json $HOME_EPKG/
+	# cp -rf $PROJECT_DIR/lib/* $EPKG_ENVS_ROOT/common/profile-current/usr/lib/ &> /dev/null
+	# cp $PROJECT_DIR/bin/epkg $EPKG_ENVS_ROOT/common/profile-current/usr/bin/ &> /dev/null
+	# cp $PROJECT_DIR/../etc/epkg/channel.json $HOME_EPKG/
 	append_user_rc
 }
 
@@ -42,7 +42,7 @@ append_user_rc() {
 	if grep -qF "shell-add-path.sh" "$RC_PATH"; then
 		echo "epkg is already initialized in '$RC_PATH'"
 	else
-		echo "source $HOME/.epkg/config/shell-add-path.sh" >> "$RC_PATH"
+		echo "source $EPKG_CONFIG_DIR/shell-add-path.sh" >> "$RC_PATH"
 		echo "source $EPKG_RC" >> "$RC_PATH"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
@@ -52,9 +52,9 @@ create_rootfs_symlinks() {
 	ROOTFS_LINK=""
 	uncompress_dir="$EPKG_STORE_ROOT"
 	symlink_dir="$CURRENT_PROFILE_DIR"
-	for pkg in $(ls $HOME_EPKG/store/);
+	for pkg in $(ls $EPKG_STORE_ROOT);
 	do
-		local fs_dir="$HOME_EPKG/store/$pkg/fs"
+		local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
 		local fs_files=$(/bin/find $fs_dir \( -type f -o -type l \))
 		create_symlink_by_fs
 	done
@@ -66,13 +66,13 @@ prepare_epkg_rootfs() {
 	# download epkg_rootfs
 	curl -# -o $EPKG_TEMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
 	chmod a+x $EPKG_TEMP/elf-loader
-	/bin/cp $EPKG_TEMP/elf-loader $EPKG_ENVS_ROOT/common/profile-1/usr/bin/
+	/bin/cp $EPKG_TEMP/elf-loader $COMMON_PROFILE_LINK/usr/bin/
 
 	echo "download epkg rootfs"
 	curl -# -o $EPKG_TEMP/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	/bin/tar -xf $EPKG_TEMP/store.tar.gz -C $HOME_EPKG &> /dev/null
+	/bin/tar -xf $EPKG_TEMP/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
 	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
@@ -84,8 +84,8 @@ prepare_rootfs() {
 		retrun 1
 	fi
 
-	cp -ar $EPKG_TMP/epkg_rootfs/* "$EPKG_ENVS_ROOT/common/profile-1"
-	__fix_rootfs_needed $EPKG_ENVS_ROOT/common/profile-1/
+	cp -ar $EPKG_TMP/epkg_rootfs/* "$COMMON_PROFILE_LINK"
+	__fix_rootfs_needed $COMMON_PROFILE_LINK
 	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
 
 	return 0

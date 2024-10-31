@@ -32,7 +32,7 @@ load_enabled_channel_conf() {
 find_pkg_metadata_json() {
     local pkg_name="__"$1"__"
     local repo_url=$2
-    local search_dir=$HOME/.cache/epkg/channel/${repo_url##*/channel/}
+    local search_dir=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
     # local search_dir=$2
     local epkg_hash=$3
 

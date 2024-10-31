@@ -4,7 +4,7 @@ cache_repo_index()
 {
 	local repo_name=$1
 	local repo_url=$2
-	local local_cache_path=$HOME/.cache/epkg/channel/${repo_url##*/channel/}
+	local local_cache_path=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
 
 	echo "Caching repodata for: $repo_name"
 	# Check if store-paths.zst already exists
@@ -101,7 +101,7 @@ cache_repo()
 	fi
 
 	for repo_conf_file in $(find ${channel_conf_dir} -name *.json)
-	do
+	do	
 		jq empty ${repo_conf_file} || {
 			echo "Epkg channel conf file not in format json: ${repo_conf_file}"
 			echo "Fix up and try again."

@@ -2,23 +2,31 @@
 
 OPT_EPKG=/opt/epkg
 HOME_EPKG=$HOME/.epkg
-
-EPKG_TEMP=$HOME_EPKG/.temp
-EPKG_CONFIG_DIR=$HOME_EPKG/config
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
+EPKG_CONFIG_DIR=$HOME_EPKG/config
+# These PATHs are based on the installation mode
+EPKG_ENV_COMM_ROOT=$EPKG_ENVS_ROOT
+EPKG_TEMP=$HOME_EPKG/.temp
 EPKG_STORE_ROOT=$HOME_EPKG/store
 EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
-
-COMMON_PROFILE_LINK=$EPKG_ENVS_ROOT/common/profile-current
-
+EPKG_CHANNEL_CACHE_DIR=$HOME/.cache/epkg/channel
+if [ "$EPKG_INSTALL_MODE" == "global"  ]; then
+	EPKG_ENV_COMM_ROOT=/opt/.epkg/envs
+	EPKG_TEMP=/opt/.temp
+	EPKG_STORE_ROOT=/opt/.epkg/store
+	EPKG_PKG_CACHE_DIR=/opt/.cache/epkg/packages
+	EPKG_CHANNEL_CACHE_DIR=/opt/.cache/epkg/channel
+fi
+# These PATHs are related to the common env
+COMMON_PROFILE_LINK=$EPKG_ENV_COMM_ROOT/common/profile-current
 if [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 fi
-
 EPKG_EXEC=$COMMON_PROFILE_LINK/usr/bin/epkg
 EPKG_RC=$COMMON_PROFILE_LINK/usr/lib/epkg/epkg-rc.sh
 FAKEROOT_EXEC=$COMMON_PROFILE_LINK/usr/bin/fakeroot
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
+
 shell=$(basename "$SHELL")
 case "$shell" in
 	"bash")
@@ -63,7 +71,9 @@ init_opt_dir() {
 
 set_epkg_env_dirs() {
 	local env=$1
-	CURRENT_PROFILE_LINK=$EPKG_ENVS_ROOT/$env/profile-current
+	local curr_env_root=
+	__get_curr_env_root $env
+	CURRENT_PROFILE_LINK=$curr_env_root/$env/profile-current
 	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
 	RPMDB_DIR=$CURRENT_PROFILE_DIR/var/lib/rpm
 	EPKG_VARLIB_DIR=$CURRENT_PROFILE_DIR/var/lib/epkg

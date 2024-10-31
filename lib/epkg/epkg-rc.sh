@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-if [ -d "$COMMON_PROFILE_LINK" ]; then
+if [ "$EPKG_INSTALL_MODE" == "global"  ]; then
+	export PROJECT_DIR=/opt/.epkg/envs/common/profile-1/usr
+elif [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 else
     export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
@@ -18,6 +20,14 @@ __epkg_rehash() {
 	fi
 }
 
+__get_curr_env_root() {
+	local env=$1
+	if [ "$env" == "common" ]; then
+		curr_env_root=$EPKG_ENV_COMM_ROOT
+	else
+		curr_env_root=$EPKG_ENVS_ROOT
+	fi
+}
 
 # update EPKG_ENV_NAME to user shell rc file
 _update_epkg_env_name() {
@@ -29,7 +39,6 @@ _update_epkg_env_name() {
 	else
 		echo "export EPKG_ENV_NAME=$env" >> "$RC_PATH"
 	fi
-
 }
 
 # initialize PATH to epkg packages for bash/zsh shell
@@ -44,7 +53,9 @@ EOM
 
 __epkg_add_path() {
 	local env_to_add=$1
-	local env_dir=$HOME/.epkg/envs/$env_to_add/profile-current
+	local curr_env_root=
+	__get_curr_env_root $env_to_add
+	local env_dir=$curr_env_root/$env_to_add/profile-current
 	local dir
 
 	for dir in usr/bin bin
@@ -65,7 +76,7 @@ __epkg_update_path() {
 	for file in $EPKG_CONFIG_DIR/enabled-envs/*
 	do
 		env_to_add=${file##*/}
-		[ $env_to_add != $env ] && [ $env_to_add != "common" ] &&
+		[ "$env_to_add" != $env ] && [ "$env_to_add" != "common" ] &&
 		__epkg_add_path $env_to_add
 	done
 
@@ -84,7 +95,9 @@ __epkg_enable_environment() {
 		return
 	fi
 
-	ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/enabled-envs/$env"
+	if [ -d "$EPKG_ENVS_ROOT/$env" ]; then
+		ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/enabled-envs/$env"
+	fi
 	__epkg_update_path $env
 	__epkg_add_path $env
 	__epkg_create_path_rc "$path"
