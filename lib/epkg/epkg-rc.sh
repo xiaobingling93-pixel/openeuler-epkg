@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-if [ "$EPKG_INSTALL_MODE" == "global"  ]; then
+if [ -d "/opt/.epkg/envs/common/" ]; then
 	export PROJECT_DIR=/opt/.epkg/envs/common/profile-1/usr
 elif [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr

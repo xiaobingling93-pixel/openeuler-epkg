@@ -21,12 +21,14 @@ epkg_init() {
 	done
 
 	init_paths
+
 	create_environment common   # package manage tools etc.
 	prepare_epkg_rootfs
-
 	__epkg_enable_environment common
+
 	create_environment main     # main user environment
 	__epkg_enable_environment main
+
 	init_rc
 }
 

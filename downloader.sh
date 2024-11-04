@@ -6,20 +6,6 @@ EPKG_USER_HOME=/root
 URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 EPKG_MANAGER_TAR=epkg_manager.tar.gz
 EPKG_INITIAL_SH=epkg_initial.sh
-EPKG_INSTALL_MODE=global
-shell=$(basename "$SHELL")
-case "$shell" in
-	"bash")
-		RC_PATH=$HOME/.bashrc
-		;;
-	"zsh")
-		RC_PATH=$HOME/.zshrc
-		;;
-	*)
-		echo "Unsupported shell: $shell"
-		exit 1
-		;;
-esac
 
 
 
@@ -29,7 +15,6 @@ create_epkg_user() {
     if [ "$choice" == "global" ]; then
         EPKG_USER_HOME=/opt
     else
-        EPKG_INSTALL_MODE=user
        if [ $EPKG_USER != root ]; then
             EPKG_USER_HOME=/home/$EPKG_USER
             useradd $EPKG_USER
@@ -50,7 +35,6 @@ mk_home() {
     mkdir -p $EPKG_USER_HOME/.epkg/envs/common/profile-1/etc/epkg
     ln -sT profile-1 $EPKG_USER_HOME/.epkg/envs/common/profile-current
     chown -R  $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/.epkg
-	echo "export EPKG_INSTALL_MODE=$EPKG_INSTALL_MODE" >> $RC_PATH
 }
 
 download_and_unpack() {

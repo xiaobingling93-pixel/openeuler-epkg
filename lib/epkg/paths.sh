@@ -10,7 +10,7 @@ EPKG_TEMP=$HOME_EPKG/.temp
 EPKG_STORE_ROOT=$HOME_EPKG/store
 EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
 EPKG_CHANNEL_CACHE_DIR=$HOME/.cache/epkg/channel
-if [ "$EPKG_INSTALL_MODE" == "global"  ]; then
+if [ -d "/opt/.epkg/envs/common/" ]; then
 	EPKG_ENV_COMM_ROOT=/opt/.epkg/envs
 	EPKG_TEMP=/opt/.temp
 	EPKG_STORE_ROOT=/opt/.epkg/store
