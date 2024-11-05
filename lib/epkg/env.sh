@@ -14,6 +14,8 @@ create_environment() {
 	local env=$1
 	local curr_env_root=
 	__get_curr_env_root $env
+	local epkg_helper=
+	__get_epkg_helper "env_mode" "$env"
 
 	#_check_env_existed $env
 	#if [ $? -eq 0 ]; then
@@ -22,20 +24,21 @@ create_environment() {
 	#fi
 
 	#create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
-	mkdir -p "$curr_env_root/$env/profile-1/tmp"
-	ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/tmp"
 
-	mkdir -p "$curr_env_root/$env/profile-1/usr/app-bin"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
+	$epkg_helper ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
 
-	ln -sT  "$curr_env_root/$env/profile-1/usr/app-bin"  "$curr_env_root/$env/profile-1/app-bin"
-	ln -sT  "$curr_env_root/$env/profile-1/usr/bin"  "$curr_env_root/$env/profile-1/bin"
-	ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
-	ln -sT  "$curr_env_root/$env/profile-1/usr/lib"  "$curr_env_root/$env/profile-1/lib"
-	ln -sT  "$curr_env_root/$env/profile-1/usr/lib64"  "$curr_env_root/$env/profile-1/lib64"
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/app-bin"
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
+
+	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/app-bin"  "$curr_env_root/$env/profile-1/app-bin"
+	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/bin"  "$curr_env_root/$env/profile-1/bin"
+	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
+	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib"  "$curr_env_root/$env/profile-1/lib"
+	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib64"  "$curr_env_root/$env/profile-1/lib64"
 
 	__epkg_activate_environment $env
 	echo "Environment '$env' created."

@@ -21,11 +21,21 @@ __epkg_rehash() {
 }
 
 __get_curr_env_root() {
-	local env=$1
-	if [ "$env" == "common" ]; then
+	local curr_env=$1
+	if [ "$curr_env" == "common" ]; then
 		curr_env_root=$EPKG_ENV_COMM_ROOT
 	else
 		curr_env_root=$EPKG_ENVS_ROOT
+	fi
+}
+
+__get_epkg_helper() {
+	local mode=$1
+	local curr_env=$2
+	if [[ "$mode" == "env_mode" && "$curr_env" == "common" ]]; then
+		epkg_helper=/usr/bin/epkg_helper
+	elif [[  "$mode" == "install_mode" && -d "/opt/.epkg/envs/common/" ]]; then
+		epkg_helper=/usr/bin/epkg_helper
 	fi
 }
 
@@ -80,9 +90,9 @@ __epkg_update_path() {
 		__epkg_add_path $env_to_add
 	done
 
-	if ! echo "$path" | grep -q -F "epkg_manager"; then
-		path=$path:$HOME/epkg_manager/bin
-	fi
+	# if ! echo "$path" | grep -q -F "epkg_manager"; then
+	# 	path=$path:$HOME/epkg_manager/bin
+	# fi
 }
 
 __epkg_enable_environment() {
@@ -132,7 +142,7 @@ __epkg_activate_environment() {
 	__epkg_rehash
 	__epkg_add_path common
 	__epkg_add_path $env
-	path=$path:$HOME/epkg_manager/bin
+	# path=$path:$HOME/epkg_manager/bin
 
 	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	export PATH="$path:$ORIGIN_PATH"
@@ -148,7 +158,7 @@ __epkg_deactivate_environment() {
 	__epkg_rehash
 	__epkg_add_path common
 	__epkg_add_path main
-	path=$path:$HOME/epkg_manager/bin
+	# path=$path:$HOME/epkg_manager/bin
 
 	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	export PATH="$path:$ORIGIN_PATH"

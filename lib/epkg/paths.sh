@@ -44,10 +44,15 @@ case "$shell" in
 esac
 
 init_paths() {
-	mkdir -p $EPKG_TEMP
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
+	# global PATH
+	$epkg_helper mkdir -p $EPKG_TEMP
+	$epkg_helper mkdir -p $EPKG_STORE_ROOT
+	$epkg_helper mkdir -p $EPKG_PKG_CACHE_DIR
+	# user PATH
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
-	mkdir -p $EPKG_STORE_ROOT
-	mkdir -p $EPKG_PKG_CACHE_DIR
 	#init_opt_dir
 }
 

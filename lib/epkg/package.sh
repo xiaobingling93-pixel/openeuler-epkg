@@ -31,6 +31,10 @@ install_package() {
 	do
 		query_package_requires "$dpk"
 	done
+
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+	
 	download_packages
 	uncompress_packages
 	create_profile_symlinks
@@ -60,7 +64,7 @@ download_packages() {
 	do
 		echo "start download $package_url"
 		#$ROOTFS_LINK/bin/cp  "$package_url" "$EPKG_PKG_CACHE_DIR"
-		$ROOTFS_LINK/bin/curl -# -o "$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"  "$package_url"  --retry 5
+		$epkg_helper $ROOTFS_LINK/bin/curl -# -o "$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"  "$package_url"  --retry 5
 	done
 }
 
@@ -70,8 +74,8 @@ uncompress_packages() {
 		local tar_dir="$uncompress_dir/$package"
 		#[ -d $tar_dir/fs ] && continue
 
-		$ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
+		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
+		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
 	done
 }
 
@@ -80,7 +84,7 @@ create_profile_symlinks() {
 	do
 		echo "start install $package"
 		local fs_dir="$uncompress_dir/$package/fs"
-		local fs_files=$($ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
+		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"
 		IFS='__' read -ra pkg_split <<< "$package"
 		if [[ "${package_arr[@]}" =~ "${pkg_split[2]}" ]]; then
@@ -106,10 +110,10 @@ create_symlink_by_fs() {
 			rfs_file="${rfs_file/\/bin/\/app-bin}"
 		fi
 
-		$ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
+		$epkg_helper $ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
 
 		# Create parent directory if it doesn't exist
-		$ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
+		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
 
 		#if [ "${fs_file}" == *"/bin/"* ]; then
 		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
@@ -121,7 +125,7 @@ create_symlink_by_fs() {
 		fi
 
 		if [[ "${fs_file}" == *"/etc/"* ]]; then
-			$ROOTFS_LINK/bin/cp -r $fs_file $symlink_dir/$rfs_file &> /dev/null
+			$epkg_helper $ROOTFS_LINK/bin/cp -r $fs_file $symlink_dir/$rfs_file &> /dev/null
 			continue
 		fi
 
@@ -130,16 +134,16 @@ create_symlink_by_fs() {
 		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
 
 		if [ -z "$installroot" ]; then
-			$ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file"
+			$epkg_helper $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file"
 		else
-			$ROOTFS_LINK/bin/ln -s "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			$epkg_helper $ROOTFS_LINK/bin/ln -s "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
 		fi
 
 	done <<< "$fs_files"
 }
 
 handle_exec() {
-	local file_type=$($ROOTFS_LINK/bin/file $1)
+	local file_type=$($epkg_helper $ROOTFS_LINK/bin/file $1)
 	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
 		handle_elf
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
@@ -147,7 +151,7 @@ handle_exec() {
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
 		handle_elf
 	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
-		$ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
+		$epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
 	fi
 }
 
@@ -155,7 +159,7 @@ handle_elf() {
 	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
-	$ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$rfs_file
+	$epkg_helper $ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$rfs_file
 	if [ -z "$installroot" ]; then
 		replace_string "$symlink_dir/$rfs_file" "$id1" "$symlink_dir"
 		replace_string "$symlink_dir/$rfs_file" "$id2" "$fs_file"
@@ -170,9 +174,9 @@ replace_string() {
 	local long_id="$2"
 	local str="$3"
 
-	local position=$($ROOTFS_LINK/bin/grep -m1 -oba "$long_id" $binary_file | $ROOTFS_LINK/bin/cut -d ":" -f 1)
+	local position=$($epkg_helper $ROOTFS_LINK/bin/grep -m1 -oba "$long_id" $binary_file | $ROOTFS_LINK/bin/cut -d ":" -f 1)
 	[ -n "$position" ] && {
-		$ROOTFS_LINK/bin/echo -en "$str\0" | $ROOTFS_LINK/bin/dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
+		$epkg_helper $ROOTFS_LINK/bin/echo -en "$str\0" | $epkg_helper $ROOTFS_LINK/bin/dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
 	}
 }
 
