@@ -248,11 +248,27 @@ __fix_file_needed() {
 
 }
 
+__check_epkg_user_init() {
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
+	if ! $epkg_helper ls $EPKG_INIT_ROOT/$USER &> /dev/null; then
+		if $epkg_helper ls -A $EPKG_INIT_ROOT 2> /dev/null | grep -q .; then
+			echo "epkg had been initialized"
+			echo "Warning: $USER has not been initialized"
+			echo "please execute: epkg init"
+			return 1
+		else
+			echo "Warning: epkg has not been initialized"
+			echo "please execute: epkg init"
+			return 1
+		fi
+	fi
+}
+
 epkg() {
-	if [ $EPKG_INITIALIZED != "yes" ]; then
-		echo "Warning: epkg has not been initialized"
-		echo "please execute: epkg init"
-		return 1
+	if ! __check_epkg_user_init; then
+		exit 1
 	fi
 	local cmd="$1"
 	local env="$2"

@@ -20,16 +20,29 @@ epkg_init() {
 		shift
 	done
 
-	init_paths
-
-	create_environment common   # package manage tools etc.
-	prepare_epkg_rootfs
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+	if $epkg_helper ls $EPKG_INIT_ROOT/$USER &> /dev/null; then
+		echo "epkg had been initialized, $USER had been initialized"
+		return 0
+	else
+		if $epkg_helper ls -A $EPKG_INIT_ROOT 2> /dev/null | grep -q . ; then
+			echo "epkg had been initialized, $USER initialization is in progress"
+			init_paths
+			__epkg_activate_environment common
+		else
+			echo "epkg has not been initialized, epkg initialization is in progress"
+			init_paths
+			create_environment common  
+			prepare_epkg_rootfs
+		fi
+	fi
 	__epkg_enable_environment common
 
 	create_environment main     # main user environment
 	__epkg_enable_environment main
-
 	init_rc
+	$epkg_helper touch "$EPKG_INIT_ROOT/$USER"
 }
 
 init_rc() {
@@ -65,9 +78,6 @@ create_rootfs_symlinks() {
 
 
 prepare_epkg_rootfs() {
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
-
 	# download epkg_rootfs
 	$epkg_helper curl -# -o $EPKG_TEMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
 	$epkg_helper chmod a+x $EPKG_TEMP/elf-loader
@@ -80,7 +90,6 @@ prepare_epkg_rootfs() {
 	$epkg_helper /bin/tar -xf $EPKG_TEMP/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
-	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
 }
 
 prepare_rootfs() {
@@ -91,7 +100,7 @@ prepare_rootfs() {
 
 	cp -ar $EPKG_TMP/epkg_rootfs/* "$COMMON_PROFILE_LINK"
 	__fix_rootfs_needed $COMMON_PROFILE_LINK
-	echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
+	# echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
 
 	return 0
 }

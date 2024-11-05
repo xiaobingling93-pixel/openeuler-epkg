@@ -10,12 +10,14 @@ EPKG_TEMP=$HOME_EPKG/.temp
 EPKG_STORE_ROOT=$HOME_EPKG/store
 EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
 EPKG_CHANNEL_CACHE_DIR=$HOME/.cache/epkg/channel
+EPKG_INIT_ROOT=$HOME_EPKG/.init
 if [ -d "/opt/.epkg/envs/common/" ]; then
 	EPKG_ENV_COMM_ROOT=/opt/.epkg/envs
 	EPKG_TEMP=/opt/.temp
 	EPKG_STORE_ROOT=/opt/.epkg/store
 	EPKG_PKG_CACHE_DIR=/opt/.cache/epkg/packages
 	EPKG_CHANNEL_CACHE_DIR=/opt/.cache/epkg/channel
+	EPKG_INIT_ROOT=/opt/.epkg/.init
 fi
 # These PATHs are related to the common env
 COMMON_PROFILE_LINK=$EPKG_ENV_COMM_ROOT/common/profile-current
@@ -44,13 +46,11 @@ case "$shell" in
 esac
 
 init_paths() {
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
-
 	# global PATH
 	$epkg_helper mkdir -p $EPKG_TEMP
 	$epkg_helper mkdir -p $EPKG_STORE_ROOT
 	$epkg_helper mkdir -p $EPKG_PKG_CACHE_DIR
+	$epkg_helper mkdir -p $EPKG_INIT_ROOT
 	# user PATH
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 	#init_opt_dir

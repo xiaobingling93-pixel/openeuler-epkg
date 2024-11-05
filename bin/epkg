@@ -22,9 +22,7 @@ if [[ "$cmd" != "init" && "$cmd" != '-h' && "$cmd" != '--help' ]]; then
 	echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
 	get_active_env "$@"
 	[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
-	if [ "$EPKG_INITIALIZED" != "yes" ]; then
-		echo "Warning: epkg has not been initialized"
-		echo "please execute: epkg init"
+	if ! __check_epkg_user_init; then
 		exit 1
 	fi
 fi
