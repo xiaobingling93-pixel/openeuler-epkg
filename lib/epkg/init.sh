@@ -23,15 +23,15 @@ epkg_init() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
 	if $epkg_helper ls $EPKG_INIT_ROOT/$USER &> /dev/null; then
-		echo "epkg had been initialized, $USER had been initialized"
+		echo "epkg had been initialized, $USER user had been initialized"
 		return 0
 	else
 		if $epkg_helper ls -A $EPKG_INIT_ROOT 2> /dev/null | grep -q . ; then
-			echo "epkg had been initialized, $USER initialization is in progress"
+			echo "epkg had been initialized, $USER user initialization is in progress ..."
 			init_paths
 			__epkg_activate_environment common
 		else
-			echo "epkg has not been initialized, epkg initialization is in progress"
+			echo "epkg has not been initialized, epkg initialization is in progress ..."
 			init_paths
 			create_environment common  
 			prepare_epkg_rootfs

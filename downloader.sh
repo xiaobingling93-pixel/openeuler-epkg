@@ -6,18 +6,18 @@ EPKG_USER_HOME=/root
 URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 EPKG_MANAGER_TAR=epkg_manager.tar.gz
 EPKG_INITIAL_SH=epkg_initial.sh
-
-
+EPKG_HELPER=epkg_helper
+EPKG_INSTALL_MODE=user
 
 create_epkg_user() {
     echo "Attention: Select the installation mode (global: /opt/.epkg, user: $HOME/.epkg, other: $HOME/.epkg)"
     read choice
     if [ "$choice" == "global" ]; then
         EPKG_USER_HOME=/opt
+        EPKG_INSTALL_MODE=global
     else
        if [ $EPKG_USER != root ]; then
             EPKG_USER_HOME=/home/$EPKG_USER
-            useradd $EPKG_USER
         fi
     fi
 }
@@ -34,7 +34,6 @@ mk_home() {
     mkdir -p $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/{bin,lib}
     mkdir -p $EPKG_USER_HOME/.epkg/envs/common/profile-1/etc/epkg
     ln -sT profile-1 $EPKG_USER_HOME/.epkg/envs/common/profile-current
-    chown -R  $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/.epkg
 }
 
 download_and_unpack() {
@@ -63,8 +62,19 @@ download_and_unpack() {
 	ln -sT  $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg /bin/epkg
 	cp -r $EPKG_TARS_PATH/epkg_manager/lib/epkg $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/lib/
 	cp -r $EPKG_TARS_PATH/epkg_manager/channel.json $EPKG_USER_HOME/.epkg/envs/common/profile-1/etc/epkg
-        chown -R $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/.epkg
-        chown $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/$EPKG_INITIAL_SH
+    chown -R $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/.epkg
+    chown $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/$EPKG_INITIAL_SH
+
+    if [ "$EPKG_INSTALL_MODE" == global ]; then
+        echo "downloading epkg_helper ..."
+        if [ ! -f /tmp/$EPKG_HELPER ]; then
+            curl -o /tmp/$EPKG_HELPER $URL/$EPKG_HELPER
+        fi
+        cp /tmp/$EPKG_HELPER /usr/bin
+
+        chmod 4755 /usr/bin/epkg_helper
+        chmod 755 /opt/.epkg
+    fi
 
     return 0
 }
