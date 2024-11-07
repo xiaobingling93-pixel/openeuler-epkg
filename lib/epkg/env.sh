@@ -15,7 +15,7 @@ create_environment() {
 	local curr_env_root=
 	__get_curr_env_root $env
 	local epkg_helper=
-	__get_epkg_helper "env_mode" "$env"
+	__get_epkg_helper "env_mode" "$curr_env_root/$env/"
 
 	#_check_env_existed $env
 	#if [ $? -eq 0 ]; then

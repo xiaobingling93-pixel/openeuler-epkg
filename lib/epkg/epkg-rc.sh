@@ -31,10 +31,12 @@ __get_curr_env_root() {
 
 __get_epkg_helper() {
 	local mode=$1
-	local curr_env=$2
-	if [[ "$mode" == "env_mode" && "$curr_env" == "common" ]]; then
-		epkg_helper=/usr/bin/epkg_helper
-	elif [[  "$mode" == "install_mode" && -d "/opt/.epkg/envs/common/" ]]; then
+	local curr_env_path=$2
+	local global_comm_path=/opt/.epkg/envs/common/
+
+	if [[ "$mode" == "env_mode" && "$curr_env_path" =~ "$global_comm_path" ]]; then
+		epkg_helper=/usr/bin/epkg_helper	
+	elif [[ "$mode" == "install_mode" && -d "$global_comm_path" ]]; then
 		epkg_helper=/usr/bin/epkg_helper
 	fi
 }

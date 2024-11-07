@@ -73,7 +73,7 @@ download_and_unpack() {
         cp /tmp/$EPKG_HELPER /usr/bin
 
         chmod 4755 /usr/bin/epkg_helper
-        chmod 755 /opt/.epkg
+        chmod -R 755 /opt/.epkg
     fi
 
     return 0

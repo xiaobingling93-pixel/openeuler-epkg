@@ -102,6 +102,8 @@ create_symlink_by_fs() {
 
 	local rfs
 	local file
+	local epkg_helper=
+	__get_epkg_helper "env_mode" "$symlink_dir"
 
 	# fs_file=/tmp/epkg-cache/xxx/fs/etc/ima/digest_lists/0-metadata_list-compact-info-7.0.3-3.oe2409.aarch64
 	while IFS= read -r fs_file; do
