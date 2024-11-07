@@ -14,11 +14,10 @@ cache_repo_index()
 	fi
 	
 	# clean old metadata files and re-init metadata dir
-	rm -rf ${local_cache_path} && \
-	mkdir -p ${local_cache_path}/repodata
+	$epkg_helper rm -rf ${local_cache_path} && \
+	$epkg_helper mkdir -p ${local_cache_path}/repodata
 
-
-	# sync repo metadata from local path
+	# sync repo metadata from local path TODO:epkg_helper
 	[[ $repo_url =~ ^/ ]] && {
 		cp -r $repo_url/repodata/store-paths.zst ${local_cache_path}/repodata/
 		cp -r $repo_url/repodata/pkg-info.zst ${local_cache_path}/repodata/
@@ -27,14 +26,14 @@ cache_repo_index()
 
 	# sync repo metadata from http urls
 	[[ $repo_url =~ ^http ]] && {
-		curl -# -o ${local_cache_path}/repodata/store-paths.zst.tmp $repo_url/repodata/store-paths.zst --retry 5 && \
-		mv ${local_cache_path}/repodata/store-paths.zst.tmp ${local_cache_path}/repodata/store-paths.zst
+		$epkg_helper curl -# -o ${local_cache_path}/repodata/store-paths.zst.tmp $repo_url/repodata/store-paths.zst --retry 5 && \
+		$epkg_helper mv ${local_cache_path}/repodata/store-paths.zst.tmp ${local_cache_path}/repodata/store-paths.zst
 
-		curl -# -o ${local_cache_path}/repodata/pkg-info.zst.tmp $repo_url/repodata/pkg-info.zst --retry 5 && \
-		mv ${local_cache_path}/repodata/pkg-info.zst.tmp ${local_cache_path}/repodata/pkg-info.zst
+		$epkg_helper curl -# -o ${local_cache_path}/repodata/pkg-info.zst.tmp $repo_url/repodata/pkg-info.zst --retry 5 && \
+		$epkg_helper mv ${local_cache_path}/repodata/pkg-info.zst.tmp ${local_cache_path}/repodata/pkg-info.zst
 
-		curl -# -o ${local_cache_path}/repodata/index.yaml.tmp $repo_url/repodata/index.yaml --retry 5 &&\
-		mv ${local_cache_path}/repodata/index.yaml.tmp ${local_cache_path}/repodata/index.yaml
+		$epkg_helper curl -# -o ${local_cache_path}/repodata/index.yaml.tmp $repo_url/repodata/index.yaml --retry 5 &&\
+		$epkg_helper mv ${local_cache_path}/repodata/index.yaml.tmp ${local_cache_path}/repodata/index.yaml
 	}
 
 	[[ -f ${local_cache_path}/repodata/store-paths.zst ]] && \
@@ -49,8 +48,8 @@ cache_repo_index()
 	}
 
 	# cached medatata file should be decompressed
-	zstd -d -q ${local_cache_path}/repodata/store-paths.zst
-	tar --use-compress-program=zstd -xf ${local_cache_path}/repodata/pkg-info.zst -C ${local_cache_path}/
+	$epkg_helper zstd -d -q ${local_cache_path}/repodata/store-paths.zst
+	$epkg_helper tar --use-compress-program=zstd -xf ${local_cache_path}/repodata/pkg-info.zst -C ${local_cache_path}/
 
 	echo "Cache repodata succeed: $repo_name"
 }
@@ -92,6 +91,9 @@ loop_cache_repos()
 
 cache_repo()
 {
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
 	local old_path=$PATH
 	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 	if [ -z "$CURRENT_PROFILE_DIR" ]; then
