@@ -55,6 +55,7 @@ rm -rf /opt/.temp/elf-loader
 rm -rf /opt/.temp/store.tar.gz
 rm -rf /etc/epkg/channel.json
 rm -rf /usr/bin/epkg_helper
+rm -rf /bin/epkg
 ALL_USERS=$(getent passwd | awk -F: '$3 >= 1000 {print $1 ":" $6}')
 ALL_USERS="$ALL_USERS root:/root"
 for USER in $ALL_USERS; do

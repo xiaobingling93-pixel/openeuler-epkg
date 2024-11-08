@@ -58,8 +58,17 @@ download_and_unpack() {
         chown -R $EPKG_USER:$EPKG_USER $EPKG_TARS_PATH
     fi
 	cp -r $EPKG_TARS_PATH/epkg_manager/bin/epkg $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/bin/
-	rm -rf /bin/epkg
-	ln -sT  $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg /bin/epkg
+
+    if [ $EPKG_USER != root ]; then
+        mkdir -p $EPKG_USER_HOME/bin
+        rm -rf $EPKG_USER_HOME/bin/epkg
+	    ln -sT $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg $EPKG_USER_HOME/bin/epkg
+    else
+        rm -rf /bin/epkg
+        rm -rf /usr/local/bin/epkg
+	    ln -sT $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg /bin/epkg
+    fi
+
 	cp -r $EPKG_TARS_PATH/epkg_manager/lib/epkg $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/lib/
 	cp -r $EPKG_TARS_PATH/epkg_manager/channel.json $EPKG_USER_HOME/.epkg/envs/common/profile-1/etc/epkg
     chown -R $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/.epkg

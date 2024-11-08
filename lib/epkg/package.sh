@@ -76,6 +76,7 @@ uncompress_packages() {
 
 		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
 		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
+		$epkg_helper $ROOTFS_LINK/bin/chmod -R 755 $tar_dir
 	done
 }
 

@@ -56,7 +56,7 @@ _update_epkg_env_name() {
 # initialize PATH to epkg packages for bash/zsh shell
 __epkg_create_path_rc() {
 	local path="$1"
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	local ORIGIN_PATH="$HOME/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cat > $EPKG_CONFIG_DIR/shell-add-path.sh <<EOM
 ## auto managed by 'epkg init|enable|disable'
 export PATH="$path:$ORIGIN_PATH"
@@ -146,7 +146,7 @@ __epkg_activate_environment() {
 	__epkg_add_path $env
 	# path=$path:$HOME/epkg_manager/bin
 
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	local ORIGIN_PATH="$HOME/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	export PATH="$path:$ORIGIN_PATH"
 	export EPKG_ENV_NAME=$env
 	set_epkg_env_dirs $env
@@ -162,7 +162,7 @@ __epkg_deactivate_environment() {
 	__epkg_add_path main
 	# path=$path:$HOME/epkg_manager/bin
 
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	local ORIGIN_PATH="$HOME/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	export PATH="$path:$ORIGIN_PATH"
 	export EPKG_ENV_NAME=main
 	set_epkg_env_dirs main
