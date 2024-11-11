@@ -283,7 +283,9 @@ epkg() {
 			shift
 			shift
 			subcmd=$1
-			shift
+			if [ $# -gt 0 ]; then # zsh compatible; when $# < shift
+				shift
+			fi
 			case $subcmd in 
 				"--repo")
 					if [[ "$1" == *"/"* ]];then
