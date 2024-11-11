@@ -55,11 +55,11 @@ _update_epkg_env_name() {
 
 # initialize PATH to epkg packages for bash/zsh shell
 __epkg_create_path_rc() {
-	local path="$1"
+	local epkg_path="$1"
 	local ORIGIN_PATH="$HOME/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cat > $EPKG_CONFIG_DIR/shell-add-path.sh <<EOM
 ## auto managed by 'epkg init|enable|disable'
-export PATH="$path:$ORIGIN_PATH"
+export PATH="$epkg_path:$ORIGIN_PATH"
 EOM
 }
 
@@ -72,9 +72,9 @@ __epkg_add_path() {
 
 	for dir in app-bin usr/app-bin
 	do
-		tmp_path=${path#*$env_dir/$dir}
-		if [ $tmp_path = $path ]; then
-			path="$env_dir/$dir:$path"
+		tmp_path=${epkg_path#*$env_dir/$dir}
+		if [ $tmp_path = $epkg_path ]; then
+			epkg_path="$env_dir/$dir:$epkg_path"
 		fi
 	done
 
@@ -99,7 +99,7 @@ __epkg_update_path() {
 
 __epkg_enable_environment() {
 	local env=$1
-	local path=
+	local epkg_path=
 
 	_check_env_enabled $env
 	if [ $? -eq 0 ]; then
@@ -112,7 +112,7 @@ __epkg_enable_environment() {
 	fi
 	__epkg_update_path $env
 	__epkg_add_path $env
-	__epkg_create_path_rc "$path"
+	__epkg_create_path_rc "$epkg_path"
 	__epkg_rehash
 	source $RC_PATH
 	echo "Environment '$env' added to PATH."
@@ -120,7 +120,7 @@ __epkg_enable_environment() {
 
 __epkg_disable_environment() {
 	local env=$1
-	local path=
+	local epkg_path=
 
 	_check_env_enabled $env
 	if [ $? -eq 1 ]; then
@@ -130,7 +130,7 @@ __epkg_disable_environment() {
 
 	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
 	__epkg_update_path $env
-	__epkg_create_path_rc "$path"
+	__epkg_create_path_rc "$epkg_path"
 	__epkg_rehash
 	source $RC_PATH
 
@@ -139,7 +139,7 @@ __epkg_disable_environment() {
 
 __epkg_activate_environment() {
 	local env=$1
-	local path=
+	local epkg_path=
 
 	__epkg_rehash
 	__epkg_add_path common
@@ -147,7 +147,7 @@ __epkg_activate_environment() {
 	# path=$path:$HOME/epkg_manager/bin
 
 	local ORIGIN_PATH="$HOME/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	export PATH="$path:$ORIGIN_PATH"
+	export PATH="$epkg_path:$ORIGIN_PATH"
 	export EPKG_ENV_NAME=$env
 	set_epkg_env_dirs $env
 
@@ -155,7 +155,7 @@ __epkg_activate_environment() {
 }
 
 __epkg_deactivate_environment() {
-	local path=
+	local epkg_path=
 
 	__epkg_rehash
 	__epkg_add_path common
@@ -163,7 +163,7 @@ __epkg_deactivate_environment() {
 	# path=$path:$HOME/epkg_manager/bin
 
 	local ORIGIN_PATH="$HOME/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	export PATH="$path:$ORIGIN_PATH"
+	export PATH="$epkg_path:$ORIGIN_PATH"
 	export EPKG_ENV_NAME=main
 	set_epkg_env_dirs main
 
@@ -306,7 +306,7 @@ epkg() {
 			__epkg_disable_environment $env
 			;;
 		activate)
-			activate_environment $env
+			__epkg_activate_environment $env
 			;;
 		deactivate)
 			__epkg_deactivate_environment

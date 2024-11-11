@@ -89,7 +89,7 @@ download_and_unpack() {
 }
 
 install_needed_tools() {
-    local package_name="jq tar file grep patchelf findutils coreutils util-linux"
+    local package_name="jq tar file grep findutils coreutils util-linux"
     if rpm -q $package_name >/dev/null 2>&1; then
         return 0
     fi
