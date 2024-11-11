@@ -109,7 +109,7 @@ create_symlink_by_fs() {
 	# fs_file=/tmp/epkg-cache/xxx/fs/etc/ima/digest_lists/0-metadata_list-compact-info-7.0.3-3.oe2409.aarch64
 	while IFS= read -r fs_file; do
 		rfs_file=${fs_file#$fs_dir}
-		if [ "$appbin_flag" == "true" ]; then
+		if [[ "$appbin_flag" == "true" ]]; then
 			rfs_file="${rfs_file/\/bin/\/app-bin}"
 		fi
 

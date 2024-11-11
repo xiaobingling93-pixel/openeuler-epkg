@@ -12,7 +12,7 @@ EPKG_INSTALL_MODE=user
 create_epkg_user() {
     echo "Attention: Select the installation mode (global: /opt/.epkg, user: $HOME/.epkg, other: $HOME/.epkg)"
     read choice
-    if [ "$choice" == "global" ]; then
+    if [[ "$choice" == "global" ]]; then
         EPKG_USER_HOME=/opt
         EPKG_INSTALL_MODE=global
     else
@@ -74,7 +74,7 @@ download_and_unpack() {
     chown -R $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/.epkg
     chown $EPKG_USER:$EPKG_USER $EPKG_USER_HOME/$EPKG_INITIAL_SH
 
-    if [ "$EPKG_INSTALL_MODE" == global ]; then
+    if [[ "$EPKG_INSTALL_MODE" == global ]]; then
         echo "downloading epkg_helper ..."
         if [ ! -f /tmp/$EPKG_HELPER ]; then
             curl -o /tmp/$EPKG_HELPER $URL/$EPKG_HELPER
