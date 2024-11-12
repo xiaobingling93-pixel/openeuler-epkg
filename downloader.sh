@@ -9,6 +9,20 @@ EPKG_INITIAL_SH=epkg_initial.sh
 EPKG_HELPER=epkg_helper
 EPKG_INSTALL_MODE=user
 
+shell=$(basename "$SHELL")
+case "$shell" in
+	"bash")
+		RC_PATH=$HOME/.bashrc
+		;;
+	"zsh")
+		RC_PATH=$HOME/.zshrc
+		;;
+	*)
+		echo "Unsupported shell: $shell"
+		exit 1
+		;;
+esac
+
 create_epkg_user() {
     echo "Attention: Select the installation mode (global: /opt/.epkg, user: $HOME/.epkg, other: $HOME/.epkg)"
     read choice
@@ -63,6 +77,14 @@ download_and_unpack() {
         mkdir -p $EPKG_USER_HOME/bin
         rm -rf $EPKG_USER_HOME/bin/epkg
 	    ln -sT $EPKG_USER_HOME/.epkg/envs/common/profile-1/usr/bin/epkg $EPKG_USER_HOME/bin/epkg
+        # 检验PATH中是否有$HOME/bin
+        current_path=$PATH
+        if [[ ":$current_path:" != *":$HOME/bin:"* ]]; then
+            echo "export PATH=$HOME/bin:$PATH" > $RC_PATH
+            echo "For changes to take effect, close and re-open your current shell."
+        else
+            echo "$HOME/bin is already in PATH."
+        fi
     else
         rm -rf /bin/epkg
         rm -rf /usr/local/bin/epkg
