@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# XXX: only create .epkg and store, common env
+# XXX: only touch bashrc epkg()
+
 EPKG_USER=${1:-$USER}
 EPKG_TARS_PATH=/tmp/$EPKG_USER
 EPKG_USER_HOME=/root
@@ -24,7 +27,9 @@ case "$shell" in
 esac
 
 create_epkg_user() {
+	# XXX: only prompt for root user
     echo "Attention: Select the installation mode (global: /opt/.epkg, user: $HOME/.epkg, other: $HOME/.epkg)"
+    # XXX: 3 lines, 1.2.3.
     read choice
     if [[ "$choice" == "global" ]]; then
         EPKG_USER_HOME=/opt
@@ -37,6 +42,7 @@ create_epkg_user() {
 }
 
 mk_home() {
+    # XXX: no need prompt
     echo "Attention: Two tars will be saved in $EPKG_TARS_PATH"
     echo "sure to continue? (y: continue, others: exit)"
     read choice
@@ -50,6 +56,7 @@ mk_home() {
     ln -sT profile-1 $EPKG_USER_HOME/.epkg/envs/common/profile-current
 }
 
+# XXX: split, 1 download all 2 unpack 3 change bashrc
 download_and_unpack() {
     echo "Attention: Need 150M space to download and unpack tars to $EPKG_TARS_PATH"
     echo "sure to continue? (y: continue, others: exit)"
@@ -110,6 +117,9 @@ download_and_unpack() {
     return 0
 }
 
+# XXX: assume has tar/coreutils; detect use curl/wget
+# XXX: use self contained tools
+# XXX: no install
 install_needed_tools() {
     local package_name="jq tar file grep findutils coreutils util-linux"
     if rpm -q $package_name >/dev/null 2>&1; then
@@ -143,8 +153,13 @@ install_needed_tools() {
     return 1
 }
 
+# XXX: rename to epkg-installer.sh
+# XXX: explain will create which dirs, change which config files
+
+# XXX: spell errors
 echo "Execute user: $USER, initail epkg user: $EPKG_USER"
 # step 0. create nonroot user
+# XXX: rename
 create_epkg_user
 
 # step 1. mk path to save tar files
