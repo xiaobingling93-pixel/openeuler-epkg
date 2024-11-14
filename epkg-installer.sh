@@ -31,23 +31,25 @@ case "$shell" in
 esac
 
 select_installation_mode() {
-	# XXX: only prompt for root user
-    echo "Attention: Select the installation mode"
-    echo "1: global mode: epkg common and store will be installed in the /opt/epkg/, requires root user"
-    echo "2: user   mode: epkg will be installed in the $HOME/.epkg/"
+    echo "Attention: Execute by $USER, Select the installation mode"
+    echo "1: user   mode: epkg will be installed in the $HOME/.epkg/"
+    echo "2: global mode: epkg common and store will be installed in the /opt/epkg/, requires root user"
     read choice
     if [[ "$choice" == "1" ]]; then
-        EPKG_INSTALL_MODE="global"
-        EPKG_CACHE=$OPT_EPKG/cache
-        EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
-    elif [[ "$choice" == "2" ]]; then
         EPKG_INSTALL_MODE="user"
         EPKG_CACHE=$HOME/.cache/epkg
         EPKG_COMMON_ROOT=$HOME_EPKG/envs/common
+    elif [[ "$choice" == "2" && "$(id -u)" = "0" ]]; then
+        EPKG_INSTALL_MODE="global"
+        EPKG_CACHE=$OPT_EPKG/cache
+        EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
+    elif [[ "$choice" == "2" && "$(id -u)" != "0" ]]; then
+        echo "Please use the root user to execute the global installation mode"
+        return 1
     else
+        echo "Error choice !"
         return 1
     fi
-
     EPKG_MANAGER_DIR=$EPKG_CACHE/epkg_manager
 }
 
@@ -91,7 +93,7 @@ epkg_unpack() {
         chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
     else
         chown -R $USER:$USER $HOME_EPKG
-        chown -R 755 $HOME_EPKG
+        chmod -R 755 $HOME_EPKG
     fi
     return 0
 }
@@ -103,50 +105,38 @@ change_bashrc() {
 
 # XXX: assume has tar/coreutils; detect use curl/wget
 # XXX: use self contained tools
-# XXX: no install
-install_needed_tools() {
+dependency_check() {
     local package_name="jq tar file grep findutils coreutils util-linux"
-    if rpm -q $package_name >/dev/null 2>&1; then
-        return 0
-    fi
-
-    local max_retries=3
-    local retry_interval=5
-    local download_timeout=60
-    local retry_count=0
-
-    echo "Attention: $package_name were needed for initialization"
-    echo "sure to continue? (y: continue, others: exit)"
-    read choice
-    if [ "$choice" != "y" ]; then
-        return 1
-    fi
-
-    while ((retry_count < max_retries)); do
-        if timeout ${download_timeout}s yum install -y $package_name; then
-            echo "Package $package_name installed successfully on attempt $((retry_count+1))"
-            return 0
-        else
-            echo "Installation failed on attempt $((retry_count+1)). Retrying after $retry_interval seconds..."
-            ((retry_count++))
-            sleep $retry_interval
+    local missing_packages=
+    for pkg in $package_name; do
+        if ! rpm -q $pkg >/dev/null 2>&1; then
+            missing_packages="$missing_packages $pkg"
         fi
     done
 
-    echo "Failed to install package $package_name after $max_retries attempts."
-    return 1
+    if [[ ! -z "$missing_packages" ]]; then
+        echo "packages $missing_packages not found, please install "
+        return 1
+    fi
+
+    return 0
 }
 
-echo "Execute user: $USER"
 # step 0. select installation mode
 select_installation_mode
+if [ $? -ne 0 ]; then
+    exit 1
+fi
 echo "Directories $EPKG_CACHE and $EPKG_COMMON_ROOT will be created."
 
 # step 1. mk path
 mk_home
 
-# step 2. install needed tools
-install_needed_tools
+# step 2. dependency check
+dependency_check
+if [ $? -ne 0 ]; then
+    exit 1
+fi
 
 # step 3. download - unpack - change bashrc
 epkg_download
