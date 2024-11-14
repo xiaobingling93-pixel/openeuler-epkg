@@ -7,12 +7,10 @@ EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_CONFIG_DIR=$HOME_EPKG/config
 # These PATHs are based on the installation mode
 EPKG_COMMON_ROOT=$EPKG_ENVS_ROOT
-EPKG_TEMP=$HOME_EPKG/tmp
 EPKG_CACHE=$HOME/.cache/epkg
 EPKG_STORE_ROOT=$HOME_EPKG/store
 if [ -d "$PUB_EPKG" ]; then
 	EPKG_COMMON_ROOT=$PUB_EPKG/envs
-	EPKG_TEMP=$PUB_EPKG/tmp
 	EPKG_CACHE=$OPT_EPKG/cache
 	EPKG_STORE_ROOT=$OPT_EPKG/store
 fi
@@ -46,7 +44,6 @@ esac
 
 init_paths() {
 	# global PATH
-	$epkg_helper mkdir -p $EPKG_TEMP
 	$epkg_helper mkdir -p $EPKG_STORE_ROOT
 	$epkg_helper mkdir -p $EPKG_PKG_CACHE_DIR
 	# user PATH

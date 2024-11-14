@@ -74,15 +74,15 @@ create_rootfs_symlinks() {
 
 prepare_epkg_rootfs() {
 	# download epkg_rootfs
-	$epkg_helper curl -# -o $EPKG_TEMP/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
-	$epkg_helper chmod a+x $EPKG_TEMP/elf-loader
-	$epkg_helper /bin/cp $EPKG_TEMP/elf-loader $COMMON_PROFILE_LINK/usr/bin/
+	$epkg_helper curl -# -o $EPKG_CACHE/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
+	$epkg_helper chmod a+x $EPKG_CACHE/elf-loader
+	$epkg_helper /bin/cp $EPKG_CACHE/elf-loader $COMMON_PROFILE_LINK/usr/bin/
 
 	echo "download epkg rootfs"
-	$epkg_helper curl -# -o $EPKG_TEMP/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
+	$epkg_helper curl -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	$epkg_helper /bin/tar -xf $EPKG_TEMP/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+	$epkg_helper /bin/tar -xf $EPKG_CACHE/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
 }
