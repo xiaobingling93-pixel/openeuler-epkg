@@ -2,23 +2,22 @@
 
 OPT_EPKG=/opt/epkg
 HOME_EPKG=$HOME/.epkg
+PUB_EPKG=$OPT_EPKG/users/public
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_CONFIG_DIR=$HOME_EPKG/config
 # These PATHs are based on the installation mode
 EPKG_ENV_COMM_ROOT=$EPKG_ENVS_ROOT
-EPKG_TEMP=$HOME_EPKG/.temp
+EPKG_TEMP=$HOME_EPKG/tmp
+EPKG_CACHE=$HOME/.cache/epkg
 EPKG_STORE_ROOT=$HOME_EPKG/store
-EPKG_PKG_CACHE_DIR=$HOME/.cache/epkg/packages
-EPKG_CHANNEL_CACHE_DIR=$HOME/.cache/epkg/channel
-EPKG_INIT_ROOT=$HOME_EPKG/.init
-if [ -d "/opt/.epkg/envs/common/" ]; then
-	EPKG_ENV_COMM_ROOT=/opt/.epkg/envs
-	EPKG_TEMP=/opt/.temp
-	EPKG_STORE_ROOT=/opt/.epkg/store
-	EPKG_PKG_CACHE_DIR=/opt/.cache/epkg/packages
-	EPKG_CHANNEL_CACHE_DIR=/opt/.cache/epkg/channel
-	EPKG_INIT_ROOT=/opt/.epkg/.init
+if [ -d "$PUB_EPKG" ]; then
+	EPKG_ENV_COMM_ROOT=$PUB_EPKG/envs
+	EPKG_TEMP=$PUB_EPKG/tmp
+	EPKG_CACHE=$OPT_EPKG/cache
+	EPKG_STORE_ROOT=$OPT_EPKG/store
 fi
+EPKG_PKG_CACHE_DIR=$EPKG_CACHE/packages
+EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
 # These PATHs are related to the common env
 COMMON_PROFILE_LINK=$EPKG_ENV_COMM_ROOT/common/profile-current
 if [ -d "$COMMON_PROFILE_LINK" ]; then
@@ -50,7 +49,6 @@ init_paths() {
 	$epkg_helper mkdir -p $EPKG_TEMP
 	$epkg_helper mkdir -p $EPKG_STORE_ROOT
 	$epkg_helper mkdir -p $EPKG_PKG_CACHE_DIR
-	$epkg_helper mkdir -p $EPKG_INIT_ROOT
 	# user PATH
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 	#init_opt_dir

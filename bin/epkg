@@ -1,6 +1,6 @@
 #!/usr/bin/bash
-if [ -d "/opt/.epkg/envs/common/" ]; then
-	export PROJECT_DIR=/opt/.epkg/envs/common/profile-1/usr
+if [ -d "/opt/epkg/users/public/envs/common/" ]; then
+	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
 elif [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 else

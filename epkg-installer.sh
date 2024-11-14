@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# XXX: only touch bashrc epkg()
-
 # download file
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 EPKG_MANAGER_TAR=epkg_manager.tar.gz
@@ -91,10 +89,16 @@ epkg_unpack() {
         cp -r $EPKG_CACHE/$EPKG_HELPER $EPKG_COMMON_ROOT/profile-1/usr/bin/
         chmod -R 755 $OPT_EPKG
         chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
+        # TODO: temp cp ->  only touch bashrc epkg()
+        cp $EPKG_CACHE/$EPKG_HELPER /usr/bin
+        chmod 4755 /usr/bin/epkg_helper
     else
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
     fi
+    # TODO: temp ln  ->  only touch bashrc epkg()
+    rm -rf /bin/epkg
+    ln -sT $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg /bin/epkg
     return 0
 }
 
@@ -103,8 +107,7 @@ change_bashrc() {
     return 0
 }
 
-# XXX: assume has tar/coreutils; detect use curl/wget
-# XXX: use self contained tools
+# TODO: assume has tar/coreutils; detect use curl/wget, use self contained tools
 dependency_check() {
     local package_name="jq tar file grep findutils coreutils util-linux"
     local missing_packages=

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-if [ -d "/opt/.epkg/envs/common/" ]; then
-	export PROJECT_DIR=/opt/.epkg/envs/common/profile-1/usr
+if [ -d "/opt/epkg/users/public/envs/common/" ]; then
+	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
 elif [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 else
@@ -32,7 +32,7 @@ __get_curr_env_root() {
 __get_epkg_helper() {
 	local mode=$1
 	local curr_env_path=$2
-	local global_comm_path=/opt/.epkg/envs/common/
+	local global_comm_path=$PUB_EPKG/envs/common/
 
 	if [[ "$mode" == "env_mode" && "$curr_env_path" =~ "$global_comm_path" ]]; then
 		epkg_helper=/usr/bin/epkg_helper	
@@ -254,17 +254,10 @@ __check_epkg_user_init() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
 
-	if ! $epkg_helper ls $EPKG_INIT_ROOT/$USER &> /dev/null; then
-		if $epkg_helper ls -A $EPKG_INIT_ROOT 2> /dev/null | grep -q .; then
-			echo "epkg had been initialized"
-			echo "Warning: $USER has not been initialized"
-			echo "please execute: epkg init"
-			return 1
-		else
-			echo "Warning: epkg has not been initialized"
-			echo "please execute: epkg init"
-			return 1
-		fi
+	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
+		echo "Warning: epkg has not been initialized"
+		echo "please execute: epkg init"
+		return 1
 	fi
 }
 
