@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 source "$SCRIPT_DIR/../lib/epkg/package.sh"
-EPKG_TMP=/tmp/$USER
-EPKG_ROOTFS_TAR_NAME="epkg_rootfs"
 
 epkg_init() {
 	local reverse=false
@@ -89,17 +87,4 @@ prepare_epkg_rootfs() {
 	$epkg_helper /bin/tar -xf $EPKG_TEMP/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
-}
-
-prepare_rootfs() {
-	if [ ! -d $EPKG_TMP/$EPKG_ROOTFS_TAR_NAME ]; then
-		echo "No $EPKG_ROOTFS_TAR_NAME exist!"
-		retrun 1
-	fi
-
-	cp -ar $EPKG_TMP/epkg_rootfs/* "$COMMON_PROFILE_LINK"
-	__fix_rootfs_needed $COMMON_PROFILE_LINK
-	# echo "export EPKG_INITIALIZED=yes" >> $RC_PATH
-
-	return 0
 }
