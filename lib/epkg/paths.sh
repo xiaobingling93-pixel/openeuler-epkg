@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 
+# Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
-HOME_EPKG=$HOME/.epkg
 PUB_EPKG=$OPT_EPKG/users/public
+# User Epkg Path
+HOME_EPKG=$HOME/.epkg
 EPKG_ENVS_ROOT=$HOME_EPKG/envs
 EPKG_CONFIG_DIR=$HOME_EPKG/config
 # These PATHs are based on the installation mode
-EPKG_COMMON_ROOT=$EPKG_ENVS_ROOT
-EPKG_CACHE=$HOME/.cache/epkg
-EPKG_STORE_ROOT=$HOME_EPKG/store
 if [ -d "$PUB_EPKG" ]; then
 	EPKG_COMMON_ROOT=$PUB_EPKG/envs
 	EPKG_CACHE=$OPT_EPKG/cache
 	EPKG_STORE_ROOT=$OPT_EPKG/store
+else 
+	EPKG_COMMON_ROOT=$EPKG_ENVS_ROOT
+	EPKG_CACHE=$HOME/.cache/epkg
+	EPKG_STORE_ROOT=$HOME_EPKG/store
 fi
 EPKG_PKG_CACHE_DIR=$EPKG_CACHE/packages
 EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
