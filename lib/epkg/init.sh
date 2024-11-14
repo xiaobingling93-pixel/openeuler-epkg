@@ -37,13 +37,6 @@ epkg_init() {
 
 	create_environment main     # main user environment
 	__epkg_enable_environment main
-	init_rc
-}
-
-init_rc() {
-	# cp -rf $PROJECT_DIR/lib/* $EPKG_ENVS_ROOT/common/profile-current/usr/lib/ &> /dev/null
-	# cp $PROJECT_DIR/bin/epkg $EPKG_ENVS_ROOT/common/profile-current/usr/bin/ &> /dev/null
-	# cp $PROJECT_DIR/../etc/epkg/channel.json $HOME_EPKG/
 	append_user_rc
 }
 
@@ -70,7 +63,6 @@ create_rootfs_symlinks() {
 	done
 	ROOTFS_LINK=$COMMON_PROFILE_LINK
 }
-
 
 prepare_epkg_rootfs() {
 	# download epkg_rootfs
