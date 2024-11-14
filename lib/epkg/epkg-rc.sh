@@ -23,7 +23,7 @@ __epkg_rehash() {
 __get_curr_env_root() {
 	local curr_env=$1
 	if [[ "$curr_env" == "common" ]]; then
-		curr_env_root=$EPKG_ENV_COMM_ROOT
+		curr_env_root=$EPKG_COMMON_ROOT
 	else
 		curr_env_root=$EPKG_ENVS_ROOT
 	fi
