@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 
-# download file
+# Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 EPKG_MANAGER_TAR=epkg_manager.tar.gz
 EPKG_HELPER=epkg_helper
-# epkg base path
+# Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
-HOME_EPKG=$HOME/.epkg
 PUB_EPKG=$OPT_EPKG/users/public
-# epkg mode-based path
+# User Epkg Path
+HOME_EPKG=$HOME/.epkg
+# Epkg Mode-based Path
 EPKG_INSTALL_MODE=
 EPKG_CACHE=
 EPKG_COMMON_ROOT=
 EPKG_MANAGER_DIR=
-# shell type
+# Shell Type
 shell=$(basename "$SHELL")
 case "$shell" in
 	"bash")
