@@ -16,18 +16,20 @@ epkg_init() {
 		shift
 	done
 
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
+	# check epkg init ready
 	if [ -d "$EPKG_ENVS_ROOT/main/" ]; then
 		echo "epkg had been initialized, $USER user had been initialized"
 		return 0
-	elif [[ -d "$PUB_EPKG" && -d "$COMMON_PROFILE_LINK" ]]; then
+	fi
+
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+	init_paths
+	if [[ -d "$PUB_EPKG" && -d "$COMMON_PROFILE_LINK" ]]; then
 		echo "epkg had been initialized, $USER user initialization is in progress ..."
-		init_paths
 		__epkg_activate_environment common
 	else
 		echo "epkg has not been initialized, epkg initialization is in progress ..."
-		init_paths
 		create_environment common  
 		prepare_epkg_rootfs
 	fi

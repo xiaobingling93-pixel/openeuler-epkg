@@ -78,12 +78,10 @@ epkg_unpack() {
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        cp -r $EPKG_CACHE/$EPKG_HELPER $EPKG_COMMON_ROOT/profile-1/usr/bin/
+        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
+        chown -R $USER:$USER $OPT_EPKG
         chmod -R 755 $OPT_EPKG
-        chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
-        # TODO: temp cp ->  only touch bashrc epkg()
-        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER /usr/bin/$EPKG_HELPER
-        chmod 4755 /usr/bin/epkg_helper
+        chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
     else
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG

@@ -40,9 +40,9 @@ __get_epkg_helper() {
 	local global_comm_path=$PUB_EPKG/envs/common/
 
 	if [[ "$mode" == "env_mode" && "$curr_env_path" =~ "$global_comm_path" ]]; then
-		epkg_helper=/usr/bin/epkg_helper	
+		epkg_helper=$EPKG_HELPER_EXEC
 	elif [[ "$mode" == "install_mode" && -d "$global_comm_path" ]]; then
-		epkg_helper=/usr/bin/epkg_helper
+		epkg_helper=$EPKG_HELPER_EXEC
 	fi
 }
 

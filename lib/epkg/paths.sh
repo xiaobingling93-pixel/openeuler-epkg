@@ -25,6 +25,7 @@ if [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 fi
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
+EPKG_HELPER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
 
 shell=$(basename "$SHELL")
 case "$shell" in
