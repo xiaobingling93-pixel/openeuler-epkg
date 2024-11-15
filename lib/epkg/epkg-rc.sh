@@ -6,9 +6,14 @@ elif [ -d "$COMMON_PROFILE_LINK" ]; then
 else
     export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
 fi
+
 source $PROJECT_DIR/lib/epkg/paths.sh
+source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/env.sh
+source $PROJECT_DIR/lib/epkg/package.sh
+source $PROJECT_DIR/lib/epkg/query.sh
 source $PROJECT_DIR/lib/epkg/repo.sh
+source $PROJECT_DIR/lib/epkg/cache-repo.sh
 
 __epkg_rehash() {
 	if [ -n "${ZSH_VERSION}" ]; then
@@ -261,15 +266,43 @@ __check_epkg_user_init() {
 	fi
 }
 
+__get_help_info() {
+	cat <<-EOF
+Usage:
+epkg init
+
+epkg env list
+
+epkg create [env]
+epkg activate [env]
+epkg deactivate [env]
+
+epkg install [PACKAGE]
+EOF
+}
+
 epkg() {
-	if ! __check_epkg_user_init; then
-		exit 1
-	fi
 	local cmd="$1"
 	local env="$2"
-	local HOME_EPKG=$HOME/.epkg
-	local EPKG_CONFIG_DIR=$HOME_EPKG/config
+	shift
+
+	if [[ "$cmd" != "init" && "$cmd" != '-h' && "$cmd" != '--help' ]]; then
+		echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
+		get_active_env "$@"
+		
+		[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
+		if ! __check_epkg_user_init; then
+			return 1
+		fi
+	fi
+
 	case "$cmd" in
+		--help|-h)
+			__get_help_info
+			;;
+		init)
+			epkg_init "$@"
+			;;
 		create)
 			echo $env
 			create_environment $env
@@ -303,6 +336,39 @@ epkg() {
 			;;
 		deactivate)
 			__epkg_deactivate_environment
+			;;
+		env)
+			subcmd=$1
+			shift
+			case $subcmd in
+				"list")
+					list_environments
+					;;
+				*)
+					echo "Usage: epkg env [list|create|remove|enable|disable|activate|deactivate|history|rollback]"
+					;;
+			esac
+			;;
+		install)
+			installroot=""
+			package_arr=()
+			while [[ $# -gt 0 ]];do
+				case "$1" in
+					--installroot=*)
+						installroot="${1#*=}"
+						shift
+						;;
+					*)
+						package_arr+=("$1")
+						shift
+						;;
+				esac
+			done
+			if [ ${#package_arr[@]} -eq 0 ]; then
+				echo "No Packages specified." >&2
+				exit 1
+			fi
+			install_package
 			;;
 		*)
 			command epkg "$@"

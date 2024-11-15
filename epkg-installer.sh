@@ -91,20 +91,31 @@ epkg_unpack() {
         chmod -R 755 $OPT_EPKG
         chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
         # TODO: temp cp ->  only touch bashrc epkg()
-        cp $EPKG_CACHE/$EPKG_HELPER /usr/bin
+        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER /usr/bin/$EPKG_HELPER
         chmod 4755 /usr/bin/epkg_helper
     else
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
     fi
-    # TODO: temp ln  ->  only touch bashrc epkg()
-    rm -rf /bin/epkg
-    ln -sT $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg /bin/epkg
     return 0
 }
 
-change_bashrc() {
-    
+epkg_change_bashrc() {
+    if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
+        local bashrc_file=/etc/bashrc
+    else
+        local bashrc_file=$HOME/.bashrc
+    fi
+    cat << EOF >> $bashrc_file
+# epkg begin
+if [ -d "/opt/epkg/users/public/envs/common/" ]; then
+	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
+else
+	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
+fi
+source \$PROJECT_DIR/lib/epkg/epkg-rc.sh
+# epkg end
+EOF
     return 0
 }
 
@@ -145,7 +156,7 @@ fi
 # step 3. download - unpack - change bashrc
 epkg_download
 epkg_unpack
-change_bashrc
+epkg_change_bashrc
 if [ $? -ne 0 ]; then
     exit 1
 fi
