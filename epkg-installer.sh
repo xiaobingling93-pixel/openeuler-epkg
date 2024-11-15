@@ -130,16 +130,11 @@ dependency_check() {
 }
 
 # step 0. dependency check
-dependency_check
-if [ $? -ne 0 ]; then
-    exit 1
-fi
+dependency_check || exit 1
 
 # step 1. select installation mode
-select_installation_mode
-if [ $? -ne 0 ]; then
-    exit 1
-fi
+select_installation_mode || exit 1
+
 echo "Attention: Directories $EPKG_CACHE and $PUB_EPKG will be created."
 echo "Attention: File $BASHRC_FILE will be modified."
 mk_home
