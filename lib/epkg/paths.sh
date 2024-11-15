@@ -24,7 +24,6 @@ COMMON_PROFILE_LINK=$EPKG_COMMON_ROOT/profile-current
 if [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
 fi
-EPKG_RC=$COMMON_PROFILE_LINK/usr/lib/epkg/epkg-rc.sh
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
 
 shell=$(basename "$SHELL")

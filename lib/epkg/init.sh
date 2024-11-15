@@ -44,7 +44,6 @@ append_user_rc() {
 		echo "epkg is already initialized in '$RC_PATH'"
 	else
 		echo "source $EPKG_CONFIG_DIR/shell-add-path.sh" >> "$RC_PATH"
-		echo "source $EPKG_RC" >> "$RC_PATH"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
 }
