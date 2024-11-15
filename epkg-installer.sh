@@ -14,7 +14,7 @@ EPKG_INSTALL_MODE=
 EPKG_CACHE=
 EPKG_COMMON_ROOT=
 EPKG_MANAGER_DIR=
-BASHRC_FILE=
+
 # Shell Type
 shell=$(basename "$SHELL")
 case "$shell" in
@@ -39,12 +39,11 @@ select_installation_mode() {
         EPKG_INSTALL_MODE="user"
         EPKG_CACHE=$HOME/.cache/epkg
         EPKG_COMMON_ROOT=$HOME_EPKG/envs/common
-        BASHRC_FILE=$HOME/.bashrc
     elif [[ "$choice" == "2" && "$(id -u)" = "0" ]]; then
         EPKG_INSTALL_MODE="global"
         EPKG_CACHE=$OPT_EPKG/cache
         EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
-        BASHRC_FILE=/etc/bashrc
+        RC_PATH=/etc/profile.d/epkg.sh
     elif [[ "$choice" == "2" && "$(id -u)" != "0" ]]; then
         echo "Attention: Please use the root user to execute the global installation mode"
         return 1
@@ -92,7 +91,8 @@ epkg_unpack() {
 }
 
 epkg_change_bashrc() {
-    cat << EOF >> $BASHRC_FILE
+    cat << EOF >> $RC_PATH
+
 # epkg begin
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	EPKG_COMMON_ROOT=/opt/epkg/users/public/envs/common
