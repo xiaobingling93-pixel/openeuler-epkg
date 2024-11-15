@@ -104,18 +104,25 @@ source \$EPKG_COMMON_ROOT/profile-current/usr/lib/epkg/epkg-rc.sh
 EOF
 }
 
+has_cmd()
+{
+	command -v "$1" >/dev/null
+}
+
 # TODO: assume has tar/coreutils; detect use curl/wget, use self contained tools
 dependency_check() {
-    local package_name="jq tar file grep findutils coreutils util-linux"
-    local missing_packages=
-    for pkg in $package_name; do
-        if ! rpm -q $pkg >/dev/null 2>&1; then
-            missing_packages="$missing_packages $pkg"
+    local cmd_names="id tar cat cp chmod chown curl"
+    local cmd
+    local missing_cmds=
+
+    for cmd in $cmd_names; do
+        if ! has_cmd $cmd; then
+            missing_cmds="$missing_cmds $pkg"
         fi
     done
 
-    if [[ ! -z "$missing_packages" ]]; then
-        echo "packages $missing_packages not found, please install "
+    if [[ -n "$missing_cmds" ]]; then
+        echo "Commands '$missing_cmds' not found, please install first"
         return 1
     fi
 
