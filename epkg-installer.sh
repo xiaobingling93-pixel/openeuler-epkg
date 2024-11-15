@@ -60,13 +60,6 @@ mk_home() {
 }
 
 epkg_download() {
-    echo "Attention: Need 150M space to download and unpack tars to $EPKG_CACHE"
-    echo "sure to continue? (y: continue, others: exit)"
-    read choice
-    if [ "$choice" != "y" ]; then
-        return 1
-    fi
-
     # download epkg_manager    
     curl -o $EPKG_CACHE/$EPKG_MANAGER_TAR $EPKG_URL/$EPKG_MANAGER_TAR
 
@@ -74,8 +67,6 @@ epkg_download() {
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         curl -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER
     fi
-    
-    return 0
 }
 
 epkg_unpack() {
@@ -97,7 +88,6 @@ epkg_unpack() {
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
     fi
-    return 0
 }
 
 epkg_change_bashrc() {
@@ -116,7 +106,6 @@ fi
 source \$PROJECT_DIR/lib/epkg/epkg-rc.sh
 # epkg end
 EOF
-    return 0
 }
 
 # TODO: assume has tar/coreutils; detect use curl/wget, use self contained tools
@@ -137,26 +126,21 @@ dependency_check() {
     return 0
 }
 
-# step 0. select installation mode
-select_installation_mode
-if [ $? -ne 0 ]; then
-    exit 1
-fi
-echo "Directories $EPKG_CACHE and $EPKG_COMMON_ROOT will be created."
-
-# step 1. mk path
-mk_home
-
-# step 2. dependency check
+# step 0. dependency check
 dependency_check
 if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# step 3. download - unpack - change bashrc
-epkg_download
-epkg_unpack
-epkg_change_bashrc
+# step 1. select installation mode
+select_installation_mode
 if [ $? -ne 0 ]; then
     exit 1
 fi
+echo "Directories $EPKG_CACHE and $EPKG_COMMON_ROOT will be created."
+mk_home
+
+# step 2. download - unpack - change bashrc
+epkg_download
+epkg_unpack
+epkg_change_bashrc
