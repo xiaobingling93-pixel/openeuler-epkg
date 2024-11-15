@@ -95,11 +95,11 @@ epkg_change_bashrc() {
     cat << EOF >> $BASHRC_FILE
 # epkg begin
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
+	EPKG_COMMON_ROOT=/opt/epkg/users/public/envs/common
 else
-	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
+	EPKG_COMMON_ROOT=\$HOME/.epkg/envs/common
 fi
-source \$PROJECT_DIR/lib/epkg/epkg-rc.sh
+source \$EPKG_COMMON_ROOT/profile-current/usr/lib/epkg/epkg-rc.sh
 # epkg end
 EOF
 }
