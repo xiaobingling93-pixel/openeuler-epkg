@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-source "$SCRIPT_DIR/../lib/epkg/query.sh"
-source "$SCRIPT_DIR/../lib/epkg/cache-repo.sh"
 
 install_package() {
 	cache_repo
