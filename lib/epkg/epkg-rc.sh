@@ -96,10 +96,6 @@ __epkg_update_path() {
 		[ "$env_to_add" != $env ] && [ "$env_to_add" != "common" ] &&
 		__epkg_add_path $env_to_add
 	done
-
-	# if ! echo "$path" | grep -q -F "epkg_manager"; then
-	# 	path=$path:$HOME/epkg_manager/bin
-	# fi
 }
 
 __epkg_enable_environment() {
@@ -147,9 +143,10 @@ __epkg_activate_environment() {
 	local epkg_path=
 
 	__epkg_rehash
-	__epkg_add_path common
+	if [[ "$env" != "common" ]]; then
+		__epkg_add_path common
+	fi
 	__epkg_add_path $env
-	# path=$path:$HOME/epkg_manager/bin
 
 	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	export PATH="$epkg_path:$ORIGIN_PATH"
@@ -165,7 +162,6 @@ __epkg_deactivate_environment() {
 	__epkg_rehash
 	__epkg_add_path common
 	__epkg_add_path main
-	# path=$path:$HOME/epkg_manager/bin
 
 	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	export PATH="$epkg_path:$ORIGIN_PATH"
@@ -283,17 +279,17 @@ EOF
 
 epkg() {
 	local cmd="$1"
-	local env="$2"
+	local input_env="$2"
 	shift
 
 	if [[ "$cmd" != "init" && "$cmd" != '-h' && "$cmd" != '--help' ]]; then
-		echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
-		get_active_env "$@"
-		
-		[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
 		if ! __check_epkg_user_init; then
 			return 1
 		fi
+		echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
+		local env=
+		get_active_env "$@"
+		[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
 	fi
 
 	case "$cmd" in
@@ -304,9 +300,8 @@ epkg() {
 			epkg_init "$@"
 			;;
 		create)
-			echo $env
-			create_environment $env
-			shift
+			echo "env $input_env will be create."
+			create_environment $input_env
 			shift
 			subcmd=$1
 			if [ $# -gt 0 ]; then # zsh compatible; when $# < shift
@@ -315,24 +310,24 @@ epkg() {
 			case $subcmd in 
 				"--repo")
 					if [[ "$1" == *"/"* ]];then
-						init_channel_repo $env ${1%/*} ${1#*/}
+						init_channel_repo $input_env ${1%/*} ${1#*/}
 					else
-						init_channel_repo $env $1
+						init_channel_repo $input_env $1
 					fi
 					;;
 				*)
-					init_channel_repo $env openEuler-24.09
+					init_channel_repo $input_env openEuler-24.09
 					;;
 			esac
 			;;
 		enable)
-			__epkg_enable_environment $env
+			__epkg_enable_environment $input_env
 			;;
 		disable)
-			__epkg_disable_environment $env
+			__epkg_disable_environment $input_env
 			;;
 		activate)
-			__epkg_activate_environment $env
+			__epkg_activate_environment $input_env
 			;;
 		deactivate)
 			__epkg_deactivate_environment
