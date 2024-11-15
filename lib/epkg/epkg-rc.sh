@@ -300,7 +300,7 @@ epkg() {
 			epkg_init "$@"
 			;;
 		create)
-			echo "env $input_env will be create."
+			echo "Attention: env $input_env will be create."
 			create_environment $input_env
 			shift
 			subcmd=$1

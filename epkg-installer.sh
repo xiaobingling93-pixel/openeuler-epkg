@@ -14,6 +14,7 @@ EPKG_INSTALL_MODE=
 EPKG_CACHE=
 EPKG_COMMON_ROOT=
 EPKG_MANAGER_DIR=
+BASHRC_FILE=
 # Shell Type
 shell=$(basename "$SHELL")
 case "$shell" in
@@ -38,12 +39,14 @@ select_installation_mode() {
         EPKG_INSTALL_MODE="user"
         EPKG_CACHE=$HOME/.cache/epkg
         EPKG_COMMON_ROOT=$HOME_EPKG/envs/common
+        BASHRC_FILE=$HOME/.bashrc
     elif [[ "$choice" == "2" && "$(id -u)" = "0" ]]; then
         EPKG_INSTALL_MODE="global"
         EPKG_CACHE=$OPT_EPKG/cache
         EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
+        BASHRC_FILE=/etc/bashrc
     elif [[ "$choice" == "2" && "$(id -u)" != "0" ]]; then
-        echo "Please use the root user to execute the global installation mode"
+        echo "Attention: Please use the root user to execute the global installation mode"
         return 1
     else
         echo "Error choice !"
@@ -89,12 +92,7 @@ epkg_unpack() {
 }
 
 epkg_change_bashrc() {
-    if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        local bashrc_file=/etc/bashrc
-    else
-        local bashrc_file=$HOME/.bashrc
-    fi
-    cat << EOF >> $bashrc_file
+    cat << EOF >> $BASHRC_FILE
 # epkg begin
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
@@ -135,10 +133,13 @@ select_installation_mode
 if [ $? -ne 0 ]; then
     exit 1
 fi
-echo "Directories $EPKG_CACHE and $EPKG_COMMON_ROOT will be created."
+echo "Attention: Directories $EPKG_CACHE and $PUB_EPKG will be created."
+echo "Attention: File $BASHRC_FILE will be modified."
 mk_home
 
 # step 2. download - unpack - change bashrc
 epkg_download
 epkg_unpack
 epkg_change_bashrc
+
+echo "Attention: For changes to take effect, close and re-open your current shell.."
