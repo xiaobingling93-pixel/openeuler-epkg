@@ -23,7 +23,6 @@ create_environment() {
 	#	return
 	#fi
 
-	#create_yum_installroot  "$EPKG_ENVS_ROOT/$env/profile-1"
 	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/tmp"
 
 	$epkg_helper ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
@@ -70,48 +69,6 @@ remove_environment() {
 	
 	mv "$curr_env_root/$env" "$curr_env_root/.$env"
 	echo "$env remove success!"
-}
-
-# create YUM --installroot directory structure
-create_yum_installroot() {
-	local installroot="$1"
-
-	if [ -z "$installroot" ]; then
-		echo "Usage: create_yum_installroot <installroot>"
-		return 1
-	fi
-
-	# Create YUM --installroot directory structure
-	mkdir -p "$installroot/var/cache/yum"
-	mkdir -p "$installroot/var/lib/yum"
-	mkdir -p "$installroot/var/lib/rpm"
-	mkdir -p "$installroot/etc/yum.repos.d"
-
-	# Set up default yum.conf
-	cat > "$installroot/etc/yum.conf" <<EOL
-[main]
-cachedir=/var/cache/yum/\$basearch/\$releasever
-keepcache=0
-debuglevel=2
-logfile=/var/log/yum.log
-exactarch=1
-obsoletes=1
-gpgcheck=1
-plugins=1
-installonly_limit=3
-reposdir=/etc/yum.repos.d
-EOL
-
-	# Set up local repository in /etc/yum.repos.d
-	cat > "$installroot/etc/yum.repos.d/local.repo" <<EOL
-[local]
-name=Local openEuler OS Repository
-baseurl=file:///srv/os-repo/epkg/openeuler/openEuler-20.03-LTS-SP1/OS/aarch64
-enabled=1
-gpgcheck=0
-EOL
-
-	echo "YUM --installroot directory structure created successfully in: $installroot"
 }
 
 # setup env variable
