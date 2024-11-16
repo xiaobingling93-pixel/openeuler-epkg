@@ -99,7 +99,7 @@ if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 else
 	EPKG_COMMON_ROOT=\$HOME/.epkg/envs/common
 fi
-source \$EPKG_COMMON_ROOT/profile-current/usr/lib/epkg/epkg-rc.sh
+source \$EPKG_COMMON_ROOT/profile-1/usr/lib/epkg/epkg-rc.sh
 # epkg end
 EOF
 }
@@ -136,7 +136,7 @@ dependency_check || exit 1
 select_installation_mode || exit 1
 
 echo "Attention: Directories $EPKG_CACHE and $PUB_EPKG will be created."
-echo "Attention: File $BASHRC_FILE will be modified."
+echo "Attention: File $RC_PATH will be modified."
 mk_home
 
 # step 2. download - unpack - change bashrc
