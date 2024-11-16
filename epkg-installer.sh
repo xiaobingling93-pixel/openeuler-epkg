@@ -109,7 +109,6 @@ has_cmd()
 	command -v "$1" >/dev/null
 }
 
-# TODO: assume has tar/coreutils; detect use curl/wget, use self contained tools
 dependency_check() {
     local cmd_names="id tar cat cp chmod chown curl"
     local cmd
