@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# XXX: 'epkg init' should
+# - not require root privilege
+# - only modify $HOME, setup env for current normal user
 epkg_init() {
 	local reverse=false
 

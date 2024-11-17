@@ -23,6 +23,8 @@ create_environment() {
 	#	return
 	#fi
 
+	# XXX: is epkg_helper secure?
+	# XXX: merge N mkdir into 1 single cmd
 	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/tmp"
 
 	$epkg_helper ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
@@ -33,6 +35,7 @@ create_environment() {
 	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
 	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
 
+	# use relative symlink
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/app-bin"  "$curr_env_root/$env/profile-1/app-bin"
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/bin"  "$curr_env_root/$env/profile-1/bin"
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
@@ -48,6 +51,7 @@ activate_environment() {
 	local curr_env_root=
 	__get_curr_env_root $env
 
+	# XXX: avoid these extra actions
 	mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
 	mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
 	mkdir -p "$curr_env_root/$env/profile-1/usr/lib"

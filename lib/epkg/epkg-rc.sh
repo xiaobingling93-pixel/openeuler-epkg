@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
+	# XXX: PROJECT_DIR too generic; no need export here in user shell env
 	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
 elif [ -d "$COMMON_PROFILE_LINK" ]; then
 	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
-else
+else # TODO: if not yet run 'epkg init', don't source $PROJECT_DIR files
     export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
 fi
 
+# XXX: too many source, will pollute user shell env
+# - epkg-installer.sh shall only add 1 function epkg() to user shell
+# - when user run 'epkg ANYCMD', it shall auto run 'epkg init' if necessary
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/init.sh
 source $PROJECT_DIR/lib/epkg/env.sh
@@ -345,6 +349,7 @@ epkg() {
 			esac
 			;;
 		install)
+			# XXX: 'epkg install' shall be in rust
 			installroot=""
 			package_arr=()
 			while [[ $# -gt 0 ]];do
