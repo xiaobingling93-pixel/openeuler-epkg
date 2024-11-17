@@ -1,153 +1,85 @@
-#!/usr/bin/env bash
-if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	# XXX: PROJECT_DIR too generic; no need export here in user shell env
-	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
-elif [ -d "$COMMON_PROFILE_LINK" ]; then
-	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
-else # TODO: if not yet run 'epkg init', don't source $PROJECT_DIR files
-    export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
-fi
+#!/bin/sh
 
-# XXX: too many source, will pollute user shell env
-# - epkg-installer.sh shall only add 1 function epkg() to user shell
-# - when user run 'epkg ANYCMD', it shall auto run 'epkg init' if necessary
-source $PROJECT_DIR/lib/epkg/paths.sh
-source $PROJECT_DIR/lib/epkg/init.sh
-source $PROJECT_DIR/lib/epkg/env.sh
-source $PROJECT_DIR/lib/epkg/package.sh
-source $PROJECT_DIR/lib/epkg/query.sh
-source $PROJECT_DIR/lib/epkg/repo.sh
-source $PROJECT_DIR/lib/epkg/cache-repo.sh
+# keep clean and minimal -- it's sourced by every user terminal
 
-__get_epkg_helper() {
-	local mode=$1
-	local curr_env_path=$2
-	local global_comm_path=$PUB_EPKG/envs/common/
+# XXX: when user run 'epkg ANYCMD', it shall auto run 'epkg init' if necessary
 
-	if [[ "$mode" == "env_mode" && "$curr_env_path" =~ "$global_comm_path" ]]; then
-		epkg_helper=$EPKG_HELPER_EXEC
-	elif [[ "$mode" == "install_mode" && -d "$global_comm_path" ]]; then
-		epkg_helper=$EPKG_HELPER_EXEC
+__epkg_add_appbin_path() {
+	local PATH_ARRAY
+	local NEW_PATH
+
+	# Use IFS (Internal Field Separator) to split the PATH into an array
+	IFS=':' read -ra PATH_ARRAY <<< "$PATH"
+
+	# Create a new PATH variable without the unwanted directories
+	NEW_PATH=""
+	for dir in "${PATH_ARRAY[@]}"; do
+		if [[ "${dir#*/app-bin}" = "$dir" ]]; then
+			# Append the directory to the new PATH if it doesn't end with /app-bin
+			NEW_PATH+="$dir:"
+		fi
+	done
+
+	# Remove the trailing colon
+	NEW_PATH=${NEW_PATH%:}
+
+	# Export the new PATH
+	local HOME_EPKG=$HOME/.epkg
+	local EPKG_CONFIG_DIR=$HOME_EPKG/config
+	source $EPKG_CONFIG_DIR/shell-cmd-path.sh
+	export PATH="$EPKG_APPBIN_PATH:$PATH"
+	[ -n "$epkg_active_env_path" ] && export PATH="$epkg_active_env_path:$PATH"
+
+	if [ -n "${ZSH_VERSION}" ]; then
+		rehash
+	elif [ -n "${BASH_VERSION}" ]; then
+		hash -r
 	fi
-}
-
-__check_epkg_user_init() {
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
-
-	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
-		echo "Warning: epkg has not been initialized"
-		echo "please execute: epkg init"
-		return 1
-	fi
-}
-
-__get_help_info() {
-	cat <<-EOF
-Usage:
-epkg init
-
-epkg env list
-
-epkg create [env]
-epkg activate [env]
-epkg deactivate [env]
-
-epkg install [PACKAGE]
-EOF
 }
 
 epkg() {
 	local cmd="$1"
-	local input_env="$2"
-	shift
 
-	if [[ "$cmd" != "init" && "$cmd" != '-h' && "$cmd" != '--help' ]]; then
-		if ! __check_epkg_user_init; then
-			return 1
-		fi
-		echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
-		local env=
-		get_active_env "$@"
-		[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
+	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
+		local project_dir=/opt/epkg/users/public/envs/common/profile-1/usr
+	elif [ -d "$COMMON_PROFILE_LINK" ]; then
+		local project_dir=$COMMON_PROFILE_LINK/usr
+	else # TODO: if not yet run 'epkg init', don't source $PROJECT_DIR files
+		local project_dir=$HOME/.epkg/envs/common/profile-1/usr
 	fi
 
 	case "$cmd" in
-		--help|-h)
-			__get_help_info
-			;;
-		init)
-			epkg_init "$@"
-			;;
-		create)
-			echo "Attention: env $input_env will be create."
-			create_environment $input_env
-			shift
-			subcmd=$1
-			if [ $# -gt 0 ]; then # zsh compatible; when $# < shift
-				shift
-			fi
-			case $subcmd in 
-				"--repo")
-					if [[ "$1" == *"/"* ]];then
-						init_channel_repo $input_env ${1%/*} ${1#*/}
-					else
-						init_channel_repo $input_env $1
-					fi
-					;;
-				*)
-					init_channel_repo $input_env openEuler-24.09
-					;;
-			esac
-			;;
-		enable)
-			__epkg_enable_environment $input_env
-			;;
-		disable)
-			__epkg_disable_environment $input_env
-			;;
-		activate)
-			__epkg_activate_environment $input_env
-			;;
-		deactivate)
-			__epkg_deactivate_environment
-			;;
 		env)
-			subcmd=$1
-			shift
-			case $subcmd in
-				"list")
-					list_environments
+			local sub_cmd=$2
+			local env=$3
+			case "$sub_cmd" in
+				create|enable)
+					$project_dir/bin/epkg "$@" || return
+					__epkg_add_appbin_path
+					return
 					;;
-				*)
-					echo "Usage: epkg env [list|create|remove|enable|disable|activate|deactivate|history|rollback]"
+				remove|disable)
+					$project_dir/bin/epkg "$@" || return
+					__epkg_add_appbin_path
+					return
+					;;
+				activate)
+					local epkg_active_env_path=(
+						source $project_dir/lib/epkg/env.sh
+						__epkg_activate_environment "$env"
+					)
+					__epkg_add_appbin_path
+					export EPKG_ENV_NAME=$env
+					return
+					;;
+				deactivate)
+					__epkg_add_appbin_path
+					unset EPKG_ENV_NAME
+					return
 					;;
 			esac
-			;;
-		install)
-			# XXX: 'epkg install' shall be in rust
-			installroot=""
-			package_arr=()
-			while [[ $# -gt 0 ]];do
-				case "$1" in
-					--installroot=*)
-						installroot="${1#*=}"
-						shift
-						;;
-					*)
-						package_arr+=("$1")
-						shift
-						;;
-				esac
-			done
-			if [ ${#package_arr[@]} -eq 0 ]; then
-				echo "No Packages specified." >&2
-				exit 1
-			fi
-			install_package
-			;;
-		*)
-			command epkg "$@"
 			;;
 	esac
+
+	$project_dir/bin/epkg "$@"
 }

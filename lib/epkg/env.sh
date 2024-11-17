@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 
-__epkg_rehash() {
-	if [ -n "${ZSH_VERSION}" ]; then
-		rehash
-	elif [ -n "${BASH_VERSION}" ]; then
-		hash -r
-	else
-		:  # pass
+__get_epkg_helper() {
+	local mode=$1
+	local curr_env_path=$2
+	local global_comm_path=$PUB_EPKG/envs/common/
+
+	if [[ "$mode" == "env_mode" && "$curr_env_path" =~ "$global_comm_path" ]]; then
+		epkg_helper=$EPKG_HELPER_EXEC
+	elif [[ "$mode" == "install_mode" && -d "$global_comm_path" ]]; then
+		epkg_helper=$EPKG_HELPER_EXEC
+	fi
+}
+
+__check_epkg_user_init() {
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
+	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
+		echo "Warning: epkg has not been initialized"
+		echo "please execute: epkg init"
+		return 1
 	fi
 }
 
@@ -19,25 +32,12 @@ __get_curr_env_root() {
 	fi
 }
 
-# update EPKG_ENV_NAME to user shell rc file
-_update_epkg_env_name() {
-	local env=$1
-	local shell
-
-	if grep -q "EPKG_ENV_NAME" $RC_PATH; then
-		sed -i "s/^export EPKG_ENV_NAME=.*$/export EPKG_ENV_NAME=$env/" $RC_PATH
-	else
-		echo "export EPKG_ENV_NAME=$env" >> "$RC_PATH"
-	fi
-}
-
 # initialize PATH to epkg packages for bash/zsh shell
 __epkg_create_path_rc() {
 	local epkg_path="$1"
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	cat > $EPKG_CONFIG_DIR/shell-add-path.sh <<EOM
+	cat > $EPKG_CONFIG_DIR/shell-cmd-path.sh <<EOM
 ## auto managed by 'epkg init|enable|disable'
-export PATH="$epkg_path:$ORIGIN_PATH"
+EPKG_APPBIN_PATH="$epkg_path"
 EOM
 }
 
@@ -55,8 +55,6 @@ __epkg_add_path() {
 			epkg_path="$env_dir/$dir:$epkg_path"
 		fi
 	done
-
-	echo "Add $env_to_add to path"
 }
 
 __epkg_update_path() {
@@ -87,8 +85,6 @@ __epkg_enable_environment() {
 	__epkg_update_path $env
 	__epkg_add_path $env
 	__epkg_create_path_rc "$epkg_path"
-	__epkg_rehash
-	source $RC_PATH
 	echo "Environment '$env' added to PATH."
 }
 
@@ -105,8 +101,6 @@ __epkg_disable_environment() {
 	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
 	__epkg_update_path $env
 	__epkg_create_path_rc "$epkg_path"
-	__epkg_rehash
-	source $RC_PATH
 
 	echo "Environment '$env' removed from PATH."
 }
@@ -115,33 +109,21 @@ __epkg_activate_environment() {
 	local env=$1
 	local epkg_path=
 
-	__epkg_rehash
 	if [[ "$env" != "common" ]]; then
 		__epkg_add_path common
 	fi
 	__epkg_add_path $env
 
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	export PATH="$epkg_path:$ORIGIN_PATH"
-	export EPKG_ENV_NAME=$env
-	set_epkg_env_dirs $env
-
-	echo "Environment '$env' activated."
+	echo $epkg_path
 }
 
 __epkg_deactivate_environment() {
 	local epkg_path=
 
-	__epkg_rehash
 	__epkg_add_path common
 	__epkg_add_path main
 
-	local ORIGIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	export PATH="$epkg_path:$ORIGIN_PATH"
-	export EPKG_ENV_NAME=main
-	set_epkg_env_dirs main
-
-	echo "Environment '$env' deactivated."
+	echo $epkg_path
 }
 
 _check_env_existed() {

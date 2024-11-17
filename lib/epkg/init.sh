@@ -45,10 +45,11 @@ epkg_init() {
 
 # append content to user shell rc file
 append_user_rc() {
-	if grep -qF "shell-add-path.sh" "$RC_PATH"; then
+	if grep -qF "shell-cmd-path.sh" "$RC_PATH"; then
 		echo "epkg is already initialized in '$RC_PATH'"
 	else
-		echo "source $EPKG_CONFIG_DIR/shell-add-path.sh" >> "$RC_PATH"
+		echo "source $EPKG_CONFIG_DIR/shell-cmd-path.sh" >> "$RC_PATH"
+		echo 'export PATH="$EPKG_APPBIN_PATH:$PATH'      >> "$RC_PATH"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
 }

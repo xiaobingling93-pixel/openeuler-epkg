@@ -27,22 +27,6 @@ fi
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
 EPKG_HELPER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
 
-shell=$(basename "$SHELL")
-case "$shell" in
-	"bash")
-		RC_PATH=$HOME/.bashrc
-		PROFILE_PATH=$HOME/.bash_profile
-		;;
-	"zsh")
-		RC_PATH=$HOME/.zshrc
-		PROFILE_PATH=$HOME/.zprofile
-		;;
-	*)
-		echo "Unsupported shell: $shell"
-		exit 1
-		;;
-esac
-
 init_paths() {
 	# global PATH
 	$epkg_helper mkdir -p $EPKG_STORE_ROOT
