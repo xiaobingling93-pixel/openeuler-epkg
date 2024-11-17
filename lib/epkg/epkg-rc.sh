@@ -192,31 +192,6 @@ _check_env_enabled() {
 	return 1
 }
 
-# 重定向指定文件的依赖到rootfs中
-__fix_file_needed() {
-	local whitelist="linux-vdso.so.1 statically"
-	local rootfs="$1"
-	local elf_file="$2"
-	dependencies=$(ldd "$elf_file" | awk '{print $1}')
-
-	for dependency in $dependencies
-	do
-		if [[ " ${whitelist[@]} " =~ " ${dependency} " ]]; then
-				continue
-		fi
-		# Find the actual path of the dependency in rootfs
-		actual_path=$(find "$rootfs" -name "$(basename $dependency)" | grep "usr/lib" | head -n1)
-		if [ -n "$actual_path" ]; then
-			patchelf --replace-needed "$dependency" "$actual_path" "$elf_file" || \
-				echo "patchelf failed, elf_file: $elf_file; dependency: $dependency; actual_path: $actual_path"
-		else
-			echo "Dependency $dependency not found in envrootfs."
-		fi
-	
-	done
-
-}
-
 __check_epkg_user_init() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
