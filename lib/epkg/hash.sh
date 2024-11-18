@@ -3,6 +3,8 @@
 # Store hash results in a key-value format
 declare -A rpm_hash_cache
 
+# XXX: shall unpack and compute over all files, shall define algorithm version
+# so that can be verified by epkg-store command.
 calculate_base32_hash() {
     local input_file=$1
 
