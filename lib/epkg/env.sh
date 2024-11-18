@@ -155,6 +155,9 @@ list_environments() {
 
 create_environment() {
 	local env=$1
+	local subcmd=$2
+	local repo_path=$3
+
 	local curr_env_root=
 	__get_curr_env_root $env
 	local epkg_helper=
@@ -186,6 +189,17 @@ create_environment() {
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib64"  "$curr_env_root/$env/profile-1/lib64"
 
 	__epkg_activate_environment $env
+
+	if [[  "$subcmd" == "--repo" ]];then
+		if [[ "$repo_path" == *"/"* ]];then
+			init_channel_repo $env ${1%/*} ${1#*/}
+		else
+			init_channel_repo $env $repo_path
+		fi
+	else 
+		init_channel_repo $env openEuler-24.09
+	fi
+
 	echo "Environment '$env' created."
 }
 

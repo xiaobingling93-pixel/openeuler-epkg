@@ -3,6 +3,23 @@
 # XXX: 'epkg init' should
 # - not require root privilege
 # - only modify $HOME, setup env for current normal user
+
+shell=$(basename "$SHELL")
+case "$shell" in
+	"bash")
+		RC_PATH=$HOME/.bashrc
+		PROFILE_PATH=$HOME/.bash_profile
+		;;
+	"zsh")
+		RC_PATH=$HOME/.zshrc
+		PROFILE_PATH=$HOME/.zprofile
+		;;
+	*)
+		echo "Unsupported shell: $shell"
+		exit 1
+		;;
+esac
+
 epkg_init() {
 	local reverse=false
 
@@ -49,7 +66,7 @@ append_user_rc() {
 		echo "epkg is already initialized in '$RC_PATH'"
 	else
 		echo "source $EPKG_CONFIG_DIR/shell-cmd-path.sh" >> "$RC_PATH"
-		echo 'export PATH="$EPKG_APPBIN_PATH:$PATH'      >> "$RC_PATH"
+		echo 'export PATH="$EPKG_APPBIN_PATH:$PATH"'      >> "$RC_PATH"
 		echo "For changes to take effect, close and re-open your current shell."
 	fi
 }
@@ -57,7 +74,7 @@ append_user_rc() {
 create_rootfs_symlinks() {
 	ROOTFS_LINK=""
 	uncompress_dir="$EPKG_STORE_ROOT"
-	symlink_dir="$CURRENT_PROFILE_DIR"
+	symlink_dir="$COMMON_PROFILE_LINK"
 	for pkg in $(ls $EPKG_STORE_ROOT);
 	do
 		local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
