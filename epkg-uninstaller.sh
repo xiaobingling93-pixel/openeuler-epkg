@@ -34,11 +34,22 @@ check_exec_user() {
 
 clean_user_file() {
     local home=$1
+
+    if [ -d "$home/.epkg/" ]; then
+        /bin/rm -rf $home/.epkg/
+        EPKG_CLEAN_DIR="$home/.epkg/ $EPKG_CLEAN_DIR"
+    fi
+    if [ -d $home/.cache/epkg/ ]; then
+        /bin/rm -rf $home/.cache/epkg/
+        EPKG_CLEAN_DIR="$home/.cache/epkg/ $EPKG_CLEAN_DIR"
+    fi
+
     bashrc_file="$home/$RC_FILE"
     if [ -f "$bashrc_file" ]; then
-        if grep -q 'shell-add-path' "$bashrc_file" || grep -q '# epkg begin' "$bashrc_file"; then
+        if grep -q '.epkg/config/shell-cmd-path' "$bashrc_file" || grep -q "EPKG_APPBIN_PATH" "$bashrc_file" || grep -q '# epkg begin' "$bashrc_file"; then
             sed -i '/# epkg begin/,/# epkg end/d' "$bashrc_file"
-            sed -i '/shell-add-path/d;' "$bashrc_file"
+            sed -i '/shell-cmd-path/d;' "$bashrc_file"
+            sed -i '/EPKG_APPBIN_PATH/d;' "$bashrc_file"
             EPKG_EDIT_FILE="$bashrc_file $EPKG_EDIT_FILE"
         fi
     fi
@@ -55,15 +66,6 @@ clean_global_file() {
 
     for USER in $ALL_USERS; do
         IFS=':' read -r user home <<< "$USER"
-        if [ -d "$home/.epkg/" ]; then
-            /bin/rm -rf $home/.epkg/
-            EPKG_CLEAN_DIR="$home/.epkg/ $EPKG_CLEAN_DIR"
-        fi
-        if [ -d $home/.cache/epkg/ ]; then
-            /bin/rm -rf $home/.cache/epkg/
-            EPKG_CLEAN_DIR="$home/.cache/epkg/ $EPKG_CLEAN_DIR"
-        fi
-
         clean_user_file $home
     done
 }
