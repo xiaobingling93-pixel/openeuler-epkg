@@ -1,0 +1,11 @@
+buildRequires:
+  - automake
+  - autoconf
+  - gcc
+  - g++
+  - make
+configureFlags: ""
+makeFlags: ""
+buildSystem: autotools
+autopkg:
+  buildSystemFiles: configure.ac

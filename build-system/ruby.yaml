@@ -1,0 +1,8 @@
+buildRequires:
+  - ruby
+  - ruby-devel
+  - rubygems-devel
+
+buildSystem: ruby
+autopkg:
+  buildSystemFiles: "*.gemspec"

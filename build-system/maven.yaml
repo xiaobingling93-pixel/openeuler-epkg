@@ -1,0 +1,6 @@
+buildRequires:
+  - java-1.8
+  - maven
+buildSystem: maven
+autopkg:
+  buildSystemFiles: pom.xml
