@@ -35,6 +35,7 @@ __get_curr_env_root() {
 # initialize PATH to epkg packages for bash/zsh shell
 __epkg_create_path_rc() {
 	local epkg_path="$1"
+	epkg_path=${epkg_path%:}
 	cat > $EPKG_CONFIG_DIR/shell-cmd-path.sh <<EOM
 ## auto managed by 'epkg init|enable|disable'
 EPKG_APPBIN_PATH="$epkg_path"
