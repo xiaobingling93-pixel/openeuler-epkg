@@ -27,7 +27,7 @@ __epkg_add_appbin_path() {
 	local HOME_EPKG=$HOME/.epkg
 	local EPKG_CONFIG_DIR=$HOME_EPKG/config
 	source $EPKG_CONFIG_DIR/shell-cmd-path.sh
-	export PATH="$EPKG_APPBIN_PATH:$PATH"
+	export PATH="$EPKG_APPBIN_PATH:$NEW_PATH"
 	[ -n "$epkg_active_env_path" ] && export PATH="$epkg_active_env_path:$PATH"
 
 	if [ -n "${ZSH_VERSION}" ]; then
@@ -64,7 +64,7 @@ epkg() {
 					return
 					;;
 				activate)
-					local epkg_active_env_path=(
+					local epkg_active_env_path=$(
 						source $project_dir/lib/epkg/env.sh
 						__epkg_activate_environment "$env"
 					)
