@@ -50,7 +50,6 @@ else
 		echo "Warning: epkg has not been initialized, Automatically execute epkg init."
 		__epkg_init
 		echo "Warning: epkg init finish, Please rerun cmd."
-		export EPKG_ENV_NAME=main
 		exit 1
 	fi
 
