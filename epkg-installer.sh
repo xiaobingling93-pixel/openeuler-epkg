@@ -11,8 +11,12 @@ PUB_EPKG=$OPT_EPKG/users/public
 HOME_EPKG=$HOME/.epkg
 # Epkg Mode-based Path
 EPKG_INSTALL_MODE=
-EPKG_CACHE=
 EPKG_COMMON_ROOT=
+EPKG_STORE_ROOT=
+ELFLOADER_EXEC=
+EPKG_CACHE=
+EPKG_PKG_CACHE_DIR=
+EPKG_CHANNEL_CACHE_DIR=
 EPKG_MANAGER_DIR=
 
 # Shell Type
@@ -30,6 +34,25 @@ case "$shell" in
 		;;
 esac
 
+dependency_check() {
+    local cmd_names="id tar cat cp chmod chown curl"
+    local cmd
+    local missing_cmds=
+
+    for cmd in $cmd_names; do
+        if ! command -v "$1" >/dev/null $cmd; then
+            missing_cmds="$missing_cmds $pkg"
+        fi
+    done
+
+    if [[ -n "$missing_cmds" ]]; then
+        echo "Commands '$missing_cmds' not found, please install first"
+        return 1
+    fi
+
+    return 0
+}
+
 select_installation_mode() {
     echo "Attention: Execute by $USER, Select the installation mode"
     echo "1: user   mode: epkg will be installed in the $HOME/.epkg/"
@@ -37,12 +60,14 @@ select_installation_mode() {
     read choice
     if [[ "$choice" == "1" ]]; then
         EPKG_INSTALL_MODE="user"
-        EPKG_CACHE=$HOME/.cache/epkg
         EPKG_COMMON_ROOT=$HOME_EPKG/envs/common
+        EPKG_STORE_ROOT=$HOME_EPKG/store
+        EPKG_CACHE=$HOME/.cache/epkg
     elif [[ "$choice" == "2" && "$(id -u)" = "0" ]]; then
         EPKG_INSTALL_MODE="global"
-        EPKG_CACHE=$OPT_EPKG/cache
         EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
+        EPKG_STORE_ROOT=$OPT_EPKG/store
+        EPKG_CACHE=$OPT_EPKG/cache
         RC_PATH=/etc/profile.d/epkg.sh
     elif [[ "$choice" == "2" && "$(id -u)" != "0" ]]; then
         echo "Attention: Please use the root user to execute the global installation mode"
@@ -51,23 +76,42 @@ select_installation_mode() {
         echo "Error choice !"
         return 1
     fi
+    ELFLOADER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/elf-loader
+    EPKG_PKG_CACHE_DIR=$EPKG_CACHE/packages
+    EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
     EPKG_MANAGER_DIR=$EPKG_CACHE/epkg_manager
+
+    create_init_home
 }
 
-mk_home() {
-    mkdir -p $EPKG_CACHE
+create_init_home() {
+    mkdir -p $EPKG_STORE_ROOT
+    mkdir -p $EPKG_PKG_CACHE_DIR
+    mkdir -p $EPKG_CHANNEL_CACHE_DIR
     mkdir -p $EPKG_MANAGER_DIR
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{bin,lib}
+
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
+
+    cd $EPKG_COMMON_ROOT
+	ln -sT "profile-1" "profile-current"
+    cd $EPKG_COMMON_ROOT/profile-1
+    ln -sT "usr/app-bin" "app-bin"
+	ln -sT "usr/bin"     "bin"
+	ln -sT "usr/sbin"    "sbin"
+	ln -sT "usr/lib"     "lib"
+	ln -sT "usr/lib64"   "lib64"
 }
 
 epkg_download() {
     # download epkg_manager    
-    curl -o $EPKG_CACHE/$EPKG_MANAGER_TAR $EPKG_URL/$EPKG_MANAGER_TAR
+    echo "download epkg manager"
+    curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR $EPKG_URL/$EPKG_MANAGER_TAR
 
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        curl -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER
+        echo "download epkg helper"
+        curl -# -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER
     fi
 }
 
@@ -105,28 +149,97 @@ export PATH=\$(__epkg_append_path)
 EOF
 }
 
-has_cmd()
-{
-	command -v "$1" >/dev/null
+prepare_epkg_rootfs() {
+	# download epkg_rootfs
+    echo "download epkg elf loader"
+	curl -# -o $EPKG_CACHE/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
+	chmod a+x $EPKG_CACHE/elf-loader
+	/bin/cp -f $EPKG_CACHE/elf-loader $ELFLOADER_EXEC
+
+	echo "download epkg rootfs"
+	curl -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
+	# uncompress epkg_rootfs
+	echo "install epkg rootfs, it will take 3min, please wait patiently.."
+	/bin/tar -xf $EPKG_CACHE/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+	# create comm profile-1 symlink to store
+	create_rootfs_symlinks
+    echo "Environment common created."
 }
 
-dependency_check() {
-    local cmd_names="id tar cat cp chmod chown curl"
-    local cmd
-    local missing_cmds=
+create_rootfs_symlinks() {
+	uncompress_dir="$EPKG_STORE_ROOT"
+	symlink_dir="$EPKG_COMMON_ROOT/profile-1"
+	for pkg in $(ls $EPKG_STORE_ROOT);
+	do
+		local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
+		local fs_files=$(/bin/find $fs_dir \( -type f -o -type l \))
+		create_symlink_by_fs
+	done
+}
 
-    for cmd in $cmd_names; do
-        if ! has_cmd $cmd; then
-            missing_cmds="$missing_cmds $pkg"
-        fi
-    done
+create_symlink_by_fs() {
+	local rfs
+	local file
 
-    if [[ -n "$missing_cmds" ]]; then
-        echo "Commands '$missing_cmds' not found, please install first"
-        return 1
-    fi
+	while IFS= read -r fs_file; do
+		rfs_file=${fs_file#$fs_dir}
 
-    return 0
+		$ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
+
+		$ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
+
+		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
+			handle_exec "$fs_file" && continue
+		fi
+
+		if [ "${fs_file#*/sbin/}" != "$fs_file" ]; then
+			handle_exec "$fs_file" && continue
+		fi
+
+		if [[ "${fs_file}" == *"/etc/"* ]]; then
+		    $ROOTFS_LINK/bin/cp -r $fs_file $symlink_dir/$rfs_file &> /dev/null
+			continue
+		fi
+
+		[ -e "$symlink_dir/$rfs_file" ] && continue
+
+		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
+
+        $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file"
+	done <<< "$fs_files"
+}
+
+handle_exec() {
+	local file_type=$($ROOTFS_LINK/bin/file $1)
+	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
+		handle_elf
+	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
+		handle_elf
+	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
+		handle_elf
+	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
+		$ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
+	fi
+}
+
+handle_elf() {
+	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
+	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
+
+	$ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$rfs_file
+    replace_string "$symlink_dir/$rfs_file" "$id1" "$symlink_dir"
+    replace_string "$symlink_dir/$rfs_file" "$id2" "$fs_file"
+}
+
+replace_string() {
+	local binary_file="$1"
+	local long_id="$2"
+	local str="$3"
+    
+	local position=$($ROOTFS_LINK/bin/grep -m1 -oba "$long_id" $binary_file | $ROOTFS_LINK/bin/cut -d ":" -f 1)
+	[ -n "$position" ] && {
+		$ROOTFS_LINK/bin/echo -en "$str\0" | $ROOTFS_LINK/bin/dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
+	}
 }
 
 # step 0. dependency check
@@ -134,14 +247,15 @@ dependency_check || exit 1
 
 # step 1. select installation mode
 select_installation_mode || exit 1
-
 echo "Attention: Directories $EPKG_CACHE and $PUB_EPKG will be created."
 echo "Attention: File $RC_PATH will be modified."
-mk_home
 
 # step 2. download - unpack - change bashrc
 epkg_download
 epkg_unpack
 epkg_change_bashrc
 
-echo "Attention: For changes to take effect, close and re-open your current shell.."
+# step 3. common env init
+prepare_epkg_rootfs
+
+echo "Attention: For changes to take effect, close and re-open your current shell."
