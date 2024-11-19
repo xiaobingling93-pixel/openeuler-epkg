@@ -21,24 +21,6 @@ __get_curr_env_root() {
 	fi
 }
 
-__epkg_add_path() {
-	local env_to_add=$1
-	local curr_env_root=
-	__get_curr_env_root $env_to_add
-	local env_dir=$curr_env_root/$env_to_add/profile-current
-	local dir
-
-	for dir in app-bin usr/app-bin
-	do
-		tmp_path=${epkg_path#*$env_dir/$dir}
-		if [ $tmp_path = $epkg_path ]; then
-			epkg_path="$env_dir/$dir:$epkg_path"
-		fi
-	done
-
-	echo "$epkg_path"
-}
-
 __epkg_enable_environment() {
 	local env=$1
 	local epkg_path=
