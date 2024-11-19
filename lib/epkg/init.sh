@@ -21,21 +21,6 @@ case "$shell" in
 esac
 
 epkg_init() {
-	local reverse=false
-
-	while [ $# -gt 0 ]; do
-		case "$1" in
-			--reverse)
-				reverse=true
-				;;
-			*)
-				echo "Invalid option: $1"
-				return 1
-				;;
-		esac
-		shift
-	done
-
 	# check epkg init ready
 	if [ -d "$EPKG_ENVS_ROOT/main/" ]; then
 		echo "epkg had been initialized, $USER user had been initialized"
@@ -47,7 +32,6 @@ epkg_init() {
 	init_paths
 	if [[ -d "$PUB_EPKG" && -d "$COMMON_PROFILE_LINK" ]]; then
 		echo "epkg had been initialized, $USER user initialization is in progress ..."
-		__epkg_activate_environment common
 	else
 		echo "epkg has not been initialized, epkg initialization is in progress ..."
 		create_environment common  
