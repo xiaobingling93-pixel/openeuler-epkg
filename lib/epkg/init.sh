@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-epkg_init() {
+__epkg_init() {
 	# check epkg init ready
 	if [ -d "$EPKG_ENVS_ROOT/main/" ]; then
 		echo "epkg had been initialized, $USER user had been initialized"
@@ -21,4 +21,13 @@ epkg_init() {
 	create_environment main     # main user environment
 	__epkg_enable_environment main
 	echo "For changes to take effect, close and re-open your current shell."
+}
+
+__check_epkg_user_init() {
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
+	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
+		return 1
+	fi
 }

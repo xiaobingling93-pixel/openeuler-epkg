@@ -12,17 +12,6 @@ __get_epkg_helper() {
 	fi
 }
 
-__check_epkg_user_init() {
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
-
-	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
-		echo "Warning: epkg has not been initialized"
-		echo "please execute: epkg init"
-		return 1
-	fi
-}
-
 __get_curr_env_root() {
 	local curr_env=$1
 	if [[ "$curr_env" == "common" ]]; then
@@ -159,7 +148,7 @@ create_environment() {
 	#	echo "$env already existed!"
 	#	return
 	#fi
-	
+
 	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}"
 	
     cd $curr_env_root/$env/profile-1
