@@ -159,24 +159,16 @@ create_environment() {
 	#	echo "$env already existed!"
 	#	return
 	#fi
-
-	# XXX: is epkg_helper secure?
-	# XXX: merge N mkdir into 1 single cmd
-
+	
+	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}"
+	
+    cd $curr_env_root/$env/profile-1
+    $epkg_helper ln -sT "usr/app-bin" "app-bin"
+	$epkg_helper ln -sT "usr/bin"     "bin"
+	$epkg_helper ln -sT "usr/sbin"    "sbin"
+	$epkg_helper ln -sT "usr/lib"     "lib"
+	$epkg_helper ln -sT "usr/lib64"   "lib64"
 	$epkg_helper ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
-
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/app-bin"
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
-
-	# use relative symlink
-	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/app-bin"  "$curr_env_root/$env/profile-1/app-bin"
-	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/bin"  "$curr_env_root/$env/profile-1/bin"
-	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
-	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib"  "$curr_env_root/$env/profile-1/lib"
-	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib64"  "$curr_env_root/$env/profile-1/lib64"
 
 	if [[  "$subcmd" == "--repo" ]];then
 		if [[ "$repo_path" == *"/"* ]];then
