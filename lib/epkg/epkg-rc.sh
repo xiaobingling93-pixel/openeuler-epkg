@@ -1,9 +1,6 @@
 #!/bin/sh
 
 # keep clean and minimal -- it's sourced by every user terminal
-
-# XXX: when user run 'epkg ANYCMD', it shall auto run 'epkg init' if necessary
-
 __epkg_append_path() {
 	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 		source /opt/epkg/users/public/envs/common/profile-1/usr/lib/epkg/env.sh

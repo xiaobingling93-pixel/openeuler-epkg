@@ -15,21 +15,8 @@ source $PROJECT_DIR/lib/epkg/query.sh
 source $PROJECT_DIR/lib/epkg/cache-repo.sh
 source $PROJECT_DIR/lib/epkg/repo.sh
 
-cmd=$1
-shift
-
-if [[ "$cmd" != "init" && "$cmd" != '-h' && "$cmd" != '--help' ]]; then
-	echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
-	get_active_env "$@"
-	[ "$cmd" = 'init' ] || set_epkg_env_dirs $env
-	if ! __check_epkg_user_init; then
-		exit 1
-	fi
-fi
-
-case $cmd in
-	"help")
-		cat <<-EOF
+__get_epkg_help_info() {
+	cat <<-EOF
 Usage:
 epkg install [--env ENV] PACKAGE
 epkg remove [--env ENV] PACKAGE
@@ -47,9 +34,32 @@ epkg [env] enable|disable ENV
 epkg [env] history ENV
 epkg [env] rollback ENV
 EOF
-		exit
-		;;
+}
 
+cmd=$1
+shift
+
+if [[ "$cmd" == "help" ]]; then
+	__get_epkg_help_info
+	exit 1
+elif [[ "$cmd" == "init" ]]; then
+	__epkg_init
+	exit 1
+else
+	if ! __check_epkg_user_init; then	
+		echo "Warning: epkg has not been initialized, Automatically execute epkg init."
+		__epkg_init
+		echo "Warning: epkg init finish, Please rerun cmd."
+		export EPKG_ENV_NAME=main
+		exit 1
+	fi
+
+	echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
+	get_active_env "$@"
+	set_epkg_env_dirs $env
+fi
+
+case "$cmd" in
 	"install")
 		installroot=""
 		package_arr=()
@@ -85,9 +95,6 @@ EOF
 		;;
 	"list")
 		list_packages "$@"
-		;;
-	"init")
-		epkg_init "$@"
 		;;
 	"show")
 		# show_package "$@"

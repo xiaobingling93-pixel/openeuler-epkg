@@ -20,7 +20,7 @@ __epkg_init() {
 	__epkg_enable_environment common
 	create_environment main     # main user environment
 	__epkg_enable_environment main
-	echo "For changes to take effect, close and re-open your current shell."
+	echo "Warning: For changes to take effect, close and re-open your current shell."
 }
 
 __check_epkg_user_init() {
