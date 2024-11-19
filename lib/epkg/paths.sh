@@ -51,5 +51,4 @@ set_epkg_env_dirs() {
 	__get_curr_env_root $env
 	CURRENT_PROFILE_LINK=$curr_env_root/$env/profile-current
 	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
-	RPMDB_DIR=$CURRENT_PROFILE_DIR/var/lib/rpm
 }
