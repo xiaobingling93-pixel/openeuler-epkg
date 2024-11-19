@@ -84,7 +84,9 @@ epkg() {
 					;;
 				remove)
 					$project_dir/bin/epkg "$@" || return
-					unset EPKG_CURR_ENV
+					if [[ "$env" == "$EPKG_CURR_ENV" ]]; then
+						unset EPKG_CURR_ENV
+					fi
 					__epkg_add_appbin_path
 					return
 					;;
