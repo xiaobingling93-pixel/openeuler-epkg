@@ -139,7 +139,7 @@ create_environment() {
 	#	return
 	#fi
 
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}"
+	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	
     cd $curr_env_root/$env/profile-1
     $epkg_helper ln -sT "usr/app-bin" "app-bin"
