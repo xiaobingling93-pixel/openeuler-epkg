@@ -1,25 +1,5 @@
 #!/usr/bin/env bash
 
-# XXX: 'epkg init' should
-# - not require root privilege
-# - only modify $HOME, setup env for current normal user
-
-shell=$(basename "$SHELL")
-case "$shell" in
-	"bash")
-		RC_PATH=$HOME/.bashrc
-		PROFILE_PATH=$HOME/.bash_profile
-		;;
-	"zsh")
-		RC_PATH=$HOME/.zshrc
-		PROFILE_PATH=$HOME/.zprofile
-		;;
-	*)
-		echo "Unsupported shell: $shell"
-		exit 1
-		;;
-esac
-
 epkg_init() {
 	# check epkg init ready
 	if [ -d "$EPKG_ENVS_ROOT/main/" ]; then
@@ -27,47 +7,18 @@ epkg_init() {
 		return 0
 	fi
 
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
-	init_paths
 	if [[ -d "$PUB_EPKG" && -d "$COMMON_PROFILE_LINK" ]]; then
 		echo "epkg had been initialized, $USER user initialization is in progress ..."
 	else
 		echo "epkg has not been initialized, epkg initialization is in progress ..."
-		create_environment common  
-		prepare_epkg_rootfs
 	fi
-	__epkg_enable_environment common
+	mkdir -p $EPKG_STORE_ROOT
+	mkdir -p $EPKG_PKG_CACHE_DIR
+	mkdir -p $EPKG_CHANNEL_CACHE_DIR
+	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 
+	__epkg_enable_environment common
 	create_environment main     # main user environment
 	__epkg_enable_environment main
 	echo "For changes to take effect, close and re-open your current shell."
-}
-
-create_rootfs_symlinks() {
-	ROOTFS_LINK=""
-	uncompress_dir="$EPKG_STORE_ROOT"
-	symlink_dir="$COMMON_PROFILE_LINK"
-	for pkg in $(ls $EPKG_STORE_ROOT);
-	do
-		local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
-		local fs_files=$($epkg_helper /bin/find $fs_dir \( -type f -o -type l \))
-		create_symlink_by_fs
-	done
-	ROOTFS_LINK=$COMMON_PROFILE_LINK
-}
-
-prepare_epkg_rootfs() {
-	# download epkg_rootfs
-	$epkg_helper curl -# -o $EPKG_CACHE/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
-	$epkg_helper chmod a+x $EPKG_CACHE/elf-loader
-	$epkg_helper /bin/cp $EPKG_CACHE/elf-loader $COMMON_PROFILE_LINK/usr/bin/
-
-	echo "download epkg rootfs"
-	$epkg_helper curl -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
-	# uncompress epkg_rootfs
-	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	$epkg_helper /bin/tar -xf $EPKG_CACHE/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
-	# create comm profile-1 symlink to store
-	create_rootfs_symlinks
 }

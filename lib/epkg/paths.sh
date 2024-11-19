@@ -27,14 +27,6 @@ fi
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
 EPKG_HELPER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
 
-init_paths() {
-	# global PATH
-	$epkg_helper mkdir -p $EPKG_STORE_ROOT
-	$epkg_helper mkdir -p $EPKG_PKG_CACHE_DIR
-	# user PATH
-	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
-}
-
 set_epkg_env_dirs() {
 	local env=$1
 	local curr_env_root=
