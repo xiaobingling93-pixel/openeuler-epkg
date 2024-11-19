@@ -88,11 +88,7 @@ epkg() {
 					__epkg_add_appbin_path
 					return
 					;;
-				enable)
-					$project_dir/bin/epkg "$@" || return
-					return
-					;;
-				disable)
+				enable|disable)
 					$project_dir/bin/epkg "$@" || return
 					return
 					;;
