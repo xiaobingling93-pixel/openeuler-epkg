@@ -10,28 +10,28 @@ __epkg_append_path() {
 		source $HOME/.epkg/envs/common/profile-1/usr/lib/epkg/paths.sh
 	fi
 
-	# get epkg enabled and activate envs
+	# Get epkg app-bin path
 	local curr_envs=()
 	local epkg_appbin_path=
 	local epkg_enabled_envs_dir=$HOME/.epkg/config/enabled-envs
-	# current shell activate env
+	# Current shell activate env
 	if [ -n "$EPKG_ENV_NAME" ]; then
 		curr_envs+=($EPKG_ENV_NAME)
 		curr_envs+=(common)
 	else
-		# enabled envs (init main & common) TODO:common env?
+		# Enabled envs (init main & common) 
 		if [[ -d $epkg_enabled_envs_dir && -n "$(ls -A $epkg_enabled_envs_dir)" ]]; then
 			for file in "$epkg_enabled_envs_dir"/*; do
 				curr_envs+=(${file##*/})
 			done
 		fi
 	fi
-	# create path
+	# Create path
 	for env in "${curr_envs[@]}";do
 		epkg_appbin_path+=$(__epkg_add_path $env)
 	done
 
-    # get system origin path
+    # Get system origin path
 	local PATH_ARRAY
 	local SYSTEM_ORIGIN_PATH
 	# Use IFS (Internal Field Separator) to split the PATH into an array
