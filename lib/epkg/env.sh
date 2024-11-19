@@ -92,12 +92,8 @@ __epkg_activate_environment() {
 }
 
 __epkg_deactivate_environment() {
-	local epkg_path=
-
-	__epkg_add_path common
-	__epkg_add_path main
-
-	echo $epkg_path
+	echo "Environment '$EPKG_ENV_NAME' deactivated."
+	export EPKG_ENV_NAME=main
 }
 
 _check_env_existed() {

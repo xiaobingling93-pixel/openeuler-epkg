@@ -97,12 +97,14 @@ epkg() {
 					return
 					;;
 				activate)
+					echo "Environment '$env' activated."
 					export EPKG_ENV_NAME=$env
 					__epkg_add_appbin_path
 					return
 					;;
 				deactivate)
-					unset EPKG_ENV_NAME
+					echo "Environment '$EPKG_ENV_NAME' deactivated."
+					export EPKG_ENV_NAME=main
 					__epkg_add_appbin_path
 					return
 					;;
