@@ -39,18 +39,6 @@ __epkg_add_path() {
 	echo "$epkg_path"
 }
 
-__epkg_update_path() {
-	local file
-
-	__epkg_add_path common
-	for file in $EPKG_CONFIG_DIR/enabled-envs/*
-	do
-		env_to_add=${file##*/}
-		[ "$env_to_add" != $env ] && [ "$env_to_add" != "common" ] &&
-		__epkg_add_path $env_to_add
-	done
-}
-
 __epkg_enable_environment() {
 	local env=$1
 	local epkg_path=
@@ -64,8 +52,7 @@ __epkg_enable_environment() {
 	if [ -d "$EPKG_ENVS_ROOT/$env" ]; then
 		ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/enabled-envs/$env"
 	fi
-	__epkg_update_path $env
-	__epkg_add_path $env
+
 	echo "Environment '$env' added to PATH."
 }
 
@@ -80,7 +67,6 @@ __epkg_disable_environment() {
 	fi
 
 	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
-	__epkg_update_path $env
 
 	echo "Environment '$env' removed from PATH."
 }
