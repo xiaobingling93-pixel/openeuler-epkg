@@ -46,9 +46,8 @@ clean_user_file() {
 
     bashrc_file="$home/$RC_FILE"
     if [ -f "$bashrc_file" ]; then
-        if grep -q '.epkg/config/shell-cmd-path' "$bashrc_file" || grep -q '# epkg begin' "$bashrc_file"; then
+        if grep -q '# epkg begin' "$bashrc_file"; then
             sed -i '/# epkg begin/,/# epkg end/d' "$bashrc_file"
-            sed -i '/shell-cmd-path/d;' "$bashrc_file"
             EPKG_EDIT_FILE="$bashrc_file $EPKG_EDIT_FILE"
         fi
     fi
