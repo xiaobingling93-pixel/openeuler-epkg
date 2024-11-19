@@ -100,6 +100,7 @@ else
 	EPKG_COMMON_ROOT=\$HOME/.epkg/envs/common
 fi
 source \$EPKG_COMMON_ROOT/profile-1/usr/lib/epkg/epkg-rc.sh
+export PATH=\$(__epkg_append_path)
 # epkg end
 EOF
 }

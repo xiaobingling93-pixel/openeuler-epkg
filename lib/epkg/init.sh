@@ -57,18 +57,7 @@ epkg_init() {
 
 	create_environment main     # main user environment
 	__epkg_enable_environment main
-	append_user_rc
-}
-
-# append content to user shell rc file
-append_user_rc() {
-	if grep -qF "shell-cmd-path.sh" "$RC_PATH"; then
-		echo "epkg is already initialized in '$RC_PATH'"
-	else
-		echo "source $EPKG_CONFIG_DIR/shell-cmd-path.sh" >> "$RC_PATH"
-		echo 'export PATH="$EPKG_APPBIN_PATH:$PATH"'      >> "$RC_PATH"
-		echo "For changes to take effect, close and re-open your current shell."
-	fi
+	echo "For changes to take effect, close and re-open your current shell."
 }
 
 create_rootfs_symlinks() {

@@ -32,16 +32,6 @@ __get_curr_env_root() {
 	fi
 }
 
-# initialize PATH to epkg packages for bash/zsh shell
-__epkg_create_path_rc() {
-	local epkg_path="$1"
-	epkg_path=${epkg_path%:}
-	cat > $EPKG_CONFIG_DIR/shell-cmd-path.sh <<EOM
-## auto managed by 'epkg init|enable|disable'
-EPKG_APPBIN_PATH="$epkg_path"
-EOM
-}
-
 __epkg_add_path() {
 	local env_to_add=$1
 	local curr_env_root=
@@ -56,6 +46,8 @@ __epkg_add_path() {
 			epkg_path="$env_dir/$dir:$epkg_path"
 		fi
 	done
+
+	echo "$epkg_path"
 }
 
 __epkg_update_path() {
@@ -85,7 +77,6 @@ __epkg_enable_environment() {
 	fi
 	__epkg_update_path $env
 	__epkg_add_path $env
-	__epkg_create_path_rc "$epkg_path"
 	echo "Environment '$env' added to PATH."
 }
 
@@ -101,7 +92,6 @@ __epkg_disable_environment() {
 
 	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
 	__epkg_update_path $env
-	__epkg_create_path_rc "$epkg_path"
 
 	echo "Environment '$env' removed from PATH."
 }
@@ -188,8 +178,6 @@ create_environment() {
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib"  "$curr_env_root/$env/profile-1/lib"
 	$epkg_helper ln -sT  "$curr_env_root/$env/profile-1/usr/lib64"  "$curr_env_root/$env/profile-1/lib64"
-
-	__epkg_activate_environment $env
 
 	if [[  "$subcmd" == "--repo" ]];then
 		if [[ "$repo_path" == *"/"* ]];then
