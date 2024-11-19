@@ -53,7 +53,7 @@ else
 		exit 1
 	fi
 
-	echo "EPKG_ENV_NAME: $EPKG_ENV_NAME"
+	echo "EPKG_CURR_ENV: $EPKG_CURR_ENV"
 	get_active_env "$@"
 	set_epkg_env_dirs $env
 fi
