@@ -87,14 +87,8 @@ __epkg_disable_environment() {
 
 __epkg_activate_environment() {
 	local env=$1
-	local epkg_path=
-
-	if [[ "$env" != "common" ]]; then
-		__epkg_add_path common
-	fi
-	__epkg_add_path $env
-
-	echo $epkg_path
+	export EPKG_ENV_NAME=env
+	echo "Environment '$env' activated."
 }
 
 __epkg_deactivate_environment() {
@@ -170,21 +164,6 @@ create_environment() {
 	fi
 
 	echo "Environment '$env' created."
-}
-
-activate_environment() {
-	local env=$1
-	local curr_env_root=
-	__get_curr_env_root $env
-
-	# XXX: avoid these extra actions
-	mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
-	mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
-
-	__epkg_activate_environment $env
-	echo "Environment '$env' activated."
 }
 
 remove_environment() {

@@ -135,7 +135,7 @@ case "$cmd" in
 				__epkg_disable_environment "$@"
 				;;
 			"activate")
-				activate_environment "$@"
+				__epkg_activate_environment "$@"
 				;;
 			"deactivate")
 				__epkg_deactivate_environment "$@"
