@@ -93,14 +93,13 @@ create_init_home() {
     mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
-    cd $EPKG_COMMON_ROOT
-	ln -sT "profile-1" "profile-current"
     cd $EPKG_COMMON_ROOT/profile-1
     ln -sT "usr/app-bin" "app-bin"
 	ln -sT "usr/bin"     "bin"
 	ln -sT "usr/sbin"    "sbin"
 	ln -sT "usr/lib"     "lib"
 	ln -sT "usr/lib64"   "lib64"
+    ln -sT "$EPKG_COMMON_ROOT/profile-1" "$EPKG_COMMON_ROOT/profile-current"
 }
 
 epkg_download() {
