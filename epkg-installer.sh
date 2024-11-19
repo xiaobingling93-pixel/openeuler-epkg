@@ -246,7 +246,7 @@ dependency_check || exit 1
 
 # step 1. select installation mode
 select_installation_mode || exit 1
-echo "Attention: Directories $EPKG_CACHE and $PUB_EPKG will be created."
+echo "Attention: Directories $EPKG_CACHE and $EPKG_COMMON_ROOT will be created."
 echo "Attention: File $RC_PATH will be modified."
 
 # step 2. download - unpack - change bashrc
