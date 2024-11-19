@@ -45,7 +45,7 @@ __epkg_add_path() {
 	echo "$epkg_path"
 }
 
-set_epkg_env_dirs() {
+__set_epkg_curr_dir() {
 	local env=$1
 	local curr_env_root=
 	__get_curr_env_root $env

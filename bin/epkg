@@ -55,7 +55,7 @@ else
 
 	echo "EPKG_CURR_ENV: $EPKG_CURR_ENV"
 	get_active_env "$@"
-	set_epkg_env_dirs $env
+	__set_epkg_curr_dir $env
 fi
 
 case "$cmd" in
