@@ -160,6 +160,7 @@ prepare_epkg_rootfs() {
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
 	/bin/tar -xf $EPKG_CACHE/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+    /bin/chmod -R 755 $EPKG_STORE_ROOT
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
     echo "Environment common created."

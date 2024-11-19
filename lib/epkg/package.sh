@@ -60,7 +60,6 @@ download_packages() {
 	for package_url in $packages_url;
 	do
 		echo "start download $package_url"
-		#$ROOTFS_LINK/bin/cp  "$package_url" "$EPKG_PKG_CACHE_DIR"
 		$epkg_helper $ROOTFS_LINK/bin/curl -# -o "$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"  "$package_url"  --retry 5
 	done
 }
@@ -69,7 +68,6 @@ uncompress_packages() {
 	for package in $require_packages;
 	do
 		local tar_dir="$uncompress_dir/$package"
-		#[ -d $tar_dir/fs ] && continue
 
 		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
 		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
