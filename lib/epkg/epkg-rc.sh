@@ -15,7 +15,7 @@ __epkg_append_path() {
 	local epkg_appbin_path=
 	local epkg_enabled_envs_dir=$HOME/.epkg/config/enabled-envs
 	# Current shell activate env
-	if [ -n "$EPKG_CURR_ENV" ]; then
+	if [[ -n $EPKG_CURR_ENV && "$EPKG_CURR_ENV" != "main" ]]; then
 		curr_envs+=($EPKG_CURR_ENV)
 		curr_envs+=(common)
 	else
@@ -71,6 +71,10 @@ epkg() {
 		local project_dir=$HOME/.epkg/envs/common/profile-1/usr
 	fi
 
+	if [ -z $EPKG_CURR_ENV ]; then
+		export EPKG_CURR_ENV=main
+	fi
+
 	case "$cmd" in
 		env)
 			local sub_cmd=$2
@@ -78,6 +82,7 @@ epkg() {
 			case "$sub_cmd" in
 				create)
 					$project_dir/bin/epkg "$@" || return
+					echo "Environment '$env' activated."
 					export EPKG_CURR_ENV=$env
 					__epkg_add_appbin_path
 					return
@@ -98,7 +103,7 @@ epkg() {
 					;;
 				deactivate)
 					echo "Environment '$EPKG_CURR_ENV' deactivated."
-					export EPKG_CURR_ENV=main
+					unset EPKG_CURR_ENV
 					__epkg_add_appbin_path
 					return
 					;;
