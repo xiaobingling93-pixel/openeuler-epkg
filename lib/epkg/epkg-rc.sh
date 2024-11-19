@@ -88,10 +88,6 @@ epkg() {
 					__epkg_add_appbin_path
 					return
 					;;
-				enable|disable)
-					$project_dir/bin/epkg "$@" || return
-					return
-					;;
 				activate)
 					echo "Environment '$env' activated."
 					export EPKG_CURR_ENV=$env
