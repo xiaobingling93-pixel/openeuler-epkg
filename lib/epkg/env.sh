@@ -162,7 +162,6 @@ create_environment() {
 
 	# XXX: is epkg_helper secure?
 	# XXX: merge N mkdir into 1 single cmd
-	$epkg_helper mkdir -p "$curr_env_root/$env/profile-1/tmp"
 
 	$epkg_helper ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
 
