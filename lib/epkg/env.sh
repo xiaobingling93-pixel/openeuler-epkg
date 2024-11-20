@@ -26,6 +26,11 @@ __get_curr_env_root() {
 __epkg_enable_environment() {
 	local env=$1
 
+	if [[ "$env" == "common" ]]; then
+		echo "$env cannot be enabled!"
+		return
+	fi
+
 	_check_env_enabled $env
 	if [ $? -eq 0 ]; then
 		echo "$env already enabled!"
@@ -84,7 +89,7 @@ _check_env_enabled() {
 list_environments() {
 	# List all environments
 	echo "Available environments(sort by time):"
-	all_envs=$(ls -t $EPKG_ENVS_ROOT)
+	all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
 	echo "Environment          Status"
 	echo "---------------------"
 	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_CURR_ENV'" ? "Y" : "")}' | column -t

@@ -19,7 +19,6 @@ __epkg_append_path() {
 	# Current shell activate env
 	if [[ -n $EPKG_CURR_ENV && "$EPKG_CURR_ENV" != "main" ]]; then
 		curr_envs+=($EPKG_CURR_ENV)
-		curr_envs+=(common)
 	else
 		# Enabled envs (init main & common) 
 		if [[ -d $epkg_enabled_envs_dir && -n "$(ls -A $epkg_enabled_envs_dir)" ]]; then
@@ -69,7 +68,7 @@ epkg() {
 		local project_dir=/opt/epkg/users/public/envs/common/profile-1/usr
 	elif [ -d "$COMMON_PROFILE_LINK" ]; then
 		local project_dir=$COMMON_PROFILE_LINK/usr
-	else # TODO: if not yet run 'epkg init', don't source $PROJECT_DIR files
+	else
 		local project_dir=$HOME/.epkg/envs/common/profile-1/usr
 	fi
 
@@ -84,6 +83,7 @@ epkg() {
 			case "$sub_cmd" in
 				create)
 					$project_dir/bin/epkg "$@" || return
+					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_CURR_ENV=$env
 					__epkg_add_appbin_path
@@ -91,6 +91,7 @@ epkg() {
 					;;
 				remove)
 					$project_dir/bin/epkg "$@" || return
+					# update PATH
 					if [[ "$env" == "$EPKG_CURR_ENV" ]]; then
 						unset EPKG_CURR_ENV
 					fi
@@ -98,12 +99,18 @@ epkg() {
 					return
 					;;
 				activate)
+					if [[ "$env" == "common" ]]; then
+						echo "$env cannot be activated!"
+						return
+					fi
+					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_CURR_ENV=$env
 					__epkg_add_appbin_path
 					return
 					;;
 				deactivate)
+					# update PATH
 					echo "Environment '$EPKG_CURR_ENV' deactivated."
 					unset EPKG_CURR_ENV
 					__epkg_add_appbin_path

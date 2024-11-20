@@ -19,7 +19,6 @@ __epkg_init() {
 	mkdir -p $EPKG_CHANNEL_CACHE_DIR
 	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
 
-	__epkg_enable_environment common
 	create_environment main     # main user environment
 	__epkg_enable_environment main
 	echo "Warning: For changes to take effect, close and re-open your current shell."
