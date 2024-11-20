@@ -135,18 +135,24 @@ epkg_unpack() {
 }
 
 epkg_change_bashrc() {
-    cat << EOF >> $RC_PATH
+    # User-based cat
+    if [[ "$(id -u)" = "0" && "$EPKG_INSTALL_MODE" == "global" ]]; then
+        cat << EOF >> $RC_PATH
 
 # epkg begin
-if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	EPKG_COMMON_ROOT=/opt/epkg/users/public/envs/common
-else
-	EPKG_COMMON_ROOT=\$HOME/.epkg/envs/common
-fi
-source \$EPKG_COMMON_ROOT/profile-1/usr/lib/epkg/epkg-rc.sh
+source /opt/epkg/users/public/envs/common/profile-1/usr/lib/epkg/epkg-rc.sh
 export PATH=\$(__epkg_append_path)
 # epkg end
 EOF
+    else
+        cat << EOF >> $RC_PATH
+
+# epkg begin
+source $HOME/.epkg/envs/common/profile-1/usr/lib/epkg/epkg-rc.sh
+export PATH=\$(__epkg_append_path)
+# epkg end
+EOF
+    fi
 }
 
 prepare_epkg_rootfs() {
