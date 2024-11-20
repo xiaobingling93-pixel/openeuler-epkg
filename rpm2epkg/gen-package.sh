@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MulanPSL-2.0+
+# Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
+
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 source "$SCRIPT_DIR/../lib/epkg/hash.sh"
 

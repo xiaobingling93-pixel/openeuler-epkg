@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MulanPSL-2.0+
+# Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 # Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
