@@ -43,7 +43,7 @@ dependency_check() {
 
     for cmd in $cmd_names; do
         if ! command -v "$1" >/dev/null $cmd; then
-            missing_cmds="$missing_cmds $pkg"
+            missing_cmds="$missing_cmds $cmd"
         fi
     done
 
