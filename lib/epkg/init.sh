@@ -26,9 +26,6 @@ __epkg_init() {
 }
 
 __check_epkg_user_init() {
-	local epkg_helper=
-	__get_epkg_helper "install_mode"
-
 	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
 		return 1
 	fi
