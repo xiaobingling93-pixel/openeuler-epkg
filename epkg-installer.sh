@@ -56,33 +56,43 @@ dependency_check() {
 }
 
 select_installation_mode() {
-    echo "Attention: Execute by $USER, Select the installation mode"
-    echo "1: user   mode: epkg will be installed in the $HOME/.epkg/"
-    echo "2: global mode: epkg common and store will be installed in the /opt/epkg/, requires root user"
-    read choice
-    if [[ "$choice" == "1" ]]; then
+    # User-based choice
+    if [[ "$(id -u)" = "0" ]]; then
+        echo "Attention: Execute by $USER, Select the installation mode"
+        echo "1: user   mode: epkg will be installed in the $HOME/.epkg/"
+        echo "2: global mode: epkg will be installed in the /opt/epkg/"
+        read mode_choice
+    else
+        echo "Attention: Execute by $USER, epkg will be installed in the $HOME/.epkg/, sure to continue? (y: continue, others: exit)"
+        read mode_choice
+        if [[ "$mode_choice" == "y" ]]; then
+            mode_choice=1
+        fi
+    fi
+    # Set epkg var
+    if [[ "$mode_choice" == "1" ]]; then
         EPKG_INSTALL_MODE="user"
         EPKG_COMMON_ROOT=$HOME_EPKG/envs/common
         EPKG_STORE_ROOT=$HOME_EPKG/store
         EPKG_CACHE=$HOME/.cache/epkg
-    elif [[ "$choice" == "2" && "$(id -u)" = "0" ]]; then
+    elif [[ "$mode_choice" == "2" && "$(id -u)" = "0" ]]; then
         EPKG_INSTALL_MODE="global"
         EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
         EPKG_STORE_ROOT=$OPT_EPKG/store
         EPKG_CACHE=$OPT_EPKG/cache
         RC_PATH=/etc/profile.d/epkg.sh
-    elif [[ "$choice" == "2" && "$(id -u)" != "0" ]]; then
+    elif [[ "$mode_choice" == "2" && "$(id -u)" != "0" ]]; then
         echo "Attention: Please use the root user to execute the global installation mode"
         return 1
     else
-        echo "Error choice !"
+        echo "epkg installer exit!"
         return 1
     fi
     ELFLOADER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/elf-loader
     EPKG_PKG_CACHE_DIR=$EPKG_CACHE/packages
     EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
     EPKG_MANAGER_DIR=$EPKG_CACHE/epkg_manager
-
+    # Make init home
     create_init_home
 }
 
