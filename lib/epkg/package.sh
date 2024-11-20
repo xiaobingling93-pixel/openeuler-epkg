@@ -37,6 +37,7 @@ install_package() {
 	download_packages
 	uncompress_packages
 	create_profile_symlinks
+	echo "Attention: Install success"
 }
 
 query_package_requires() {
