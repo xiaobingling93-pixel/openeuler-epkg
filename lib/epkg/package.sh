@@ -81,6 +81,11 @@ create_profile_symlinks() {
 		echo "start install $package"
 		local fs_dir="$uncompress_dir/$package/fs"
 		local fs_files=$($ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
+		local appbin_flag="false"
+		IFS='__' read -ra pkg_split <<< "$package"
+		if [[ "${package_arr[@]}" =~ "${pkg_split[2]}" ]]; then
+			appbin_flag="true"
+		fi
 		create_symlink_by_fs
 	done
 }
@@ -97,6 +102,9 @@ create_symlink_by_fs() {
 	# fs_file=/tmp/epkg-cache/xxx/fs/etc/ima/digest_lists/0-metadata_list-compact-info-7.0.3-3.oe2409.aarch64
 	while IFS= read -r fs_file; do
 		rfs_file=${fs_file#$fs_dir}
+		if [ "$appbin_flag" == "true" ]; then
+			rfs_file="${rfs_file/\/bin/\/app-bin}"
+		fi
 
 		$ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
 

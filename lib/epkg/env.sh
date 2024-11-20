@@ -25,11 +25,13 @@ create_environment() {
 	mkdir -p "$curr_env_root/$env/profile-1/tmp"
 	ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
 
+	mkdir -p "$curr_env_root/$env/profile-1/usr/app-bin"
 	mkdir -p "$curr_env_root/$env/profile-1/usr/bin"
 	mkdir -p "$curr_env_root/$env/profile-1/usr/sbin"
 	mkdir -p "$curr_env_root/$env/profile-1/usr/lib"
 	mkdir -p "$curr_env_root/$env/profile-1/usr/lib64"
 
+	ln -sT  "$curr_env_root/$env/profile-1/usr/app-bin"  "$curr_env_root/$env/profile-1/app-bin"
 	ln -sT  "$curr_env_root/$env/profile-1/usr/bin"  "$curr_env_root/$env/profile-1/bin"
 	ln -sT  "$curr_env_root/$env/profile-1/usr/sbin"  "$curr_env_root/$env/profile-1/sbin"
 	ln -sT  "$curr_env_root/$env/profile-1/usr/lib"  "$curr_env_root/$env/profile-1/lib"
