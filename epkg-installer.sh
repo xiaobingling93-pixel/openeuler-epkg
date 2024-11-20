@@ -96,7 +96,6 @@ create_init_home() {
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
     cd $EPKG_COMMON_ROOT/profile-1
-    ln -sT "usr/app-bin" "app-bin"
 	ln -sT "usr/bin"     "bin"
 	ln -sT "usr/sbin"    "sbin"
 	ln -sT "usr/lib"     "lib"

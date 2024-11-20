@@ -36,7 +36,7 @@ __epkg_add_path() {
 	local env_dir=$curr_env_root/$env_to_add/profile-current
 	local dir
 
-	for dir in app-bin usr/app-bin
+	for dir in usr/app-bin
 	do
 		tmp_path=${epkg_path#*$env_dir/$dir}
 		if [ $tmp_path = $epkg_path ]; then
