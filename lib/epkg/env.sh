@@ -23,7 +23,6 @@ __get_curr_env_root() {
 
 __epkg_enable_environment() {
 	local env=$1
-	local epkg_path=
 
 	_check_env_enabled $env
 	if [ $? -eq 0 ]; then
@@ -40,7 +39,6 @@ __epkg_enable_environment() {
 
 __epkg_disable_environment() {
 	local env=$1
-	local epkg_path=
 
 	_check_env_enabled $env
 	if [ $? -eq 1 ]; then
