@@ -60,13 +60,13 @@ __epkg_disable_environment() {
 
 __epkg_activate_environment() {
 	local env=$1
-	export EPKG_CURR_ENV=env
+	export EPKG_ACTIVE_ENV=env
 	echo "Environment '$env' activated."
 }
 
 __epkg_deactivate_environment() {
-	echo "Environment '$EPKG_CURR_ENV' deactivated."
-	export EPKG_CURR_ENV=main
+	echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
+	export EPKG_ACTIVE_ENV=main
 }
 
 _check_env_existed() {
@@ -92,8 +92,8 @@ list_environments() {
 	all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
 	echo "Environment          Status"
 	echo "---------------------"
-	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_CURR_ENV'" ? "Y" : "")}' | column -t
-	# echo "You are in [$EPKG_CURR_ENV] now"
+	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_ACTIVE_ENV'" ? "Y" : "")}' | column -t
+	# echo "You are in [$EPKG_ACTIVE_ENV] now"
 }
 
 create_environment() {
@@ -158,8 +158,8 @@ get_active_env() {
 		return
 	}
 
-	[ -n "$EPKG_CURR_ENV" ] && {
-		env=$EPKG_CURR_ENV
+	[ -n "$EPKG_ACTIVE_ENV" ] && {
+		env=$EPKG_ACTIVE_ENV
 		return
 	}
 
