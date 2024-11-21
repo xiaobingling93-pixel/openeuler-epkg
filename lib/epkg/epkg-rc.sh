@@ -51,6 +51,9 @@ __epkg_append_path() {
 	echo $epkg_appbin_path$SYSTEM_ORIGIN_PATH
 }
 
+# change PATH in bashrc
+export PATH=$(__epkg_append_path)
+
 __epkg_add_appbin_path() {
 	export PATH=$(__epkg_append_path)
 	

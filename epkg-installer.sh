@@ -151,7 +151,6 @@ epkg_change_bashrc() {
 
 # epkg begin
 source /opt/epkg/users/public/envs/common/profile-1/usr/lib/epkg/epkg-rc.sh
-export PATH=\$(__epkg_append_path)
 # epkg end
 EOF
     else
@@ -159,7 +158,6 @@ EOF
 
 # epkg begin
 source $HOME/.epkg/envs/common/profile-1/usr/lib/epkg/epkg-rc.sh
-export PATH=\$(__epkg_append_path)
 # epkg end
 EOF
     fi
