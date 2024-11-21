@@ -150,14 +150,14 @@ epkg_change_bashrc() {
         cat << EOF >> $RC_PATH
 
 # epkg begin
-source /opt/epkg/users/public/envs/common/profile-1/usr/lib/epkg/epkg-rc.sh
+source /opt/epkg/users/public/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 # epkg end
 EOF
     else
         cat << EOF >> $RC_PATH
 
 # epkg begin
-source $HOME/.epkg/envs/common/profile-1/usr/lib/epkg/epkg-rc.sh
+source $HOME/.epkg/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 # epkg end
 EOF
     fi

@@ -5,11 +5,11 @@
 # keep clean and minimal -- it's sourced by every user terminal
 __epkg_append_path() {
 	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-		source /opt/epkg/users/public/envs/common/profile-1/usr/lib/epkg/env.sh
-		source /opt/epkg/users/public/envs/common/profile-1/usr/lib/epkg/paths.sh
+		source /opt/epkg/users/public/envs/common/profile-current/usr/lib/epkg/env.sh
+		source /opt/epkg/users/public/envs/common/profile-current/usr/lib/epkg/paths.sh
 	else
-		source $HOME/.epkg/envs/common/profile-1/usr/lib/epkg/env.sh
-		source $HOME/.epkg/envs/common/profile-1/usr/lib/epkg/paths.sh
+		source $HOME/.epkg/envs/common/profile-current/usr/lib/epkg/env.sh
+		source $HOME/.epkg/envs/common/profile-current/usr/lib/epkg/paths.sh
 	fi
 
 	# Get epkg app-bin path
@@ -68,11 +68,11 @@ epkg() {
 	local cmd="$1"
 
 	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-		local project_dir=/opt/epkg/users/public/envs/common/profile-1/usr
+		local project_dir=/opt/epkg/users/public/envs/common/profile-current/usr
 	elif [ -d "$COMMON_PROFILE_LINK" ]; then
 		local project_dir=$COMMON_PROFILE_LINK/usr
 	else
-		local project_dir=$HOME/.epkg/envs/common/profile-1/usr
+		local project_dir=$HOME/.epkg/envs/common/profile-current/usr
 	fi
 
 	if [ -z $EPKG_ACTIVE_ENV ]; then
