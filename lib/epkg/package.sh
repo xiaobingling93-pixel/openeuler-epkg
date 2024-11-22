@@ -70,7 +70,7 @@ download_packages() {
 		else
 			local curl_opts=
 		fi
-		$epkg_helper $ROOTFS_LINK/bin/curl -# $curl_opts -o "$file" "$package_url"  --retry 5
+		$epkg_helper $ROOTFS_LINK/bin/curl -# --insecure $curl_opts -o "$file" "$package_url"  --retry 5
 		if test -s "$file.etag.tmp"; then
 			mv "$file.etag.tmp" "$file.etag.txt"
 		else
