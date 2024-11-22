@@ -130,7 +130,10 @@ epkg_unpack() {
     tar -xvf $EPKG_CACHE/$EPKG_MANAGER_TAR -C $EPKG_CACHE > /dev/null
 
     # for compatibility, can remove in future
-    [ -f $EPKG_MANAGER_DIR/bin/epkg ] && mv $EPKG_MANAGER_DIR/bin/epkg $EPKG_MANAGER_DIR/bin/epkg.sh
+    [ -f $EPKG_MANAGER_DIR/bin/epkg ] && {
+		mv $EPKG_MANAGER_DIR/bin/epkg $EPKG_MANAGER_DIR/bin/epkg.sh
+		ln -s epkg.sh $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg
+    }
 
     cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
     cp -r $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
