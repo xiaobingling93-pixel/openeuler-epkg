@@ -173,7 +173,13 @@ prepare_epkg_rootfs() {
 	/bin/cp -f $EPKG_CACHE/elf-loader $ELFLOADER_EXEC
 
 	echo "download epkg rootfs"
-	curl -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
+	curl --etag-save $EPKG_CACHE/store-etag.tmp --etag-compare $EPKG_CACHE/store-etag.txt -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
+	if -s $EPKG_CACHE/store-etag.tmp; then
+		mv $EPKG_CACHE/store-etag.tmp $EPKG_CACHE/store-etag.txt
+	else
+		rm -f $EPKG_CACHE/store-etag.tmp
+	fi
+
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
 	/bin/tar -xf $EPKG_CACHE/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
