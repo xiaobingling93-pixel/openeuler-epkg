@@ -62,7 +62,10 @@ export PATH=$(__epkg_append_path)
 
 __epkg_add_appbin_path() {
 	export PATH=$(__epkg_append_path)
-	
+	__rehash_path
+}
+
+__rehash_path() {
 	if [ -n "${ZSH_VERSION}" ]; then
 		rehash
 	elif [ -n "${BASH_VERSION}" ]; then
@@ -136,5 +139,11 @@ epkg() {
 			;;
 	esac
 
-	$epkg_sh "$@"
+	$epkg_sh "$@" || return
+
+	case "$cmd" in
+		install)
+			__rehash_path
+			;;
+	esac
 }
