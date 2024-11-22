@@ -75,6 +75,13 @@ epkg() {
 		local project_dir=$HOME/.epkg/envs/common/profile-current/usr
 	fi
 
+	if [ -f $project_dir/bin/epkg ]; then
+		# for compatibility, can remove in future
+		local epkg_sh=$project_dir/bin/epkg
+	else
+		local epkg_sh=$project_dir/bin/epkg.sh
+	fi
+
 	if [ -z $EPKG_ACTIVE_ENV ]; then
 		export EPKG_ACTIVE_ENV=main
 	fi
@@ -85,7 +92,7 @@ epkg() {
 			local env=$3
 			case "$sub_cmd" in
 				create)
-					$project_dir/bin/epkg "$@" || return
+					$epkg_sh "$@" || return
 					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
@@ -93,7 +100,7 @@ epkg() {
 					return
 					;;
 				remove)
-					$project_dir/bin/epkg "$@" || return
+					$epkg_sh "$@" || return
 					# update PATH
 					if [[ "$env" == "$EPKG_ACTIVE_ENV" ]]; then
 						unset EPKG_ACTIVE_ENV
@@ -123,5 +130,5 @@ epkg() {
 			;;
 	esac
 
-	$project_dir/bin/epkg "$@"
+	$epkg_sh "$@"
 }

@@ -128,9 +128,13 @@ epkg_download() {
 epkg_unpack() {
     # unpack epkg_manager
     tar -xvf $EPKG_CACHE/$EPKG_MANAGER_TAR -C $EPKG_CACHE > /dev/null
-    cp -r $EPKG_MANAGER_DIR/bin/epkg $EPKG_COMMON_ROOT/profile-1/usr/bin/
-	cp -r $EPKG_MANAGER_DIR/lib/epkg $EPKG_COMMON_ROOT/profile-1/usr/lib/
-	cp -r $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg
+
+    # for compatibility, can remove in future
+    [ -f $EPKG_MANAGER_DIR/bin/epkg ] && mv $EPKG_MANAGER_DIR/bin/epkg $EPKG_MANAGER_DIR/bin/epkg.sh
+
+    cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
+    cp -r $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
+    cp    $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg/
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
