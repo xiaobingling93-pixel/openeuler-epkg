@@ -8,8 +8,12 @@
 下面的实例介绍了安装不同软件包版本的方式
 
 ```bash
-# 下载epkg
- wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm && sudo yum -y install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
+# openEuler 安装方式
+sudo yum install epkg
+
+# 通用安装方式
+curl -sSL https://gitee.com/openeuler/epkg/raw/master/epkg-installer.sh
+bash epkg-installer.sh
 
 # 初始化epkg
 epkg init
@@ -39,26 +43,6 @@ which tree
 
 # 切换回环境1
 epkg activate t1
-```
-
-
-
-## 安装教程
-```bash
-# 下载epkg
-wget https://repo.oepkgs.net/openeuler/epkg/epkg-0.1.0-1.aarch64.rpm
-sudo yum install epkg-0.1.0-1.aarch64.rpm // 待放到repo后可以直接执行 yum install epkg
-# 或执行 
-curl -sSL https://repo.oepkgs.net/openeuler/epkg/rootfs/downloader.sh -o /tmp/
-bash /tmp/downloader.sh 
-
-# 初始化epkg
-epkg init
-bash // 重新执行.bashrc, 获得新的PATH
-
-# 创建环境
-epkg creat $env 
-epkg install $package 
 ```
 
 ## EPKG包管理器使用说明
