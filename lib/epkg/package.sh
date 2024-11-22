@@ -60,7 +60,7 @@ query_package_requires() {
 }
 
 download_packages() {
-	local curl_help=$(curl --help all)
+	local curl_help=$($ROOTFS_LINK/bin/curl --help all)
 	for package_url in $packages_url;
 	do
 		echo "start download $package_url"
