@@ -116,7 +116,7 @@ create_init_home() {
 epkg_download() {
     # download epkg_manager    
     echo "download epkg manager"
-    curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR $EPKG_MANAGER_URL
+    curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR --max-redirs 3 --location $EPKG_MANAGER_URL
 
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
