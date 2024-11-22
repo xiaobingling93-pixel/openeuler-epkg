@@ -66,7 +66,7 @@ download_packages() {
 		echo "start download $package_url"
 		local file="$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"
 		if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
-			local curl_opts="--etag-save '$file.etag.tmp' --etag-compare '$file.etag.txt'"
+			local curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
 		else
 			local curl_opts=
 		fi
