@@ -33,13 +33,19 @@ __epkg_append_path() {
 	done
 
     # Get system origin path
-	local PATH_ARRAY
+	local PATH_DIRS
 	local SYSTEM_ORIGIN_PATH
 	# Use IFS (Internal Field Separator) to split the PATH into an array
-	IFS=':' read -ra PATH_ARRAY <<< "$PATH"
+	if [ -n "$BASH_VERSION" ]; then
+		PATH_DIRS="${PATH//:/ }"
+	elif [ -n "$ZSH_VERSION" ]; then
+		PATH_DIRS=(${(@s/:/)PATH})
+	else
+		PATH_DIRS=$(echo "$PATH" | tr : ' ')
+	fi
 	# Create a new PATH variable without the unwanted directories
 	SYSTEM_ORIGIN_PATH=""
-	for dir in "${PATH_ARRAY[@]}"; do
+	for dir in $PATH_DIRS; do
 		if [[ -n "$dir" && "${dir#*/app-bin}" = "$dir" ]]; then
 			# Append the directory to the new PATH if it doesn't end with /app-bin
 			SYSTEM_ORIGIN_PATH+="$dir:"
