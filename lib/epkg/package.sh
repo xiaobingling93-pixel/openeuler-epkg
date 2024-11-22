@@ -63,7 +63,13 @@ download_packages() {
 	for package_url in $packages_url;
 	do
 		echo "start download $package_url"
-		$epkg_helper $ROOTFS_LINK/bin/curl -# -o "$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"  "$package_url"  --retry 5
+		local file="$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"
+		$epkg_helper $ROOTFS_LINK/bin/curl -# --etag-save "$file.etag.tmp" --etag-compare "$file.etag.txt" -o "$file" "$package_url"  --retry 5
+		if test -s "$file.etag.tmp"; then
+			mv "$file.etag.tmp" "$file.etag.txt"
+		else
+			rm -f "$file.etag.tmp"
+		fi
 	done
 }
 
