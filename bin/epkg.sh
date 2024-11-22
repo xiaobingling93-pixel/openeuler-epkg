@@ -1,4 +1,7 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: MulanPSL-2.0+
+# Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
+
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
 elif [ -d "$COMMON_PROFILE_LINK" ]; then
@@ -6,6 +9,9 @@ elif [ -d "$COMMON_PROFILE_LINK" ]; then
 else
 	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
 fi
+
+export PATH=$PROJECT_DIR/bin:$PATH
+
 source $PROJECT_DIR/lib/epkg/paths.sh
 source $PROJECT_DIR/lib/epkg/env.sh
 source $PROJECT_DIR/lib/epkg/init.sh
