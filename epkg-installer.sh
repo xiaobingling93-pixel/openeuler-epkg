@@ -4,7 +4,10 @@
 
 # Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
-EPKG_MANAGER_TAR=epkg_manager.tar.gz
+# for quick develop-test cycle
+EPKG_VERSION=master
+EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSION.tar.gz
+EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_HELPER=epkg_helper
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
@@ -19,7 +22,6 @@ ELFLOADER_EXEC=
 EPKG_CACHE=
 EPKG_PKG_CACHE_DIR=
 EPKG_CHANNEL_CACHE_DIR=
-EPKG_MANAGER_DIR=
 
 # Shell Type
 shell=$(basename "$SHELL")
@@ -91,7 +93,6 @@ select_installation_mode() {
     ELFLOADER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/elf-loader
     EPKG_PKG_CACHE_DIR=$EPKG_CACHE/packages
     EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
-    EPKG_MANAGER_DIR=$EPKG_CACHE/epkg_manager
     # Make init home
     create_init_home
 }
@@ -100,7 +101,6 @@ create_init_home() {
     mkdir -p $EPKG_STORE_ROOT
     mkdir -p $EPKG_PKG_CACHE_DIR
     mkdir -p $EPKG_CHANNEL_CACHE_DIR
-    mkdir -p $EPKG_MANAGER_DIR
 
     mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
@@ -116,7 +116,7 @@ create_init_home() {
 epkg_download() {
     # download epkg_manager    
     echo "download epkg manager"
-    curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR $EPKG_URL/$EPKG_MANAGER_TAR
+    curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR $EPKG_MANAGER_URL
 
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
@@ -128,15 +128,10 @@ epkg_download() {
 epkg_unpack() {
     # unpack epkg_manager
     tar -xvf $EPKG_CACHE/$EPKG_MANAGER_TAR -C $EPKG_CACHE > /dev/null
-
-    # for compatibility, can remove in future
-    [ -f $EPKG_MANAGER_DIR/bin/epkg ] && {
-		mv $EPKG_MANAGER_DIR/bin/epkg $EPKG_MANAGER_DIR/bin/epkg.sh
-		ln -s epkg.sh $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg
-    }
+    local EPKG_MANAGER_DIR=$EPKG_CACHE/epkg-$EPKG_VERSION
 
     cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
-    cp -r $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
+    cp -a $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
     cp    $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg/
 
     # unpack epkg_helper
