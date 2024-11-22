@@ -60,16 +60,22 @@ query_package_requires() {
 
 download_packages() {
 	local curl_help=$($ROOTFS_LINK/bin/curl --help all)
+
+	local url_prefix=${packages_url%% *}
+	local url_prefix=${url_prefix%/*}
+	local url_prefix=${url_prefix%/*}
+	echo "Packages location: $url_prefix"
+
 	for package_url in $packages_url;
 	do
-		echo "start download $package_url"
+		echo "Downloading ${package_url##*/}"
 		local file="$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"
 		if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
 			local curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
 		else
 			local curl_opts=
 		fi
-		$epkg_helper $ROOTFS_LINK/bin/curl -# --insecure $curl_opts -o "$file" "$package_url"  --retry 5
+		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5
 		if test -s "$file.etag.tmp"; then
 			mv "$file.etag.tmp" "$file.etag.txt"
 		else
@@ -94,7 +100,7 @@ uncompress_packages() {
 create_profile_symlinks() {
 	for package in $require_packages;
 	do
-		echo "start install $package"
+		echo "Installing $package"
 		local fs_dir="$uncompress_dir/$package/fs"
 		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"

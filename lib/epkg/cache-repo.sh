@@ -8,13 +8,13 @@ cache_repo_index()
 	local repo_url=$2
 	local local_cache_path=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
 
-	echo "Caching repodata for: $repo_name"
 	# Check if store-paths.zst already exists
 	if [[ -f "${local_cache_path}/repodata/store-paths.zst" ]]; then
-		echo "Cache for ${repo_name} already exists. Skipping..."
 		return
 	fi
 	
+	echo "Caching repodata for: $repo_name"
+
 	# clean old metadata files and re-init metadata dir
 	$epkg_helper rm -rf ${local_cache_path} && \
 	$epkg_helper mkdir -p ${local_cache_path}/repodata
