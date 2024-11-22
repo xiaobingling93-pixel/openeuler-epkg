@@ -124,10 +124,15 @@ create_symlink_by_fs() {
 			rfs_file="${rfs_file/\/bin/\/app-bin}"
 		fi
 
-		$epkg_helper $ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
+		[ -e "$symlink_dir/$rfs_file" ] && continue
+
+		[ -e $fs_file ] || continue
+
+		local parent_dir=${rfs_file%/*}
 
 		# Create parent directory if it doesn't exist
-		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
+		[ -e $symlink_dir/$parent_dir ] ||
+		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir"
 
 		#if [ "${fs_file}" == *"/bin/"* ]; then
 		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
@@ -142,8 +147,6 @@ create_symlink_by_fs() {
 			$epkg_helper $ROOTFS_LINK/bin/cp -r $fs_file $symlink_dir/$rfs_file &> /dev/null
 			continue
 		fi
-
-		[ -e "$symlink_dir/$rfs_file" ] && continue
 
 		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
 
