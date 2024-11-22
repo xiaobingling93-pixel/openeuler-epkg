@@ -166,6 +166,13 @@ EOF
 }
 
 prepare_epkg_rootfs() {
+	local curl_help=$(curl --help all)
+	if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
+		local curl_opts="--etag-save $EPKG_CACHE/store-etag.tmp --etag-compare $EPKG_CACHE/store-etag.txt"
+	else
+		local curl_opts=
+	fi
+
 	# download epkg_rootfs
     echo "download epkg elf loader"
 	curl -# -o $EPKG_CACHE/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
@@ -173,7 +180,7 @@ prepare_epkg_rootfs() {
 	/bin/cp -f $EPKG_CACHE/elf-loader $ELFLOADER_EXEC
 
 	echo "download epkg rootfs"
-	curl --etag-save $EPKG_CACHE/store-etag.tmp --etag-compare $EPKG_CACHE/store-etag.txt -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
+	curl $curl_opts -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
 	if -s $EPKG_CACHE/store-etag.tmp; then
 		mv $EPKG_CACHE/store-etag.tmp $EPKG_CACHE/store-etag.txt
 	else
