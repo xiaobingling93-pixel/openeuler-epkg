@@ -181,7 +181,7 @@ prepare_epkg_rootfs() {
 
 	echo "download epkg rootfs"
 	curl $curl_opts -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
-	if -s $EPKG_CACHE/store-etag.tmp; then
+	if [ -s $EPKG_CACHE/store-etag.tmp ]; then
 		mv $EPKG_CACHE/store-etag.tmp $EPKG_CACHE/store-etag.txt
 	else
 		rm -f $EPKG_CACHE/store-etag.tmp
@@ -272,6 +272,11 @@ replace_string() {
 	}
 }
 
+prepare_conf() {
+    # curl resolv.conf
+    cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+}
+
 # step 0. dependency check
 dependency_check || exit 1
 
@@ -287,5 +292,6 @@ epkg_change_bashrc
 
 # step 3. common env init
 prepare_epkg_rootfs
+prepare_conf
 
 echo "Attention: For changes to take effect, close and re-open your current shell."
