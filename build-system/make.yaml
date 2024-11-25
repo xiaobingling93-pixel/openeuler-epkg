@@ -1,6 +1,0 @@
-buildRequires:
-  - make
-makeFlags: ""
-buildSystem: make
-autopkg:
-  buildSystemFiles: Makefile
