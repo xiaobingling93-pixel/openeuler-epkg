@@ -41,9 +41,9 @@ install_package() {
 
 query_package_requires() {
 	local requires=$(accurate_query_requires $1)
-	local packges_info=${requires#*PACKAGE  CHANNEL}
+	local packages_info=${requires#*PACKAGE  CHANNEL}
 	local count=0
-	for ite in $packges_info;
+	for ite in $packages_info;
 	do
 		count=$((count + 1))
 		if ((count % 3 == 0)); then
