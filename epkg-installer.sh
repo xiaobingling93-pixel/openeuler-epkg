@@ -181,7 +181,7 @@ prepare_epkg_rootfs() {
 
 	echo "download epkg rootfs"
 	curl $curl_opts -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
-	if -s $EPKG_CACHE/store-etag.tmp; then
+	if [ -s $EPKG_CACHE/store-etag.tmp ]; then
 		mv $EPKG_CACHE/store-etag.tmp $EPKG_CACHE/store-etag.txt
 	else
 		rm -f $EPKG_CACHE/store-etag.tmp
