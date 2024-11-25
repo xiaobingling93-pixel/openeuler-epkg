@@ -208,8 +208,6 @@ create_rootfs_symlinks() {
 }
 
 create_symlink_by_fs() {
-	local rfs
-	local file
 
 	while IFS= read -r fs_file; do
 		rfs_file=${fs_file#$fs_dir}
