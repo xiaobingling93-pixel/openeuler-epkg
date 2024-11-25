@@ -20,7 +20,7 @@ epkg init
 bash // 重新执行.bashrc, 获得新的PATH
 
 # 创建环境1
-epkg create t1
+epkg env create t1
 epkg install tree
 tree --version
 which tree
@@ -36,13 +36,13 @@ openEuler-24.09                | OS              | https://repo.oepkgs.net/opene
 ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 # 创建环境2, 指定repo
-epkg create t2 --repo openEuler-22.03-LTS-SP3
+epkg env create t2 --repo openEuler-22.03-LTS-SP3
 epkg install tree 
 tree --version
 which tree
 
 # 切换回环境1
-epkg activate t1
+epkg env activate t1
 ```
 
 ## EPKG包管理器使用说明
@@ -57,18 +57,18 @@ Usage:
     epkg list （开发中...）
     
     epkg env list
-    epkg create|remove ENV
-    epkg activate ENV
-    epkg deactivate ENV
-    epkg enable|disable ENV
+    epkg env create|remove ENV
+    epkg env activate ENV
+    epkg env deactivate ENV
+    epkg env enable|disable ENV
     epkg env history ENV （开发中...）
     epkg env rollback ENV （开发中...）
 
 软件包安装：
-    epkg create $env // 创建环境
+    epkg env create $env // 创建环境
     epkg install $package // 在环境中安装软件包
 
-    epkg create $env2 --repo $repo // 创建环境2，指定repo
+    epkg env create $env2 --repo $repo // 创建环境2，指定repo
     epkg install $package // 在环境2中安装软件包
 
 
@@ -83,7 +83,7 @@ Usage:
 
 返回示例：
 ```
-[root@2d785c36ee2e /]# epkg activate t1
+[root@2d785c36ee2e /]# epkg env activate t1
 Add common to path
 Add t1 to path
 Environment 't1' activated.
@@ -185,11 +185,11 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg create ${env_name}
+    epkg env create ${env_name}
 
 返回示例：
 
-    [small_leek@b0e608264355 bin]# epkg create work1
+    [small_leek@b0e608264355 bin]# epkg env create work1
     YUM --installroot directory structure created successfully in: /root/.epkg/envs/work1/profile-1
     Environment 'work1' added to PATH.
     Environment 'work1' activated.
@@ -202,11 +202,11 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg activate ${env_name}
+    epkg env activate ${env_name}
 
 返回示例：
 
-    [small_leek@9d991d463f89 bin]# epkg activate main
+    [small_leek@9d991d463f89 bin]# epkg env activate main
     YUM --installroot directory structure created successfully in: /root/.epkg/envs/main/profile-1
     Environment 'main' activated.
 
@@ -217,11 +217,11 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg deactivat ${env_name}
+    epkg env deactivate ${env_name}
 
 返回示例：
 
-    [small_leek@398ec57ce780 bin]# epkg deactivate w1
+    [small_leek@398ec57ce780 bin]# epkg env deactivate w1
     Environment 'w1' deactivated.
 
 
@@ -232,11 +232,11 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg enable ${env_name}
+    epkg env enable ${env_name}
 
 返回示例：
 
-    [small_leek@5042ae77dd75 bin]# epkg enable lkp
+    [small_leek@5042ae77dd75 bin]# epkg env enable lkp
     add common to path
     add main to path
     add xsl to path
@@ -250,11 +250,11 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg disable ${env_name}
+    epkg env disable ${env_name}
 
 返回示例：
 
-    [small_leek@69393675945d /]# epkg disable w4
+    [small_leek@69393675945d /]# epkg env disable w4
     Warning: Don't try to disable current env!
     Warning: you are trying to disable current env!
     sure to continue? (y: continue, others: exit)
