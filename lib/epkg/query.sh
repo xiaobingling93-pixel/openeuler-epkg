@@ -68,7 +68,6 @@ get_requires() {
     local channel_name=$3
     local channel_index=$4
     local pkg_info_path="$channel_url/pkg-info" # 需要改为环境中的路径
-    local store_path="$channel_url/store"
 
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
     local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
