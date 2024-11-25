@@ -272,6 +272,11 @@ replace_string() {
 	}
 }
 
+prepare_conf() {
+    # curl resolv.conf
+    cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+}
+
 # step 0. dependency check
 dependency_check || exit 1
 
@@ -287,5 +292,6 @@ epkg_change_bashrc
 
 # step 3. common env init
 prepare_epkg_rootfs
+prepare_conf
 
 echo "Attention: For changes to take effect, close and re-open your current shell."
