@@ -7,6 +7,11 @@ import yaml
 import shutil
 import subprocess
 
+# Const Var
+epkg_global_path = "/opt/epkg/users/public/envs/common"
+epkg_user_path = os.path.join(os.environ.get('HOME'), ".epkg/envs/common")
+
+# Epkg Build path
 epkg_path = "/root/epkg"
 workspace = "/root/workspace"
 scripts_path = workspace + '/' + "scripts"
@@ -16,6 +21,13 @@ src_path = workspace + '/' + "src"
 fs_path = workspace + '/' + "fs"
 
 def init_workspace():
+    # init epkg path
+    global epkg_path
+    if os.path.exists(epkg_global_path):
+        epkg_path = "/opt/epkg"
+    else:
+        epkg_path = os.path.join(os.environ.get('HOME'), ".epkg")
+
     # remove
     if os.path.exists(workspace):
         shutil.rmtree(workspace)
