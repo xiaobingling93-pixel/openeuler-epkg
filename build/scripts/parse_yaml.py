@@ -14,7 +14,7 @@ epkg_user_path = os.path.join(os.environ.get('HOME'), ".epkg/envs/common")
 epkg_path = "/root/epkg"
 workspace = "/root/workspace"
 scripts_path = workspace + '/' + "scripts"
-tar_sources_path = workspace + '/' + "tar/sources"
+sources_path = workspace + '/' + "sources"
 patches_path = workspace + '/' + "patches"
 src_path = workspace + '/' + "src"
 fs_path = workspace + '/' + "fs"
@@ -36,8 +36,8 @@ def init_workspace():
     # mkdir
     if not os.path.exists(scripts_path):
         os.makedirs(scripts_path)
-    if not os.path.exists(tar_sources_path):
-        os.makedirs(tar_sources_path)
+    if not os.path.exists(sources_path):
+        os.makedirs(sources_path)
     if not os.path.exists(patches_path):
         os.makedirs(patches_path)
     if not os.path.exists(src_path):
@@ -61,7 +61,7 @@ def generate_pkgvars(pkg_meta):
         f.write("# path vars " + os.linesep)
         # f.write("epkg_build_workspace=" + workspace + os.linesep)
         # f.write("epkg_scripts_path=" + scripts_path + os.linesep)
-        # f.write("epkg_tar_sources_path=" + tar_sources_path + os.linesep)
+        # f.write("epkg_sources_path=" + sources_path + os.linesep)
         f.write("epkg_patches_path=" + patches_path + os.linesep)
         f.write("epkg_src_path=" + src_path + os.linesep)
         f.write("epkg_fs_path=" + fs_path + os.linesep)
@@ -121,8 +121,8 @@ def generate_patch_cmd(patch_urls: dict):
         file.write(new_phase_context)
 
 def unzip_code():
-    for source_tar in os.listdir(tar_sources_path):
-        unzip_file(os.path.join(tar_sources_path, source_tar))
+    for source_tar in os.listdir(sources_path):
+        unzip_file(os.path.join(sources_path, source_tar))
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
@@ -138,7 +138,7 @@ if __name__ == '__main__':
     mv_build_sh(pkg_meta)
 
     # download & unzip $ patch
-    download(list(pkg_meta["source"].values()), tar_sources_path)
+    download(list(pkg_meta["source"].values()), sources_path)
     download(list(pkg_meta["patches"].values()), patches_path)
     generate_patch_cmd(pkg_meta["patches"])
     unzip_code()
