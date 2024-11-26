@@ -24,8 +24,10 @@ def init_workspace():
     global epkg_path
     if os.path.exists(epkg_global_path):
         epkg_path = "/opt/epkg"
-    else:
+    elif os.path.exists(epkg_user_path):
         epkg_path = os.path.join(os.environ.get('HOME'), ".epkg")
+    else:
+        epkg_path = "/root/epkg"
 
     # remove
     if os.path.exists(workspace):
@@ -98,12 +100,25 @@ def unzip_file(filename: str):
     else:
         print("unknow zip file type!")
 
-def get_sources_and_patches(sources_url: list, patches_url: list):
-    # download
-    for source_url in sources_url:
-        os.system(f"wget {source_url} -P {tar_sources_path}")
-    for patch_url in patches_url:
-        os.system(f"wget {patch_url} -P {patches_path}")
+def download(URLs: list, save_path: str):
+    for url in URLs:    
+        file_path = os.path.join(save_path, os.path.basename(url))
+        print("Downloading " + file_path)
+        # download
+        os.system(f"wget -q {url} -P {save_path}")
+
+def generate_patch_cmd(patch_urls: dict):
+    patch_content=""
+    for patch_url in patch_urls.values():
+        file_path = os.path.join(patches_path, os.path.basename(patch_url))
+        patch_content = patch_content + '\t' + "patch -p1 -N < " + file_path + os.linesep 
+
+    # replace phase.sh basic_patch content
+    with open(os.path.join(scripts_path, "phase.sh"), 'r') as file:
+        phase_content = file.read()
+    new_phase_context = phase_content.replace('echo "exec phase.sh basic_patch"', patch_content)
+    with open(os.path.join(scripts_path, "phase.sh"), 'w') as file:
+        file.write(new_phase_context)
 
 def unzip_code():
     for source_tar in os.listdir(tar_sources_path):
@@ -123,5 +138,7 @@ if __name__ == '__main__':
     mv_build_sh(pkg_meta)
 
     # download & unzip $ patch
-    get_sources_and_patches(list(pkg_meta["source"].values()), list(pkg_meta["patches"].values()))
+    download(list(pkg_meta["source"].values()), tar_sources_path)
+    download(list(pkg_meta["patches"].values()), patches_path)
+    generate_patch_cmd(pkg_meta["patches"])
     unzip_code()

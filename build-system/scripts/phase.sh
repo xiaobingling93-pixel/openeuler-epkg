@@ -20,11 +20,7 @@ basic_prep() {
 }
 
 basic_patch() {
-  patch_files=$(find "$epkg_patches_path" -type f -name "*.patch")
-  while IFS= read -r patch_file; do
-    echo "Patching file: $patch_file"
-    patch -p1 -N < "$patch_file"
-  done <<< "$patch_files"
+  echo "exec phase.sh basic_patch"
 }
 
 basic_build() {
