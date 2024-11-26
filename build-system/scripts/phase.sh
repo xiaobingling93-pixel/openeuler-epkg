@@ -10,23 +10,27 @@ runPhase() {
     echo "exec $build_system ${phase} ..."
     $function
   else 
-    echo "exec phase.sh ${phase} ..."
-    $phase
+    echo "exec phase.sh basic_${phase} ..."
+    basic_$phase
   fi
 }
 
-prep() {
-  echo "exec phase.sh prep"
+basic_prep() {
+  echo "exec phase.sh basic_prep"
 }
 
-patch() {
-  echo "exec phase.sh patch"
+basic_patch() {
+  patch_files=$(find "$epkg_patches_path" -type f -name "*.patch")
+  while IFS= read -r patch_file; do
+    echo "Patching file: $patch_file"
+    patch -p1 -N < "$patch_file"
+  done <<< "$patch_files"
 }
 
-build() {
-  echo "exec phase.sh build"
+basic_build() {
+  echo "exec phase.sh basic_build"
 }
 
-install() {
-  echo "exec phase.sh install"
+basic_install() {
+  echo "exec phase.sh basic_install"
 }
