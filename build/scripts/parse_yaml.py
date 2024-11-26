@@ -52,7 +52,7 @@ def parse(yaml_path):
 
 def generate_pkgvars(pkg_meta):
     build_system = pkg_meta["buildSystem"]
-    build_meta = parse(os.path.join(epkg_path, "build-system/builder", str(build_system) + ".yaml"))
+    build_meta = parse(os.path.join(epkg_path, "build/build-system", str(build_system) + ".yaml"))
     sytem_build_requires = build_meta["buildRequires"]
     build_requires = sytem_build_requires + pkg_meta["buildRequires"]
 
@@ -81,9 +81,9 @@ def generate_pkgvars(pkg_meta):
 def mv_build_sh(pkg_meta):
     build_system = pkg_meta["buildSystem"]
 
-    build_system_script_src=os.path.join(epkg_path, "build-system/builder", str(build_system) + ".sh")
-    generic_build_script_src=os.path.join(epkg_path, "build-system/scripts/generic-build.sh")
-    phase_script_src=os.path.join(epkg_path, "build-system/scripts/phase.sh")
+    build_system_script_src=os.path.join(epkg_path, "build/build-system", str(build_system) + ".sh")
+    generic_build_script_src=os.path.join(epkg_path, "build/scripts/generic-build.sh")
+    phase_script_src=os.path.join(epkg_path, "build/scripts/phase.sh")
     shutil.copy(build_system_script_src, scripts_path)
     shutil.copy(generic_build_script_src, scripts_path)
     shutil.copy(phase_script_src, scripts_path)
