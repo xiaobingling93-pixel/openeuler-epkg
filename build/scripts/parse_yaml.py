@@ -10,14 +10,16 @@ import shutil
 epkg_global_common_path = "/opt/epkg/users/public/envs/common"
 epkg_user_common_path = os.path.join(os.environ.get('HOME'), ".epkg/envs/common")
 if os.path.exists(epkg_global_common_path):
-    epkg_manager_path = "/opt/epkg"
+    epkg_home_path = "/opt/epkg"
 elif os.path.exists(epkg_user_common_path):
-    epkg_manager_path = os.path.join(os.environ.get('HOME'), ".epkg")
+    epkg_home_path = os.path.join(os.environ.get('HOME'), ".epkg")
 else:
     print("Not Found epkg Manager. Maybe exec epkg installer.sh")
+    sys.exit()
+epkg_env_root_path = os.path.join(epkg_home_path, "envs")
 
 # Epkg Build path
-workspace = os.path.join(epkg_manager_path, "build/workspace")
+workspace = os.path.join(epkg_home_path, "build/workspace")
 scripts_path = os.path.join(workspace, "scripts")
 sources_path = os.path.join(workspace, "sources")
 patches_path = os.path.join(workspace, "patches")
@@ -48,7 +50,7 @@ def parse(yaml_path):
 
 def generate_pkgvars(pkg_meta):
     build_system = pkg_meta["buildSystem"]
-    build_meta = parse(os.path.join(epkg_manager_path, "build/build-system", str(build_system) + ".yaml"))
+    build_meta = parse(os.path.join(epkg_home_path, "build/build-system", str(build_system) + ".yaml"))
     sytem_build_requires = build_meta["buildRequires"]
     build_requires = sytem_build_requires + pkg_meta["buildRequires"]
 

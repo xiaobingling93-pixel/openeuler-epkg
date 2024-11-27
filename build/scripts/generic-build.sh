@@ -4,23 +4,23 @@
 
 # Source the required scripts
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	epkg_manager_path=/opt/epkg
+	epkg_home_path=/opt/epkg
 else
-	epkg_manager_path=$HOME/.epkg
+	epkg_home_path=$HOME/.epkg
 fi
-source $epkg_manager_path/build/scripts/generic-phase.sh
-source $epkg_manager_path/build/workspace/scripts/pkgvars.sh
-source $epkg_manager_path/build/workspace/scripts/phase.sh
-source $epkg_manager_path/build/build-system/"$build_system".sh
+source $epkg_home_path/build/scripts/generic-phase.sh
+source $epkg_home_path/build/workspace/scripts/pkgvars.sh
+source $epkg_home_path/build/workspace/scripts/phase.sh
+source $epkg_home_path/build/build-system/"$build_system".sh
 
 # build env create
 echo "build_requires:$build_requires"
-source $epkg_manager_path/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
+source $epkg_home_path/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 epkg env create build
 epkg install $build_requires
 
 # run phase
-cd $epkg_manager_path/build/workspace/src/$name-$version
+cd $epkg_home_path/build/workspace/src/$name-$version
 phases="prep patch build install"
 for curPhase in ${phases[*]}; do
 	runPhase "$curPhase"
