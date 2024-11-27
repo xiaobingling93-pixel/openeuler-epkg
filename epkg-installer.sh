@@ -259,7 +259,22 @@ handle_exec() {
 		handle_elf
 	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
 		$ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
+    elif [[ "$file_type" =~ 'symbolic link' ]]; then
+		handle_symlink
 	fi
+}
+
+handle_symlink() {
+	ln_fs_file=$($epkg_helper $ROOTFS_LINK/bin/readlink -f  $fs_file)
+    if [ ! -e "$ln_fs_file" ]; then
+        return 1
+    fi
+
+	ln_rfs=${ln_fs_file#$fs_dir}
+	if [[ "$appbin_flag" == "true" ]]; then
+		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
+	fi
+	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
 }
 
 handle_elf() {
