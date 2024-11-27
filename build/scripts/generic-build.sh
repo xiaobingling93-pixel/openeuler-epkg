@@ -13,9 +13,15 @@ source $epkg_manager_path/build/workspace/scripts/pkgvars.sh
 source $epkg_manager_path/build/workspace/scripts/phase.sh
 source $epkg_manager_path/build/build-system/"$build_system".sh
 
+# build env create
+echo "build_requires:$build_requires"
+source $epkg_manager_path/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
+epkg env create build
+epkg install $build_requires
+
+# run phase
 cd $epkg_manager_path/build/workspace/src/$name-$version
 phases="prep patch build install"
-# XXX: use some_name coding style in shell script, except if the variable comes from pkg.yaml
 for curPhase in ${phases[*]}; do
 	runPhase "$curPhase"
 done

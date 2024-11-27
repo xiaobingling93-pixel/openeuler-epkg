@@ -65,14 +65,10 @@ def generate_pkgvars(pkg_meta):
         f.write("name=" + pkg_meta["name"] + os.linesep)
         f.write("version=" + pkg_meta["version"] + os.linesep)
         f.write("build_system=" + build_system + os.linesep)
+        f.write("build_requires=\"" + ' '.join(build_requires) + "\"" + os.linesep)
         f.write("# makeFlags vars" + os.linesep)
         f.write("makeFlags=" + build_meta["makeFlags"] + os.linesep)
         f.write("installFlags=" + build_meta["installFlags"] + os.linesep)
-        f.write("# epkg build env create " + os.linesep)
-        f.write("source /root/.bashrc" + os.linesep)
-        # f.write("epkg env activate build" + os.linesep)
-        f.write("epkg env create build" + os.linesep)
-        f.write("epkg install " + ' '.join(build_requires) + os.linesep)
 
 def unzip_file(filename: str):
     if filename.endswith(".tar.gz") or filename.endswith(".tgz"):
