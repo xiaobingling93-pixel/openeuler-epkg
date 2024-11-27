@@ -15,5 +15,3 @@ runPhase() {
     $buildsystem_function
   fi
 }
-
-# parse_yaml.py generate ${name}_${phase} function

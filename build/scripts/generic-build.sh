@@ -3,6 +3,7 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 # Source the required scripts
+source /root/workspace/scripts/generic-phase.sh
 source /root/workspace/scripts/pkgvars.sh
 source /root/workspace/scripts/"$build_system".sh
 source /root/workspace/scripts/phase.sh
