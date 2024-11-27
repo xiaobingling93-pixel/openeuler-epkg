@@ -18,7 +18,6 @@ echo "build_requires:$build_requires"
 source $epkg_home_path/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 epkg env create build
 epkg install $build_requires
-ln -sf $epkg_home_path/envs/build/profile-current/usr/bin/bash $epkg_home_path/envs/build/profile-current/usr/bin/sh
 
 # run phase
 cd $epkg_home_path/build/workspace/src/$name-$version
