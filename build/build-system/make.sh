@@ -3,6 +3,7 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 make_build() {
+  ln -sf /root/.epkg/envs/build/profile-current/usr/bin/bash /root/.epkg/envs/build/profile-current/usr/bin/sh
   if [ -n "${makePath}" ]; then
     pushd ${makePath}
   fi
@@ -10,5 +11,5 @@ make_build() {
 }
 
 make_install() {
-  make install ${installFlags} DESTDIR=$epkg_fs_path PREFIX=$epkg_fs_path
+  make install DESTDIR=$epkg_fs_path PREFIX=$epkg_fs_path
 }

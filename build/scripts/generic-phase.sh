@@ -10,8 +10,10 @@ runPhase() {
   if type $pkg_function &> /dev/null; then
     echo "exec phase.sh ${name}_${phase} ..."
     $pkg_function
-  else 
+  elif type $buildsystem_function &> /dev/null; then
     echo "exec $build_system ${phase} ..."
     $buildsystem_function
+  else
+    echo "no define phase ${phase}"
   fi
 }

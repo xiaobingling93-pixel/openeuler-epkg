@@ -70,7 +70,6 @@ def generate_pkgvars(pkg_meta):
         f.write("build_requires=\"" + ' '.join(build_requires) + "\"" + os.linesep)
         f.write("# makeFlags vars" + os.linesep)
         f.write("makeFlags=" + build_meta["makeFlags"] + os.linesep)
-        f.write("installFlags=" + build_meta["installFlags"] + os.linesep)
 
 def unzip_file(filename: str):
     if filename.endswith(".tar.gz") or filename.endswith(".tgz"):

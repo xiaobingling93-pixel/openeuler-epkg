@@ -1,7 +1,6 @@
 buildRequires:
   - make
-makeFlags: "CC=/root/.epkg/envs/build/profile-current/usr/app-bin/gcc"
-installFlags: "SHELL=/root/.epkg/envs/build/profile-current/usr/bin/bash"
+makeFlags: "CC=gcc"
 buildSystem: make
 autopkg:
   buildSystemFiles: Makefile
