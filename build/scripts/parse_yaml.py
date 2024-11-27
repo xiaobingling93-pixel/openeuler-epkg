@@ -108,17 +108,27 @@ def download(URLs: list, save_path: str):
         os.system(f"wget -q {url} -P {save_path}")
 
 def generate_patch_cmd(patch_urls: dict):
-    patch_content=""
+    patch_content = pkg_meta["name"]+"_patch() {\n@cmd}\n\n"
+    cmd_content = ""
     for patch_url in patch_urls.values():
         file_path = os.path.join(patches_path, os.path.basename(patch_url))
-        patch_content = patch_content + '\t' + "patch -p1 -N < " + file_path + os.linesep 
+        cmd_content = cmd_content + '\t' + "patch -p1 -N < " + file_path + os.linesep 
+    patch_content = patch_content.replace("@cmd", cmd_content)
 
-    # replace phase.sh basic_patch content
-    with open(os.path.join(scripts_path, "phase.sh"), 'r') as file:
-        phase_content = file.read()
-    new_phase_context = phase_content.replace('echo "exec phase.sh basic_patch"', patch_content)
-    with open(os.path.join(scripts_path, "phase.sh"), 'w') as file:
-        file.write(new_phase_context)
+    # add phase.sh $pkgname_patch content
+    with open(os.path.join(scripts_path, "phase.sh"), 'a') as file:
+        file.write(patch_content)
+
+def generate_prep_cmd(prep_cmds):
+    prep_content = pkg_meta["name"]+"_prep() {\n@cmd}\n\n"
+    cmd_content=""
+    for prep_cmd in prep_cmds:
+        cmd_content = cmd_content + '\t' + prep_cmd + os.linesep
+    prep_content = prep_content.replace("@cmd", cmd_content)
+    
+    # add phase.sh $pkgname_prep content
+    with open(os.path.join(scripts_path, "phase.sh"), 'a') as file:
+        file.write(prep_content)
 
 def unzip_code():
     for source_tar in os.listdir(sources_path):
@@ -140,5 +150,9 @@ if __name__ == '__main__':
     # download & unzip $ patch
     download(list(pkg_meta["source"].values()), sources_path)
     download(list(pkg_meta["patches"].values()), patches_path)
-    generate_patch_cmd(pkg_meta["patches"])
+
+    if "prep" in pkg_meta and pkg_meta["prep"]:
+        generate_prep_cmd(pkg_meta["prep"])
+    if "patches" in pkg_meta and pkg_meta["patches"]:
+        generate_patch_cmd(pkg_meta["patches"])
     unzip_code()

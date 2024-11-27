@@ -5,28 +5,15 @@
 runPhase() {
   phase=$1
 
-  function="${build_system}_${phase}"
-  if type $function &> /dev/null; then
-    echo "exec $build_system ${phase} ..."
-    $function
+  buildsystem_function="${build_system}_${phase}"
+  pkg_function="${name}_${phase}"
+  if type $pkg_function &> /dev/null; then
+    echo "exec phase.sh ${name}_${phase} ..."
+    pkg_function
   else 
-    echo "exec phase.sh basic_${phase} ..."
-    basic_$phase
+    echo "exec $build_system ${phase} ..."
+    $buildsystem_function
   fi
 }
 
-basic_prep() {
-  echo "exec phase.sh basic_prep"
-}
-
-basic_patch() {
-  echo "exec phase.sh basic_patch"
-}
-
-basic_build() {
-  echo "exec phase.sh basic_build"
-}
-
-basic_install() {
-  echo "exec phase.sh basic_install"
-}
+# parse_yaml.py generate ${name}_${phase} function

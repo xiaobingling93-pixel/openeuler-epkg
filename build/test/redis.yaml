@@ -32,6 +32,14 @@ patches:
 buildSystem: make
 buildRequires:
 - gcc
+- gawk
 - systemd
 - logrotate
 - shadow-utils
+
+prep:
+- sed -i -e 's|^logfile .*$|logfile /var/log/redis/redis.log|g' redis.conf
+- sed -i -e '$ alogfile /var/log/redis/sentinel.log' sentinel.conf
+- sed -i -e 's|^dir .*$|dir /var/lib/redis|g' redis.conf
+- ln -sf bash /root/.epkg/envs/build/profile-current/bin/sh
+- ln -sf gawk /root/.epkg/envs/build/profile-current/usr/app-bin/awk
