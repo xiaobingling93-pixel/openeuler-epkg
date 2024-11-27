@@ -7,28 +7,24 @@ import yaml
 import shutil
 
 # Const Var
-epkg_global_path = "/opt/epkg/users/public/envs/common"
-epkg_user_path = os.path.join(os.environ.get('HOME'), ".epkg/envs/common")
+epkg_global_common_path = "/opt/epkg/users/public/envs/common"
+epkg_user_common_path = os.path.join(os.environ.get('HOME'), ".epkg/envs/common")
+if os.path.exists(epkg_global_common_path):
+    epkg_manager_path = "/opt/epkg"
+elif os.path.exists(epkg_user_common_path):
+    epkg_manager_path = os.path.join(os.environ.get('HOME'), ".epkg")
+else:
+    print("Not Found epkg Manager. Maybe exec epkg installer.sh")
 
 # Epkg Build path
-epkg_path = "/root/epkg"
-workspace = "/root/workspace"
-scripts_path = workspace + '/' + "scripts"
-sources_path = workspace + '/' + "sources"
-patches_path = workspace + '/' + "patches"
-src_path = workspace + '/' + "src"
-fs_path = workspace + '/' + "fs"
+workspace = os.path.join(epkg_manager_path, "build/workspace")
+scripts_path = os.path.join(workspace, "scripts")
+sources_path = os.path.join(workspace, "sources")
+patches_path = os.path.join(workspace, "patches")
+src_path = os.path.join(workspace, "src")
+fs_path = os.path.join(workspace, "fs")
 
 def init_workspace():
-    # init epkg path
-    global epkg_path
-    if os.path.exists(epkg_global_path):
-        epkg_path = "/opt/epkg"
-    elif os.path.exists(epkg_user_path):
-        epkg_path = os.path.join(os.environ.get('HOME'), ".epkg")
-    else:
-        epkg_path = "/root/epkg"
-
     # remove
     if os.path.exists(workspace):
         shutil.rmtree(workspace)
@@ -52,7 +48,7 @@ def parse(yaml_path):
 
 def generate_pkgvars(pkg_meta):
     build_system = pkg_meta["buildSystem"]
-    build_meta = parse(os.path.join(epkg_path, "build/build-system", str(build_system) + ".yaml"))
+    build_meta = parse(os.path.join(epkg_manager_path, "build/build-system", str(build_system) + ".yaml"))
     sytem_build_requires = build_meta["buildRequires"]
     build_requires = sytem_build_requires + pkg_meta["buildRequires"]
 
@@ -62,8 +58,8 @@ def generate_pkgvars(pkg_meta):
         # f.write("epkg_build_workspace=" + workspace + os.linesep)
         # f.write("epkg_scripts_path=" + scripts_path + os.linesep)
         # f.write("epkg_sources_path=" + sources_path + os.linesep)
-        f.write("epkg_patches_path=" + patches_path + os.linesep)
-        f.write("epkg_src_path=" + src_path + os.linesep)
+        # f.write("epkg_patches_path=" + patches_path + os.linesep)
+        # f.write("epkg_src_path=" + src_path + os.linesep)
         f.write("epkg_fs_path=" + fs_path + os.linesep)
         f.write("# pkg vars " + os.linesep)
         f.write("name=" + pkg_meta["name"] + os.linesep)
@@ -77,16 +73,6 @@ def generate_pkgvars(pkg_meta):
         # f.write("epkg env activate build" + os.linesep)
         f.write("epkg env create build" + os.linesep)
         f.write("epkg install " + ' '.join(build_requires) + os.linesep)
-
-def mv_build_sh(pkg_meta):
-    build_system = pkg_meta["buildSystem"]
-
-    build_system_script_src=os.path.join(epkg_path, "build/build-system", str(build_system) + ".sh")
-    generic_build_script_src=os.path.join(epkg_path, "build/scripts/generic-build.sh")
-    phase_script_src=os.path.join(epkg_path, "build/scripts/phase.sh")
-    shutil.copy(build_system_script_src, scripts_path)
-    shutil.copy(generic_build_script_src, scripts_path)
-    shutil.copy(phase_script_src, scripts_path)
 
 def unzip_file(filename: str):
     if filename.endswith(".tar.gz") or filename.endswith(".tgz"):
@@ -145,7 +131,6 @@ if __name__ == '__main__':
     # parse yaml & generate scripts
     pkg_meta=parse(sys.argv[1])
     generate_pkgvars(pkg_meta)
-    mv_build_sh(pkg_meta)
 
     # download & unzip $ patch
     download(list(pkg_meta["source"].values()), sources_path)
