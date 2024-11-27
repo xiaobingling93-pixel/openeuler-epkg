@@ -10,5 +10,5 @@ make_build() {
 }
 
 make_install() {
-  make install ${installFlags} DESTDIR=$epkg_fs_path 
+  make install ${installFlags} DESTDIR=$epkg_fs_path PREFIX=$epkg_fs_path
 }
