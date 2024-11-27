@@ -3,6 +3,7 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 make_build() {
+  ln -sf /root/.epkg/envs/build/profile-current/usr/bin/bash /root/.epkg/envs/build/profile-current/usr/bin/sh
   if [ -n "${makePath}" ]; then
     pushd ${makePath}
   fi

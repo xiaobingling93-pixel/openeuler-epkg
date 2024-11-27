@@ -1,6 +1,6 @@
 buildRequires:
   - make
-makeFlags: "CC=gcc"
+makeFlags: ""
 buildSystem: make
 autopkg:
   buildSystemFiles: Makefile
