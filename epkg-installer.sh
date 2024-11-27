@@ -136,7 +136,13 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
     cp -a $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
     cp    $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg/
-    cp -a $EPKG_MANAGER_DIR/build        $EPKG_BUILD_SYSTEM
+
+    # unpack epkg build
+    if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
+        cp -a $EPKG_MANAGER_DIR/build  $OPT_EPKG
+    else
+        cp -a $EPKG_MANAGER_DIR/build  $HOME_EPKG
+    fi
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
