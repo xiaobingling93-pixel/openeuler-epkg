@@ -15,19 +15,6 @@ patches:
   '01': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2020-14147.patch
   '02': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/improved-HyperLogLog-cardinality-estimation.patch
   '03': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/Aesthetic-changes-to-PR.patch
-  '04': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2019-10193.patch
-  '05': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/modify-aarch64-architecture-jemalloc-page-size-from-4k-to-64k.patch
-  '06': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/huawei-deps-jemalloc-support-riscv.patch
-  '07': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2021-21309.patch
-  '08': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2021-3470.patch
-  '09': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2021-29478.patch
-  '10': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2021-32672.patch
-  '11': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2022-36021.patch
-  '12': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2023-28856.patch
-  '13': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2022-24834.patch
-  '14': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2023-45145.patch
-  '15': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2024-31228.patch
-  '16': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2024-31449.patch
 
 buildSystem: make
 buildRequires:
