@@ -9,7 +9,7 @@ runPhase() {
   pkg_function="${name}_${phase}"
   if type $pkg_function &> /dev/null; then
     echo "exec phase.sh ${name}_${phase} ..."
-    pkg_function
+    $pkg_function
   else 
     echo "exec $build_system ${phase} ..."
     $buildsystem_function
