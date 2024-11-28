@@ -25,3 +25,9 @@ phases="prep patch build install"
 for curPhase in ${phases[*]}; do
 	runPhase "$curPhase"
 done
+
+# hash
+source $epkg_home_path/envs/common/profile-current/usr/lib/epkg/hash.sh
+tar -cvf ../../${name}-${version}.tar $epkg_fs_path
+file_hash=$(rpm_hash "$epkg_home_path/build/workspace/${name}-${version}.tar")
+echo "pkg_fs_hash: $file_hash"
