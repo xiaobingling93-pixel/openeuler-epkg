@@ -7,7 +7,7 @@ release: 0
 license: GPLv2+
 homepage: http://mama.indstate.edu/users/ice/tree/
 
-source:
+sources:
   '0': https://gitee.com/src-openeuler/tree/raw/master/tree-2.1.1.tgz 
 patches:
   '0': https://gitee.com/rkingkoyo/epkg_test/releases/download/tree-2.1.1.patch/0001-Support-specify-CC.patch
