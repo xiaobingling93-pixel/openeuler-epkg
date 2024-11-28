@@ -6,7 +6,7 @@ make_build() {
   if [ -n "${makePath}" ]; then
     pushd ${makePath}
   fi
-  make -j8 ${makeFlags} 
+  make -j8 ${makeFlags}
 }
 
 make_install() {
