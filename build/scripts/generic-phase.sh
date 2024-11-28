@@ -20,7 +20,7 @@ runPhase() {
 
 generate_phase() {
   local phase_name="$1"
-  local phase_content_var="${phase_name}_content"
+  local phase_content_var="${phase_name}Phase"
 
   if [[ -z "${!phase_content_var}" ]]; then
     echo "not found $phase_name content"
@@ -29,9 +29,8 @@ generate_phase() {
 
   local phase_content="${!phase_content_var}"
 
-  cat <<EOF
-$phase_name () {
-${phase_content}
+  cat <<EOF >> $epkg_scripts_path/phase.sh
+${name}_${phase_name} () {${phase_content}
 }
 EOF
 }

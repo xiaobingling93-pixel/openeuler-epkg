@@ -61,7 +61,7 @@ def generate_pkgvars(pkg_meta):
             elif k == "buildRequires":
                 v = '\"' + ' '.join(build_requires) + '\"'
             elif k == "prepPhase":
-                v = '\"' + '\n\t'.join(v) + '\"'
+                v = '\"\t' + '\n\t'.join(v) + '\"'
             elif k == "sources" or k == "patches":
                 v = str(list(v.values())).replace('[', '(').replace(']', ')').replace(',', '').replace('\'', '\"')
             else:
@@ -110,7 +110,5 @@ if __name__ == '__main__':
     pkg_meta=parse(sys.argv[1])
     generate_pkgvars(pkg_meta)
 
-    if "prep" in pkg_meta and pkg_meta["prep"]:
-        generate_prep_cmd(pkg_meta["prep"])
     if "patches" in pkg_meta and pkg_meta["patches"]:
         generate_patch_cmd(pkg_meta["patches"])

@@ -10,13 +10,17 @@ else
 fi
 source $epkg_home_path/build/scripts/generic-phase.sh
 source $epkg_home_path/build/workspace/scripts/pkgvars.sh
-source $epkg_home_path/build/workspace/scripts/phase.sh
 source $epkg_home_path/build/build-system/"$buildSystem".sh
 
+# download & decompress
 source $epkg_home_path/build/scripts/downloader.sh
 source $epkg_home_path/build/scripts/decompress.sh
 pkg_download
 pkg_decompress
+
+# generate phase.sh
+generate_phase prep
+source $epkg_home_path/build/workspace/scripts/phase.sh
 
 # build env create
 echo "buildRequires:$buildRequires"
