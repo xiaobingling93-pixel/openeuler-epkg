@@ -11,13 +11,18 @@ fi
 source $epkg_home_path/build/scripts/generic-phase.sh
 source $epkg_home_path/build/workspace/scripts/pkgvars.sh
 source $epkg_home_path/build/workspace/scripts/phase.sh
-source $epkg_home_path/build/build-system/"$build_system".sh
+source $epkg_home_path/build/build-system/"$buildSystem".sh
+
+source $epkg_home_path/build/scripts/downloader.sh
+source $epkg_home_path/build/scripts/decompress.sh
+pkg_download
+pkg_decompress
 
 # build env create
-echo "build_requires:$build_requires"
+echo "buildRequires:$buildRequires"
 source $epkg_home_path/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 epkg env create build
-epkg install $build_requires
+epkg install $buildRequires
 
 # run phase
 cd $epkg_home_path/build/workspace/src/$name-$version
