@@ -20,6 +20,7 @@ pkg_decompress
 
 # generate phase.sh
 generate_phase prep
+generate_phase patch
 source $epkg_home_path/build/workspace/scripts/phase.sh
 
 # build env create

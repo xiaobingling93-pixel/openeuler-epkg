@@ -75,18 +75,6 @@ def generate_pkgvars(pkg_meta):
         f.write("epkg_src_path=" + src_path + os.linesep)
         f.write("epkg_fs_path=" + fs_path + os.linesep)
 
-def generate_patch_cmd(patch_urls: dict):
-    patch_content = pkg_meta["name"]+"_patch() {\n@cmd}\n\n"
-    cmd_content = ""
-    for patch_url in patch_urls.values():
-        file_path = os.path.join(patches_path, os.path.basename(patch_url))
-        cmd_content = cmd_content + '\t' + "patch -p1 -N < " + file_path + os.linesep 
-    patch_content = patch_content.replace("@cmd", cmd_content)
-
-    # add phase.sh $pkgname_patch content
-    with open(os.path.join(scripts_path, "phase.sh"), 'a') as file:
-        file.write(patch_content)
-
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         print("Usage: python parse_yaml.py <yaml_file>")
@@ -98,6 +86,3 @@ if __name__ == '__main__':
     # parse yaml & generate scripts
     pkg_meta=parse(sys.argv[1])
     generate_pkgvars(pkg_meta)
-
-    if "patches" in pkg_meta and pkg_meta["patches"]:
-        generate_patch_cmd(pkg_meta["patches"])
