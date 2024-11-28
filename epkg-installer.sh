@@ -9,6 +9,7 @@ EPKG_VERSION=master
 EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSION.tar.gz
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_HELPER=epkg_helper
+EPKG_HASH=epkg-hash
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
 PUB_EPKG=$OPT_EPKG/users/public
@@ -121,6 +122,10 @@ epkg_download() {
     echo "download epkg manager"
     curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR --max-redirs 3 --location $EPKG_MANAGER_URL
 
+    # download epkg-hash
+    echo "download epkg hash"
+    curl -# -o $EPKG_CACHE/$EPKG_HASH $EPKG_URL/$EPKG_HASH
+
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         echo "download epkg helper"
@@ -143,6 +148,9 @@ epkg_unpack() {
     else
         cp -a $EPKG_MANAGER_DIR/build  $HOME_EPKG
     fi
+
+    # unpack epkg hash
+    cp $EPKG_CACHE/$EPKG_HASH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HASH
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
