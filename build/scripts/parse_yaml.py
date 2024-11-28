@@ -87,17 +87,6 @@ def generate_patch_cmd(patch_urls: dict):
     with open(os.path.join(scripts_path, "phase.sh"), 'a') as file:
         file.write(patch_content)
 
-def generate_prep_cmd(prep_cmds):
-    prep_content = pkg_meta["name"]+"_prep() {\n@cmd}\n\n"
-    cmd_content=""
-    for prep_cmd in prep_cmds:
-        cmd_content = cmd_content + '\t' + prep_cmd + os.linesep
-    prep_content = prep_content.replace("@cmd", cmd_content)
-    
-    # add phase.sh $pkgname_prep content
-    with open(os.path.join(scripts_path, "phase.sh"), 'a') as file:
-        file.write(prep_content)
-
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         print("Usage: python parse_yaml.py <yaml_file>")
