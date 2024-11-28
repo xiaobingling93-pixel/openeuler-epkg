@@ -27,7 +27,8 @@ for curPhase in ${phases[*]}; do
 done
 
 # hash
+source $epkg_home_path/envs/common/profile-current/lib/epkg/hash.sh
 cd $epkg_home_path/build/workspace/
 tar --sort=name --mtime='2024-11-28' -czf ${name}-${version}.tar.gz ./fs 
-file_hash=$(sha256sum "${name}-${version}.tar.gz" )
+file_hash=$(calculate_base32_hash "${name}-${version}.tar.gz" )
 echo "pkg_fs_hash: $file_hash"
