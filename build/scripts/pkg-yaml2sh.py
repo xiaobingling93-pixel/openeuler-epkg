@@ -32,7 +32,7 @@ def generate_pkgvars(pkg_meta, build_meta, build_scripts_dir):
 
 if __name__ == '__main__':
     if len(sys.argv) != 4:
-        print("Usage: python parse_yaml.py <yaml_file>")
+        print("Usage: python parse_yaml.py <yaml_file> <epkg_project_dir> <build_scripts_dir> ")
         sys.exit(1)
 
     # Load argv
