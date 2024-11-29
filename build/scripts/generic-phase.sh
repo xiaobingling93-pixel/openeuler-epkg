@@ -21,16 +21,16 @@ runPhase() {
 generate_phase() {
   local phase_name="$1"
   local phase_content=
-  # patch phase generate
+  # [ patch ] generate
   if [[ "$phase_name" == "patch" ]]; then
     local patch_content=""
     for url in "${patches[@]}"; do
       patch_content="${patch_content}
-        patch -p1 -N < $epkg_patches_path/$(basename "$url")"
+        patch -p1 -N < $BUILD_PATCHES_DIR/$(basename "$url")"
     done
     phase_content=$patch_content
+  # [ prep build install ] generate
   else
-    # prep build install generate
     local phase_content_var="phase${phase_name}"
     if [[ -z "${!phase_content_var}" ]]; then
       echo "not found $phase_name content"
@@ -39,7 +39,7 @@ generate_phase() {
     phase_content="${!phase_content_var}"
   fi
 
-  cat <<EOF >> $epkg_scripts_path/phase.sh
+  cat <<EOF >> $BUILD_SCRIPTS_DIR/phase.sh
 ${name}_${phase_name} () {$phase_content
 }
 EOF

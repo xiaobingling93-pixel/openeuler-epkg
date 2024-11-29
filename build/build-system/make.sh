@@ -10,5 +10,5 @@ make_build() {
 }
 
 make_install() {
-  make install DESTDIR=$epkg_fs_path PREFIX=$epkg_fs_path
+  make install DESTDIR=$BUILD_OUT_DIR PREFIX=$BUILD_OUT_DIR
 }

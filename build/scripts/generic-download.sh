@@ -5,11 +5,11 @@
 pkg_download() {
     for url in "${sources[@]}"; do
 		echo "Downloading ${url##*/}"
-        curl --silent -L -o "$epkg_sources_path/$(basename "$url")" "$url"
+        curl --silent -L -o "$BUILD_SOURCES_DIR/$(basename "$url")" "$url"
     done
 
     for url in "${patches[@]}"; do
         echo "Downloading ${url##*/}"
-        curl --silent -L -o "$epkg_patches_path/$(basename "$url")" "$url"
+        curl --silent -L -o "$BUILD_PATCHES_DIR/$(basename "$url")" "$url"
     done   
 }

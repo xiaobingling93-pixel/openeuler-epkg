@@ -4,21 +4,21 @@
 
 pkg_decompress() {
     # 遍历目录中的所有文件
-    find "$epkg_sources_path" -type f | while read -r file; do
+    find "$BUILD_SOURCES_DIR" -type f | while read -r file; do
         # 获取文件扩展名
         ext="${file##*.}"
         # 根据文件扩展名解压
         case "$ext" in
             zip)
-                unzip -q "$file" -d "$epkg_src_path"
+                unzip -q "$file" -d "$BUILD_SRC_DIR"
                 echo "Decompress success: $file"
                 ;;
             tar.gz|tgz|gz)
-                tar -xzf "$file" -C "$epkg_src_path"
+                tar -xzf "$file" -C "$BUILD_SRC_DIR"
                 echo "Decompress success: $file"
                 ;;
             tar.bz2)
-                tar -xjf "$file" -C "$epkg_src_path"
+                tar -xjf "$file" -C "$BUILD_SRC_DIR"
                 echo "Decompress success: $file"
                 ;;
             *)
