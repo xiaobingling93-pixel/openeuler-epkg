@@ -56,14 +56,15 @@ def generate_pkgvars(pkg_meta):
         f.write("#!/usr/bin/env bash" + os.linesep*2)
 
         for k,v in pkg_meta.items():
-            if k == "meta":
-                continue
-            elif k == "buildRequires":
+            if k == "buildRequires":
                 v = '\"' + ' '.join(build_requires) + '\"'
-            elif k == "prepPhase":
-                v = '\"\t' + '\n\t'.join(v) + '\"'
             elif k == "sources" or k == "patches":
                 v = str(list(v.values())).replace('[', '(').replace(']', ')').replace(',', '').replace('\'', '\"')
+            elif k == "phase":
+                for sub_k, sub_v in v.items():
+                    sub_v = '\"\t' + '\n\t'.join(sub_v) + '\"'
+                    f.write(k + sub_k + "=" + sub_v + os.linesep)
+                continue
             else:
                 v = '\"' + str(v) + '\"'
             f.write(k + "=" + v + os.linesep)

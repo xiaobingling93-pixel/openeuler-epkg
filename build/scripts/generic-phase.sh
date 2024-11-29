@@ -31,7 +31,7 @@ generate_phase() {
     phase_content=$patch_content
   else
     # prep build install generate
-    local phase_content_var="${phase_name}Phase"
+    local phase_content_var="phase${phase_name}"
     if [[ -z "${!phase_content_var}" ]]; then
       echo "not found $phase_name content"
       return 1

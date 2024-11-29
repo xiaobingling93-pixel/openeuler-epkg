@@ -13,7 +13,7 @@ source $epkg_home_path/build/workspace/scripts/pkgvars.sh
 source $epkg_home_path/build/build-system/"$buildSystem".sh
 
 # download & decompress
-source $epkg_home_path/build/scripts/generic-donwload.sh
+source $epkg_home_path/build/scripts/generic-download.sh
 source $epkg_home_path/build/scripts/generic-extract.sh
 pkg_download
 pkg_decompress
