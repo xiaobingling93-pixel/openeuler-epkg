@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
+# Project Dir
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	PROJECT_DIR=/opt/epkg
 else
@@ -9,6 +10,7 @@ else
 fi
 # Build Dir
 BUILD_WORKSPACE_DIR=$HOME/epkg-build
+rm -rf $BUILD_WORKSPACE_DIR
 BUILD_SCRIPTS_DIR=$BUILD_WORKSPACE_DIR/scripts
 BUILD_SOURCES_DIR=$BUILD_WORKSPACE_DIR/sources
 BUILD_PATCHES_DIR=$BUILD_WORKSPACE_DIR/patches
@@ -20,6 +22,11 @@ mkdir -p $BUILD_SOURCES_DIR
 mkdir -p $BUILD_PATCHES_DIR
 mkdir -p $BUILD_SRC_DIR
 mkdir -p $BUILD_OUT_DIR
+
+# Parse yaml
+yaml_path=$1
+python "$PROJECT_DIR/build/scripts/pkg-yaml2sh.py" $yaml_path $PROJECT_DIR $BUILD_SCRIPTS_DIR
+echo "Generate pkgvars.sh"
 
 # Source the required scripts
 source $BUILD_SCRIPTS_DIR/pkgvars.sh

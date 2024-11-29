@@ -5,28 +5,15 @@ import os
 import sys
 import yaml
 
-# Epkg Project Dir
-if os.path.exists("/opt/epkg/users/public/envs/common"):
-    PROJECT_DIR = "/opt/epkg"
-elif os.path.exists(os.path.join(os.environ.get('HOME'), ".epkg/envs/common")):
-    PROJECT_DIR = os.path.join(os.environ.get('HOME'), ".epkg")
-else:
-    print("Not Found epkg Manager. Maybe exec epkg installer.sh")
-    sys.exit()
-# Epkg Build Dir
-BUILD_SCRIPTS_DIR = os.path.join(os.environ.get('HOME'), "epkg-build/scripts")
-if not os.path.exists(BUILD_SCRIPTS_DIR):
-    os.makedirs(BUILD_SCRIPTS_DIR)
-
 def parse(yaml_path):
     with open(yaml_path, 'r') as file:
         pkg_meta = yaml.safe_load(file)
     return pkg_meta
 
-def generate_pkgvars(pkg_meta, build_meta):
+def generate_pkgvars(pkg_meta, build_meta, build_scripts_dir):
     build_requires = build_meta["buildRequires"] + pkg_meta["buildRequires"]
     
-    with open(os.path.join(BUILD_SCRIPTS_DIR, "pkgvars.sh"), "w") as f:
+    with open(os.path.join(build_scripts_dir, "pkgvars.sh"), "w") as f:
         f.write("#!/usr/bin/env bash" + os.linesep*2)
 
         for k,v in pkg_meta.items():
@@ -44,11 +31,16 @@ def generate_pkgvars(pkg_meta, build_meta):
             f.write(k + "=" + v + os.linesep)
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 4:
         print("Usage: python parse_yaml.py <yaml_file>")
         sys.exit(1)
 
-    # parse yaml & generate scripts
+    # Load argv
+    yaml_path=sys.argv[1]
+    project_dir=sys.argv[2]
+    build_scripts_dir=sys.argv[3]
+    
+    # Parse yaml & Generate scripts
     pkg_meta = parse(sys.argv[1])
-    build_meta = parse(os.path.join(PROJECT_DIR, "build/build-system", str(pkg_meta["buildSystem"]) + ".yaml"))
-    generate_pkgvars(pkg_meta, build_meta)
+    build_meta = parse(os.path.join(project_dir, "build/build-system", str(pkg_meta["buildSystem"]) + ".yaml"))
+    generate_pkgvars(pkg_meta, build_meta, build_scripts_dir)
