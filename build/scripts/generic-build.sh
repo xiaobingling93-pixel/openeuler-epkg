@@ -23,6 +23,12 @@ mkdir -p $BUILD_PATCHES_DIR
 mkdir -p $BUILD_SRC_DIR
 mkdir -p $BUILD_OUT_DIR
 
+# dependency check: pyyaml
+if ! pip show pyyaml &> /dev/null; then
+	echo "pyyaml is not installed. Please install."
+	exit 1
+fi
+
 # Parse yaml
 yaml_path=$1
 python "$PROJECT_DIR/build/scripts/pkg-yaml2sh.py" $yaml_path $PROJECT_DIR $BUILD_SCRIPTS_DIR
