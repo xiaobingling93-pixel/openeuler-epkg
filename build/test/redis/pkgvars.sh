@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-meta="{'summary': 'A persistent key-value database', 'description': 'redis description'}"
 name="redis"
 version="4.0.14"
 release="7"

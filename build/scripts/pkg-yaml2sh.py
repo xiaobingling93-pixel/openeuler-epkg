@@ -17,7 +17,9 @@ def generate_pkgvars(pkg_meta, build_meta, build_scripts_dir):
         f.write("#!/usr/bin/env bash" + os.linesep*2)
 
         for k,v in pkg_meta.items():
-            if k == "buildRequires":
+            if k == "meta":
+                continue
+            elif k == "buildRequires":
                 v = str(build_requires).replace('[', '(').replace(']', ')').replace(',', '')
             elif k == "sources" or k == "patches":
                 v = str(list(v.values())).replace('[', '(').replace(']', ')').replace(',', '').replace('\'', '\"')
