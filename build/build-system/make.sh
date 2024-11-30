@@ -10,5 +10,5 @@ make_build() {
 }
 
 make_install() {
-  make install DESTDIR=$BUILD_OUT_DIR PREFIX=$BUILD_OUT_DIR
+  make install DESTDIR=$BUILD_FS_DIR PREFIX=$BUILD_FS_DIR
 }

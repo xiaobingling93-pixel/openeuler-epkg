@@ -14,9 +14,10 @@ BUILD_SCRIPTS_DIR=$BUILD_WORKSPACE_DIR/scripts
 BUILD_SOURCES_DIR=$BUILD_WORKSPACE_DIR/sources
 BUILD_PATCHES_DIR=$BUILD_WORKSPACE_DIR/patches
 BUILD_SRC_DIR=$BUILD_WORKSPACE_DIR/src
-BUILD_OUT_DIR=$BUILD_WORKSPACE_DIR/fs
-BUILD_INFO_DIR=$BUILD_WORKSPACE_DIR/info
-BUILD_PGP_DIR=$BUILD_WORKSPACE_DIR/info/pgp
+BUILD_RESULT_DIR=$BUILD_WORKSPACE_DIR/result
+BUILD_FS_DIR=$BUILD_RESULT_DIR/fs
+BUILD_INFO_DIR=$BUILD_RESULT_DIR/info
+BUILD_PGP_DIR=$BUILD_RESULT_DIR/info/pgp
 
 dependency_check() {
 	# Check Python 
@@ -41,7 +42,8 @@ create_build_home() {
 	mkdir -p $BUILD_SOURCES_DIR
 	mkdir -p $BUILD_PATCHES_DIR
 	mkdir -p $BUILD_SRC_DIR
-	mkdir -p $BUILD_OUT_DIR
+	mkdir -p $BUILD_RESULT_DIR
+	mkdir -p $BUILD_FS_DIR
 	mkdir -p $BUILD_INFO_DIR
 	mkdir -p $BUILD_PGP_DIR
 	return 0
@@ -93,7 +95,7 @@ done
 
 # step6. Calculate hash (Todo Demo, just print)
 epkg_hash_exec=$PROJECT_DIR/envs/common/profile-current/usr/bin/epkg-hash
-file_hash=$($epkg_hash_exec "$BUILD_OUT_DIR" )
+file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
 echo "pkg_fs_hash: $file_hash"
 
 # step7. Generate epkg info
