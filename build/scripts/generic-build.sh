@@ -17,7 +17,6 @@ BUILD_SRC_DIR=$BUILD_WORKSPACE_DIR/src
 BUILD_OUT_DIR=$BUILD_WORKSPACE_DIR/fs
 BUILD_INFO_DIR=$BUILD_WORKSPACE_DIR/info
 BUILD_PGP_DIR=$BUILD_WORKSPACE_DIR/info/pgp
-EPKG_BUILD_ENV_NAME="build-$(mktemp -u XXXX)"
 
 dependency_check() {
 	# Check Python 
@@ -81,7 +80,7 @@ generate_phase patch
 # step 4. Build env create
 source $PROJECT_DIR/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 echo "buildRequires:$buildRequires"
-epkg env create $EPKG_BUILD_ENV_NAME
+epkg env create build
 epkg install $buildRequires
 
 # step5. Run phase
