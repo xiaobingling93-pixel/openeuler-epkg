@@ -15,6 +15,8 @@ BUILD_SOURCES_DIR=$BUILD_WORKSPACE_DIR/sources
 BUILD_PATCHES_DIR=$BUILD_WORKSPACE_DIR/patches
 BUILD_SRC_DIR=$BUILD_WORKSPACE_DIR/src
 BUILD_OUT_DIR=$BUILD_WORKSPACE_DIR/fs
+BUILD_INFO_DIR=$BUILD_WORKSPACE_DIR/info
+BUILD_PGP_DIR=$BUILD_WORKSPACE_DIR/info/pgp
 EPKG_BUILD_ENV_NAME="build-$(mktemp -u XXXX)"
 
 dependency_check() {
@@ -41,6 +43,8 @@ create_build_home() {
 	mkdir -p $BUILD_PATCHES_DIR
 	mkdir -p $BUILD_SRC_DIR
 	mkdir -p $BUILD_OUT_DIR
+	mkdir -p $BUILD_INFO_DIR
+	mkdir -p $BUILD_PGP_DIR
 	return 0
 }
 
@@ -92,3 +96,9 @@ done
 epkg_hash_exec=$PROJECT_DIR/envs/common/profile-current/usr/bin/epkg-hash
 file_hash=$($epkg_hash_exec "$BUILD_OUT_DIR" )
 echo "pkg_fs_hash: $file_hash"
+
+# step7. Generate epkg info
+touch $BUILD_INFO_DIR/runtimePhase.sh
+touch $BUILD_INFO_DIR/buildinfo.json
+touch $BUILD_INFO_DIR/package.json
+touch $BUILD_INFO_DIR/files
