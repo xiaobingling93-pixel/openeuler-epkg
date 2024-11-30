@@ -181,12 +181,12 @@ handle_exec() {
 }
 
 handle_symlink() {
-	ln_fs_file=$($epkg_helper $ROOTFS_LINK/bin/readlink -f  $fs_file)
+	local ln_fs_file=$($epkg_helper $ROOTFS_LINK/bin/readlink -f  $fs_file)
     if [ ! -e "$ln_fs_file" ]; then
         return 1
     fi
 
-	ln_rfs=${ln_fs_file#$fs_dir}
+	local ln_rfs=${ln_fs_file#$fs_dir}
 	if [[ "$appbin_flag" == "true" ]]; then
 		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
 	fi
