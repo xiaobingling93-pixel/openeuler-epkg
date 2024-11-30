@@ -23,7 +23,6 @@ ELFLOADER_EXEC=
 EPKG_CACHE=
 EPKG_PKG_CACHE_DIR=
 EPKG_CHANNEL_CACHE_DIR=
-EPKG_BUILD_SYSTEM=
 
 # Shell Type
 shell=$(basename "$SHELL")
@@ -79,13 +78,11 @@ select_installation_mode() {
         EPKG_COMMON_ROOT=$HOME_EPKG/envs/common
         EPKG_STORE_ROOT=$HOME_EPKG/store
         EPKG_CACHE=$HOME/.cache/epkg
-        EPKG_BUILD_SYSTEM=$HOME_EPKG/
     elif [[ "$mode_choice" == "2" && "$(id -u)" = "0" ]]; then
         EPKG_INSTALL_MODE="global"
         EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
         EPKG_STORE_ROOT=$OPT_EPKG/store
         EPKG_CACHE=$OPT_EPKG/cache
-        EPKG_BUILD_SYSTEM=$OPT_EPKG/
         RC_PATH=/etc/profile.d/epkg.sh
     elif [[ "$mode_choice" == "2" && "$(id -u)" != "0" ]]; then
         echo "Attention: Please use the root user to execute the global installation mode"
