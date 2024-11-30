@@ -79,9 +79,9 @@ generate_phase patch
 
 # step 4. Build env create
 source $PROJECT_DIR/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
-echo "buildRequires:$buildRequires"
+echo "buildRequires:${buildRequires[@]}"
 epkg env create build
-epkg install $buildRequires
+epkg install ${buildRequires[@]}
 
 # step5. Run phase
 source $BUILD_SCRIPTS_DIR/phase.sh

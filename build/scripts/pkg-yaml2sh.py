@@ -18,7 +18,7 @@ def generate_pkgvars(pkg_meta, build_meta, build_scripts_dir):
 
         for k,v in pkg_meta.items():
             if k == "buildRequires":
-                v = '\"' + ' '.join(build_requires) + '\"'
+                v = str(build_requires).replace('[', '(').replace(']', ')').replace(',', '')
             elif k == "sources" or k == "patches":
                 v = str(list(v.values())).replace('[', '(').replace(']', ')').replace(',', '').replace('\'', '\"')
             elif k == "phase":
