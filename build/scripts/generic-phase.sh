@@ -17,30 +17,3 @@ runPhase() {
     echo "no define phase ${phase}"
   fi
 }
-
-generate_phase() {
-  local phase_name="$1"
-  local phase_content=
-  # [ patch ] generate
-  if [[ "$phase_name" == "patch" ]]; then
-    local patch_content=""
-    for url in "${patches[@]}"; do
-      patch_content="${patch_content}
-        patch -p1 -N < $BUILD_PATCHES_DIR/$(basename "$url")"
-    done
-    phase_content=$patch_content
-  # [ prep build install ] generate
-  else
-    local phase_content_var="phase${phase_name}"
-    if [[ -z "${!phase_content_var}" ]]; then
-      echo "not found $phase_name content"
-      return 1
-    fi
-    phase_content="${!phase_content_var}"
-  fi
-
-  cat <<EOF >> $BUILD_SCRIPTS_DIR/phase.sh
-${name}_${phase_name} () {$phase_content
-}
-EOF
-}

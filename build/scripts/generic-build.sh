@@ -66,18 +66,22 @@ echo "Generate pkgvars.sh"
 
 # Source the required scripts
 source $BUILD_SCRIPTS_DIR/pkgvars.sh
+if [ -e "$BUILD_SCRIPTS_DIR/phase.sh" ]; then
+	source $BUILD_SCRIPTS_DIR/phase.sh
+fi
 source $PROJECT_DIR/build/build-system/"$buildSystem".sh
 source $PROJECT_DIR/build/scripts/generic-download.sh
 source $PROJECT_DIR/build/scripts/generic-extract.sh
 source $PROJECT_DIR/build/scripts/generic-phase.sh
+source $PROJECT_DIR/build/scripts/generic-patch.sh
 
 # step 2. Download & Decompress
 pkg_download
 pkg_decompress
 
-# step 3. Generate phase.sh
-generate_phase prep
-generate_phase patch
+# step 3. Patch file
+cd $BUILD_SRC_DIR/$name-$version
+pkg_patch
 
 # step 4. Build env create
 source $PROJECT_DIR/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
@@ -86,9 +90,7 @@ epkg env create build
 epkg install ${buildRequires[@]}
 
 # step5. Run phase
-source $BUILD_SCRIPTS_DIR/phase.sh
-cd $BUILD_SRC_DIR/$name-$version
-phases="prep patch build install"
+phases="prep build install"
 for curPhase in ${phases[*]}; do
 	runPhase "$curPhase"
 done

@@ -3,5 +3,7 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 pkg_patch() {
-    # 遍历patches文件夹，直接打patch
+    for url in "${patches[@]}";do
+        patch -p1 < "$BUILD_PATCHES_DIR/$(basename "$url")"
+    done
 }

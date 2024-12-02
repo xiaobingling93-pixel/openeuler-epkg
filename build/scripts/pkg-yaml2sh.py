@@ -17,20 +17,29 @@ def generate_pkgvars(pkg_meta, build_meta, build_scripts_dir):
         f.write("#!/usr/bin/env bash" + os.linesep*2)
 
         for k,v in pkg_meta.items():
-            if k == "meta":
+            if k == "meta" or k == "phase":
                 continue
             elif k == "buildRequires":
                 v = str(build_requires).replace('[', '(').replace(']', ')').replace(',', '')
             elif k == "sources" or k == "patches":
                 v = str(list(v.values())).replace('[', '(').replace(']', ')').replace(',', '').replace('\'', '\"')
-            elif k == "phase":
-                for sub_k, sub_v in v.items():
-                    sub_v = '\"\t' + '\n\t'.join(sub_v) + '\"'
-                    f.write(k + sub_k + "=" + sub_v + os.linesep)
-                continue
             else:
                 v = '\"' + str(v) + '\"'
             f.write(k + "=" + v + os.linesep)
+
+def generate_phase(pkg_meta, build_scripts_dir):
+    if "phase" not in pkg_meta.keys():
+        return
+
+    phase_content = pkg_meta["phase"]
+    print(phase_content)
+    with open(os.path.join(build_scripts_dir, "phase.sh"), "w") as f:
+        f.write("#!/usr/bin/env bash" + os.linesep*2)
+
+        for function_name, function_text in phase_content.items():
+            f.write(pkg_meta["name"] + "_" + function_name + "() {" + os.linesep) 
+            function_text = '\t' + '\n\t'.join(function_text)
+            f.write(function_text + os.linesep + "}" + os.linesep)
 
 if __name__ == '__main__':
     if len(sys.argv) != 4:
@@ -42,7 +51,10 @@ if __name__ == '__main__':
     project_dir=sys.argv[2]
     build_scripts_dir=sys.argv[3]
     
-    # Parse yaml & Generate scripts
+    # Parse yaml
     pkg_meta = parse(sys.argv[1])
     build_meta = parse(os.path.join(project_dir, "build/build-system", str(pkg_meta["buildSystem"]) + ".yaml"))
+
+    # Generate scripts - pkgvars.sh & phase.sh
     generate_pkgvars(pkg_meta, build_meta, build_scripts_dir)
+    generate_phase(pkg_meta, build_scripts_dir)
