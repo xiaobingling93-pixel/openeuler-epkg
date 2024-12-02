@@ -79,13 +79,9 @@ run_phase() {
 	done
 }
 
-prep_pipeline() {
-	dependency_check || return 1
-	init_workspace
-	return 0
-}
-
 build_pipeline() {
+	init_workspace
+
 	# step 1. Parse yaml
 	parse_yaml $@
 
@@ -116,10 +112,10 @@ post_pipeline() {
 	echo "pkg_hash: $file_hash"
 }
 
-# Prep step. Dependency check
-prep_pipeline || exit 1
+# Prep Step
+dependency_check || exit 1
 
-# Main step
+# Main Step
 build_pipeline $@
 
 # Post Step
