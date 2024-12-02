@@ -3,7 +3,7 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 # Todo: Checksum Check
-pkg_decompress() {
+pkg_extract() {
     sources=("$BUILD_SOURCES_DIR"/*)
 
     for file in "${sources[@]}"; do

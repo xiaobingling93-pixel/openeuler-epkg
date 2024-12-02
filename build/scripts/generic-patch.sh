@@ -4,6 +4,6 @@
 
 pkg_patch() {
     for url in "${patches[@]}";do
-        patch -p1 < "$BUILD_PATCHES_DIR/$(basename "$url")"
+        patch -p1 -d "$BUILD_SRC_DIR/${name}-${version}" < "$BUILD_PATCHES_DIR/$(basename "$url")"
     done
 }
