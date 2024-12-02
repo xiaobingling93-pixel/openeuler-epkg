@@ -8,7 +8,7 @@ src_download() {
 		echo "Downloading ${url##*/}"
         local local_file="$BUILD_SOURCES_DIR/$(basename "$url")"
         curl --silent -L -o "$local_file" "$url"
-        unpack_src $local_file
+        src_unpack $local_file
     done
 
     for url in "${patches[@]}"; do
@@ -19,7 +19,7 @@ src_download() {
     done   
 }
 
-unpack_src() {
+src_unpack() {
     local file=$1
     local ext="${file##*.}"
     case "$ext" in
