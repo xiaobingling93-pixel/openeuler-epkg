@@ -77,9 +77,9 @@ download_packages() {
 		fi
 		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5
 		if test -s "$file.etag.tmp"; then
-			mv "$file.etag.tmp" "$file.etag.txt"
+			$epkg_helper mv "$file.etag.tmp" "$file.etag.txt"
 		else
-			rm -f "$file.etag.tmp"
+			$epkg_helper rm -f "$file.etag.tmp"
 		fi
 	done
 }
