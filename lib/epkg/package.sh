@@ -101,6 +101,7 @@ create_profile_symlinks() {
 	for package in $require_packages;
 	do
 		echo "Installing $package"
+		pushd $uncompress_dir/$package &> /dev/null
 		local fs_dir="$uncompress_dir/$package/fs"
 		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"
@@ -109,6 +110,7 @@ create_profile_symlinks() {
 			appbin_flag="true"
 		fi
 		create_symlink_by_fs
+		popd &> /dev/null
 	done
 }
 
