@@ -96,9 +96,10 @@ for curPhase in ${phases[*]}; do
 done
 
 # step6. Calculate hash (Todo Demo, just print)
+echo "hash calculate dir: $BUILD_RESULT_DIR"
 epkg_hash_exec=$PROJECT_DIR/envs/common/profile-current/usr/bin/epkg-hash
 file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
-echo "pkg_fs_hash: $file_hash"
+echo "pkg_hash: $file_hash"
 
 # step7. Generate epkg info
 touch $BUILD_INFO_DIR/runtimePhase.sh
