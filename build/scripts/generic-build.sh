@@ -62,15 +62,7 @@ source_scripts() {
 	fi
 	source $PROJECT_DIR/build/build-system/"${buildSystem}".sh
 	source $PROJECT_DIR/build/scripts/generic-download.sh
-	source $PROJECT_DIR/build/scripts/generic-extract.sh
 	source $PROJECT_DIR/build/scripts/generic-phase.sh
-	source $PROJECT_DIR/build/scripts/generic-patch.sh
-}
-
-code_prepare() {
-	pkg_download
-	pkg_extract
-	pkg_patch
 }
 
 create_build_env() {
@@ -101,7 +93,7 @@ build_pipeline() {
 	source_scripts
 
 	# step 3. Download & Extract & Patch
-	code_prepare
+	src_download
 
 	# step 5. Build env create
 	cd $BUILD_SRC_DIR/$name-$version

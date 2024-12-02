@@ -2,14 +2,41 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
-pkg_download() {
+# Todo: Checksum Check
+src_download() {
     for url in "${sources[@]}"; do
 		echo "Downloading ${url##*/}"
-        curl --silent -L -o "$BUILD_SOURCES_DIR/$(basename "$url")" "$url"
+        local local_file="$BUILD_SOURCES_DIR/$(basename "$url")"
+        curl --silent -L -o "$local_file" "$url"
+        unpack_src $local_file
     done
 
     for url in "${patches[@]}"; do
         echo "Downloading ${url##*/}"
-        curl --silent -L -o "$BUILD_PATCHES_DIR/$(basename "$url")" "$url"
+        local local_file="$BUILD_PATCHES_DIR/$(basename "$url")"
+        curl --silent -L -o "$local_file" "$url"
+        patch -p1 -d "$BUILD_SRC_DIR/${name}-${version}" < "$local_file"
     done   
+}
+
+unpack_src() {
+    local file=$1
+    local ext="${file##*.}"
+    case "$ext" in
+        zip)
+            unzip -q "$file" -d "$BUILD_SRC_DIR"
+            echo "Decompress success: $file"
+            ;;
+        tar.gz|tgz|gz)
+            tar -xzf "$file" -C "$BUILD_SRC_DIR"
+            echo "Decompress success: $file"
+            ;;
+        tar.bz2)
+            tar -xjf "$file" -C "$BUILD_SRC_DIR"
+            echo "Decompress success: $file"
+            ;;
+        *)
+            echo "Unknown format or no need to decompress: $file"
+            ;;
+    esac
 }
