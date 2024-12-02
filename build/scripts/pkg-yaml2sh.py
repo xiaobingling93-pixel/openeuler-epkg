@@ -32,14 +32,11 @@ def generate_phase(pkg_meta, build_scripts_dir):
         return
 
     phase_content = pkg_meta["phase"]
-    print(phase_content)
     with open(os.path.join(build_scripts_dir, "phase.sh"), "w") as f:
         f.write("#!/usr/bin/env bash" + os.linesep*2)
 
         for function_name, function_text in phase_content.items():
-            f.write(function_name + "() {" + os.linesep) 
-            function_text = '\t' + '\n\t'.join(function_text)
-            f.write(function_text + os.linesep + "}" + os.linesep)
+            f.write(function_name + "() {" + os.linesep + function_text + os.linesep + "}" + os.linesep) 
 
 if __name__ == '__main__':
     if len(sys.argv) != 4:
