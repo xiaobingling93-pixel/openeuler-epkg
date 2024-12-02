@@ -57,7 +57,7 @@ build_pipeline() {
 	if [ -e "$BUILD_SCRIPTS_DIR/phase.sh" ]; then
 		source $BUILD_SCRIPTS_DIR/phase.sh
 	fi
-	source $PROJECT_DIR/build/build-system/"$buildSystem".sh
+	source $PROJECT_DIR/build/build-system/"${buildSystem}".sh
 	source $PROJECT_DIR/build/scripts/generic-download.sh
 	source $PROJECT_DIR/build/scripts/generic-extract.sh
 	source $PROJECT_DIR/build/scripts/generic-phase.sh
