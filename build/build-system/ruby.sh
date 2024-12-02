@@ -11,7 +11,7 @@ ruby_build() {
     gem install -V --local --build-root usr --force --document=ri,doc *.gem
 }
 
-ruby_install() {
+ruby_package() {
     rm -rf /opt/buildroot
     mkdir /opt/buildroot
     cp -r usr/ /opt/buildroot

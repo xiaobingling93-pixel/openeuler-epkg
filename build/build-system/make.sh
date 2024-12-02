@@ -9,6 +9,6 @@ make_build() {
   make -j8 ${makeFlags}
 }
 
-make_install() {
+make_package() {
   make install DESTDIR=$BUILD_FS_DIR PREFIX=$BUILD_FS_DIR
 }

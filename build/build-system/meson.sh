@@ -12,7 +12,7 @@ meson_build() {
   meson compile -C "$(arch)_compile_gnu" -j 8 --verbose
 }
 
-meson_install() {
+meson_package() {
   arch=`uname -m`
   DESTDIR=/opt/buildroot meson install -C "$(arch)_compile_gnu" --no-rebuild
 }

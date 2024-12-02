@@ -21,7 +21,7 @@ autotools_build() {
     make -j8 ${makeFlags}
 }
 
-autotools_install() {
+autotools_package() {
     # XXX
     rm -rf /opt/buildroot
     mkdir /opt/buildroot

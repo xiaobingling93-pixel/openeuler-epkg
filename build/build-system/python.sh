@@ -9,7 +9,7 @@ python_build() {
   python3 setup.py bdist_wheel
 }
 
-python_install() {
+python_package() {
   rm -rf /opt/buildroot
   mkdir /opt/buildroot
   cp dist/*.whl /opt/buildroot

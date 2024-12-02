@@ -90,7 +90,7 @@ epkg env create build
 epkg install ${buildRequires[@]}
 
 # step5. Run phase
-phases="prep build install"
+phases="prepare build package"
 for curPhase in ${phases[*]}; do
 	runPhase "$curPhase"
 done

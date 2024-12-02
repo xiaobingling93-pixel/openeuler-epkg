@@ -37,7 +37,7 @@ def generate_phase(pkg_meta, build_scripts_dir):
         f.write("#!/usr/bin/env bash" + os.linesep*2)
 
         for function_name, function_text in phase_content.items():
-            f.write(pkg_meta["name"] + "_" + function_name + "() {" + os.linesep) 
+            f.write(function_name + "() {" + os.linesep) 
             function_text = '\t' + '\n\t'.join(function_text)
             f.write(function_text + os.linesep + "}" + os.linesep)
 
