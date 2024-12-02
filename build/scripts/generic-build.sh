@@ -19,7 +19,7 @@ BUILD_FS_DIR=$BUILD_RESULT_DIR/fs
 BUILD_INFO_DIR=$BUILD_RESULT_DIR/info
 BUILD_PGP_DIR=$BUILD_RESULT_DIR/info/pgp
 
-dependency_check() {
+prep_pipeline() {
 	# Check Python 
 	if ! command -v python3 &> /dev/null; then
 		echo "Python is not installed. Please install."
@@ -32,10 +32,7 @@ dependency_check() {
 		return 1
 	fi
 
-    return 0
-}
-
-create_build_home() {
+	# Mkdir build home
 	rm -rf $BUILD_WORKSPACE_DIR
 	mkdir -p $BUILD_WORKSPACE_DIR
 	mkdir -p $BUILD_SCRIPTS_DIR
@@ -49,60 +46,62 @@ create_build_home() {
 	return 0
 }
 
-parse_yaml() {
+build_pipeline() {
+	# step 1. Parse yaml
 	yaml_path=$1
 	python "$PROJECT_DIR/build/scripts/pkg-yaml2sh.py" $yaml_path $PROJECT_DIR $BUILD_SCRIPTS_DIR
-	return 0
+	echo "Generate pkgvars.sh"
+
+	# step 2. Source file
+	source $BUILD_SCRIPTS_DIR/pkgvars.sh
+	if [ -e "$BUILD_SCRIPTS_DIR/phase.sh" ]; then
+		source $BUILD_SCRIPTS_DIR/phase.sh
+	fi
+	source $PROJECT_DIR/build/build-system/"$buildSystem".sh
+	source $PROJECT_DIR/build/scripts/generic-download.sh
+	source $PROJECT_DIR/build/scripts/generic-extract.sh
+	source $PROJECT_DIR/build/scripts/generic-phase.sh
+	source $PROJECT_DIR/build/scripts/generic-patch.sh
+
+	# step 3. Download & Decompress
+	pkg_download
+	pkg_decompress
+
+	# step 4. Patch file
+	cd $BUILD_SRC_DIR/$name-$version
+	pkg_patch
+
+	# step 5. Build env create
+	source $PROJECT_DIR/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
+	echo "buildRequires:${buildRequires[@]}"
+	epkg env create build
+	epkg install ${buildRequires[@]}
+
+	# step6. Run phase
+	phases="prepare build package"
+	for curPhase in ${phases[*]}; do
+		runPhase "$curPhase"
+	done
 }
 
-# step 0. Dependency check
-dependency_check || exit 1
-create_build_home
+post_pipeline() {
+	# Generate epkg info (demo, empty file)
+	touch $BUILD_INFO_DIR/runtimePhase.sh
+	touch $BUILD_INFO_DIR/buildinfo.json
+	touch $BUILD_INFO_DIR/package.json
+	touch $BUILD_INFO_DIR/files
 
-# step 1. Parse yaml
-yaml_path=$1
-parse_yaml $yaml_path
-echo "Generate pkgvars.sh"
+	echo "hash calculate dir: $BUILD_RESULT_DIR"
+	epkg_hash_exec=$PROJECT_DIR/envs/common/profile-current/usr/bin/epkg-hash
+	file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
+	echo "pkg_hash: $file_hash"
+}
 
-# Source the required scripts
-source $BUILD_SCRIPTS_DIR/pkgvars.sh
-if [ -e "$BUILD_SCRIPTS_DIR/phase.sh" ]; then
-	source $BUILD_SCRIPTS_DIR/phase.sh
-fi
-source $PROJECT_DIR/build/build-system/"$buildSystem".sh
-source $PROJECT_DIR/build/scripts/generic-download.sh
-source $PROJECT_DIR/build/scripts/generic-extract.sh
-source $PROJECT_DIR/build/scripts/generic-phase.sh
-source $PROJECT_DIR/build/scripts/generic-patch.sh
+# Prep step. Dependency check
+prep_pipeline || exit 1
 
-# step 2. Download & Decompress
-pkg_download
-pkg_decompress
+# Main step
+build_pipeline $@
 
-# step 3. Patch file
-cd $BUILD_SRC_DIR/$name-$version
-pkg_patch
-
-# step 4. Build env create
-source $PROJECT_DIR/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
-echo "buildRequires:${buildRequires[@]}"
-epkg env create build
-epkg install ${buildRequires[@]}
-
-# step5. Run phase
-phases="prepare build package"
-for curPhase in ${phases[*]}; do
-	runPhase "$curPhase"
-done
-
-# step6. Calculate hash (Todo Demo, just print)
-echo "hash calculate dir: $BUILD_RESULT_DIR"
-epkg_hash_exec=$PROJECT_DIR/envs/common/profile-current/usr/bin/epkg-hash
-file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
-echo "pkg_hash: $file_hash"
-
-# step7. Generate epkg info
-touch $BUILD_INFO_DIR/runtimePhase.sh
-touch $BUILD_INFO_DIR/buildinfo.json
-touch $BUILD_INFO_DIR/package.json
-touch $BUILD_INFO_DIR/files
+# Post-Process Step
+post_pipeline
