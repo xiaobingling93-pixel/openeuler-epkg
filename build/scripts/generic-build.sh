@@ -107,7 +107,7 @@ build_pipeline() {
 	cd $BUILD_SRC_DIR/$name-$version
 	create_build_env
 
-	# step6. Run phase
+	# step 6. Run phase
 	run_phase
 }
 
