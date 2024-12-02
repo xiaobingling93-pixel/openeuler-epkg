@@ -80,8 +80,6 @@ run_phase() {
 }
 
 build_pipeline() {
-	init_workspace
-
 	# step 1. Parse yaml
 	parse_yaml $@
 
@@ -114,6 +112,7 @@ post_pipeline() {
 
 # Prep Step
 dependency_check || exit 1
+init_workspace
 
 # Main Step
 build_pipeline $@
