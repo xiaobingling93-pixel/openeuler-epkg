@@ -104,9 +104,7 @@ cache_repo()
 		local channel_conf_dir=$CURRENT_PROFILE_DIR/etc/epkg
 	fi
 
-	pushd $channel_conf_dir &> /dev/null
-	for repo_conf_file in $(find ${channel_conf_dir} -name *.json)
-	do	
+	for repo_conf_file in "${channel_conf_dir}"/*.json; do
 		jq empty ${repo_conf_file} || {
 			echo "Epkg channel conf file not in format json: ${repo_conf_file}"
 			echo "Fix up and try again."
@@ -116,7 +114,6 @@ cache_repo()
 
 		loop_cache_repos ${repo_conf_file}
 	done
-	popd &> /dev/null
 
 	export PATH=$old_path
 }
