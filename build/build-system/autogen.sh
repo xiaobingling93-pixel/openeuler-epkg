@@ -8,7 +8,7 @@ autogen_build() {
     ./"${autogen_file}"
 }
 
-autogen_install() {
+autogen_package() {
     rm -rf /opt/buildroot
     mkdir /opt/buildroot
     make install DESTDIR=/opt/buildroot

@@ -9,7 +9,7 @@ go_build() {
   go build
 }
 
-go_install() {
+go_package() {
   export GOPATH="/opt/buildroot"
   export PATH=$PATH:$GOPATH/bin
   go install

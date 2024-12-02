@@ -1,0 +1,31 @@
+meta:
+  summary: A persistent key-value database
+  description: redis description
+name: redis
+version: 4.0.14
+release: 7
+license: BSD-3-Clause and MIT
+homepage: https://redis.io
+sources:
+  '0': https://gitee.com/src-openeuler/redis/raw/master/redis-4.0.14.tar.gz
+  '1': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis.logrotate
+  '2': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis-sentinel.service
+  '3': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis.service
+patches:
+  '01': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/CVE-2020-14147.patch
+  '02': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/improved-HyperLogLog-cardinality-estimation.patch
+  '03': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/Aesthetic-changes-to-PR.patch
+
+buildSystem: make
+buildRequires:
+- gcc
+- gawk
+- systemd
+- logrotate
+- shadow-utils
+
+phase:
+  prepare: |
+    sed -i -e 's|^logfile .*$|logfile /var/log/redis/redis.log|g' redis.conf
+    sed -i -e '$ alogfile /var/log/redis/sentinel.log' sentinel.conf
+    sed -i -e 's|^dir .*$|dir /var/lib/redis|g' redis.conf

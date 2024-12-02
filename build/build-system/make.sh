@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
-
 make_build() {
   if [ -n "${makePath}" ]; then
     pushd ${makePath}
@@ -10,8 +9,6 @@ make_build() {
   make -j8 ${makeFlags}
 }
 
-make_install() {
-  rm -rf /opt/buildroot
-  mkdir /opt/buildroot
-  make install DESTDIR=/opt/buildroot
+make_package() {
+  make install DESTDIR=$BUILD_FS_DIR PREFIX=$BUILD_FS_DIR
 }

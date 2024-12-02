@@ -12,7 +12,7 @@ cmake_build() {
   make -j8 ${makeFlags}
 }
 
-cmake_install() {
+cmake_package() {
   rm -rf /opt/buildroot
   mkdir /opt/buildroot
   make install DESTDIR=/opt/buildroot
