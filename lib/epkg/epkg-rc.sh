@@ -75,7 +75,6 @@ __rehash_path() {
 
 epkg() {
 	local cmd="$1"
-	local EPKG_ENVS_ROOT=$HOME/.epkg/envs
 
 	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 		local project_dir=/opt/epkg/users/public/envs/common/profile-current/usr
@@ -122,7 +121,7 @@ epkg() {
 					if [[ "$env" == "common" ]]; then
 						echo "$env cannot be activated!"
 						return
-					elif [ ! -d "$EPKG_ENVS_ROOT/$env" ]; then
+					elif [ ! -d "$HOME/.epkg/envs/$env" ]; then
 						echo "$env not exist!"
 						return
 					fi
