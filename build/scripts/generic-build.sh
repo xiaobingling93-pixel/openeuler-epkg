@@ -72,8 +72,8 @@ source_scripts() {
 create_build_env() {
 	source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 	echo "buildRequires:${buildRequires[@]}"
-	epkg env activate build
-	# epkg install ${buildRequires[@]}
+	epkg env create build
+	epkg install ${buildRequires[@]}
 }
 
 run_phase() {
