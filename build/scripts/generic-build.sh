@@ -5,10 +5,10 @@
 # Project Dir
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	PROJECT_DIR=/opt/epkg
-	EPKG_ENV_COMMON=$PROJECT_DIR/users/public/envs/common/profile-current
+	EPKG_COMMON_PROFILE=$PROJECT_DIR/users/public/envs/common/profile-current
 else
 	PROJECT_DIR=$HOME/.epkg
-	EPKG_ENV_COMMON=$PROJECT_DIR/envs/common/profile-current
+	EPKG_COMMON_PROFILE=$PROJECT_DIR/envs/common/profile-current
 fi
 # Build Dir
 BUILD_WORKSPACE_DIR=$HOME/.cache/epkg/build-workspace
@@ -68,7 +68,7 @@ source_scripts() {
 }
 
 create_build_env() {
-	source $EPKG_ENV_COMMON/usr/lib/epkg/epkg-rc.sh
+	source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 	echo "buildRequires:${buildRequires[@]}"
 	epkg env create build
 	epkg install ${buildRequires[@]}
@@ -107,7 +107,7 @@ post_pipeline() {
 	touch $BUILD_INFO_DIR/files
 
 	echo "hash calculate dir: $BUILD_RESULT_DIR"
-	epkg_hash_exec=$EPKG_ENV_COMMON/usr/bin/epkg-hash
+	epkg_hash_exec=$EPKG_COMMON_PROFILE/usr/bin/epkg-hash
 	file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
 	echo "pkg_hash: $file_hash"
 }
