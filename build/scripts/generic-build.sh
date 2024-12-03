@@ -20,6 +20,7 @@ BUILD_RESULT_DIR=$BUILD_WORKSPACE_DIR/result
 BUILD_FS_DIR=$BUILD_RESULT_DIR/fs
 BUILD_INFO_DIR=$BUILD_RESULT_DIR/info
 BUILD_PGP_DIR=$BUILD_RESULT_DIR/info/pgp
+BUILD_EPKG_DIR=$BUILD_WORKSPACE_DIR/epkg
 
 dependency_check() {
 	# Check Python 
@@ -48,6 +49,7 @@ init_workspace() {
 	mkdir -p $BUILD_FS_DIR
 	mkdir -p $BUILD_INFO_DIR
 	mkdir -p $BUILD_PGP_DIR
+	mkdir -p $BUILD_EPKG_DIR
 	return 0
 }
 
@@ -157,7 +159,7 @@ post_pipeline() {
 	touch $BUILD_INFO_DIR/buildinfo.json
 	
 	# zstd compress
-	compress_file=${BUILD_WORKSPACE_DIR}/${hash}__${name}__${version}__${release}.${dist}.epkg
+	compress_file=${BUILD_EPKG_DIR}/${hash}__${name}__${version}__${release}.${dist}.epkg
 	tar --zstd -cf $compress_file -C $BUILD_RESULT_DIR .
 	echo "Compress success: $compress_file"
 }
