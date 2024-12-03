@@ -70,8 +70,8 @@ source_scripts() {
 create_build_env() {
 	source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 	echo "buildRequires:${buildRequires[@]}"
-	epkg env create build
-	epkg install ${buildRequires[@]}
+	epkg env activate build
+	# epkg install ${buildRequires[@]}
 }
 
 run_phase() {
@@ -79,6 +79,49 @@ run_phase() {
 	for curPhase in ${phases[*]}; do
 		runPhase "$curPhase"
 	done
+}
+
+output_entry() {
+	local full_path=$1
+  	local relative_path=${full_path#${BUILD_FS_DIR%/}/}
+	[ -z "$relative_path" ] && relative_path="./"
+
+	local mode=$(stat -c "%a" "$full_path")
+	local size=$(stat -c "%s" "$full_path")
+	local mtime=$(stat -c "%Y" "$full_path")
+
+	printf "%s mode=%s size=%d mtime=%d\n" "$relative_path" "$mode" "$size" "$mtime"
+}
+
+generate_info_files() {
+	local dir=$1
+
+	for entry in "$dir"/*; do
+		if [ -d "$entry" ]; then
+			output_entry "$entry"
+			generate_info_files "$entry"
+		elif [ -f "$entry" ]; then
+			output_entry "$entry"
+		fi
+	done
+}
+
+generate_info_package_json() {
+	json_content=$(jq -n \
+		--arg name "$name" \
+		--arg hash "$hash" \
+		--arg epoch "$epoch" \
+		--arg version "$version" \
+		--arg release "$release" \
+		--arg dist "$dist" \
+		--arg arch "$(uname -m)" \
+		'{name: $name, hash: $hash, epoch: $epoch, version: $version, release: $release, dist: $dist, arch: $arch,
+			requires: [],
+			provides: {}
+		}'
+	)
+
+	echo "$json_content"
 }
 
 build_pipeline() {
@@ -100,16 +143,23 @@ build_pipeline() {
 }
 
 post_pipeline() {
+	# Calculate Hash (demo)
+	epkg_hash_exec=$EPKG_COMMON_PROFILE/usr/bin/epkg-hash
+	hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
+	echo "pkg_hash: $hash, dir: $BUILD_RESULT_DIR"
+
 	# Generate epkg info (demo, empty file)
+	local dist="oe2409"
+	local epoch=0
+	generate_info_files $BUILD_FS_DIR > $BUILD_INFO_DIR/files
+	generate_info_package_json > $BUILD_INFO_DIR/package.json
 	touch $BUILD_INFO_DIR/runtimePhase.sh
 	touch $BUILD_INFO_DIR/buildinfo.json
-	touch $BUILD_INFO_DIR/package.json
-	touch $BUILD_INFO_DIR/files
-
-	echo "hash calculate dir: $BUILD_RESULT_DIR"
-	epkg_hash_exec=$EPKG_COMMON_PROFILE/usr/bin/epkg-hash
-	file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
-	echo "pkg_hash: $file_hash"
+	
+	# zstd compress
+	compress_file=${BUILD_WORKSPACE_DIR}/${hash}__${name}__${version}__${release}.${dist}.epkg
+	tar --zstd -cf $compress_file -C $BUILD_RESULT_DIR .
+	echo "Compress success: $compress_file"
 }
 
 # Prep Step
