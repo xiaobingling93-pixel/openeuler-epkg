@@ -93,6 +93,8 @@ epkg() {
 
 	if [ -z $EPKG_ACTIVE_ENV ]; then
 		export EPKG_ACTIVE_ENV=main
+	elif [ ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]; then
+		export EPKG_ACTIVE_ENV=main
 	fi
 
 	case "$cmd" in
@@ -120,6 +122,9 @@ epkg() {
 				activate)
 					if [[ "$env" == "common" ]]; then
 						echo "$env cannot be activated!"
+						return
+					elif [ ! -d "$HOME/.epkg/envs/$env" ]; then
+						echo "$env not exist!"
 						return
 					fi
 					# update PATH

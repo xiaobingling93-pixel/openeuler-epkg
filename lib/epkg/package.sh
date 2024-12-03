@@ -77,9 +77,9 @@ download_packages() {
 		fi
 		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5
 		if test -s "$file.etag.tmp"; then
-			mv "$file.etag.tmp" "$file.etag.txt"
+			$epkg_helper mv "$file.etag.tmp" "$file.etag.txt"
 		else
-			rm -f "$file.etag.tmp"
+			$epkg_helper rm -f "$file.etag.tmp"
 		fi
 	done
 }
@@ -101,6 +101,7 @@ create_profile_symlinks() {
 	for package in $require_packages;
 	do
 		echo "Installing $package"
+		pushd $uncompress_dir/$package > /dev/null
 		local fs_dir="$uncompress_dir/$package/fs"
 		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"
@@ -109,6 +110,7 @@ create_profile_symlinks() {
 			appbin_flag="true"
 		fi
 		create_symlink_by_fs
+		popd > /dev/null
 	done
 }
 
