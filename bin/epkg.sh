@@ -3,23 +3,24 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	export PROJECT_DIR=/opt/epkg/users/public/envs/common/profile-1/usr
+	export EPKG_COMMON_PROFILE=/opt/epkg/users/public/envs/common/profile-1
+	
 elif [ -d "$COMMON_PROFILE_LINK" ]; then
-	export PROJECT_DIR=$COMMON_PROFILE_LINK/usr
+	export EPKG_COMMON_PROFILE=$COMMON_PROFILE_LINK
 else
-	export PROJECT_DIR=$HOME/.epkg/envs/common/profile-1/usr
+	export EPKG_COMMON_PROFILE=$HOME/.epkg/envs/common/profile-1
 fi
 
-export PATH=$PROJECT_DIR/bin:$PATH
+export PATH=$EPKG_COMMON_PROFILE/usr/bin:$PATH
 
-source $PROJECT_DIR/lib/epkg/paths.sh
-source $PROJECT_DIR/lib/epkg/env.sh
-source $PROJECT_DIR/lib/epkg/init.sh
-source $PROJECT_DIR/lib/epkg/package.sh
-source $PROJECT_DIR/lib/epkg/epkg-rc.sh
-source $PROJECT_DIR/lib/epkg/query.sh
-source $PROJECT_DIR/lib/epkg/cache-repo.sh
-source $PROJECT_DIR/lib/epkg/repo.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/paths.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/env.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/init.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/package.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/query.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/cache-repo.sh
+source $EPKG_COMMON_PROFILE/usr/lib/epkg/repo.sh
 
 __get_epkg_help_info() {
 	cat <<-EOF
