@@ -65,6 +65,10 @@ else
 fi
 
 case "$cmd" in
+	"localinstall")
+		local_package=$1
+		local_install_package
+		;;
 	"install")
 		installroot=""
 		package_arr=()
