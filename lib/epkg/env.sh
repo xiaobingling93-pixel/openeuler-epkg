@@ -115,11 +115,11 @@ create_environment() {
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	
     cd $curr_env_root/$env/profile-1
-	$epkg_helper ln -sT "usr/bin"     "bin"
-	$epkg_helper ln -sT "usr/sbin"    "sbin"
-	$epkg_helper ln -sT "usr/lib"     "lib"
-	$epkg_helper ln -sT "usr/lib64"   "lib64"
-	$epkg_helper ln -sT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
+	$epkg_helper ln -sfT "usr/bin"     "bin"
+	$epkg_helper ln -sfT "usr/sbin"    "sbin"
+	$epkg_helper ln -sfT "usr/lib"     "lib"
+	$epkg_helper ln -sfT "usr/lib64"   "lib64"
+	$epkg_helper ln -sfT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
 
 	if [[  "$subcmd" == "--repo" ]];then
 		if [[ "$repo_path" == *"/"* ]];then
