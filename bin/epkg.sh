@@ -4,9 +4,6 @@
 
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	export EPKG_COMMON_PROFILE=/opt/epkg/users/public/envs/common/profile-1
-	
-elif [ -d "$COMMON_PROFILE_LINK" ]; then
-	export EPKG_COMMON_PROFILE=$COMMON_PROFILE_LINK
 else
 	export EPKG_COMMON_PROFILE=$HOME/.epkg/envs/common/profile-1
 fi

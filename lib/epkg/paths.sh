@@ -23,9 +23,6 @@ EPKG_PKG_CACHE_DIR=$EPKG_CACHE/packages
 EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
 # These PATHs are related to the common env
 COMMON_PROFILE_LINK=$EPKG_COMMON_ROOT/profile-current
-if [ -d "$COMMON_PROFILE_LINK" ]; then
-	export EPKG_COMMON_PROFILE=$COMMON_PROFILE_LINK
-fi
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
 EPKG_HELPER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
 
