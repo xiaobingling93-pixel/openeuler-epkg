@@ -42,6 +42,7 @@ install_package() {
 # local install demo (support 2024-1230-RC4)
 local_install_package() {
 	ROOTFS_LINK=$COMMON_PROFILE_LINK
+	local local_package=$1
 	local package_name=$($ROOTFS_LINK/bin/basename $local_package .epkg)
 	local package_arr=($package_name)
 	local require_packages=($package_name)

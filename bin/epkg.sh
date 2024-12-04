@@ -3,10 +3,10 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	export EPKG_COMMON_PROFILE=/opt/epkg/users/public/envs/common/profile-1
+	export EPKG_COMMON_PROFILE=/opt/epkg/users/public/envs/common/profile-current
 	export PROJECT_DIR=/opt/epkg
 else
-	export EPKG_COMMON_PROFILE=$HOME/.epkg/envs/common/profile-1
+	export EPKG_COMMON_PROFILE=$HOME/.epkg/envs/common/profile-current
 	export PROJECT_DIR=$HOME/.epkg
 fi
 
@@ -67,8 +67,7 @@ fi
 
 case "$cmd" in
 	"localinstall")
-		local_package=$1
-		local_install_package
+		local_install_package "$@"
 		;;
 	"install")
 		installroot=""
@@ -175,8 +174,7 @@ case "$cmd" in
 		esac
 		;;
 	"build")
-		yaml_path=$1
-		run_build $yaml_path
+		run_build "$@"
 		;;
 	*)
 		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|enable|disable|activate|deactivate|history|rollback|help]"
