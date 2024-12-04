@@ -75,16 +75,12 @@ run_phase() {
 	done
 }
 
-output_entry() {
+output_mtree_data() {
 	local full_path=$1
   	local relative_path=${full_path#${BUILD_FS_DIR%/}/}
 	[ -z "$relative_path" ] && relative_path="./"
 
-	local mode=$(stat -c "%a" "$full_path")
-	local size=$(stat -c "%s" "$full_path")
-	local mtime=$(stat -c "%Y" "$full_path")
-
-	printf "%s mode=%s size=%d mtime=%d\n" "$relative_path" "$mode" "$size" "$mtime"
+	stat -c "mode=%a size=%s mtime=%Y" "$full_path" | sed "s|^|$relative_path |"
 }
 
 generate_info_files() {
@@ -92,10 +88,10 @@ generate_info_files() {
 
 	for entry in "$dir"/*; do
 		if [ -d "$entry" ]; then
-			output_entry "$entry"
+			output_mtree_data "$entry"
 			generate_info_files "$entry"
 		elif [ -f "$entry" ]; then
-			output_entry "$entry"
+			output_mtree_data "$entry"
 		fi
 	done
 }
