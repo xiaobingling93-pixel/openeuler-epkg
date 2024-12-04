@@ -70,13 +70,13 @@ get_requires() {
     local pkg_info_path="$channel_url/pkg-info" # 需要改为环境中的路径
 
     pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
-    local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
 
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
         # echo "-------Warning: no package.json for $pkg_name"
         return
     fi
 
+    local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
     local pkg_hash=$(jq -r '.hash' "$pkg_metadata_file_path")
 
     if [[ -z "$pkg_hash" || "$pkg_hash" == "null" ]]; then

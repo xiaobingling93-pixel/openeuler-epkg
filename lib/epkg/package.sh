@@ -42,9 +42,9 @@ install_package() {
 # local install demo (support 2024-1230-RC4)
 local_install_package() {
 	ROOTFS_LINK=$COMMON_PROFILE_LINK
-	local package_name=$($ROOTFS_LINK/bin/basename $local_package)
-	local package_arr=(${package_name%.epkg})
-	local require_packages=(${package_name%.epkg})
+	local package_name=$($ROOTFS_LINK/bin/basename $local_package .epkg)
+	local package_arr=($package_name)
+	local require_packages=($package_name)
 	local uncompress_dir="$EPKG_STORE_ROOT"
 	local symlink_dir="$CURRENT_PROFILE_DIR"
 
@@ -66,6 +66,8 @@ query_package_requires() {
 	do
 		count=$((count + 1))
 		if ((count % 3 == 0)); then
+		# TODO Fix: 
+		# TODO Fix: Try 'basename --help' for more information.
 			local pkg_name=$($ROOTFS_LINK/bin/basename $ite .epkg)
 			if [[ "$require_packages" ==  *"$pkg_name"* ]];then
 				continue
