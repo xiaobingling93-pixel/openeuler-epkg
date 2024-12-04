@@ -39,6 +39,25 @@ install_package() {
 	echo "Attention: Install success"
 }
 
+# local install demo (support 2024-1230-RC4)
+local_install_package() {
+	ROOTFS_LINK=$COMMON_PROFILE_LINK
+	local package_name=$($ROOTFS_LINK/bin/basename $local_package)
+	local package_arr=(${package_name%.epkg})
+	local require_packages=(${package_name%.epkg})
+	local uncompress_dir="$EPKG_STORE_ROOT"
+	local symlink_dir="$CURRENT_PROFILE_DIR"
+
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
+	$epkg_helper mv $local_package $EPKG_PKG_CACHE_DIR
+
+	uncompress_packages
+	create_profile_symlinks
+	echo "Attention: Install success"
+}
+
 query_package_requires() {
 	local requires=$(accurate_query_requires $1)
 	local packages_info=${requires#*PACKAGE  CHANNEL}
