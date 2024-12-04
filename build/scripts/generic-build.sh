@@ -2,14 +2,6 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
-# Project Dir
-if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	PROJECT_DIR=/opt/epkg
-	EPKG_COMMON_PROFILE=$PROJECT_DIR/users/public/envs/common/profile-current
-else
-	PROJECT_DIR=$HOME/.epkg
-	EPKG_COMMON_PROFILE=$PROJECT_DIR/envs/common/profile-current
-fi
 # Build Dir
 BUILD_WORKSPACE_DIR=$HOME/.cache/epkg/build-workspace
 BUILD_SCRIPTS_DIR=$BUILD_WORKSPACE_DIR/scripts
@@ -164,12 +156,14 @@ post_pipeline() {
 	echo "Compress success: $compress_file"
 }
 
-# Prep Step
-dependency_check || exit 1
-init_workspace
+run_build() {
+	# Prep Step
+	dependency_check || return 1
+	init_workspace
 
-# Main Step
-build_pipeline $@
+	# Main Step
+	build_pipeline $@
 
-# Post Step
-post_pipeline
+	# Post Step
+	post_pipeline
+}

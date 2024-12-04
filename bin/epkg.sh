@@ -4,8 +4,10 @@
 
 if [ -d "/opt/epkg/users/public/envs/common/" ]; then
 	export EPKG_COMMON_PROFILE=/opt/epkg/users/public/envs/common/profile-1
+	export PROJECT_DIR=/opt/epkg
 else
 	export EPKG_COMMON_PROFILE=$HOME/.epkg/envs/common/profile-1
+	export PROJECT_DIR=$HOME/.epkg
 fi
 
 export PATH=$EPKG_COMMON_PROFILE/usr/bin:$PATH
@@ -18,6 +20,7 @@ source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/query.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/cache-repo.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/repo.sh
+source $PROJECT_DIR/build/scripts/generic-build.sh
 
 __get_epkg_help_info() {
 	cat <<-EOF
@@ -170,6 +173,10 @@ case "$cmd" in
 				echo "Usage: epkg repo [list]"
 				;;
 		esac
+		;;
+	"build")
+		yaml_path=$1
+		run_build $yaml_path
 		;;
 	*)
 		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|enable|disable|activate|deactivate|history|rollback|help]"
