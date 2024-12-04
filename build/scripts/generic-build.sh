@@ -162,7 +162,7 @@ run_build() {
 	init_workspace
 
 	# Main Step
-	build_pipeline $@
+	build_pipeline "$@"
 
 	# Post Step
 	post_pipeline
