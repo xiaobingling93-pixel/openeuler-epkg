@@ -2,14 +2,6 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
-# Project Dir
-if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-	PROJECT_DIR=/opt/epkg
-	EPKG_COMMON_PROFILE=$PROJECT_DIR/users/public/envs/common/profile-current
-else
-	PROJECT_DIR=$HOME/.epkg
-	EPKG_COMMON_PROFILE=$PROJECT_DIR/envs/common/profile-current
-fi
 # Build Dir
 BUILD_WORKSPACE_DIR=$HOME/.cache/epkg/build-workspace
 BUILD_SCRIPTS_DIR=$BUILD_WORKSPACE_DIR/scripts
@@ -20,6 +12,7 @@ BUILD_RESULT_DIR=$BUILD_WORKSPACE_DIR/result
 BUILD_FS_DIR=$BUILD_RESULT_DIR/fs
 BUILD_INFO_DIR=$BUILD_RESULT_DIR/info
 BUILD_PGP_DIR=$BUILD_RESULT_DIR/info/pgp
+BUILD_EPKG_DIR=$BUILD_WORKSPACE_DIR/epkg
 
 dependency_check() {
 	# Check Python 
@@ -48,6 +41,7 @@ init_workspace() {
 	mkdir -p $BUILD_FS_DIR
 	mkdir -p $BUILD_INFO_DIR
 	mkdir -p $BUILD_PGP_DIR
+	mkdir -p $BUILD_EPKG_DIR
 	return 0
 }
 
@@ -81,6 +75,45 @@ run_phase() {
 	done
 }
 
+output_mtree_data() {
+	local full_path=$1
+  	local relative_path=${full_path#${BUILD_FS_DIR%/}/}
+	[ -z "$relative_path" ] && relative_path="./"
+
+	stat -c "mode=%a size=%s mtime=%Y" "$full_path" | sed "s|^|$relative_path |"
+}
+
+generate_info_files() {
+	local dir=$1
+
+	for entry in "$dir"/*; do
+		if [ -d "$entry" ]; then
+			output_mtree_data "$entry"
+			generate_info_files "$entry"
+		elif [ -f "$entry" ]; then
+			output_mtree_data "$entry"
+		fi
+	done
+}
+
+generate_info_package_json() {
+	json_content=$(jq -n \
+		--arg name "$name" \
+		--arg hash "$hash" \
+		--arg epoch "$epoch" \
+		--arg version "$version" \
+		--arg release "$release" \
+		--arg dist "$dist" \
+		--arg arch "$(uname -m)" \
+		'{name: $name, hash: $hash, epoch: $epoch, version: $version, release: $release, dist: $dist, arch: $arch,
+			requires: [],
+			provides: {}
+		}'
+	)
+
+	echo "$json_content"
+}
+
 build_pipeline() {
 	# step 1. Parse yaml
 	parse_yaml $@
@@ -100,24 +133,33 @@ build_pipeline() {
 }
 
 post_pipeline() {
+	# Calculate Hash (demo)
+	epkg_hash_exec=$EPKG_COMMON_PROFILE/usr/bin/epkg-hash
+	hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
+	echo "pkg_hash: $hash, dir: $BUILD_RESULT_DIR"
+
 	# Generate epkg info (demo, empty file)
+	local dist="oe2409"
+	local epoch=0
+	generate_info_files $BUILD_FS_DIR > $BUILD_INFO_DIR/files
+	generate_info_package_json > $BUILD_INFO_DIR/package.json
 	touch $BUILD_INFO_DIR/runtimePhase.sh
 	touch $BUILD_INFO_DIR/buildinfo.json
-	touch $BUILD_INFO_DIR/package.json
-	touch $BUILD_INFO_DIR/files
-
-	echo "hash calculate dir: $BUILD_RESULT_DIR"
-	epkg_hash_exec=$EPKG_COMMON_PROFILE/usr/bin/epkg-hash
-	file_hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
-	echo "pkg_hash: $file_hash"
+	
+	# zstd compress
+	compress_file=${BUILD_EPKG_DIR}/${hash}__${name}__${version}__${release}.${dist}.epkg
+	tar --zstd -cf $compress_file -C $BUILD_RESULT_DIR .
+	echo "Compress success: $compress_file"
 }
 
-# Prep Step
-dependency_check || exit 1
-init_workspace
+run_build() {
+	# Prep Step
+	dependency_check || return 1
+	init_workspace
 
-# Main Step
-build_pipeline $@
+	# Main Step
+	build_pipeline "$@"
 
-# Post Step
-post_pipeline
+	# Post Step
+	post_pipeline
+}

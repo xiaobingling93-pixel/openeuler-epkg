@@ -77,19 +77,12 @@ epkg() {
 	local cmd="$1"
 
 	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-		local project_dir=/opt/epkg/users/public/envs/common/profile-current/usr
-	elif [ -d "$COMMON_PROFILE_LINK" ]; then
-		local project_dir=$COMMON_PROFILE_LINK/usr
+		local epkg_common_profile=/opt/epkg/users/public/envs/common/profile-current
 	else
-		local project_dir=$HOME/.epkg/envs/common/profile-current/usr
+		local epkg_common_profile=$HOME/.epkg/envs/common/profile-current
 	fi
 
-	if [ -f $project_dir/bin/epkg ]; then
-		# for compatibility, can remove in future
-		local epkg_sh=$project_dir/bin/epkg
-	else
-		local epkg_sh=$project_dir/bin/epkg.sh
-	fi
+	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
 
 	if [ -z $EPKG_ACTIVE_ENV ]; then
 		export EPKG_ACTIVE_ENV=main

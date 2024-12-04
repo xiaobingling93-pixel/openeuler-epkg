@@ -39,6 +39,26 @@ install_package() {
 	echo "Attention: Install success"
 }
 
+# local install demo (support 2024-1230-RC4)
+local_install_package() {
+	ROOTFS_LINK=$COMMON_PROFILE_LINK
+	local local_package=$1
+	local package_name=$($ROOTFS_LINK/bin/basename $local_package .epkg)
+	local package_arr=($package_name)
+	local require_packages=($package_name)
+	local uncompress_dir="$EPKG_STORE_ROOT"
+	local symlink_dir="$CURRENT_PROFILE_DIR"
+
+	local epkg_helper=
+	__get_epkg_helper "install_mode"
+
+	$epkg_helper mv $local_package $EPKG_PKG_CACHE_DIR
+
+	uncompress_packages
+	create_profile_symlinks
+	echo "Attention: Install success"
+}
+
 query_package_requires() {
 	local requires=$(accurate_query_requires $1)
 	local packages_info=${requires#*PACKAGE  CHANNEL}
@@ -47,6 +67,8 @@ query_package_requires() {
 	do
 		count=$((count + 1))
 		if ((count % 3 == 0)); then
+		# TODO Fix: 
+		# TODO Fix: Try 'basename --help' for more information.
 			local pkg_name=$($ROOTFS_LINK/bin/basename $ite .epkg)
 			if [[ "$require_packages" ==  *"$pkg_name"* ]];then
 				continue
