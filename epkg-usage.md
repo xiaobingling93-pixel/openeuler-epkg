@@ -68,6 +68,8 @@ Usage:
     epkg env create $env2 --repo $repo // 创建环境2，指定repo
     epkg install $package // 在环境2中安装软件包
 
+软件包构建
+    epkg build ${yaml_path}
 
 ### 安装软件
 功能描述：
@@ -257,3 +259,18 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     sure to continue? (y: continue, others: exit)
     y
     Environment 'w4' removed from PATH.
+
+### 编译epkg软件包
+功能描述：
+
+    根据autopkg提供的yaml编译epkg软件包
+
+命令：
+
+    epkg build ${yaml_path}
+
+返回示例：
+
+    [small_leek@69393675945d /]#  epkg build /root/epkg/build/test/tree/package.yaml
+    pkg_hash: fbfqtsnza9ez1zk0cy23vyh07xfzsydh, dir: /root/.cache/epkg/build-workspace/result
+    Compress success: /root/.cache/epkg/build-workspace/epkg/fbfqtsnza9ez1zk0cy23vyh07xfzsydh__tree__2.1.1__0.oe2409.epkg
