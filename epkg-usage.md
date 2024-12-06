@@ -8,9 +8,6 @@
 下面的实例介绍了安装不同软件包版本的方式
 
 ```bash
-# openEuler 安装方式
-sudo yum install epkg
-
 # 通用安装方式
 curl -sSL https://gitee.com/openeuler/epkg/raw/master/epkg-installer.sh
 bash epkg-installer.sh
