@@ -17,7 +17,7 @@ BUILD_EPKG_DIR=$BUILD_WORKSPACE_DIR/epkg
 dependency_check() {
 	# Check Python 
 	if ! command -v python3 &> /dev/null; then
-		echo "Python is not installed. Please install."
+		echo "Python3 is not installed. Please install."
 		return 1
 	fi
 
@@ -47,7 +47,7 @@ init_workspace() {
 
 parse_yaml() {
 	yaml_path=$1
-	python "$PROJECT_DIR/build/scripts/pkg-yaml2sh.py" $yaml_path $PROJECT_DIR $BUILD_SCRIPTS_DIR
+	python3 "$PROJECT_DIR/build/scripts/pkg-yaml2sh.py" $yaml_path $PROJECT_DIR $BUILD_SCRIPTS_DIR
 	echo "Generate pkgvars.sh"
 }
 
