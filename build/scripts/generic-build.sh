@@ -27,6 +27,12 @@ dependency_check() {
 		return 1
 	fi
 
+	# Check patch 
+	if ! command -v patch &> /dev/null; then
+		echo "patch is not installed. Please install."
+		return 1
+	fi
+
 	return 0
 }
 
