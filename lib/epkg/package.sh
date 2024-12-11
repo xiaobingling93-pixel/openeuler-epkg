@@ -52,7 +52,8 @@ local_install_package() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
 
-	$epkg_helper mv $local_package $EPKG_PKG_CACHE_DIR
+	# Todo: epkg mv Permission denied, need fix
+	$epkg_helper /bin/mv $local_package $EPKG_PKG_CACHE_DIR
 
 	uncompress_packages
 	create_profile_symlinks
