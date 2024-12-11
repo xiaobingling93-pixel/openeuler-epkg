@@ -133,7 +133,7 @@ create_profile_symlinks() {
 			appbin_flag="true"
 		fi
 		create_symlink_by_fs
-		popd > /dev/null
+		popd &> /dev/null
 	done
 }
 
