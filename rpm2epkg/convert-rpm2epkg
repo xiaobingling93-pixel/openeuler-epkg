@@ -36,7 +36,9 @@ generate_files()
 
 	sed -i "s|^${epkg_conversion_dir}/fs/||" ${epkg_conversion_dir}/info/files
 	# 生成package.json
-	./gen-package.sh $rpm_file ${epkg_conversion_dir}/info/ /tmp/rpm
+	tmp_dir=$(mktemp -d)
+	./gen-package.sh $rpm_file ${epkg_conversion_dir}/info/ $tmp_dir
+	rm -rf $tmp_dir
 }
 
 generate_epkg_name()
