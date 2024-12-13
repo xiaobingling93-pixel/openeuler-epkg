@@ -312,8 +312,8 @@ generate_metadata_json () {
     output_json=$(echo "$output_json" | jq --argjson requires "$requires_json" '. + { "requires": $requires }')
 
     # provides: []
-    provides_json=$(echo "${!rpm_provides_info[@]}" | jq -R . | jq -s .)
-    output_json=$(echo "$output_json" | jq --argjson provides "$provides_json" '. + { "provides": $provides }')
+    provides_json=$(printf '%s\n' "${!rpm_provides_info[@]}" | jq -R . | jq -s 'map(select(length > 0))')
+    output_json=$(echo "$output_json"  | jq --argjson provides "$provides_json" '. + { "provides": $provides }')
 
     # other rpm info
     recommends=$(rpm -q --recommends $rpm_package)

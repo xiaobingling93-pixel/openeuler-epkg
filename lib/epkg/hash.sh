@@ -43,7 +43,7 @@ rpm_hash()
     local hash=$($epkg_hash_exec "$temp_cpio")
 
     # Remove temporary CPIO file
-    rm "$temp_cpio"
+    rm -rf "$temp_cpio"
     # Store the result in the cache
     rpm_hash_cache[$rpm_file]=$hash
 
