@@ -60,7 +60,7 @@ query_rpm_name() {
     fi
 
     # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-1.1.oe2203sp3.aarch64，需要依次解析各个字段
-    local full_rpm_name=$(dnf repoquery --whatprovides "$input_item" 2>/dev/null)
+    local full_rpm_name=$(dnf repoquery --whatprovides "$input_item" --forcearch $package_arch 2>/dev/null)
     IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
     rpm_name=${rpm_name_epoch%-*}
     epoch=${rpm_name_epoch##*-}
@@ -76,7 +76,7 @@ query_rpm_name() {
 
 query_requirements() {
     local package=$1
-    dnf repoquery --requires "$package" > "$requires_file" 2>/dev/null
+    dnf repoquery --requires "$package" --forcearch $package_arch > "$requires_file" 2>/dev/null
     echo "==============Requirements:"
     cat $requires_file
 }
@@ -85,7 +85,7 @@ query_provides () {
     local package_file_name=$1
     local package=$2
     if [[ ! -f "$package_file_name" ]]; then
-        dnf repoquery --provides "$package" > "$provides_file" 2>/dev/null
+        dnf repoquery --provides "$package" --forcearch $package_arch > "$provides_file" 2>/dev/null
     else
         rpm -qp --provides $store_rpms/$package_file_name > $provides_file
     fi
