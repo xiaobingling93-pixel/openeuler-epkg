@@ -40,7 +40,7 @@ rpm_hash()
     rpm2cpio ${rpm_file} | cpio -idm --quiet -D ${temp_cpio}/fs/ 2>/dev/null
     
     # Calculate hash using calculate_base32_hash function from hash.sh
-    local hash=$($epkg_hash_exec "$temp_cpio")
+    local hash=$($epkg_hash_exec "${temp_cpio}/fs")
 
     # Remove temporary CPIO file
     rm -rf "$temp_cpio"
