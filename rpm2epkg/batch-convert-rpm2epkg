@@ -3,6 +3,29 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 repos_list_file=$1
+rpm2epkg_cache_dir=$HOME/.cache/rpm2epkg
+mkdir -p $rpm2epkg_cache_dir
+epkg_hash_exec=$rpm2epkg_cache_dir/epkg-hash
+
+init_hash() {
+	local arch=$(uname -m)
+	local epkg_url=https://repo.oepkgs.net/openeuler/epkg/rootfs
+
+	case $arch in
+		x86_64)
+			URL=$epkg_url/epkg-hash-x86_64
+			;;
+		aarch64)
+			URL=$epkg_url/epkg-hash-aarch64
+			;;
+		*)
+			echo "Error: Unsupported architecture: $ARCH"
+			exit 1
+			;;
+	esac
+	curl -o "$epkg_hash_exec" -L "$URL"
+	chmod 755 $epkg_hash_exec
+}
 
 loop_convert_repos()
 {
@@ -35,12 +58,13 @@ loop_convert_epkg()
 
 	for rpm in $(find ${rpm_repo} -name "*.rpm")
 	do
+		echo "$rpm"
 		[[ $rpm =~ '.rpm' ]] || continue
 		[[ $rpm =~ 'src.rpm' ]] && continue
 
 		echo "converting rpm:	${rpm}"
 
-		./convert-rpm2epkg ${rpm} ${result_repo_path}
+		./convert-rpm2epkg ${rpm} ${result_repo_path} ${epkg_hash_exec}
 	done
 }
 
@@ -93,5 +117,6 @@ create_epkg_repo()
 	exit 1
 }
 
+init_hash
 loop_convert_repos
 wait
