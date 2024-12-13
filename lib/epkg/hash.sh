@@ -27,6 +27,7 @@ rpm_hash()
 {
     
     local rpm_file=$1
+    local epkg_hash_exec=$2
 
     # Check if the hash for this rpm_file is already calculated
     if [[ -n "${rpm_hash_cache[$rpm_file]}" ]]; then
@@ -36,13 +37,13 @@ rpm_hash()
 
     local temp_cpio=$(mktemp)
     # Convert RPM to CPIO
-    rpm2cpio "$rpm_file" > "$temp_cpio"
-
+    rpm2cpio ${rpm_file} | cpio -idm --quiet -D ${temp_cpio}/fs/ 2>/dev/null
+    
     # Calculate hash using calculate_base32_hash function from hash.sh
-    local hash=$(calculate_base32_hash "$temp_cpio")
+    local hash=$($epkg_hash_exec "${temp_cpio}/fs")
 
     # Remove temporary CPIO file
-    rm "$temp_cpio"
+    rm -rf "$temp_cpio"
     # Store the result in the cache
     rpm_hash_cache[$rpm_file]=$hash
 

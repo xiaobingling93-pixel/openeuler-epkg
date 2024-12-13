@@ -17,58 +17,54 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
     let mut hasher = Sha256::new();
     let mut hashed_files = HashSet::new();
 
-    let mut files = Vec::new();
-    for entry in WalkDir::new(dir) {
-        let entry = entry.unwrap();
-        let path = entry.path();
+    // 收集所有文件和目录的相对路径
+    let mut relative_entries: Vec<PathBuf> = WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().strip_prefix(dir).unwrap_or(entry.path()).to_path_buf())
+        .collect();
 
-        if entry.file_type().is_file() || entry.file_type().is_dir() || entry.file_type().is_symlink() {
-            files.push(path.to_path_buf());
-        }
-    }
-    files.sort();
+    // 按照字典顺序排序
+    relative_entries.sort();
 
-    for file in &files {
-        // println!("Processing file: {}", file.display());  // 打印当前文件路径
-        let file_content = get_file_content(file, &mut hasher, &mut hashed_files);
-        hasher.update(&file_content);
+    for entry in &relative_entries {
+        let absolute_path = dir.join(entry);
+        // println!("Processing entry: {}", absolute_path.display());  // 打印当前条目路径
+        let (entry_path, entry_content) = get_entry_content(&absolute_path, &mut hasher, &mut hashed_files, dir);
+        hasher.update(&entry_path);
+        hasher.update(&entry_content);
     }
 
     let hash_result = hasher.finalize();
     let compressed_hash = xor_compress_to_20_bytes(&hash_result);
     let base32_result = base32::encode(Alphabet::Crockford, &compressed_hash);
-    base32_result
+    base32_result.to_lowercase()
 }
 
-fn get_file_content(file: &Path, hasher: &mut Sha256, hashed_files: &mut HashSet<PathBuf>) -> Vec<u8> {
-    match fs::symlink_metadata(file) {
+fn get_entry_content(entry: &Path, hasher: &mut Sha256, hashed_files: &mut HashSet<PathBuf>, base_dir: &Path,) -> (Vec<u8>, Vec<u8>) {
+    match fs::symlink_metadata(entry) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
-                let target_path = fs::read_link(file).unwrap_or_else(|_| file.to_path_buf());
-                hasher.update(&path_to_bytes(file));
-                if !hashed_files.contains(&target_path) {
-                    hashed_files.insert(target_path.clone());
-                    if let Ok(content) = fs::read(&target_path) {
-                        return content;
-                    }
-                }
-                path_to_bytes(file)
+                let target_path = fs::read_link(entry).unwrap_or_else(|_| entry.to_path_buf());
+                let relative_target = target_path.strip_prefix(base_dir).unwrap_or(&target_path);
+
+                // 获取链接的内容
+                let target_content = path_to_bytes(relative_target)
+
+                // 将符号链接的相对路径和内容都加入到哈希计算中
+                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), target_content)
             } else if metadata.is_file() {
-                let content = fs::read(file).unwrap_or_else(|_| Vec::new());
-                if content.is_empty() {
-                    path_to_bytes(file)
-                } else {
-                    content
-                }
+                let content = fs::read(entry).unwrap_or_else(|_| Vec::new());
+                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), content)
             } else if metadata.is_dir() {
-                path_to_bytes(file)
+                // 对于目录，仅返回路径，不包括内容
+                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), Vec::new())
             } else {
-                path_to_bytes(file)
+                // 如果是其他类型的条目（例如socket, device等），我们只返回路径
+                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), Vec::new())
             }
         }
-        Err(_) => {
-            path_to_bytes(file)
-        }
+        Err(_) => (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), Vec::new()),
     }
 }
 

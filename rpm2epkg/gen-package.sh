@@ -158,7 +158,7 @@ update_requirement_checksum () {
                         continue
                     fi
                     # sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
-                    sha256=$($epkg_hash_exec "${store_rpms}/${file_name}")
+                    sha256=$(rpm_hash "${store_rpms}/${file_name}" $epkg_hash_exec)
                     valid_check_sum="yes"
                 fi
                 echo "$rpm_name: $sha256"
@@ -312,8 +312,8 @@ generate_metadata_json () {
     output_json=$(echo "$output_json" | jq --argjson requires "$requires_json" '. + { "requires": $requires }')
 
     # provides: []
-    provides_json=$(echo "${!rpm_provides_info[@]}" | jq -R . | jq -s .)
-    output_json=$(echo "$output_json" | jq --argjson provides "$provides_json" '. + { "provides": $provides }')
+    provides_json=$(printf '%s\n' "${!rpm_provides_info[@]}" | jq -R . | jq -s 'map(select(length > 0))')
+    output_json=$(echo "$output_json"  | jq --argjson provides "$provides_json" '. + { "provides": $provides }')
 
     # other rpm info
     recommends=$(rpm -q --recommends $rpm_package)
@@ -405,7 +405,7 @@ process_all_rpms() {
 
         # step 2 check rpm's sha256 and package.json existed or not
         # package_hash=$(sha256sum $store_rpms/$package_file_name | awk '{print $1}')
-        package_hash=$($epkg_hash_exec $store_rpms/$package_file_name)
+        package_hash=$(rpm_hash $store_rpms/$package_file_name $epkg_hash_exec)
         echo $package_hash
     
         # store_dir="$output_dir/$package_hash"__"$package"__"$package_version"__"$package_release"."$package_dist"
