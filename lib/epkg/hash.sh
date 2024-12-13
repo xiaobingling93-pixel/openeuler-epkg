@@ -35,7 +35,7 @@ rpm_hash()
         return
     fi
 
-    local temp_cpio=$(mktemp)
+    local temp_cpio=$(mktemp -d)
     # Convert RPM to CPIO
     rpm2cpio ${rpm_file} | cpio -idm --quiet -D ${temp_cpio}/fs/ 2>/dev/null
     
