@@ -5,7 +5,7 @@
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 source "$SCRIPT_DIR/../lib/epkg/hash.sh"
 
-if [ "$#" -ne 3 ]; then
+if [ "$#" -ne 4 ]; then
     echo "Usage: $0 <rpm-package> $1 <output dir>  $2 <store rpms>"
     exit 1
 fi
@@ -19,7 +19,7 @@ store_rpms="$3"
 json_data=""
 full_rpm_names=()
 has_unknown_requires=0
-
+epkg_hash_exec=$4
 
 query_rpm_names() {
     local input_item=$rpm_package
@@ -158,7 +158,7 @@ update_requirement_checksum () {
                         continue
                     fi
                     # sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
-                    sha256=$(rpm_hash "${store_rpms}/${file_name}")
+                    sha256=$($epkg_hash_exec "${store_rpms}/${file_name}")
                     valid_check_sum="yes"
                 fi
                 echo "$rpm_name: $sha256"
@@ -405,7 +405,7 @@ process_all_rpms() {
 
         # step 2 check rpm's sha256 and package.json existed or not
         # package_hash=$(sha256sum $store_rpms/$package_file_name | awk '{print $1}')
-        package_hash=$(rpm_hash $store_rpms/$package_file_name)
+        package_hash=$($epkg_hash_exec $store_rpms/$package_file_name)
         echo $package_hash
     
         # store_dir="$output_dir/$package_hash"__"$package"__"$package_version"__"$package_release"."$package_dist"
