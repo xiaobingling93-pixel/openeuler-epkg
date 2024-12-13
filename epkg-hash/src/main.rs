@@ -26,11 +26,19 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
             files.push(path.to_path_buf());
         }
     }
-    files.sort();
 
-    for file in &files {
-        // println!("Processing file: {}", file.display());  // 打印当前文件路径
-        let file_content = get_file_content(file, &mut hasher, &mut hashed_files);
+    // 将所有路径转换为相对于 epkg_path 的相对路径
+    let mut relative_files: Vec<PathBuf> = files
+        .iter()
+        .map(|path| path.strip_prefix(dir).unwrap_or(path).to_path_buf())
+        .collect();
+
+    relative_files.sort();
+
+    for file in &relative_files {
+        let absolute_path = dir.join(file);
+        // println!("Processing file: {}", absolute_path.display());  // 打印当前文件路径
+        let file_content = get_file_content(&absolute_path, &mut hasher, &mut hashed_files);
         hasher.update(&file_content);
     }
 
@@ -45,14 +53,19 @@ fn get_file_content(file: &Path, hasher: &mut Sha256, hashed_files: &mut HashSet
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 let target_path = fs::read_link(file).unwrap_or_else(|_| file.to_path_buf());
-                hasher.update(&path_to_bytes(file));
-                if !hashed_files.contains(&target_path) {
-                    hashed_files.insert(target_path.clone());
-                    if let Ok(content) = fs::read(&target_path) {
+
+                // 将符号链接的目标路径转换为相对于 epkg_path 的相对路径
+                let canonical_target = fs::canonicalize(&target_path).unwrap_or(target_path);
+                let relative_target = canonical_target.strip_prefix(file.parent().unwrap()).unwrap_or(&canonical_target);
+
+                hasher.update(&path_to_bytes(relative_target));
+                if !hashed_files.contains(&canonical_target) {
+                    hashed_files.insert(canonical_target.clone());
+                    if let Ok(content) = fs::read(&canonical_target) {
                         return content;
                     }
                 }
-                path_to_bytes(file)
+                path_to_bytes(relative_target)
             } else if metadata.is_file() {
                 let content = fs::read(file).unwrap_or_else(|_| Vec::new());
                 if content.is_empty() {
