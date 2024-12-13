@@ -203,40 +203,16 @@ convert_requiremennts_to_json () {
     local data="$2"
     IFS=';' read -r -a entries <<< "$data"
     local pkgname=${entries[0]%%|*}
-    local files=()
-    local sonames=()
-    local binaries=()
-    for entry in "${entries[@]}"; do
-        IFS='|' read -r pkgname category value <<< "$entry"
-	    echo "convert_requiremennts_to_json: $pkgname  $category   $value"
-        case "$category" in
-            "file")
-                files+=("${value}")
-                ;;
-            "soname")
-                sonames+=("${value}")
-                ;;
-            "binary")
-                binaries+=("${value}")
-                ;;
-        esac
-    done
 
     # 创建 JSON 对象
     local json=$(jq -n \
         --arg package_hash "$package_hash" \
         --arg pkgname "$pkgname" \
-        --argjson files "$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)" \
-        --argjson sonames "$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)" \
-        --argjson binaries "$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)" \
         '{
             requires: [
                 {
                     hash: $package_hash,
                     pkgname: $pkgname,
-                    files: $files,
-                    sonames: $sonames,
-                    binaries: $binaries
                 }
             ]
         }'
@@ -307,8 +283,7 @@ convert_package_info_to_json () {
             version: $version,
             release: $release,
             dist: $dist,
-            arch: $arch,
-            requires: []
+            arch: $arch
         }'
     )
     json_data=$json
@@ -322,19 +297,45 @@ generate_metadata_json () {
     convert_package_info_to_json $package_elements
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
 
-    # 获取并解析requires信息
+    # depends: [{}]
     if [[ "$has_unknown_requires" -eq 0 ]];then
         unset requirement_rpm_info["unknown"]
     fi
     for key in "${!requirement_rpm_info[@]}"; do
-        data=${requirement_rpm_info[$key]}
+        # data=${requirement_rpm_info[$key]}
         convert_requiremennts_to_json "$key" "${requirement_rpm_info[$key]}"
-        output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '.requires += $new_obj.requires')
+        output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '.depends += $new_obj.requires')
     done
 
-    # 获取并解析provides信息
-    convert_provides_to_json
-    output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
+    # requires: []
+    requires_json=$(cat "$requires_file" | jq -R . | jq -s .)
+    output_json=$(echo "$output_json" | jq --argjson requires "$requires_json" '. + { "requires": $requires }')
+
+    # provides: []
+    provides_json=$(echo "${!rpm_provides_info[@]}" | jq -R . | jq -s .)
+    output_json=$(echo "$output_json" | jq --argjson provides "$provides_json" '. + { "provides": $provides }')
+
+    # other rpm info
+    recommends=$(rpm -q --recommends $rpm_package)
+    suggests=$(rpm -q --suggests $rpm_package)
+    supplements=$(rpm -q --supplements $rpm_package)
+    enhances=$(rpm -q --enhances $rpm_package)
+    if [ -n "$recommends" ];then
+        recommends_json=$(echo "$recommends" | jq -R . | jq -s .)
+        output_json=$(echo "$output_json" | jq --argjson recommends "$recommends_json" '. + { "recommends": $recommends }')
+    fi
+    if [ -n "$suggests" ];then
+        suggests_json=$(echo "$suggests" | jq -R . | jq -s .)
+        output_json=$(echo "$output_json" | jq --argjson suggests "$suggests_json" '. + { "suggests": $suggests }')
+    fi
+    if [ -n "$supplements" ];then
+        supplements_json=$(echo "$supplements" | jq -R . | jq -s .)
+        output_json=$(echo "$output_json" | jq --argjson supplements "$supplements_json" '. + { "supplements": $supplements }')
+    fi
+    if [ -n "$enhances" ];then
+        enhances_json=$(echo "$enhances" | jq -R . | jq -s .)
+        output_json=$(echo "$output_json" | jq --argjson enhances "$enhances_json" '. + { "enhances": $enhances }')
+    fi
 
     output_file="package.json"
     echo "$output_json" | jq '.' > "$output_file"
