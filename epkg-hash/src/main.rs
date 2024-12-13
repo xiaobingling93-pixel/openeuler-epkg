@@ -4,7 +4,6 @@ use sha2::{Sha256, Digest};
 use base32;
 use base32::Alphabet;
 use walkdir::WalkDir;
-use std::collections::HashSet;
 
 fn main() {
     let epkg_path = std::env::args().nth(1).expect("Please provide a path as an argument");
@@ -15,8 +14,7 @@ fn main() {
 pub fn cal_path_hash(epkg_path: &String) -> String {
     let dir = Path::new(&epkg_path);
     let mut hasher = Sha256::new();
-    let mut hashed_files = HashSet::new();
-
+    
     // 收集所有文件和目录的相对路径
     let mut relative_entries: Vec<PathBuf> = WalkDir::new(dir)
         .into_iter()
@@ -30,7 +28,7 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
     for entry in &relative_entries {
         let absolute_path = dir.join(entry);
         // println!("Processing entry: {}", absolute_path.display());  // 打印当前条目路径
-        let (entry_path, entry_content) = get_entry_content(&absolute_path, &mut hasher, &mut hashed_files, dir);
+        let (entry_path, entry_content) = get_entry_content(&absolute_path, dir);
         hasher.update(&entry_path);
         hasher.update(&entry_content);
     }
@@ -41,7 +39,7 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
     base32_result.to_lowercase()
 }
 
-fn get_entry_content(entry: &Path, hasher: &mut Sha256, hashed_files: &mut HashSet<PathBuf>, base_dir: &Path,) -> (Vec<u8>, Vec<u8>) {
+fn get_entry_content(entry: &Path, base_dir: &Path,) -> (Vec<u8>, Vec<u8>) {
     match fs::symlink_metadata(entry) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
@@ -49,7 +47,7 @@ fn get_entry_content(entry: &Path, hasher: &mut Sha256, hashed_files: &mut HashS
                 let relative_target = target_path.strip_prefix(base_dir).unwrap_or(&target_path);
 
                 // 获取链接的内容
-                let target_content = path_to_bytes(relative_target)
+                let target_content = path_to_bytes(relative_target);
 
                 // 将符号链接的相对路径和内容都加入到哈希计算中
                 (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), target_content)
