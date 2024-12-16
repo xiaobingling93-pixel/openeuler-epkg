@@ -69,9 +69,7 @@ source_scripts() {
 
 create_build_env() {
 	source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
-	buildTools=(bash)
-	merged_buildRequires=($(echo "${buildTools[@]} ${buildRequires[@]}" | tr ' ' '\n' | sort -u))
-	echo "buildRequires:${merged_buildRequires[@]}"
+	echo "buildRequires:${buildRequires[@]}"
 	epkg env create build
 	epkg install ${merged_buildRequires[@]}
 }
