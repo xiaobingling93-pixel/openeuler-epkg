@@ -22,5 +22,5 @@ autotools_build() {
 }
 
 autotools_package() {
-    make install PREFIX=$BUILD_FS_DIR/usr DESTDIR=$BUILD_FS_DIR/usr
+    make install PREFIX=$BUILD_FS_DIR DESTDIR=$BUILD_FS_DIR
 }
