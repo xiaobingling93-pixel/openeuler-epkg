@@ -133,8 +133,22 @@ create_profile_symlinks() {
 			appbin_flag="true"
 		fi
 		create_symlink_by_fs
+		postinstall_scriptlet
 		popd &> /dev/null
 	done
+}
+
+postinstall_scriptlet() {
+	# remove in future: exec runtimePhase.sh
+	IFS='__' read -ra pkg_split <<< "$package"
+	if [[ "${pkg_split[2]}" == "golang" ]]; then
+		# usr/app-bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/app-bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/app-bin/gofmt"
+		# usr/bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/bin/gofmt"
+	fi
 }
 
 create_symlink_by_fs() {
@@ -151,9 +165,6 @@ create_symlink_by_fs() {
 	# fs_file=/tmp/epkg-cache/xxx/fs/etc/ima/digest_lists/0-metadata_list-compact-info-7.0.3-3.oe2409.aarch64
 	while IFS= read -r fs_file; do
 		rfs_file=${fs_file#$fs_dir}
-		if [[ "$appbin_flag" == "true" ]]; then
-			rfs_file="${rfs_file/\/bin/\/app-bin}"
-		fi
 
 		[ -e "$symlink_dir/$rfs_file" ] && continue
 
@@ -165,7 +176,6 @@ create_symlink_by_fs() {
 		[ -e $symlink_dir/$parent_dir ] ||
 		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir"
 
-		#if [ "${fs_file}" == *"/bin/"* ]; then
 		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
 			handle_exec "$fs_file" && continue
 		fi
@@ -191,15 +201,30 @@ create_symlink_by_fs() {
 }
 
 handle_exec() {
+	# Add app-bin path
+	if [[ "$appbin_flag" == "true" && "$rfs_file" == "/usr/bin/"* ]]; then
+		local rfs_file_appbin="${rfs_file/\/bin/\/app-bin}"
+		local parent_dir_appbin=${rfs_file_appbin%/*}
+		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
+	fi
+
 	local file_type=$($epkg_helper $ROOTFS_LINK/bin/file $1)
 	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
-		handle_elf
+		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
+		handle_elf $rfs_file
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
-		handle_elf
+		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
+		handle_elf $rfs_file
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
-		handle_elf
+		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
+		handle_elf $rfs_file
 	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
+		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file_appbin
 		$epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
+	# test: install autoconf
+	elif [[ "$file_type" =~ 'Perl script text executable' ]]; then
+		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file_appbin"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s $fs_file $symlink_dir/$rfs_file
 	elif [[ "$file_type" =~ 'symbolic link' ]]; then
 		handle_symlink
 	fi
@@ -212,23 +237,25 @@ handle_symlink() {
     fi
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
+	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
 	if [[ "$appbin_flag" == "true" ]]; then
 		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
+		ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file_appbin
 	fi
-	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
 }
 
 handle_elf() {
+	local target_file=$1
 	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
 
-	$epkg_helper $ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$rfs_file
+	$epkg_helper $ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$target_file
 	if [ -z "$installroot" ]; then
-		replace_string "$symlink_dir/$rfs_file" "$id1" "$symlink_dir"
-		replace_string "$symlink_dir/$rfs_file" "$id2" "$fs_file"
+		replace_string "$symlink_dir/$target_file" "$id1" "$symlink_dir"
+		replace_string "$symlink_dir/$target_file" "$id2" "$fs_file"
 	else
-		replace_string "$symlink_dir/$rfs_file" "$id1" "/"
-		replace_string "$symlink_dir/$rfs_file" "$id2" "${fs_file#$installroot}"
+		replace_string "$symlink_dir/$target_file" "$id1" "/"
+		replace_string "$symlink_dir/$target_file" "$id2" "${fs_file#$installroot}"
 	fi
 }
 
