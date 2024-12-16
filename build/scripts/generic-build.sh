@@ -143,8 +143,8 @@ build_pipeline() {
 post_pipeline() {
 	# Calculate Hash (demo)
 	epkg_hash_exec=$EPKG_COMMON_PROFILE/usr/bin/epkg-hash
-	hash=$($epkg_hash_exec "$BUILD_RESULT_DIR" )
-	echo "pkg_hash: $hash, dir: $BUILD_RESULT_DIR"
+	hash=$($epkg_hash_exec "$BUILD_FS_DIR" )
+	echo "pkg_hash: $hash, dir: $BUILD_FS_DIR"
 
 	# Generate epkg info (demo, empty file)
 	local dist="oe2409"
