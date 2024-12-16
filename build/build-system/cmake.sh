@@ -13,7 +13,5 @@ cmake_build() {
 }
 
 cmake_package() {
-  rm -rf /opt/buildroot
-  mkdir /opt/buildroot
-  make install DESTDIR=/opt/buildroot
+  make install DESTDIR="$BUILD_FS_DIR"
 }

@@ -6,11 +6,9 @@
 python_build() {
   pip install setuptools wheel -i https://mirrors.aliyun.com/pypi/simple/
   pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-  python3 setup.py bdist_wheel
+  python3 setup.py build '--executable=/usr/bin/python3 -s'
 }
 
 python_package() {
-  rm -rf /opt/buildroot
-  mkdir /opt/buildroot
-  cp dist/*.whl /opt/buildroot
+  python3 setup.py install -O1 --skip-build --root "$BUILD_FS_DIR"
 }

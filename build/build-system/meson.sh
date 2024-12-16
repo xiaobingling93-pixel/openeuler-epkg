@@ -14,5 +14,5 @@ meson_build() {
 
 meson_package() {
   arch=`uname -m`
-  DESTDIR=/opt/buildroot meson install -C "$(arch)_compile_gnu" --no-rebuild
+  DESTDIR="$BUILD_FS_DIR" meson install -C "$(arch)_compile_gnu" --no-rebuild
 }
