@@ -133,8 +133,22 @@ create_profile_symlinks() {
 			appbin_flag="true"
 		fi
 		create_symlink_by_fs
+		postinstall_scriptlet
 		popd &> /dev/null
 	done
+}
+
+postinstall_scriptlet() {
+	# remove in future: exec runtimePhase.sh
+	IFS='__' read -ra pkg_split <<< "$package"
+	if [[ "${pkg_split[2]}" == "golang" ]]; then
+		# usr/app-bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/app-bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/app-bin/gofmt"
+		# usr/bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/bin/gofmt"
+	fi
 }
 
 create_symlink_by_fs() {
