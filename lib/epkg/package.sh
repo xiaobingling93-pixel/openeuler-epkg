@@ -207,6 +207,10 @@ handle_exec() {
 	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
 		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file_appbin
 		$epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
+	# test: install autoconf
+	elif [[ "$file_type" =~ 'Perl script text executable' ]]; then
+		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file_appbin"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s $fs_file $symlink_dir/$rfs_file
 	elif [[ "$file_type" =~ 'symbolic link' ]]; then
 		handle_symlink
 	fi
