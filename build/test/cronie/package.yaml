@@ -1,0 +1,18 @@
+meta:
+  summary: Standard UNIX daemon crond
+  description: Cronie contains the standard UNIX daemon crond that runs specified programs at scheduled times and related tools. It is based on the original cron and has security and configuration enhancements like the ability to use pam and SELinux. 
+name: cronie
+version: 1.7.2
+release: 1
+license: GPL-2.0-or-later AND BSD-3-Clause AND BSD-2-Clause AND ISC AND LGPL-2.1-or-later
+homepage: https://github.com/cronie-crond/cronie
+sources:
+  '0': https://gitee.com/src-openeuler/cronie/raw/master/cronie-1.7.2.tar.gz
+
+buildSystem: autotools
+buildRequires:
+- automake
+- autoconf
+- gcc
+- g++
+- make

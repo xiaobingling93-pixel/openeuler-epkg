@@ -22,8 +22,5 @@ autotools_build() {
 }
 
 autotools_package() {
-    # XXX
-    rm -rf /opt/buildroot
-    mkdir /opt/buildroot
-    make install DESTDIR=/opt/buildroot
+    make install PREFIX=$BUILD_FS_DIR DESTDIR=$BUILD_FS_DIR
 }
