@@ -48,27 +48,15 @@ maven_build() {
   disable_module "$maven_disable_modules"
   delete_dir "$maven_rm_dirs"
   python3 /usr/share/java-utils/mvn_build.py -b -f
-  if [ $? -eq 0 ]; then
-    echo "maven build finished"
-  else
-    echo "maven build failed"
-    exit 1
-  fi
 }
 
 maven_install() {
   # 检查 name 字段是否存在
   if [ -z "$name" ]; then
-    echo "name 字段不存在"
+    echo "package name not exist in yaml!"
   else
-    echo "name 字段的值是: $name"
+    echo "package name in yaml is: $name"
   fi
   xmvn-install -R .xmvn-reactor -n "$name" -d "$BUILD_FS_DIR"
-  if [ $? -eq 0 ]; then
-    echo "maven package finished"
-  else
-    echo "maven package failed"
-    exit 1
-  fi
 }
 

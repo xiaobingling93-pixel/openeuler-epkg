@@ -16,20 +16,8 @@ autotools_build() {
   fi
   configure
   make -j8 ${makeFlags}
-  if [ $? -eq 0 ]; then
-    echo "autotools build finished"
-  else
-    echo "autotools build failed"
-    exit 1
-  fi
 }
 
 autotools_package() {
   make install DESTDIR=$BUILD_FS_DIR
-  if [ $? -eq 0 ]; then
-    echo "autotools package finished"
-  else
-    echo "autotools package failed"
-    exit 1
-  fi
 }

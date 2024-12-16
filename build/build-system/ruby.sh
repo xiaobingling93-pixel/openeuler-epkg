@@ -9,12 +9,6 @@ ruby_build() {
   fi
   mkdir -p usr/
   gem install -V --local --build-root usr --force --document=ri,doc *.gem
-  if [ $? -eq 0 ]; then
-    echo "ruby package finished"
-  else
-    echo "ruby package failed"
-    exit 1
-  fi
 }
 
 ruby_package() {
