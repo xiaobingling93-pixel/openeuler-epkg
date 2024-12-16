@@ -25,7 +25,7 @@ autotools_build() {
 }
 
 autotools_package() {
-  make install DESTDIR=$BUILD_FS_DIR
+  make install DESTDIR=$BUILD_FS_DIR PREFIX=$BUILD_FS_DIR/usr
   if [ $? -eq 0 ]; then
     echo "autotools package finished"
   else
