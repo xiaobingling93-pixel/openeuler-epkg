@@ -8,9 +8,15 @@
 下面的实例介绍了安装不同软件包版本的方式
 
 ```bash
-# 通用安装方式
-curl -sSL https://gitee.com/openeuler/epkg/raw/master/epkg-installer.sh
-bash epkg-installer.sh
+# curl 方式安装epkg
+# 安装时可选user/global安装模式，user模式仅当前安装用户可用，global模式全局用户可用
+# 仅root用户可使用global安装模式
+wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-installer.sh
+sh epkg-installer.sh
+
+# 卸载epkg
+wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-uninstaller.sh
+sh epkg-uninstaller.sh
 
 # 初始化epkg
 epkg init
@@ -44,6 +50,7 @@ epkg env activate t1
 
 ## EPKG包管理器使用说明
 
+```bash
 Usage:
     epkg install PACKAGE 
     epkg install [--env ENV] PACKAGE （开发中...）
@@ -60,16 +67,20 @@ Usage:
     epkg env enable|disable ENV
     epkg env history ENV （开发中...）
     epkg env rollback ENV （开发中...）
+```
 
 软件包安装：
+```bash
     epkg env create $env // 创建环境
     epkg install $package // 在环境中安装软件包
-
     epkg env create $env2 --repo $repo // 创建环境2，指定repo
     epkg install $package // 在环境2中安装软件包
+```
 
-软件包构建
-    epkg build ${yaml_path}
+软件包构建：
+```bash
+    epkg build ${yaml_path}/$pkg_name.yaml
+```
 
 ### 安装软件
 功能描述：
@@ -267,7 +278,7 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg build ${yaml_path}
+    epkg build ${yaml_path}/$pkg_name.yaml
 
 返回示例：
 
