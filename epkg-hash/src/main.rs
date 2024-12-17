@@ -46,6 +46,7 @@ fn get_entry_hash_param(entry: &Path) -> (Vec<u8>, Vec<u8>) {
         Ok(metadata) => match metadata.file_type() {
             ft if ft.is_symlink() => (path_to_bytes(&fs::read_link(entry).unwrap()), vec![1]),
             ft if ft.is_file() => (fs::read(entry).unwrap(), vec![2]),
+            // metadata.dev() -> u64: high32-major  low32-minor
             ft if ft.is_block_device() => (metadata.dev().to_ne_bytes().into(), vec![3]),
             ft if ft.is_char_device() => (metadata.dev().to_ne_bytes().into(), vec![4]),
             ft if ft.is_dir() => (Vec::new(), vec![5]),
