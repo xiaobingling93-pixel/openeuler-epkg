@@ -17,10 +17,10 @@ __epkg_init() {
 	mkdir -p $EPKG_STORE_ROOT
 	mkdir -p $EPKG_PKG_CACHE_DIR
 	mkdir -p $EPKG_CHANNEL_CACHE_DIR
-	mkdir -p $EPKG_CONFIG_DIR/enabled-envs
+	mkdir -p $EPKG_CONFIG_DIR/registered-envs
 
 	create_environment main     # main user environment
-	__epkg_enable_environment main
+	__epkg_register_environment main
 	echo "Warning: For changes to take effect, close and re-open your current shell."
 }
 

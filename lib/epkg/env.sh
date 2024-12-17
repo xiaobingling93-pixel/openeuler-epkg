@@ -23,39 +23,39 @@ __get_curr_env_root() {
 	fi
 }
 
-__epkg_enable_environment() {
+__epkg_register_environment() {
 	local env=$1
 
 	if [[ "$env" == "common" ]]; then
-		echo "$env cannot be enabled!"
+		echo "Environment $env cannot be registered!"
 		return
 	fi
 
-	_check_env_enabled $env
+	_check_env_registered $env
 	if [ $? -eq 0 ]; then
-		echo "$env already enabled!"
+		echo "Environment $env already registered!"
 		return
 	fi
 
 	if [ -d "$EPKG_ENVS_ROOT/$env" ]; then
-		ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/enabled-envs/$env"
+		ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
 	fi
 
-	echo "Environment '$env' added to PATH."
+	echo "Environment '$env' has been registered to PATH."
 }
 
-__epkg_disable_environment() {
+__epkg_unregister_environment() {
 	local env=$1
 
-	_check_env_enabled $env
+	_check_env_registered $env
 	if [ $? -eq 1 ]; then
-		echo "$env already disabled!"
+		echo "Environment $env already unregistered!"
 		return
 	fi
 
-	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
+	rm -f "$EPKG_CONFIG_DIR/registered-envs/$env"
 
-	echo "Environment '$env' removed from PATH."
+	echo "Environment '$env' has been unregistered from PATH."
 }
 
 __epkg_activate_environment() {
@@ -78,9 +78,9 @@ _check_env_existed() {
 	return 1
 }
 
-_check_env_enabled() {
+_check_env_registered() {
 	local env=$1
-	if [ -L "$EPKG_CONFIG_DIR/enabled-envs/$env" ]; then
+	if [ -L "$EPKG_CONFIG_DIR/registered-envs/$env" ]; then
 		return 0
 	fi
 	return 1

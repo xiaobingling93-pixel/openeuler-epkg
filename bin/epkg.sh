@@ -37,7 +37,7 @@ epkg env list
 epkg [env] create|remove ENV
 epkg [env] activate ENV
 epkg [env] deactivate
-epkg [env] enable|disable ENV
+epkg [env] register|unregister ENV
 epkg [env] history ENV
 epkg [env] rollback ENV
 EOF
@@ -137,11 +137,11 @@ case "$cmd" in
 			"remove")
 				remove_environment "$@"
 				;;
-			"enable")
-				__epkg_enable_environment "$@"
+			"register")
+				__epkg_register_environment "$@"
 				;;
-			"disable")
-				__epkg_disable_environment "$@"
+			"unregister")
+				__epkg_unregister_environment "$@"
 				;;
 			"activate")
 				__epkg_activate_environment "$@"
@@ -156,7 +156,7 @@ case "$cmd" in
 				env_rollback "$@"
 				;;
 			*)
-				echo "Usage: epkg env [list|create|remove|enable|disable|activate|deactivate|history|rollback]"
+				echo "Usage: epkg env [list|create|remove|register|unregister|activate|deactivate|history|rollback]"
 				;;
 		esac
 		;;
@@ -177,6 +177,6 @@ case "$cmd" in
 		run_build "$@"
 		;;
 	*)
-		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|enable|disable|activate|deactivate|history|rollback|help]"
+		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|register|unregister|activate|deactivate|history|rollback|help]"
 		;;
 esac

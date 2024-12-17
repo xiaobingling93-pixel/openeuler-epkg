@@ -15,16 +15,16 @@ __epkg_append_path() {
 	# Get epkg app-bin path
 	declare -A curr_envs
 	local epkg_appbin_path=
-	local epkg_enabled_envs_dir=$HOME/.epkg/config/enabled-envs
+	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
 	# Current shell activate env
 	if [[ "$pure_flag" == "true" ]]; then
 		curr_envs["$EPKG_ACTIVE_ENV"]=1
 	else
 		# Activate env
 		[ -n "$EPKG_ACTIVE_ENV" ] && curr_envs["$EPKG_ACTIVE_ENV"]=1
-		# Enabled envs
-		if [[ -d $epkg_enabled_envs_dir && -n "$(ls -A $epkg_enabled_envs_dir)" ]]; then
-			for file in "$epkg_enabled_envs_dir"/*; do
+		# Registered envs
+		if [[ -d $epkg_registered_envs_dir && -n "$(ls -A $epkg_registered_envs_dir)" ]]; then
+			for file in "$epkg_registered_envs_dir"/*; do
 				curr_envs["${file##*/}"]=1
 			done
 		fi

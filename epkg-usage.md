@@ -64,7 +64,7 @@ Usage:
     epkg env create|remove ENV
     epkg env activate ENV
     epkg env deactivate ENV
-    epkg env enable|disable ENV
+    epkg env register|unregister ENV
     epkg env history ENV （开发中...）
     epkg env rollback ENV （开发中...）
 ```
@@ -217,8 +217,7 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 返回示例：
 
     [small_leek@9d991d463f89 bin]# epkg env activate main
-    YUM --installroot directory structure created successfully in: /root/.epkg/envs/main/profile-1
-    Environment 'main' activated.
+    Environment 'main' activated
 
 ### 取消激活环境
 功能描述：
@@ -242,16 +241,13 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg env enable ${env_name}
+    epkg env register ${env_name}
 
 返回示例：
 
-    [small_leek@5042ae77dd75 bin]# epkg env enable lkp
-    add common to path
-    add main to path
-    add xsl to path
-    add lkp to path
-    Environment 'lkp' added to PATH.
+    [small_leek@5042ae77dd75 bin]# epkg env register lkp
+    EPKG_ACTIVE_ENV: 
+    Environment 'lkp' has been registered to PATH.
 
 ### 取消使能环境
 功能描述：
@@ -260,16 +256,13 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg env disable ${env_name}
+    epkg env unregister ${env_name}
 
 返回示例：
 
-    [small_leek@69393675945d /]# epkg env disable w4
-    Warning: Don't try to disable current env!
-    Warning: you are trying to disable current env!
-    sure to continue? (y: continue, others: exit)
-    y
-    Environment 'w4' removed from PATH.
+    [small_leek@69393675945d /]# epkg env unregister w4
+    EPKG_ACTIVE_ENV: 
+    Environment 'w4' has been unregistered from PATH.
 
 ### 编译epkg软件包
 功能描述：
