@@ -94,7 +94,7 @@ epkg() {
 				create)
 					$epkg_sh "$@" || return
 					# update PATH
-					echo "Environment '$env' activated."
+					echo "Environment '$env' has been activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
 					return
@@ -122,7 +122,7 @@ epkg() {
 						local pure_flag=true
 					fi
 					# update PATH
-					echo "Environment '$env' activated."
+					echo "Environment '$env' has been activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
 					unset pure_flag
@@ -130,7 +130,7 @@ epkg() {
 					;;
 				deactivate)
 					# update PATH
-					echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
+					echo "Environment '$EPKG_ACTIVE_ENV' has been deactivated."
 					unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return

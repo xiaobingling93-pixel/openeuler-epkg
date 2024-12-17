@@ -54,7 +54,7 @@ __epkg_register_environment() {
 	__check_env_registered $env && return 1
 
 	ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
-	echo "Environment '$env' has been registered to PATH."
+	echo "Environment '$env' has been registered."
 }
 
 __epkg_unregister_environment() {
