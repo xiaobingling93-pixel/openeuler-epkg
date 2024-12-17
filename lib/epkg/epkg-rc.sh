@@ -135,6 +135,18 @@ epkg() {
 					__epkg_add_appbin_path
 					return
 					;;
+				register)
+					$epkg_sh "$@" || return
+					# update PATH
+					__epkg_add_appbin_path
+					return
+					;;
+				unregister)
+					$epkg_sh "$@" || return
+					# update PATH
+					__epkg_add_appbin_path
+					return					
+					;;
 			esac
 			;;
 	esac
