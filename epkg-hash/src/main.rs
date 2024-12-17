@@ -51,9 +51,9 @@ fn get_entry_hash_param(entry: &Path) -> (Vec<u8>, Vec<u8>) {
             ft if ft.is_dir() => (Vec::new(), vec![5]),
             ft if ft.is_socket() => (Vec::new(), vec![6]),
             ft if ft.is_fifo() => (Vec::new(), vec![7]),
-            _ => panic!("Encountered an unknown file type"),
+            _ => panic!("Encountered an unknown file type at: {}", entry.display()),
         },
-        Err(_) => panic!("File Metadata error"),
+        Err(e) => panic!("Failed to get metadata for {}: {}", entry.display(), e),
     }
 }
 
