@@ -30,7 +30,7 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
         hasher.update(path_to_bytes(entry));
         // hasher add file_type & other param
         let absolute_path = dir.join(entry);
-        let (entry_type, entry_content) = get_entry_hash_param(&absolute_path);
+        let (entry_content, entry_type) = get_entry_hash_param(&absolute_path);
         hasher.update(&entry_type);
         hasher.update(&entry_content);
     }
