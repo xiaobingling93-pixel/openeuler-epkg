@@ -23,7 +23,7 @@ __get_curr_env_root() {
 	fi
 }
 
-_check_env_existed() {
+__check_env_existed() {
 	local check_env=$1
 	if [ -d "$EPKG_ENVS_ROOT/${check_env}" ];then
 		echo "Environment ${check_env} exist."
@@ -33,7 +33,7 @@ _check_env_existed() {
 	return 1
 }
 
-_check_env_registered() {
+__check_env_registered() {
 	local check_env=$1
 	if [ -L "$EPKG_CONFIG_DIR/registered-envs/${check_env}" ]; then
 		echo "Environment ${check_env} had been registered."
@@ -50,8 +50,8 @@ __epkg_register_environment() {
 		echo "Environment $env cannot be registered."
 		return 1
 	fi
-	_check_env_existed $env || return 1
-	_check_env_registered $env && return 1
+	__check_env_existed $env || return 1
+	__check_env_registered $env && return 1
 
 	ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
 	echo "Environment '$env' has been registered to PATH."
@@ -64,8 +64,8 @@ __epkg_unregister_environment() {
 		echo "Environment $env cannot be registered."
 		return 1
 	fi
-	_check_env_existed $env || return 1
-	_check_env_registered $env || return 1
+	__check_env_existed $env || return 1
+	__check_env_registered $env || return 1
 
 	rm -f "$EPKG_CONFIG_DIR/registered-envs/$env"
 	echo "Environment '$env' has been unregistered from PATH."
@@ -91,7 +91,7 @@ __epkg_create_environment() {
 		echo "Environment $env cannot be create."
 		return 1
 	fi
-	_check_env_existed $env && return 1
+	__check_env_existed $env && return 1
 	
 	local curr_env_root=
 	__get_curr_env_root $env
@@ -129,8 +129,8 @@ __epkg_remove_environment() {
 		echo "Environment $env cannot be removed."
 		return 1
 	fi
-	_check_env_existed $env || return 1
-	_check_env_registered $env && __epkg_unregister_environment $env
+	__check_env_existed $env || return 1
+	__check_env_registered $env && __epkg_unregister_environment $env
 
 	mv "$curr_env_root/$env" "$curr_env_root/.$env"
 	echo "Environment $env has been removed."
