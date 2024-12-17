@@ -97,16 +97,16 @@ create_environment() {
 	local subcmd=$2
 	local repo_path=$3
 
+	if [[ "$env" == "common" ]]; then
+		echo "Environment $env cannot be create."
+		return 1
+	fi
+	_check_env_existed $env && return 1
+	
 	local curr_env_root=
 	__get_curr_env_root $env
 	local epkg_helper=
 	__get_epkg_helper "env_mode" "$curr_env_root/$env/"
-
-	#_check_env_existed $env
-	#if [ $? -eq 0 ]; then
-	#	echo "$env already existed!"
-	#	return
-	#fi
 
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	
@@ -127,17 +127,23 @@ create_environment() {
 		init_channel_repo $env openEuler-24.09
 	fi
 
-	echo "Environment '$env' created."
+	echo "Environment '$env' has been created."
 }
 
 remove_environment() {
 	local env=$1
 	local curr_env_root=
 	__get_curr_env_root $env
+
+	if [[ "$env" == "common" || "$env" == "main" ]]; then
+		echo "Environment $env cannot be removed."
+		return 1
+	fi
 	_check_env_existed $env || return 1
-	
+	_check_env_registered $env && __epkg_unregister_environment $env
+
 	mv "$curr_env_root/$env" "$curr_env_root/.$env"
-	echo "$env remove success!"
+	echo "Environment $env has been removed."
 }
 
 # setup env variable
