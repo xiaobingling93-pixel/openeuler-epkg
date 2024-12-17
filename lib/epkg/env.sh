@@ -136,7 +136,7 @@ __epkg_remove_environment() {
 	echo "Environment $env has been removed."
 }
 
-list_environments() {
+__epkg_list_environments() {
 	local all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
 	local registered_envs=$(ls -t $EPKG_CONFIG_DIR/registered-envs/)
 	

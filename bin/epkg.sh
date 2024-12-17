@@ -129,7 +129,7 @@ case "$cmd" in
 		shift
 		case $subcmd in
 			"list")
-				list_environments
+				__epkg_list_environments
 				;;
 			"create")
 				__epkg_create_environment "$@"
