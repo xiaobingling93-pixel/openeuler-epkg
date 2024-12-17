@@ -31,7 +31,7 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
         // hasher add file_type & other param
         let absolute_path = dir.join(entry);
         let (entry_content, entry_type) = get_entry_hash_param(&absolute_path);
-        hasher.update(&entry_type);
+        hasher.update(entry_type.as_bytes());
         hasher.update(&entry_content);
     }
 
@@ -41,17 +41,16 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
     base32_result.to_lowercase()
 }
 
-fn get_entry_hash_param(entry: &Path) -> (Vec<u8>, Vec<u8>) {
+fn get_entry_hash_param(entry: &Path) -> (Vec<u8>, String) {
     match fs::symlink_metadata(entry) {
         Ok(metadata) => match metadata.file_type() {
-            ft if ft.is_symlink() => (path_to_bytes(&fs::read_link(entry).unwrap()), vec![1]),
-            ft if ft.is_file() => (fs::read(entry).unwrap(), vec![2]),
-            // metadata.dev() -> u64: high32-major  low32-minor
-            ft if ft.is_block_device() => (metadata.dev().to_ne_bytes().into(), vec![3]),
-            ft if ft.is_char_device() => (metadata.dev().to_ne_bytes().into(), vec![4]),
-            ft if ft.is_dir() => (Vec::new(), vec![5]),
-            ft if ft.is_socket() => (Vec::new(), vec![6]),
-            ft if ft.is_fifo() => (Vec::new(), vec![7]),
+            ft if ft.is_symlink() => (path_to_bytes(&fs::read_link(entry).unwrap()), "S_IFLNK".to_string()),
+            ft if ft.is_file() => (fs::read(entry).unwrap(), "S_IFREG".to_string()),
+            ft if ft.is_block_device() => (metadata.dev().to_ne_bytes().into(), "S_IFBLK".to_string()), // metadata.dev() -> u64
+            ft if ft.is_char_device() => (metadata.dev().to_ne_bytes().into(), "S_IFCHR".to_string()),  // high32-major  low32-minor
+            ft if ft.is_dir() => (Vec::new(), "S_IFDIR".to_string()),
+            ft if ft.is_socket() => (Vec::new(), "S_IFSOCK".to_string()),
+            ft if ft.is_fifo() => (Vec::new(), "S_IFIFO".to_string()),
             _ => panic!("Encountered an unknown file type at: {}", entry.display()),
         },
         Err(e) => panic!("Failed to get metadata for {}: {}", entry.display(), e),
