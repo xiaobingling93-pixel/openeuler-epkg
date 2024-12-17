@@ -137,13 +137,29 @@ __epkg_remove_environment() {
 }
 
 list_environments() {
-	# List all environments
-	echo "Available environments(sort by time):"
-	all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
-	echo "Environment          Status"
-	echo "---------------------"
-	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_ACTIVE_ENV'" ? "Y" : "")}' | column -t
-	# echo "You are in [$EPKG_ACTIVE_ENV] now"
+	local all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
+	local registered_envs=$(ls -t $EPKG_CONFIG_DIR/registered-envs/)
+	
+	printf "%-15s  %20s\n" "Environment" "Status"
+	printf "%35s\n" | tr ' ' '-'
+	# Use awk to format and add the registered or activated status
+	echo "$all_envs" | awk -v active="$EPKG_ACTIVE_ENV"  -v registered="$registered_envs" '
+	BEGIN {
+        split(registered, reg_array, "\n")
+        for (i in reg_array) {
+            reg[reg_array[i]] = 1
+        }
+    }
+	{
+		status = ""
+		if ($1 in reg) {
+			status = (status ? status "|" : "") "registered"
+		}
+		if ($1 == active) {
+			status = (status ? status "|" : "") "activated"
+		} 
+		printf "%-15s  %20s\n", $1, status
+	}'
 }
 
 # setup env variable
