@@ -191,7 +191,7 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 ### 创建环境
 功能描述：
 
-    创建新环境（创建成功后，默认激活新环境，即切换进新环境；但是不全局使能）
+    创建新环境（创建成功后，默认激活新环境，即切换进新环境；但是不全局注册）
 
 命令：
 
@@ -234,10 +234,10 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     Environment 'w1' deactivated.
 
 
-### 使能环境
+### 注册环境
 功能描述：
 
-    使能指定环境，持久化刷新PATH，包含epkg所有已使能环境，并将指定环境设为第一优先级
+    注册指定环境，持久化刷新PATH，包含epkg所有已注册环境，并将指定环境设为第一优先级
 
 命令：
 
@@ -249,10 +249,10 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     EPKG_ACTIVE_ENV: 
     Environment 'lkp' has been registered to PATH.
 
-### 取消使能环境
+### 取消注册环境
 功能描述：
 
-    去使能指定环境，持久化刷新PATH，包含除指定环境外的epkg所有已使能环境
+    去注册指定环境，持久化刷新PATH，包含除指定环境外的epkg所有已注册环境
 
 命令：
 
