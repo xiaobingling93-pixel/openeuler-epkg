@@ -152,12 +152,12 @@ __epkg_list_environments() {
     }
 	{
 		status = ""
-		if ($1 in reg) {
-			status = (status ? status "|" : "") "registered"
-		}
 		if ($1 == active) {
 			status = (status ? status "|" : "") "activated"
 		} 
+		if ($1 in reg) {
+			status = (status ? status "|" : "") "registered"
+		}
 		printf "%-15s  %20s\n", $1, status
 	}'
 }
