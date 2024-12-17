@@ -1,9 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use sha2::{Sha256, Digest};
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::MetadataExt;
 use base32;
 use base32::Alphabet;
 use walkdir::WalkDir;
+use sha2::{Sha256, Digest};
 
 fn main() {
     let epkg_path = std::env::args().nth(1).expect("Please provide a path as an argument");
@@ -21,15 +23,15 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path().strip_prefix(dir).unwrap_or(entry.path()).to_path_buf())
         .collect();
-
-    // 按照字典顺序排序
     relative_entries.sort();
 
     for entry in &relative_entries {
+        // hasher add path
+        hasher.update(path_to_bytes(entry));
+        // hasher add file_type & other param
         let absolute_path = dir.join(entry);
-        // println!("Processing entry: {}", absolute_path.display());  // 打印当前条目路径
-        let (entry_path, entry_content) = get_entry_content(&absolute_path, dir);
-        hasher.update(&entry_path);
+        let (entry_type, entry_content) = get_entry_hash_param(&absolute_path);
+        hasher.update(&entry_type);
         hasher.update(&entry_content);
     }
 
@@ -39,35 +41,24 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
     base32_result.to_lowercase()
 }
 
-fn get_entry_content(entry: &Path, base_dir: &Path,) -> (Vec<u8>, Vec<u8>) {
+fn get_entry_hash_param(entry: &Path) -> (Vec<u8>, Vec<u8>) {
     match fs::symlink_metadata(entry) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                let target_path = fs::read_link(entry).unwrap_or_else(|_| entry.to_path_buf());
-                let relative_target = target_path.strip_prefix(base_dir).unwrap_or(&target_path);
-
-                // 获取链接的内容
-                let target_content = path_to_bytes(relative_target);
-
-                // 将符号链接的相对路径和内容都加入到哈希计算中
-                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), target_content)
-            } else if metadata.is_file() {
-                let content = fs::read(entry).unwrap_or_else(|_| Vec::new());
-                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), content)
-            } else if metadata.is_dir() {
-                // 对于目录，仅返回路径，不包括内容
-                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), Vec::new())
-            } else {
-                // 如果是其他类型的条目（例如socket, device等），我们只返回路径
-                (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), Vec::new())
-            }
-        }
-        Err(_) => (path_to_bytes(entry.strip_prefix(base_dir).unwrap_or(entry)), Vec::new()),
+        Ok(metadata) => match metadata.file_type() {
+            ft if ft.is_symlink() => (path_to_bytes(&fs::read_link(entry).unwrap()), vec![1]),
+            ft if ft.is_file() => (fs::read(entry).unwrap(), vec![2]),
+            ft if ft.is_block_device() => (metadata.dev().to_ne_bytes().into(), vec![3]),
+            ft if ft.is_char_device() => (metadata.dev().to_ne_bytes().into(), vec![4]),
+            ft if ft.is_dir() => (Vec::new(), vec![5]),
+            ft if ft.is_socket() => (Vec::new(), vec![6]),
+            ft if ft.is_fifo() => (Vec::new(), vec![7]),
+            _ => panic!("Encountered an unknown file type"),
+        },
+        Err(_) => panic!("File Metadata error"),
     }
 }
 
 fn path_to_bytes(path: &Path) -> Vec<u8> {
-    path.as_os_str().to_string_lossy().as_bytes().to_vec()
+    path.to_string_lossy().as_bytes().to_vec()
 }
 
 fn xor_compress_to_20_bytes(hash: &[u8]) -> Vec<u8> {
