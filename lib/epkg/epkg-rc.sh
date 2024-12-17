@@ -83,8 +83,12 @@ epkg() {
 	else
 		local epkg_common_profile=$HOME/.epkg/envs/common/profile-current
 	fi
-
 	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
+
+	# issue: IB8I93
+	if [[ -n "$EPKG_ACTIVE_ENV" && ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]]; then
+		unset EPKG_ACTIVE_ENV
+	fi
 
 	case "$cmd" in
 		env)
