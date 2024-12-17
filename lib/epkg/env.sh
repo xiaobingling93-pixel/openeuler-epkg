@@ -27,34 +27,27 @@ __epkg_register_environment() {
 	local env=$1
 
 	if [[ "$env" == "common" ]]; then
-		echo "Environment $env cannot be registered!"
-		return
+		echo "Environment $env cannot be registered."
+		return 1
 	fi
+	_check_env_existed $env || return 1
+	_check_env_registered $env && return 1
 
-	_check_env_registered $env
-	if [ $? -eq 0 ]; then
-		echo "Environment $env already registered!"
-		return
-	fi
-
-	if [ -d "$EPKG_ENVS_ROOT/$env" ]; then
-		ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
-	fi
-
+	ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
 	echo "Environment '$env' has been registered to PATH."
 }
 
 __epkg_unregister_environment() {
 	local env=$1
 
-	_check_env_registered $env
-	if [ $? -eq 1 ]; then
-		echo "Environment $env already unregistered!"
-		return
+	if [[ "$env" == "common" ]]; then
+		echo "Environment $env cannot be registered."
+		return 1
 	fi
+	_check_env_existed $env || return 1
+	_check_env_registered $env || return 1
 
 	rm -f "$EPKG_CONFIG_DIR/registered-envs/$env"
-
 	echo "Environment '$env' has been unregistered from PATH."
 }
 
@@ -70,19 +63,22 @@ __epkg_deactivate_environment() {
 }
 
 _check_env_existed() {
-	local env=$1
-	all_envs=$(ls -lt $EPKG_ENVS_ROOT | grep '^d' | awk '{print $9}')
-	if echo "$all_envs" | grep -q -F -- "$env"; then
+	local check_env=$1
+	if [ -d "$EPKG_ENVS_ROOT/${check_env}" ];then
+		echo "Environment ${check_env} exist."
 		return 0
 	fi
+	echo "Environment ${check_env} not exist."
 	return 1
 }
 
 _check_env_registered() {
-	local env=$1
-	if [ -L "$EPKG_CONFIG_DIR/registered-envs/$env" ]; then
+	local check_env=$1
+	if [ -L "$EPKG_CONFIG_DIR/registered-envs/${check_env}" ]; then
+		echo "Environment ${check_env} had been registered."
 		return 0
 	fi
+	echo "Environment ${check_env} not registered."
 	return 1
 }
 
@@ -138,11 +134,7 @@ remove_environment() {
 	local env=$1
 	local curr_env_root=
 	__get_curr_env_root $env
-	_check_env_existed $env
-	if [ $? -eq 1 ]; then
-		echo "$env no existed!"
-		return
-	fi
+	_check_env_existed $env || return 1
 	
 	mv "$curr_env_root/$env" "$curr_env_root/.$env"
 	echo "$env remove success!"
