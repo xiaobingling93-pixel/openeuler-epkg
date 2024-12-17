@@ -13,22 +13,24 @@ __epkg_append_path() {
 	fi
 
 	# Get epkg app-bin path
-	local curr_envs=()
+	declare -A curr_envs
 	local epkg_appbin_path=
 	local epkg_enabled_envs_dir=$HOME/.epkg/config/enabled-envs
 	# Current shell activate env
-	if [[ -n $EPKG_ACTIVE_ENV && "$EPKG_ACTIVE_ENV" != "main" ]]; then
-		curr_envs+=($EPKG_ACTIVE_ENV)
+	if [[ "$pure_flag" == "true" ]]; then
+		curr_envs["$EPKG_ACTIVE_ENV"]=1
 	else
-		# Enabled envs (init main & common) 
+		# Activate env
+		[ -n "$EPKG_ACTIVE_ENV" ] && curr_envs["$EPKG_ACTIVE_ENV"]=1
+		# Enabled envs
 		if [[ -d $epkg_enabled_envs_dir && -n "$(ls -A $epkg_enabled_envs_dir)" ]]; then
 			for file in "$epkg_enabled_envs_dir"/*; do
-				curr_envs+=(${file##*/})
+				curr_envs["${file##*/}"]=1
 			done
 		fi
 	fi
 	# Create path
-	for env in "${curr_envs[@]}";do
+	for env in "${!curr_envs[@]}";do
 		epkg_appbin_path+=$(__epkg_add_path $env)
 	done
 
@@ -84,12 +86,6 @@ epkg() {
 
 	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
 
-	if [ -z $EPKG_ACTIVE_ENV ]; then
-		export EPKG_ACTIVE_ENV=main
-	elif [ ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]; then
-		export EPKG_ACTIVE_ENV=main
-	fi
-
 	case "$cmd" in
 		env)
 			local sub_cmd=$2
@@ -120,10 +116,16 @@ epkg() {
 						echo "$env not exist!"
 						return
 					fi
+					# --pure
+					local activate_cmd=$4
+					if [[ "$activate_cmd" == "--pure" ]]; then
+						local pure_flag=true
+					fi
 					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
+					unset pure_flag
 					return
 					;;
 				deactivate)
