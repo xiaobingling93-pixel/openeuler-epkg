@@ -132,10 +132,10 @@ case "$cmd" in
 				list_environments
 				;;
 			"create")
-				create_environment "$@"
+				__epkg_create_environment "$@"
 				;;
 			"remove")
-				remove_environment "$@"
+				__epkg_remove_environment "$@"
 				;;
 			"register")
 				__epkg_register_environment "$@"

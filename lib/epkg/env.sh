@@ -23,6 +23,26 @@ __get_curr_env_root() {
 	fi
 }
 
+_check_env_existed() {
+	local check_env=$1
+	if [ -d "$EPKG_ENVS_ROOT/${check_env}" ];then
+		echo "Environment ${check_env} exist."
+		return 0
+	fi
+	echo "Environment ${check_env} not exist."
+	return 1
+}
+
+_check_env_registered() {
+	local check_env=$1
+	if [ -L "$EPKG_CONFIG_DIR/registered-envs/${check_env}" ]; then
+		echo "Environment ${check_env} had been registered."
+		return 0
+	fi
+	echo "Environment ${check_env} not registered."
+	return 1
+}
+
 __epkg_register_environment() {
 	local env=$1
 
@@ -62,37 +82,7 @@ __epkg_deactivate_environment() {
 	export EPKG_ACTIVE_ENV=main
 }
 
-_check_env_existed() {
-	local check_env=$1
-	if [ -d "$EPKG_ENVS_ROOT/${check_env}" ];then
-		echo "Environment ${check_env} exist."
-		return 0
-	fi
-	echo "Environment ${check_env} not exist."
-	return 1
-}
-
-_check_env_registered() {
-	local check_env=$1
-	if [ -L "$EPKG_CONFIG_DIR/registered-envs/${check_env}" ]; then
-		echo "Environment ${check_env} had been registered."
-		return 0
-	fi
-	echo "Environment ${check_env} not registered."
-	return 1
-}
-
-list_environments() {
-	# List all environments
-	echo "Available environments(sort by time):"
-	all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
-	echo "Environment          Status"
-	echo "---------------------"
-	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_ACTIVE_ENV'" ? "Y" : "")}' | column -t
-	# echo "You are in [$EPKG_ACTIVE_ENV] now"
-}
-
-create_environment() {
+__epkg_create_environment() {
 	local env=$1
 	local subcmd=$2
 	local repo_path=$3
@@ -130,7 +120,7 @@ create_environment() {
 	echo "Environment '$env' has been created."
 }
 
-remove_environment() {
+__epkg_remove_environment() {
 	local env=$1
 	local curr_env_root=
 	__get_curr_env_root $env
@@ -144,6 +134,16 @@ remove_environment() {
 
 	mv "$curr_env_root/$env" "$curr_env_root/.$env"
 	echo "Environment $env has been removed."
+}
+
+list_environments() {
+	# List all environments
+	echo "Available environments(sort by time):"
+	all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
+	echo "Environment          Status"
+	echo "---------------------"
+	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_ACTIVE_ENV'" ? "Y" : "")}' | column -t
+	# echo "You are in [$EPKG_ACTIVE_ENV] now"
 }
 
 # setup env variable

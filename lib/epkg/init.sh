@@ -19,7 +19,7 @@ __epkg_init() {
 	mkdir -p $EPKG_CHANNEL_CACHE_DIR
 	mkdir -p $EPKG_CONFIG_DIR/registered-envs
 
-	create_environment main     # main user environment
+	__epkg_create_environment main     # main user environment
 	__epkg_register_environment main
 	echo "Warning: For changes to take effect, close and re-open your current shell."
 }
