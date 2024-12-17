@@ -68,8 +68,6 @@ query_package_requires() {
 	do
 		count=$((count + 1))
 		if ((count % 3 == 0)); then
-		# TODO Fix: 
-		# TODO Fix: Try 'basename --help' for more information.
 			local pkg_name=$($ROOTFS_LINK/bin/basename $ite .epkg)
 			if [[ "$require_packages" ==  *"$pkg_name"* ]];then
 				continue
