@@ -14,10 +14,6 @@
 wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-installer.sh
 sh epkg-installer.sh
 
-# 卸载epkg
-wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-uninstaller.sh
-sh epkg-uninstaller.sh
-
 # 初始化epkg
 epkg init
 bash // 重新执行.bashrc, 获得新的PATH
