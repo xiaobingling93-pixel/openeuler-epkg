@@ -51,9 +51,8 @@ __epkg_register_environment() {
 		return 1
 	fi
 	__check_env_existed $env || return 1
-	__check_env_registered $env && return 1
 
-	ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
+	ln -sfT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
 	echo "Environment '$env' has been registered."
 }
 

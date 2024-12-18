@@ -13,24 +13,32 @@ __epkg_append_path() {
 	fi
 
 	# Get epkg app-bin path
-	declare -A curr_envs
+	local curr_envs=()
 	local epkg_appbin_path=
 	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
 	# Current shell activate env
 	if [[ "$pure_flag" == "true" ]]; then
-		curr_envs["$EPKG_ACTIVE_ENV"]=1
+		curr_envs+=($EPKG_ACTIVE_ENV)
 	else
+		declare -A seen_envs
 		# Activate env
-		[ -n "$EPKG_ACTIVE_ENV" ] && curr_envs["$EPKG_ACTIVE_ENV"]=1
+		if [ -n "$EPKG_ACTIVE_ENV" ]; then
+			curr_envs+=($EPKG_ACTIVE_ENV)
+        	seen_envs[$env_name]=1
+		fi
 		# Registered envs
 		if [[ -d $epkg_registered_envs_dir && -n "$(ls -A $epkg_registered_envs_dir)" ]]; then
-			for file in "$epkg_registered_envs_dir"/*; do
-				curr_envs["${file##*/}"]=1
-			done
+			while IFS= read -r file; do
+				env_name=${file##*/}
+				if [[ ! ${seen_envs[$env_name]} ]]; then
+					curr_envs+=("$env_name")
+					seen_envs[$env_name]=1  
+				fi
+			done < <(ls -lt "$epkg_registered_envs_dir" | grep '^l' |  awk '{print $9}')
 		fi
 	fi
 	# Create path
-	for env in "${!curr_envs[@]}";do
+	for env in "${curr_envs[@]}";do
 		epkg_appbin_path+=$(__epkg_add_path $env)
 	done
 
@@ -98,7 +106,7 @@ epkg() {
 				create)
 					$epkg_sh "$@" || return
 					# update PATH
-					echo "Environment '$env' has been activated."
+					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
 					return
@@ -126,7 +134,7 @@ epkg() {
 						local pure_flag=true
 					fi
 					# update PATH
-					echo "Environment '$env' has been activated."
+					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
 					unset pure_flag
@@ -134,7 +142,7 @@ epkg() {
 					;;
 				deactivate)
 					# update PATH
-					echo "Environment '$EPKG_ACTIVE_ENV' has been deactivated."
+					echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
 					unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
