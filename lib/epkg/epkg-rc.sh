@@ -17,14 +17,14 @@ __epkg_append_path() {
 	local epkg_appbin_path=
 	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
 	# Current shell activate env
-	if [[ "$pure_flag" == "true" ]]; then
+	if [ -n "$opt_pure" ]; then
 		curr_envs+=($EPKG_ACTIVE_ENV)
 	else
 		declare -A seen_envs
 		# Activate env
 		if [ -n "$EPKG_ACTIVE_ENV" ]; then
 			curr_envs+=($EPKG_ACTIVE_ENV)
-        	seen_envs[$env_name]=1
+        	seen_envs[$EPKG_ACTIVE_ENV]=1
 		fi
 		# Registered envs
 		if [[ -d $epkg_registered_envs_dir && -n "$(ls -A $epkg_registered_envs_dir)" ]]; then
@@ -129,15 +129,11 @@ epkg() {
 						return
 					fi
 					# --pure
-					local activate_cmd=$4
-					if [[ "$activate_cmd" == "--pure" ]]; then
-						local pure_flag=true
-					fi
+					local opt_pure=$4
 					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
-					unset pure_flag
 					return
 					;;
 				deactivate)
