@@ -16,8 +16,9 @@ __epkg_append_path() {
 	local curr_envs=()
 	local epkg_appbin_path=
 	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
-	# Current shell activate env
+	# Add eppkg path check
 	if [ -n "$opt_pure" ]; then
+		# Activate env --pure
 		curr_envs+=($EPKG_ACTIVE_ENV)
 	else
 		declare -A seen_envs
