@@ -20,6 +20,11 @@ json_data=""
 full_rpm_names=()
 has_unknown_requires=0
 epkg_hash_exec=$4
+if [ -z "$CONVERT_ARCH" ]; then
+    CONVERT_ARCH=$(arch)
+fi
+
+
 
 query_rpm_names() {
     local input_item=$rpm_package
@@ -42,7 +47,7 @@ cp_input_rpm () {
 }
 
 get_package_depends() {
-    for depend_package in $(dnf repoquery --requires --resolve $rpm_package --forcearch aarch64 2>/dev/null); do
+    for depend_package in $(dnf repoquery --requires --resolve $rpm_package --forcearch $CONVERT_ARCH 2>/dev/null); do
         IFS=':' read -r depend_rpm_name_epoch depend_version_release_dist_arch <<< $depend_package
         depend_rpm_name=${depend_rpm_name_epoch%-*}
         depend_file_name="$depend_rpm_name-$depend_version_release_dist_arch.rpm"
