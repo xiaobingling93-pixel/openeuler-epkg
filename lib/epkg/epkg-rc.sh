@@ -93,7 +93,7 @@ epkg() {
 	fi
 	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
 
-	# issue: IB8I93
+	# issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
 	if [[ -n "$EPKG_ACTIVE_ENV" && ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]]; then
 		unset EPKG_ACTIVE_ENV
 	fi
