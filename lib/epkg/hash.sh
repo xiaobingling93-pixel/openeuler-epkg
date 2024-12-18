@@ -28,10 +28,16 @@ rpm_hash()
     
     local rpm_file=$1
     local epkg_hash_exec=$2
-
+    local file_name=$(basename "$rpm_file")
+    touch "$HOME/file_hash"
     # Check if the hash for this rpm_file is already calculated
-    if [[ -n "${rpm_hash_cache[$rpm_file]}" ]]; then
-        echo "${rpm_hash_cache[$rpm_file]}"
+    # if [[ -n "${rpm_hash_cache[$rpm_file]}" ]]; then
+    #     echo "${rpm_hash_cache[$rpm_file]}"
+    #     return
+    # fi
+    if grep -q "^$file_name:" "$HOME/file_hash"; then
+        hash=$(grep "^$file_name:" "$HOME/file_hash" | cut -d: -f2-)
+        echo "$hash"
         return
     fi
 
@@ -45,7 +51,8 @@ rpm_hash()
     # Remove temporary CPIO file
     rm -rf "$temp_cpio"
     # Store the result in the cache
-    rpm_hash_cache[$rpm_file]=$hash
+    
+    echo "$file_name:$hash" >> $HOME/file_hash
 
     echo "$hash"
 }
