@@ -34,170 +34,34 @@ query_rpm_names() {
     IFS=$'\n' read -r -d '' -a full_rpm_names <<< "$rpm_names"
 }
 
-query_require_hash() {
-    local pkg_name=$1
-    local search_dir=$2
-    find "$search_dir" -maxdepth 1 -mindepth 1 -type d -name "*$pkg_name*"| while read -r dir; do
-        # ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db-fftw-libs-3.3.8-11.oe2203sp3
-        dir_name=$(basename "$dir")
-        hash=${dir_name%%-*}
-        dir_name=${dir_name%.*}
-        dir_name=${dir_name%-*}
-        dir_name=${dir_name%-*}
-        epkg_name=${dir_name#*-}
-        if [[ $epkg_name == "$pkg_name" ]]; then
-            echo "$hash"
-            return
-        fi
-    done
-    echo ""
-}
-
-query_rpm_name() {
-    local input_item=$1
-    if [[ "/bin/sh" == $input_item ]];then
-        input_item="bash"
-    fi
-
-    # 查询input_item对应的rpm包名信息，形如：audit-devel-1:3.0.1-1.1.oe2203sp3.aarch64，需要依次解析各个字段
-    local full_rpm_name=$(dnf repoquery --whatprovides "$input_item" --forcearch $package_arch 2>/dev/null)
-    IFS=':' read -r rpm_name_epoch version_release_dist_arch <<< $full_rpm_name
-    rpm_name=${rpm_name_epoch%-*}
-    epoch=${rpm_name_epoch##*-}
-    version=${version_release_dist_arch%-*}
-    release_dist_arch=${version_release_dist_arch##*-}
-    arch=${release_dist_arch##*.}
-    release_dist=${release_dist_arch%.*}
-    dist=${release_dist##*.}
-    release=${release_dist%.*}
-    file_name="$rpm_name-$version_release_dist_arch.rpm"
-    echo "$rpm_name $file_name $epoch $version $release $dist $arch"
-}
-
-query_requirements() {
-    local package=$1
-    dnf repoquery --requires "$package" --forcearch $package_arch > "$requires_file" 2>/dev/null
-    echo "==============Requirements:"
-    cat $requires_file
-}
-
-query_provides () {
-    local package_file_name=$1
-    local package=$2
-    if [[ ! -f "$package_file_name" ]]; then
-        dnf repoquery --provides "$package" --forcearch $package_arch > "$provides_file" 2>/dev/null
-    else
-        rpm -qp --provides $store_rpms/$package_file_name > $provides_file
-    fi
-    # rpm -ql $store_rpms/$package_file_name >> $provides_file
-    echo "===============Provides:"
-    cat $provides_file
-}
- 
 cp_input_rpm () {
     # local package=$1
     # dnf download --destdir=$store_rpms $package 2>/dev/null
     cp $rpm_package "$store_rpms"
+    echo "$rpm_package $store_rpms"
 }
 
-classify_requirements () {
-    while read -r requirement; do
-        if [[ "$requirement" =~ \.so ]]; then
-            so_requirements["$requirement"]=1
-	        echo "catch so requirement: $requirement"
-        elif [[ "$requirement" =~ / ]]; then
-            file_requirements["$requirement"]=1
-	        echo "catch file requirement: $requirement"
-        else
-            bin_requirements["$requirement"]=1
-	        echo "catch binary requirement: $requirement"
+get_package_depends() {
+    for depend_package in $(dnf repoquery --requires --resolve $rpm_package --forcearch aarch64 2>/dev/null); do
+        IFS=':' read -r depend_rpm_name_epoch depend_version_release_dist_arch <<< $depend_package
+        depend_rpm_name=${depend_rpm_name_epoch%-*}
+        depend_file_name="$depend_rpm_name-$depend_version_release_dist_arch.rpm"
+
+        if grep -q "^$depend_file_name:" "$HOME/file_hash"; then
+            hash=$(grep "^$depend_file_name:" "$HOME/file_hash" | cut -d: -f2-)
+            requirement_rpm_info[$hash]+="$depend_rpm_name|;"
+            continue
         fi
-    done < "$requires_file"
-}
 
-update_requirement_checksum () {
-    local requirement=$1
-    local type=$2
-    local requirement_array
-    local sha256=""
-    local valid_check_sum="no"
-    # case1：(docker-runc or runc)
-    if [[  "$requirement" == *" or "* ]];then
-        echo "----------Requirement contains or: $requirement"
-        cleaned="${requirement/(/}"
-        cleaned="${cleaned%\)*}"
-        IFS=' ' read -r -a requirement_array <<< "$cleaned"
-    # case2：(npm(async) >= 1.5.0 with npm(async) < 2)
-    elif [[  "$requirement" == *" with "* ]];then
-        cleaned="${requirement/(/}"
-        cleaned="${cleaned%\)*}"
-        split_strings=$(echo "$cleaned" | awk -F ' with ' '{print $1 ";" $2}')
-        IFS=';' read -r -a requirement_array <<< "$split_strings"
-    # case3: (tpm2-abrmd-selinux >= 2.3.3-2 if selinux-policy)
-    elif [[  "$requirement" == *" if "* ]];then
-        echo "----------Requirement contains if: $requirement, return"
-        return
-    else
-        requirement_array=("$requirement")
-    fi
-    
-    for element in "${requirement_array[@]}"; do
-        if [[ $element != "or" ]];then
-            result=$(query_rpm_name "$element")
-            echo "query rpm info for $element: $result"
-            IFS=' ' read -r rpm_name file_name epoch version release dist arch<<< $result
-            if [ -n "$file_name" ];then
-                sha256=$(query_require_hash $rpm_name $output_parent_dir)
-                if [[ -n "$sha256" ]];then
-                    echo "----------hash from existed package.json"
-                    valid_check_sum="yes"
-                else
-                    dnf download --dest=$store_rpms $rpm_name-$version-$release.$dist --forcearch $package_arch 2>/dev/null
-                    if [[ ! -f "$store_rpms/$file_name" ]]; then
-                        echo "-----------Warning: no rpm found for $rpm_name"
-                        continue
-                    fi
-                    # sha256=$(sha256sum $store_rpms/$file_name | awk '{print $1}')
-                    sha256=$(rpm_hash "${store_rpms}/${file_name}" $epkg_hash_exec)
-                    valid_check_sum="yes"
-                fi
-                echo "$rpm_name: $sha256"
-                requirement_rpm_info[$sha256]+="$rpm_name|$type|$element;"
-                return
-            fi
-        fi
-    done
-    if [[ $valid_check_sum == "no" ]];then
-        requirement_rpm_info["unknown"]+="unknown|$type|$requirement;"
-        has_unknown_requires=1
-    fi    
-}
-
-init_rpm_provides_info_info () {
-    while read -r provide; do
-        if [[ "$provide" =~ \.so ]]; then
-            rpm_provides_info["$provide"]="soname"
-        elif [[ "$provide" =~ / ]]; then
-            rpm_provides_info["$provide"]="file"
-        else
-            rpm_provides_info["$provide"]="binary"
-        fi
-    done < "$provides_file"
-}
-
-init_requirement_rpm_info () {
-    requirement_rpm_info["unknown"]=""
-    for requirement in "${!file_requirements[@]}"; do
-        update_requirement_checksum "$requirement" file
-    done
-    for requirement in "${!so_requirements[@]}"; do
-        update_requirement_checksum "$requirement" soname
-    done
-    for requirement in "${!bin_requirements[@]}"; do
-        update_requirement_checksum "$requirement" binary
+        dnf download --destdir=$store_rpms $depend_package 2>/dev/null
+        # package_file_name="$package-$depend_version_release_dist_arch.rpm"
+        package_hash=$(rpm_hash "${store_rpms}/${depend_file_name}" $epkg_hash_exec)
+        echo "Downloaded $depend_package and calculated hash: $package_hash"
+        requirement_rpm_info[$package_hash]+="$depend_rpm_name|;"
     done
 }
-
+# /srv/os-repo/fedora/releases/40/Server/aarch64/os/Packages/h/hunspell-1.7.2-7.fc40.aarch64.rpm
+# dnf repoquery --requires --resolve /srv/os-repo/fedora/releases/40/Server/x86_64/os/Packages/h/hunspell-es-BO-2.8-3.fc40.noarch.rpm  --forcearch x86_64 2>/dev/null
 convert_requiremennts_to_json () {
     local package_hash="$1"
     local data="$2"
@@ -209,49 +73,12 @@ convert_requiremennts_to_json () {
         --arg package_hash "$package_hash" \
         --arg pkgname "$pkgname" \
         '{
-            requires: [
+            depends: [
                 {
                     hash: $package_hash,
                     pkgname: $pkgname,
                 }
             ]
-        }'
-    )
-    json_data=$json
-}
-
-convert_provides_to_json () {
-    local files=()
-    local sonames=()
-    local binaries=()
-
-    for provide in "${!rpm_provides_info[@]}"; do
-        type=${rpm_provides_info[$provide]}
-        echo "convert_provides_to_json provide: $provide; type: $type"
-        case "$type" in
-            "file")
-                files+=("${provide}")
-                ;;
-            "soname")
-                sonames+=("${provide}")
-                ;;
-            "binary")
-                binaries+=("${provide}")
-                ;;
-        esac
-    done
-
-    # 创建 JSON 对象
-    local json=$(jq -n \
-        --argjson files "$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)" \
-        --argjson sonames "$(printf '%s\n' "${sonames[@]}" | jq -R . | jq -s .)" \
-        --argjson binaries "$(printf '%s\n' "${binaries[@]}" | jq -R . | jq -s .)" \
-        '{
-            provides: {
-                    files: $files,
-                    sonames: $sonames,
-                    binaries: $binaries
-            }
         }'
     )
     json_data=$json
@@ -298,28 +125,30 @@ generate_metadata_json () {
     output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '. * $new_obj')
 
     # depends: [{}]
-    if [[ "$has_unknown_requires" -eq 0 ]];then
-        unset requirement_rpm_info["unknown"]
-    fi
+    # if [[ "$has_unknown_requires" -eq 0 ]];then
+    #     unset requirement_rpm_info["unknown"]
+    # fi
+
+    get_package_depends
     for key in "${!requirement_rpm_info[@]}"; do
         # data=${requirement_rpm_info[$key]}
         convert_requiremennts_to_json "$key" "${requirement_rpm_info[$key]}"
-        output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '.depends += $new_obj.requires')
+        output_json=$(echo "$output_json" | jq --argjson new_obj "$json_data" '.depends += $new_obj.depends')
     done
 
     # requires: []
-    requires_json=$(cat "$requires_file" | jq -R . | jq -s .)
+    requires_json=$(rpm -q --requires $rpm_package 2>/dev/null| jq -R . | jq -s .)
     output_json=$(echo "$output_json" | jq --argjson requires "$requires_json" '. + { "requires": $requires }')
 
     # provides: []
-    provides_json=$(printf '%s\n' "${!rpm_provides_info[@]}" | jq -R . | jq -s 'map(select(length > 0))')
+    provides_json=$(rpm -q --provides $rpm_package 2>/dev/null| jq -R . | jq -s 'map(select(length > 0))')
     output_json=$(echo "$output_json"  | jq --argjson provides "$provides_json" '. + { "provides": $provides }')
 
     # other rpm info
-    recommends=$(rpm -q --recommends $rpm_package)
-    suggests=$(rpm -q --suggests $rpm_package)
-    supplements=$(rpm -q --supplements $rpm_package)
-    enhances=$(rpm -q --enhances $rpm_package)
+    recommends=$(rpm -q --recommends $rpm_package 2>/dev/null)
+    suggests=$(rpm -q --suggests $rpm_package 2>/dev/null)
+    supplements=$(rpm -q --supplements $rpm_package 2>/dev/null)
+    enhances=$(rpm -q --enhances $rpm_package 2>/dev/null)
     if [ -n "$recommends" ];then
         recommends_json=$(echo "$recommends" | jq -R . | jq -s .)
         output_json=$(echo "$output_json" | jq --argjson recommends "$recommends_json" '. + { "recommends": $recommends }')
@@ -416,18 +245,18 @@ process_all_rpms() {
         fi
 
         # step 3 query original requires and provides info of rpm
-        query_requirements $package
-        query_provides $package_file_name $package
+        # query_requirements $package
+        # query_provides $package_file_name $package
         echo "========Query original requires and provides info Done========"
 
         # step 3 
-        classify_requirements
-        echo "========Classify original requires info Done========"
+        # classify_requirements
+        # echo "========Classify original requires info Done========"
 
         # step 4
-        init_requirement_rpm_info
-        init_rpm_provides_info_info
-        echo "========Turn original requires and provides info to array Done========"
+        # init_requirement_rpm_info
+        # init_rpm_provides_info_info
+        # echo "========Turn original requires and provides info to array Done========"
 
         # step 5
         package_elements="$package $package_hash $package_epoch $package_version $package_release $package_dist $package_arch"

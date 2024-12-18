@@ -4,6 +4,6 @@
 
 . $CCI_SRC/container/defconfig.sh
 
-docker_skip_rebuild "convert-ekpkg"
+docker_skip_rebuild "convert-epkg"
 
 docker build -t convert-epkg .

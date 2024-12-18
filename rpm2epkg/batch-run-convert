@@ -3,18 +3,20 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 repo_list_file_name=$1
+CONVERT_ARCH=$2
 
 cmd=(
   docker run
   --name=convert-epkg-${repo_list_file_name}
   --user root
   --rm
+  -e CONVERT_ARCH=$CONVERT_ARCH
   -v /etc/localtime:/etc/localtime:ro
   -v /srv/os-repo:/srv/os-repo
   -v /srv/log:/srv/log
   -v $HOME/epkg_manager/:/root/epkg_manager
   convert-epkg:latest
-  /root/epkg_manager/rpm2epkg/batch-conbert-rpm2epkg /root/epkg_manager/rpm2epkg/rpm2epkg-repos-list/${repo_list_file_name}
+  /root/epkg/rpm2epkg/batch-conbert-rpm2epkg /root/epkg/rpm2epkg/rpm2epkg-repos-list/${repo_list_file_name}
 )
 
 "${cmd[@]}"

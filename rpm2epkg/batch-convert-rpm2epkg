@@ -27,6 +27,33 @@ init_hash() {
 	chmod 755 $epkg_hash_exec
 }
 
+init_repo() {
+	# disable current repo
+	for repo in /etc/yum.repos.d/*.repo
+	do
+		mv $repo ${repo}.bak
+	done
+	# enable repos_list_file
+
+	yum_repo_file=/etc/yum.repos.d/rpm2epkg.repo
+	rm -rf ${yum_repo_file} && touch ${yum_repo_file}
+	i=1
+	while read rpm_repo_path result_repo_path
+	do
+		[[ -z ${rpm_repo_path} ]] && continue
+		cat >> ${yum_repo_file} <<-EOF
+		[image_ebs_$i]
+		name=image_ebs_$i
+		baseurl=file://${rpm_repo_path}
+		enabled=1
+		gpgcheck=0
+		priority=${i}
+
+		EOF
+		let i=i+1
+	done < ${repos_list_file}
+} 
+
 loop_convert_repos()
 {
 	while read rpm_repo_path result_repo_path
@@ -118,5 +145,6 @@ create_epkg_repo()
 }
 
 init_hash
+init_repo
 loop_convert_repos
 wait
