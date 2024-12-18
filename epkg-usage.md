@@ -8,9 +8,11 @@
 下面的实例介绍了安装不同软件包版本的方式
 
 ```bash
-# 通用安装方式
-curl -sSL https://gitee.com/openeuler/epkg/raw/master/epkg-installer.sh
-bash epkg-installer.sh
+# curl 方式安装epkg
+# 安装时可选user/global安装模式，user模式仅当前安装用户可用，global模式全局用户可用
+# 仅root用户可使用global安装模式
+wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-installer.sh
+sh epkg-installer.sh
 
 # 初始化epkg
 epkg init
@@ -44,6 +46,7 @@ epkg env activate t1
 
 ## EPKG包管理器使用说明
 
+```bash
 Usage:
     epkg install PACKAGE 
     epkg install [--env ENV] PACKAGE （开发中...）
@@ -57,19 +60,23 @@ Usage:
     epkg env create|remove ENV
     epkg env activate ENV
     epkg env deactivate ENV
-    epkg env enable|disable ENV
+    epkg env register|unregister ENV
     epkg env history ENV （开发中...）
     epkg env rollback ENV （开发中...）
+```
 
 软件包安装：
+```bash
     epkg env create $env // 创建环境
     epkg install $package // 在环境中安装软件包
-
     epkg env create $env2 --repo $repo // 创建环境2，指定repo
     epkg install $package // 在环境2中安装软件包
+```
 
-软件包构建
-    epkg build ${yaml_path}
+软件包构建：
+```bash
+    epkg build ${yaml_path}/$pkg_name.yaml
+```
 
 ### 安装软件
 功能描述：
@@ -180,7 +187,7 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 ### 创建环境
 功能描述：
 
-    创建新环境（创建成功后，默认激活新环境，即切换进新环境；但是不全局使能）
+    创建新环境（创建成功后，默认激活新环境，即切换进新环境；但是不全局注册）
 
 命令：
 
@@ -206,8 +213,7 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 返回示例：
 
     [small_leek@9d991d463f89 bin]# epkg env activate main
-    YUM --installroot directory structure created successfully in: /root/.epkg/envs/main/profile-1
-    Environment 'main' activated.
+    Environment 'main' activated
 
 ### 取消激活环境
 功能描述：
@@ -224,41 +230,35 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
     Environment 'w1' deactivated.
 
 
-### 使能环境
+### 注册环境
 功能描述：
 
-    使能指定环境，持久化刷新PATH，包含epkg所有已使能环境，并将指定环境设为第一优先级
+    注册指定环境，持久化刷新PATH，包含epkg所有已注册环境，并将指定环境设为第一优先级
 
 命令：
 
-    epkg env enable ${env_name}
+    epkg env register ${env_name}
 
 返回示例：
 
-    [small_leek@5042ae77dd75 bin]# epkg env enable lkp
-    add common to path
-    add main to path
-    add xsl to path
-    add lkp to path
-    Environment 'lkp' added to PATH.
+    [small_leek@5042ae77dd75 bin]# epkg env register lkp
+    EPKG_ACTIVE_ENV: 
+    Environment 'lkp' has been registered to PATH.
 
-### 取消使能环境
+### 取消注册环境
 功能描述：
 
-    去使能指定环境，持久化刷新PATH，包含除指定环境外的epkg所有已使能环境
+    去注册指定环境，持久化刷新PATH，包含除指定环境外的epkg所有已注册环境
 
 命令：
 
-    epkg env disable ${env_name}
+    epkg env unregister ${env_name}
 
 返回示例：
 
-    [small_leek@69393675945d /]# epkg env disable w4
-    Warning: Don't try to disable current env!
-    Warning: you are trying to disable current env!
-    sure to continue? (y: continue, others: exit)
-    y
-    Environment 'w4' removed from PATH.
+    [small_leek@69393675945d /]# epkg env unregister w4
+    EPKG_ACTIVE_ENV: 
+    Environment 'w4' has been unregistered from PATH.
 
 ### 编译epkg软件包
 功能描述：
@@ -267,7 +267,7 @@ start install E4KCO6VAAQV5AJGNPW4HIXDHFXMR4EJV__ncurses-base__6.4__8.oe2409
 
 命令：
 
-    epkg build ${yaml_path}
+    epkg build ${yaml_path}/$pkg_name.yaml
 
 返回示例：
 

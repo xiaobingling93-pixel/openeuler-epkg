@@ -71,7 +71,7 @@ create_build_env() {
 	source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 	echo "buildRequires:${buildRequires[@]}"
 	epkg env create build
-	epkg install ${merged_buildRequires[@]}
+	epkg install ${buildRequires[@]}
 }
 
 run_phase() {

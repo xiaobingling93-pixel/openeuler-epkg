@@ -23,39 +23,51 @@ __get_curr_env_root() {
 	fi
 }
 
-__epkg_enable_environment() {
+__check_env_existed() {
+	local check_env=$1
+	if [ -d "$EPKG_ENVS_ROOT/${check_env}" ];then
+		echo "Environment ${check_env} exist."
+		return 0
+	fi
+	echo "Environment ${check_env} not exist."
+	return 1
+}
+
+__check_env_registered() {
+	local check_env=$1
+	if [ -L "$EPKG_CONFIG_DIR/registered-envs/${check_env}" ]; then
+		echo "Environment ${check_env} had been registered."
+		return 0
+	fi
+	echo "Environment ${check_env} not registered."
+	return 1
+}
+
+__epkg_register_environment() {
 	local env=$1
 
 	if [[ "$env" == "common" ]]; then
-		echo "$env cannot be enabled!"
-		return
+		echo "Environment $env cannot be registered."
+		return 1
 	fi
+	__check_env_existed $env || return 1
 
-	_check_env_enabled $env
-	if [ $? -eq 0 ]; then
-		echo "$env already enabled!"
-		return
-	fi
-
-	if [ -d "$EPKG_ENVS_ROOT/$env" ]; then
-		ln -sT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/enabled-envs/$env"
-	fi
-
-	echo "Environment '$env' added to PATH."
+	ln -sfT "$EPKG_ENVS_ROOT/$env" "$EPKG_CONFIG_DIR/registered-envs/$env"
+	echo "Environment '$env' has been registered."
 }
 
-__epkg_disable_environment() {
+__epkg_unregister_environment() {
 	local env=$1
 
-	_check_env_enabled $env
-	if [ $? -eq 1 ]; then
-		echo "$env already disabled!"
-		return
+	if [[ "$env" == "common" ]]; then
+		echo "Environment $env cannot be registered."
+		return 1
 	fi
+	__check_env_existed $env || return 1
+	__check_env_registered $env || return 1
 
-	rm -f "$EPKG_CONFIG_DIR/enabled-envs/$env"
-
-	echo "Environment '$env' removed from PATH."
+	rm -f "$EPKG_CONFIG_DIR/registered-envs/$env"
+	echo "Environment '$env' has been unregistered from PATH."
 }
 
 __epkg_activate_environment() {
@@ -69,48 +81,21 @@ __epkg_deactivate_environment() {
 	export EPKG_ACTIVE_ENV=main
 }
 
-_check_env_existed() {
-	local env=$1
-	all_envs=$(ls -lt $EPKG_ENVS_ROOT | grep '^d' | awk '{print $9}')
-	if echo "$all_envs" | grep -q -F -- "$env"; then
-		return 0
-	fi
-	return 1
-}
-
-_check_env_enabled() {
-	local env=$1
-	if [ -L "$EPKG_CONFIG_DIR/enabled-envs/$env" ]; then
-		return 0
-	fi
-	return 1
-}
-
-list_environments() {
-	# List all environments
-	echo "Available environments(sort by time):"
-	all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
-	echo "Environment          Status"
-	echo "---------------------"
-	echo "$all_envs" | awk '{print $1 "          " ($1 == "'$EPKG_ACTIVE_ENV'" ? "Y" : "")}' | column -t
-	# echo "You are in [$EPKG_ACTIVE_ENV] now"
-}
-
-create_environment() {
+__epkg_create_environment() {
 	local env=$1
 	local subcmd=$2
 	local repo_path=$3
 
+	if [[ "$env" == "common" ]]; then
+		echo "Environment $env cannot be create."
+		return 1
+	fi
+	__check_env_existed $env && return 1
+	
 	local curr_env_root=
 	__get_curr_env_root $env
 	local epkg_helper=
 	__get_epkg_helper "env_mode" "$curr_env_root/$env/"
-
-	#_check_env_existed $env
-	#if [ $? -eq 0 ]; then
-	#	echo "$env already existed!"
-	#	return
-	#fi
 
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	
@@ -131,21 +116,49 @@ create_environment() {
 		init_channel_repo $env openEuler-24.09
 	fi
 
-	echo "Environment '$env' created."
+	echo "Environment '$env' has been created."
 }
 
-remove_environment() {
+__epkg_remove_environment() {
 	local env=$1
 	local curr_env_root=
 	__get_curr_env_root $env
-	_check_env_existed $env
-	if [ $? -eq 1 ]; then
-		echo "$env no existed!"
-		return
+
+	if [[ "$env" == "common" || "$env" == "main" ]]; then
+		echo "Environment $env cannot be removed."
+		return 1
 	fi
-	
+	__check_env_existed $env || return 1
+	__check_env_registered $env && __epkg_unregister_environment $env
+
 	mv "$curr_env_root/$env" "$curr_env_root/.$env"
-	echo "$env remove success!"
+	echo "Environment $env has been removed."
+}
+
+__epkg_list_environments() {
+	local all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
+	local registered_envs=$(ls -t $EPKG_CONFIG_DIR/registered-envs/)
+	
+	printf "%-15s  %20s\n" "Environment" "Status"
+	printf "%35s\n" | tr ' ' '-'
+	# Use awk to format and add the registered or activated status
+	echo "$all_envs" | awk -v active="$EPKG_ACTIVE_ENV"  -v registered="$registered_envs" '
+	BEGIN {
+        split(registered, reg_array, "\n")
+        for (i in reg_array) {
+            reg[reg_array[i]] = 1
+        }
+    }
+	{
+		status = ""
+		if ($1 == active) {
+			status = (status ? status "|" : "") "activated"
+		} 
+		if ($1 in reg) {
+			status = (status ? status "|" : "") "registered"
+		}
+		printf "%-15s  %20s\n", $1, status
+	}'
 }
 
 # setup env variable

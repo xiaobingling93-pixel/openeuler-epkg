@@ -15,16 +15,27 @@ __epkg_append_path() {
 	# Get epkg app-bin path
 	local curr_envs=()
 	local epkg_appbin_path=
-	local epkg_enabled_envs_dir=$HOME/.epkg/config/enabled-envs
-	# Current shell activate env
-	if [[ -n $EPKG_ACTIVE_ENV && "$EPKG_ACTIVE_ENV" != "main" ]]; then
+	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
+	# Add epkg path check
+	if [ -n "$opt_pure" ]; then
+		# Activate env --pure
 		curr_envs+=($EPKG_ACTIVE_ENV)
 	else
-		# Enabled envs (init main & common) 
-		if [[ -d $epkg_enabled_envs_dir && -n "$(ls -A $epkg_enabled_envs_dir)" ]]; then
-			for file in "$epkg_enabled_envs_dir"/*; do
-				curr_envs+=(${file##*/})
-			done
+		declare -A seen_envs
+		# Activate env
+		if [ -n "$EPKG_ACTIVE_ENV" ]; then
+			curr_envs+=($EPKG_ACTIVE_ENV)
+        	seen_envs[$EPKG_ACTIVE_ENV]=1
+		fi
+		# Registered envs
+		if [[ -d $epkg_registered_envs_dir && -n "$(ls -A $epkg_registered_envs_dir)" ]]; then
+			while IFS= read -r file; do
+				env_name=${file##*/}
+				if [[ ! ${seen_envs[$env_name]} ]]; then
+					curr_envs+=("$env_name")
+					seen_envs[$env_name]=1  
+				fi
+			done < <(ls -lt "$epkg_registered_envs_dir" | grep '^l' |  awk '{print $9}')
 		fi
 	fi
 	# Create path
@@ -81,13 +92,11 @@ epkg() {
 	else
 		local epkg_common_profile=$HOME/.epkg/envs/common/profile-current
 	fi
-
 	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
 
-	if [ -z $EPKG_ACTIVE_ENV ]; then
-		export EPKG_ACTIVE_ENV=main
-	elif [ ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]; then
-		export EPKG_ACTIVE_ENV=main
+	# issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
+	if [[ -n "$EPKG_ACTIVE_ENV" && ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]]; then
+		unset EPKG_ACTIVE_ENV
 	fi
 
 	case "$cmd" in
@@ -120,6 +129,8 @@ epkg() {
 						echo "$env not exist!"
 						return
 					fi
+					# --pure
+					local opt_pure=$4
 					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
@@ -132,6 +143,18 @@ epkg() {
 					unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
+					;;
+				register)
+					$epkg_sh "$@" || return
+					# update PATH
+					__epkg_add_appbin_path
+					return
+					;;
+				unregister)
+					$epkg_sh "$@" || return
+					# update PATH
+					__epkg_add_appbin_path
+					return					
 					;;
 			esac
 			;;
