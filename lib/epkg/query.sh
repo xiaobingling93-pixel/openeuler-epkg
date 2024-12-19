@@ -112,7 +112,7 @@ get_requires() {
                 continue
             fi
         fi
-    done < <(jq -c '.requires | to_entries[]' "$pkg_metadata_file_path")
+    done < <(jq -c '(.depends // {}) | to_entries[]' "$pkg_metadata_file_path")
 }
 
 find_pkg_names() {
