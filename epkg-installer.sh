@@ -2,14 +2,23 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
+# Check if the architecture is either x86_64 or aarch64
+ARCH=$(uname -m)
+if [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "aarch64" ]; then
+    echo "Error: This script only supports x86_64 and aarch64 architectures."
+    echo "Your system architecture is: $ARCH"
+    exit 1
+fi
 # Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 # for quick develop-test cycle
 EPKG_VERSION=master
 EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSION.tar.gz
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
-EPKG_HELPER=epkg_helper
+EPKG_ROOTFS=epkg-rootfs
+EPKG_HELPER=epkg-helper
 EPKG_HASH=epkg-hash
+ELF_LOADER=elf-loader
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
 PUB_EPKG=$OPT_EPKG/users/public
@@ -121,12 +130,12 @@ epkg_download() {
 
     # download epkg-hash
     echo "download epkg hash"
-    curl -# -o $EPKG_CACHE/$EPKG_HASH $EPKG_URL/$EPKG_HASH
+    curl -# -o $EPKG_CACHE/$EPKG_HASH $EPKG_URL/$EPKG_HASH-$ARCH
 
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         echo "download epkg helper"
-        curl -# -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER
+        curl -# -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER-$ARCH
     fi
 }
 
@@ -183,28 +192,29 @@ EOF
 prepare_epkg_rootfs() {
 	local curl_help=$(curl --help all)
 	if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
-		local curl_opts="--etag-save $EPKG_CACHE/store-etag.tmp --etag-compare $EPKG_CACHE/store-etag.txt"
+		local curl_opts="--etag-save $EPKG_CACHE/rootfs-etag.tmp --etag-compare $EPKG_CACHE/rootfs-etag.txt"
 	else
 		local curl_opts=
 	fi
 
-	# download epkg_rootfs
+    # download elf_loader
     echo "download epkg elf loader"
-	curl -# -o $EPKG_CACHE/elf-loader https://repo.oepkgs.net/openeuler/epkg/rootfs/elf-loader --retry 5
-	chmod a+x $EPKG_CACHE/elf-loader
-	/bin/cp -f $EPKG_CACHE/elf-loader $ELFLOADER_EXEC
+	curl -# -o $EPKG_CACHE/$ELF_LOADER $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
+	chmod a+x $EPKG_CACHE/$ELF_LOADER
+	/bin/cp -f $EPKG_CACHE/$ELF_LOADER $ELFLOADER_EXEC
 
+	# download epkg_rootfs
 	echo "download epkg rootfs"
-	curl $curl_opts -# -o $EPKG_CACHE/store.tar.gz https://repo.oepkgs.net/openeuler/epkg/rootfs/store.tar.gz --retry 5
-	if [ -s $EPKG_CACHE/store-etag.tmp ]; then
-		mv $EPKG_CACHE/store-etag.tmp $EPKG_CACHE/store-etag.txt
+	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
+	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
+		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
 	else
-		rm -f $EPKG_CACHE/store-etag.tmp
+		rm -f $EPKG_CACHE/rootfs-etag.tmp
 	fi
 
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	/bin/tar -xf $EPKG_CACHE/store.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
     /bin/chmod -R 755 $EPKG_STORE_ROOT
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks

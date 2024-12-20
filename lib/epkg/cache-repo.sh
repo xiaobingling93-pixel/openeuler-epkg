@@ -82,7 +82,9 @@ loop_cache_repos()
 			# skip cache metadata for disabled repos
 			[[ ${repo_enable_code} == 1 ]] || continue
 
+			arch=$(uname -m)
 			repo_url=$(echo ${repo_content} | jq '.url' | tr -d '"')
+			repo_url=${repo_url}/${arch}/
 
 			[[ -z ${repo_url} ]] && continue
 

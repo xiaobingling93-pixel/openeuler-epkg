@@ -113,7 +113,7 @@ __epkg_create_environment() {
 			init_channel_repo $env $repo_path
 		fi
 	else 
-		init_channel_repo $env openEuler-24.09
+		init_channel_repo $env openEuler-24.03-LTS
 	fi
 
 	echo "Environment '$env' has been created."

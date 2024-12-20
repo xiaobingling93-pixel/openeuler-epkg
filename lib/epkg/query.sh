@@ -19,12 +19,13 @@ load_enabled_channel_conf() {
     CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
     json=$(cat $CHANNEL_CONF_PATH)
     enabled_data=$(echo "$json" | jq -c '[.. | objects | select(.enabled == "1")]')
-    
+    arch=$(uname -m)
+
     while IFS= read -r item; do
         key=$(echo "$item" | jq -r '.key')
         name=$(echo "$item" | jq -r '.value.name')
         channel=$(echo "$item" | jq -r '.value.channel')
-        url=$(echo "$item" | jq -r '.value.url')
+        url=$(echo "$item" | jq -r '.value.url')${arch}/
         gpgcheck=$(echo "$item" | jq -r '.value.gpgcheck')
         gpgkey=$(echo "$item" | jq -r '.value.gpgkey')
         channel_array[$key]="$name,$channel,$url,$gpgcheck,$gpgkey"
@@ -111,7 +112,7 @@ get_requires() {
                 continue
             fi
         fi
-    done < <(jq -c '.requires | to_entries[]' "$pkg_metadata_file_path")
+    done < <(jq -c '(.depends // {}) | to_entries[]' "$pkg_metadata_file_path")
 }
 
 find_pkg_names() {
