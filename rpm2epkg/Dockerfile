@@ -13,7 +13,5 @@ RUN	yum clean all && \
 
 RUN	yum -y install wget zstd rpm cpio dnf-plugins-core git jq cpio 
 RUN	yum -y install findutils python3-rpm
-COPY	batch-convert-rpm2epkg /usr/bin
-COPY	convert-rpm2epkg /usr/bin
 
-RUN git clone https://gitee.com/openeuler/epkg.git /root/epkg
+WORKDIR /root/epkg/rpm2epkg/
