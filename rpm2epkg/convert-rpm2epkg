@@ -39,6 +39,7 @@ generate_files()
 	# 生成package.json
 	tmp_dir=$(mktemp -d)
 	./gen-package.sh $rpm_file ${epkg_conversion_dir}/info/ $tmp_dir ${epkg_hash_exec}
+	./gen-runtimePhase.sh $rpm_file ${epkg_conversion_dir}/info/
 	rm -rf $tmp_dir
 }
 
