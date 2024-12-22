@@ -64,7 +64,7 @@ generate_epkg_name()
 compress_epkg()
 {
 	mkdir -p ${epkg_repo_path}/store/${epkg_name:0:2}/
-	tar --zstd -cvf ${epkg_repo_path}/store/${epkg_name:0:2}/${epkg_name} -C ${epkg_conversion_dir} .
+	tar --zstd -cf ${epkg_repo_path}/store/${epkg_name:0:2}/${epkg_name} -C ${epkg_conversion_dir} .
 }
 
 init_conversion_dirs
