@@ -5,45 +5,48 @@
 rpm_package="$1"
 output_directory="$2/install"
 mkdir -p "$output_directory"
-scripts_record=()
+
+# https://github.com/rpm-software-management/rpm/blob/master/tests/rpmbuild.at
+declare -A SCRIPTLET2FILE=(
+	["pretrans"]="pretrans"
+	["preinstall"]="pre"
+	["postinstall"]="post"
+	["preuninstall"]="preun"
+	["postuninstall"]="postun"
+	["posttrans"]="posttrans"
+	["preuntrans"]="preuntrans"
+	["postuntrans"]="postuntrans"
+	["verify"]="verifyscript"
+	["triggerprein"]="triggerprein"
+	["triggerin"]="triggerin"
+	["triggerun"]="triggerun"
+	["triggerpostun"]="triggerpostun"
+	["filetriggerin"]="filetriggerin"
+	["filetriggerun"]="filetriggerun"
+	["transfiletriggerin"]="transfiletriggerin"
+	["transfiletriggerun"]="transfiletriggerun"
+)
 
 generate_to_file() {
-    local cur_scripts=$1
-    local content=$2
-    if [[ -n "$cur_scripts" ]]; then
-        if [[ -z "${script_files[$cur_scripts]}" ]]; then
-            echo "Error: Invalid script type '$cur_scripts'. Aborting." >&2
-            exit 1
-        fi
-        echo "$content" > "$output_directory/${script_files[$cur_scripts]}"
-        chmod +x "$output_directory/${script_files[$cur_scripts]}"
+    local scriptlet="$1"
+    local content="$2"
+
+    [[ -n "$scriptlet" ]] || return
+
+    local file="${SCRIPTLET2FILE[$scriptlet]}"
+    if [[ -z "$file" ]]; then
+        echo "Error: Unknown scriptlet name '$scriptlet'. Aborting." >&2
+        exit 1
     fi
+
+    echo "$content" > "$output_directory/$file"
+    chmod +x "$output_directory/$file"
 }
 
 extract_install_scripts() {
     local current_script=""
     local script_content=""
-    
-    # https://github.com/rpm-software-management/rpm/blob/master/tests/rpmbuild.at
-    declare -A script_files=(
-        ["pretrans"]="pretrans"
-        ["preinstall"]="pre"
-        ["postinstall"]="post"
-        ["preuninstall"]="preun"
-        ["postuninstall"]="postun"
-        ["posttrans"]="posttrans"
-        ["preuntrans"]="preuntrans"
-        ["postuntrans"]="postuntrans"
-        ["verify"]="verifyscript"
-        ["triggerprein"]="triggerprein"
-        ["triggerin"]="triggerin"
-        ["triggerun"]="triggerun"
-        ["triggerpostun"]="triggerpostun"
-        ["filetriggerin"]="filetriggerin"
-        ["filetriggerun"]="filetriggerun"
-        ["transfiletriggerin"]="transfiletriggerin"
-        ["transfiletriggerun"]="transfiletriggerun"
-    )
+    local scripts_record=()
 
     # example scripts_content:
     # postinstall scriptlet (using /bin/sh):
