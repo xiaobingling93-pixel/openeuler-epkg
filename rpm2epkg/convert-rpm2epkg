@@ -23,7 +23,8 @@ init_conversion_dirs()
 
 	mkdir -p ${epkg_conversion_dir}/{fs,info}
 	mkdir -p ${epkg_conversion_dir}/info/pgp
-	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files,runtimePhase.sh}
+	mkdir -p ${epkg_conversion_dir}/info/runtimePhase
+	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files}
 }
 
 decompress_rpm()
