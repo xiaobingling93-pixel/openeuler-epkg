@@ -66,24 +66,24 @@ loop_cache_repos()
 	local repo_enable_code
 	local repo_url
 
-	for channel in $(echo ${channel_conf_content} | jq '. | keys[]')
+	for channel in $(echo ${channel_conf_content} | $COMMON_PROFILE_LINK/bin/jq '. | keys[]')
 	do
 		# channel_content=$(echo "${channel_conf_content}" | jq '.channel['"$i"']')
-		channel_content=$(echo "${channel_conf_content}" | jq '.['"${channel}"']')
+		channel_content=$(echo "${channel_conf_content}" | $COMMON_PROFILE_LINK/bin/jq '.['"${channel}"']')
 		[[ ${channel_content} == null ]] && continue
 
-		for repo in $(echo ${channel_content} | jq '. | keys[]')
+		for repo in $(echo ${channel_content} | $COMMON_PROFILE_LINK/bin/jq '. | keys[]')
 		do
-			repo_content=$(echo "${channel_content}" | jq '.["'${repo//\"/}'"]')
+			repo_content=$(echo "${channel_content}" | $COMMON_PROFILE_LINK/bin/jq '.["'${repo//\"/}'"]')
 			[[ ${repo_content} == null ]] && continue
 
-			repo_enable_code=$(echo ${repo_content} | jq '.enabled' | tr -d '"')
+			repo_enable_code=$(echo ${repo_content} | $COMMON_PROFILE_LINK/bin/jq '.enabled' | tr -d '"')
 
 			# skip cache metadata for disabled repos
 			[[ ${repo_enable_code} == 1 ]] || continue
 
 			arch=$(uname -m)
-			repo_url=$(echo ${repo_content} | jq '.url' | tr -d '"')
+			repo_url=$(echo ${repo_content} | $COMMON_PROFILE_LINK/bin/jq '.url' | tr -d '"')
 			repo_url=${repo_url}/${arch}/
 
 			[[ -z ${repo_url} ]] && continue
@@ -108,7 +108,7 @@ cache_repo()
 
 	pushd $channel_conf_dir > /dev/null
 	for repo_conf_file in "${channel_conf_dir}"/*.json; do
-		jq empty ${repo_conf_file} || {
+		$COMMON_PROFILE_LINK/bin/jq empty ${repo_conf_file} || {
 			echo "Epkg channel conf file not in format json: ${repo_conf_file}"
 			echo "Fix up and try again."
 

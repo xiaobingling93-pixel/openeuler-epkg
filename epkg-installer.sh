@@ -49,7 +49,7 @@ case "$shell" in
 esac
 
 dependency_check() {
-    local cmd_names="id tar cat cp chmod chown curl jq"
+    local cmd_names="id tar cat cp chmod chown curl"
     local cmd
     local missing_cmds=
 
