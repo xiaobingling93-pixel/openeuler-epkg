@@ -23,7 +23,8 @@ init_conversion_dirs()
 
 	mkdir -p ${epkg_conversion_dir}/{fs,info}
 	mkdir -p ${epkg_conversion_dir}/info/pgp
-	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files,runtimePhase.sh}
+	mkdir -p ${epkg_conversion_dir}/info/runtimePhase
+	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files}
 }
 
 decompress_rpm()
@@ -39,6 +40,7 @@ generate_files()
 	# 生成package.json
 	tmp_dir=$(mktemp -d)
 	./gen-package.sh $rpm_file ${epkg_conversion_dir}/info/ $tmp_dir ${epkg_hash_exec}
+	./gen-runtimePhase.sh $rpm_file ${epkg_conversion_dir}/info/
 	rm -rf $tmp_dir
 }
 
@@ -63,7 +65,7 @@ generate_epkg_name()
 compress_epkg()
 {
 	mkdir -p ${epkg_repo_path}/store/${epkg_name:0:2}/
-	tar --zstd -cvf ${epkg_repo_path}/store/${epkg_name:0:2}/${epkg_name} -C ${epkg_conversion_dir} .
+	tar --zstd -cf ${epkg_repo_path}/store/${epkg_name:0:2}/${epkg_name} -C ${epkg_conversion_dir} .
 }
 
 init_conversion_dirs

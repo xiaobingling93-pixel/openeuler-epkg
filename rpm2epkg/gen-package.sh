@@ -47,7 +47,7 @@ cp_input_rpm () {
 }
 
 get_package_depends() {
-    for depend_package in $(dnf repoquery --requires --resolve $rpm_package --forcearch $CONVERT_ARCH 2>/dev/null); do
+    for depend_package in $(dnf repoquery --requires --resolve $rpm_package --forcearch $CONVERT_ARCH 2>/dev/null | grep -v 'i686'); do
         IFS=':' read -r depend_rpm_name_epoch depend_version_release_dist_arch <<< $depend_package
         depend_rpm_name=${depend_rpm_name_epoch%-*}
         depend_file_name="$depend_rpm_name-$depend_version_release_dist_arch.rpm"
@@ -171,7 +171,7 @@ generate_metadata_json () {
         output_json=$(echo "$output_json" | jq --argjson enhances "$enhances_json" '. + { "enhances": $enhances }')
     fi
 
-    output_file="package.json"
+    output_file="$output_dir/package.json"
     echo "$output_json" | jq '.' > "$output_file"
     echo "$output_json" | jq '.'
 }
@@ -184,15 +184,11 @@ restore_metadata_json() {
         if [ ! -d "$abnormal_output_dir" ]; then
             mkdir -p "$abnormal_output_dir"
         fi
-        mv "package.json" $abnormal_output_dir
+        mv "$output_dir/package.json" $abnormal_output_dir
         echo "---------Get abnormal requires for $package, move json to $abnormal_output_dir"
         echo "$package" >> ./need_check
         return
     fi
-    if [ ! -d "$restore_dir" ]; then
-        mkdir -p "$restore_dir"
-    fi
-    mv "package.json" $restore_dir
     echo "********JSON has been moved to $restore_dir**********"
 }
 
