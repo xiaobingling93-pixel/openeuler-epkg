@@ -3,7 +3,7 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 rpm_package="$1"
-output_directory="$2/runtimePhase"
+output_directory="$2/install"
 mkdir -p "$output_directory"
 scripts_record=()
 
@@ -62,9 +62,7 @@ extract_install_scripts() {
         fi
     done <<< "$(rpm -qp --nosignature --scripts "$rpm_package")"
     generate_to_file "$current_script" "$script_content"
+    echo "Install scriptlets extracted to $output_directory: ${scripts_record[@]}"
 }
 
 extract_install_scripts
-echo "Scripts have been extracted to individual files in $output_directory."
-echo "$rpm_package has scripts: ${scripts_record[@]}"
-echo "========runtimePhase.sh has been generated========="
