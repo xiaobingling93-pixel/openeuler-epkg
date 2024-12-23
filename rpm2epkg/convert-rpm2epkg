@@ -23,7 +23,7 @@ init_conversion_dirs()
 
 	mkdir -p ${epkg_conversion_dir}/{fs,info}
 	mkdir -p ${epkg_conversion_dir}/info/pgp
-	mkdir -p ${epkg_conversion_dir}/info/runtimePhase
+	mkdir -p ${epkg_conversion_dir}/info/install
 	touch ${epkg_conversion_dir}/info/{package.json,buildinfo.json,files}
 }
 
