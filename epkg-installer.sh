@@ -330,4 +330,5 @@ epkg_change_bashrc
 prepare_epkg_rootfs
 prepare_conf
 
-echo "Attention: For changes to take effect, close and re-open your current shell."
+# step 4. automic init
+$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init
