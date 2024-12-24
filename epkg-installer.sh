@@ -153,6 +153,12 @@ epkg_download() {
         curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH.sha256 $EPKG_URL/$EPKG_HELPER-$ARCH.sha256
         epkg_verify_checksum "$EPKG_HELPER-$ARCH.sha256"
     fi
+
+    # download epkg elf loader
+    echo "download epkg elf loader"
+	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
+    curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH.sha256 $EPKG_URL/$ELF_LOADER-$ARCH.sha256
+    epkg_verify_checksum "$ELF_LOADER-$ARCH.sha256"
 }
 
 epkg_unpack() {
@@ -184,6 +190,10 @@ epkg_unpack() {
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
     fi
+
+    # unpack elf loader
+	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
+    chmod a+x $ELFLOADER_EXEC
 }
 
 epkg_change_bashrc() {
@@ -212,15 +222,6 @@ prepare_epkg_rootfs() {
 	else
 		local curl_opts=
 	fi
-
-    # download elf_loader
-    echo "download epkg elf loader"
-	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
-    curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH.sha256 $EPKG_URL/$ELF_LOADER-$ARCH.sha256
-    epkg_verify_checksum "$ELF_LOADER-$ARCH.sha256"
-
-	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
-    chmod a+x $ELFLOADER_EXEC
 
 	# download epkg_rootfs
 	echo "download epkg rootfs"
