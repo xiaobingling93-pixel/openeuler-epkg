@@ -112,7 +112,8 @@ create_init_home() {
     mkdir -p $EPKG_PKG_CACHE_DIR
     mkdir -p $EPKG_CHANNEL_CACHE_DIR
 
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/app-bin
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
     cd $EPKG_COMMON_ROOT/profile-1
@@ -205,7 +206,7 @@ prepare_epkg_rootfs() {
 
 	# download epkg_rootfs
 	echo "download epkg rootfs"
-	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
+	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
 	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
 		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
 	else
@@ -214,7 +215,7 @@ prepare_epkg_rootfs() {
 
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
     /bin/chmod -R 755 $EPKG_STORE_ROOT
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
@@ -284,9 +285,6 @@ handle_symlink() {
     fi
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
-	if [[ "$appbin_flag" == "true" ]]; then
-		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
-	fi
 	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
 }
 
