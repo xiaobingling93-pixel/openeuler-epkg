@@ -8,7 +8,7 @@ license: MIT
 homepage: https://github.com/jbeder/yaml-cpp
 
 sources:
-  '0': https://github.com/jbeder/yaml-cpp/archive/0.8.0/yaml-cpp-0.8.0.tar.gz
+  '0': https://gitee.com/src-openeuler/yaml-cpp/raw/master/yaml-cpp-0.8.0.tar.gz
 
 buildSystem: cmake
 buildRequires:
