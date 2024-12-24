@@ -12,8 +12,8 @@ fi
 # Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 # for quick develop-test cycle
-EPKG_VERSION=master
-EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSION.tar.gz
+EPKG_VERSION=bugfix-epkg-manager
+EPKG_MANAGER_URL=https://gitee.com/rkingkoyo/epkg/repository/archive/bugfix/epkg-manager.tar.gz
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_ROOTFS=epkg-rootfs
 EPKG_HELPER=epkg-helper
@@ -124,6 +124,17 @@ create_init_home() {
     ln -sT "$EPKG_COMMON_ROOT/profile-1" "$EPKG_COMMON_ROOT/profile-current"
 }
 
+epkg_verify_checksum() {
+    local checksum_file=$1
+    pushd "$EPKG_CACHE" > /dev/null 
+    if ! sha256sum -c "$checksum_file" > /dev/null 2>&1; then
+        echo "checksum error: $checksum_file"
+        popd > /dev/null 
+        exit 1
+    fi
+    popd > /dev/null  # 返回原始目录
+}
+
 epkg_download() {
     # download epkg_manager    
     echo "download epkg manager"
@@ -131,12 +142,16 @@ epkg_download() {
 
     # download epkg-hash
     echo "download epkg hash"
-    curl -# -o $EPKG_CACHE/$EPKG_HASH $EPKG_URL/$EPKG_HASH-$ARCH
+    curl -# -o $EPKG_CACHE/$EPKG_HASH-$ARCH $EPKG_URL/$EPKG_HASH-$ARCH
+    curl -# -o $EPKG_CACHE/$EPKG_HASH-$ARCH.sha256 $EPKG_URL/$EPKG_HASH-$ARCH.sha256
+    epkg_verify_checksum "$EPKG_HASH-$ARCH.sha256"
 
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         echo "download epkg helper"
-        curl -# -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER-$ARCH
+        curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH $EPKG_URL/$EPKG_HELPER-$ARCH
+        curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH.sha256 $EPKG_URL/$EPKG_HELPER-$ARCH.sha256
+        epkg_verify_checksum "$EPKG_HELPER-$ARCH.sha256"
     fi
 }
 
@@ -157,11 +172,11 @@ epkg_unpack() {
     fi
 
     # unpack epkg hash
-    cp $EPKG_CACHE/$EPKG_HASH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HASH
+    cp $EPKG_CACHE/$EPKG_HASH-$ARCH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HASH
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
+        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER-$ARCH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
         chown -R $USER:$USER $OPT_EPKG
         chmod -R 755 $OPT_EPKG
         chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
@@ -200,13 +215,18 @@ prepare_epkg_rootfs() {
 
     # download elf_loader
     echo "download epkg elf loader"
-	curl -# -o $EPKG_CACHE/$ELF_LOADER $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
-	chmod a+x $EPKG_CACHE/$ELF_LOADER
-	/bin/cp -f $EPKG_CACHE/$ELF_LOADER $ELFLOADER_EXEC
+	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
+    curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH.sha256 $EPKG_URL/$ELF_LOADER-$ARCH.sha256
+    epkg_verify_checksum "$ELF_LOADER-$ARCH.sha256"
+
+	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
+    chmod a+x $ELFLOADER_EXEC
 
 	# download epkg_rootfs
 	echo "download epkg rootfs"
-	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
+	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
+    curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz.sha256 $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz.sha256
+    epkg_verify_checksum "$EPKG_ROOTFS-$ARCH.tar.gz.sha256"
 	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
 		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
 	else
@@ -215,7 +235,7 @@ prepare_epkg_rootfs() {
 
 	# uncompress epkg_rootfs
 	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
     /bin/chmod -R 755 $EPKG_STORE_ROOT
 	# create comm profile-1 symlink to store
 	create_rootfs_symlinks
