@@ -167,7 +167,7 @@ create_symlink_by_fs() {
 		# app-bin 不应该被跳过
 		[ -e "$symlink_dir/$rfs_file" ] && [[ "$appbin_flag" == "false" ]] && continue
 
-		[ -e $fs_file ] || continue
+		[ -e "$fs_file" ] || continue
 
 		local parent_dir=${rfs_file%/*}
 
