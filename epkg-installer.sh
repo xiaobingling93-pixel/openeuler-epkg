@@ -12,8 +12,8 @@ fi
 # Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 # for quick develop-test cycle
-EPKG_VERSION=master
-EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSION.tar.gz
+EPKG_VERSION=bugfix-epkg-manager
+EPKG_MANAGER_URL=https://gitee.com/rkingkoyo/epkg/repository/archive/bugfix/epkg-manager.tar.gz
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_ROOTFS=epkg-rootfs
 EPKG_HELPER=epkg-helper
@@ -112,7 +112,7 @@ create_init_home() {
     mkdir -p $EPKG_PKG_CACHE_DIR
     mkdir -p $EPKG_CHANNEL_CACHE_DIR
 
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin, bin,sbin,lib,lib64}
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
     cd $EPKG_COMMON_ROOT/profile-1
