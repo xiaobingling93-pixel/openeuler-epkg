@@ -141,8 +141,8 @@ postinstall_scriptlet() {
 	IFS='__' read -ra pkg_split <<< "$package"
 	if [[ "${pkg_split[2]}" == "golang" ]]; then
 		# usr/app-bin
-		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/app-bin/go"
-		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/app-bin/gofmt"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/app-bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/app-bin/gofmt"
 		# usr/bin
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/bin/go"
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/bin/gofmt"
@@ -202,7 +202,7 @@ create_symlink_by_fs() {
 handle_exec() {
 	# Add app-bin path
 	if [[ "$appbin_flag" == "true" && "$rfs_file" == "/usr/bin/"* ]]; then
-		local rfs_file_appbin="${rfs_file/\/usr\/bin/\/app-bin}"
+		local rfs_file_appbin="${rfs_file/\/bin/\/app-bin}"
 		local parent_dir_appbin=${rfs_file_appbin%/*}
 		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
 	fi
@@ -238,7 +238,7 @@ handle_symlink() {
 	local ln_rfs=${ln_fs_file#$fs_dir}
 	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
 	if [[ "$appbin_flag" == "true" ]]; then
-		ln_rfs="${ln_rfs/\/usr\/bin/\/app-bin}"
+		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
 		ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file_appbin
 	fi
 }
