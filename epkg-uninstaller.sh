@@ -83,4 +83,4 @@ fi
 echo "Attention: Uninstall success"
 echo "Attention: Remove epkg files  : $EPKG_CLEAN_DIR"
 echo "Attention: Remove epkg context: $EPKG_EDIT_FILE"
-echo "Warning: For changes to take effect, close and re-open your current shell."
+echo "Attention: For changes to take effect, close and re-open your current shell."
