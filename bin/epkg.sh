@@ -48,16 +48,16 @@ shift
 
 if [[ "$cmd" == "help" ]]; then
 	__get_epkg_help_info
-	exit 1
+	exit 0
 elif [[ "$cmd" == "init" ]]; then
 	__epkg_init
-	exit 1
+	exit 0
 else
 	if ! __check_epkg_user_init; then	
 		echo "Warning: epkg has not been initialized, Automatically execute epkg init."
 		__epkg_init
 		echo "Warning: epkg init finish, Please rerun cmd."
-		exit 1
+		exit 0
 	fi
 
 	echo "EPKG_ACTIVE_ENV: $EPKG_ACTIVE_ENV"
