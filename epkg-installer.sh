@@ -112,7 +112,8 @@ create_init_home() {
     mkdir -p $EPKG_PKG_CACHE_DIR
     mkdir -p $EPKG_CHANNEL_CACHE_DIR
 
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/app-bin
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
     cd $EPKG_COMMON_ROOT/profile-1
@@ -123,6 +124,17 @@ create_init_home() {
     ln -sT "$EPKG_COMMON_ROOT/profile-1" "$EPKG_COMMON_ROOT/profile-current"
 }
 
+epkg_verify_checksum() {
+    local checksum_file=$1
+    pushd "$EPKG_CACHE" > /dev/null 
+    if ! sha256sum -c "$checksum_file" > /dev/null 2>&1; then
+        echo "checksum error: $checksum_file"
+        popd > /dev/null 
+        exit 1
+    fi
+    popd > /dev/null  # 返回原始目录
+}
+
 epkg_download() {
     # download epkg_manager    
     echo "download epkg manager"
@@ -130,13 +142,23 @@ epkg_download() {
 
     # download epkg-hash
     echo "download epkg hash"
-    curl -# -o $EPKG_CACHE/$EPKG_HASH $EPKG_URL/$EPKG_HASH-$ARCH
+    curl -# -o $EPKG_CACHE/$EPKG_HASH-$ARCH $EPKG_URL/$EPKG_HASH-$ARCH
+    curl -# -o $EPKG_CACHE/$EPKG_HASH-$ARCH.sha256 $EPKG_URL/$EPKG_HASH-$ARCH.sha256
+    epkg_verify_checksum "$EPKG_HASH-$ARCH.sha256"
 
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         echo "download epkg helper"
-        curl -# -o $EPKG_CACHE/$EPKG_HELPER $EPKG_URL/$EPKG_HELPER-$ARCH
+        curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH $EPKG_URL/$EPKG_HELPER-$ARCH
+        curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH.sha256 $EPKG_URL/$EPKG_HELPER-$ARCH.sha256
+        epkg_verify_checksum "$EPKG_HELPER-$ARCH.sha256"
     fi
+
+    # download epkg elf loader
+    echo "download epkg elf loader"
+	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
+    curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH.sha256 $EPKG_URL/$ELF_LOADER-$ARCH.sha256
+    epkg_verify_checksum "$ELF_LOADER-$ARCH.sha256"
 }
 
 epkg_unpack() {
@@ -156,11 +178,11 @@ epkg_unpack() {
     fi
 
     # unpack epkg hash
-    cp $EPKG_CACHE/$EPKG_HASH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HASH
+    cp $EPKG_CACHE/$EPKG_HASH-$ARCH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HASH
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
+        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER-$ARCH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
         chown -R $USER:$USER $OPT_EPKG
         chmod -R 755 $OPT_EPKG
         chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
@@ -168,6 +190,10 @@ epkg_unpack() {
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
     fi
+
+    # unpack elf loader
+	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
+    chmod a+x $ELFLOADER_EXEC
 }
 
 epkg_change_bashrc() {
@@ -197,15 +223,11 @@ prepare_epkg_rootfs() {
 		local curl_opts=
 	fi
 
-    # download elf_loader
-    echo "download epkg elf loader"
-	curl -# -o $EPKG_CACHE/$ELF_LOADER $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
-	chmod a+x $EPKG_CACHE/$ELF_LOADER
-	/bin/cp -f $EPKG_CACHE/$ELF_LOADER $ELFLOADER_EXEC
-
 	# download epkg_rootfs
 	echo "download epkg rootfs"
 	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
+    curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz.sha256 $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz.sha256
+    epkg_verify_checksum "$EPKG_ROOTFS-$ARCH.tar.gz.sha256"
 	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
 		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
 	else
@@ -278,15 +300,12 @@ handle_exec() {
 }
 
 handle_symlink() {
-	local ln_fs_file=$($epkg_helper $ROOTFS_LINK/bin/readlink -f  $fs_file)
+	local ln_fs_file=$($ROOTFS_LINK/bin/readlink -f  $fs_file)
     if [ ! -e "$ln_fs_file" ]; then
         return 1
     fi
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
-	if [[ "$appbin_flag" == "true" ]]; then
-		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
-	fi
 	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
 }
 
@@ -332,4 +351,5 @@ epkg_change_bashrc
 prepare_epkg_rootfs
 prepare_conf
 
-echo "Attention: For changes to take effect, close and re-open your current shell."
+# step 4. automic init
+$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init

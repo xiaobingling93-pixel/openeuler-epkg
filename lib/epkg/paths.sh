@@ -24,13 +24,13 @@ EPKG_CHANNEL_CACHE_DIR=$EPKG_CACHE/channel
 # These PATHs are related to the common env
 COMMON_PROFILE_LINK=$EPKG_COMMON_ROOT/profile-current
 ELFLOADER_EXEC=$COMMON_PROFILE_LINK/usr/bin/elf-loader
-EPKG_HELPER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg_helper
+EPKG_HELPER_EXEC=$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg-helper
 
 __epkg_add_path() {
 	local env_to_add=$1
 	local curr_env_root=
 	__get_curr_env_root $env_to_add
-	local appbin_path=$curr_env_root/$env_to_add/profile-current/usr/app-bin
+	local appbin_path=$curr_env_root/$env_to_add/profile-current/app-bin
 	echo "$appbin_path:"
 }
 

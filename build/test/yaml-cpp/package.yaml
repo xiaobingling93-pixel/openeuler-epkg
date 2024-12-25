@@ -1,0 +1,17 @@
+meta:
+  summary: yaml-cpp
+  description: yaml-cpp description
+name: yaml-cpp
+version: 0.8.0
+release: 1
+license: MIT
+homepage: https://github.com/jbeder/yaml-cpp
+
+sources:
+  '0': https://gitee.com/src-openeuler/yaml-cpp/raw/master/yaml-cpp-0.8.0.tar.gz
+
+buildSystem: cmake
+buildRequires:
+- cmake
+- make
+- gcc-c++

@@ -37,8 +37,8 @@ download_packages() {
 
     echo "Downloading ${pkg_download_url##*/}"
     curl --silent -o $EPKG_ROOTFS_PKG_STORE/$epkg_name $pkg_download_url
-    mkdir -p $EPKG_ROOTFS_PKG_UNPACK/$epkg_name
-    tar --zstd -xf $EPKG_ROOTFS_PKG_STORE/$epkg_name -C $EPKG_ROOTFS_PKG_UNPACK/$epkg_name
+    mkdir -p $EPKG_ROOTFS_PKG_UNPACK/${epkg_name%%.epkg}
+    tar --zstd -xf $EPKG_ROOTFS_PKG_STORE/$epkg_name -C $EPKG_ROOTFS_PKG_UNPACK/${epkg_name%%.epkg}
 }
 
 rootfs_prep_home() {
