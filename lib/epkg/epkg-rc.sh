@@ -57,8 +57,7 @@ __epkg_append_path() {
 	# Create a new PATH variable without the unwanted directories
 	SYSTEM_ORIGIN_PATH=""
 	for dir in $PATH_DIRS; do
-		if [[ -n "$dir" && "${dir#*/app-bin}" = "$dir" ]]; then
-			# Append the directory to the new PATH if it doesn't end with /app-bin
+		if [[ -n "$dir" && "$dir" != "*epkg*" ]]; then
 			SYSTEM_ORIGIN_PATH+="$dir:"
 		fi
 	done
