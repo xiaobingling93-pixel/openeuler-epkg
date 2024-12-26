@@ -57,7 +57,7 @@ __epkg_append_path() {
 	# Create a new PATH variable without the unwanted directories
 	SYSTEM_ORIGIN_PATH=""
 	for dir in $PATH_DIRS; do
-		if [[ -n "$dir" && "$dir" != "*epkg*" ]]; then
+		if [[ -n "$dir" && "$dir" != *epkg* ]]; then
 			SYSTEM_ORIGIN_PATH+="$dir:"
 		fi
 	done
