@@ -15,3 +15,7 @@ patches:
 buildSystem: make
 buildRequires:
 - gcc
+
+phase:
+  package: |
+    make install PREFIX="$BUILD_FS_DIR/usr"
