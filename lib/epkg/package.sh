@@ -167,7 +167,7 @@ create_symlink_by_fs() {
 		# app-bin 不应该被跳过
 		[ -e "$symlink_dir/$rfs_file" ] && [[ "$appbin_flag" == "false" ]] && continue
 
-		[ -e "$fs_file" ] || continue
+		[ -e "$fs_file" ] || [ -L "$fs_file" ] || continue
 
 		local parent_dir=${rfs_file%/*}
 
@@ -191,9 +191,17 @@ create_symlink_by_fs() {
 		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
 
 		if [ -z "$installroot" ]; then
-			$epkg_helper $ROOTFS_LINK/bin/ln -sf "$fs_file" "$symlink_dir/$rfs_file"
+			if [ -L "$fs_file" ]; then
+				$epkg_helper $ROOTFS_LINK/bin/cp -P "$fs_file" "$symlink_dir/$rfs_file"
+			else
+				$epkg_helper $ROOTFS_LINK/bin/ln -sf "$fs_file" "$symlink_dir/$rfs_file"
+			fi
 		else
-			$epkg_helper $ROOTFS_LINK/bin/ln -sf "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			if [ -L "$fs_file" ]; then
+				$epkg_helper $ROOTFS_LINK/bin/cp -P "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			else
+				$epkg_helper $ROOTFS_LINK/bin/ln -sf "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			fi
 		fi
 
 	done <<< "$fs_files"
