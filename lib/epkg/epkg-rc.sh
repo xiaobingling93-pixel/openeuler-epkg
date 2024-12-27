@@ -35,7 +35,7 @@ __epkg_append_path() {
 					curr_envs+=("$env_name")
 					seen_envs[$env_name]=1  
 				fi
-			done < <(ls -lt "$epkg_registered_envs_dir" | grep '^l' |  awk '{print $9}')
+			done < <(ls -lt --time-style=long-iso "$epkg_registered_envs_dir" | grep '^l' |  awk '{print $(NF-2)}')
 		fi
 	fi
 	# Create path
