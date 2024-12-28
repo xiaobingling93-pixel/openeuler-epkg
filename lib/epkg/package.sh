@@ -208,32 +208,28 @@ create_symlink_by_fs() {
 }
 
 handle_exec() {
+	local file_type=$($epkg_helper $ROOTFS_LINK/bin/file $1)
+	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
+		handle_elf $rfs_file
+	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
+		handle_elf $rfs_file
+	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
+		handle_elf $rfs_file
+	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
+	# test: install autoconf
+	elif [[ "$file_type" =~ 'Perl script text executable' ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/ln -s $fs_file $symlink_dir/$rfs_file
+	elif [[ "$file_type" =~ 'symbolic link' ]]; then
+		handle_symlink
+	fi
+
 	# Add app-bin path
 	if [[ "$appbin_flag" == "true" && "$rfs_file" == "/usr/bin/"* ]]; then
 		local rfs_file_appbin="${rfs_file/\/bin/\/app-bin}"
 		local parent_dir_appbin=${rfs_file_appbin%/*}
 		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
-	fi
-
-	local file_type=$($epkg_helper $ROOTFS_LINK/bin/file $1)
-	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
-		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
-		handle_elf $rfs_file
-	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
-		handle_elf $rfs_file
-	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
-		handle_elf $rfs_file
-	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file_appbin
-		$epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
-	# test: install autoconf
-	elif [[ "$file_type" =~ 'Perl script text executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file_appbin"
-		$epkg_helper $ROOTFS_LINK/bin/ln -s $fs_file $symlink_dir/$rfs_file
-	elif [[ "$file_type" =~ 'symbolic link' ]]; then
-		handle_symlink
+		$epkg_helper $ROOTFS_LINK/bin/ln -sf "$symlink_dir/$rfs_file" "$symlink_dir/$rfs_file_appbin" 
 	fi
 }
 
@@ -245,10 +241,6 @@ handle_symlink() {
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
 	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
-	if [[ "$appbin_flag" == "true" ]]; then
-		ln_rfs="${ln_rfs/\/bin/\/app-bin}"
-		ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file_appbin
-	fi
 }
 
 handle_elf() {
