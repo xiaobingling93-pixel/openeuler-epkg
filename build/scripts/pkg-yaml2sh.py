@@ -11,7 +11,7 @@ def parse(yaml_path):
     return pkg_meta
 
 def generate_pkgvars(pkg_meta, build_meta, build_scripts_dir):
-    build_requires = build_meta["buildRequires"] + pkg_meta["buildRequires"]
+    build_requires = list(set(build_meta["buildRequires"] + pkg_meta["buildRequires"]))
     
     with open(os.path.join(build_scripts_dir, "pkgvars.sh"), "w") as f:
         f.write("#!/usr/bin/env bash" + os.linesep*2)
