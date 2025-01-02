@@ -10,5 +10,5 @@ make_build() {
 }
 
 make_package() {
-  make install PREFIX="$BUILD_FS_DIR" DESTDIR="$BUILD_FS_DIR"
+  make install PREFIX="$BUILD_FS_DIR/usr" DESTDIR="$BUILD_FS_DIR"
 }
