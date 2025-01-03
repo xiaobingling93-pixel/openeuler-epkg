@@ -35,7 +35,7 @@ __epkg_append_path() {
 					curr_envs+=("$env_name")
 					seen_envs[$env_name]=1  
 				fi
-			done < <(ls -lt "$epkg_registered_envs_dir" | grep '^l' |  awk '{print $9}')
+			done < <(ls -lt --time-style=long-iso "$epkg_registered_envs_dir" | grep '^l' |  awk '{print $(NF-2)}')
 		fi
 	fi
 	# Create path
@@ -57,8 +57,7 @@ __epkg_append_path() {
 	# Create a new PATH variable without the unwanted directories
 	SYSTEM_ORIGIN_PATH=""
 	for dir in $PATH_DIRS; do
-		if [[ -n "$dir" && "${dir#*/app-bin}" = "$dir" ]]; then
-			# Append the directory to the new PATH if it doesn't end with /app-bin
+		if [[ -n "$dir" && "$dir" != *epkg* ]]; then
 			SYSTEM_ORIGIN_PATH+="$dir:"
 		fi
 	done

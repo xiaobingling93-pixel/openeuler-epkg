@@ -112,8 +112,7 @@ create_init_home() {
     mkdir -p $EPKG_PKG_CACHE_DIR
     mkdir -p $EPKG_CHANNEL_CACHE_DIR
 
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/app-bin
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{bin,sbin,lib,lib64}
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
     cd $EPKG_COMMON_ROOT/profile-1
@@ -332,6 +331,7 @@ replace_string() {
 prepare_conf() {
     # curl resolv.conf
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+    cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 }
 
 # step 0. dependency check

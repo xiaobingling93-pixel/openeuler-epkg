@@ -23,13 +23,13 @@ dependency_check() {
 
 	# Check PyYAML 
 	if ! pip show pyyaml &> /dev/null; then
-		echo "pyyaml is not installed. Please install."
+		echo "pyyaml is not installed. Please pip install."
 		return 1
 	fi
 
 	# Check patch 
 	if ! command -v patch &> /dev/null; then
-		echo "patch is not installed. Please install."
+		echo "patch is not installed. Please yum install."
 		return 1
 	fi
 
@@ -71,6 +71,7 @@ create_build_env() {
 	source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 	echo "buildRequires:${buildRequires[@]}"
 	epkg env create build
+	epkg env activate build --pure
 	epkg install ${buildRequires[@]}
 }
 

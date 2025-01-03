@@ -141,8 +141,8 @@ postinstall_scriptlet() {
 	IFS='__' read -ra pkg_split <<< "$package"
 	if [[ "${pkg_split[2]}" == "golang" ]]; then
 		# usr/app-bin
-		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/app-bin/go"
-		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/app-bin/gofmt"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/app-bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/app-bin/gofmt"
 		# usr/bin
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/bin/go"
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/bin/gofmt"
@@ -164,9 +164,10 @@ create_symlink_by_fs() {
 	while IFS= read -r fs_file; do
 		rfs_file=${fs_file#$fs_dir}
 
-		[ -e "$symlink_dir/$rfs_file" ] && continue
+		# app-bin 不应该被跳过
+		[ -e "$symlink_dir/$rfs_file" ] && [[ "$appbin_flag" == "false" ]] && continue
 
-		[ -e $fs_file ] || continue
+		[ -e "$fs_file" ] || [ -L "$fs_file" ] || continue
 
 		local parent_dir=${rfs_file%/*}
 
@@ -190,41 +191,45 @@ create_symlink_by_fs() {
 		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
 
 		if [ -z "$installroot" ]; then
-			$epkg_helper $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file"
+			if [ -L "$fs_file" ]; then
+				$epkg_helper $ROOTFS_LINK/bin/cp -P "$fs_file" "$symlink_dir/$rfs_file"
+			else
+				$epkg_helper $ROOTFS_LINK/bin/ln -sf "$fs_file" "$symlink_dir/$rfs_file"
+			fi
 		else
-			$epkg_helper $ROOTFS_LINK/bin/ln -s "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			if [ -L "$fs_file" ]; then
+				$epkg_helper $ROOTFS_LINK/bin/cp -P "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			else
+				$epkg_helper $ROOTFS_LINK/bin/ln -sf "${fs_file#$installroot}" "$symlink_dir/$rfs_file"
+			fi
 		fi
 
 	done <<< "$fs_files"
 }
 
 handle_exec() {
-	# Add app-bin path
-	if [[ "$appbin_flag" == "true" && "$rfs_file" == "/usr/bin/"* ]]; then\
-		local rfs_file_appbin="${rfs_file/\/usr\/bin/\/app-bin}"
-		local parent_dir_appbin=${rfs_file_appbin%/*}
-		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
-	fi
-
 	local file_type=$($epkg_helper $ROOTFS_LINK/bin/file $1)
 	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
-		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
 		handle_elf $rfs_file
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
 		handle_elf $rfs_file
 	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && handle_elf $rfs_file_appbin
 		handle_elf $rfs_file
 	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file_appbin
 		$epkg_helper $ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
 	# test: install autoconf
 	elif [[ "$file_type" =~ 'Perl script text executable' ]]; then
-		[ -n "$rfs_file_appbin" ] && $epkg_helper $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file_appbin"
 		$epkg_helper $ROOTFS_LINK/bin/ln -s $fs_file $symlink_dir/$rfs_file
 	elif [[ "$file_type" =~ 'symbolic link' ]]; then
 		handle_symlink
+	fi
+
+	# Add app-bin path
+	if [[ "$appbin_flag" == "true" && "$rfs_file" == "/usr/bin/"* ]]; then
+		local rfs_file_appbin="${rfs_file/\/bin/\/app-bin}"
+		local parent_dir_appbin=${rfs_file_appbin%/*}
+		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
+		$epkg_helper $ROOTFS_LINK/bin/ln -sf "$symlink_dir/$rfs_file" "$symlink_dir/$rfs_file_appbin" 
 	fi
 }
 
@@ -236,10 +241,6 @@ handle_symlink() {
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
 	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
-	if [[ "$appbin_flag" == "true" ]]; then
-		ln_rfs="${ln_rfs/\/usr\/bin/\/app-bin}"
-		ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file_appbin
-	fi
 }
 
 handle_elf() {
