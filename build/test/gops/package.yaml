@@ -1,0 +1,14 @@
+meta:
+  summary: gops is a command to list and diagnose Go processes currently running on your system.
+  description: gops is a command to list and diagnose Go processes currently running on your system. 
+name: gops
+version: 0.3.28
+release: 0
+license: GPL-2.0-or-later AND BSD-3-Clause AND BSD-2-Clause AND ISC AND LGPL-2.1-or-later
+homepage: https://github.com/google/gops
+sources:
+  '0': https://github.com/google/gops/archive/refs/heads/master.zip
+
+buildSystem: go
+buildRequires:
+- golang
