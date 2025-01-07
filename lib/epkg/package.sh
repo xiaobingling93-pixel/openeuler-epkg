@@ -29,6 +29,7 @@ install_package() {
 	do
 		query_package_requires "$dpk"
 	done
+	[ -z "$require_packages" ] && echo "Attention: No such epkg package" && return 1
 
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
