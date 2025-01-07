@@ -243,7 +243,9 @@ handle_symlink() {
     fi
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
-	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
+	local rfs_file_dirname=$($epkg_helper $ROOTFS_LINK/bin/dirname "$symlink_dir/$rfs_file")
+    local rfs_rel_path=$($epkg_helper $ROOTFS_LINK/bin/realpath --relative-to="$rfs_file_dirname" "$symlink_dir/$ln_rfs")
+    ln -sf "$rfs_rel_path" "$symlink_dir/$rfs_file"
 }
 
 handle_elf() {
