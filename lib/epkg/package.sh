@@ -227,12 +227,11 @@ handle_exec() {
 	# Add app-bin path
 	if [[ "$appbin_flag" == "true" && "$rfs_file" == "/usr/bin/"* ]]; then
 		local rfs_file_appbin="${rfs_file/\/bin/\/app-bin}"
-		local file_basename=$($epkg_helper $ROOTFS_LINK/bin/basename "$rfs_file_appbin")
 		local parent_dir_appbin=${rfs_file_appbin%/*}
 		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
-		pushd "$symlink_dir/$parent_dir_appbin" > /dev/null
-		$epkg_helper $ROOTFS_LINK/bin/ln -sf "../../bin/$file_basename" "$file_basename"
-		popd > /dev/null 
+
+    	local rfs_rel_path=$(realpath --relative-to="$symlink_dir/$parent_dir_appbin" "$symlink_dir/$rfs_file")
+   		$epkg_helper $ROOTFS_LINK/bin/ln -sf "$rfs_rel_path" "$symlink_dir/$rfs_file_appbin"
 	fi
 }
 
