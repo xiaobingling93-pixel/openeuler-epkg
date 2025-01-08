@@ -249,6 +249,8 @@ handle_symlink() {
 	local ln_rfs=${ln_fs_file#$fs_dir}
 	local rfs_file_dirname=$($epkg_helper $ROOTFS_LINK/bin/dirname "$symlink_dir/$rfs_file")
     local rfs_rel_path=$($epkg_helper $ROOTFS_LINK/bin/realpath --relative-to="$rfs_file_dirname" "$symlink_dir/$ln_rfs")
+	# example: cd $cur_envs/usr/bin/
+	# relative ln: lrwxrwxrwx. 1 root root     4 Jan  8 15:45  awk -> gawk
     ln -sf "$rfs_rel_path" "$symlink_dir/$rfs_file"
 }
 
