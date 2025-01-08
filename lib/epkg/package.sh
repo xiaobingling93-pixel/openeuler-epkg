@@ -138,7 +138,7 @@ create_profile_symlinks() {
 }
 
 postinstall_scriptlet() {
-	# remove in future: exec runtimePhase.sh
+	# remove in future: exec pkg.epkg/info/install/
 	IFS='__' read -ra pkg_split <<< "$package"
 	if [[ "${pkg_split[2]}" == "golang" ]]; then
 		# usr/app-bin
@@ -147,6 +147,10 @@ postinstall_scriptlet() {
 		# usr/bin
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/bin/go"
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/bin/gofmt"
+	fi
+
+	if [[ "${pkg_split[2]}" == "ca-certificates" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem $symlink_dir/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 	fi
 }
 
