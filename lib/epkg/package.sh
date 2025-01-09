@@ -34,8 +34,8 @@ install_package() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
 	
-	download_packages
-	uncompress_packages
+	download_packages || return 1
+	uncompress_packages || return 1
 	create_profile_symlinks
 	echo "Attention: Install success"
 }
@@ -97,13 +97,18 @@ download_packages() {
 		else
 			local curl_opts=
 		fi
-		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5
+		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5 || {
+			echo "Error: Failed to download package from $package_url"
+			return 1
+		}
 		if test -s "$file.etag.tmp"; then
 			$epkg_helper mv "$file.etag.tmp" "$file.etag.txt"
 		else
 			$epkg_helper rm -f "$file.etag.tmp"
 		fi
 	done
+
+	return 0
 }
 
 uncompress_packages() {
@@ -114,9 +119,14 @@ uncompress_packages() {
 		test -d $tar_dir/fs && continue
 
 		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
+		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null || {
+			echo "Error: Failed to extract package $package.epkg"
+			return 1
+		}
 		$epkg_helper $ROOTFS_LINK/bin/chmod -R 755 $tar_dir
 	done
+
+	return 0
 }
 
 create_profile_symlinks() {
