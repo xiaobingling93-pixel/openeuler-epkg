@@ -90,7 +90,6 @@ download_packages() {
 
 	for package_url in $packages_url;
 	do
-		echo "Downloading ${package_url##*/}"
 		local file="$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"
 		if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
 			local curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
@@ -101,7 +100,9 @@ download_packages() {
 			echo "Error: Failed to download package from $package_url"
 			return 1
 		}
-		if test -s "$file.etag.tmp"; then
+		# etag compare
+		if [ -s "$file.etag.tmp" ] && ! cmp -s "$file.etag.txt" "$file.etag.tmp"; then
+			echo "Downloading ${package_url##*/}"
 			$epkg_helper mv "$file.etag.tmp" "$file.etag.txt"
 		else
 			$epkg_helper rm -f "$file.etag.tmp"
