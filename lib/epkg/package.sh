@@ -29,6 +29,7 @@ install_package() {
 	do
 		query_package_requires "$dpk"
 	done
+	[ -z "$require_packages" ] && echo "Attention: No such epkg package" && return 1
 
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
@@ -137,15 +138,26 @@ create_profile_symlinks() {
 }
 
 postinstall_scriptlet() {
-	# remove in future: exec runtimePhase.sh
+	# remove in future: exec pkg.epkg/info/install/
 	IFS='__' read -ra pkg_split <<< "$package"
 	if [[ "${pkg_split[2]}" == "golang" ]]; then
-		# usr/app-bin
-		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/app-bin/go"
-		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/app-bin/gofmt"
 		# usr/bin
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/go"    "$symlink_dir/usr/bin/go"
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/lib/golang/bin/gofmt" "$symlink_dir/usr/bin/gofmt"
+		# usr/app-bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "../bin/go"    "$symlink_dir/usr/app-bin/go"
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "../bin/gofmt" "$symlink_dir/usr/app-bin/gofmt"
+	fi
+
+	if [[ "${pkg_split[2]}" == "ca-certificates" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem $symlink_dir/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+	fi
+
+	if [[ "${pkg_split[2]}" == "maven" ]]; then
+		# usr/bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/share/maven/bin/mvn"    "$symlink_dir/usr/bin/mvn"
+		# usr/app-bin
+		$epkg_helper $ROOTFS_LINK/bin/ln -s "../bin/mvn"    "$symlink_dir/usr/app-bin/mvn"
 	fi
 }
 
@@ -229,7 +241,9 @@ handle_exec() {
 		local rfs_file_appbin="${rfs_file/\/bin/\/app-bin}"
 		local parent_dir_appbin=${rfs_file_appbin%/*}
 		[ -e $symlink_dir/$parent_dir_appbin ] || $epkg_helper $ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$parent_dir_appbin"
-		$epkg_helper $ROOTFS_LINK/bin/ln -sf "$symlink_dir/$rfs_file" "$symlink_dir/$rfs_file_appbin" 
+
+    	local rfs_rel_path=$(realpath --relative-to="$symlink_dir/$parent_dir_appbin" "$symlink_dir/$rfs_file")
+   		$epkg_helper $ROOTFS_LINK/bin/ln -sf "$rfs_rel_path" "$symlink_dir/$rfs_file_appbin"
 	fi
 }
 
@@ -240,7 +254,11 @@ handle_symlink() {
     fi
 
 	local ln_rfs=${ln_fs_file#$fs_dir}
-	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
+	local rfs_file_dirname=$($epkg_helper $ROOTFS_LINK/bin/dirname "$symlink_dir/$rfs_file")
+    local rfs_rel_path=$($epkg_helper $ROOTFS_LINK/bin/realpath --relative-to="$rfs_file_dirname" "$symlink_dir/$ln_rfs")
+	# example: cd $cur_envs/usr/bin/
+	# relative ln: lrwxrwxrwx. 1 root root     4 Jan  8 15:45  awk -> gawk
+    ln -sf "$rfs_rel_path" "$symlink_dir/$rfs_file"
 }
 
 handle_elf() {

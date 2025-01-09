@@ -1,0 +1,16 @@
+meta:
+  summary: Jekyll is a simple, blog-aware, static site generator perfect for personal, project, or organization sites.
+  description: Jekyll is a simple, blog-aware, static site generator perfect for personal, project, or organization sites.
+name: jekyll
+version: 4.3.4
+release: 0
+license: MIT
+homepage: https://github.com/jekyll/jekyll
+sources:
+  '0': https://github.com/jekyll/jekyll/archive/refs/tags/v4.3.4.tar.gz
+
+buildSystem: ruby
+buildRequires:
+- ruby
+- ruby-devel
+- rubygems-devel

@@ -98,6 +98,7 @@ __epkg_create_environment() {
 	__get_epkg_helper "env_mode" "$curr_env_root/$env/"
 
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
+	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/etc
 	
     cd $curr_env_root/$env/profile-1
 	$epkg_helper ln -sfT "usr/bin"     "bin"
@@ -105,6 +106,7 @@ __epkg_create_environment() {
 	$epkg_helper ln -sfT "usr/lib"     "lib"
 	$epkg_helper ln -sfT "usr/lib64"   "lib64"
 	$epkg_helper ln -sfT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
+	$epkg_helper cp /etc/resolv.conf $curr_env_root/$env/profile-current/etc/resolv.conf
 
 	if [[  "$subcmd" == "--repo" ]];then
 		if [[ "$repo_path" == *"/"* ]];then
