@@ -120,7 +120,7 @@ uncompress_packages() {
 		test -d $tar_dir/fs && continue
 
 		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null || {
+		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir > /dev/null || {
 			echo "Error: Failed to extract package $package.epkg"
 			return 1
 		}
