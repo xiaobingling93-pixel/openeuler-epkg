@@ -229,7 +229,8 @@ process_all_rpms() {
         release_dist=${release_dist_arch%.*}
         package_dist=${release_dist##*.}
         package_release=${release_dist%.*}
-        package_source=$(rpm -qip "$rpm_package" | awk -F': |.src.rpm' '/Source RPM/ {print $2}')
+        package_file_name="$package-$version_release_dist_arch.rpm"
+        package_source=$(rpm -qip "$rpm_package" | grep "Source RPM"  | awk -F': ' '{print $2}' | awk -F'.src.rpm' '{print $1}')
         echo "$package $package_file_name $package_epoch $package_version $package_release $package_dist $package_arch $package_source"
         
         # step 1 download rpm
