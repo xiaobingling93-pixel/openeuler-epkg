@@ -98,6 +98,7 @@ convert_package_info_to_json () {
     local package_release=$5
     local package_dist=$6
     local package_arch=$7
+    local package_source=$8
     # IFS=' ' read -r package package_hash package_epoch package_version package_release package_dist package_arch<<< $result
     # 创建 JSON 对象
     local json=$(jq -n \
@@ -108,6 +109,7 @@ convert_package_info_to_json () {
         --arg release "$package_release" \
         --arg dist "$package_dist" \
         --arg arch "$package_arch" \
+        --arg source "$package_source" \
         '{
             name: $name,
             hash: $hash,
@@ -115,7 +117,8 @@ convert_package_info_to_json () {
             version: $version,
             release: $release,
             dist: $dist,
-            arch: $arch
+            arch: $arch,
+            source: $source
         }'
     )
     json_data=$json
@@ -226,9 +229,8 @@ process_all_rpms() {
         release_dist=${release_dist_arch%.*}
         package_dist=${release_dist##*.}
         package_release=${release_dist%.*}
-        package_file_name="$package-$version_release_dist_arch.rpm"
-        echo "$package $package_file_name $package_epoch $package_version $package_release $package_dist $package_arch"
-        # 暂停执行，等待用户输入
+        package_source=$(rpm -qip "$rpm_package" | awk -F': |.src.rpm' '/Source RPM/ {print $2}')
+        echo "$package $package_file_name $package_epoch $package_version $package_release $package_dist $package_arch $package_source"
         
         # step 1 download rpm
         cp_input_rpm
@@ -260,7 +262,7 @@ process_all_rpms() {
         # echo "========Turn original requires and provides info to array Done========"
 
         # step 5
-        package_elements="$package $package_hash $package_epoch $package_version $package_release $package_dist $package_arch"
+        package_elements="$package $package_hash $package_epoch $package_version $package_release $package_dist $package_arch $package_source"
         generate_metadata_json $package_elements
         echo "========Json has been generated========="
 
