@@ -15,21 +15,21 @@ declare -A channel_array
 
 
 load_enabled_channel_conf() {
-    local CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
-    local arch=$(uname -m)
-    local enabled_data=$(jq -c '[.. | objects | select(.enabled == "1")] | map({key, value: .value})' "$CHANNEL_CONF_PATH")
+    echo "$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
+    CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
+    json=$(cat $CHANNEL_CONF_PATH)
+    enabled_data=$(echo "$json" | jq -c '[.. | objects | select(.enabled == "1")]')
+    arch=$(uname -m)
 
     while IFS= read -r item; do
         key=$(echo "$item" | jq -r '.key')
-        value=$(echo "$item" | jq -c '.value')
-        # channel.json value
-        name=$(echo "$value" | jq -r '.name')
-        channel=$(echo "$value" | jq -r '.channel')
-        url=$(echo "$value" | jq -r '.url')${arch}/
-        gpgcheck=$(echo "$value" | jq -r '.gpgcheck')
-        gpgkey=$(echo "$value" | jq -r '.gpgkey')
+        name=$(echo "$item" | jq -r '.value.name')
+        channel=$(echo "$item" | jq -r '.value.channel')
+        url=$(echo "$item" | jq -r '.value.url')${arch}/
+        gpgcheck=$(echo "$item" | jq -r '.value.gpgcheck')
+        gpgkey=$(echo "$item" | jq -r '.value.gpgkey')
         channel_array[$key]="$name,$channel,$url,$gpgcheck,$gpgkey"
-    done < <(echo "$enabled_data" | jq -c '.[]')
+    done < <(echo "$enabled_data" | jq -c 'to_entries[]')
 }
 
 find_pkg_metadata_json() {
