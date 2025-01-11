@@ -15,11 +15,9 @@ declare -A channel_array
 
 
 load_enabled_channel_conf() {
-    echo "$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
-    CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
-    json=$(cat $CHANNEL_CONF_PATH)
-    enabled_data=$(echo "$json" | jq -c '[.. | objects | select(.enabled == "1")]')
-    arch=$(uname -m)
+    local CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
+    local arch=$(uname -m)
+    local enabled_data=$(jq -c '[.. | objects | select(.enabled == "1")]' "$CHANNEL_CONF_PATH")
 
     while IFS= read -r item; do
         key=$(echo "$item" | jq -r '.key')
