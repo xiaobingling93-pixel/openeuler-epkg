@@ -39,15 +39,14 @@ find_pkg_metadata_json() {
 
     if [[ $epkg_hash == "" ]]; then
         find "$search_dir" -maxdepth 2 -mindepth 1 -type f -name "*$pkg_name*" | while read -r dir; do
-            dir_name=$(basename "$dir")
-            IFS='__' read -ra parts <<< "$dir_name"
+            IFS='__' read -ra parts <<< "$(basename "$dir")"
             if [[ "__${parts[2]}__" == "$pkg_name" ]]; then
                 echo "$dir"
                 return
             fi
         done
     else
-        result=$(find "$search_dir" -type f -name "${epkg_hash}*" -print -quit)
+        local result=$(find "$search_dir" -type f -name "${epkg_hash}*" -print -quit)
         [[ -n "$result" ]] && echo "$result" && return
     fi
     echo ""
@@ -58,12 +57,13 @@ get_requires() {
     local channel_url=$2
     local channel_name=$3
     local channel_index=$4
-    local pkg_info_path="$channel_url/pkg-info" # 需要改为环境中的路径
-
-    pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
+    # example: https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/everything/aarch64/pkg-info/
+    local pkg_info_path="$channel_url/pkg-info" 
+    # example: .epkg/store/0cf5b7wjt0p4pwrhdse4345q75xty8wy__gmp__6.3.0__2.oe2403/info/package.json
+    local pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
 
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
-        # echo "-------Warning: no package.json for $pkg_name"
+        echo "-------Warning: no package.json for $pkg_name"
         return
     fi
 
@@ -81,20 +81,19 @@ get_requires() {
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
-        epkg_hash=$(echo "$entry" | jq -r '.value.hash')
+        local epkg_hash=$(echo "$entry" | jq -r '.value.hash')
         # 如果当前requirement已经被查询过，则跳过
         if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue
         else
-            pkgname=$(echo "$entry" | jq -r '.value.pkgname')
-            echo "        $pkgname $epkg_hash"
+            local pkgname=$(echo "$entry" | jq -r '.value.pkgname')
 
             if [[ $epkg_hash == "unknown" ]] || [[ $pkgname == "" ]];then
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
                 continue
             fi
             # requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${pkg_epkg_name:0:2}/${pkg_epkg_name%.*}.epkg"
-            new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
+            local new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
             else
