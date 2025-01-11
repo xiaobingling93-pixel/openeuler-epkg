@@ -33,18 +33,13 @@ load_enabled_channel_conf() {
 find_pkg_metadata_json() {
     local pkg_name="__"$1"__"
     local repo_url=$2
-    local search_dir=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
-    # local search_dir=$2
     local epkg_hash=$3
+    # example: .cache/epkg/channel/openEuler-24.09/everything/aarch64/pkg-info
+    local search_dir=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
 
     if [[ $epkg_hash == "" ]]; then
-        find "$search_dir" -maxdepth 2 -mindepth 1 -type f -name "*$pkg_name*"| while read -r dir; do
-            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db__fftw-libs__3.3.8__11.oe2203sp3
+        find "$search_dir" -maxdepth 2 -mindepth 1 -type f -name "*$pkg_name*" | while read -r dir; do
             dir_name=$(basename "$dir")
-            # dir_name=${dir_name%.*}
-            # dir_name=${dir_name%-*}
-            # dir_name=${dir_name%-*}
-            # epkg_name=${dir_name#*-}
             IFS='__' read -ra parts <<< "$dir_name"
             if [[ "__${parts[2]}__" == "$pkg_name" ]]; then
                 echo "$dir"
@@ -52,11 +47,8 @@ find_pkg_metadata_json() {
             fi
         done
     else
-        result=$(find $search_dir -type f -name "$epkg_hash*" | head -n 1)
-        if [[ $result != "" ]]; then
-            echo "$result"
-            return
-        fi
+        result=$(find "$search_dir" -type f -name "${epkg_hash}*" -print -quit)
+        [[ -n "$result" ]] && echo "$result" && return
     fi
     echo ""
 }
