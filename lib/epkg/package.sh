@@ -84,17 +84,15 @@ download_packages() {
 	local curl_help=$($ROOTFS_LINK/bin/curl --help all)
 
 	local url_prefix=${packages_url%% *}
-	local url_prefix=${url_prefix%/*}
-	local url_prefix=${url_prefix%/*}
+	url_prefix=${url_prefix%/*/*}
 	echo "Packages location: $url_prefix"
 
 	for package_url in $packages_url;
 	do
 		local file="$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"
+		local curl_opts=""
 		if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
-			local curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
-		else
-			local curl_opts=
+			curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
 		fi
 		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5 || {
 			echo "Error: Failed to download package from $package_url"
