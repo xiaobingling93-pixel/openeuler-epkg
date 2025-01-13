@@ -7,6 +7,7 @@ install_package() {
 	# /root/.cache/epkg/packages/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
 	# /root/.epkg/store/Z7YEZKCXLA5AAMBOV6ZXCG77MZSLMKIM__libev__4.33__4.oe2409/
 	ROOTFS_LINK=$COMMON_PROFILE_LINK
+	declare -A appbin_sources
 	local require_packages
 	local packages_url=""
 	local uncompress_dir
@@ -27,6 +28,7 @@ install_package() {
 	fi
 	for dpk in ${package_arr[@]}
 	do
+		query_package_sources "$dpk"
 		query_package_requires "$dpk"
 	done
 	[ -z "$require_packages" ] && echo "Attention: No such epkg package" && return 1
@@ -59,6 +61,11 @@ local_install_package() {
 	uncompress_packages
 	create_profile_symlinks
 	echo "Attention: Install success"
+}
+
+query_package_sources() {
+	local pkg_source=$(get_sources $1)
+	[[ -n "$pkg_source" ]] && appbin_sources["$pkg_source"]=1
 }
 
 query_package_requires() {
@@ -137,8 +144,11 @@ create_profile_symlinks() {
 		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"
 		IFS='__' read -ra pkg_split <<< "$package"
-		if [[ "${package_arr[@]}" =~ "${pkg_split[2]}" ]]; then
-			appbin_flag="true"
+		local pkg_source=$(get_sources "${pkg_split[2]}")
+		if [[ -n "$pkg_source" ]]; then
+			[[ -n "${appbin_sources[$pkg_source]}" ]] && appbin_flag="true"
+		else
+			echo "Attention: $package no source field."
 		fi
 		create_symlink_by_fs
 		postinstall_scriptlet
