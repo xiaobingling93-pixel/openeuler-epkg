@@ -36,8 +36,8 @@ install_package() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
 	
-	download_packages || return 1
-	uncompress_packages || return 1
+	download_packages || return
+	uncompress_packages || return
 	create_profile_symlinks
 	echo "Attention: Install success"
 }
@@ -101,10 +101,12 @@ download_packages() {
 		if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
 			curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
 		fi
-		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5 || {
-			echo "Error: Failed to download package from $package_url"
+		# curl		
+		local http_status=$($epkg_helper $ROOTFS_LINK/bin/curl $curl_opts --silent --insecure --retry 5 -w "%{http_code}" -o "$file" "$package_url")
+		if [[ "$http_status" != "200" && "$http_status" != "304" ]]; then
+			echo "Error: Failed to download package from $package_url, http_status: $http_status"
 			return 1
-		}
+		fi
 		# etag compare
 		if [ -s "$file.etag.tmp" ] && ! cmp -s "$file.etag.txt" "$file.etag.tmp"; then
 			echo "Downloading ${package_url##*/}"
@@ -120,16 +122,13 @@ download_packages() {
 uncompress_packages() {
 	for package in $require_packages;
 	do
-		local tar_dir="$uncompress_dir/$package"
-
-		test -d $tar_dir/fs && continue
-
-		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$epkg_helper $ROOTFS_LINK/bin/tar --zstd --no-same-owner -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir > /dev/null || {
-			echo "Error: Failed to extract package $package.epkg"
+		[ -d "$uncompress_dir/$package/fs" ] && continue
+		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$uncompress_dir/$package"
+		$epkg_helper $ROOTFS_LINK/bin/tar --zstd --no-same-owner -xf $EPKG_PKG_CACHE_DIR/$package.epkg -C "$uncompress_dir/$package" || {
+			echo "Error: Failed to extract package $EPKG_PKG_CACHE_DIR/$package.epkg"
 			return 1
 		}
-		$epkg_helper $ROOTFS_LINK/bin/chmod -R 755 $tar_dir
+		$epkg_helper $ROOTFS_LINK/bin/chmod -R 755 "$uncompress_dir/$package"
 	done
 
 	return 0
@@ -141,10 +140,11 @@ create_profile_symlinks() {
 		echo "Installing $package"
 		pushd $uncompress_dir/$package > /dev/null
 		local fs_dir="$uncompress_dir/$package/fs"
-		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
+		local fs_files=$($ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"
 		IFS='__' read -ra pkg_split <<< "$package"
-		local pkg_source=$(get_sources "${pkg_split[2]}")
+		local pkg_source
+	 	pkg_source=$(get_sources "${pkg_split[2]}")
 		if [[ -n "$pkg_source" ]]; then
 			[[ -n "${appbin_sources[$pkg_source]}" ]] && appbin_flag="true"
 		else
@@ -169,7 +169,7 @@ postinstall_scriptlet() {
 	fi
 
 	if [[ "${pkg_split[2]}" == "ca-certificates" ]]; then
-		$epkg_helper $ROOTFS_LINK/bin/cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem $symlink_dir/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+		$epkg_helper $ROOTFS_LINK/bin/cp $COMMON_PROFILE_LINK/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem $symlink_dir/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 	fi
 
 	if [[ "${pkg_split[2]}" == "maven" ]]; then
