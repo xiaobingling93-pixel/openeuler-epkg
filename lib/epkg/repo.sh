@@ -30,21 +30,21 @@ init_channel_repo()
 	do
 		[[ -f ${channel_json} ]] || continue
 
-		has_channel=$(cat ${channel_json} | jq 'has("'"${channel}"'")')
+		has_channel=$(cat ${channel_json} | $COMMON_PROFILE_LINK/bin/jq 'has("'"${channel}"'")')
 
 		[[ $has_channel == true ]] || continue
 
-		channel_content=$(cat ${channel_json} | jq '.["'"${channel}"'"]')
+		channel_content=$(cat ${channel_json} | $COMMON_PROFILE_LINK/bin/jq '.["'"${channel}"'"]')
 
 		[[ -z $repo ]] && {
-			jq --argjson channel_content "${channel_content}" '.["'"${channel}"'"] = '"${channel_content}"'' "${env_channel_json}" > ${tmp_env_channel_json} && \
+			$COMMON_PROFILE_LINK/bin/jq --argjson channel_content "${channel_content}" '.["'"${channel}"'"] = '"${channel_content}"'' "${env_channel_json}" > ${tmp_env_channel_json} && \
 				mv -f ${tmp_env_channel_json} ${env_channel_json}
 		}
 
 		[[ -n ${repo} ]] && {
-			repo_content=$(echo "${channel_content}" | jq '.["'"${repo}"'"]')
+			repo_content=$(echo "${channel_content}" | $COMMON_PROFILE_LINK/bin/jq '.["'"${repo}"'"]')
 
-			jq --argjson repo_content "${repo_content}" '.["'"${channel}"'"]["'"${repo}"'"] = '"${repo_content}"'' "${env_channel_json}" > ${tmp_env_channel_json} && \
+			$COMMON_PROFILE_LINK/bin/jq --argjson repo_content "${repo_content}" '.["'"${channel}"'"]["'"${repo}"'"] = '"${repo_content}"'' "${env_channel_json}" > ${tmp_env_channel_json} && \
 				mv -f ${tmp_env_channel_json} ${env_channel_json}
 		}
 	done
@@ -80,7 +80,7 @@ list_repos()
 		printf '%.0s-' $(seq 1 ${l_length})
 		printf '\n'
 
-		jq -r 'to_entries[] | "\(.key) \(.value | to_entries[] | "\(.key) \(.value.url)")"' "${channel_json}" | sort | while read -r channel repo url; do
+		$COMMON_PROFILE_LINK/bin/jq -r 'to_entries[] | "\(.key) \(.value | to_entries[] | "\(.key) \(.value.url)")"' "${channel_json}" | sort | while read -r channel repo url; do
     			printf "%-30s | %-15s | %-1s\n" "$channel" "$repo" "$url"
 		done
 		printf '%.0s-' $(seq 1 ${l_length})

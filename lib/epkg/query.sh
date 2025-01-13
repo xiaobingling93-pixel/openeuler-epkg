@@ -17,17 +17,17 @@ declare -A channel_array
 load_enabled_channel_conf() {
     local CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
     local arch=$(uname -m)
-    local enabled_data=$(jq -c '[.. | objects | select(.enabled == "1")]' "$CHANNEL_CONF_PATH")
+    local enabled_data=$($COMMON_PROFILE_LINK/bin/jq -c '[.. | objects | select(.enabled == "1")]' "$CHANNEL_CONF_PATH")
 
     while IFS= read -r item; do
-        key=$(echo "$item" | jq -r '.key')
-        name=$(echo "$item" | jq -r '.value.name')
-        channel=$(echo "$item" | jq -r '.value.channel')
-        url=$(echo "$item" | jq -r '.value.url')${arch}/
-        gpgcheck=$(echo "$item" | jq -r '.value.gpgcheck')
-        gpgkey=$(echo "$item" | jq -r '.value.gpgkey')
+        key=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.key')
+        name=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.name')
+        channel=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.channel')
+        url=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.url')${arch}/
+        gpgcheck=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.gpgcheck')
+        gpgkey=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.gpgkey')
         channel_array[$key]="$name,$channel,$url,$gpgcheck,$gpgkey"
-    done < <(echo "$enabled_data" | jq -c 'to_entries[]')
+    done < <(echo "$enabled_data" | $COMMON_PROFILE_LINK/bin/jq -c 'to_entries[]')
 }
 
 find_pkg_metadata_json() {
@@ -62,7 +62,7 @@ get_sources() {
         local pkg_info_path="$channel_url/pkg-info"
         local pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
         if [[ -f "$pkg_metadata_file_path" ]]; then
-            local pkg_source=$(jq -r '.source' "$pkg_metadata_file_path")
+            local pkg_source=$($COMMON_PROFILE_LINK/bin/jq -r '.source' "$pkg_metadata_file_path")
             echo "$pkg_source"
             return
         fi
@@ -85,7 +85,7 @@ get_requires() {
     fi
 
     local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
-    local pkg_hash=$(jq -r '.hash' "$pkg_metadata_file_path")
+    local pkg_hash=$($COMMON_PROFILE_LINK/bin/jq -r '.hash' "$pkg_metadata_file_path")
 
     if [[ -z "$pkg_hash" || "$pkg_hash" == "null" ]]; then
         echo "-------Warning: Unable to extract hash for $pkg_name"
@@ -98,12 +98,12 @@ get_requires() {
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
-        local epkg_hash=$(echo "$entry" | jq -r '.value.hash')
+        local epkg_hash=$(echo "$entry" | $COMMON_PROFILE_LINK/bin/jq -r '.value.hash')
         # 如果当前requirement已经被查询过，则跳过
         if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue
         else
-            local pkgname=$(echo "$entry" | jq -r '.value.pkgname')
+            local pkgname=$(echo "$entry" | $COMMON_PROFILE_LINK/bin/jq -r '.value.pkgname')
 
             if [[ $epkg_hash == "unknown" ]] || [[ $pkgname == "" ]];then
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
@@ -118,7 +118,7 @@ get_requires() {
                 continue
             fi
         fi
-    done < <(jq -c '(.depends // {}) | to_entries[]' "$pkg_metadata_file_path")
+    done < <($COMMON_PROFILE_LINK/bin/jq -c '(.depends // {}) | to_entries[]' "$pkg_metadata_file_path")
 }
 
 find_pkg_names() {
@@ -207,7 +207,7 @@ show_package_file_list() {
         pkg_metadata_file_path="$(find_pkg_metadata_json $query_name $pkg_info_path "")"
         echo "pkg_metadata_file_path: $pkg_metadata_file_path"
 
-        read name hash version release dist <<< $(jq -r '. | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
+        read name hash version release dist <<< $($COMMON_PROFILE_LINK/bin/jq -r '. | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
                # b976e8f53bddb31373d7ba3ccf9dc20fd2af0e553fbda299261ba4843346e646-CUnit-2.1.3-24.oe2203sp3.epkg
         pkg_store_file_name="$hash"__"$name"__"$version"__"$release.$dist.epkg"
 
