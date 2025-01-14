@@ -178,6 +178,20 @@ postinstall_scriptlet() {
 		# usr/app-bin
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "../bin/mvn"    "$symlink_dir/usr/app-bin/mvn"
 	fi
+
+	if [[ "${pkg_split[2]}" == "python3-pip" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env python3|' $symlink_dir/usr/bin/pip
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env python3|' $symlink_dir/usr/bin/pip3
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env python3|' $symlink_dir/usr/bin/pip3.11
+	fi
+
+	if [[ "${pkg_split[2]}" == "ruby" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env ruby|' $symlink_dir/usr/bin/erb
+	fi
+
+	if [[ "${pkg_split[2]}" == "rubygems" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env ruby|' $symlink_dir/usr/bin/gem	
+	fi
 }
 
 create_symlink_by_fs() {
