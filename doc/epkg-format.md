@@ -51,8 +51,8 @@ enforce file order:
   "epoch": null,
   "hash": null,
   "dist": null,
+  "arch": null,
   "source": "xxxxx",
-  "architecture": null,
   "summary": "xxxxxxx",
   "description": "xxxxxxxx",
   "depends": [
