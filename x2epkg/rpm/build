@@ -1,9 +1,0 @@
-#!/bin/sh
-# SPDX-License-Identifier: MulanPSL-2.0+
-# Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
-
-. $CCI_SRC/container/defconfig.sh
-
-docker_skip_rebuild "convert-epkg"
-
-docker build -t convert-epkg .
