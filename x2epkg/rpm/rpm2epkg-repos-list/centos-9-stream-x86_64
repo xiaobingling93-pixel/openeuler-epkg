@@ -1,4 +1,0 @@
-/srv/os-repo/centos/9-stream/BaseOS/x86_64/os              /srv/os-repo/epkg3/channel/centos-9-stream/BaseOS/x86_64
-/srv/os-repo/centos/9-stream/AppStream/x86_64/os           /srv/os-repo/epkg3/channel/centos-9-stream/AppStream/x86_64
-/srv/os-repo/centos/9-stream/HighAvailability/x86_64/os    /srv/os-repo/epkg3/channel/centos-9-stream/HighAvailability/x86_64
-/srv/os-repo/centos/9-stream/CRB/x86_64/os                 /srv/os-repo/epkg3/channel/centos-9-stream/CRB/x86_64
