@@ -41,14 +41,14 @@ def get_entry_hash_param(entry: Path) -> (bytes, str):
 
 
 def update_package_json():
-    with open(os.path.join(output_path, "package.json"), "r") as f:
+    with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "r") as f:
         content = f.read()
     metadata = json.loads(content)
     metadata["hash"] = get_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
     epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
     metadata["hash_version"] = "1"
-    with open(os.path.join(output_path, "package.json"), "w") as f:
-        f.write(json.dumps(metadata, sort_keys=True))
+    with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "w") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
     return epkg_file_name
 
 
@@ -58,5 +58,5 @@ if __name__ == '__main__':
     epkg_conversion_dir = f"{home_path}/epkg_conversion"
 
     epkg_name = update_package_json()
-    os.mkdir(f"{output_path}/store/{epkg_name[:2]}/")
-    os.system(f"tar --zstd -cvf {output_path}/store/${epkg_name[:2]}/${epkg_name} -C ${epkg_conversion_dir} .")
+    os.makedirs(f"{output_path}/store/{epkg_name[:2]}/", exist_ok=True)
+    os.system(f"tar --zstd -cvf {output_path}/store/{epkg_name[:2]}/{epkg_name} -C {epkg_conversion_dir} .")
