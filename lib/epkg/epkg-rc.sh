@@ -121,7 +121,10 @@ epkg() {
 					return
 					;;
 				activate)
-					if [[ "$env" == "common" ]]; then
+					if [ -z "$env" ]; then
+						echo "env_name cannot be empty!"
+						return
+					elif [[ "$env" == "common" ]]; then
 						echo "$env cannot be activated!"
 						return
 					elif [ ! -d "$HOME/.epkg/envs/$env" ]; then

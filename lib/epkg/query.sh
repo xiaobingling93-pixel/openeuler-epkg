@@ -15,52 +15,58 @@ declare -A channel_array
 
 
 load_enabled_channel_conf() {
-    echo "$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
-    CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
-    json=$(cat $CHANNEL_CONF_PATH)
-    enabled_data=$(echo "$json" | jq -c '[.. | objects | select(.enabled == "1")]')
-    arch=$(uname -m)
+    local CHANNEL_CONF_PATH="$CURRENT_PROFILE_DIR/etc/epkg/channel.json"
+    local arch=$(uname -m)
+    local enabled_data=$($COMMON_PROFILE_LINK/bin/jq -c '[.. | objects | select(.enabled == "1")]' "$CHANNEL_CONF_PATH")
 
     while IFS= read -r item; do
-        key=$(echo "$item" | jq -r '.key')
-        name=$(echo "$item" | jq -r '.value.name')
-        channel=$(echo "$item" | jq -r '.value.channel')
-        url=$(echo "$item" | jq -r '.value.url')${arch}/
-        gpgcheck=$(echo "$item" | jq -r '.value.gpgcheck')
-        gpgkey=$(echo "$item" | jq -r '.value.gpgkey')
+        key=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.key')
+        name=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.name')
+        channel=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.channel')
+        url=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.url')${arch}/
+        gpgcheck=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.gpgcheck')
+        gpgkey=$(echo "$item" | $COMMON_PROFILE_LINK/bin/jq -r '.value.gpgkey')
         channel_array[$key]="$name,$channel,$url,$gpgcheck,$gpgkey"
-    done < <(echo "$enabled_data" | jq -c 'to_entries[]')
+    done < <(echo "$enabled_data" | $COMMON_PROFILE_LINK/bin/jq -c 'to_entries[]')
 }
 
 find_pkg_metadata_json() {
     local pkg_name="__"$1"__"
     local repo_url=$2
-    local search_dir=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
-    # local search_dir=$2
     local epkg_hash=$3
+    # example: .cache/epkg/channel/openEuler-24.09/everything/aarch64/pkg-info
+    local search_dir=$EPKG_CHANNEL_CACHE_DIR/${repo_url##*/channel/}
 
     if [[ $epkg_hash == "" ]]; then
-        find "$search_dir" -maxdepth 2 -mindepth 1 -type f -name "*$pkg_name*"| while read -r dir; do
-            # 形如：ebe594c852e852f774472fa73aca86f4ac30c7ea43db9cf9055550d5357c92db__fftw-libs__3.3.8__11.oe2203sp3
-            dir_name=$(basename "$dir")
-            # dir_name=${dir_name%.*}
-            # dir_name=${dir_name%-*}
-            # dir_name=${dir_name%-*}
-            # epkg_name=${dir_name#*-}
-            IFS='__' read -ra parts <<< "$dir_name"
+        find "$search_dir" -maxdepth 2 -mindepth 1 -type f -name "*$pkg_name*" | while read -r dir; do
+            IFS='__' read -ra parts <<< "$(basename "$dir")"
             if [[ "__${parts[2]}__" == "$pkg_name" ]]; then
                 echo "$dir"
                 return
             fi
         done
     else
-        result=$(find $search_dir -type f -name "$epkg_hash*" | head -n 1)
-        if [[ $result != "" ]]; then
-            echo "$result"
-            return
-        fi
+        local result=$(find "$search_dir" -type f -name "${epkg_hash}*" -print -quit)
+        [[ -n "$result" ]] && echo "$result" && return
     fi
     echo ""
+}
+
+get_sources() {
+    local pkg_name=$1
+    load_enabled_channel_conf
+    local channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
+    for channel_index in $channel_indexs; do
+        IFS=',' read -r name channel url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
+        local channel_url=$url
+        local pkg_info_path="$channel_url/pkg-info"
+        local pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
+        if [[ -f "$pkg_metadata_file_path" ]]; then
+            local pkg_source=$($COMMON_PROFILE_LINK/bin/jq -r '.source' "$pkg_metadata_file_path")
+            echo "$pkg_source"
+            return
+        fi
+    done
 }
 
 get_requires() {
@@ -68,17 +74,18 @@ get_requires() {
     local channel_url=$2
     local channel_name=$3
     local channel_index=$4
-    local pkg_info_path="$channel_url/pkg-info" # 需要改为环境中的路径
-
-    pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
+    # example: https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/everything/aarch64/pkg-info/
+    local pkg_info_path="$channel_url/pkg-info" 
+    # example: .epkg/store/0cf5b7wjt0p4pwrhdse4345q75xty8wy__gmp__6.3.0__2.oe2403/info/package.json
+    local pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
 
     if [[ ! -f "$pkg_metadata_file_path" ]]; then
-        # echo "-------Warning: no package.json for $pkg_name"
+        echo "-------Warning: no package.json for $pkg_name"
         return
     fi
 
     local pkg_epkg_name="$(basename ${pkg_metadata_file_path})"
-    local pkg_hash=$(jq -r '.hash' "$pkg_metadata_file_path")
+    local pkg_hash=$($COMMON_PROFILE_LINK/bin/jq -r '.hash' "$pkg_metadata_file_path")
 
     if [[ -z "$pkg_hash" || "$pkg_hash" == "null" ]]; then
         echo "-------Warning: Unable to extract hash for $pkg_name"
@@ -91,20 +98,19 @@ get_requires() {
 
     # 遍历pkg_name关联的package.json中的requires字段，递归查询每一层requirement的requires对应的pkg name
     while IFS= read -r entry; do
-        epkg_hash=$(echo "$entry" | jq -r '.value.hash')
+        local epkg_hash=$(echo "$entry" | $COMMON_PROFILE_LINK/bin/jq -r '.value.hash')
         # 如果当前requirement已经被查询过，则跳过
         if [[ -n "${requires_array[$epkg_hash]+x}" ]]; then
             continue
         else
-            pkgname=$(echo "$entry" | jq -r '.value.pkgname')
-            echo "        $pkgname $epkg_hash"
+            local pkgname=$(echo "$entry" | $COMMON_PROFILE_LINK/bin/jq -r '.value.pkgname')
 
             if [[ $epkg_hash == "unknown" ]] || [[ $pkgname == "" ]];then
                 echo "-------Warning: abnormal requirement [$epkg_hash]---[$pkgname]"
                 continue
             fi
             # requires_array["$epkg_hash"]="${pkgname}   ${channel_url}/store/${pkg_epkg_name:0:2}/${pkg_epkg_name%.*}.epkg"
-            new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
+            local new_pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path $epkg_hash)"
             if [[ -f "$new_pkg_metadata_file_path" ]]; then
                 get_requires $pkgname $channel_url $channel_name $channel_index
             else
@@ -112,7 +118,7 @@ get_requires() {
                 continue
             fi
         fi
-    done < <(jq -c '(.depends // {}) | to_entries[]' "$pkg_metadata_file_path")
+    done < <($COMMON_PROFILE_LINK/bin/jq -c '(.depends // {}) | to_entries[]' "$pkg_metadata_file_path")
 }
 
 find_pkg_names() {
@@ -201,7 +207,7 @@ show_package_file_list() {
         pkg_metadata_file_path="$(find_pkg_metadata_json $query_name $pkg_info_path "")"
         echo "pkg_metadata_file_path: $pkg_metadata_file_path"
 
-        read name hash version release dist <<< $(jq -r '. | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
+        read name hash version release dist <<< $($COMMON_PROFILE_LINK/bin/jq -r '. | "\(.name) \(.hash) \(.version) \(.release) \(.dist)"' "$pkg_metadata_file_path")
                # b976e8f53bddb31373d7ba3ccf9dc20fd2af0e553fbda299261ba4843346e646-CUnit-2.1.3-24.oe2203sp3.epkg
         pkg_store_file_name="$hash"__"$name"__"$version"__"$release.$dist.epkg"
 

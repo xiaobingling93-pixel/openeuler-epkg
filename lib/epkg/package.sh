@@ -7,6 +7,7 @@ install_package() {
 	# /root/.cache/epkg/packages/YW5WTOMKY2E5DLYYMTIDIWY3XIGHNILT__info__7.0.3__3.oe2409.epkg
 	# /root/.epkg/store/Z7YEZKCXLA5AAMBOV6ZXCG77MZSLMKIM__libev__4.33__4.oe2409/
 	ROOTFS_LINK=$COMMON_PROFILE_LINK
+	declare -A appbin_sources
 	local require_packages
 	local packages_url=""
 	local uncompress_dir
@@ -27,6 +28,7 @@ install_package() {
 	fi
 	for dpk in ${package_arr[@]}
 	do
+		query_package_sources "$dpk"
 		query_package_requires "$dpk"
 	done
 	[ -z "$require_packages" ] && echo "Attention: No such epkg package" && return 1
@@ -34,8 +36,8 @@ install_package() {
 	local epkg_helper=
 	__get_epkg_helper "install_mode"
 	
-	download_packages
-	uncompress_packages
+	download_packages || return
+	uncompress_packages || return
 	create_profile_symlinks
 	echo "Attention: Install success"
 }
@@ -61,6 +63,11 @@ local_install_package() {
 	echo "Attention: Install success"
 }
 
+query_package_sources() {
+	local pkg_source=$(get_sources $1)
+	[[ -n "$pkg_source" ]] && appbin_sources["$pkg_source"]=1
+}
+
 query_package_requires() {
 	local requires=$(accurate_query_requires $1)
 	local packages_info=${requires#*PACKAGE  CHANNEL}
@@ -84,39 +91,47 @@ download_packages() {
 	local curl_help=$($ROOTFS_LINK/bin/curl --help all)
 
 	local url_prefix=${packages_url%% *}
-	local url_prefix=${url_prefix%/*}
-	local url_prefix=${url_prefix%/*}
+	url_prefix=${url_prefix%/*/*}
 	echo "Packages location: $url_prefix"
 
 	for package_url in $packages_url;
 	do
-		echo "Downloading ${package_url##*/}"
 		local file="$EPKG_PKG_CACHE_DIR/$($ROOTFS_LINK/bin/basename $package_url)"
+		local curl_opts=""
 		if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
-			local curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
-		else
-			local curl_opts=
+			curl_opts="--etag-save $file.etag.tmp --etag-compare $file.etag.txt"
 		fi
-		$epkg_helper $ROOTFS_LINK/bin/curl --silent --insecure $curl_opts -o "$file" "$package_url"  --retry 5
-		if test -s "$file.etag.tmp"; then
+		# curl		
+		local http_status=$($epkg_helper $ROOTFS_LINK/bin/curl $curl_opts --silent --insecure --retry 5 -w "%{http_code}" -o "$file" "$package_url")
+		if [[ "$http_status" != "200" && "$http_status" != "304" ]]; then
+			echo "Error: Failed to download package from $package_url, http_status: $http_status"
+			return 1
+		fi
+		# etag compare
+		if [ -s "$file.etag.tmp" ] && ! cmp -s "$file.etag.txt" "$file.etag.tmp"; then
+			echo "Downloading ${package_url##*/}"
 			$epkg_helper mv "$file.etag.tmp" "$file.etag.txt"
 		else
 			$epkg_helper rm -f "$file.etag.tmp"
 		fi
 	done
+
+	return 0
 }
 
 uncompress_packages() {
 	for package in $require_packages;
 	do
-		local tar_dir="$uncompress_dir/$package"
-
-		test -d $tar_dir/fs && continue
-
-		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$tar_dir"
-		$epkg_helper $ROOTFS_LINK/bin/tar --zstd -xvf $EPKG_PKG_CACHE_DIR/$package.epkg -C $tar_dir &> /dev/null
-		$epkg_helper $ROOTFS_LINK/bin/chmod -R 755 $tar_dir
+		[ -d "$uncompress_dir/$package/fs" ] && continue
+		$epkg_helper $ROOTFS_LINK/bin/mkdir -p "$uncompress_dir/$package"
+		$epkg_helper $ROOTFS_LINK/bin/tar --zstd --no-same-owner -xf $EPKG_PKG_CACHE_DIR/$package.epkg -C "$uncompress_dir/$package" || {
+			echo "Error: Failed to extract package $EPKG_PKG_CACHE_DIR/$package.epkg"
+			return 1
+		}
+		$epkg_helper $ROOTFS_LINK/bin/chmod -R 755 "$uncompress_dir/$package"
 	done
+
+	return 0
 }
 
 create_profile_symlinks() {
@@ -125,11 +140,15 @@ create_profile_symlinks() {
 		echo "Installing $package"
 		pushd $uncompress_dir/$package > /dev/null
 		local fs_dir="$uncompress_dir/$package/fs"
-		local fs_files=$($epkg_helper $ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
+		local fs_files=$($ROOTFS_LINK/bin/find $fs_dir \( -type f -o -type l \))
 		local appbin_flag="false"
 		IFS='__' read -ra pkg_split <<< "$package"
-		if [[ "${package_arr[@]}" =~ "${pkg_split[2]}" ]]; then
-			appbin_flag="true"
+		local pkg_source
+	 	pkg_source=$(get_sources "${pkg_split[2]}")
+		if [[ -n "$pkg_source" ]]; then
+			[[ -n "${appbin_sources[$pkg_source]}" ]] && appbin_flag="true"
+		else
+			echo "Attention: $package no source field."
 		fi
 		create_symlink_by_fs
 		postinstall_scriptlet
@@ -150,7 +169,7 @@ postinstall_scriptlet() {
 	fi
 
 	if [[ "${pkg_split[2]}" == "ca-certificates" ]]; then
-		$epkg_helper $ROOTFS_LINK/bin/cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem $symlink_dir/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+		$epkg_helper $ROOTFS_LINK/bin/cp $COMMON_PROFILE_LINK/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem $symlink_dir/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 	fi
 
 	if [[ "${pkg_split[2]}" == "maven" ]]; then
@@ -158,6 +177,20 @@ postinstall_scriptlet() {
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "$symlink_dir/usr/share/maven/bin/mvn"    "$symlink_dir/usr/bin/mvn"
 		# usr/app-bin
 		$epkg_helper $ROOTFS_LINK/bin/ln -s "../bin/mvn"    "$symlink_dir/usr/app-bin/mvn"
+	fi
+
+	if [[ "${pkg_split[2]}" == "python3-pip" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env python3|' $symlink_dir/usr/bin/pip
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env python3|' $symlink_dir/usr/bin/pip3
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env python3|' $symlink_dir/usr/bin/pip3.11
+	fi
+
+	if [[ "${pkg_split[2]}" == "ruby" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env ruby|' $symlink_dir/usr/bin/erb
+	fi
+
+	if [[ "${pkg_split[2]}" == "rubygems" ]]; then
+		$epkg_helper $ROOTFS_LINK/bin/sed -i '1s|^.*$|#!/usr/bin/env ruby|' $symlink_dir/usr/bin/gem	
 	fi
 }
 
