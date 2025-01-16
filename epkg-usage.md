@@ -12,9 +12,11 @@
 # 安装时可选user/global安装模式，user模式仅当前安装用户可用，global模式全局用户可用
 # 仅root用户可使用global安装模式
 wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-installer.sh
-sh epkg-installer.sh
+bash epkg-installer.sh
 
 # 初始化epkg
+# user模式安装：自动初始化
+# global模式安装：root用户自动初始化，其他用户需要手动初始化
 epkg init
 bash // 重新执行.bashrc, 获得新的PATH
 

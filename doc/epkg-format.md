@@ -52,22 +52,23 @@ enforce file order:
   "hash": null,
   "dist": null,
   "arch": null,
+  "source": "xxxxx",
   "summary": "xxxxxxx",
   "description": "xxxxxxxx",
+  "depends": [
+    {
+      "hash": "hash1",
+      "pkgname": "pkgname1"
+    }
+  ],
+  "requires": [
+    "rpmlib(xxxx) <= xxx",
+    "pkgname1"
+  ],
   "provides": [
     "/bin/sh",
     "libc.so.6(GLIBC_2.34)(64bit)",
     "xxx-libs"
-  ],
-  "requires": [
-    {
-      "hash": "hash1",
-      "pkgname": "xxx"
-    },
-    {
-      "hash": "hash2",
-      "pkgname": "yyy"
-    }
   ],
   "recommends": null,
   "suggests": null
