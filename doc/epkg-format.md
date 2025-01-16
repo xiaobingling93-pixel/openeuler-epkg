@@ -244,15 +244,13 @@ location:
 # 以下为从.epkg解压所得
 fs/
 info/
-
-# 以下为动态维护, for tracking installed packages and their users
-info/use-ref/${user}:${env} # can cross verify with /home/${user}/.epkg/envs/${env}/profile-current/installed-packages.json
 ```
 
 ## installed package tracking
 
-/home/${user}/.epkg/envs/${env}/profile-current/installed-packages.json
+per-env tracking:
 ```json
+# /home/${user}/.epkg/envs/${env}/profile-current/installed-packages.json
 {
   "${pkghash1}__${pkgname}__${pkgver}__${pkgrel}": {
     "install-time": null,
@@ -260,10 +258,12 @@ info/use-ref/${user}:${env} # can cross verify with /home/${user}/.epkg/envs/${e
   },
   "${pkghash2}__${pkgname}__${pkgver}__${pkgrel}": {
     "install-time": null,
-    "manual-install": false
   }
 }
 ```
+
+per-store tracking is done by finding all `installed-packages.json` in all user/envs
+and check them together.
 
 ## epkg db: 本地软件信息数据库与索引
 
