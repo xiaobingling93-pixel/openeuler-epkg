@@ -253,11 +253,11 @@ per-env tracking:
 # /home/${user}/.epkg/envs/${env}/profile-current/installed-packages.json
 {
   "${pkghash1}__${pkgname}__${pkgver}__${pkgrel}": {
-    "install-time": null,
-    "manual-install": true
+    "install_time": null,
+    "manual_install": true
   },
   "${pkghash2}__${pkgname}__${pkgver}__${pkgrel}": {
-    "install-time": null,
+    "install_time": null,
   }
 }
 ```
