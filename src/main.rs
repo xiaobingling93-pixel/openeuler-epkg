@@ -1,0 +1,219 @@
+mod models;
+mod io;
+mod depends;
+mod install;
+mod upgrade;
+mod remove;
+mod list;
+mod hash;
+use std::env;
+use crate::models::*;
+use anyhow::Result;
+
+use clap::{Arg, ArgAction, Command};
+
+fn main() -> Result<()> {
+    // Create the CLI app
+    let matches = Command::new("epkg")
+        .version(env!("CARGO_PKG_VERSION"))
+        .author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
+        .author("Duan Pengjie <pengjieduan@gmail.com>")
+        .author("Yingjiahui <ying_register@163.com>")
+        .about("The EPKG package manager")
+        .arg(
+            Arg::new("env")
+                .long("env")
+                .value_name("ENV")
+                .help("Select the environment")
+                .num_args(1)
+                .value_parser(clap::value_parser!(String))
+        )
+        .arg(
+            Arg::new("arch")
+                .long("arch")
+                .value_name("ARCH")
+                .help("Select the CPU architecture")
+                .num_args(1)
+                .value_parser(clap::value_parser!(String))
+        )
+        .arg(
+            Arg::new("simulate")
+                .short('s')
+                .long("simulate")
+                .aliases(&["dry-run"])
+                .help("Simulated run without changing the system")
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("download_only")
+                .long("download-only")
+                .help("Download packages without installing")
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .help("Suppress output")
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Verbose operation, show debug messages")
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("assume_yes")
+                .short('y')
+                .long("assume-yes")
+                .help("Automatically answer yes to all prompts")
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("ignore_missing")
+                .short('m')
+                .long("ignore-missing")
+                .help("Ignore missing packages")
+                .action(ArgAction::SetTrue)
+        )
+        .subcommand(
+            Command::new("install")
+                .about("Install packages")
+                .arg(
+                    Arg::new("install_suggests")
+                    .long("install-suggests")
+                    .help("Consider suggested packages as a dependency for installing")
+                    .action(ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("no_install_recommends")
+                    .long("no-install-recommends")
+                    .help("Do not consider recommended packages as a dependency for installing")
+                    .action(ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("package-spec")
+                        .num_args(1..)
+                        .required(true)
+                        .help("Package specifications to install")
+                )
+        )
+        .subcommand(
+            Command::new("upgrade")
+                .about("upgrade packages")
+                .arg(
+                    Arg::new("package-spec")
+                        .num_args(1..)
+                        .required(false)
+                        .help("Package specifications to upgrade")
+                )
+        )
+        .subcommand(
+            Command::new("remove")
+                .about("Remove packages")
+                .arg(
+                    Arg::new("package-spec")
+                        .num_args(1..)
+                        .required(true)
+                        .help("Package specifications to remove")
+                )
+        )
+        .subcommand(
+            Command::new("list")
+                .about("List packages")
+                .arg(
+                    Arg::new("list_all")
+                        .long("all")
+                        .help("List all packages")
+                        .action(ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("list_installed")
+                        .long("installed")
+                        .help("List installed packages")
+                        .action(ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("list_available")
+                        .long("available")
+                        .help("List available packages")
+                        .action(ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("glob-pattern")
+                        .num_args(1..)
+                        .required(false)
+                        .help("Package glob pattern to list")
+                )
+        )
+        .get_matches();
+
+    if matches.contains_id("version") {
+        println!("epkg version {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    // Create EPKGOptions and PackageManager instance
+    let mut options: EPKGOptions = Default::default();
+
+    options.env = if let Some(env) = matches.get_one::<String>("env") {
+        // Use the command-line argument if provided
+        env.to_string()
+    } else if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
+        // Use the environment variable if set
+        active_env
+    } else {
+        // Use the default value
+        "main".to_string()
+    };
+
+    options.arch = if let Some(arch) = matches.get_one::<String>("arch") {
+        arch.to_string()
+    } else {
+        std::env::consts::ARCH.to_string()
+    };
+
+    options.simulate            = matches.get_flag("simulate");
+    options.download_only       = matches.get_flag("download_only");
+    options.quiet               = matches.get_flag("quiet");
+    options.verbose             = matches.get_flag("verbose");
+    options.assume_yes          = matches.get_flag("assume_yes");
+    options.ignore_missing      = matches.get_flag("ignore_missing");
+
+    let mut package_manager: PackageManager = Default::default();
+    package_manager.options = options;
+
+    // Handle subcommands
+    if let Some(matches) = matches.subcommand_matches("install") {
+        if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            package_manager.options.install_suggests = matches.get_flag("install_suggests");
+            package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
+            package_manager.install_packages(package_specs)?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("upgrade") {
+        if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            package_manager.upgrade_packages(package_specs)?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("remove") {
+        if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            package_manager.remove_packages(package_specs)?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("list") {
+        if let Some(package_specs) = matches.get_one::<String>("glob-pattern") {
+            package_manager.options.list_all = matches.get_flag("list_all");
+            package_manager.options.list_installed = matches.get_flag("list_installed");
+            package_manager.options.list_available = matches.get_flag("list_available");
+            package_manager.list_packages(package_specs)?;
+        }
+    }
+
+    Ok(())
+}

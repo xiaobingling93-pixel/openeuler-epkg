@@ -197,8 +197,8 @@ tar文件列表:
 ```toml
 # $HOME/.epkg/envs/${env}/config.toml
 [channel]
-name = "openEuler-22.03-LTS-SP3"
-url = "http://repo.openeuler.org/epkg/channel/openEuler-22.03-LTS-SP3/"
+name = "openEuler-24.03-LTS"
+url = "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/everything/x86_64/"
 
 [repos.baseos]
 
