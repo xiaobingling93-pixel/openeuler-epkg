@@ -18,6 +18,8 @@ init_channel_repo()
 	[repos.everything]
 	EOF
 
+	echo -e "{\n}" > $HOME/.epkg/envs/$env/profile-current/installed-packages.json
+
 	local env_channel_json=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.json
 	local tmp_env_channel_json=/tmp/channel.json
 
