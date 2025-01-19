@@ -41,3 +41,5 @@ __set_epkg_curr_dir() {
 	CURRENT_PROFILE_LINK=$curr_env_root/$env/profile-current
 	CURRENT_PROFILE_DIR=$(realpath $CURRENT_PROFILE_LINK)
 }
+
+# vim: sw=4 ts=4 et

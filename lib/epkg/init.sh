@@ -29,3 +29,5 @@ __check_epkg_user_init() {
 		return 1
 	fi
 }
+
+# vim: sw=4 ts=4 et

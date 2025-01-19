@@ -84,3 +84,5 @@ echo "Attention: Uninstall success"
 echo "Attention: Remove epkg files  : $EPKG_CLEAN_DIR"
 echo "Attention: Remove epkg context: $EPKG_EDIT_FILE"
 echo "Attention: For changes to take effect, close and re-open your current shell."
+
+# vim: sw=4 ts=4 et

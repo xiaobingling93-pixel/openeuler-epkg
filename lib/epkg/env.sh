@@ -91,7 +91,7 @@ __epkg_create_environment() {
 		return 1
 	fi
 	__check_env_existed $env && return 1
-	
+
 	local curr_env_root=
 	__get_curr_env_root $env
 	local epkg_helper=
@@ -99,7 +99,7 @@ __epkg_create_environment() {
 
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/etc
-	
+
     cd $curr_env_root/$env/profile-1
 	$epkg_helper ln -sfT "usr/bin"     "bin"
 	$epkg_helper ln -sfT "usr/sbin"    "sbin"
@@ -114,7 +114,7 @@ __epkg_create_environment() {
 		else
 			init_channel_repo $env $repo_path
 		fi
-	else 
+	else
 		init_channel_repo $env openEuler-24.03-LTS
 	fi
 
@@ -140,7 +140,7 @@ __epkg_remove_environment() {
 __epkg_list_environments() {
 	local all_envs=$(ls -t $EPKG_ENVS_ROOT | grep -v 'common')
 	local registered_envs=$(ls -t $EPKG_CONFIG_DIR/registered-envs/)
-	
+
 	printf "%-15s  %20s\n" "Environment" "Status"
 	printf "%35s\n" | tr ' ' '-'
 	# Use awk to format and add the registered or activated status
@@ -155,7 +155,7 @@ __epkg_list_environments() {
 		status = ""
 		if ($1 == active) {
 			status = (status ? status "|" : "") "activated"
-		} 
+		}
 		if ($1 in reg) {
 			status = (status ? status "|" : "") "registered"
 		}
@@ -194,3 +194,5 @@ env_rollback() {
 	echo "Environment '$env' rolled back."
 	# Add implementation for rollback (if available)
 }
+
+# vim: sw=4 ts=4 et

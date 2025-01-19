@@ -180,3 +180,5 @@ case "$cmd" in
 		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|register|unregister|activate|deactivate|history|rollback|help]"
 		;;
 esac
+
+# vim: sw=4 ts=4 et

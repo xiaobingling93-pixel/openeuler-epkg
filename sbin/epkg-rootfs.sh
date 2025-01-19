@@ -77,3 +77,5 @@ rootfs_prep_compress() {
 rootfs_prep_home
 rootfs_prep_pkg
 rootfs_prep_compress
+
+# vim: sw=4 ts=4 et

@@ -249,3 +249,5 @@ query_requires() {
 
 # API: 查询files信息
 # show_package_file_list $1
+
+# vim: sw=4 ts=4 et

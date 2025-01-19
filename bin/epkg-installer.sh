@@ -353,3 +353,5 @@ prepare_conf
 
 # step 4. automic init
 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init
+
+# vim: sw=4 ts=4 et

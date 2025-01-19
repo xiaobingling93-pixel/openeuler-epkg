@@ -338,3 +338,5 @@ search_package() {
 list_packages() {
 	:
 }
+
+# vim: sw=4 ts=4 et

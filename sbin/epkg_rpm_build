@@ -31,3 +31,5 @@ cp "${PROJECT_DIR}/epkg.spec" SPECS/
 rpmbuild -ba SPECS/epkg.spec --nocheck
 
 cp RPMS/$(arch)/epkg*.rpm "${PROJECT_DIR}"
+
+# vim: sw=4 ts=4 et
