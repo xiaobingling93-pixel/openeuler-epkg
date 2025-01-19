@@ -56,7 +56,7 @@ fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
 impl PackageManager {
 
     pub fn load_env_config(&mut self) -> Result<()> {
-        let file_path = format!("{}/.epkg/envs/{}/config.toml",
+        let file_path = format!("{}/.epkg/envs/{}/profile-current/etc/epkg/channel.toml",
             env::var("HOME")?,
             self.options.env,
         );

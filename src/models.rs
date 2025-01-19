@@ -117,7 +117,7 @@ pub struct InstalledPackageInfo {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstalledPackages(HashMap<String, InstalledPackageInfo>);
 
-// $HOME/.epkg/envs/${env}/config.toml
+// $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.toml
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[derive(Default)]
@@ -131,7 +131,7 @@ pub struct EnvConfig {
 #[derive(Default)]
 pub struct Channel {
     pub name: String,
-    pub url: String,
+    pub baseurl: String,
 }
 
 fn default_as_true() -> bool { true }
