@@ -17,7 +17,6 @@ pub struct Package {
     pub version: String,
     pub release: String,
     // pub epoch: Option<u32>, XXX fix x2epkg output type first, then use this
-    pub epoch: Option<String>,
     pub dist: Option<String>,
     pub hash: String,
     pub arch: String,
@@ -63,24 +62,24 @@ pub struct Repodata {
 #[derive(Debug, Deserialize)]
 pub struct StorePathsIndex {
     pub filename: String,
-    pub checksum: Option<String>,
-    pub datetime: Option<String>,
+    // pub checksum: String,
+    // pub datetime: String,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PkgInfoIndex {
     pub filename: String,
-    pub checksum: Option<String>,
-    pub datetime: Option<String>,
+    // pub checksum: String,
+    // pub datetime: String,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PkgFilesIndex {
     pub filename: String,
-    pub checksum: Option<String>,
-    pub datetime: Option<String>,
+    // pub checksum: String,
+    // pub datetime: String,
 }
 
 // parsed from pkgline
