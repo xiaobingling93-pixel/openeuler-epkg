@@ -229,8 +229,8 @@ $HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkgh
 $HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-files/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.files.txt
 $HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-files/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.files.txt
 ...
-$HOME/.cache/epkg/packages/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
-$HOME/.cache/epkg/packages/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
+$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/store/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
+$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/store/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
 ...
 ```
 
