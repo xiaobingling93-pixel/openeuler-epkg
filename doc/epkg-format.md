@@ -270,6 +270,11 @@ and check them together.
 
 ## epkg db: 本地软件信息数据库与索引
 
+### rust embedded key/value store
+
+https://github.com/cberner/redb
+https://github.com/fjall-rs/fjall
+
 ### installed package db
 
 The db is optional, mainly for speeding up common queries by reverse index.
