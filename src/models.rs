@@ -106,7 +106,7 @@ pub struct PackageSpec {
     }
 */
 #[allow(dead_code)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackageInfo {
     #[serde(with = "chrono::serde::ts_seconds")]
     pub install_time: DateTime<Utc>,
