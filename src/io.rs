@@ -3,6 +3,7 @@ use std::fs;
 use std::env;
 use glob;
 use toml;
+use dirs::home_dir;
 use anyhow::{Context, Result, bail};
 use crate::models::*;
 
@@ -144,4 +145,28 @@ impl PackageManager {
         Ok(())
     }
 
+    pub fn save_installed_packages(&self) -> Result<()> {
+        // Get the home directory
+        let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+
+        // Construct the file path
+        let file_path = home
+            .join(".epkg")
+            .join("envs")
+            .join(self.options.env.clone())
+            .join("profile-current")
+            .join("installed-packages.json");
+
+        // Serialize the installed packages to JSON
+        let json = serde_json::to_string_pretty(&self.installed_packages)?;
+
+        // Write the JSON to the file
+        fs::write(&file_path, json)?;
+
+        if self.options.verbose {
+            println!("Installed packages saved to: {}", file_path.display());
+        }
+
+        Ok(())
+    }
 }

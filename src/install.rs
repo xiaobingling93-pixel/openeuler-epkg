@@ -43,8 +43,11 @@ impl PackageManager {
 
         if self.options.verbose {
             println!("Packages to install:");
-            print_packages_by_depend_depth(&packages_to_install)
+            print_packages_by_depend_depth(&packages_to_install);
         }
+
+        self.installed_packages.extend(packages_to_install);
+        self.save_installed_packages()?;
 
         Ok(())
     }
