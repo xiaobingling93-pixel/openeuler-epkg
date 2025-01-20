@@ -5,6 +5,22 @@ use clap::parser::ValuesRef;
 use anyhow::Result;
 use crate::models::*;
 
+fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
+    // Convert HashMap to a Vec of tuples (pkgline, info)
+    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().collect();
+
+    // Sort by depend_depth
+    packages_vec.sort_by(|a, b| a.1.depend_depth.cmp(&b.1.depend_depth));
+
+    // Print the header
+    println!("{:<12} {:<10}", "depend_depth", "package");
+
+    // Print each package
+    for (pkgline, info) in packages_vec {
+        println!("{:<12} {:<10}", info.depend_depth, pkgline);
+    }
+}
+
 impl PackageManager {
 
     pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
@@ -14,17 +30,20 @@ impl PackageManager {
 
         let mut packages_to_install = self.manual_install_packages(package_specs);
         let mut depend_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        let mut depth = 1;
 
-        self.collect_depends(&packages_to_install, &mut depend_packages)?;
+        self.collect_depends(&packages_to_install, &mut depend_packages, depth)?;
 
         while !depend_packages.is_empty() {
             packages_to_install.extend(depend_packages);
             depend_packages = HashMap::new();
-            self.collect_depends(&packages_to_install, &mut depend_packages)?;
+            depth += 1;
+            self.collect_depends(&packages_to_install, &mut depend_packages, depth)?;
         }
 
         if self.options.verbose {
-            println!("Installing packages: {:#?}", packages_to_install.keys());
+            println!("Packages to install:");
+            print_packages_by_depend_depth(&packages_to_install)
         }
 
         Ok(())
@@ -44,7 +63,7 @@ impl PackageManager {
                             pkgline.clone(),
                             InstalledPackageInfo {
                                 install_time: Utc::now(),
-                                manual_install: true,
+                                depend_depth: 0,
                             },
                         );
                     }

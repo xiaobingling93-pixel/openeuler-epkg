@@ -257,7 +257,7 @@ per-env tracking:
 {
   "${pkghash1}__${pkgname}__${pkgver}__${pkgrel}": {
     "install_time": null,
-    "manual_install": true
+    "depend_depth": 0
   },
   "${pkghash2}__${pkgname}__${pkgver}__${pkgrel}": {
     "install_time": null,

@@ -98,7 +98,7 @@ pub struct PackageSpec {
     {
       "${pkghash1}__${pkgname}__${pkgver}__${pkgrel}": {
         "install_time": xxx,
-        "manual_install": true
+        "depend_depth": true
       },
       "${pkghash2}__${pkgname}__${pkgver}__${pkgrel}": {
         "install_time": xxx,
@@ -111,10 +111,8 @@ pub struct InstalledPackageInfo {
     #[serde(with = "chrono::serde::ts_seconds")]
     pub install_time: DateTime<Utc>,
     #[serde(default)]
-    pub manual_install: bool,
+    pub depend_depth: u8,
 }
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InstalledPackages(HashMap<String, InstalledPackageInfo>);
 
 // $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.toml
 #[allow(dead_code)]

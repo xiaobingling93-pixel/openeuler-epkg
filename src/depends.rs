@@ -10,6 +10,7 @@ impl PackageManager {
     pub fn collect_depends(&mut self,
         packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
+        depth: u8,
     ) -> Result<()> {
         let mut misses = Vec::new();
         for pkgline in packages.keys() {
@@ -39,7 +40,7 @@ impl PackageManager {
                             dpkgline.clone(),
                             InstalledPackageInfo {
                                 install_time: Utc::now(),
-                                manual_install: false,
+                                depend_depth: depth,
                             },
                         );
                     }
