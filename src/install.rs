@@ -21,6 +21,34 @@ fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInf
     }
 }
 
+/// Finds duplicates between `a` and `b`,
+/// shows a warning about the duplicates, and removes them from `b`.
+pub fn remove_duplicates(
+    a: &HashMap<String, InstalledPackageInfo>,
+    b: &mut HashMap<String, InstalledPackageInfo>,
+    warn: &str) {
+
+    let duplicates: Vec<_> = b
+        .keys()
+        .filter(|&package_name| a.contains_key(package_name))
+        .cloned()
+        .collect();
+
+    if !duplicates.is_empty() {
+        if !warn.is_empty() {
+            eprintln!("{}", warn);
+            for package_name in &duplicates {
+                eprintln!("- {}", package_name);
+            }
+        }
+
+        // Remove duplicates from `b`
+        for package_name in duplicates {
+            b.remove(&package_name);
+        }
+    }
+}
+
 impl PackageManager {
 
     pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
@@ -28,18 +56,11 @@ impl PackageManager {
         self.load_store_paths()?;
         self.load_installed_packages()?;
 
-        let mut packages_to_install = self.manual_install_packages(package_specs);
-        let mut depend_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        let mut depth = 1;
+        let mut packages_to_install = self.resolve_package_info(package_specs);
+        remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: The following packages are already installed and will be skipped:");
 
-        self.collect_depends(&packages_to_install, &mut depend_packages, depth)?;
-
-        while !depend_packages.is_empty() {
-            packages_to_install.extend(depend_packages);
-            depend_packages = HashMap::new();
-            depth += 1;
-            self.collect_depends(&packages_to_install, &mut depend_packages, depth)?;
-        }
+        self.collect_recursive_depends(&mut packages_to_install);
+        remove_duplicates(&self.installed_packages, &mut packages_to_install, "");
 
         if self.options.verbose {
             println!("Packages to install:");
@@ -52,37 +73,4 @@ impl PackageManager {
         Ok(())
     }
 
-    // convert user provided @pkg_names to pkglines,
-    // skipping the ones already in @installed_packages
-    fn manual_install_packages(&self, pkg_names: ValuesRef<String>) -> HashMap<String, InstalledPackageInfo> {
-        let mut packages_to_install = HashMap::new();
-        let mut missing_names = Vec::new();
-
-        for pkgname in pkg_names {
-            if let Some(pkglines) = self.pkgname2lines.get(pkgname) {
-                for pkgline in pkglines {
-                    if !self.installed_packages.contains_key(pkgline) {
-                        packages_to_install.insert(
-                            pkgline.clone(),
-                            InstalledPackageInfo {
-                                install_time: Utc::now(),
-                                depend_depth: 0,
-                            },
-                        );
-                    }
-                }
-            } else {
-                missing_names.push(pkgname);
-            }
-        }
-
-        if !missing_names.is_empty() {
-            println!("Missing packages: {:#?}", missing_names);
-            if !self.options.ignore_missing {
-                exit(1);
-            }
-        }
-
-        packages_to_install
-    }
 }
