@@ -270,6 +270,43 @@ and check them together.
 
 ## epkg db: 本地软件信息数据库与索引
 
+It may be enough to create the yaml lookup file in (1) on updated repodata and
+use for dependency lookup. If too large and slow, try (2) embedded rust kv store.
+Try (3) sqlite as last resort since it introduces complexity and lib.so dependency.
+
+### yaml lookup files
+
+Manual create and parse these files, not via the slow yaml library.
+Ensure one line per package to simplify parse or grep.
+
+These can be quickly loaded into internal HashMap for forward/reverse lookup,
+or one-shot grep for substring or regex pattern.
+
+The depend/rdepend lookup yamls size may be ~3MB for 30k packages.
+
+Files under dir: $HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/repodata/pkg-info-{filehash}/
+- provide2pkgnames.yaml     # depend lookup
+```
+libcunit.so.1()(64bit): CUnit
+```
+- require2pkgnames.yaml     # rdepend lookup
+```
+/bin/sh: CUnit
+ld-linux-aarch64.so.1()(64bit): CUnit
+ld-linux-aarch64.so.1(GLIBC_2.17)(64bit): CUnit
+rtld(GNU_HASH): CUnit
+libc.so.6(GLIBC_2.17)(64bit): CUnit
+```
+- recommend2pkgnames.yaml   # rdepend lookup
+- suggest2pkgnames.yaml     # rdepend lookup
+- pkgname2files.yaml        # grep for files, only the critical files in repodata primary.xml
+```
+bash: file1 file2 ...
+CUnit: file1 file2 file3
+```
+- pkgname2summary.yaml      # grep for package summary
+- pkgname2description.yaml  # grep for package details
+
 ### rust embedded key/value store
 
 https://github.com/cberner/redb
