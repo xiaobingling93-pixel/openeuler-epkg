@@ -4,10 +4,6 @@ description = "epkg package manager"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "epkg-store"
-path = "src/epkg-store.rs"
-
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
 reqwest = { version = "0.11", features = ["json"] }
@@ -15,7 +11,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 walkdir = "2.3"
 tar = "0.4"
-zstd = "0.9"
+zstd = "0.11"
 sha2 = "0.10" 
 base32 = "0.5.1" 
 glob = "0.3.2"

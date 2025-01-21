@@ -1,56 +1,23 @@
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::fs::File;
+use std::io::{self, BufReader};
 use tar::Archive;
-use clap::{Parser, Subcommand};
-use zstd::stream::decode_all;
+use zstd::stream::read::Decoder;
 use anyhow::{Context, Result};
-mod utils;
-use crate::utils::is_setuid;
-mod models;
 use crate::models::*;
 
-#[derive(Parser)]
-#[clap(name = "epkg-store", version = "0.1.0")]
-struct Cli {
-    #[clap(subcommand)]
-    command: Commands,
-}
+fn untar_zst(file_path: &str, output_dir: &str) -> io::Result<()> {
+    // Open the compressed file
+    let file = File::open(file_path)?;
+    let buffered_reader = BufReader::new(file);
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Install packages into the store
-    Install {
-        packages: Vec<String>,
-    },
-    /// Garbage collect unused packages
-    Gc,
-}
+    // Create a Zstandard decoder
+    let zstd_decoder = Decoder::new(buffered_reader)?;
 
-fn main() {
-    if !is_setuid() {
-        eprintln!("epkg-store must be run as setuid.");
-        return;
-    }
+    // Create a tar archive from the Zstandard decoder
+    let mut archive = Archive::new(zstd_decoder);
 
-    let cli = Cli::parse();
+    // Unpack the archive into the output directory
+    archive.unpack(output_dir)?;
 
-    match cli.command {
-        Commands::Install { packages } => {
-            for pkg_path in packages {
-                install_package(&pkg_path);
-            }
-        }
-        Commands::Gc => {
-            garbage_collect();
-        }
-    }
-}
-
-fn install_package(pkg_path: &str) {
-    let uname_output = Command::new("uname").arg("-a").output().expect("Failed to execute uname");
-}
-
-fn garbage_collect() {
-    unimplemented!()
+    Ok(())
 }

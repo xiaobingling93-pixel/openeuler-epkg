@@ -6,6 +6,7 @@ mod upgrade;
 mod remove;
 mod list;
 mod hash;
+mod store;
 use std::env;
 use crate::models::*;
 use anyhow::Result;
