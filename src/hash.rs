@@ -1,71 +1,98 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::io::Read;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use base32;
-use base32::Alphabet;
 use walkdir::WalkDir;
-use sha2::{Sha256, Digest};
+use sha1::Digest;
+use sha2;
+use anyhow::Result;
 
-fn main() {
-    let epkg_path = std::env::args().nth(1).expect("Please provide a path as an argument");
-    let base32_result = cal_path_hash(&epkg_path);
-    println!("{}", base32_result.to_lowercase());
+
+pub fn b32_hash(content: &str) -> String {
+    // Compute the SHA1 hash of the input string
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(content.as_bytes());
+    let sha1_hash = hasher.finalize();
+
+    // Encode the SHA1 hash in base32
+    let b32sum = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &sha1_hash);
+
+    // Convert the base32 hash to lowercase
+    b32sum.to_lowercase()
 }
 
-pub fn cal_path_hash(epkg_path: &String) -> String {
+pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
     let dir = Path::new(&epkg_path);
-    let mut hasher = Sha256::new();
 
-    // 收集所有文件和目录的相对路径
-    let mut relative_entries: Vec<PathBuf> = WalkDir::new(dir)
+    // 收集所有文件和目录的路径
+    let mut paths: Vec<PathBuf> = WalkDir::new(dir)
         .into_iter()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path().strip_prefix(dir).unwrap_or(entry.path()).to_path_buf())
+        .filter_map(|entry| entry.ok()) // Skip errors
+        .map(|entry| entry.into_path())
         .collect();
-    relative_entries.sort();
 
-    for entry in &relative_entries {
-        // hasher add path
-        hasher.update(path_to_bytes(entry));
-        // hasher add file_type & other param
-        let absolute_path = dir.join(entry);
-        let (entry_content, entry_type) = get_entry_hash_param(&absolute_path);
-        hasher.update(entry_type.as_bytes());
-        hasher.update(&entry_content);
+    paths.sort();
+
+    let mut info: Vec<String> = Vec::new();
+
+    for path in &paths {
+        if path == dir { continue; } // this is where rust WalkDir differs from python os.walk
+        let (fsize, ftype, fdata) = get_path_info(&path)?;
+        info.push(path.strip_prefix(dir)?.to_string_lossy().into_owned());
+        info.push(ftype.to_string());
+        info.push(fsize.to_string());
+        info.push(fdata);
     }
 
-    let hash_result = hasher.finalize();
-    let compressed_hash = xor_compress_to_20_bytes(&hash_result);
-    let base32_result = base32::encode(Alphabet::Crockford, &compressed_hash);
-    base32_result.to_lowercase()
+    let mut hasher = sha2::Sha256::new();
+    let all_info = info.join("\n");
+    // println!("{}", all_info);
+
+    hasher.update(all_info);
+    let sha256_sum = format!("{:x}", hasher.finalize());
+    Ok(b32_hash(&sha256_sum))
 }
 
-fn get_entry_hash_param(entry: &Path) -> (Vec<u8>, String) {
-    match fs::symlink_metadata(entry) {
-        Ok(metadata) => match metadata.file_type() {
-            ft if ft.is_symlink() => (path_to_bytes(&fs::read_link(entry).unwrap()), "S_IFLNK".to_string()),
-            ft if ft.is_file() => (fs::read(entry).unwrap(), "S_IFREG".to_string()),
-            ft if ft.is_block_device() => (metadata.dev().to_ne_bytes().into(), "S_IFBLK".to_string()), // metadata.dev() -> u64
-            ft if ft.is_char_device() => (metadata.dev().to_ne_bytes().into(), "S_IFCHR".to_string()),  // high32-major  low32-minor
-            ft if ft.is_dir() => (Vec::new(), "S_IFDIR".to_string()),
-            ft if ft.is_socket() => (Vec::new(), "S_IFSOCK".to_string()),
-            ft if ft.is_fifo() => (Vec::new(), "S_IFIFO".to_string()),
-            _ => panic!("Encountered an unknown file type at: {}", entry.display()),
-        },
-        Err(e) => panic!("Failed to get metadata for {}: {}", entry.display(), e),
+fn get_path_info(path: &Path) -> Result<(u64, &str, String)> {
+    let metadata = fs::symlink_metadata(path)?;
+
+    let (ftype, fdata) = match metadata.file_type() {
+        ft if ft.is_symlink()       => ("S_IFLNK", fs::read_link(path)?.to_string_lossy().into_owned()),
+        ft if ft.is_file()          => ("S_IFREG", file_sha256_chunks(path)?.join(" ")),
+        ft if ft.is_block_device()  => ("S_IFBLK", metadata.dev().to_string()),  // u64
+        ft if ft.is_char_device()   => ("S_IFCHR", metadata.dev().to_string()),  // high32-major  low32-minor
+        ft if ft.is_dir()           => ("S_IFDIR", "".to_string()),
+        ft if ft.is_fifo()          => ("S_IFIFO", "".to_string()),
+        ft if ft.is_socket()        => ("S_IFSOCK", "".to_string()),
+        _ => panic!("Encountered an unknown file type at: {}", path.display()),
+    };
+
+    Ok((metadata.len(), ftype, fdata))
+}
+
+/// Compute the SHA-256 hash for every 16 KB chunk of a file.
+/// One-shot computation could consume too much memory for large files.
+fn file_sha256_chunks(file_path: &Path) -> Result<Vec<String>> {
+    const CHUNK_SIZE: usize = 16<<10; // 16 KB
+
+    let mut file = fs::File::open(file_path)?;
+    let mut buffer = vec![0; CHUNK_SIZE];
+    let mut hashes = Vec::new();
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break; // End of file
+        }
+
+        // Compute the SHA-256 hash of the chunk
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&buffer[..bytes_read]);
+        let hash = format!("{:x}", hasher.finalize());
+        hashes.push(hash);
     }
-}
 
-fn path_to_bytes(path: &Path) -> Vec<u8> {
-    path.to_string_lossy().as_bytes().to_vec()
-}
-
-fn xor_compress_to_20_bytes(hash: &[u8]) -> Vec<u8> {
-    assert_eq!(hash.len(), 32, "Hash must be 32 bytes for SHA-256");
-    let mut compressed = vec![0u8; 20];
-    for i in 0..20 {
-        compressed[i] = hash[i] ^ hash[i + 12]; // 前 20 字节和后 12 字节依次 XOR
-    }
-    compressed
+    Ok(hashes)
 }

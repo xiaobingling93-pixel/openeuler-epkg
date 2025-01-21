@@ -150,6 +150,16 @@ fn main() -> Result<()> {
                         .help("Package glob pattern to list")
                 )
         )
+        .subcommand(
+            Command::new("hash")
+                .about("Compute binary package hash")
+                .arg(
+                    Arg::new("package-store-dir")
+                        .num_args(1..)
+                        .required(true)
+                        .help("Package store dir to compute hash")
+                )
+        )
         .get_matches();
 
     if matches.contains_id("version") {
@@ -214,6 +224,15 @@ fn main() -> Result<()> {
             package_manager.options.list_installed = matches.get_flag("list_installed");
             package_manager.options.list_available = matches.get_flag("list_available");
             package_manager.list_packages(package_specs)?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("hash") {
+        if let Some(package_store_dir) = matches.get_many::<String>("package-store-dir") {
+            for dir in package_store_dir {
+                let hash = crate::hash::epkg_store_hash(&dir)?;
+                println!("{}", hash);
+            }
         }
     }
 
