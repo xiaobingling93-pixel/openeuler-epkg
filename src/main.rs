@@ -1,5 +1,6 @@
 mod models;
 mod io;
+mod download;
 mod depends;
 mod install;
 mod upgrade;
