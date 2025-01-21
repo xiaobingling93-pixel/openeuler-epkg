@@ -16,10 +16,16 @@ def epkg_store_hash(epkg_path: str) -> str:
     dir_path = Path(epkg_path)
     paths = []
 
-    # Collect all file and directory paths
+    # Collect all paths under $dir/fs/ or $dir/info/install/
+    dir_path = Path(dir_path)
+    fs_path = str(dir_path / "fs")
+    install_path = str(dir_path / "info" / "install")
+
     for root, dirs, files in os.walk(dir_path):
         for name in files + dirs:
-            paths.append(Path(root) / name)
+            path = str(Path(root) / name)
+            if (path.startswith(fs_path) or path.startswith(install_path)):
+                paths.append(Path(path))
 
     paths.sort()
 

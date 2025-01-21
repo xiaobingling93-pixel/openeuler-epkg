@@ -26,11 +26,15 @@ pub fn b32_hash(content: &str) -> String {
 pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
     let dir = Path::new(&epkg_path);
 
+    let fs_path = dir.join("fs");
+    let install_path = dir.join("info").join("install");
+
     // 收集所有文件和目录的路径
     let mut paths: Vec<PathBuf> = WalkDir::new(dir)
         .into_iter()
         .filter_map(|entry| entry.ok()) // Skip errors
         .map(|entry| entry.into_path())
+        .filter(|entry| entry.starts_with(&fs_path) || entry.starts_with(&install_path))
         .collect();
 
     paths.sort();
