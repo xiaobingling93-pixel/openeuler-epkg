@@ -3,7 +3,6 @@ use std::time::Duration;
 use std::sync::Arc;
 use std::path::Path;
 use dirs::home_dir;
-use url::Url;
 use reqwest::{Client, StatusCode};
 use tokio::io::AsyncWriteExt; // Import AsyncWriteExt for write_all
 use tokio::sync::Semaphore;

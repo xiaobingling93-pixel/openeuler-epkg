@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::io::BufRead; // for .read_line()
 use std::io::Write;
+use std::os::unix::fs::chown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -69,7 +70,7 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
 
     // Set permissions for master process
     fs::set_permissions(socket_path, fs::Permissions::from_mode(0o700))?;
-    nix::unistd::chown(socket_path, Some(Uid::from_raw(get_current_uid())), None)?;
+    chown(socket_path, Some(get_current_uid()), None)?;
 
     for stream in listener.incoming() {
         match stream {

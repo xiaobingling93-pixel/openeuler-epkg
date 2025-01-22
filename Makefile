@@ -50,6 +50,7 @@ build-x86_64:
 build-aarch64:
 	@echo "Building aarch64 binary..."
 	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+	RUSTFLAGS="-C linker=aarch64-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc" \
 	cargo build --release --target $(RUST_TARGET_AARCH64)
 	@mkdir -p $(OUTPUT_DIR)
 	cp target/$(RUST_TARGET_AARCH64)/release/$(BINARY_NAME) $(OUTPUT_DIR)/$(BINARY_NAME)-aarch64
@@ -59,6 +60,7 @@ build-aarch64:
 build-riscv64:
 	@echo "Building RISC-V binary..."
 	CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-gnu-gcc \
+	RUSTFLAGS="-C linker=riscv64-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lm -C link-arg=-lc" \
 	cargo build --release --target $(RUST_TARGET_RISCV64)
 	@mkdir -p $(OUTPUT_DIR)
 	cp target/$(RUST_TARGET_RISCV64)/release/$(BINARY_NAME) $(OUTPUT_DIR)/$(BINARY_NAME)-riscv64
