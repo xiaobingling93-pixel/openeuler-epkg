@@ -18,7 +18,7 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
             .join(pkgline);
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
 
-        println!("untar {} {}", file, dir_str);
+        // println!("untar {} {}", file, dir_str);
         untar_zst(&file, &dir_str)?;
 
         let hash = crate::hash::epkg_store_hash(&dir_str)?;
