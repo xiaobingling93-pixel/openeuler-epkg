@@ -15,6 +15,7 @@ EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 EPKG_VERSION=master
 EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSION.tar.gz
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
+EPKG_STATIC=epkg
 EPKG_ROOTFS=epkg-rootfs
 EPKG_HELPER=epkg-helper
 EPKG_HASH=epkg-hash
@@ -125,19 +126,24 @@ create_init_home() {
 
 epkg_verify_checksum() {
     local checksum_file=$1
-    pushd "$EPKG_CACHE" > /dev/null 
+    pushd "$EPKG_CACHE" > /dev/null
     if ! sha256sum -c "$checksum_file" > /dev/null 2>&1; then
         echo "checksum error: $checksum_file"
-        popd > /dev/null 
+        popd > /dev/null
         exit 1
     fi
     popd > /dev/null  # 返回原始目录
 }
 
 epkg_download() {
-    # download epkg_manager    
+    # download epkg_manager
     echo "download epkg manager"
     curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR --max-redirs 3 --location $EPKG_MANAGER_URL
+
+    echo "download static epkg binary"
+	curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH $EPKG_URL/$EPKG_STATIC-$ARCH --retry 5
+    curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
+    epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
 
     # download epkg-hash
     echo "download epkg hash"
@@ -168,6 +174,8 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
     cp -a $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
     cp    $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg/
+    # XXX: copy toml to                  $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.toml
+    echo -e "{\n}" >                     $EPKG_COMMON_ROOT/profile-1/installed-packages.json
 
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
@@ -212,6 +220,22 @@ source $HOME/.epkg/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
 # epkg end
 EOF
     fi
+}
+
+epkg_install_common_env() {
+    local rootfs_packages=(
+        coreutils tar gzip zstd jq curl grep sed gawk setup which file bash libcap file-libs fuse libpng
+        libstdc++ libtasn1 libtirpc libevent libxcrypt fuse-common cracklib ca-certificates
+        chkconfig ncurses-base pcre2 libffi libsepol basesystem newt ncurses-libs publicsuffix-list
+        krb5-libs glibc openEuler-gpg-keys libnghttp2 oniguruma pam gmp libunistring libidn2 readline
+        openEuler-release attr libselinux mpfr tzdata patchelf crypto-policies libverto audit-libs
+        libcurl libmount zlib p11-kit-trust cyrus-sasl-lib libcap-ng openssl-libs popt libpwquality
+        p11-kit ncurses bc libgcc e2fsprogs gdbm libblkid openEuler-repos libnsl2 openldap brotli keyutils-libs
+        libuuid filesystem findutils slang libpsl libacl libssh info libev libsigsegv
+    )
+
+    # XXX: download repodata first
+    $EPKG_CACHE/$EPKG_STATIC-$ARCH --env 'common' install "${rootfs_packages[@]}"
 }
 
 prepare_epkg_rootfs() {
@@ -321,7 +345,7 @@ replace_string() {
 	local binary_file="$1"
 	local long_id="$2"
 	local str="$3"
-    
+
 	local position=$($ROOTFS_LINK/bin/grep -m1 -oba "$long_id" $binary_file | $ROOTFS_LINK/bin/cut -d ":" -f 1)
 	[ -n "$position" ] && {
 		$ROOTFS_LINK/bin/echo -en "$str\0" | $ROOTFS_LINK/bin/dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
@@ -348,8 +372,12 @@ epkg_unpack
 epkg_change_bashrc
 
 # step 3. common env init
-prepare_epkg_rootfs
 prepare_conf
+if [ -f $EPKG_CACHE/$EPKG_STATIC-$ARCH ]; then
+    epkg_install_common_env
+else
+    prepare_epkg_rootfs
+fi
 
 # step 4. automic init
 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init
