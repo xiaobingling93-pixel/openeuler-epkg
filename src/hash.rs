@@ -154,12 +154,9 @@ S_IFREG
 207 b43569e54c311b794fe65f87e3142448333e15954fa0ce522d8ccad4c172ac0b
 fs/usr/share/licenses/which/COPYING
 S_IFREG
-35147 4640533f6a2164475200c008c0dd97eef50a7020fb924d00563f3bd2c8400a1a bca4e8f27aaa00867178fe0adc7e4559d0396118346e3143d94479025241ab6a 683acd90103a7b7e9f859f9876a9e0536701bd56d09dba6672b0c9fce4b8fe40
-info/install
-S_IFDIR
-"#;
+35147 4640533f6a2164475200c008c0dd97eef50a7020fb924d00563f3bd2c8400a1a bca4e8f27aaa00867178fe0adc7e4559d0396118346e3143d94479025241ab6a 683acd90103a7b7e9f859f9876a9e0536701bd56d09dba6672b0c9fce4b8fe40"#;
 
-        assert_eq!(b32_hash(content), "7aoaghifu46jzptrxaixztk76wi4tbr2");
+        assert_eq!(b32_hash(content), "u2qpre6bl4hxfpqsudubrgftglmiz74t");
     }
 
     #[test]
@@ -241,12 +238,9 @@ S_IFREG
 18091 68721be0e2e5e985b05b419cb25dd8e9be7139d3cad63f86e4b3334793d37c1b 16bed86d2751edaca2691e685decd7addba5909c3a08a920c6ece35d5eb7f387
 fs/usr/share/licenses/zstd/LICENSE
 S_IFREG
-1549 7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8
-info/install
-S_IFDIR
-"#;
+1549 7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"#;
 
-        assert_eq!(b32_hash(content), "yjoa7thc5bzcpdnelmol6ncmmn7xayvr");
+        assert_eq!(b32_hash(content), "n5u65yfywfkhjg74lgv64vlx5t3jhnp3");
 
     }
 }
