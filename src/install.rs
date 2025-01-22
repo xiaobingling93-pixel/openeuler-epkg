@@ -59,7 +59,7 @@ impl PackageManager {
         let mut packages_to_install = self.resolve_package_info(package_specs);
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: The following packages are already installed and will be skipped:");
 
-        self.collect_recursive_depends(&mut packages_to_install);
+        self.collect_recursive_depends(&mut packages_to_install)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "");
 
         if self.options.verbose {
@@ -67,6 +67,7 @@ impl PackageManager {
             print_packages_by_depend_depth(&packages_to_install);
         }
 
+        self.download_packages(&packages_to_install)?;
         self.installed_packages.extend(packages_to_install);
         self.save_installed_packages()?;
 

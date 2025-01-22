@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::path::Path;
+use dirs::home_dir;
 use url::Url;
 use reqwest::Client;
 use tokio::fs::OpenOptions;
@@ -8,6 +10,7 @@ use tokio::sync::Semaphore;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use futures::StreamExt; // Import StreamExt for bytes_stream
 use anyhow::Result;
+use crate::models::*;
 
 /// Downloads a list of URLs to a specified directory with a given level of parallelism.
 ///
@@ -58,7 +61,8 @@ pub async fn download_urls(urls: Vec<String>, output_dir: &str, nr_parallel: usi
             let file_name = url
                 .path_segments()
                 .and_then(|segments| segments.last())
-                .unwrap_or("file");
+                .map(|name| name.to_string()) // Convert to owned String
+                .ok_or_else(|| anyhow::anyhow!("Invalid URL: {}", url))?;
             let output_path = format!("{}/{}", output_dir, file_name);
 
             // Skip if the file already exists
@@ -78,11 +82,11 @@ pub async fn download_urls(urls: Vec<String>, output_dir: &str, nr_parallel: usi
             let pb = multi_progress.add(ProgressBar::new(0));
             pb.set_style(
                 ProgressStyle::default_bar()
-                    .template("[{elapsed_precise}] [{bar:10}] {bytes}/{total_bytes} {msg}")
+                    .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} {msg}")
                     .unwrap()
                     .progress_chars("=> "),
             );
-            pb.set_message(output_path.clone());
+            pb.set_message(file_name.clone());
 
             // Send a GET request to the URL
             let response = client.get(url.as_str()).send().await?;
@@ -107,7 +111,7 @@ pub async fn download_urls(urls: Vec<String>, output_dir: &str, nr_parallel: usi
                 pb.inc(chunk.len() as u64);
             }
 
-            pb.finish_with_message(format!("Downloaded {} to {}", url, output_path));
+            pb.finish_with_message(format!("Downloaded {}", file_name));
             Ok(())
         });
 
@@ -124,6 +128,42 @@ pub async fn download_urls(urls: Vec<String>, output_dir: &str, nr_parallel: usi
 
     println!("Complete!");
     Ok(())
+}
+
+impl PackageManager {
+
+    /// Download packages specified by their pkgline strings.
+    #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+    pub async fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        // Step 1: Compose URLs for each pkgline
+        let mut urls = Vec::new();
+        for pkgline in packages.keys() {
+            let pkghash = &pkgline[..32]; // Extract the first 32 characters as the hash
+            if let Some(spec) = self.pkghash2spec.get(pkghash) {
+                let repo = &spec.repo;
+                let url = format!(
+                    "{}/{}/{}/store/{}/{}.epkg",
+                    self.env_config.channel.baseurl,
+                    repo,
+                    self.options.arch,
+                    &pkgline[..2], // First 2 characters of the hash
+                    pkgline
+                );
+                urls.push(url);
+            } else {
+                return Err(anyhow::anyhow!("Package spec not found for {}", pkgline));
+            }
+        }
+
+        let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let output_dir = format!(
+            "{}/.cache/epkg/packages",
+            home.display()
+        );
+
+        // Step 2: Call the predefined download_urls function
+        download_urls(urls, &output_dir, 6).await
+    }
 }
 
 /*

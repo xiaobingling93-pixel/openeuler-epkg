@@ -65,7 +65,7 @@ impl PackageManager {
             .filter(|(pkgline, info)| info.depend_depth == 0 && !packages_to_remove.contains_key(*pkgline))
             .map(|(key, value)| (key.clone(), (*value).clone())) // Clone the key and value
             .collect(); // Collect into a HashMap
-        self.collect_recursive_depends(&mut packages_to_keep);
+        self.collect_recursive_depends(&mut packages_to_keep)?;
 
         // Step 9: Find final duplicates after collecting dependencies
         let installed_to_remove: Vec<String> = self.installed_packages
