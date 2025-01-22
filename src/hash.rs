@@ -42,11 +42,10 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
     let mut info: Vec<String> = Vec::new();
 
     for path in &paths {
-        if path == dir { continue; } // this is where rust WalkDir differs from python os.walk
-        let (fsize, ftype, fdata) = get_path_info(&path)?;
+        // if path == dir { continue; } // this is where rust WalkDir differs from python os.walk
+        let (ftype, fdata) = get_path_info(&path)?;
         info.push(path.strip_prefix(dir)?.to_string_lossy().into_owned());
         info.push(ftype.to_string());
-        info.push(fsize.to_string());
         info.push(fdata);
     }
 
@@ -59,12 +58,12 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
     Ok(b32_hash(&sha256_sum))
 }
 
-fn get_path_info(path: &Path) -> Result<(u64, &str, String)> {
+fn get_path_info(path: &Path) -> Result<(&str, String)> {
     let metadata = fs::symlink_metadata(path)?;
 
     let (ftype, fdata) = match metadata.file_type() {
         ft if ft.is_symlink()       => ("S_IFLNK", fs::read_link(path)?.to_string_lossy().into_owned()),
-        ft if ft.is_file()          => ("S_IFREG", file_sha256_chunks(path)?.join(" ")),
+        ft if ft.is_file()          => ("S_IFREG", file_sha256_chunks(path, &metadata)?.join(" ")),
         ft if ft.is_block_device()  => ("S_IFBLK", metadata.dev().to_string()),  // u64
         ft if ft.is_char_device()   => ("S_IFCHR", metadata.dev().to_string()),  // high32-major  low32-minor
         ft if ft.is_dir()           => ("S_IFDIR", "".to_string()),
@@ -73,17 +72,19 @@ fn get_path_info(path: &Path) -> Result<(u64, &str, String)> {
         _ => panic!("Encountered an unknown file type at: {}", path.display()),
     };
 
-    Ok((metadata.len(), ftype, fdata))
+    Ok((ftype, fdata))
 }
 
 /// Compute the SHA-256 hash for every 16 KB chunk of a file.
 /// One-shot computation could consume too much memory for large files.
-fn file_sha256_chunks(file_path: &Path) -> Result<Vec<String>> {
+fn file_sha256_chunks(file_path: &Path, metadata: &fs::Metadata) -> Result<Vec<String>> {
     const CHUNK_SIZE: usize = 16<<10; // 16 KB
 
     let mut file = fs::File::open(file_path)?;
     let mut buffer = vec![0; CHUNK_SIZE];
     let mut hashes = Vec::new();
+
+    hashes.push(metadata.len().to_string());
 
     loop {
         let bytes_read = file.read(&mut buffer)?;

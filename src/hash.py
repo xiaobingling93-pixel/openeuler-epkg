@@ -32,10 +32,9 @@ def epkg_store_hash(epkg_path: str) -> str:
     info = []
 
     for path in paths:
-        fsize, ftype, fdata = get_path_info(path)
+        ftype, fdata = get_path_info(path)
         info.append(str(path.relative_to(dir_path)))
         info.append(ftype)
-        info.append(str(fsize))
         info.append(fdata)
 
     all_info = "\n".join(info)
@@ -54,7 +53,7 @@ def get_path_info(path: Path):
         fdata = os.readlink(path)
     elif stat.st_mode & 0o170000 == 0o100000:  # Regular file
         ftype = "S_IFREG"
-        fdata = " ".join(file_sha256_chunks(path))
+        fdata = " ".join(file_sha256_chunks(path, stat))
     elif stat.st_mode & 0o170000 == 0o060000:  # Block device
         ftype = "S_IFBLK"
         fdata = str(stat.st_dev)
@@ -73,12 +72,12 @@ def get_path_info(path: Path):
     else:
         raise ValueError(f"Encountered an unknown file type at: {path}")
 
-    return stat.st_size, ftype, fdata
+    return ftype, fdata
 
-def file_sha256_chunks(file_path: Path) -> list[str]:
+def file_sha256_chunks(file_path: Path, stat) -> list[str]:
     """Compute the SHA-256 hash for every 16 KB chunk of a file."""
     CHUNK_SIZE = 16 << 10  # 16 KB
-    hashes = []
+    hashes = [str(stat.st_size)]
 
     with open(file_path, "rb") as file:
         while chunk := file.read(CHUNK_SIZE):
