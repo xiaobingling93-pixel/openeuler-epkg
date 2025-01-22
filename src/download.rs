@@ -134,9 +134,17 @@ impl PackageManager {
 
     /// Download packages specified by their pkgline strings.
     #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-    pub async fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<()> {
+    pub async fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
+
+        let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let output_dir = format!(
+            "{}/.cache/epkg/packages",
+            home.display()
+        );
+
         // Step 1: Compose URLs for each pkgline
         let mut urls = Vec::new();
+        let mut local_files = Vec::new();
         for pkgline in packages.keys() {
             let pkghash = &pkgline[..32]; // Extract the first 32 characters as the hash
             if let Some(spec) = self.pkghash2spec.get(pkghash) {
@@ -150,19 +158,15 @@ impl PackageManager {
                     pkgline
                 );
                 urls.push(url);
+                local_files.push(format!("{}/{}.epkg", output_dir, pkgline));
             } else {
                 return Err(anyhow::anyhow!("Package spec not found for {}", pkgline));
             }
         }
 
-        let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        let output_dir = format!(
-            "{}/.cache/epkg/packages",
-            home.display()
-        );
-
         // Step 2: Call the predefined download_urls function
-        download_urls(urls, &output_dir, 6).await
+        download_urls(urls, &output_dir, 6).await?;
+        Ok(local_files)
     }
 }
 

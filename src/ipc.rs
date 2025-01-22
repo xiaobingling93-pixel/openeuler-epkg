@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use nix::unistd::{fork, setuid, Uid, ForkResult};
 use rand::Rng;
 use serde_json::{json, Value};

@@ -1,4 +1,3 @@
-use std::process::exit;
 use std::collections::HashMap;
 use clap::parser::ValuesRef;
 use anyhow::Result;

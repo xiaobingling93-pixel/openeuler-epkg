@@ -1,6 +1,4 @@
-use std::process::exit;
 use std::collections::HashMap;
-use chrono::Utc;
 use clap::parser::ValuesRef;
 use anyhow::Result;
 use crate::models::*;
@@ -67,7 +65,8 @@ impl PackageManager {
             print_packages_by_depend_depth(&packages_to_install);
         }
 
-        self.download_packages(&packages_to_install)?;
+        let files = self.download_packages(&packages_to_install)?;
+        self.unpack_packages(files)?;
         self.installed_packages.extend(packages_to_install);
         self.save_installed_packages()?;
 

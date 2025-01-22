@@ -1,14 +1,30 @@
 use std::fs;
 use std::io;
+use dirs::home_dir;
 use tar::Archive;
 use zstd::stream::read::Decoder;
-use anyhow::{Context, Result};
-use crate::models::*;
+use anyhow::Result;
 
 pub fn unpack_packages(files: Vec<String>) -> Result<()> {
-    // Actual unpacking implementation would go here
+
+    // Get the home directory
+    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+
     for file in files {
-        println!("Unpacking {} to /opt/epkg/store/", file);
+        let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
+        let dir = home
+            .join(".epkg")
+            .join("store")
+            .join(pkgline);
+        let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
+
+        println!("untar {} {}", file, dir_str);
+        untar_zst(&file, &dir_str)?;
+
+        let hash = crate::hash::epkg_store_hash(&dir_str)?;
+        if hash != pkgline[..32] {
+            eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
+        }
     }
     Ok(())
 }
