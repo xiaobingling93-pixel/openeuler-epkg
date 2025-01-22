@@ -6,8 +6,10 @@ import base64
 from pathlib import Path
 
 def b32_hash(content: str) -> str:
-    """Compute the base32-encoded SHA-1 hash of the input string."""
-    sha1 = hashlib.sha1(content.encode("utf-8")).digest()
+    """Compute the base32-encoded SHA-256/SHA-1 hash of the input string."""
+    sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    sha1 = hashlib.sha1(sha256.encode("utf-8")).digest()
     b32_hash = base64.b32encode(sha1).decode("utf-8").lower()
     return b32_hash
 
@@ -40,9 +42,7 @@ def epkg_store_hash(epkg_path: str) -> str:
     all_info = "\n".join(info)
     #  print(all_info)
 
-    # Compute the SHA-256 hash of the concatenated info
-    sha256 = hashlib.sha256(all_info.encode("utf-8")).hexdigest()
-    return b32_hash(sha256)
+    return b32_hash(all_info)
 
 def get_path_info(path: Path):
     """Get the type, size, and content hash of a file or directory."""

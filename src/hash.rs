@@ -11,9 +11,14 @@ use anyhow::Result;
 
 
 pub fn b32_hash(content: &str) -> String {
+    // Compute the SHA256 hash of the input string
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(content);
+    let sha256_hash = format!("{:x}", hasher.finalize());
+
     // Compute the SHA1 hash of the input string
     let mut hasher = sha1::Sha1::new();
-    hasher.update(content.as_bytes());
+    hasher.update(sha256_hash.as_bytes());
     let sha1_hash = hasher.finalize();
 
     // Encode the SHA1 hash in base32
@@ -49,13 +54,10 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
         info.push(fdata);
     }
 
-    let mut hasher = sha2::Sha256::new();
     let all_info = info.join("\n");
     // println!("{}", all_info);
 
-    hasher.update(all_info);
-    let sha256_sum = format!("{:x}", hasher.finalize());
-    Ok(b32_hash(&sha256_sum))
+    Ok(b32_hash(&all_info))
 }
 
 fn get_path_info(path: &Path) -> Result<(&str, String)> {
