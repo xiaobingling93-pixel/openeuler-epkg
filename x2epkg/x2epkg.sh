@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
-DEST="/srv/os-repo/epkg3/tmp"
+OUT_DIR=""
 
-__get_x2epkg_help_info() {
+show_help() {
 	cat <<-EOF
 Usage:
 x2epkg xxx.rpm                                # single rpm package
 x2epkg xxx.deb                                # single deb package
 x2epkg file_path/*.rpm                        # several rpms
-x2epkg xxx.rpm --dest PATH                    # convert package into dest dir
+x2epkg xxx.rpm --out-dir PATH                 # convert package into output dir
 EOF
 }
 
@@ -23,11 +23,11 @@ eval set -- "$OPT"
 while true; do
     case "$1" in
         --out-dir)
-            DEST="$2"
+            OUT_DIR="$2"
             shift 2
             ;;
         -h|--help)
-            __get_x2epkg_help_info
+            show_help
             exit 0
             ;;
         --)
@@ -43,31 +43,31 @@ done
 
 if [ $# -eq 0 ]; then
     echo "Error: file path must be provided."
-    __get_x2epkg_help_info
+    show_help
     exit 1
 fi
 
-# 输出目标路径和repo源
-echo "Destination path is: $DEST"
-if [ -n "$SRC_REPO" ]; then
-    echo "Source repository file is: $SRC_REPO"
+if [ "$OUT_DIR" == "" ]; then
+    OUT_DIR=$(dirname "$@" | uniq)
 fi
+# 输出目标路径
+echo "Output path is: $OUT_DIR"
 
 # 批量解压逻辑
-for pkg in $@; do
+for pkg in "$@"; do
   if [ -f "$pkg" ]; then      # single convert
     case "$pkg" in
       *.rpm)
-        ./rpm/convert-rpm2epkg.sh "${pkg}" "${DEST}"
+        ./rpm/convert-rpm2epkg.sh "${pkg}" "${OUT_DIR}"
         echo "rpm: $pkg"
         ;;
       *.deb)
         echo "deb: $pkg"
-        ./deb/convert-deb2epkg.sh "${pkg}" "${DEST}"
+        ./deb/convert-deb2epkg.sh "${pkg}" "${OUT_DIR}"
         ;;
       *.pkg.tar.zst)
         echo "archlinux: $pkg"
-        ./archlinux/convert-archlinux2epkg.sh "${pkg}" "${DEST}"
+        ./archlinux/convert-archlinux2epkg.sh "${pkg}" "${OUT_DIR}"
         ;;
       *)
         help
@@ -76,5 +76,4 @@ for pkg in $@; do
     esac
   fi
 done
-wait
 echo "Operation completed."

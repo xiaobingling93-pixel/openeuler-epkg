@@ -19,7 +19,6 @@ init_conversion_dirs()
 
 decompress_rpm()
 {
-  yum install -y tar cpio
 	rpm2cpio "${rpm_file}" | cpio -idm --quiet -D "${epkg_conversion_dir}/fs/" 2>/dev/null
 }
 

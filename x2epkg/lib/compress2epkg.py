@@ -1,47 +1,20 @@
 import sys
 import json
 import os
-from pathlib import Path
-from hash import epkg_store_hash
 
 
-# TODO(main flow: get hash from path)
-def get_entry_hash_param(entry: Path) -> (bytes, str):
-    try:
-        # 使用 os.lstat 而不是 os.stat 以避免解析符号链接
-        metadata = entry.lstat()
-
-        if entry.is_symlink():
-            target = os.readlink(entry)
-            return str.encode(target), "S_IFLNK"
-        elif entry.is_file():
-            with entry.open("rb") as file:
-                content = file.read()
-            return content, "S_IFREG"
-        elif entry.is_block_device():
-            dev_id = metadata.st_dev.to_bytes(8, byteorder='big')
-            return dev_id, "S_IFBLK"
-        elif entry.is_char_device():
-            dev_id = metadata.st_rdev.to_bytes(8, byteorder='big')
-            return dev_id, "S_IFCHR"
-        elif entry.is_dir():
-            return b'', "S_IFDIR"
-        elif entry.is_socket():
-            return b'', "S_IFSOCK"
-        elif entry.is_fifo():
-            return b'', "S_IFIFO"
-        else:
-            raise ValueError(f"Encountered an unknown file type at: {entry}")
-
-    except Exception as e:
-        raise RuntimeError(f"Failed to get metadata for {entry}: {e}")
+def run_epkg_hash(path):
+    local_path = os.getcwd()
+    hash_script = os.path.join(local_path, "../src/hash.py")
+    result = os.popen(f"python3 {hash_script} {path}").read().strip()
+    return result
 
 
 def update_package_json():
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "r") as f:
         content = f.read()
     metadata = json.loads(content)
-    metadata["hash"] = epkg_store_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
+    metadata["hash"] = run_epkg_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
     epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
     metadata["hash_version"] = "1"
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "w") as f:
