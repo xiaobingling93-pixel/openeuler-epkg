@@ -2,10 +2,7 @@ import sys
 import json
 import os
 from pathlib import Path
-
-
-def get_hash(path):
-    return "hash2of2path"
+from hash import epkg_store_hash
 
 
 # TODO(main flow: get hash from path)
@@ -44,7 +41,7 @@ def update_package_json():
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "r") as f:
         content = f.read()
     metadata = json.loads(content)
-    metadata["hash"] = get_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
+    metadata["hash"] = epkg_store_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
     epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
     metadata["hash_version"] = "1"
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "w") as f:
