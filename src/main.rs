@@ -7,9 +7,11 @@ mod upgrade;
 mod remove;
 mod list;
 mod hash;
+mod ipc;
 mod store;
 use std::env;
 use crate::models::*;
+use crate::ipc::*;
 use anyhow::Result;
 
 use clap::{Arg, ArgAction, Command};
@@ -202,18 +204,21 @@ fn main() -> Result<()> {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
             package_manager.options.install_suggests = matches.get_flag("install_suggests");
             package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
+            package_manager.fork_on_suid();
             package_manager.install_packages(package_specs)?;
         }
     }
 
     if let Some(matches) = matches.subcommand_matches("upgrade") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            package_manager.fork_on_suid();
             package_manager.upgrade_packages(package_specs)?;
         }
     }
 
     if let Some(matches) = matches.subcommand_matches("remove") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            package_manager.fork_on_suid();
             package_manager.remove_packages(package_specs)?;
         }
     }
@@ -223,12 +228,14 @@ fn main() -> Result<()> {
             package_manager.options.list_all = matches.get_flag("list_all");
             package_manager.options.list_installed = matches.get_flag("list_installed");
             package_manager.options.list_available = matches.get_flag("list_available");
+            privdrop_on_suid();
             package_manager.list_packages(package_specs)?;
         }
     }
 
     if let Some(matches) = matches.subcommand_matches("hash") {
         if let Some(package_store_dir) = matches.get_many::<String>("package-store-dir") {
+            privdrop_on_suid();
             for dir in package_store_dir {
                 let hash = crate::hash::epkg_store_hash(&dir)?;
                 println!("{}", hash);

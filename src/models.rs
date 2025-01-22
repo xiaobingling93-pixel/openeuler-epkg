@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::os::unix::net::UnixStream;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -178,4 +179,9 @@ pub struct PackageManager {
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>,
+
+    pub has_worker_process: bool,
+    pub ipc_socket: String,
+    pub ipc_stream: Option<UnixStream>,
+    pub ipc_connected: bool,
 }

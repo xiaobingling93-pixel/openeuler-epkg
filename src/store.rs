@@ -5,7 +5,7 @@ use zstd::stream::read::Decoder;
 use anyhow::{Context, Result};
 use crate::models::*;
 
-pub fn unpack_package_files_to_store(files: Vec<String>) -> io::Result<()> {
+pub fn unpack_packages(files: Vec<String>) -> Result<()> {
     // Actual unpacking implementation would go here
     for file in files {
         println!("Unpacking {} to /opt/epkg/store/", file);
@@ -13,7 +13,7 @@ pub fn unpack_package_files_to_store(files: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-pub fn garbage_collect() -> io::Result<()> {
+pub fn garbage_collect() -> Result<()> {
     // Actual garbage collection implementation would go here
     println!("Performing garbage collection");
     Ok(())
