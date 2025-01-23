@@ -1,56 +1,73 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::path::Path;
+use std::thread;
+use std::time::Duration;
 use dirs::home_dir;
-use reqwest::{Client, StatusCode};
-use tokio::io::AsyncWriteExt; // Import AsyncWriteExt for write_all
-use tokio::sync::Semaphore;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use futures::StreamExt; // Import StreamExt for bytes_stream
+
 use anyhow::{anyhow, Context, Result};
+use crossbeam_channel::{bounded, Sender};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use reqwest::blocking::{Client, Response};
+use reqwest::StatusCode;
 use crate::models::*;
 
 // Main Features:
 //
 // 1. Concurrent Downloads
 //   - Supports parallel downloads with configurable concurrency limit
-//   - Uses tokio::sync::Semaphore for resource management
-
+//   - Uses a thread pool (Rayon) for resource management
+//
 // 2. Resumable Downloads
 //   - Creates .part files during download
 //   - Uses HTTP Range headers to resume interrupted downloads
 //   - Automatically handles servers that don't support resuming
-
+//
 // 3. Error Handling
 //   - Distinguishes between fatal (4xx) and transient errors
 //   - Implements exponential backoff for retries
 //   - Configurable maximum retry count
-
+//
 // 4. Progress Tracking
 //   - Shows download progress with indicatif progress bars
 //   - Tracks downloaded bytes across retries
 //   - Displays ETA and transfer speed
-
+//
 // 5. File Management
 //   - Downloads to .part files first
 //   - Renames to final filename only after successful completion
 //   - Cleans up partial files on failure
-
+//
 // 6. Robustness Features
 //   - Verifies downloaded file size matches Content-Length
 //   - Handles network interruptions gracefully
 //   - Implements proper timeouts
-
+//
 // 7. User Feedback
 //   - Provides clear status messages
 //   - Shows retry attempts and delays
 //   - Indicates when downloads are complete
-
+//
 // 8. Safety Features
 //   - Skips already downloaded files
 //   - Ensures atomic completion with file renaming
 //   - Properly cleans up resources on errors
+//
+// 9. Blocking I/O
+//   - Uses blocking I/O instead of async/await
+//   - Relies on a thread pool for parallelism
+//   - Avoids async runtime dependencies
+//
+// 10. Cross-Platform
+//   - Uses rustls for TLS instead of OpenSSL
+//   - Works on all major platforms (Linux, macOS, Windows)
+//
+// 11. Lightweight
+//   - Minimal dependencies
+//   - No async runtime overhead
+//   - Efficient resource usage
 
 #[derive(Debug)]
 struct FatalError;
@@ -63,7 +80,7 @@ impl std::fmt::Display for FatalError {
 
 impl std::error::Error for FatalError {}
 
-pub async fn download_urls(
+pub fn download_urls(
     urls: Vec<String>,
     output_dir: &str,
     nr_parallel: usize,
@@ -73,84 +90,99 @@ pub async fn download_urls(
         .timeout(Duration::from_secs(30))
         .build()?;
 
-    tokio::fs::create_dir_all(output_dir).await?;
-
+    fs::create_dir_all(output_dir)?;
     let multi_progress = MultiProgress::new();
-    let semaphore = Arc::new(Semaphore::new(nr_parallel));
 
-    let tasks = urls.into_iter().map(|url| {
-        let client = client.clone();
-        let output_dir = output_dir.to_string();
-        let multi_progress = multi_progress.clone();
-        let semaphore = semaphore.clone();
-        let max_retries = max_retries;
+    let (sender, receiver) = bounded(urls.len());
+    for url in urls {
+        sender.send(url)?;
+    }
+    drop(sender);
 
-        tokio::spawn(async move {
-            let _permit = semaphore.acquire().await?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(nr_parallel)
+        .build()?;
 
-            let file_name = url.split('/').last()
-                .map(|s| s.to_string())  // Convert to owned String
-                .ok_or_else(|| anyhow!("Invalid URL: {}", url))?;
-            let final_path = Path::new(&output_dir).join(&file_name);
-            let part_path = final_path.with_extension("part");
+    let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-            if final_path.exists() {
-                return Ok(());
-            }
+    pool.scope(|s| {
+        for url in receiver {
+            let client = client.clone();
+            let output_dir = output_dir.to_string();
+            let multi_progress = multi_progress.clone();
+            let errors = Arc::clone(&errors);
 
-            let pb = multi_progress.add(ProgressBar::new(0));
-            pb.set_style(ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("=> "));
-            pb.set_message(file_name.clone());
-
-            let result = download_file_with_retries(
-                &client,
-                &url,
-                part_path.to_str().unwrap(),
-                &pb,
-                max_retries
-            ).await;
-
-            pb.finish_and_clear();
-
-            match result {
-                Ok(()) => {
-                    tokio::fs::rename(&part_path, &final_path).await?;
-                    Ok(())
-                },
-                Err(e) => {
-                    let _ = tokio::fs::remove_file(&part_path).await;
-                    Err(e)
+            s.spawn(move |_| {
+                if let Err(e) = download_task(&client, &url, &output_dir, &multi_progress, max_retries) {
+                    errors.lock().unwrap().push(e);
                 }
-            }
-        })
+            });
+        }
     });
 
-    let results = futures::future::join_all(tasks).await;
-    for result in results {
-        match result {
-            Ok(Ok(_)) => {},
-            Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(anyhow!("Task failed: {}", e)),
+    let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
+    if !errors.is_empty() {
+        return Err(anyhow!("{} downloads failed", errors.len()));
+    }
+
+    Ok(())
+}
+
+fn download_task(
+    client: &Client,
+    url: &str,
+    output_dir: &str,
+    multi_progress: &MultiProgress,
+    max_retries: usize,
+) -> Result<()> {
+    let file_name = url.split('/').last()
+        .ok_or_else(|| anyhow!("Invalid URL: {}", url))?;
+    let final_path = Path::new(output_dir).join(file_name);
+    let part_path = final_path.with_extension("part");
+
+    if final_path.exists() {
+        return Ok(());
+    }
+
+    let pb = multi_progress.add(ProgressBar::new(0));
+    pb.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
+        .unwrap()
+        .progress_chars("=> "));
+    pb.set_message(file_name.to_string());
+
+    let result = download_file_with_retries(
+        client,
+        url,
+        &part_path,
+        &pb,
+        max_retries
+    );
+
+    pb.finish_and_clear();
+
+    match result {
+        Ok(()) => fs::rename(&part_path, &final_path)?,
+        Err(e) => {
+            let _ = fs::remove_file(&part_path);
+            return Err(e);
         }
     }
 
     Ok(())
 }
 
-async fn download_file_with_retries(
+fn download_file_with_retries(
     client: &Client,
     url: &str,
-    part_file_path: &str,
+    part_path: &Path,
     pb: &ProgressBar,
     max_retries: usize,
 ) -> Result<()> {
     let mut retries = 0;
 
     loop {
-        match download_file(client, url, part_file_path, pb).await {
+        match download_file(client, url, part_path, pb) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if e.downcast_ref::<FatalError>().is_some() {
@@ -164,35 +196,32 @@ async fn download_file_with_retries(
                 retries += 1;
                 let delay = Duration::from_secs(2u64.pow(retries as u32));
                 pb.println(format!("Retrying {} (attempt {}/{})...", url, retries, max_retries));
-                tokio::time::sleep(delay).await;
+                thread::sleep(delay);
             }
         }
     }
 }
 
-async fn download_file(
+fn download_file(
     client: &Client,
     url: &str,
-    part_file_path: &str,
+    part_path: &Path,
     pb: &ProgressBar,
 ) -> Result<()> {
-    let path = Path::new(part_file_path);
-    let mut downloaded = 0u64;
-
-    if path.exists() {
-        let meta = tokio::fs::metadata(path).await?;
-        downloaded = meta.len();
-    }
+    let mut downloaded = if part_path.exists() {
+        fs::metadata(part_path)?.len()
+    } else {
+        0
+    };
 
     let mut request = client.get(url);
     if downloaded > 0 {
         request = request.header("Range", format!("bytes={}-", downloaded));
     }
 
-    let response = request.send().await?;
+    let mut response = request.send()?;
     let status = response.status();
 
-    // Handle error status codes
     if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
         pb.finish_with_message(format!("HTTP error {}: {}", status, url));
         return if status.is_client_error() {
@@ -202,50 +231,45 @@ async fn download_file(
         };
     }
 
-    // Handle non-resumable responses
     if downloaded > 0 && status != StatusCode::PARTIAL_CONTENT {
-        tokio::fs::remove_file(path).await?;
+        fs::remove_file(part_path)?;
         downloaded = 0;
         pb.println(format!("Server doesn't support resume, restarting: {}", url));
     }
 
-    // Calculate total size
     let total_size = response.content_length().unwrap_or(0) + downloaded;
     pb.set_length(total_size);
     pb.set_position(downloaded);
 
-    // Open file in append mode
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
-        .await?;
+        .open(part_path)?;
 
-    // Download chunks
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
+    let mut buffer = [0; 8192];
+    loop {
+        let bytes_read = response.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..bytes_read])?;
+        downloaded += bytes_read as u64;
         pb.set_position(downloaded);
     }
 
-    // Verify download size
-    if downloaded == total_size {
-        pb.finish_with_message(format!("Downloaded {}", path.file_name().unwrap().to_string_lossy()));
-    } else if total_size > 0 {
+    if total_size > 0 && downloaded != total_size {
         pb.finish_with_message(format!("Incomplete download: {}/{} bytes", downloaded, total_size));
         return Err(anyhow!("Download incomplete"));
     }
 
+    pb.finish_with_message(format!("Downloaded {}", part_path.file_name().unwrap().to_string_lossy()));
     Ok(())
 }
 
 impl PackageManager {
 
     /// Download packages specified by their pkgline strings.
-    #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-    pub async fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
+    pub fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
 
         let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         let output_dir = format!(
@@ -276,7 +300,7 @@ impl PackageManager {
         }
 
         // Step 2: Call the predefined download_urls function
-        download_urls(urls, &output_dir, 6, 6).await?;
+        download_urls(urls, &output_dir, 6, 6)?;
         Ok(local_files)
     }
 }
