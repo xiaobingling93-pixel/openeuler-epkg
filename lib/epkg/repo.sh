@@ -8,18 +8,14 @@ init_channel_repo()
 	local channel=$2
 	local repo=$3
 
+	# channel.toml
 	local env_channel_toml=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.toml
-	# TODO: make repo configurable
-	cat > $env_channel_toml <<-EOF
-	[channel]
-	name = "$channel"
-	baseurl = "http://repo.openeuler.org/epkg/channel/$channel/"
-
-	[repos.everything]
-	EOF
-
+	mkdir -p $(dirname ${env_channel_toml})
+	cp $COMMON_PROFILE_LINK/etc/epkg/channel/${channel}-channel.toml  $env_channel_toml
+	# installed-packages.json
 	echo -e "{\n}" > $HOME/.epkg/envs/$env/profile-current/installed-packages.json
 
+	# remove in furture: channel.json 
 	local env_channel_json=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.json
 	local tmp_env_channel_json=/tmp/channel.json
 

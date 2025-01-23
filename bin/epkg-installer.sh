@@ -174,7 +174,7 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
     cp -a $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
     cp    $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg/
-    # XXX: copy toml to                  $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.toml
+    cp -r $EPKG_MANAGER_DIR/channel/     $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel/
     echo -e "{\n}" >                     $EPKG_COMMON_ROOT/profile-1/installed-packages.json
 
     # unpack epkg build

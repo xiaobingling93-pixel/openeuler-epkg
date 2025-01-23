@@ -1,0 +1,5 @@
+[channel]
+name = "openEuler-24.03-LTS"
+baseurl = "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/"
+
+[repos.everything]
