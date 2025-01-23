@@ -3,6 +3,91 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use crate::models::*;
 
+// ======================================================================================
+// `epkg list` - Search and List Packages
+// ======================================================================================
+//
+// DESCRIPTION:
+//   The `epkg list` command searches for packages in the configured repositories and
+//   displays their details in a formatted table. It supports simple glob-like patterns
+//   for filtering package names.
+//
+// USAGE:
+//   epkg list [PATTERN]
+//
+// ARGUMENTS:
+//   PATTERN:
+//     A pattern to filter package names. The pattern can be in one of the following forms:
+//
+//     1. `xxx`:
+//        - Matches packages whose names contain the substring "xxx".
+//        - Example: `epkg list podman` matches "podman", "podman-gvproxy", etc.
+//
+//     2. `*xxx`:
+//        - Matches packages whose names end with "xxx".
+//        - Example: `epkg list *selinux` matches "pcp-selinux", "audit-selinux", etc.
+//
+//     3. `xxx*`:
+//        - Matches packages whose names start with "xxx".
+//        - Example: `epkg list texlive*` matches "texlive-xdvi", "texlive-meetingmins", etc.
+//
+// OUTPUT FORMAT:
+//   The command outputs a table with the following columns:
+//
+//   - Channel: The channel name (e.g., "openEuler-24.09").
+//   - Repo: The repository name (e.g., "everything").
+//   - Package: The package name (e.g., "texlive-xdvi").
+//   - Version-Release: The package version and release (e.g., "20210325-8").
+//   - Hash: The unique hash of the package (e.g., "ZHNXZNVU2HAGMX4FBAFGF4JVH3LGZB2J").
+//
+//   Example Output:
+//   ```
+//   Channel                Repo             Package               Version-Release      Hash
+//   ============================================================================================
+//   openEuler-24.09        everything       texlive-xdvi          20210325-8           ZHNXZNVU2HAGMX4FBAFGF4JVH3LGZB2J
+//   openEuler-24.09        everything       pcp-selinux           6.2.2-2              ZHBBEFHR6TO7BWWH7JFAXAKNKKTFJX67
+//   openEuler-24.09        everything       podman-gvproxy        4.9.4-8              ZHCF7QQHK2H35B6ME65EPIARWNCZS7LL
+//   ```
+//
+// EXAMPLES:
+//   1. List all packages containing "podman":
+//      ```
+//      epkg list podman
+//      ```
+//
+//   2. List all packages ending with "selinux":
+//      ```
+//      epkg list *selinux
+//      ```
+//
+//   3. List all packages starting with "texlive":
+//      ```
+//      epkg list texlive*
+//      ```
+//
+//   4. List all packages (no filter):
+//      ```
+//      epkg list
+//      ```
+//
+// NOTES:
+//   - The command reads package data from the `store-paths` files in the configured
+//     repositories.
+//   - The pattern matching is case-sensitive.
+//   - If no pattern is provided, all packages are listed.
+//
+// ERROR HANDLING:
+//   - If a `store-paths` file cannot be read, an error message is displayed, and the
+//     command continues processing the remaining files.
+//   - If no packages match the pattern, no output is displayed.
+//
+// SEE ALSO:
+//   - `epkg install`: Install a package.
+//   - `epkg remove`: Remove a package.
+//   - `epkg update`: Update the package database.
+//
+// ======================================================================================
+
 macro_rules! LIST_OUTPUT_FORMAT {
     () => {
         "{:<24} {:<16} {:<24} {:<20} {}"
