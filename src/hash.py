@@ -6,12 +6,46 @@ import base64
 from pathlib import Path
 
 def b32_hash(content: str) -> str:
-    """Compute the base32-encoded SHA-256/SHA-1 hash of the input string."""
-    sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    """
+    Computes a base32-encoded hash of the input string using SHA256 and XOR folding.
 
-    sha1 = hashlib.sha1(sha256.encode("utf-8")).digest()
-    b32_hash = base64.b32encode(sha1).decode("utf-8").lower()
-    return b32_hash
+    This function performs the following steps:
+    1. Compute hash: SHA256 hash of the input string. (Output: 32-byte bytes object)
+    2. Compress hash: XOR folding to reduce to 20 bytes. (Output: 20-byte bytearray)
+    3. Encode base32: Base32 encoding of the compressed hash. (Output: 32-character string)
+    4. Convert lowercase: Lowercase conversion of the base32 string. (Output: 32-character lowercase string)
+
+    Args:
+        content (str): The input string to hash.
+
+    Returns:
+        str: A base32-encoded, lowercase string representing the compressed hash.
+    """
+    # Step 1: Compute SHA256 hash
+    # - The hashlib.sha256() function computes the SHA256 hash of the input string.
+    # - The .encode() method converts the string to bytes (required by hashlib).
+    # - The .digest() method returns the hash as a bytes object (32 bytes long).
+    sha256_hash = hashlib.sha256(content.encode()).digest()
+
+    # Step 2: Compress hash
+    # - A bytearray of size 20 is created to store the compressed hash.
+    # - Each byte of the first 20 bytes of the SHA256 hash is XORed with the corresponding
+    #   byte of the next 12 bytes. This ensures all bits contribute to the final hash.
+    # - The result is a 20-byte compressed hash.
+    compressed_hash = bytearray(20)
+    for i in range(20):
+        compressed_hash[i] = sha256_hash[i] ^ sha256_hash[i + 12]
+
+    # Step 3: Encode base32
+    # - The base64.b32encode() function encodes the compressed hash into a base32 string.
+    # - The .decode() method converts the bytes object to a string.
+    b32sum = base64.b32encode(compressed_hash).decode()
+
+    # Step 4: Convert lowercase
+    # - The base32 string is converted to lowercase using .lower().
+    # - This ensures consistency in the output, as base32 encoding can produce uppercase
+    #   letters by default.
+    return b32sum.lower()
 
 def epkg_store_hash(epkg_path: str) -> str:
     """Compute the hash of the contents of a directory."""

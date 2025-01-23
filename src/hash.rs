@@ -5,26 +5,44 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use base32;
 use walkdir::WalkDir;
-use sha1::Digest;
 use sha2;
+use sha2::Digest;
 use anyhow::Result;
 
-
+// Step 1: Compute SHA256 hash  Output: 32-byte bytes object.
+// Step 2: Compress(XOR) hash   Output: 20-byte bytearray.
+// Step 3: Encode base32        Output: 32-character string.
+// Step 4: Convert lowercase    Output: 32-character lowercase string.
 pub fn b32_hash(content: &str) -> String {
-    // Compute the SHA256 hash of the input string
+    // Step 1: Compute hash
+    // - The Sha256::new() function initializes a SHA256 hasher.
+    // - The .update() method feeds the input string (as bytes) into the hasher.
+    // - The .finalize() method computes the hash and returns it as a 32-byte array.
     let mut hasher = sha2::Sha256::new();
     hasher.update(content);
-    let sha256_hash = format!("{:x}", hasher.finalize());
+    let sha256_hash = hasher.finalize();
 
-    // Compute the SHA1 hash of the input string
-    let mut hasher = sha1::Sha1::new();
-    hasher.update(sha256_hash.as_bytes());
-    let sha1_hash = hasher.finalize();
+    // Step 2: Compress hash
+    // - A [u8; 20] array is created to store the compressed hash.
+    // - Each byte of the first 20 bytes of the SHA256 hash is XORed with the corresponding
+    //   byte of the next 12 bytes. This ensures all bits contribute to the final hash.
+    // - The result is a 20-byte compressed hash.
+    let mut compressed_hash = [0u8; 20];
+    for i in 0..20 {
+        compressed_hash[i] = sha256_hash[i] ^ sha256_hash[i + 12];
+    }
 
-    // Encode the SHA1 hash in base32
-    let b32sum = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &sha1_hash);
+    // Step 3: Encode base32
+    // - The base32::encode() function encodes the compressed hash into a base32 string.
+    // - The Alphabet::Rfc4648 { padding: false } ensures no padding is added.
+    // - The result is a 32-character string.
+    let b32sum = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &compressed_hash);
 
-    // Convert the base32 hash to lowercase
+    // Step 4: Convert lowercase
+    // - The base32 string is converted to lowercase using .to_lowercase().
+    // - This ensures consistency in the output, as base32 encoding can produce uppercase
+    //   letters by default.
+    // - The result is a 32-character lowercase string.
     b32sum.to_lowercase()
 }
 
@@ -156,7 +174,7 @@ fs/usr/share/licenses/which/COPYING
 S_IFREG
 35147 4640533f6a2164475200c008c0dd97eef50a7020fb924d00563f3bd2c8400a1a bca4e8f27aaa00867178fe0adc7e4559d0396118346e3143d94479025241ab6a 683acd90103a7b7e9f859f9876a9e0536701bd56d09dba6672b0c9fce4b8fe40"#;
 
-        assert_eq!(b32_hash(content), "u2qpre6bl4hxfpqsudubrgftglmiz74t");
+        assert_eq!(b32_hash(content), "pm7cnxioa7iycyeyabryerpiyx26lgwm");
     }
 
     #[test]
@@ -240,7 +258,7 @@ fs/usr/share/licenses/zstd/LICENSE
 S_IFREG
 1549 7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"#;
 
-        assert_eq!(b32_hash(content), "n5u65yfywfkhjg74lgv64vlx5t3jhnp3");
+        assert_eq!(b32_hash(content), "g2q62dbhj7g7rn3fggzyihqu2xodq5yf");
 
     }
 }
