@@ -1,8 +1,6 @@
-use anyhow::{Context, Result};
-use grep::regex::RegexMatcher;
-use grep::searcher::Searcher;
-use grep::searcher::sinks::UTF8;
 use std::fs;
+use std::path::Path;
+use anyhow::{Context, Result};
 use crate::models::*;
 
 macro_rules! LIST_OUTPUT_FORMAT {
@@ -12,19 +10,16 @@ macro_rules! LIST_OUTPUT_FORMAT {
 }
 
 impl PackageManager {
-
     pub fn list_packages(&mut self, glob_pattern: &str) -> Result<()> {
         self.load_store_paths()?;
 
-        // Convert the pattern to a regex based on the rules
-        let regex_pattern = match glob_pattern {
-            p if p.starts_with('*') => format!("{}__", &p[1..]), // '*xxx' => 'xxx__'
-            p if p.contains('*') => format!("__{}__", p.replace('*', ".*")), // 'xx*x' => '__xx.*x__'
-            _ => format!("__{}__", glob_pattern), // 'xxx' => '__xxx__'
+        // Determine the search pattern based on the glob syntax
+        let (prefix, suffix) = match glob_pattern {
+            p if p.starts_with('*') => (None, Some(&p[1..])), // '*xxx' => search for suffix
+            p if p.ends_with('*') => (Some(&p[..p.len() - 1]), None), // 'xxx*' => search for prefix
+            _ => (Some(glob_pattern), Some(glob_pattern)), // 'xxx' => search for exact match
         };
 
-        // Compile the regex matcher
-        let matcher = RegexMatcher::new(&regex_pattern)?;
         let mut header_printed = false;
 
         // Iterate over all repositories
@@ -41,46 +36,43 @@ impl PackageManager {
                 let contents = fs::read_to_string(&file_path)
                     .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
 
-                // Create a Searcher
-                let mut searcher = Searcher::new();
-
-                // Use UTF8 sink to handle the search results
-                let mut matches = Vec::new();
-                let sink = UTF8(|_line_num, line| {
-                    matches.push(line.to_string());
-                    Ok(true)
-                });
-
-                // Perform the search
-                searcher.search_slice(&matcher, contents.as_bytes(), sink)?;
-
-                // Print the matches in the desired format
-                for line in matches {
+                // Process each line in the file
+                for line in contents.lines() {
                     let parts: Vec<&str> = line.split("__").collect();
                     if parts.len() >= 4 {
                         let hash = parts[0];
                         let pkgname = parts[1];
-                        let mut version_release = parts[2..].join("__");
-                        if version_release.ends_with('\n') { version_release.pop(); }
+                        let version_release = parts[2..].join("__");
 
-                        // Print the header
-                        if !header_printed {
-                            header_printed = true;
+                        // Check if the package name matches the pattern
+                        let matches = match (prefix, suffix) {
+                            (Some(pre), Some(suf)) => pkgname.contains(pre) && pkgname.contains(suf),
+                            (Some(pre), None) => pkgname.starts_with(pre),
+                            (None, Some(suf)) => pkgname.ends_with(suf),
+                            _ => false,
+                        };
+
+                        if matches {
+                            // Print the header if not already printed
+                            if !header_printed {
+                                header_printed = true;
+                                println!(
+                                    LIST_OUTPUT_FORMAT!(),
+                                    "Channel", "Repo", "Package", "Version-Release", "Hash"
+                                );
+                                println!("{}", "-".repeat(120)); // Separator line
+                            }
+
+                            // Print the package details
                             println!(
                                 LIST_OUTPUT_FORMAT!(),
-                                "Channel", "Repo", "Package", "Version-Release", "Hash"
+                                self.env_config.channel.name,
+                                repodata.name,
+                                pkgname,
+                                version_release,
+                                hash
                             );
-                            println!("{}", "-".repeat(120)); // Separator line
                         }
-
-                        println!(
-                            LIST_OUTPUT_FORMAT!(),
-                            self.env_config.channel.name,
-                            repodata.name,
-                            pkgname,
-                            version_release,
-                            hash
-                        );
                     }
                 }
             }
