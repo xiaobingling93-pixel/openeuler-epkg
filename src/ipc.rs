@@ -355,6 +355,7 @@ impl PackageManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn garbage_collect(&mut self) -> Result<()> {
         if !self.has_worker_process {
             crate::store::garbage_collect()?;
