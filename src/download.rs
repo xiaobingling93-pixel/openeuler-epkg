@@ -1,17 +1,16 @@
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use dirs::home_dir;
 
 use anyhow::{anyhow, Context, Result};
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::bounded;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use reqwest::blocking::{Client, Response};
-use reqwest::StatusCode;
+use ureq::{Agent, AgentBuilder};
 use crate::models::*;
 
 // Main Features:
@@ -58,7 +57,7 @@ use crate::models::*;
 // 9. Blocking I/O
 //   - Uses blocking I/O instead of async/await
 //   - Relies on a thread pool for parallelism
-//   - Avoids async runtime dependencies
+//   - Avoids tokio async runtime dependencies
 //
 // 10. Cross-Platform
 //   - Uses rustls for TLS instead of OpenSSL
@@ -85,10 +84,16 @@ pub fn download_urls(
     output_dir: &str,
     nr_parallel: usize,
     max_retries: usize,
+    proxy: Option<&str>,
 ) -> Result<()> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    // Create HTTP client with optional proxy
+    let client = if let Some(proxy_url) = proxy {
+        AgentBuilder::new()
+            .proxy(ureq::Proxy::new(proxy_url)?)
+            .build()
+    } else {
+        AgentBuilder::new().build()
+    };
 
     fs::create_dir_all(output_dir)?;
     let multi_progress = MultiProgress::new();
@@ -129,7 +134,7 @@ pub fn download_urls(
 }
 
 fn download_task(
-    client: &Client,
+    client: &Agent,
     url: &str,
     output_dir: &str,
     multi_progress: &MultiProgress,
@@ -173,7 +178,7 @@ fn download_task(
 }
 
 fn download_file_with_retries(
-    client: &Client,
+    client: &Agent,
     url: &str,
     part_path: &Path,
     pb: &ProgressBar,
@@ -203,7 +208,7 @@ fn download_file_with_retries(
 }
 
 fn download_file(
-    client: &Client,
+    client: &Agent,
     url: &str,
     part_path: &Path,
     pb: &ProgressBar,
@@ -216,28 +221,31 @@ fn download_file(
 
     let mut request = client.get(url);
     if downloaded > 0 {
-        request = request.header("Range", format!("bytes={}-", downloaded));
+        request = request.set("Range", &format!("bytes={}-", downloaded));
     }
 
-    let mut response = request.send()?;
+    let response = request.call()?;
     let status = response.status();
 
-    if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+    if !(status >= 200 && status < 300) && status != 206 {
         pb.finish_with_message(format!("HTTP error {}: {}", status, url));
-        return if status.is_client_error() {
+        return if status >= 400 && status < 500 {
             Err(anyhow!("Fatal HTTP error: {}", status).context(FatalError))
         } else {
             Err(anyhow!("HTTP error: {}", status))
         };
     }
 
-    if downloaded > 0 && status != StatusCode::PARTIAL_CONTENT {
+    if downloaded > 0 && status != 206 {
         fs::remove_file(part_path)?;
         downloaded = 0;
         pb.println(format!("Server doesn't support resume, restarting: {}", url));
     }
 
-    let total_size = response.content_length().unwrap_or(0) + downloaded;
+    let total_size = response.header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+        + downloaded;
     pb.set_length(total_size);
     pb.set_position(downloaded);
 
@@ -246,9 +254,10 @@ fn download_file(
         .append(true)
         .open(part_path)?;
 
+    let mut reader = response.into_reader();
     let mut buffer = [0; 8192];
     loop {
-        let bytes_read = response.read(&mut buffer)?;
+        let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
             break;
         }
@@ -300,7 +309,7 @@ impl PackageManager {
         }
 
         // Step 2: Call the predefined download_urls function
-        download_urls(urls, &output_dir, 6, 6)?;
+        download_urls(urls, &output_dir, 6, 6, None)?;
         Ok(local_files)
     }
 }
