@@ -168,14 +168,15 @@ epkg_download() {
 
 epkg_unpack() {
     # unpack epkg_manager
-    tar -xvf $EPKG_CACHE/$EPKG_MANAGER_TAR -C $EPKG_CACHE > /dev/null
-    local EPKG_MANAGER_DIR=$EPKG_CACHE/epkg-$EPKG_VERSION
+    mkdir -p $EPKG_CACHE/epkg-manager
+    tar -xvf $EPKG_CACHE/$EPKG_MANAGER_TAR --strip-components 1 -C $EPKG_CACHE/epkg-manager > /dev/null
+    local EPKG_MANAGER_DIR=$EPKG_CACHE/epkg-manager
 
-    cp    $EPKG_MANAGER_DIR/bin/epkg.sh  $EPKG_COMMON_ROOT/profile-1/usr/bin/
-    cp -a $EPKG_MANAGER_DIR/lib/epkg     $EPKG_COMMON_ROOT/profile-1/usr/lib/
-    cp    $EPKG_MANAGER_DIR/channel.json $EPKG_COMMON_ROOT/profile-1/etc/epkg/
-    # XXX: copy toml to                  $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.toml
-    echo -e "{\n}" >                     $EPKG_COMMON_ROOT/profile-1/installed-packages.json
+    cp    $EPKG_MANAGER_DIR/bin/epkg.sh                              $EPKG_COMMON_ROOT/profile-1/usr/bin/
+    cp -a $EPKG_MANAGER_DIR/lib/epkg                                 $EPKG_COMMON_ROOT/profile-1/usr/lib/
+    cp    $EPKG_MANAGER_DIR/channel.json                             $EPKG_COMMON_ROOT/profile-1/etc/epkg/
+    cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.toml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.toml
+    echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
 
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
