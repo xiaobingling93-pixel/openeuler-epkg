@@ -13,9 +13,178 @@ use serde_json::{json, Value};
 use users::{get_current_uid, get_effective_uid};
 use crate::models::*;
 
-// static has_worker_process: bool = false;
-// static ipc_connected: bool = false;
-// static ipc_stream: UnixStream;
+// ======================================================================================
+// Design Document: SUID Worker/Master Architecture for `epkg`
+// ======================================================================================
+//
+// OVERVIEW:
+//   The `epkg` package manager supports SUID installation, where it forks a worker process
+//   to manage privileged operations (e.g., unpacking packages to `/opt/epkg/store/`).
+//   The master process drops privileges and communicates with the worker process via IPC.
+//
+//   Key Features:
+//   - Fork a worker process if `epkg` is SUID.
+//   - Drop privileges in the master process.
+//   - Communicate via Unix domain sockets.
+//   - Provide transparent wrapper functions for privileged operations.
+//
+// ARCHITECTURE:
+//
+//   +---------------------+       +-----------------------+
+//   | Master Process      |       | Worker Process        |
+//   |---------------------|       |-----------------------|
+//   | - Drops privileges  |       | - Runs as root        |
+//   | - Handles user I/O  |       | - Manages store       |
+//   | - Calls wrappers    |<----->| - Exposes 2 APIs:     |
+//   |                     |  IPC  |   1) unpack_packages  |
+//   |                     |       |   2) garbage_collect  |
+//   +---------------------+       +-----------------------+
+//
+//   IPC Communication:
+//   - Uses Unix domain sockets.
+//   - JSON format for messages:
+//     {
+//       "command": "unpack" | "gc",
+//       "params": { "files": ["file1.epkg", "file2.epkg"] }
+//     }
+//
+// INTERNAL DATA STRUCTURES:
+//
+// 1. `PackageManager`:
+//    - Manages the state of the package manager and IPC communication.
+//
+//    Fields:
+//    - `has_worker_process: bool`:
+//      - Indicates whether a worker process has been forked.
+//      - Set to `true` if `epkg` is SUID and a worker process is running.
+//      - Used to determine whether to use IPC or direct function calls.
+//
+//    - `ipc_socket: String`:
+//      - Path to the Unix domain socket used for IPC communication.
+//      - Created by the master process and passed to the worker process.
+//      - Used by the master process to connect to the worker.
+//
+//    - `ipc_stream: Option<UnixStream>`:
+//      - The Unix stream for IPC communication.
+//      - Initialized when the master process connects to the worker process.
+//      - Used to send commands and receive responses.
+//
+//    - `ipc_connected: bool`:
+//      - Indicates whether the master process is connected to the worker process.
+//      - Set to `true` after successfully connecting to the worker.
+//      - Used to avoid reconnecting unnecessarily.
+//
+// 2. `WorkerCommand`:
+//    - Represents commands sent from the master process to the worker process.
+//
+//    Variants:
+//    - `Unpack(Vec<String>)`:
+//      - Command to unpack a list of `.epkg` files.
+//      - Contains the list of file paths to unpack.
+//
+//    - `GarbageCollect`:
+//      - Command to perform garbage collection in the store.
+//
+// 3. `UnixStream`:
+//    - Represents a connection to a Unix domain socket.
+//    - Used for bidirectional communication between the master and worker processes.
+//
+// CALL FLOW:
+//
+// 1. Master Process:
+//    - Checks if `epkg` is SUID.
+//    - If SUID:
+//      a. Forks a worker process.
+//      b. Drops privileges.
+//      c. Connects to the worker via a Unix socket.
+//    - If not SUID:
+//      a. Directly calls privileged functions.
+//
+// 2. Worker Process:
+//    - Binds to a Unix socket.
+//    - Listens for commands from the master process.
+//    - Executes privileged operations:
+//      a. `unpack_packages(files)`: Unpack `.epkg` files to `/opt/epkg/store/`.
+//      b. `garbage_collect()`: Clean up unused dirs in the store.
+//
+// 3. IPC Communication:
+//    - Master sends JSON commands to the worker.
+//    - Worker responds with JSON status messages.
+//
+// USAGE:
+//
+// 1. Transparent Wrapper Functions:
+//    - `unpack_packages(files)`: Unpacks `.epkg` files.
+//    - `garbage_collect()`: Performs garbage collection.
+//
+//    Those functions automatically handle SUID/non-SUID cases:
+//    - If SUID, they send commands to the worker process via IPC.
+//    - If not SUID, they directly call the underlying functions.
+//
+// 2. Example Usage in `PackageManager`:
+//    - `install_packages()`: Downloads packages and calls `unpack_packages()`.
+//    - `store_gc()`: Calls `garbage_collect()`.
+//
+// 3. Example Usage in `main()`:
+//    - Call `fork_on_suid()` before performing privileged operations.
+//    - Call `privdrop_on_suid()` to drop privileges if necessary.
+//
+// IMPLEMENTATION DETAILS:
+//
+// 1. `store.rs`:
+//    - Contains the privileged functions:
+//      a. `unpack_packages(files)`: Unpacks `.epkg` files to `/opt/epkg/store/`.
+//      b. `garbage_collect()`: Cleans up unused files in the store.
+//
+// 2. `privdrop_on_suid()`:
+//    - Drops privileges if `epkg` is SUID.
+//
+// 3. `fork_on_suid()`:
+//    - Forks a worker process if `epkg` is SUID.
+//    - Sets up IPC communication.
+//
+// 4. IPC Communication:
+//    - Uses Unix domain sockets.
+//    - JSON format for messages:
+//      {
+//        "command": "unpack" | "gc",
+//        "params": { "files": ["file1.epkg", "file2.epkg"] }
+//      }
+//
+// 5. Transparent Client Wrappers in master process and PackageManager:
+//    - `unpack_packages(files)`:
+//      - If SUID, sends IPC command to worker.
+//      - If not SUID, directly calls `crate::store::unpack_packages()`.
+//    - `garbage_collect()`:
+//      - If SUID, sends IPC command to worker.
+//      - If not SUID, directly calls `crate::store::garbage_collect()`.
+//
+// EXAMPLE CALLERS:
+//
+// 1. `main()`:
+//    ```
+//    if let Some(matches) = matches.subcommand_matches("remove") {
+//        if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+// =>         package_manager.fork_on_suid()?;
+//            package_manager.remove_packages(package_specs)?;
+//        }
+//    }
+//    ```
+//
+// 2. `PackageManager::install_packages()`:
+//    ```
+//    let files = self.download_packages(&packages_to_install)?;
+// => self.unpack_packages(files)?;
+//    self.installed_packages.extend(packages_to_install);
+//    self.save_installed_packages()?;
+//    ```
+//
+// 3. `PackageManager::store_gc()`:
+//    ```
+// => self.garbage_collect()?;
+//    ```
+//
+// ======================================================================================
 
 #[derive(Debug)]
 enum WorkerCommand {
