@@ -47,9 +47,6 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-if [ "$OUT_DIR" == "" ]; then
-    OUT_DIR=$(dirname "$@" | uniq)
-fi
 # 输出目标路径
 echo "Output path is: $OUT_DIR"
 
@@ -58,16 +55,16 @@ for pkg in "$@"; do
   if [ -f "$pkg" ]; then      # single convert
     case "$pkg" in
       *.rpm)
-        ./rpm/convert-rpm2epkg.sh "${pkg}" "${OUT_DIR}"
+        source rpm/convert-rpm2epkg.sh "${pkg}"
         echo "rpm: $pkg"
         ;;
       *.deb)
         echo "deb: $pkg"
-        ./deb/convert-deb2epkg.sh "${pkg}" "${OUT_DIR}"
+        source deb/convert-deb2epkg.sh "${pkg}"
         ;;
       *.pkg.tar.zst)
         echo "archlinux: $pkg"
-        ./archlinux/convert-archlinux2epkg.sh "${pkg}" "${OUT_DIR}"
+        source archlinux/convert-archlinux2epkg.sh "${pkg}"
         ;;
       *)
         help

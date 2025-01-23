@@ -3,8 +3,10 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 rpm_file=$1
-epkg_repo_path=$2
-
+epkg_repo_path="$OUT_DIR"
+if [ "$epkg_repo_path" == "" ]; then
+  epkg_repo_path=$(dirname "$rpm_file")
+fi
 epkg_conversion_dir="${HOME}/epkg_conversion"
 
 init_conversion_dirs()
