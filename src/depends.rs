@@ -2,7 +2,7 @@ use std::env;
 use std::process::exit;
 use std::collections::HashMap;
 use clap::parser::ValuesRef;
-use chrono::Utc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use crate::models::*;
 use crate::io::load_package_json;
@@ -20,7 +20,7 @@ impl PackageManager {
                     packages.insert(
                         pkgline.clone(),
                         InstalledPackageInfo {
-                            install_time: Utc::now(),
+                            install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                             depend_depth: 0,
                         },
                     );
@@ -89,7 +89,7 @@ impl PackageManager {
                         depend_packages.insert(
                             dpkgline.clone(),
                             InstalledPackageInfo {
-                                install_time: Utc::now(),
+                                install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                                 depend_depth: depth,
                             },
                         );

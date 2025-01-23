@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
@@ -109,9 +108,7 @@ pub struct PackageSpec {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackageInfo {
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub install_time: DateTime<Utc>,
-    #[serde(default)]
+    pub install_time: u64,
     pub depend_depth: u8,
 }
 
