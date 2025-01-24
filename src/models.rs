@@ -112,7 +112,7 @@ pub struct InstalledPackageInfo {
     pub depend_depth: u8,
 }
 
-// $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.toml
+// $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[derive(Default)]

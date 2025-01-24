@@ -175,7 +175,7 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/bin/epkg.sh                              $EPKG_COMMON_ROOT/profile-1/usr/bin/
     cp -a $EPKG_MANAGER_DIR/lib/epkg                                 $EPKG_COMMON_ROOT/profile-1/usr/lib/
     cp    $EPKG_MANAGER_DIR/channel.json                             $EPKG_COMMON_ROOT/profile-1/etc/epkg/
-    cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.toml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.toml
+    cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.yaml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.yaml
     echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
 
     # unpack epkg build

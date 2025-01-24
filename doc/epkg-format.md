@@ -194,22 +194,22 @@ tar文件列表:
 ```
 
 ## epkg env软件源配置文件
-```toml
-# $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.toml
-[channel]
-name = "openEuler-24.03-LTS"
-baseurl = "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS"
+```yaml
+# $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
+channel:
+  name: "openEuler-24.03-LTS"
+  baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/"
 
-[repos.everything]
-# url defaults to ${channel.baseurl}/$reponame
-# XXX:
-# gpgcheck = true
-# gpgkey = "http://repo.openeuler.org/openEuler-24.03-LTS/everything/${channel.arch}/RPM-GPG-KEY-openEuler"
-
-[repos.mysql]
-enabled = false
-# a repo can specify its own url
-url = "http://third.party/repo/dir"
+repos:
+  everything:
+    # url: defaults to ${channel.baseurl}/$reponame
+    # XXX
+    # gpgcheck: true
+    # gpgkey: "http://repo.openeuler.org/openEuler-24.03-LTS/everything/${channel.arch}/RPM-GPG-KEY-openEuler"
+  mysql:
+      enabled = false
+      # a repo can specify its own url
+      url = "http://third.party/repo/dir"
 ```
 
 ## epkg cache: 本地软件源缓存

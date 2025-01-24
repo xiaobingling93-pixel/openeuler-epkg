@@ -1,5 +1,0 @@
-[channel]
-name = "openEuler-20.03-LTS-SP4"
-baseurl = "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-20.03-LTS-SP4/"
-
-[repos.everything]

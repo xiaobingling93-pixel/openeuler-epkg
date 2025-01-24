@@ -2,7 +2,8 @@ use std::path::Path;
 use std::fs;
 use std::env;
 use glob;
-use toml;
+use serde_json;
+use serde_yaml;
 use dirs::home_dir;
 use anyhow::{Context, Result, bail};
 use crate::models::*;
@@ -57,7 +58,7 @@ fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
 impl PackageManager {
 
     pub fn load_env_config(&mut self) -> Result<()> {
-        let file_path = format!("{}/.epkg/envs/{}/profile-current/etc/epkg/channel.toml",
+        let file_path = format!("{}/.epkg/envs/{}/profile-current/etc/epkg/channel.yaml",
             env::var("HOME")?,
             self.options.env,
         );
@@ -66,9 +67,9 @@ impl PackageManager {
         let contents = fs::read_to_string(&file_path)
             .with_context(|| format!("Failed to read file: {}", file_path))?;
 
-        // Deserialize the TOML into the Config struct
-        self.env_config = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse TOML from file: {}", file_path))?;
+        // Deserialize the YAML into the Config struct
+        self.env_config = serde_yaml::from_str(&contents)
+            .with_context(|| format!("Failed to parse YAML from file: {}", file_path))?;
 
         Ok(())
     }

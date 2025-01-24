@@ -8,10 +8,10 @@ init_channel_repo()
 	local channel=$2
 	local repo=$3
 
-	# channel.toml
-	local env_channel_toml=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.toml
-	mkdir -p $(dirname ${env_channel_toml})
-	cp $EPKG_CACHE/epkg-manager/channel/${channel}-channel.toml  $env_channel_toml
+	# channel.yaml
+	local env_channel_yaml=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
+	mkdir -p $(dirname ${env_channel_yaml})
+	cp $EPKG_CACHE/epkg-manager/channel/${channel}-channel.yaml  $env_channel_yaml
 	# installed-packages.json
 	echo -e "{\n}" > $HOME/.epkg/envs/$env/profile-current/installed-packages.json
 
