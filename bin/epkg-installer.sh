@@ -140,10 +140,11 @@ epkg_download() {
     echo "download epkg manager"
     curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR --max-redirs 3 --location $EPKG_MANAGER_URL
 
-    echo "download static epkg binary"
-	curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH $EPKG_URL/$EPKG_STATIC-$ARCH --retry 5
-    curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
-    epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
+    # add in future: download static epkg binary
+    # echo "download static epkg binary"
+	# curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH $EPKG_URL/$EPKG_STATIC-$ARCH --retry 5
+    # curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
+    # epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
 
     # download epkg-hash
     echo "download epkg hash"
@@ -356,6 +357,7 @@ replace_string() {
 prepare_conf() {
     # curl resolv.conf
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+    mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
     cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 }
 

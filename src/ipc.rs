@@ -343,11 +343,12 @@ impl PackageManager {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;
         } else {
+            println!("Unpacking packages: {:?}", files);
             self.send_command(
                 json!({
                     "command": "unpack",
                     "params": {
-                        "files": ["package1.epkg", "package2.epkg"]
+                        "files": files
                     }
                 }),
             )?;

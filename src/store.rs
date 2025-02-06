@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::path::Path;
 use dirs::home_dir;
 use tar::Archive;
 use zstd::stream::read::Decoder;
@@ -21,10 +22,10 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
         // println!("untar {} {}", file, dir_str);
         untar_zst(&file, &dir_str)?;
 
-        let hash = crate::hash::epkg_store_hash(&dir_str)?;
-        if hash != pkgline[..32] {
-            eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
-        }
+        // let hash = crate::hash::epkg_store_hash(&dir_str)?;
+        // if hash != pkgline[..32] {
+        //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
+        // }
     }
     Ok(())
 }
@@ -36,6 +37,10 @@ pub fn garbage_collect() -> Result<()> {
 }
 
 fn untar_zst(file_path: &str, output_dir: &str) -> io::Result<()> {
+    if Path::new(output_dir).exists() {
+        return Ok(());
+    }
+
     // Open the compressed file
     let file = fs::File::open(file_path)?;
     let buffered_reader = io::BufReader::new(file);
