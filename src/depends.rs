@@ -9,6 +9,18 @@ use crate::io::load_package_json;
 
 impl PackageManager {
 
+    pub fn resolve_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) {
+        for pkgline in packages.keys() {
+            if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
+                if let Some(source) = spec.source.clone() {
+                    self.appbin_source.insert(source);
+                } else {
+                    println!("Not get source, pkgline: {:#?}", pkgline);
+                }
+            }
+        }
+    }
+
     /// convert user provided @pkg_names to exact pkglines
     pub fn resolve_package_info(&self, pkg_names: ValuesRef<String>) -> HashMap<String, InstalledPackageInfo> {
         let mut packages = HashMap::new();

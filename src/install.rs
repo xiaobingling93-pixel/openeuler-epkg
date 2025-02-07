@@ -87,7 +87,7 @@ pub fn get_file_type(file: &Path) -> Result<String> {
 
 }
 
-pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path) -> Result<()> {
+pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
     let file_type = get_file_type(fs_file)?;
     let elfloader_exec = Path::new("/root/.epkg/envs/common/profile-1/usr/bin/elf-loader");
 
@@ -108,6 +108,24 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
             let ln_store_relative = ln_fs_file.strip_prefix(fs_dir)?;
             handle_symlink(ln_store_relative, rfs_file, symlink_dir)?;
         }
+    }
+
+    // Add app-bin path
+    if appbin_flag && rfs_file.starts_with("usr/bin/") {
+        let rfs_file_appbin = rfs_file.to_string_lossy().replace("/bin", "/app-bin");
+        let parent_dir_appbin = Path::new(&rfs_file_appbin).parent().unwrap();
+        let symlink_dir_appbin = symlink_dir.join(parent_dir_appbin);
+        if !symlink_dir_appbin.exists() {
+            fs::create_dir_all(&symlink_dir_appbin)?;
+        }
+
+        let rfs_rel_path = diff_paths(symlink_dir.join(rfs_file), &symlink_dir_appbin).unwrap();
+        let appbin_target_path = symlink_dir.join(rfs_file_appbin);
+
+        if appbin_target_path.exists() {
+            fs::remove_file(&appbin_target_path).unwrap();
+        }
+        symlink(rfs_rel_path, appbin_target_path).unwrap();
     }
 
     Ok(())
@@ -178,22 +196,22 @@ pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> R
 
 impl PackageManager {
 
-    pub fn process_package_files(&self, package_path: &str) -> Result<()> {
+    pub fn process_package_files(&self, package_path: &str, appbin_flag: bool) -> Result<()> {
         let home_dir = std::env::var("HOME")?;
         let symlink_dir = format!("{}/.epkg/envs/{}/profile-current", home_dir, self.options.env);
         let fs_dir = format!("{}/fs", package_path);
         let fs_files = list_package_files(&fs_dir)?;
 
-        println!("Details:\nsymlink_dir: {:?}\nfs_dir: {:?}\nfs_files: {:?}", symlink_dir, fs_dir, fs_files);
+        // println!("Details:\nsymlink_dir: {:?}\nfs_dir: {:?}\nfs_files: {:?}", symlink_dir, fs_dir, fs_files);
 
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir)?;
             let target_path = Path::new(&symlink_dir).join(rfs_file);
             
-            println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
+            // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
 
-            // If it's a symlink and the target doesn't exist, exists() will return false
-            if !fs_file.exists() && !fs_file.is_symlink() {
+            // If it's a symlink | the target doesn't exist | appbin_flag=false, exists() will return false
+            if !fs_file.exists() && !fs_file.is_symlink() && !appbin_flag {
                 continue;
             }
 
@@ -207,13 +225,13 @@ impl PackageManager {
 
             // Check if the path contains "/bin/"
             if fs_file.to_string_lossy().contains("/bin/") {
-                handle_exec(Path::new(&fs_dir), &fs_file, Path::new(&rfs_file), Path::new(&symlink_dir), &target_path)?;
+                handle_exec(Path::new(&fs_dir), &fs_file, Path::new(&rfs_file), Path::new(&symlink_dir), &target_path, appbin_flag)?;
                 continue; 
             }
             
             // Check if the path contains "/sbin/"
             if fs_file.to_string_lossy().contains("/sbin/") {
-                handle_exec(Path::new(&fs_dir), &fs_file, Path::new(&rfs_file), Path::new(&symlink_dir), &target_path)?;
+                handle_exec(Path::new(&fs_dir), &fs_file, Path::new(&rfs_file), Path::new(&symlink_dir), &target_path, appbin_flag)?;
                 continue; 
             }
 
@@ -224,51 +242,58 @@ impl PackageManager {
             }
             
             // If it is a symbolic link, copy the symbolic link itself; otherwise, create a symbolic link.
-            if fs_file.is_symlink() {
-                let link_target = fs::read_link(fs_file).unwrap();
-                symlink(link_target, &target_path).unwrap();
-            } else {
-                if target_path.exists() {
-                    fs::remove_file(&target_path).unwrap();
-                }
-                symlink(fs_file, &target_path).unwrap();
+            if target_path.exists() {
+                fs::remove_file(&target_path)?;
             }
+            symlink(fs::read_link(&fs_file).unwrap_or(fs_file.to_path_buf()), &target_path)?;
         }
 
         Ok(())
     }
     
     pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
+        let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
         self.load_store_paths()?;
         self.load_installed_packages()?;
 
-        let mut packages_to_install = self.resolve_package_info(package_specs);
+        let mut packages_to_install = self.resolve_package_info(package_specs.clone());
+        self.resolve_appbin_source(&mut packages_to_install);
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: The following packages are already installed and will be skipped:");
 
         self.collect_recursive_depends(&mut packages_to_install)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "");
 
         if self.options.verbose {
+            println!("appbin_source: {:?}", self.appbin_source);
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
         }
 
         let files = self.download_packages(&packages_to_install)?;
         self.unpack_packages(files)?;
-        self.installed_packages.extend(packages_to_install);
 
-        // Filter self.installed_packages to retain only keys containing "tree"
-        self.installed_packages.retain(|key, _| key.contains("tree"));
-        println!("Installed packages:{:?}", self.installed_packages);
+        // Filter self.installed_packages to retain only keys containing "git" or "git-core"
+        // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
+        packages_to_install.retain(|key, _| key.contains("tree"));
+        println!("Installed packages:{:?}", packages_to_install);
 
         // create symlinks
         let home_dir = std::env::var("HOME").expect("HOME environment variable not set");
         let store_dir = format!("{}/.epkg/store", home_dir);
-        for (package_name, _package_info) in &self.installed_packages {
-            let package_path = format!("{}/{}", store_dir, package_name);
-            self.process_package_files(&package_path)?;
+        for (pkgline, _package_info) in &packages_to_install {
+            let mut appbin_flag = false;
+            // appbin_source check
+            if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
+                appbin_flag = origin_pkg_names.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
+            }
+            // install files
+            let package_path = format!("{}/{}", store_dir, pkgline);
+            self.process_package_files(&package_path, appbin_flag)?;
         }
+
+        // Save installed packages
+        self.installed_packages.extend(packages_to_install);
         // self.save_installed_packages()?;
 
         Ok(())
