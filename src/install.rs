@@ -275,8 +275,8 @@ impl PackageManager {
 
         // Filter self.installed_packages to retain only keys containing "git" or "git-core"
         // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
-        packages_to_install.retain(|key, _| key.contains("tree"));
-        println!("Installed packages:{:?}", packages_to_install);
+        // packages_to_install.retain(|key, _| key.contains("tree"));
+        // println!("Installed packages:{:?}", packages_to_install);
 
         // create symlinks
         let home_dir = std::env::var("HOME").expect("HOME environment variable not set");
@@ -294,7 +294,7 @@ impl PackageManager {
 
         // Save installed packages
         self.installed_packages.extend(packages_to_install);
-        // self.save_installed_packages()?;
+        self.save_installed_packages()?;
 
         Ok(())
     }
