@@ -73,9 +73,14 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
         if file_type.is_file() || file_type.is_symlink() {
             paths.push(path.clone());
         } else if file_type.is_dir() {
+            paths.push(path.clone());
             paths.extend(list_package_files(path.to_str().unwrap())?);
         }
     }
+
+    // Remove duplicates
+    paths.sort();
+    paths.dedup();
 
     Ok(paths)
 }
@@ -84,7 +89,19 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 pub fn get_file_type(file: &Path) -> Result<String> {
     let output = Command::new("file").arg(file).output()?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
 
+// Check path exist or is broken symlink
+fn path_exists_or_is_broken_symlink(path: &Path) -> bool {
+    if path.exists() {
+        return true;
+    }
+
+    if get_file_type(path).unwrap().contains("broken symbolic link") {
+        return true;
+    }
+    
+    return false;
 }
 
 pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
@@ -122,7 +139,7 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
         let rfs_rel_path = diff_paths(symlink_dir.join(rfs_file), &symlink_dir_appbin).unwrap();
         let appbin_target_path = symlink_dir.join(rfs_file_appbin);
 
-        if appbin_target_path.exists() {
+        if path_exists_or_is_broken_symlink(&appbin_target_path) {
             fs::remove_file(&appbin_target_path).unwrap();
         }
         symlink(rfs_rel_path, appbin_target_path).unwrap();
@@ -138,7 +155,7 @@ pub fn handle_symlink(ln_store_relative: &Path, rfs_file: &Path, symlink_dir: &P
     let ln_env_relative = pathdiff::diff_paths(symlink_dir.join(ln_store_relative), ln_env_dirname).ok_or_else(|| anyhow::anyhow!("Failed to compute relative path"))?;
     // symlink
     let target_symlink_path = symlink_dir.join(rfs_file);
-    if target_symlink_path.exists() {
+    if path_exists_or_is_broken_symlink(&target_symlink_path) {
         fs::remove_file(&target_symlink_path)?;
     }
     symlink(&ln_env_relative, &target_symlink_path)?;
@@ -196,19 +213,67 @@ pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> R
 
 impl PackageManager {
 
-    pub fn process_package_files(&self, package_path: &str, appbin_flag: bool) -> Result<()> {
-        let home_dir = std::env::var("HOME")?;
-        let symlink_dir = format!("{}/.epkg/envs/{}/profile-current", home_dir, self.options.env);
-        let fs_dir = format!("{}/fs", package_path);
+    // pub fn postinstall_scriptlet(&self, pkg_name: &str, symlink_dir: &Path) -> Result<()> {
+    //     match pkg_name {
+    //         "golang" => {
+    //             // usr/bin
+    //             symlink(symlink_dir.join("usr/lib/golang/bin/go"), symlink_dir.join("usr/bin/go"))?;
+    //             symlink(symlink_dir.join("usr/lib/golang/bin/gofmt"), symlink_dir.join("usr/bin/gofmt"))?;
+    //             // usr/app-bin
+    //             symlink(Path::new("../bin/go"), symlink_dir.join("usr/app-bin/go"))?;
+    //             symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/app-bin/gofmt"))?;
+    //         }
+    //         // Todo: Global mode
+    //         "ca-certificates" => {
+    //             fs::copy(
+    //                 "/root/.epkg/envs/common/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    //                 symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
+    //             )?;
+    //         }
+    //         "maven" => {
+    //             // usr/bin
+    //             symlink(symlink_dir.join("usr/share/maven/bin/mvn"), symlink_dir.join("usr/bin/mvn"))?;
+    //             // usr/app-bin
+    //             symlink(Path::new("../bin/mvn"), symlink_dir.join("usr/app-bin/mvn"))?;
+    //         }
+    //         "python3-pip" => {
+    //             for file in &["pip", "pip3", "pip3.11"] {
+    //                 let path = symlink_dir.join(format!("usr/bin/{}", file));
+    //                 let content = fs::read_to_string(&path)?;
+    //                 let new_content = content.replacen("#!/usr/bin/python", "#!/usr/bin/env python3", 1);
+    //                 fs::write(&path, new_content)?;
+    //             }
+    //         }
+    //         "ruby" => {
+    //             let path = symlink_dir.join("usr/bin/erb");
+    //             let content = fs::read_to_string(&path)?;
+    //             let new_content = content.replacen("#!/usr/bin/ruby", "#!/usr/bin/env ruby", 1);
+    //             fs::write(&path, new_content)?;
+    //         }
+    //         "rubygems" => {
+    //             let path = symlink_dir.join("usr/bin/gem");
+    //             let content = fs::read_to_string(&path)?;
+    //             let new_content = content.replacen("#!/usr/bin/ruby", "#!/usr/bin/env ruby", 1);
+    //             fs::write(&path, new_content)?;
+    //         }
+    //         _ => {}
+    //     }
+
+    //     Ok(())
+    // }
+
+    pub fn process_package_files(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
         let fs_files = list_package_files(&fs_dir)?;
-
-        // println!("Details:\nsymlink_dir: {:?}\nfs_dir: {:?}\nfs_files: {:?}", symlink_dir, fs_dir, fs_files);
-
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir)?;
             let target_path = Path::new(&symlink_dir).join(rfs_file);
             
             // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
+            // Create empty directory
+            if fs_file.is_dir() {
+                fs::create_dir_all(&target_path)?;
+                continue;
+            }
 
             // If it's a symlink | the target doesn't exist | appbin_flag=false, exists() will return false
             if !fs_file.exists() && !fs_file.is_symlink() && !appbin_flag {
@@ -237,15 +302,17 @@ impl PackageManager {
 
             // Check if the path contains "/etc/"
             if fs_file.to_string_lossy().contains("/etc/") {
-                fs::copy(fs_file, target_path)?;
-                continue; 
+                if !get_file_type(&fs_file).unwrap().contains("symbolic link") {
+                    fs::copy(fs_file, target_path).unwrap();
+                    continue; 
+                }
             }
-            
+
             // If it is a symbolic link, copy the symbolic link itself; otherwise, create a symbolic link.
-            if target_path.exists() {
-                fs::remove_file(&target_path)?;
+            if path_exists_or_is_broken_symlink(&target_path) {
+                fs::remove_file(&target_path).unwrap();
             }
-            symlink(fs::read_link(&fs_file).unwrap_or(fs_file.to_path_buf()), &target_path)?;
+            symlink(fs::read_link(&fs_file).unwrap_or(fs_file.to_path_buf()), &target_path).unwrap();
         }
 
         Ok(())
@@ -275,21 +342,29 @@ impl PackageManager {
 
         // Filter self.installed_packages to retain only keys containing "git" or "git-core"
         // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
-        // packages_to_install.retain(|key, _| key.contains("tree"));
+        // packages_to_install.retain(|key, _| key.contains("chkconfig"));
         // println!("Installed packages:{:?}", packages_to_install);
 
         // create symlinks
-        let home_dir = std::env::var("HOME").expect("HOME environment variable not set");
+        let home_dir = std::env::var("HOME")?;
         let store_dir = format!("{}/.epkg/store", home_dir);
+        // Todo: Global symlink_dir
+        let symlink_dir = format!("{}/.epkg/envs/{}/profile-current", home_dir, self.options.env);
+        println!("symlink_dir: {:?}", symlink_dir);
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
+            let mut pkg_name = String::new();
             // appbin_source check
             if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
                 appbin_flag = origin_pkg_names.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
+                pkg_name = spec.name.clone();
             }
             // install files
-            let package_path = format!("{}/{}", store_dir, pkgline);
-            self.process_package_files(&package_path, appbin_flag)?;
+            let fs_dir = format!("{}/{}/fs", store_dir, pkgline);
+            println!("fs_dir: {:?}", fs_dir);
+            self.process_package_files(&fs_dir, &symlink_dir, appbin_flag)?;
+            // postinstall
+            // self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir))?;
         }
 
         // Save installed packages
