@@ -213,54 +213,54 @@ pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> R
 
 impl PackageManager {
 
-    // pub fn postinstall_scriptlet(&self, pkg_name: &str, symlink_dir: &Path) -> Result<()> {
-    //     match pkg_name {
-    //         "golang" => {
-    //             // usr/bin
-    //             symlink(symlink_dir.join("usr/lib/golang/bin/go"), symlink_dir.join("usr/bin/go"))?;
-    //             symlink(symlink_dir.join("usr/lib/golang/bin/gofmt"), symlink_dir.join("usr/bin/gofmt"))?;
-    //             // usr/app-bin
-    //             symlink(Path::new("../bin/go"), symlink_dir.join("usr/app-bin/go"))?;
-    //             symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/app-bin/gofmt"))?;
-    //         }
-    //         // Todo: Global mode
-    //         "ca-certificates" => {
-    //             fs::copy(
-    //                 "/root/.epkg/envs/common/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-    //                 symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
-    //             )?;
-    //         }
-    //         "maven" => {
-    //             // usr/bin
-    //             symlink(symlink_dir.join("usr/share/maven/bin/mvn"), symlink_dir.join("usr/bin/mvn"))?;
-    //             // usr/app-bin
-    //             symlink(Path::new("../bin/mvn"), symlink_dir.join("usr/app-bin/mvn"))?;
-    //         }
-    //         "python3-pip" => {
-    //             for file in &["pip", "pip3", "pip3.11"] {
-    //                 let path = symlink_dir.join(format!("usr/bin/{}", file));
-    //                 let content = fs::read_to_string(&path)?;
-    //                 let new_content = content.replacen("#!/usr/bin/python", "#!/usr/bin/env python3", 1);
-    //                 fs::write(&path, new_content)?;
-    //             }
-    //         }
-    //         "ruby" => {
-    //             let path = symlink_dir.join("usr/bin/erb");
-    //             let content = fs::read_to_string(&path)?;
-    //             let new_content = content.replacen("#!/usr/bin/ruby", "#!/usr/bin/env ruby", 1);
-    //             fs::write(&path, new_content)?;
-    //         }
-    //         "rubygems" => {
-    //             let path = symlink_dir.join("usr/bin/gem");
-    //             let content = fs::read_to_string(&path)?;
-    //             let new_content = content.replacen("#!/usr/bin/ruby", "#!/usr/bin/env ruby", 1);
-    //             fs::write(&path, new_content)?;
-    //         }
-    //         _ => {}
-    //     }
+    pub fn postinstall_scriptlet(&self, pkg_name: &str, symlink_dir: &Path) -> Result<()> {
+        match pkg_name {
+            "golang" => {
+                // usr/bin
+                symlink(symlink_dir.join("usr/lib/golang/bin/go"), symlink_dir.join("usr/bin/go"))?;
+                symlink(symlink_dir.join("usr/lib/golang/bin/gofmt"), symlink_dir.join("usr/bin/gofmt"))?;
+                // usr/app-bin
+                symlink(Path::new("../bin/go"), symlink_dir.join("usr/app-bin/go"))?;
+                symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/app-bin/gofmt"))?;
+            }
+            // Todo: Global mode
+            "ca-certificates" => {
+                fs::copy(
+                    "/root/.epkg/envs/common/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                    symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
+                )?;
+            }
+            "maven" => {
+                // usr/bin
+                symlink(symlink_dir.join("usr/share/maven/bin/mvn"), symlink_dir.join("usr/bin/mvn"))?;
+                // usr/app-bin
+                symlink(Path::new("../bin/mvn"), symlink_dir.join("usr/app-bin/mvn"))?;
+            }
+            "python3-pip" => {
+                for file in &["pip", "pip3", "pip3.11"] {
+                    let path = symlink_dir.join(format!("usr/bin/{}", file));
+                    let content = fs::read_to_string(&path)?;
+                    let new_content = content.replacen("#!/usr/bin/python", "#!/usr/bin/env python3", 1);
+                    fs::write(&path, new_content)?;
+                }
+            }
+            "ruby" => {
+                let path = symlink_dir.join("usr/bin/erb");
+                let content = fs::read_to_string(&path)?;
+                let new_content = content.replacen("#!/usr/bin/ruby", "#!/usr/bin/env ruby", 1);
+                fs::write(&path, new_content)?;
+            }
+            "rubygems" => {
+                let path = symlink_dir.join("usr/bin/gem");
+                let content = fs::read_to_string(&path)?;
+                let new_content = content.replacen("#!/usr/bin/ruby", "#!/usr/bin/env ruby", 1);
+                fs::write(&path, new_content)?;
+            }
+            _ => {}
+        }
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     pub fn process_package_files(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
         let fs_files = list_package_files(&fs_dir)?;
@@ -342,7 +342,7 @@ impl PackageManager {
 
         // Filter self.installed_packages to retain only keys containing "git" or "git-core"
         // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
-        // packages_to_install.retain(|key, _| key.contains("chkconfig"));
+        // packages_to_install.retain(|key, _| key.contains("python3-pip"));
         // println!("Installed packages:{:?}", packages_to_install);
 
         // create symlinks
@@ -364,7 +364,7 @@ impl PackageManager {
             println!("fs_dir: {:?}", fs_dir);
             self.process_package_files(&fs_dir, &symlink_dir, appbin_flag)?;
             // postinstall
-            // self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir))?;
+            self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir))?;
         }
 
         // Save installed packages
