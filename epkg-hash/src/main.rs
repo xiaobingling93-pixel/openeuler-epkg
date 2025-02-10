@@ -8,12 +8,20 @@ use walkdir::WalkDir;
 use sha2::{Sha256, Digest};
 
 fn main() {
-    let epkg_path = std::env::args().nth(1).expect("Please provide a path as an argument");
-    let base32_result = cal_path_hash(&epkg_path);
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 2 {
+        panic!("Please provide at least a path as an argument.");
+    }
+    
+    let epkg_path = &args[1]; // 第一个入参：路径
+    let pkg_name = if args.len() > 2 { &args[2] } else { "" };
+
+    let base32_result = cal_path_hash(&epkg_path, &pkg_name);
     println!("{}", base32_result.to_lowercase());
 }
 
-pub fn cal_path_hash(epkg_path: &String) -> String {
+pub fn cal_path_hash(epkg_path: &String, pkg_name: &str) -> String {
     let dir = Path::new(&epkg_path);
     let mut hasher = Sha256::new();
     
@@ -25,6 +33,10 @@ pub fn cal_path_hash(epkg_path: &String) -> String {
         .collect();
     relative_entries.sort();
 
+    // hasher add pkg_name
+    if !pkg_name.is_empty() {
+        hasher.update(pkg_name.as_bytes());
+    }
     for entry in &relative_entries {
         // hasher add path
         hasher.update(path_to_bytes(entry));
