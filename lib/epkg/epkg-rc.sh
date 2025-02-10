@@ -171,12 +171,6 @@ epkg() {
 	esac
 
 	$epkg_sh "$@" || return
-
-	case "$cmd" in
-		install)
-			__rehash_path
-			;;
-	esac
 }
 
 # vim: sw=4 ts=4 et
