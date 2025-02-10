@@ -7,13 +7,10 @@ use std::process::Command;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
-use std::io::Error;
 use std::io::SeekFrom;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
-use anyhow::anyhow;
-use anyhow::Context;
 use pathdiff::diff_paths;
 use crate::paths;
 
