@@ -379,11 +379,13 @@ epkg_change_bashrc
 
 # step 3. common env init
 prepare_conf
-if [ -f $EPKG_CACHE/$EPKG_STATIC-$ARCH ]; then
-    epkg_install_common_env
-else
-    prepare_epkg_rootfs
-fi
+prepare_epkg_rootfs
+# Todo: add in furture - rootfs simpily install
+# if [ -f $EPKG_CACHE/$EPKG_STATIC-$ARCH ]; then
+#     epkg_install_common_env
+# else
+#     prepare_epkg_rootfs
+# fi
 
 # step 4. automic init
 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init
