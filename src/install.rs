@@ -15,6 +15,7 @@ use std::io::Write;
 use anyhow::anyhow;
 use anyhow::Context;
 use pathdiff::diff_paths;
+use crate::paths;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgline, info)
@@ -106,10 +107,9 @@ fn path_exists_or_is_broken_symlink(path: &Path) -> bool {
 
 pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
     let file_type = get_file_type(fs_file)?;
-    let elfloader_exec = Path::new("/root/.epkg/envs/common/profile-1/usr/bin/elf-loader");
 
     if file_type.contains("ELF 64-bit LSB") {
-        handle_elf(elfloader_exec, target_path, symlink_dir, fs_file)?;
+        handle_elf(target_path, symlink_dir, fs_file)?;
     } else if file_type.contains("ASCII text executable") {
         let target_path = symlink_dir.join(rfs_file);
         fs::copy(fs_file, &target_path)?;
@@ -156,18 +156,18 @@ pub fn handle_symlink(ln_store_relative: &Path, rfs_file: &Path, symlink_dir: &P
     // symlink
     let target_symlink_path = symlink_dir.join(rfs_file);
     if path_exists_or_is_broken_symlink(&target_symlink_path) {
-        fs::remove_file(&target_symlink_path)?;
+        fs::remove_file(&target_symlink_path).unwrap();
     }
-    symlink(&ln_env_relative, &target_symlink_path)?;
+    symlink(&ln_env_relative, &target_symlink_path).unwrap();
 
     Ok(())
 }
 
-pub fn handle_elf(elfloader_exec: &Path, target_path: &Path, symlink_dir: &Path, fs_file: &Path) -> Result<()> {
+pub fn handle_elf(target_path: &Path, symlink_dir: &Path, fs_file: &Path) -> Result<()> {
     let id1 = "{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
     let id2 = "{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
 
-    fs::copy(elfloader_exec, &target_path)?;
+    fs::copy(&paths::instance.elfloader_exec, &target_path)?;
     replace_string(&target_path, id1, &symlink_dir.to_string_lossy())?;
     replace_string(&target_path, id2, &fs_file.to_string_lossy())?;
     Ok(())
@@ -223,10 +223,9 @@ impl PackageManager {
                 symlink(Path::new("../bin/go"), symlink_dir.join("usr/app-bin/go"))?;
                 symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/app-bin/gofmt"))?;
             }
-            // Todo: Global mode
             "ca-certificates" => {
                 fs::copy(
-                    "/root/.epkg/envs/common/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                    paths::instance.epkg_common_root.join("profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
                     symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
                 )?;
             }
@@ -265,13 +264,13 @@ impl PackageManager {
     pub fn process_package_files(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
         let fs_files = list_package_files(&fs_dir)?;
         for fs_file in fs_files {
-            let rfs_file = fs_file.strip_prefix(&fs_dir)?;
+            let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
             let target_path = Path::new(&symlink_dir).join(rfs_file);
             
             // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
             // Create empty directory
             if fs_file.is_dir() {
-                fs::create_dir_all(&target_path)?;
+                fs::create_dir_all(&target_path).unwrap();
                 continue;
             }
 
@@ -286,7 +285,7 @@ impl PackageManager {
 
             // Create parent directory (if it doesn't exist)
             let symlink_parent_dir = Path::new(&symlink_dir).join(rfs_file.parent().unwrap_or(Path::new("")));
-            fs::create_dir_all(&symlink_parent_dir)?;
+            fs::create_dir_all(&symlink_parent_dir).unwrap();
 
             // Check if the path contains "/bin/"
             if fs_file.to_string_lossy().contains("/bin/") {
@@ -342,15 +341,11 @@ impl PackageManager {
 
         // Filter self.installed_packages to retain only keys containing "git" or "git-core"
         // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
-        // packages_to_install.retain(|key, _| key.contains("python3-pip"));
+        // packages_to_install.retain(|key, _| key.contains("libnsl2"));
         // println!("Installed packages:{:?}", packages_to_install);
 
         // create symlinks
-        let home_dir = std::env::var("HOME")?;
-        let store_dir = format!("{}/.epkg/store", home_dir);
-        // Todo: Global symlink_dir
-        let symlink_dir = format!("{}/.epkg/envs/{}/profile-current", home_dir, self.options.env);
-        println!("symlink_dir: {:?}", symlink_dir);
+        let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();
@@ -360,8 +355,7 @@ impl PackageManager {
                 pkg_name = spec.name.clone();
             }
             // install files
-            let fs_dir = format!("{}/{}/fs", store_dir, pkgline);
-            println!("fs_dir: {:?}", fs_dir);
+            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
             self.process_package_files(&fs_dir, &symlink_dir, appbin_flag)?;
             // postinstall
             self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir))?;

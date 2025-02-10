@@ -7,6 +7,7 @@ use serde_yaml;
 use dirs::home_dir;
 use anyhow::{Context, Result, bail};
 use crate::models::*;
+use crate::paths;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -47,8 +48,8 @@ fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) 
         bail!("Invalid package line format: {}", pkgline);
     }
 
-    let file_path: String = format!("{}/.cache/epkg/channel/{}/{}/{}/pkg-info/{}/{}.json",
-        env::var("HOME")?,
+    let file_path: String = format!("{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
+        paths::instance.epkg_cache.display(),
         channel,
         reponame.to_string(),
         arch,
@@ -92,8 +93,8 @@ impl PackageManager {
             self.load_env_config()?;
         }
 
-        let file_glob: String = format!("{}/.cache/epkg/channel/{}/*/{}/repodata/index.json",
-            env::var("HOME")?,
+        let file_glob: String = format!("{}/channel/{}/*/{}/repodata/index.json",
+            paths::instance.epkg_cache.display(),
             self.env_config.channel.name,
             self.options.arch,
         );

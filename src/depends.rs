@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use crate::models::*;
 use crate::io::load_package_json;
+use crate::paths;
 
 impl PackageManager {
 
@@ -78,8 +79,8 @@ impl PackageManager {
         let mut misses = Vec::new();
         for pkgline in packages.keys() {
 
-            let file_path: String = format!("{}/.cache/epkg/channel/{}/{}/{}/pkg-info/{}/{}.json",
-                env::var("HOME")?,
+            let file_path: String = format!("{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
+                paths::instance.epkg_cache.display(),
                 self.env_config.channel.name,
                 self.pkghash2spec[&pkgline[0..32]].repo,
                 self.options.arch,

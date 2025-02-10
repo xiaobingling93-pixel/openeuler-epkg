@@ -92,6 +92,7 @@ epkg() {
 		local epkg_common_profile=$HOME/.epkg/envs/common/profile-current
 	fi
 	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
+	local epkg_rust=$epkg_common_profile/usr/bin/epkg
 
 	# issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
 	if [[ -n "$EPKG_ACTIVE_ENV" && ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]]; then
@@ -159,6 +160,13 @@ epkg() {
 					return					
 					;;
 			esac
+			;;
+		install)
+			echo "rust epkg install..."
+			$epkg_sh update
+			$epkg_rust "$@"
+			__rehash_path
+			return
 			;;
 	esac
 

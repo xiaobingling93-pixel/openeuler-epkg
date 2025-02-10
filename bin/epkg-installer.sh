@@ -140,11 +140,11 @@ epkg_download() {
     echo "download epkg manager"
     curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR --max-redirs 3 --location $EPKG_MANAGER_URL
 
-    # add in future: download static epkg binary
-    # echo "download static epkg binary"
-	# curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH $EPKG_URL/$EPKG_STATIC-$ARCH --retry 5
-    # curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
-    # epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
+    # download static epkg binary
+    echo "download static epkg binary"
+	curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH $EPKG_URL/$EPKG_STATIC-$ARCH --retry 5
+    curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
+    epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
 
     # download epkg-hash
     echo "download epkg hash"
@@ -178,6 +178,9 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/channel.json                             $EPKG_COMMON_ROOT/profile-1/etc/epkg/
     cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.yaml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.yaml
     echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
+
+    # unpack epkg static binary
+    cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
 
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
