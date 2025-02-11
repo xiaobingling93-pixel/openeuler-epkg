@@ -276,10 +276,6 @@ impl PackageManager {
                 continue;
             }
 
-            if rfs_file.to_string_lossy().contains("/etc/yum.repos.d") {
-                continue;
-            }
-
             // Create parent directory (if it doesn't exist)
             let symlink_parent_dir = Path::new(&symlink_dir).join(rfs_file.parent().unwrap_or(Path::new("")));
             fs::create_dir_all(&symlink_parent_dir).unwrap();
