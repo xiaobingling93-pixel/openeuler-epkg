@@ -5,8 +5,8 @@ import json
 
 def get_basic_info():
     # TODO(method)
-    with open(pkginfo_path, "r") as f:
-        lines = f.readlines()
+    with open(pkginfo_path, "r") as file:
+        lines = file.readlines()
     json_data = {}
     for line in lines:
         if line.startswith("#"):
@@ -23,13 +23,6 @@ def get_basic_info():
     return json_data
 
 
-def get_shell_result(cmd):
-    result = os.popen(cmd).read().strip()
-    if result == "":
-        return []
-    return result.split(os.linesep)  # return list
-
-
 def gen_metadata():
     keywords_map = {
         "pkgname": "name",
@@ -44,18 +37,17 @@ def gen_metadata():
         if old_key in metadata:
             metadata[new_key] = metadata[old_key]
             del metadata[old_key]
-    rm_keywords = ["pkgbase", "replaces", "size", "builddate", "packager"]
+    rm_keywords = ["pkgbase", "replaces", "size", "builddate", "packager", "xdata"]
     for _key in rm_keywords:
         if _key in metadata:
             del metadata[_key]
     metadata["release"] = 1
 
 
-
 if __name__ == '__main__':
     pkginfo_path = sys.argv[1]
     output_path = sys.argv[2]
-    backup_rpm_path = sys.argv[3]     # /tmp/****/xxx.rpm
+    backup_pkg_path = sys.argv[3]     # /tmp/****/xxx.pkg.tar.zst
     metadata = get_basic_info()
     for keywords in ["depend", "makedepend"]:
         if keywords in metadata and isinstance(metadata[keywords], str):

@@ -1,0 +1,19 @@
+{
+  "arch": "x86_64",
+  "buildRequires": [
+    "git",
+    "po4a"
+  ],
+  "description": "Tool for simulating superuser privileges (32-bit)",
+  "hash": "5rvrchh57cuw55hv7chc5xz36k72eyxa",
+  "hash_version": "1",
+  "homepage": "https://tracker.debian.org/pkg/fakeroot",
+  "license": "GPL-3.0-or-later",
+  "name": "lib32-fakeroot",
+  "release": 1,
+  "requires": [
+    "lib32-glibc",
+    "fakeroot"
+  ],
+  "version": "1.37-1"
+}
