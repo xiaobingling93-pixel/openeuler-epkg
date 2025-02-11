@@ -1,18 +1,16 @@
-use std::collections::HashMap;
-use clap::parser::ValuesRef;
-use anyhow::Result;
-use crate::models::*;
-use std::path::Path;
-use std::process::Command;
 use std::fs;
-use std::os::unix::fs::symlink;
-use std::path::PathBuf;
-use std::io::SeekFrom;
+use std::io;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
-use pathdiff::diff_paths;
+use anyhow::Result;
+use std::path::Path;
+use std::path::PathBuf;
+use clap::parser::ValuesRef;
+use std::collections::HashMap;
+use std::os::unix::fs::symlink;
 use crate::paths;
+use crate::models::*;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgline, info)
@@ -85,21 +83,27 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 
 // Get file type
 pub fn get_file_type(file: &Path) -> Result<String> {
-    let output = Command::new("file").arg(file).output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-// Check path exist or is broken symlink
-fn path_exists_or_is_broken_symlink(path: &Path) -> bool {
-    if path.exists() {
-        return true;
+    const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
+    // Check Symbolic link
+    if fs::symlink_metadata(&file).map(|metadata| metadata.file_type().is_symlink()).unwrap() {
+        return Ok("symbolic link".to_string());
     }
 
-    if get_file_type(path).unwrap().contains("broken symbolic link") {
-        return true;
+    // Check ELF 64-bit LSB 
+    let mut buffer = Vec::new();
+    let mut f = fs::File::open(file)?;
+    f.read_to_end(&mut buffer)?;
+    if buffer.starts_with(ELF_MAGIC) {
+        return Ok("ELF 64-bit LSB".to_string());
     }
-    
-    return false;
+
+    // Check ASCII text executable || Perl script text executable
+    let mime_type = tree_magic::from_u8(&buffer);
+    match mime_type.as_str() {
+        "application/x-executable" => Ok("ASCII text executable".to_string()),
+        "text/x-perl" => Ok("Perl script text executable".to_string()),
+        _ => Ok("Unknown file type".to_string()),
+    }
 }
 
 pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
@@ -133,10 +137,10 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
             fs::create_dir_all(&symlink_dir_appbin)?;
         }
 
-        let rfs_rel_path = diff_paths(symlink_dir.join(rfs_file), &symlink_dir_appbin).unwrap();
+        let rfs_rel_path = pathdiff::diff_paths(symlink_dir.join(rfs_file), &symlink_dir_appbin).unwrap();
         let appbin_target_path = symlink_dir.join(rfs_file_appbin);
 
-        if path_exists_or_is_broken_symlink(&appbin_target_path) {
+        if fs::symlink_metadata(&appbin_target_path).is_ok() {
             fs::remove_file(&appbin_target_path).unwrap();
         }
         symlink(rfs_rel_path, appbin_target_path).unwrap();
@@ -152,7 +156,7 @@ pub fn handle_symlink(ln_store_relative: &Path, rfs_file: &Path, symlink_dir: &P
     let ln_env_relative = pathdiff::diff_paths(symlink_dir.join(ln_store_relative), ln_env_dirname).ok_or_else(|| anyhow::anyhow!("Failed to compute relative path"))?;
     // symlink
     let target_symlink_path = symlink_dir.join(rfs_file);
-    if path_exists_or_is_broken_symlink(&target_symlink_path) {
+    if fs::symlink_metadata(&target_symlink_path).is_ok() {
         fs::remove_file(&target_symlink_path).unwrap();
     }
     symlink(&ln_env_relative, &target_symlink_path).unwrap();
@@ -201,7 +205,7 @@ pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> R
     }
 
     // write to file
-    file.seek(SeekFrom::Start(0))?;
+    file.seek(io::SeekFrom::Start(0))?;
     file.write_all(&buffer)?;
     file.set_len(buffer.len() as u64)?;
 
@@ -294,14 +298,14 @@ impl PackageManager {
 
             // Check if the path contains "/etc/"
             if fs_file.to_string_lossy().contains("/etc/") {
-                if !get_file_type(&fs_file).unwrap().contains("symbolic link") {
+                if !fs::symlink_metadata(&fs_file).map(|metadata| metadata.file_type().is_symlink()).unwrap() {
                     fs::copy(fs_file, target_path).unwrap();
                     continue; 
                 }
             }
 
             // If it is a symbolic link, copy the symbolic link itself; otherwise, create a symbolic link.
-            if path_exists_or_is_broken_symlink(&target_path) {
+            if fs::symlink_metadata(&target_path).is_ok() {
                 fs::remove_file(&target_path).unwrap();
             }
             symlink(fs::read_link(&fs_file).unwrap_or(fs_file.to_path_buf()), &target_path).unwrap();

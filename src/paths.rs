@@ -1,7 +1,6 @@
-use std::env;
 use std::fs;
+use std::env;
 use std::path::PathBuf;
-use lazy_static::lazy_static;
 
 #[allow(dead_code)]
 pub struct EPKGPaths {
@@ -68,6 +67,6 @@ impl EPKGPaths {
     }
 }
 
-lazy_static! {
+lazy_static::lazy_static! {
     pub static ref instance: EPKGPaths = EPKGPaths::new();
 }
