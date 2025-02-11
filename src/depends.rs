@@ -89,10 +89,6 @@ impl PackageManager {
 
             let package = load_package_json(&file_path)?;
             for dep in package.depends {
-                // remove in furture: skip empty hash
-                if dep.hash == "tbddmtvpr76sfbc491kyhkbz5r8s4a2x" {
-                    continue;
-                }
                 if let Some(spec) = self.pkghash2spec.get(&dep.hash) {
                     let dpkgline = format!("{}__{}__{}__{}",
                         spec.hash,
