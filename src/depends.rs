@@ -1,4 +1,3 @@
-use std::env;
 use std::process::exit;
 use std::collections::HashMap;
 use clap::parser::ValuesRef;
@@ -6,8 +5,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use crate::models::*;
 use crate::io::load_package_json;
+use crate::paths;
 
 impl PackageManager {
+
+    pub fn resolve_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) {
+        for pkgline in packages.keys() {
+            if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
+                if let Some(source) = spec.source.clone() {
+                    self.appbin_source.insert(source);
+                } else {
+                    println!("Not get source, pkgline: {:#?}", pkgline);
+                }
+            }
+        }
+    }
 
     /// convert user provided @pkg_names to exact pkglines
     pub fn resolve_package_info(&self, pkg_names: ValuesRef<String>) -> HashMap<String, InstalledPackageInfo> {
@@ -66,8 +78,8 @@ impl PackageManager {
         let mut misses = Vec::new();
         for pkgline in packages.keys() {
 
-            let file_path: String = format!("{}/.cache/epkg/channel/{}/{}/{}/pkg-info/{}/{}.json",
-                env::var("HOME")?,
+            let file_path: String = format!("{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
+                paths::instance.epkg_cache.display(),
                 self.env_config.channel.name,
                 self.pkghash2spec[&pkgline[0..32]].repo,
                 self.options.arch,

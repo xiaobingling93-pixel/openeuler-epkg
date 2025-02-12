@@ -140,6 +140,7 @@ epkg_download() {
     echo "download epkg manager"
     curl -# -o $EPKG_CACHE/$EPKG_MANAGER_TAR --max-redirs 3 --location $EPKG_MANAGER_URL
 
+    # download static epkg binary
     echo "download static epkg binary"
 	curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH $EPKG_URL/$EPKG_STATIC-$ARCH --retry 5
     curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
@@ -177,6 +178,9 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/channel.json                             $EPKG_COMMON_ROOT/profile-1/etc/epkg/
     cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.yaml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.yaml
     echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
+
+    # unpack epkg static binary
+    cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
 
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
@@ -356,6 +360,7 @@ replace_string() {
 prepare_conf() {
     # curl resolv.conf
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+    mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
     cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 }
 
@@ -374,11 +379,13 @@ epkg_change_bashrc
 
 # step 3. common env init
 prepare_conf
-if [ -f $EPKG_CACHE/$EPKG_STATIC-$ARCH ]; then
-    epkg_install_common_env
-else
-    prepare_epkg_rootfs
-fi
+prepare_epkg_rootfs
+# Todo: add in furture - rootfs simpily install
+# if [ -f $EPKG_CACHE/$EPKG_STATIC-$ARCH ]; then
+#     epkg_install_common_env
+# else
+#     prepare_epkg_rootfs
+# fi
 
 # step 4. automic init
 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init

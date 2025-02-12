@@ -7,6 +7,7 @@ use serde_yaml;
 use dirs::home_dir;
 use anyhow::{Context, Result, bail};
 use crate::models::*;
+use crate::paths;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -41,17 +42,29 @@ fn load_repodata_index(file_path: &str) -> Result<Repodata> {
 }
 
 // Function to parse a pkgline into a PackageSpec
-fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
+fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) -> Result<PackageSpec> {
     let parts: Vec<&str> = pkgline.split("__").collect();
     if parts.len() != 4 {
         bail!("Invalid package line format: {}", pkgline);
     }
+
+    let file_path: String = format!("{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
+        paths::instance.epkg_cache.display(),
+        channel,
+        reponame.to_string(),
+        arch,
+        &pkgline[0..2],
+        pkgline,
+    );
+    let pkg_json = load_package_json(&file_path)?;
+
     Ok(PackageSpec {
         repo: reponame.to_string(),
         hash: parts[0].to_string(),
         name: parts[1].to_string(),
         version: parts[2].to_string(),
         release: parts[3].to_string(),
+        source: pkg_json.source,
     })
 }
 
@@ -80,8 +93,8 @@ impl PackageManager {
             self.load_env_config()?;
         }
 
-        let file_glob: String = format!("{}/.cache/epkg/channel/{}/*/{}/repodata/index.json",
-            env::var("HOME")?,
+        let file_glob: String = format!("{}/channel/{}/*/{}/repodata/index.json",
+            paths::instance.epkg_cache.display(),
             self.env_config.channel.name,
             self.options.arch,
         );
@@ -117,7 +130,7 @@ impl PackageManager {
                 let contents = fs::read_to_string(&file_path)
                     .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
                 for pkgline in contents.lines() {
-                    if let Ok(pkg_spec) = parse_package_line(pkgline, &repodata.name) {
+                    if let Ok(pkg_spec) = parse_package_line(pkgline, &repodata.name, &self.env_config.channel.name, &self.options.arch) {
                         self.pkgname2lines
                             .entry(pkg_spec.name.clone())
                             .or_insert_with(Vec::new)

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 
@@ -91,6 +92,7 @@ pub struct PackageSpec {
     pub name: String,
     pub version: String,
     pub release: String,
+    pub source: Option<String>,
 }
 
 /*
@@ -167,6 +169,7 @@ pub struct PackageManager {
     pub options: EPKGOptions,
     pub repos_data: Vec<Repodata>,
     pub env_config: EnvConfig,
+    pub appbin_source: HashSet<String>,
 
     // loaded from repodata.store_paths files
     // pkghash2spec[hash] = PackageSpec
