@@ -10,25 +10,28 @@ impl PackageManager {
 
         self.load_store_paths()?;
         self.load_installed_packages()?;
+        let mut input_package_info = self.resolve_package_info(package_specs.clone());
 
-        // Step 1: Resolve package info for the given specs
-        let mut packages_to_remove = self.resolve_package_info(package_specs);
-
-        // Step 2: Find duplicates between installed_packages and packages_to_remove
-        let duplicates: Vec<String> = packages_to_remove
+        // Step 1: Find duplicates between installed_packages and input_package_info
+        let duplicates: Vec<String> = input_package_info
             .keys()
             .filter(|name| self.installed_packages.contains_key(*name))
             .cloned()
             .collect();
+        if duplicates.is_empty() {
+            eprintln!("Warning: No match for installed packages:");
+            for package_name in package_specs.clone() {
+                eprintln!("- {}", package_name);
+            }
+            return Err(anyhow!("Error: Unable to find packages"));
+        }
 
-        // Step 3: Find duplicates with depend_depth > 0
+        // Step 2: Check if packages is being depended on by installed packages
         let duplicates_depended: Vec<String> = duplicates
             .iter()
             .filter(|name| self.installed_packages[*name].depend_depth > 0)
             .cloned()
             .collect();
-
-        // Step 4: If duplicates_depended is not empty, warn and exit
         if !duplicates_depended.is_empty() {
             eprintln!("Warning: The following packages are depended on by others and cannot be removed:");
             for package_name in &duplicates_depended {
@@ -37,43 +40,37 @@ impl PackageManager {
             return Err(anyhow!("Cannot remove packages that are depended on by others"));
         }
 
-        // Step 5: Find non-duplicates (packages not installed)
-        let non_duplicates: Vec<String> = packages_to_remove
+        // Step 3: Find non-duplicates (packages not installed), Remove non-duplicates from input_package_info
+        let non_duplicates: Vec<String> = input_package_info
             .keys()
             .filter(|name| !self.installed_packages.contains_key(*name))
             .cloned()
             .collect();
-
-        // Step 6: Warn about non-duplicates (packages not installed)
         if !non_duplicates.is_empty() {
             eprintln!("Warning: The following packages are not installed and cannot be removed:");
             for package_name in &non_duplicates {
                 eprintln!("- {}", package_name);
             }
         }
-
-        // Step 7: Remove non-duplicates from packages_to_remove
         for package_name in &non_duplicates {
-            packages_to_remove.remove(package_name);
+            input_package_info.remove(package_name);
         }
 
-        // Step 8: Collect recursive dependencies that should be kept
+        // Step 4: Collect recursive dependencies that should be kept (Parse the packages that are only depended on by input_package_info)
         let mut packages_to_keep: HashMap<String, InstalledPackageInfo> = self
             .installed_packages
             .iter()
-            .filter(|(pkgline, info)| info.depend_depth == 0 && !packages_to_remove.contains_key(*pkgline))
-            .map(|(key, value)| (key.clone(), (*value).clone())) // Clone the key and value
-            .collect(); // Collect into a HashMap
+            .filter(|(pkgline, info)| info.depend_depth == 0 && !input_package_info.contains_key(*pkgline))
+            .map(|(key, value)| (key.clone(), (*value).clone()))
+            .collect();
         self.collect_recursive_depends(&mut packages_to_keep)?;
-
-        // Step 9: Find final duplicates after collecting dependencies
         let installed_to_remove: Vec<String> = self.installed_packages
             .keys()
             .filter(|name| !packages_to_keep.contains_key(*name))
             .cloned()
             .collect();
 
-        // Step 10: Show packages to remove
+        // Step 5: Show packages to remove
         if !installed_to_remove.is_empty() {
             println!("Packages to remove:");
             for package_name in &installed_to_remove {
@@ -83,12 +80,13 @@ impl PackageManager {
             println!("No packages to remove.");
         }
 
-        // Step 11: Remove from installed_packages
+        // Step 6: Remove package in epkg_env_root/$cur_env/profile-current/ files
+
+
+        // Step 7: Save the updated installed_packages
         for package_name in &installed_to_remove {
             self.installed_packages.remove(package_name);
-        }
-
-        // Step 12: Save the updated installed_packages
+        } 
         self.save_installed_packages()?;
 
         Ok(())
