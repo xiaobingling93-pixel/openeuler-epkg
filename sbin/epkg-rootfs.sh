@@ -36,9 +36,10 @@ download_packages() {
     local pkg_download_url=$download_url/${epkg_name:0:2}/$epkg_name
 
     echo "Downloading ${pkg_download_url##*/}"
-    curl --silent -o $EPKG_ROOTFS_PKG_STORE/$epkg_name $pkg_download_url
+    curl --silent -o $EPKG_ROOTFS_PKG_STORE/$epkg_name $pkg_download_url --retry 3
     mkdir -p $EPKG_ROOTFS_PKG_UNPACK/${epkg_name%%.epkg}
-    tar --use-compress-program=zstd -xf $EPKG_ROOTFS_PKG_STORE/$epkg_name -C $EPKG_ROOTFS_PKG_UNPACK/${epkg_name%%.epkg}
+    tar --use-compress-program=zstd --no-same-owner -xf $EPKG_ROOTFS_PKG_STORE/$epkg_name -C $EPKG_ROOTFS_PKG_UNPACK/${epkg_name%%.epkg}
+    chmod 755 -R $EPKG_ROOTFS_PKG_UNPACK/${epkg_name%%.epkg}
 }
 
 rootfs_prep_home() {
@@ -47,8 +48,9 @@ rootfs_prep_home() {
     mkdir -p $EPKG_ROOTFS_PKG_UNPACK
 
     echo "Downloading $pkg_info_url"
-    curl -# -o $EPKG_ROOTFS_CACHE/pkg-info.zst $pkg_info_url
-    tar --use-compress-program=zstd -xf $EPKG_ROOTFS_CACHE/pkg-info.zst -C $EPKG_ROOTFS_CACHE/
+    curl -# -o $EPKG_ROOTFS_CACHE/pkg-info.zst $pkg_info_url --retry 3
+    tar --use-compress-program=zstd --no-same-owner -xf $EPKG_ROOTFS_CACHE/pkg-info.zst -C $EPKG_ROOTFS_CACHE/
+    chmod 755 -R $EPKG_ROOTFS_CACHE/pkg-info
 }
 
 rootfs_prep_pkg() {
