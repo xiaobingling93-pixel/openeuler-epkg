@@ -10,6 +10,7 @@ mod hash;
 mod ipc;
 mod store;
 mod paths;
+mod utils;
 use std::env;
 use crate::models::*;
 use crate::ipc::*;

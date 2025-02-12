@@ -1,10 +1,44 @@
+use std::fs;
+use std::path::Path;
 use std::collections::HashMap;
 use clap::parser::ValuesRef;
 use anyhow::Result;
 use anyhow::anyhow;
+use crate::paths;
 use crate::models::*;
+use crate::utils::list_package_files;
 
 impl PackageManager {
+
+    pub fn remove_package_files(&self, fs_dir: &str, symlink_dir: &str) -> Result<()> {
+        let fs_files = list_package_files(&fs_dir)?;
+        for fs_file in fs_files {
+            let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
+            let target_path = Path::new(&symlink_dir).join(rfs_file);
+            // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
+
+            // Skip dir
+            if target_path.is_dir() {
+                continue;
+            }
+
+            // Remove file (include symlink)
+            if fs::symlink_metadata(&target_path).is_ok() {
+                fs::remove_file(&target_path).unwrap();
+            }
+
+            // Remove appbin-file
+            if rfs_file.starts_with("usr/bin/") {
+                let rfs_file_appbin = rfs_file.to_string_lossy().replace("/bin", "/app-bin");
+                let appbin_target_path = Path::new(&symlink_dir).join(&rfs_file_appbin);
+                if fs::symlink_metadata(&appbin_target_path).is_ok() {
+                    fs::remove_file(&appbin_target_path).unwrap();
+                }
+            }
+        }
+
+        Ok(())
+    }
 
     pub fn remove_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
 
@@ -81,7 +115,12 @@ impl PackageManager {
         }
 
         // Step 6: Remove package in epkg_env_root/$cur_env/profile-current/ files
-
+        let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
+        for pkgline in &installed_to_remove {
+            // remove files
+            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            self.remove_package_files(&fs_dir, &symlink_dir)?;
+        }
 
         // Step 7: Save the updated installed_packages
         for package_name in &installed_to_remove {
