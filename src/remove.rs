@@ -110,6 +110,13 @@ impl PackageManager {
             for package_name in &installed_to_remove {
                 println!("- {}", package_name);
             }
+            println!("Do you want to continue with uninstallation? (y/n):");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).expect("Failed to read input");
+            if input.trim().to_lowercase() != "y" {
+                println!("Aborted removal.");
+                return Ok(());
+            }
         } else {
             println!("No packages to remove.");
         }
