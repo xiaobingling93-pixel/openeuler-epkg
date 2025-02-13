@@ -22,6 +22,16 @@ def get_shell_result(cmd):
     return result.split(os.linesep)  # return list
 
 
+def remove_duplicates(lst):
+    seen = set()
+    result = []
+    for item in lst:
+        if item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
+
+
 if __name__ == '__main__':
     rpm_path = sys.argv[1]
     output_path = sys.argv[2]
@@ -30,7 +40,7 @@ if __name__ == '__main__':
     for keywords in ["requires", "provides", "conflicts", "suggests", "recommends", "supplements", "enhances"]:
         items = get_shell_result(f"rpm -q --{keywords} {rpm_path}")
         if items:
-            metadata[keywords] = items
+            metadata[keywords] = remove_duplicates(items)
 
     with open(os.path.join(output_path, "package.json"), "w") as f:
         json.dump(metadata, f, indent=2, sort_keys=True)

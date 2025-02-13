@@ -1,7 +1,11 @@
 import sys
 import json
 import os
+from collections import OrderedDict
 
+# keywords sequence
+desired_order = ['name', 'version', 'epoch', 'license', 'release', 'arch', 'hash', 'hash_version', 'buildRequires',
+                 'requires', "provides", "conflicts", "suggests", "recommends", "supplements", "enhances"]
 
 def run_epkg_hash(path):
     local_path = os.getcwd()
@@ -17,8 +21,15 @@ def update_package_json():
     metadata["hash"] = run_epkg_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
     epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
     metadata["hash_version"] = "1"
+    # 按顺序构建有序字典
+    ordered_data = OrderedDict()
+    for key in desired_order:
+        if key in metadata:
+            ordered_data[key] = metadata[key]
+
+    # 写入JSON文件
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "w") as f:
-        json.dump(metadata, f, indent=2, sort_keys=True)
+        json.dump(ordered_data, f, indent=2)
     return epkg_file_name
 
 
