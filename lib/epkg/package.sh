@@ -322,20 +322,11 @@ replace_string() {
 
 
 ######### END install_package() #########
-
-remove_package() {
-	:
-}
-
 upgrade_package() {
 	:
 }
 
 search_package() {
-	:
-}
-
-list_packages() {
 	:
 }
 

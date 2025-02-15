@@ -168,6 +168,17 @@ epkg() {
 			__rehash_path
 			return
 			;;
+		remove)
+			echo "rust epkg remove..."
+			$epkg_rust "$@"
+			__rehash_path
+			return
+			;;
+		list)
+			echo "rust epkg list..."
+			$epkg_rust "$@"
+			return
+			;;
 	esac
 
 	$epkg_sh "$@" || return

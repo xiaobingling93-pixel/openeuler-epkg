@@ -93,17 +93,11 @@ case "$cmd" in
 	"update")
 		cache_repo
 		;;
-	"remove")
-		remove_package "$@"
-		;;
 	"upgrade")
 		upgrade_package "$@"
 		;;
 	"search")
 		search_package "$@"
-		;;
-	"list")
-		list_packages "$@"
 		;;
 	"show")
 		# show_package "$@"
