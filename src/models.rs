@@ -131,6 +131,16 @@ pub struct Channel {
     pub baseurl: String,
 }
 
+// $HOME/.epkg/envs/${cur_env}/.history
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct HistoryRecord {
+    pub id: u64,
+    pub timestamp: String,
+    pub action: String,
+    pub packages: Vec<String>,
+}
+
 fn default_as_true() -> bool { true }
 
 #[allow(dead_code)]
@@ -179,6 +189,9 @@ pub struct PackageManager {
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>,
+
+    // loaded from env .history 
+    pub history: Vec<HistoryRecord>,
 
     pub has_worker_process: bool,
     pub ipc_socket: String,

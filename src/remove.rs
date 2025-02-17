@@ -121,7 +121,7 @@ impl PackageManager {
             println!("No packages to remove.");
         }
 
-        // Step 6: Remove package in epkg_env_root/$cur_env/profile-current/ files
+        // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
         let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
         for pkgline in &installed_to_remove {
             // remove files

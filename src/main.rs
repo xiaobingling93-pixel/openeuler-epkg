@@ -11,6 +11,7 @@ mod ipc;
 mod store;
 mod paths;
 mod utils;
+mod history;
 use std::env;
 use crate::models::*;
 use crate::ipc::*;
@@ -155,6 +156,16 @@ fn main() -> Result<()> {
                 )
         )
         .subcommand(
+            Command::new("history")
+                .about("Show environment history")
+                .arg(
+                    Arg::new("env")
+                        .num_args(1)
+                        .required(true)
+                        .help("Environment name")
+                )
+        )
+        .subcommand(
             Command::new("hash")
                 .about("Compute binary package hash")
                 .arg(
@@ -242,6 +253,13 @@ fn main() -> Result<()> {
                 let hash = crate::hash::epkg_store_hash(&dir)?;
                 println!("{}", hash);
             }
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("history") {
+        if let Some(env) = matches.get_one::<String>("env") {
+            package_manager.options.env = env.to_string();
+            package_manager.print_history()?;
         }
     }
 
