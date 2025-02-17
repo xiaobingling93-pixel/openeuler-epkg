@@ -33,7 +33,7 @@ generate_files()
 	tmp_dir=$(mktemp -d)
 	./rpm/gen-install-scriptlets.sh "$rpm_file" "${epkg_conversion_dir}/info/"
 	python3 rpm/gen-package.py "$rpm_file" "${epkg_conversion_dir}/info/" "$tmp_dir"
-	python3 lib/compress2epkg.py "$epkg_repo_path/info/"
+	python3 lib/compress2epkg.py "$epkg_repo_path"
 	rm -rf "$tmp_dir"
 }
 
