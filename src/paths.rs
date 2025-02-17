@@ -47,7 +47,7 @@ impl EPKGPaths {
 
         let common_profile_link = PathBuf::from(format!("{}/profile-current", epkg_common_root.display()));
         let elfloader_exec = PathBuf::from(format!("{}/usr/bin/elf-loader", common_profile_link.display()));
-        let epkg_helper_exec = PathBuf::from(format!("{}/profile-1/usr/bin/epkg-helper", epkg_common_root.display()));
+        let epkg_helper_exec = PathBuf::from(format!("{}/profile-current/usr/bin/epkg-helper", epkg_common_root.display()));
 
         Self {
             opt_epkg,

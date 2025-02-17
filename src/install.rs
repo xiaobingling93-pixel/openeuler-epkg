@@ -267,6 +267,7 @@ impl PackageManager {
     pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
         let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
+        self.load_history()?;
         self.load_store_paths()?;
         self.load_installed_packages()?;
 
@@ -292,7 +293,7 @@ impl PackageManager {
         // println!("Installed packages:{:?}", packages_to_install);
 
         // create symlinks
-        let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
+        let symlink_dir = self.create_profile_dir()?;
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();

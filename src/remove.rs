@@ -5,8 +5,8 @@ use clap::parser::ValuesRef;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::paths;
+use crate::utils::*;
 use crate::models::*;
-use crate::utils::list_package_files;
 
 impl PackageManager {
 
@@ -43,6 +43,7 @@ impl PackageManager {
     pub fn remove_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
         let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
+        self.load_history()?;
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
@@ -123,7 +124,7 @@ impl PackageManager {
         }
 
         // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
-        let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
+        let symlink_dir = self.create_profile_dir()?;
         for pkgline in &installed_to_remove {
             // remove files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
