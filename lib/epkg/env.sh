@@ -97,6 +97,7 @@ __epkg_create_environment() {
 	local epkg_helper=
 	__get_epkg_helper "env_mode" "$curr_env_root/$env/"
 
+	$epkg_helper touch $curr_env_root/$env/.history
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/etc
 
