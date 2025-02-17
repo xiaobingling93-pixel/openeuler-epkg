@@ -312,6 +312,9 @@ impl PackageManager {
         self.installed_packages.extend(packages_to_install);
         self.save_installed_packages()?;
 
+        // Save History
+        self.record_history("install", origin_pkg_names)?;
+
         Ok(())
     }
 

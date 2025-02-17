@@ -5,11 +5,13 @@ use crate::models::*;
 use crate::paths;
 
 impl PackageManager {
-    pub fn print_history(&self) {
+    pub fn print_history(&mut self) -> Result<()> {
         self.load_history()?;
         for record in &self.history {
             println!("{}|{}|{}|{}", record.id, record.timestamp, record.action, record.packages.join(" "));
         }
+
+        Ok(())
     }
 
     pub fn load_history(&mut self) -> Result<()> {
@@ -39,8 +41,37 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn record_history(&mut self, action: &str) -> Result<()> {
+    pub fn save_history(&self) -> Result<()> {
+        let file_path = format!("{}/{}/.history", paths::instance.epkg_envs_root.display(), self.options.env,);
+        let contents = self.history.iter().map(|record| {
+            format!("{}|{}|{}|{}", record.id, record.timestamp, record.action, record.packages.join(" "))
+        }).collect::<Vec<String>>().join("\n");
+        fs::write(&file_path, contents).with_context(|| format!("Failed to write file: {}", file_path))?;
+
+        Ok(())
+    }
+
+    pub fn record_history(&mut self, action: &str, packages: Vec<String>) -> Result<()> {
         self.load_history()?;
+        // if history is empty, set id to 1, otherwise set id to the last id + 1
+        let id = if self.history.is_empty() {
+            1
+        } else {
+            self.history.last().unwrap().id + 1
+        };
+        // get current timestamp
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S  %:z").to_string();
+        // create a new history record
+        let record = HistoryRecord {
+            id,
+            timestamp,
+            action: action.to_string(),
+            packages,
+        };
+        // write the history to file
+        self.history.push(record);
+        self.save_history()?;
+
         Ok(())
     }
 }

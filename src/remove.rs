@@ -41,6 +41,7 @@ impl PackageManager {
     }
 
     pub fn remove_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
+        let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
         self.load_store_paths()?;
         self.load_installed_packages()?;
@@ -134,6 +135,9 @@ impl PackageManager {
             self.installed_packages.remove(package_name);
         } 
         self.save_installed_packages()?;
+
+        //  Step 8: Save History
+        self.record_history("remove", origin_pkg_names)?;
 
         Ok(())
     }
