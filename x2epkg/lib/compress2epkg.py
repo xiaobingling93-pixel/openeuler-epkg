@@ -4,8 +4,9 @@ import os
 from collections import OrderedDict
 
 # keywords sequence
-desired_order = ['name', 'version', 'epoch', 'license', 'release', 'arch', 'hash', 'hash_version', 'buildRequires',
-                 'requires', "provides", "conflicts", "suggests", "recommends", "supplements", "enhances"]
+desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash',
+                 'hash_version', 'source', 'description', 'buildRequires', 'requires', "provides", "conflicts",
+                 "suggests", "recommends", "supplements", "enhances", "packager"]
 
 def run_epkg_hash(path):
     local_path = os.getcwd()

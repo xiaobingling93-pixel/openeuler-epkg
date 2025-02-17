@@ -11,13 +11,20 @@ script_map = {
 }
 
 def extract_install_scripts():
-    max_functions = content.split("\n}")
-    for max_function in max_functions:
+    script_output = ""
+    local_script_name = ""
+    for line in line_list:
+        if line == "}\n":
+            script_output += line + local_script_name
+            write_function2_file(script_output, script_map[local_script_name])
+            script_output = ""
+            local_script_name = ""
+        elif local_script_name != "":
+            script_output += line
         for script_name in script_map.keys():
-            if f"{script_name}() " in max_function:
-                middle_function = max_function.split(f"{script_name}() ")[1]
-                function_body = middle_function.split(os.linesep, 1)[1].strip()
-                write_function2_file(function_body, script_map[script_name])
+            if line.startswith(f"{script_name}() "):
+                script_output += line
+                local_script_name = script_name
                 break
 
 
@@ -31,5 +38,5 @@ if __name__ == '__main__':
     output_dir = f"{sys.argv[2]}/install"
     os.makedirs(output_dir, exist_ok=True)
     with open(install_file, "r") as f:
-        content = f.read()
+        line_list = f.readlines()
     extract_install_scripts()
