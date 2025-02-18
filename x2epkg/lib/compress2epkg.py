@@ -27,6 +27,9 @@ def update_package_json():
     for key in desired_order:
         if key in metadata:
             ordered_data[key] = metadata[key]
+    for key in metadata:
+        if key.capitalize() not in desired_order:
+            ordered_data[key.capitalize()] = metadata[key]
 
     # 写入JSON文件
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "w") as f:

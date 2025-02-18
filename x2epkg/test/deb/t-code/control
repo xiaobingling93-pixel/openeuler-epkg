@@ -1,0 +1,19 @@
+Package: t-code
+Version: 2:2.3.1-10
+Architecture: all
+Maintainer: Debian QA Group <packages@qa.debian.org>
+Installed-Size: 468
+Depends: t-code-common (= 2:2.3.1-10), emacs-nox | emacs | xemacs21-mule | xemacs21-mule-canna-wnn | emacsen
+Section: utils
+Priority: optional
+Multi-Arch: foreign
+Homepage: http://openlab.jp/tcode/
+Description: Japanese direct input method environment for emacsen
+ This package is provides tc2. the T-Code input environment for emacsen,
+ which enables you to input Japanese characters with T-Code or TUT-Code.
+ .
+ T-Code is a Japanese input method that doesn't use Kana-to-Kanji
+ conversion.  You can input Kanji characters directly in the same way
+ of inputting Hiragana.  TUT-Code is an alternative to T-Code.
+ .
+ This package provides emacs support for T-Code.

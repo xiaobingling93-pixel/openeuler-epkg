@@ -16,7 +16,7 @@ keywords_map = {
     "Conflicts": "conflicts",
     "Recommends": "recommends",
     "Suggests": "suggests",
-    "Enhances": "enhance"
+    "Enhances": "enhances"
 }
 
 
@@ -49,28 +49,20 @@ def get_basic_info():
     return json_data
 
 
-def gen_version():
-    version = pkg_name.replace(metadata["name"] + "_", "").rsplit("_", 1)[0]
-    if version.endswith("-" + metadata["release"]):
-        metadata["version"] = version.rsplit("-", 1)[0]
-
-
 def gen_metadata():
     for old_key, new_key in keywords_map.items():
         if old_key in metadata:
             metadata[new_key] = metadata[old_key]
             del metadata[old_key]
-    rm_keywords = ["Section", "Priority", "Installed-Size"]
-    for _key in rm_keywords:
-        if _key in metadata:
-            del metadata[_key]
-    if "-" not in metadata["version"]:
-        metadata["release"] = 1
-    else:
+    if "-" in metadata["version"]:
         metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
+    else:
+        metadata["release"] = 1
     if ":" in metadata["version"]:
-        # the ':' exist in the version, should be remove
-        gen_version()
+        # the ':' exist in the version, should be divided into epoch
+        metadata["epoch"], metadata["version"] = metadata["version"].split(":", 1)
+    if "\n" in metadata["description"].strip():
+        metadata["summary"], metadata["description"] = metadata["description"].split("\n", 1)
 
 
 if __name__ == '__main__':
