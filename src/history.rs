@@ -10,14 +10,19 @@ use crate::models::*;
 
 impl PackageManager {
 
-    // Create profile directory
-    pub fn create_profile_dir(&self) -> Result<String> {
-        // Get current profile id
+    pub fn get_current_id(&self) -> Result<u64> {
         let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
         let target = fs::read_link(&profile_current).with_context(|| format!("Failed to read symlink: {}", profile_current))?;
         let parts: Vec<&str> = target.to_str().unwrap().split("-").collect();
         let current_profile_id = parts[1].parse::<u64>().with_context(|| format!("Failed to parse profile id from '{}'", parts[1]))?;
-    
+        Ok(current_profile_id)
+    }
+
+    // Create profile directory
+    pub fn create_profile_dir(&self) -> Result<String> {
+        // Get current profile id
+        let current_profile_id = self.get_current_id()?;
+
         // Check profile command json
         let cur_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, current_profile_id);
         let command_json = format!("{}/{}/profile-current/command.json", paths::instance.epkg_envs_root.display(), self.options.env);
@@ -61,6 +66,8 @@ impl PackageManager {
         println!("{:-<4}-+-{:-<30}-+-{:-<15}-+-{:-<}", "", "", "", "");
 
         let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
+        let mut history_entries: Vec<(u64, String, String, String)> = Vec::new();
+
         for entry in fs::read_dir(&profile_dir)?.filter_map(Result::ok) {
             let path = entry.path();
             if !path.is_dir() || path.ends_with("profile-current") {
@@ -68,21 +75,22 @@ impl PackageManager {
             }
             if let Some(profile) = path.file_name().and_then(|s| s.to_str()) {
                 if profile.starts_with("profile-") {
-                    let command_json = path.join("command.json");
-                    if command_json.exists() {
-                        let contents = fs::read_to_string(&command_json)?;
-                        let command: ProfileCommand = serde_json::from_str(&contents)?;
-                        let id = profile[8..].parse::<u64>()?;
-                        println!(
-                            "{:<4} | {:<30} | {:<15} | {}",
-                            id,
-                            command.timestamp,
-                            command.action,
-                            command.packages.join("")
-                        );
+                    if let Ok(id) = profile[8..].parse::<u64>() {
+                        let command_json = path.join("command.json");
+                        if command_json.exists() {
+                            let contents = fs::read_to_string(&command_json)?;
+                            let command: ProfileCommand = serde_json::from_str(&contents)?;
+                            history_entries.push((id, command.timestamp, command.action, command.packages.join("")));
+                        }
                     }
                 }
             }
+        }
+
+        // sort in ascending order of id
+        history_entries.sort_by_key(|entry| entry.0);
+        for (id, timestamp, action, packages) in history_entries {
+            println!("{:<4} | {:<30} | {:<15} | {}", id, timestamp, action, packages);
         }
         Ok(())
     }
