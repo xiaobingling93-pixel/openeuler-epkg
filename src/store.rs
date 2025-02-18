@@ -1,22 +1,17 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use dirs::home_dir;
 use tar::Archive;
 use zstd::stream::read::Decoder;
 use anyhow::Result;
+use crate::paths;
 
 pub fn unpack_packages(files: Vec<String>) -> Result<()> {
 
-    // Get the home directory
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-
     for file in files {
+
         let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
-        let dir = home
-            .join(".epkg")
-            .join("store")
-            .join(pkgline);
+        let dir = paths::instance.epkg_store_root.join(pkgline);
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
 
         // println!("untar {} {}", file, dir_str);

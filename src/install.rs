@@ -213,7 +213,7 @@ impl PackageManager {
     }
 
     pub fn install_package_files(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
-        let fs_files = list_package_files(&fs_dir)?;
+        let fs_files = list_package_files(&fs_dir).unwrap();
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
             let target_path = Path::new(&symlink_dir).join(rfs_file);
@@ -267,9 +267,9 @@ impl PackageManager {
     pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
         let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
-        self.load_history()?;
-        self.load_store_paths()?;
-        self.load_installed_packages()?;
+        self.load_history().unwrap();
+        self.load_store_paths().unwrap();
+        self.load_installed_packages().unwrap();
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
         self.resolve_appbin_source(&mut packages_to_install);
@@ -285,7 +285,7 @@ impl PackageManager {
         }
 
         let files = self.download_packages(&packages_to_install)?;
-        self.unpack_packages(files)?;
+        self.unpack_packages(files).unwrap();
 
         // Filter self.installed_packages to retain only keys containing "git" or "git-core"
         // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
@@ -304,17 +304,17 @@ impl PackageManager {
             }
             // install files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
-            self.install_package_files(&fs_dir, &symlink_dir, appbin_flag)?;
+            self.install_package_files(&fs_dir, &symlink_dir, appbin_flag).unwrap();
             // postinstall
-            self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir))?;
+            self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir)).unwrap();
         }
 
         // Save installed packages
         self.installed_packages.extend(packages_to_install);
-        self.save_installed_packages()?;
+        self.save_installed_packages().unwrap();
 
         // Save History
-        self.record_history("install", origin_pkg_names)?;
+        self.record_history("install", origin_pkg_names.clone()).unwrap();
 
         Ok(())
     }
