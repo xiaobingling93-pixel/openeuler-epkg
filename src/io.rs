@@ -1,13 +1,13 @@
-use std::path::Path;
-use std::fs;
-use std::env;
 use glob;
 use serde_json;
 use serde_yaml;
+use std::fs;
+use std::env;
+use std::path::Path;
 use dirs::home_dir;
 use anyhow::{Context, Result, bail};
-use crate::models::*;
 use crate::paths;
+use crate::models::*;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -180,6 +180,43 @@ impl PackageManager {
         if self.options.verbose {
             println!("Installed packages saved to: {}", file_path.display());
         }
+
+        Ok(())
+    }
+
+    pub fn load_history(&mut self) -> Result<()> {
+        let file_path = format!("{}/{}/.history", paths::instance.epkg_envs_root.display(), self.options.env,);
+        let contents = fs::read_to_string(&file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
+
+        self.history = contents
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                let parts: Vec<&str> = trimmed.split('|').collect();
+                if parts.len() != 4 {
+                    return None;
+                }
+                Some(HistoryRecord {
+                    id: parts[0].parse::<u64>().unwrap(),
+                    timestamp: parts[1].to_string(),
+                    action: parts[2].to_string(),
+                    packages: parts[3].split_whitespace().map(|s| s.to_string()).collect(),
+                })
+            })
+            .collect();
+
+        Ok(())
+    }
+
+    pub fn save_history(&self) -> Result<()> {
+        let file_path = format!("{}/{}/.history", paths::instance.epkg_envs_root.display(), self.options.env,);
+        let contents = self.history.iter().map(|record| {
+            format!("{}|{}|{}|{}", record.id, record.timestamp, record.action, record.packages.join(" "))
+        }).collect::<Vec<String>>().join("\n");
+        fs::write(&file_path, contents).with_context(|| format!("Failed to write file: {}", file_path))?;
 
         Ok(())
     }

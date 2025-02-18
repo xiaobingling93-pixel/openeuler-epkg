@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::symlink;
+use anyhow::anyhow;
 use anyhow::Result;
-use anyhow::Context;
 use crate::paths;
 use crate::utils::*;
 use crate::models::*;
@@ -9,47 +9,17 @@ use crate::models::*;
 impl PackageManager {
     pub fn print_history(&mut self) -> Result<()> {
         self.load_history()?;
+        println!("{:<4} | {:<30} | {:<15} | {}", "id", "timestamp", "action", "packages");
+        println!("{:-<4}-+-{:-<30}-+-{:-<15}-+-{:-<}", "", "", "", "");
         for record in &self.history {
-            println!("{}|{}|{}|{}", record.id, record.timestamp, record.action, record.packages.join(" "));
+            println!(
+                "{:<4} | {:<30} | {:<15} | {}",
+                record.id,
+                record.timestamp,
+                record.action,
+                record.packages.join(" ")
+            );
         }
-
-        Ok(())
-    }
-
-    pub fn load_history(&mut self) -> Result<()> {
-        let file_path = format!("{}/{}/.history", paths::instance.epkg_envs_root.display(), self.options.env,);
-        let contents = fs::read_to_string(&file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
-
-        self.history = contents
-            .lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    return None;
-                }
-                let parts: Vec<&str> = trimmed.split('|').collect();
-                if parts.len() != 4 {
-                    return None;
-                }
-                Some(HistoryRecord {
-                    id: parts[0].parse::<u64>().unwrap(),
-                    timestamp: parts[1].to_string(),
-                    action: parts[2].to_string(),
-                    packages: parts[3].split_whitespace().map(|s| s.to_string()).collect(),
-                })
-            })
-            .collect();
-
-        Ok(())
-    }
-
-    pub fn save_history(&self) -> Result<()> {
-        let file_path = format!("{}/{}/.history", paths::instance.epkg_envs_root.display(), self.options.env,);
-        let contents = self.history.iter().map(|record| {
-            format!("{}|{}|{}|{}", record.id, record.timestamp, record.action, record.packages.join(" "))
-        }).collect::<Vec<String>>().join("\n");
-        fs::write(&file_path, contents).with_context(|| format!("Failed to write file: {}", file_path))?;
-
         Ok(())
     }
 
@@ -90,5 +60,29 @@ impl PackageManager {
         symlink(&cur_profile, &profile_current)?;
 
         Ok(cur_profile)
+    }
+
+    pub fn rollback_history(&mut self, rollback_id: u64) -> Result<()> {
+        // Check if id is valid
+        self.load_history()?;
+        let _record = self.history.iter().find(|r| r.id == rollback_id).ok_or_else(|| anyhow!("No such history record"))?;
+
+        // symlink profile-current to profile-id
+        let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
+        let profile_history = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
+        fs::remove_file(&profile_current)?;
+        symlink(&profile_history, &profile_current)?;
+
+        // Remove profile dir between id and last id
+        for i in rollback_id+1..self.history.last().unwrap().id+1 {
+            let profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, i);
+            fs::remove_dir_all(&profile)?;
+        }
+
+        // Remove history record between id and last id
+        self.history.retain(|r| r.id <= rollback_id);
+        self.save_history()?;
+
+        Ok(())
     }
 }
