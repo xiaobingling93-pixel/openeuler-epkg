@@ -267,7 +267,6 @@ impl PackageManager {
     pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
         let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
-        self.load_history().unwrap();
         self.load_store_paths().unwrap();
         self.load_installed_packages().unwrap();
 

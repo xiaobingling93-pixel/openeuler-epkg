@@ -42,8 +42,6 @@ impl PackageManager {
 
     pub fn remove_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
         let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-
-        self.load_history()?;
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
