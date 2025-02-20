@@ -37,11 +37,14 @@ def gen_metadata():
         if old_key in metadata:
             metadata[new_key] = metadata[old_key]
             del metadata[old_key]
-    rm_keywords = ["pkgbase", "replaces", "size", "builddate", "packager", "xdata"]
+    rm_keywords = ["pkgbase", "replaces", "size", "builddate", "xdata"]
     for _key in rm_keywords:
         if _key in metadata:
             del metadata[_key]
-    metadata["release"] = 1
+    if "-" not in metadata["version"]:
+        metadata["release"] = 0
+    else:
+        metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
 
 
 if __name__ == '__main__':

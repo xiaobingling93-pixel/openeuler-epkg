@@ -7,17 +7,8 @@ epkg_repo_path="$OUT_DIR"
 if [ "$epkg_repo_path" == "" ]; then
   epkg_repo_path=$(dirname "$rpm_file")
 fi
-epkg_conversion_dir="${HOME}/epkg_conversion"
 
-init_conversion_dirs()
-{
-	rm -rf ${epkg_conversion_dir}/*
-
-	mkdir -p ${epkg_conversion_dir}/{fs,info}
-	mkdir -p ${epkg_conversion_dir}/info/pgp
-	mkdir -p ${epkg_conversion_dir}/info/install
-	touch ${epkg_conversion_dir}/info/{package.json,files}
-}
+source lib/common.sh
 
 decompress_rpm()
 {
@@ -33,7 +24,7 @@ generate_files()
 	tmp_dir=$(mktemp -d)
 	./rpm/gen-install-scriptlets.sh "$rpm_file" "${epkg_conversion_dir}/info/"
 	python3 rpm/gen-package.py "$rpm_file" "${epkg_conversion_dir}/info/" "$tmp_dir"
-	python3 lib/compress2epkg.py "$epkg_repo_path/info/"
+	python3 lib/compress2epkg.py "$epkg_repo_path"
 	rm -rf "$tmp_dir"
 }
 

@@ -7,17 +7,8 @@ epkg_repo_path="$OUT_DIR"
 if [ "$epkg_repo_path" == "" ]; then
   epkg_repo_path=$(dirname "$arch_file")
 fi
-epkg_conversion_dir="${HOME}/epkg_conversion"
 
-init_conversion_dirs()
-{
-	rm -rf ${epkg_conversion_dir}/*
-
-	mkdir -p ${epkg_conversion_dir}/{fs,info}
-	mkdir -p ${epkg_conversion_dir}/info/pgp
-	mkdir -p ${epkg_conversion_dir}/info/install
-	touch ${epkg_conversion_dir}/info/{package.json,files}
-}
+source lib/common.sh
 
 decompress_tar()
 {
@@ -35,9 +26,8 @@ generate_files()
 	  python3 archlinux/gen-install-scriptlets.py "${epkg_conversion_dir}/fs/.INSTALL" "${epkg_conversion_dir}/info/"
 	fi
 	python3 archlinux/gen-package.py "${epkg_conversion_dir}/fs/.PKGINFO" "${epkg_conversion_dir}/info/" "$tmp_dir"
-	python3 lib/compress2epkg.py "$epkg_repo_path/info/"  # common method
-  # python3 archlinux/gen-install-scriptlets.py test/archlinux/lib32-fakeroot/.INSTALL test/info/
-	rm -rf "$tmp_dir"
+	python3 lib/compress2epkg.py "$epkg_repo_path"  # common method
+  rm -rf "$tmp_dir"
 }
 
 init_conversion_dirs
