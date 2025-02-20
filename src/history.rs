@@ -96,8 +96,18 @@ impl PackageManager {
     }
 
     pub fn rollback_history(&mut self, rollback_id: u64) -> Result<()> {
-        // // Check if id is valid
-        // let _record = self.history.iter().find(|r| r.id == rollback_id).ok_or_else(|| anyhow!("No such history record"))?;
+        // Check if rollback_id exists
+        let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
+        let rollback_profile = format!("{}/profile-{}", profile_dir, rollback_id);
+        if !Path::new(&rollback_profile).exists() {
+            return Err(anyhow!("No such history record: Profile {} does not exist", rollback_id));
+        }
+
+        // Check if rollback_id is the last id
+        let current_profile_id = self.get_current_id()?;
+        if rollback_id == current_profile_id {
+            return Err(anyhow!("Cannot rollback to the current profile"));
+        }
 
         // // symlink profile-current to profile-id
         // let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
