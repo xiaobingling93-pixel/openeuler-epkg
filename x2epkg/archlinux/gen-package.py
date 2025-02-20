@@ -42,7 +42,7 @@ def gen_metadata():
         if _key in metadata:
             del metadata[_key]
     if "-" not in metadata["version"]:
-        metadata["release"] = 1
+        metadata["release"] = 0
     else:
         metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
 

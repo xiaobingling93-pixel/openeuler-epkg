@@ -1,17 +1,24 @@
 {
-  "name": "lib32-fakeroot",
-  "version": "1.37-1",
+  "name": "fakeroot",
+  "version": "1.37",
   "license": "GPL-3.0-or-later",
-  "release": 1,
+  "release": "1",
+  "homepage": "https://tracker.debian.org/pkg/fakeroot",
   "arch": "x86_64",
-  "hash": "5rvrchh57cuw55hv7chc5xz36k72eyxa",
+  "hash": "4tmfsi5yikkq32rrulae6oi6u4txr5zu",
   "hash_version": "1",
+  "description": "Tool for simulating superuser privileges",
   "buildRequires": [
     "git",
+    "systemd",
     "po4a"
   ],
   "requires": [
-    "lib32-glibc",
-    "fakeroot"
-  ]
+    "glibc",
+    "filesystem",
+    "sed",
+    "util-linux",
+    "sh"
+  ],
+  "packager": "Christian Hesse <eworm@archlinux.org>"
 }

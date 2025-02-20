@@ -9,8 +9,6 @@ declare -A SCRIPTLET2FILE=(
 	["prerm"]="preun"
 	["postinst"]="post"
 	["postrm"]="postun"
-	["config"]="filetriggerin"
-	["triggers"]="triggerin"
 )
 
 for file_name in "${!SCRIPTLET2FILE[@]}"; do

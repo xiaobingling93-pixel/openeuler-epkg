@@ -16,7 +16,10 @@ keywords_map = {
     "Conflicts": "conflicts",
     "Recommends": "recommends",
     "Suggests": "suggests",
-    "Enhances": "enhances"
+    "Enhances": "enhances",
+    "Installed-Size": "installedSize",
+    "Section": "section",
+    "Priority": "priority"
 }
 
 
@@ -24,17 +27,17 @@ def get_basic_info():
     with open(pkginfo_path, "r") as file:
         lines = file.readlines()
     json_data = {}
+    _keywords = ""
+    _value = ""
     for line in lines:
-        _keywords = ""
-        value = ""
         if line.startswith("#"):
             continue
         if line.startswith(" "):
-            value += line
+            _value += line.strip() + os.linesep
             if _keywords == "":
                 print("parse failed from deb control")
                 break
-            json_data[_keywords] = value
+            json_data[_keywords] = _value
             continue
         if ": " not in line:
             print(f"unknown text in control, text is {line.strip()}")
@@ -57,7 +60,7 @@ def gen_metadata():
     if "-" in metadata["version"]:
         metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
     else:
-        metadata["release"] = 1
+        metadata["release"] = 0
     if ":" in metadata["version"]:
         # the ':' exist in the version, should be divided into epoch
         metadata["epoch"], metadata["version"] = metadata["version"].split(":", 1)

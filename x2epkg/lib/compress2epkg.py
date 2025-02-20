@@ -6,7 +6,8 @@ from collections import OrderedDict
 # keywords sequence
 desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash',
                  'hash_version', 'source', 'description', 'buildRequires', 'requires', "provides", "conflicts",
-                 "suggests", "recommends", "supplements", "enhances", "packager"]
+                 "suggests", "recommends", "supplements", "enhances", "packager", "installedSize", "section",
+                 "priority"]
 
 def run_epkg_hash(path):
     local_path = os.getcwd()
@@ -27,9 +28,6 @@ def update_package_json():
     for key in desired_order:
         if key in metadata:
             ordered_data[key] = metadata[key]
-    for key in metadata:
-        if key.capitalize() not in desired_order:
-            ordered_data[key.capitalize()] = metadata[key]
 
     # 写入JSON文件
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "w") as f:
