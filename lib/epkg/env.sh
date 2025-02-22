@@ -99,7 +99,6 @@ __epkg_create_environment() {
 
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	$epkg_helper mkdir -p $curr_env_root/$env/profile-1/etc
-	$epkg_helper touch $curr_env_root/$env/.history
 
     cd $curr_env_root/$env/profile-1
 	$epkg_helper ln -sfT "usr/bin"     "bin"

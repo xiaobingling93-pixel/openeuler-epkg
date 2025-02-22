@@ -5,8 +5,27 @@ use anyhow::anyhow;
 use anyhow::Result;
 use anyhow::Context;
 use crate::paths;
-use crate::utils::*;
 use crate::models::*;
+
+fn move_profile_directory(source: &str, destination: &str) -> Result<()> {
+    let source = Path::new(source);
+    let destination = Path::new(destination);
+
+    if !source.exists() {
+        return Err(anyhow!("Source directory '{}' does not exist", source.display()));
+    }
+    if destination.exists() {
+        return Err(anyhow!("Destination directory '{}' already exists", destination.display()));
+    }
+
+    fs::rename(source, destination)?;
+    // profile-last save installed-packages.json and command.json
+    fs::create_dir_all(source)?;
+    fs::copy(&destination.join("installed-packages.json"), &source.join("installed-packages.json"))?;
+    fs::rename(&destination.join("command.json"), &source.join("command.json"))?;
+
+    Ok(())
+}
 
 impl PackageManager {
 
@@ -32,7 +51,7 @@ impl PackageManager {
 
         // cp -R profile-last profile-cur
         let new_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, current_profile_id+1);
-        copy_dir_all(&cur_profile, &new_profile)?;
+        move_profile_directory(&cur_profile, &new_profile)?;
 
         // ln -sf profile-current -> cur_profile
         let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
@@ -50,14 +69,8 @@ impl PackageManager {
             packages,
         };
         let json = serde_json::to_string_pretty(&command)?;
-        // Check if command.json exists
-        if Path::new(&command_json).exists() {
-            fs::remove_file(&command_json)?;
-            fs::write(&command_json, json)?;
-        } else {
-            fs::write(&command_json, json)?;
-        }
-        
+        fs::write(&command_json, json)?;
+    
         Ok(())
     }
 
