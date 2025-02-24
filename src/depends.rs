@@ -1,6 +1,5 @@
 use std::process::exit;
 use std::collections::HashMap;
-use clap::parser::ValuesRef;
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use crate::models::*;
@@ -22,12 +21,12 @@ impl PackageManager {
     }
 
     /// convert user provided @pkg_names to exact pkglines
-    pub fn resolve_package_info(&self, pkg_names: ValuesRef<String>) -> HashMap<String, InstalledPackageInfo> {
+    pub fn resolve_package_info(&self, pkg_names: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
         let mut packages = HashMap::new();
         let mut missing_names = Vec::new();
 
         for pkgname in pkg_names {
-            if let Some(pkglines) = self.pkgname2lines.get(pkgname) {
+            if let Some(pkglines) = self.pkgname2lines.get(&pkgname) {
                 for pkgline in pkglines {
                     packages.insert(
                         pkgline.clone(),

@@ -6,7 +6,6 @@ use std::io::Write;
 use std::path::Path;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
-use clap::parser::ValuesRef;
 use anyhow::Result;
 use crate::paths;
 use crate::utils::*;
@@ -264,9 +263,7 @@ impl PackageManager {
         Ok(())
     }
     
-    pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
-        let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-
+    pub fn install_packages(&mut self, package_specs: Vec<String>, rollback: bool) -> Result<()> {
         self.load_store_paths().unwrap();
         self.load_installed_packages().unwrap();
 
@@ -286,19 +283,14 @@ impl PackageManager {
         let files = self.download_packages(&packages_to_install)?;
         self.unpack_packages(files).unwrap();
 
-        // Filter self.installed_packages to retain only keys containing "git" or "git-core"
-        // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
-        // packages_to_install.retain(|key, _| key.contains("libnsl2"));
-        // println!("Installed packages:{:?}", packages_to_install);
-
         // create symlinks
-        let symlink_dir = self.create_profile_dir()?;
+        let symlink_dir = self.get_profile_dir(rollback)?;
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();
             // appbin_source check
             if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
-                appbin_flag = origin_pkg_names.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
+                appbin_flag = package_specs.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
                 pkg_name = spec.name.clone();
             }
             // install files
@@ -308,12 +300,12 @@ impl PackageManager {
             self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir)).unwrap();
         }
 
-        // Save installed packages
-        self.installed_packages.extend(packages_to_install);
-        self.save_installed_packages().unwrap();
-
-        // Save History
-        self.record_history("install", origin_pkg_names.clone()).unwrap();
+        // Save installed packages & history
+        if !rollback {
+            self.installed_packages.extend(packages_to_install);
+            self.save_installed_packages().unwrap();
+            self.record_history("install", package_specs.clone()).unwrap();
+        }
 
         Ok(())
     }

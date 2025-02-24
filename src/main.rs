@@ -235,7 +235,7 @@ fn main() -> Result<()> {
             package_manager.options.install_suggests = matches.get_flag("install_suggests");
             package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
             package_manager.fork_on_suid()?;
-            package_manager.install_packages(package_specs)?;
+            package_manager.install_packages(package_specs.clone().map(|s| s.clone()).collect(), false)?;
         }
     }
 
@@ -249,7 +249,7 @@ fn main() -> Result<()> {
     if let Some(matches) = matches.subcommand_matches("remove") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
             package_manager.fork_on_suid()?;
-            package_manager.remove_packages(package_specs)?;
+            package_manager.remove_packages(package_specs.clone().map(|s| s.clone()).collect(), false)?;
         }
     }
 

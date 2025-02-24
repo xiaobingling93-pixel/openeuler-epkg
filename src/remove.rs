@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 use std::collections::HashMap;
-use clap::parser::ValuesRef;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::paths;
@@ -40,8 +39,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn remove_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
-        let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
+    pub fn remove_packages(&mut self, package_specs: Vec<String>, rollback: bool) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
@@ -122,21 +120,21 @@ impl PackageManager {
         }
 
         // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
-        let symlink_dir = self.create_profile_dir()?;
+        let symlink_dir = self.get_profile_dir(rollback)?;
         for pkgline in &installed_to_remove {
             // remove files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
             self.remove_package_files(&fs_dir, &symlink_dir)?;
         }
 
-        // Step 7: Save the updated installed_packages
-        for package_name in &installed_to_remove {
-            self.installed_packages.remove(package_name);
-        } 
-        self.save_installed_packages()?;
-
-        //  Step 8: Save History
-        self.record_history("remove", origin_pkg_names)?;
+        //  Step 7: Save installed packages & history
+        if !rollback {
+            for package_name in &installed_to_remove {
+                self.installed_packages.remove(package_name);
+            } 
+            self.save_installed_packages()?;
+            self.record_history("remove", package_specs)?;
+        }
 
         Ok(())
     }

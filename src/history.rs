@@ -7,23 +7,35 @@ use anyhow::Context;
 use crate::paths;
 use crate::models::*;
 
-fn move_profile_directory(source: &str, destination: &str) -> Result<()> {
-    let source = Path::new(source);
-    let destination = Path::new(destination);
+pub fn move_profile_contents(src_dir: &str, dst_dir: &str) -> Result<()> {
+    let src_path = Path::new(src_dir);
+    let dst_path = Path::new(dst_dir);
 
-    if !source.exists() {
-        return Err(anyhow!("Source directory '{}' does not exist", source.display()));
-    }
-    if destination.exists() {
-        return Err(anyhow!("Destination directory '{}' already exists", destination.display()));
+    if !src_path.exists() {
+        return Err(anyhow!("Source directory '{}' does not exist", src_path.display()));
     }
 
-    fs::rename(source, destination)?;
-    // profile-last save installed-packages.json and command.json
-    fs::create_dir_all(source)?;
-    fs::copy(&destination.join("installed-packages.json"), &source.join("installed-packages.json"))?;
-    fs::rename(&destination.join("command.json"), &source.join("command.json"))?;
+    // Create destination directory
+    fs::create_dir_all(dst_path).with_context(|| format!("Failed to create destination directory '{}'", dst_path.display()))?;
 
+    // Exclude installed-packages.json and command.json
+    let excluded = ["installed-packages.json", "command.json"];
+
+    for entry in fs::read_dir(src_path)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+
+        if excluded.contains(&file_name_str.as_ref()) {
+            continue;
+        }
+
+        let src_entry_path = entry.path();
+        let dst_entry_path = dst_path.join(&file_name);
+
+        fs::rename(&src_entry_path, &dst_entry_path)
+            .with_context(|| format!("Failed to move '{}' to '{}'", src_entry_path.display(), dst_entry_path.display()))?;
+    }
     Ok(())
 }
 
@@ -37,8 +49,7 @@ impl PackageManager {
         Ok(current_profile_id)
     }
 
-    // Create profile directory
-    pub fn create_profile_dir(&self) -> Result<String> {
+    pub fn get_profile_dir(&self, rollback: bool) -> Result<String> {
         // Get current profile id
         let current_profile_id = self.get_current_id()?;
 
@@ -49,9 +60,17 @@ impl PackageManager {
             return Ok(cur_profile);
         }
 
-        // cp -R profile-last profile-cur
-        let new_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, current_profile_id+1);
-        move_profile_directory(&cur_profile, &new_profile)?;
+        // mv profile-{cur}/* -> profile-{new}/*
+        let new_profile = format!(
+            "{}/{}/profile-{}",
+            paths::instance.epkg_envs_root.display(),
+            self.options.env,
+            if rollback { current_profile_id - 1 } else { current_profile_id + 1 }
+        );
+        move_profile_contents(&cur_profile, &new_profile)?;
+        if rollback {
+            fs::remove_dir_all(&cur_profile)?;
+        }
 
         // ln -sf profile-current -> cur_profile
         let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
@@ -122,20 +141,34 @@ impl PackageManager {
             return Err(anyhow!("Cannot rollback to the current profile"));
         }
 
-        // // symlink profile-current to profile-id
-        // let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
-        // let profile_history = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
-        // fs::remove_file(&profile_current)?;
-        // symlink(&profile_history, &profile_current)?;
+        // load current_profile_id ~ rollback_id command.json
+        let mut history_entries: Vec<(u64, String, String, Vec<String>)> = Vec::new();
+        for i in rollback_id+1..current_profile_id+1 {
+            let profile = format!("{}/profile-{}", profile_dir, i);
+            let command_json = format!("{}/command.json", profile);
+            if Path::new(&command_json).exists() {
+                let contents = fs::read_to_string(&command_json)?;
+                let command: ProfileCommand = serde_json::from_str(&contents)?;
+                history_entries.push((i, command.timestamp, command.action, command.packages));
+            }
+        }
+        history_entries.sort_by(|a, b| b.0.cmp(&a.0));
 
-        // // Remove profile dir between id and last id
-        // for i in rollback_id+1..self.history.last().unwrap().id+1 {
-        //     let profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, i);
-        //     fs::remove_dir_all(&profile)?;
-        // }
-
-        // // Remove history record between id and last id
-        // self.history.retain(|r| r.id <= rollback_id);
+        // traversal history_entries
+        for (profile_id, _timestamp, action, packages) in history_entries {
+            println!("Rollback ...: {} {}, profile {} -> {}", action, packages.join(""), profile_id, profile_id-1);
+            let mut rollback_action = String::new();
+            if action.trim() == "install" {
+                rollback_action = "remove".to_string();
+                self.remove_packages(packages.clone(), true)?;
+            } else if action.trim() == "remove" {
+                rollback_action = "install".to_string();
+                self.install_packages(packages.clone(), true)?;
+            } else if action.trim() == "upgrade" {
+                // Todo upgrade & downgrade
+            }
+            println!("Rollback done: {} {}", rollback_action, packages.join(""));
+        }
 
         Ok(())
     }
