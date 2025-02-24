@@ -159,6 +159,15 @@ epkg() {
 					__epkg_add_appbin_path
 					return					
 					;;
+				history)
+					$epkg_rust "history"
+					return					
+					;;
+				rollback)
+					local history_id=$3
+					$epkg_rust "rollback" "$history_id"
+					return					
+					;;
 			esac
 			;;
 		install)

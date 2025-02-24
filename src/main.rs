@@ -158,22 +158,10 @@ fn main() -> Result<()> {
         .subcommand(
             Command::new("history")
                 .about("Show environment history")
-                .arg(
-                    Arg::new("env")
-                        .num_args(1)
-                        .required(true)
-                        .help("Environment name")
-                )
         )
         .subcommand(
             Command::new("rollback")
                 .about("Rollback environment to a specific history")
-                .arg(
-                    Arg::new("env")
-                        .num_args(1)
-                        .required(true)
-                        .help("Environment name")
-                )
                 .arg(
                     Arg::new("history-id")
                         .num_args(1)
@@ -270,19 +258,13 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(matches) = matches.subcommand_matches("history") {
-        if let Some(env) = matches.get_one::<String>("env") {
-            package_manager.options.env = env.to_string();
-            package_manager.print_history()?;
-        }
+    if let Some(_matches) = matches.subcommand_matches("history") {
+        package_manager.print_history()?;
     }
 
     if let Some(matches) = matches.subcommand_matches("rollback") {
-        if let Some(env) = matches.get_one::<String>("env") {
-            if let Some(rollback_id) = matches.get_one::<u64>("history-id") {
-                package_manager.options.env = env.to_string();
-                package_manager.rollback_history(*rollback_id)?;
-            }
+        if let Some(rollback_id) = matches.get_one::<u64>("history-id") {
+            package_manager.rollback_history(*rollback_id)?;
         }
     }
 
