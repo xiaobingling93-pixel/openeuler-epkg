@@ -300,11 +300,10 @@ impl PackageManager {
             self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir)).unwrap();
         }
 
-        // Save installed packages & history
+        // Save installed packages
         if !rollback {
             self.installed_packages.extend(packages_to_install);
             self.save_installed_packages().unwrap();
-            self.record_history("install", package_specs.clone()).unwrap();
         }
 
         Ok(())

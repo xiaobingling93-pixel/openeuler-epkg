@@ -121,6 +121,7 @@ pub struct ProfileCommand {
     pub timestamp: String,
     pub action: String,
     pub packages: Vec<String>,
+    pub command_line: String,
 }
 
 // $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml

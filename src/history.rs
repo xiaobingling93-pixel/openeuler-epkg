@@ -80,12 +80,13 @@ impl PackageManager {
         Ok(new_profile)
     }
 
-    pub fn record_history(&mut self, action: &str, packages: Vec<String>) -> Result<()> {
+    pub fn record_history(&mut self, action: &str, packages: Vec<String>, command_line: &str) -> Result<()> {
         let command_json = format!("{}/{}/profile-current/command.json", paths::instance.epkg_envs_root.display(), self.options.env);
         let command = ProfileCommand {
-            timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S  %:z").to_string(),
+            timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
             action: action.to_string(),
-            packages,
+            packages: packages,
+            command_line: command_line.to_string(),
         };
         let json = serde_json::to_string_pretty(&command)?;
         fs::write(&command_json, json)?;
@@ -94,11 +95,11 @@ impl PackageManager {
     }
 
     pub fn print_history(&mut self) -> Result<()> {
-        println!("{:<4} | {:<30} | {:<15} | {}", "id", "timestamp", "action", "packages");
-        println!("{:-<4}-+-{:-<30}-+-{:-<15}-+-{:-<}", "", "", "", "");
+        println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", "id", "timestamp", "action", "packages", "command line");
+        println!("{:-<4}-+-{:-<26}-+-{:-<10}-+-{:-<30}-+-{:-<}", "", "", "", "", "");
 
         let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
-        let mut history_entries: Vec<(u64, String, String, String)> = Vec::new();
+        let mut history_entries: Vec<(u64, String, String, String, String)> = Vec::new();
 
         for entry in fs::read_dir(&profile_dir)?.filter_map(Result::ok) {
             let path = entry.path();
@@ -112,7 +113,7 @@ impl PackageManager {
                         if command_json.exists() {
                             let contents = fs::read_to_string(&command_json)?;
                             let command: ProfileCommand = serde_json::from_str(&contents)?;
-                            history_entries.push((id, command.timestamp, command.action, command.packages.join("")));
+                            history_entries.push((id, command.timestamp, command.action, command.packages.join(" "), command.command_line));
                         }
                     }
                 }
@@ -121,8 +122,8 @@ impl PackageManager {
 
         // sort in ascending order of id
         history_entries.sort_by_key(|entry| entry.0);
-        for (id, timestamp, action, packages) in history_entries {
-            println!("{:<4} | {:<30} | {:<15} | {}", id, timestamp, action, packages);
+        for (id, timestamp, action, packages, command_line) in history_entries {
+            println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", id, timestamp, action, packages, command_line);
         }
         Ok(())
     }
@@ -156,7 +157,7 @@ impl PackageManager {
 
         // traversal history_entries
         for (profile_id, _timestamp, action, packages) in history_entries {
-            println!("Rollback ...: {} {}, profile {} -> {}", action, packages.join(""), profile_id, profile_id-1);
+            println!("Rollback ...: {} {}, profile {} -> {}", action, packages.join(" "), profile_id, profile_id-1);
             let mut rollback_action = String::new();
             if action.trim() == "install" {
                 rollback_action = "remove".to_string();
@@ -167,7 +168,7 @@ impl PackageManager {
             } else if action.trim() == "upgrade" {
                 // Todo upgrade & downgrade
             }
-            println!("Rollback done: {} {}", rollback_action, packages.join(""));
+            println!("Rollback done: {} {}", rollback_action, packages.join(" "));
         }
 
         Ok(())

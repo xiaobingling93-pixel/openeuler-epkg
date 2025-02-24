@@ -127,13 +127,12 @@ impl PackageManager {
             self.remove_package_files(&fs_dir, &symlink_dir)?;
         }
 
-        //  Step 7: Save installed packages & history
+        //  Step 7: Save installed packages
         if !rollback {
             for package_name in &installed_to_remove {
                 self.installed_packages.remove(package_name);
             } 
             self.save_installed_packages()?;
-            self.record_history("remove", package_specs)?;
         }
 
         Ok(())

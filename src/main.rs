@@ -229,13 +229,18 @@ fn main() -> Result<()> {
     let mut package_manager: PackageManager = Default::default();
     package_manager.options = options;
 
+    // record raw command
+    let command_line = std::env::args().collect::<Vec<String>>().join(" ");
+
     // Handle subcommands
     if let Some(matches) = matches.subcommand_matches("install") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
             package_manager.options.install_suggests = matches.get_flag("install_suggests");
             package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
             package_manager.fork_on_suid()?;
-            package_manager.install_packages(package_specs.clone().map(|s| s.clone()).collect(), false)?;
+            let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
+            package_manager.install_packages(packages_vec.clone(), false)?;
+            package_manager.record_history("install", packages_vec.clone(), &command_line).unwrap();
         }
     }
 
@@ -249,7 +254,9 @@ fn main() -> Result<()> {
     if let Some(matches) = matches.subcommand_matches("remove") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
             package_manager.fork_on_suid()?;
-            package_manager.remove_packages(package_specs.clone().map(|s| s.clone()).collect(), false)?;
+            let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
+            package_manager.remove_packages(packages_vec.clone(), false)?;
+            package_manager.record_history("remove", packages_vec.clone(), &command_line)?;
         }
     }
 
