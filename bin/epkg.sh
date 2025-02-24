@@ -143,12 +143,6 @@ case "$cmd" in
 			"deactivate")
 				__epkg_deactivate_environment "$@"
 				;;
-			"history")
-				env_history "$@"
-				;;
-			"rollback")
-				env_rollback "$@"
-				;;
 			*)
 				echo "Usage: epkg env [list|create|remove|register|unregister|activate|deactivate|history|rollback]"
 				;;
