@@ -147,44 +147,38 @@ epkg() {
 					__epkg_add_appbin_path
 					return
 					;;
-				register)
+				register|unregister)
 					$epkg_sh "$@" || return
 					# update PATH
 					__epkg_add_appbin_path
 					return
 					;;
-				unregister)
-					$epkg_sh "$@" || return
-					# update PATH
-					__epkg_add_appbin_path
-					return					
-					;;
-				history)
-					$epkg_rust "history"
-					return					
-					;;
-				rollback)
-					local history_id=$3
-					$epkg_rust "rollback" "$history_id"
-					return					
+				history|rollback)
+					if [ -z "$EPKG_ACTIVE_ENV" ]; then
+						echo "No environment activated, please activate environment first."
+						return
+					fi
+					if [ "$sub_cmd" == "history" ]; then
+						$epkg_rust "$sub_cmd"
+					else
+						$epkg_rust "$sub_cmd" "$3"
+					fi
+					return
 					;;
 			esac
 			;;
-		install)
-			echo "rust epkg install..."
-			$epkg_sh update
-			$epkg_rust "$@"
-			__rehash_path
-			return
-			;;
-		remove)
-			echo "rust epkg remove..."
+		install|remove)
+			if [ -z "$EPKG_ACTIVE_ENV" ]; then
+				echo "No environment activated, main environment will be used."
+			fi
+			if [ "$cmd" == "install" ]; then
+				$epkg_sh update
+			fi
 			$epkg_rust "$@"
 			__rehash_path
 			return
 			;;
 		list)
-			echo "rust epkg list..."
 			$epkg_rust "$@"
 			return
 			;;
