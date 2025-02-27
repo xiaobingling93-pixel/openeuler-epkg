@@ -1,12 +1,12 @@
 use std::fs;
-use std::io;
-use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
+use std::io::SeekFrom;
 use std::path::Path;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use anyhow::Result;
+use anyhow::anyhow;
 use crate::paths;
 use crate::utils::*;
 use crate::models::*;
@@ -124,40 +124,16 @@ pub fn handle_elf(target_path: &Path, symlink_dir: &Path, fs_file: &Path) -> Res
 }
 
 pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Result<()> {
-    // println!("Replacing '{}' with '{}' in file {:?}", long_id, replacement, binary_file);
-    // read file data
-    let mut file = fs::OpenOptions::new().read(true).write(true).open(binary_file)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
-    // trans long_id & replacement to bytes
-    let long_id_bytes = long_id.as_bytes();
-    let replacement_bytes = replacement.as_bytes();
-
-    while let Some(position) = buffer.windows(long_id_bytes.len()).position(|window| window == long_id_bytes) {
-        // println!("Replacement successful at position {}", position);
-
-        // length: replacement > long_id_bytes, extend buffer
-        if replacement_bytes.len() > long_id_bytes.len() {
-            buffer.resize(buffer.len() + replacement_bytes.len() - long_id_bytes.len(), 0);
-            buffer[position + replacement_bytes.len()..].rotate_right(replacement_bytes.len() - long_id_bytes.len());
-        }
-
-        // replace
-        buffer[position..position + replacement_bytes.len()].copy_from_slice(replacement_bytes);
-
-        // length: replacement <long_id_bytes, delete redundant bytes
-        if replacement_bytes.len() < long_id_bytes.len() {
-            buffer[position + replacement_bytes.len()..].rotate_left(long_id_bytes.len() - replacement_bytes.len());
-            buffer.truncate(buffer.len() - (long_id_bytes.len() - replacement_bytes.len()));
-        }
+    let data = fs::read(binary_file)?;
+    let pattern = long_id.as_bytes();
+    
+    if let Some(pos) = data.windows(pattern.len()).position(|window| window == pattern) {
+        let mut file = fs::OpenOptions::new().write(true).open(binary_file)?;
+        file.seek(SeekFrom::Start(pos as u64))?;
+        // Write the replacement followed by a null terminator.
+        file.write_all(format!("{}\0", replacement).as_bytes())?;
     }
-
-    // write to file
-    file.seek(io::SeekFrom::Start(0))?;
-    file.write_all(&buffer)?;
-    file.set_len(buffer.len() as u64)?;
-
+    
     Ok(())
 }
 
