@@ -39,7 +39,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn remove_packages(&mut self, package_specs: Vec<String>, rollback: bool) -> Result<()> {
+    pub fn remove_packages(&mut self, package_specs: Vec<String>, rollback: bool, assume_yes: bool) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
@@ -108,12 +108,14 @@ impl PackageManager {
             for package_name in &installed_to_remove {
                 println!("- {}", package_name);
             }
-            println!("Do you want to continue with uninstallation? (y/n):");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).expect("Failed to read input");
-            if input.trim().to_lowercase() != "y" {
-                println!("Aborted removal.");
-                return Ok(());
+            if !assume_yes {
+                println!("Do you want to continue with uninstallation? (y/n):");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).expect("Failed to read input");
+                if input.trim().to_lowercase() != "y" {
+                    println!("Aborted removal.");
+                    return Ok(());
+                }
             }
         } else {
             println!("No packages to remove.");

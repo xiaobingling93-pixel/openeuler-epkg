@@ -161,7 +161,7 @@ impl PackageManager {
             let mut rollback_action = String::new();
             if action.trim() == "install" {
                 rollback_action = "remove".to_string();
-                self.remove_packages(packages.clone(), true)?;
+                self.remove_packages(packages.clone(), true, false)?;
             } else if action.trim() == "remove" {
                 rollback_action = "install".to_string();
                 self.install_packages(packages.clone(), true)?;

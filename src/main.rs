@@ -121,10 +121,17 @@ fn main() -> Result<()> {
             Command::new("remove")
                 .about("Remove packages")
                 .arg(
+                    Arg::new("assume_yes")
+                    .short('y')
+                    .long("assume-yes")
+                    .help("Automatically answer yes to all prompts")
+                    .action(ArgAction::SetTrue)
+                )
+                .arg(
                     Arg::new("package-spec")
-                        .num_args(1..)
-                        .required(true)
-                        .help("Package specifications to remove")
+                    .num_args(1..)
+                    .required(true)
+                    .help("Package specifications to remove")
                 )
         )
         .subcommand(
@@ -241,9 +248,10 @@ fn main() -> Result<()> {
 
     if let Some(matches) = matches.subcommand_matches("remove") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            let assume_yes = matches.get_flag("assume_yes");
             package_manager.fork_on_suid()?;
             let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-            package_manager.remove_packages(packages_vec.clone(), false)?;
+            package_manager.remove_packages(packages_vec.clone(), false, assume_yes)?;
             package_manager.record_history("remove", packages_vec.clone(), &command_line)?;
         }
     }
