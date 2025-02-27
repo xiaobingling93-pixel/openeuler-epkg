@@ -66,9 +66,6 @@ else
 fi
 
 case "$cmd" in
-	"localinstall")
-		local_install_package "$@"
-		;;
 	"install")
 		installroot=""
 		package_arr=()
@@ -164,6 +161,9 @@ case "$cmd" in
 	"build")
 		run_build "$@"
 		;;
+	# "localinstall")
+	# 	local_install_package "$@"
+	# 	;;
 	*)
 		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|register|unregister|activate|deactivate|history|rollback|help]"
 		;;
