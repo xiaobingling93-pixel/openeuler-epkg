@@ -161,6 +161,10 @@ impl PackageManager {
                 }
             }
         }
+        
+        if !header_printed {
+            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, self.env_config.channel.name);
+        }
 
         Ok(())
     }

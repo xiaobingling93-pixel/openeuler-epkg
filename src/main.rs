@@ -158,7 +158,7 @@ fn main() -> Result<()> {
                 .arg(
                     Arg::new("glob-pattern")
                         .num_args(1..)
-                        .required(false)
+                        .required(true)
                         .help("Package glob pattern to list")
                 )
         )
