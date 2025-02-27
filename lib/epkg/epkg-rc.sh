@@ -170,11 +170,8 @@ epkg() {
 					;;
 				history|rollback)
 					__epkg_check_activate_register || return
-					if [ "$sub_cmd" == "history" ]; then
-						$epkg_rust "$sub_cmd"
-					else
-						$epkg_rust "$sub_cmd" "$3"
-					fi
+					shift
+					$epkg_rust "$@"
 					return
 					;;
 			esac
