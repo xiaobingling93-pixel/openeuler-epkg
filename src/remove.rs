@@ -134,6 +134,7 @@ impl PackageManager {
             } 
             self.save_installed_packages()?;
         }
+        println!("Attention: Remove success:{}", installed_to_remove.iter().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())
     }

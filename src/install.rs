@@ -278,9 +278,10 @@ impl PackageManager {
 
         // Save installed packages
         if !rollback {
-            self.installed_packages.extend(packages_to_install);
+            self.installed_packages.extend(packages_to_install.clone());
             self.save_installed_packages().unwrap();
         }
+        println!("Attention: Install success:{}", packages_to_install.keys().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())
     }
