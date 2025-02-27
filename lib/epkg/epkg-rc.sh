@@ -67,6 +67,21 @@ __epkg_append_path() {
 	echo $epkg_appbin_path$SYSTEM_ORIGIN_PATH
 }
 
+__epkg_check_activate_register() {
+	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
+	
+	if [[ -z "$EPKG_ACTIVE_ENV" ]]; then
+		# Check if no registered envs exist
+		if [[ ! -d $epkg_registered_envs_dir || -z "$(ls -A $epkg_registered_envs_dir)" ]]; then
+			echo "No environment activated|registered, please activate|register environment first."
+			return 1
+		fi
+		echo "No environment activated, main environment will be used."
+	fi
+	
+	return 0
+}
+
 # change PATH in bashrc
 export PATH=$(__epkg_append_path)
 
@@ -154,10 +169,7 @@ epkg() {
 					return
 					;;
 				history|rollback)
-					if [ -z "$EPKG_ACTIVE_ENV" ]; then
-						echo "No environment activated, please activate environment first."
-						return
-					fi
+					__epkg_check_activate_register || return
 					if [ "$sub_cmd" == "history" ]; then
 						$epkg_rust "$sub_cmd"
 					else
@@ -168,9 +180,7 @@ epkg() {
 			esac
 			;;
 		install|remove)
-			if [ -z "$EPKG_ACTIVE_ENV" ]; then
-				echo "No environment activated, main environment will be used."
-			fi
+			__epkg_check_activate_register || return
 			if [ "$cmd" == "install" ]; then
 				$epkg_sh update
 			fi
