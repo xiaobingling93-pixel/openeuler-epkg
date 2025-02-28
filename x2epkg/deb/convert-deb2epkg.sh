@@ -13,9 +13,16 @@ source lib/common.sh
 
 decompress_deb()
 {
+  rm -f control.tar.xz control.tar.gz
   ar x "${deb_file}"
   tar -xf data.tar.xz -C "${epkg_conversion_dir}/fs/" 2>/dev/null
-  tar -xf control.tar.xz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
+  if [ -f control.tar.xz ]; then
+    tar -xf control.tar.xz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
+  elif [ -f control.tar.gz ]; then
+    tar -xzf control.tar.gz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
+  else
+    echo "error: unknown control tarball type"
+  fi
   rm -f "${epkg_conversion_dir}/info/install/"{conffiles,md5sums}
 }
 
