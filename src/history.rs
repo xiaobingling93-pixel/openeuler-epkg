@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -39,6 +40,13 @@ pub fn move_profile_contents(src_dir: &str, dst_dir: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn load_installed_packages(env: &str, profile_id: u64) -> Result<HashMap<String, InstalledPackageInfo>> {
+    let file_path = format!("{}/{}/profile-{}/installed-packages.json", paths::instance.epkg_envs_root.display(), env, profile_id);
+    let contents = fs::read_to_string(&file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
+    let packages: HashMap<String, InstalledPackageInfo> = serde_json::from_str(&contents).with_context(|| format!("Failed to parse JSON from file: {}", file_path))?;
+    Ok(packages)
+}
+
 impl PackageManager {
 
     pub fn get_current_id(&self) -> Result<u64> {
@@ -49,7 +57,7 @@ impl PackageManager {
         Ok(current_profile_id)
     }
 
-    pub fn get_profile_dir(&self, rollback: bool) -> Result<String> {
+    pub fn get_profile_dir(&self) -> Result<String> {
         // Get current profile id
         let current_profile_id = self.get_current_id()?;
 
@@ -65,12 +73,9 @@ impl PackageManager {
             "{}/{}/profile-{}",
             paths::instance.epkg_envs_root.display(),
             self.options.env,
-            if rollback { current_profile_id - 1 } else { current_profile_id + 1 }
+            current_profile_id + 1
         );
         move_profile_contents(&cur_profile, &new_profile)?;
-        if rollback {
-            fs::remove_dir_all(&cur_profile)?;
-        }
 
         // ln -sf profile-current -> cur_profile
         let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
@@ -130,8 +135,7 @@ impl PackageManager {
 
     pub fn rollback_history(&mut self, rollback_id: u64) -> Result<()> {
         // Check if rollback_id exists
-        let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
-        let rollback_profile = format!("{}/profile-{}", profile_dir, rollback_id);
+        let rollback_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
         if !Path::new(&rollback_profile).exists() {
             return Err(anyhow!("No such history record: Profile {} does not exist", rollback_id));
         }
@@ -142,34 +146,37 @@ impl PackageManager {
             return Err(anyhow!("Cannot rollback to the current profile"));
         }
 
-        // load current_profile_id ~ rollback_id command.json
-        let mut history_entries: Vec<(u64, String, String, Vec<String>)> = Vec::new();
-        for i in rollback_id+1..current_profile_id+1 {
-            let profile = format!("{}/profile-{}", profile_dir, i);
-            let command_json = format!("{}/command.json", profile);
-            if Path::new(&command_json).exists() {
-                let contents = fs::read_to_string(&command_json)?;
-                let command: ProfileCommand = serde_json::from_str(&contents)?;
-                history_entries.push((i, command.timestamp, command.action, command.packages));
-            }
-        }
-        history_entries.sort_by(|a, b| b.0.cmp(&a.0));
+        // Load current_profile_id ~ rollback_id installed-packages.json, filter need new/del packages
+        let current_packages = load_installed_packages(&self.options.env, current_profile_id)?;
+        let rollback_packages = load_installed_packages(&self.options.env, rollback_id)?;
+        let new_packages: Vec<String> = rollback_packages.keys()
+            .filter(|name| !current_packages.contains_key(*name))
+            .cloned()
+            .collect();
+        let del_packages: Vec<String> = current_packages.keys()
+            .filter(|name| !rollback_packages.contains_key(*name))
+            .cloned()
+            .collect();
 
-        // traversal history_entries
-        for (profile_id, _timestamp, action, packages) in history_entries {
-            println!("Rollback ...: {} {}, profile {} -> {}", action, packages.join(" "), profile_id, profile_id-1);
-            let mut rollback_action = String::new();
-            if action.trim() == "install" {
-                rollback_action = "remove".to_string();
-                self.remove_packages(packages.clone(), true, false)?;
-            } else if action.trim() == "remove" {
-                rollback_action = "install".to_string();
-                self.install_packages(packages.clone(), true)?;
-            } else if action.trim() == "upgrade" {
-                // Todo upgrade & downgrade
-            }
-            println!("Rollback done: {} {}", rollback_action, packages.join(" "));
+        println!("Rollback informaton:");
+        println!("New: {:?}, Del: {:?}", new_packages, del_packages);
+
+        // Remove del_packages
+        let symlink_dir = self.get_profile_dir()?;
+        for pkgline in new_packages {
+            // Todo: appbin_flag need fix
+            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            self.new_package(&fs_dir, &symlink_dir, false)?;
         }
+        for pkgline in del_packages {
+            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            self.del_package(&fs_dir, &symlink_dir)?;
+        }
+
+        // Cp rollback_id installed-packages.json to current profile
+        let installed_json = format!("{}/{}/profile-{}/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
+        let current_json = format!("{}/{}/profile-current/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env);
+        fs::copy(&installed_json, &current_json)?;
 
         Ok(())
     }

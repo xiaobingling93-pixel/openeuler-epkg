@@ -187,7 +187,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn install_package_files(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
+    pub fn new_package(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
         let fs_files = list_package_files(&fs_dir).unwrap();
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
@@ -238,8 +238,8 @@ impl PackageManager {
 
         Ok(())
     }
-    
-    pub fn install_packages(&mut self, package_specs: Vec<String>, rollback: bool) -> Result<()> {
+
+    pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_store_paths().unwrap();
         self.load_installed_packages().unwrap();
 
@@ -261,7 +261,7 @@ impl PackageManager {
         self.unpack_packages(files).unwrap();
 
         // create symlinks
-        let symlink_dir = self.get_profile_dir(rollback)?;
+        let symlink_dir = self.get_profile_dir()?;
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();
@@ -272,16 +272,14 @@ impl PackageManager {
             }
             // install files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
-            self.install_package_files(&fs_dir, &symlink_dir, appbin_flag).unwrap();
+            self.new_package(&fs_dir, &symlink_dir, appbin_flag).unwrap();
             // postinstall
             self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir)).unwrap();
         }
 
         // Save installed packages
-        if !rollback {
-            self.installed_packages.extend(packages_to_install.clone());
-            self.save_installed_packages().unwrap();
-        }
+        self.installed_packages.extend(packages_to_install.clone());
+        self.save_installed_packages().unwrap();
         println!("Attention: Install success:{}", packages_to_install.keys().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())

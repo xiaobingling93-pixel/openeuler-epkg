@@ -9,7 +9,7 @@ use crate::models::*;
 
 impl PackageManager {
 
-    pub fn remove_package_files(&self, fs_dir: &str, symlink_dir: &str) -> Result<()> {
+    pub fn del_package(&self, fs_dir: &str, symlink_dir: &str) -> Result<()> {
         let fs_files = list_package_files(&fs_dir)?;
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
@@ -39,7 +39,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn remove_packages(&mut self, package_specs: Vec<String>, rollback: bool, assume_yes: bool) -> Result<()> {
+    pub fn remove_packages(&mut self, package_specs: Vec<String>, assume_yes: bool) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
@@ -122,20 +122,18 @@ impl PackageManager {
         }
 
         // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
-        let symlink_dir = self.get_profile_dir(rollback)?;
+        let symlink_dir = self.get_profile_dir()?;
         for pkgline in &installed_to_remove {
             // remove files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
-            self.remove_package_files(&fs_dir, &symlink_dir)?;
+            self.del_package(&fs_dir, &symlink_dir)?;
         }
 
         //  Step 7: Save installed packages
-        if !rollback {
-            for package_name in &installed_to_remove {
-                self.installed_packages.remove(package_name);
-            } 
-            self.save_installed_packages()?;
-        }
+        for package_name in &installed_to_remove {
+            self.installed_packages.remove(package_name);
+        } 
+        self.save_installed_packages()?;
         println!("Attention: Remove success:{}", installed_to_remove.iter().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())
