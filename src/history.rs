@@ -100,35 +100,36 @@ impl PackageManager {
     }
 
     pub fn print_history(&mut self) -> Result<()> {
+        println!("{} env history", self.options.env);
         println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", "id", "timestamp", "action", "packages", "command line");
         println!("{:-<4}-+-{:-<26}-+-{:-<10}-+-{:-<30}-+-{:-<}", "", "", "", "", "");
 
         let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
-        let mut history_entries: Vec<(u64, String, String, String, String)> = Vec::new();
+        let mut history_entries: Vec<(u64, ProfileCommand)> = Vec::new();
 
-        for entry in fs::read_dir(&profile_dir)?.filter_map(Result::ok) {
-            let path = entry.path();
-            if !path.is_dir() || path.ends_with("profile-current") {
-                continue;
-            }
-            if let Some(profile) = path.file_name().and_then(|s| s.to_str()) {
-                if profile.starts_with("profile-") {
-                    if let Ok(id) = profile[8..].parse::<u64>() {
-                        let command_json = path.join("command.json");
-                        if command_json.exists() {
-                            let contents = fs::read_to_string(&command_json)?;
-                            let command: ProfileCommand = serde_json::from_str(&contents)?;
-                            history_entries.push((id, command.timestamp, command.action, command.packages.join(" "), command.command_line));
+        // Collect history entries
+        for entry in fs::read_dir(&profile_dir)? {
+            let path = entry?.path();
+            let filename = path.file_name().and_then(|s| s.to_str());
+            
+            if let Some(profile) = filename {
+                if !profile.starts_with("profile-") || profile == "profile-current" {
+                    continue;
+                }
+                
+                if let Ok(id) = profile[8..].parse::<u64>() {
+                    if let Ok(contents) = fs::read_to_string(path.join("command.json")) {
+                        if let Ok(command) = serde_json::from_str(&contents) {
+                            history_entries.push((id, command));
                         }
                     }
                 }
             }
         }
 
-        // sort in ascending order of id
         history_entries.sort_by_key(|entry| entry.0);
-        for (id, timestamp, action, packages, command_line) in history_entries {
-            println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", id, timestamp, action, packages, command_line);
+        for (id, command) in history_entries {
+            println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", id, command.timestamp, command.action, command.packages.join(" "), command.command_line);
         }
         Ok(())
     }
