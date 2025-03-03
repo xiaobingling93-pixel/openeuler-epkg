@@ -85,12 +85,13 @@ impl PackageManager {
         Ok(new_profile)
     }
 
-    pub fn record_history(&mut self, action: &str, packages: Vec<String>, command_line: &str) -> Result<()> {
+    pub fn record_history(&mut self, action: &str, new_packages: Vec<String>, del_packages: Vec<String>, command_line: &str) -> Result<()> {
         let command_json = format!("{}/{}/profile-current/command.json", paths::instance.epkg_envs_root.display(), self.options.env);
         let command = ProfileCommand {
             timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
             action: action.to_string(),
-            packages: packages,
+            new_packages: new_packages,
+            del_packages: del_packages,
             command_line: command_line.to_string(),
         };
         let json = serde_json::to_string_pretty(&command)?;
@@ -100,9 +101,9 @@ impl PackageManager {
     }
 
     pub fn print_history(&mut self) -> Result<()> {
-        println!("{} env history", self.options.env);
-        println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", "id", "timestamp", "action", "packages", "command line");
-        println!("{:-<4}-+-{:-<26}-+-{:-<10}-+-{:-<30}-+-{:-<}", "", "", "", "", "");
+        println!("{}  {} env history  {}", "-".repeat(50), self.options.env, "-".repeat(50));
+        println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", "id", "timestamp", "action", "new_packages", "del_packages", "command line");
+        println!("{:-<3}-+-{:-<26}-+-{:-<10}-+-{:-<12}-+-{:-<12}-+-{:-<40}", "", "", "", "", "", "");
 
         let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
         let mut history_entries: Vec<(u64, ProfileCommand)> = Vec::new();
@@ -129,12 +130,19 @@ impl PackageManager {
 
         history_entries.sort_by_key(|entry| entry.0);
         for (id, command) in history_entries {
-            println!("{:<4} | {:<26} | {:<10} | {:<30} | {}", id, command.timestamp, command.action, command.packages.join(" "), command.command_line);
+            println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", 
+                id, 
+                command.timestamp, 
+                command.action, 
+                command.new_packages.len(), 
+                command.del_packages.len(), 
+                command.command_line
+            );
         }
         Ok(())
     }
 
-    pub fn rollback_history(&mut self, rollback_id: u64) -> Result<()> {
+    pub fn rollback_history(&mut self, rollback_id: u64, command_line: &str) -> Result<()> {
         // Check if rollback_id exists
         let rollback_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
         if !Path::new(&rollback_profile).exists() {
@@ -164,12 +172,12 @@ impl PackageManager {
 
         // Remove del_packages
         let symlink_dir = self.get_profile_dir()?;
-        for pkgline in new_packages {
+        for pkgline in &new_packages {
             // Todo: appbin_flag need fix
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
             self.new_package(&fs_dir, &symlink_dir, false)?;
         }
-        for pkgline in del_packages {
+        for pkgline in &del_packages {
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
             self.del_package(&fs_dir, &symlink_dir)?;
         }
@@ -178,6 +186,9 @@ impl PackageManager {
         let installed_json = format!("{}/{}/profile-{}/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
         let current_json = format!("{}/{}/profile-current/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env);
         fs::copy(&installed_json, &current_json)?;
+
+        // Record history
+        self.record_history("rollback", new_packages, del_packages, command_line)?;
 
         Ok(())
     }

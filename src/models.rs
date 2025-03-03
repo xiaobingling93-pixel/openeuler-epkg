@@ -120,7 +120,8 @@ pub struct InstalledPackageInfo {
 pub struct ProfileCommand {
     pub timestamp: String,
     pub action: String,
-    pub packages: Vec<String>,
+    pub new_packages: Vec<String>,
+    pub del_packages: Vec<String>,
     pub command_line: String,
 }
 

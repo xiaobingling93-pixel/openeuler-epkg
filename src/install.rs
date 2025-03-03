@@ -239,7 +239,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
+    pub fn install_packages(&mut self, package_specs: Vec<String>, command_line: &str) -> Result<()> {
         self.load_store_paths().unwrap();
         self.load_installed_packages().unwrap();
 
@@ -280,6 +280,7 @@ impl PackageManager {
         // Save installed packages
         self.installed_packages.extend(packages_to_install.clone());
         self.save_installed_packages().unwrap();
+        self.record_history("install", packages_to_install.keys().cloned().collect(), vec![], command_line)?;
         println!("Attention: Install success:{}", packages_to_install.keys().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())

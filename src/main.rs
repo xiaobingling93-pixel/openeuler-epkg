@@ -234,8 +234,7 @@ fn main() -> Result<()> {
             package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
             package_manager.fork_on_suid()?;
             let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-            package_manager.install_packages(packages_vec.clone())?;
-            package_manager.record_history("install", packages_vec.clone(), &command_line).unwrap();
+            package_manager.install_packages(packages_vec.clone(), &command_line)?;
         }
     }
 
@@ -251,8 +250,7 @@ fn main() -> Result<()> {
             let assume_yes = matches.get_flag("assume_yes");
             package_manager.fork_on_suid()?;
             let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-            package_manager.remove_packages(packages_vec.clone(), assume_yes)?;
-            package_manager.record_history("remove", packages_vec.clone(), &command_line)?;
+            package_manager.remove_packages(packages_vec.clone(), assume_yes, &command_line)?;
         }
     }
 
@@ -272,8 +270,7 @@ fn main() -> Result<()> {
 
     if let Some(matches) = matches.subcommand_matches("rollback") {
         if let Some(rollback_id) = matches.get_one::<u64>("history-id") {
-            package_manager.rollback_history(*rollback_id)?;
-            package_manager.record_history("rollback", vec![], &command_line)?;
+            package_manager.rollback_history(*rollback_id, &command_line)?;
         }
     }
 

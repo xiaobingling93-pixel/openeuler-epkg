@@ -39,7 +39,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn remove_packages(&mut self, package_specs: Vec<String>, assume_yes: bool) -> Result<()> {
+    pub fn remove_packages(&mut self, package_specs: Vec<String>, assume_yes: bool, command_line: &str) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
@@ -134,6 +134,7 @@ impl PackageManager {
             self.installed_packages.remove(package_name);
         } 
         self.save_installed_packages()?;
+        self.record_history("remove", vec![], installed_to_remove.clone(), command_line)?;
         println!("Attention: Remove success:{}", installed_to_remove.iter().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())
