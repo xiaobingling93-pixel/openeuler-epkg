@@ -122,7 +122,7 @@ impl PackageManager {
         }
 
         // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
-        let symlink_dir = self.get_profile_dir()?;
+        let symlink_dir = self.get_current_profile()?;
         for pkgline in &installed_to_remove {
             // remove files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);

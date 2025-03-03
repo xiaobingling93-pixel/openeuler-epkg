@@ -57,15 +57,16 @@ impl PackageManager {
         Ok(current_profile_id)
     }
 
-    pub fn get_profile_dir(&self) -> Result<String> {
-        // Get current profile id
+    pub fn get_current_profile(&self) -> Result<String> {
+        // Get symlink profile_current
+        let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
         let current_profile_id = self.get_current_id()?;
 
         // Check profile command json
         let cur_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, current_profile_id);
         let command_json = format!("{}/{}/profile-current/command.json", paths::instance.epkg_envs_root.display(), self.options.env);
         if !Path::new(&command_json).exists() {
-            return Ok(cur_profile);
+            return Ok(profile_current);
         }
 
         // mv profile-{cur}/* -> profile-{new}/*
@@ -78,11 +79,10 @@ impl PackageManager {
         move_profile_contents(&cur_profile, &new_profile)?;
 
         // ln -sf profile-current -> cur_profile
-        let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
         fs::remove_file(&profile_current)?;
         symlink(&new_profile, &profile_current)?;
 
-        Ok(new_profile)
+        Ok(profile_current)
     }
 
     pub fn record_history(&mut self, action: &str, new_packages: Vec<String>, del_packages: Vec<String>, command_line: &str) -> Result<()> {
@@ -171,7 +171,7 @@ impl PackageManager {
         println!("New: {:?}, Del: {:?}", new_packages, del_packages);
 
         // Remove del_packages
-        let symlink_dir = self.get_profile_dir()?;
+        let symlink_dir = self.get_current_profile()?;
         for pkgline in &new_packages {
             // Todo: appbin_flag need fix
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);

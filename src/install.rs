@@ -261,7 +261,7 @@ impl PackageManager {
         self.unpack_packages(files).unwrap();
 
         // create symlinks
-        let symlink_dir = self.get_profile_dir()?;
+        let symlink_dir = self.get_current_profile()?;
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();
