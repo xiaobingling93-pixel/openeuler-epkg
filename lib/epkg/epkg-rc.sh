@@ -162,6 +162,11 @@ epkg() {
 					return
 					;;
 				register|unregister)
+					if [ $# -ne 3 ]; then
+						echo "Usage: epkg env register|unregister <env_name>"
+						return
+					fi
+
 					$epkg_sh "$@" || return
 					# update PATH
 					__epkg_add_appbin_path
