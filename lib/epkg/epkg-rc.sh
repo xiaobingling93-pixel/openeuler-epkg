@@ -119,22 +119,30 @@ epkg() {
 			local sub_cmd=$2
 			local env=$3
 			case "$sub_cmd" in
-				create|remove)
+				create)
+					# Check Parameters $#==3 or ($#==5 and $5==--repo)
+					if ! { [ $# -eq 3 ] || [ $# -eq 5 -a "$4" = "--repo" ]; }; then
+						echo "Usage: epkg env create|remove <env_name>"
+						return
+					fi
+
+					$epkg_sh "$@" || return
+					echo "Environment '$env' activated."
+					export EPKG_ACTIVE_ENV=$env
+					__epkg_add_appbin_path
+					return
+					;;	
+				remove)	
 					if [ $# -ne 3 ]; then
 						echo "Usage: epkg env create|remove <env_name>"
 						return
 					fi
 
 					$epkg_sh "$@" || return
-					if [[ "$sub_cmd" == "create" ]]; then
-						echo "Environment '$env' activated."
-						export EPKG_ACTIVE_ENV=$env
-					else
-						[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
-					fi
+					[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
-					;;		
+					;;	
 				activate)
 					# Check Parameters $#==3 or ($#==4 and $4==--pure)
 					if ! { [ $# -eq 3 ] || [ $# -eq 4 -a "$4" = "--pure" ]; }; then
