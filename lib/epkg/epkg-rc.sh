@@ -119,46 +119,44 @@ epkg() {
 			local sub_cmd=$2
 			local env=$3
 			case "$sub_cmd" in
-				create)
+				create|remove)
+					# Parameters check
+					if [ $# -ne 3 ]; then
+						echo "Usage: epkg env <sub_cmd> <env_name>"
+						return
+					fi
+
 					$epkg_sh "$@" || return
-					# update PATH
-					echo "Environment '$env' activated."
-					export EPKG_ACTIVE_ENV=$env
+					if [[ "$sub_cmd" == "create" ]]; then
+						echo "Environment '$env' activated."
+						export EPKG_ACTIVE_ENV=$env
+					else
+						[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
+					fi
 					__epkg_add_appbin_path
 					return
-					;;
-				remove)
-					$epkg_sh "$@" || return
-					# update PATH
-					if [[ "$env" == "$EPKG_ACTIVE_ENV" ]]; then
+					;;					
+				activate|deactivate)
+					# Parameters check
+					if [ $# -ne 3 ]; then
+						echo "Usage: epkg env <sub_cmd> <env_name>"
+						return
+					fi
+
+					if [ "$sub_cmd" = "activate" ]; then
+						[[ -z "$env" ]] && { echo "env_name cannot be empty!"; return; }
+						[[ "$env" == "common" ]] && { echo "$env cannot be activated!"; return; }
+						[[ ! -d "$HOME/.epkg/envs/$env" ]] && { echo "$env not exist!"; return; }
+						# --pure
+						local opt_pure=$4
+						echo "Environment '$env' activated."
+						export EPKG_ACTIVE_ENV=$env
+					else
+						[[ -z "$EPKG_ACTIVE_ENV" ]] && { echo "No environment activated!"; return; }
+						echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
 						unset EPKG_ACTIVE_ENV
 					fi
-					__epkg_add_appbin_path
-					return
-					;;
-				activate)
-					if [ -z "$env" ]; then
-						echo "env_name cannot be empty!"
-						return
-					elif [[ "$env" == "common" ]]; then
-						echo "$env cannot be activated!"
-						return
-					elif [ ! -d "$HOME/.epkg/envs/$env" ]; then
-						echo "$env not exist!"
-						return
-					fi
-					# --pure
-					local opt_pure=$4
 					# update PATH
-					echo "Environment '$env' activated."
-					export EPKG_ACTIVE_ENV=$env
-					__epkg_add_appbin_path
-					return
-					;;
-				deactivate)
-					# update PATH
-					echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
-					unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
 					;;
