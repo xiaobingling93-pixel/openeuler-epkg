@@ -313,7 +313,6 @@ fn send_response(stream: &mut UnixStream, response: Value) -> Result<()> {
 }
 
 // send side
-
 impl PackageManager {
     fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
         let stream: &UnixStream = self.get_ipc_stream()?;
@@ -338,7 +337,6 @@ impl PackageManager {
     }
 
     // wrapper functions
-
     pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;

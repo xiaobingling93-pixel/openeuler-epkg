@@ -7,9 +7,7 @@ use anyhow::Result;
 use crate::paths;
 
 pub fn unpack_packages(files: Vec<String>) -> Result<()> {
-
     for file in files {
-
         let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
         let dir = paths::instance.epkg_store_root.join(pkgline);
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
