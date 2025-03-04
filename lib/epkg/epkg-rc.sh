@@ -120,9 +120,8 @@ epkg() {
 			local env=$3
 			case "$sub_cmd" in
 				create|remove)
-					# Parameters check
 					if [ $# -ne 3 ]; then
-						echo "Usage: epkg env <sub_cmd> <env_name>"
+						echo "Usage: epkg env create|remove <env_name>"
 						return
 					fi
 
@@ -135,28 +134,30 @@ epkg() {
 					fi
 					__epkg_add_appbin_path
 					return
-					;;					
-				activate|deactivate)
-					# Parameters check
-					if [ $# -ne 3 ]; then
-						echo "Usage: epkg env <sub_cmd> <env_name>"
+					;;		
+				activate)
+					# Check Parameters $#==3 or ($#==4 and $4==--pure)
+					if ! { [ $# -eq 3 ] || [ $# -eq 4 -a "$4" = "--pure" ]; }; then
+						echo "Usage: epkg env activate <env_name> [--pure]"
 						return
 					fi
-
-					if [ "$sub_cmd" = "activate" ]; then
-						[[ -z "$env" ]] && { echo "env_name cannot be empty!"; return; }
-						[[ "$env" == "common" ]] && { echo "$env cannot be activated!"; return; }
-						[[ ! -d "$HOME/.epkg/envs/$env" ]] && { echo "$env not exist!"; return; }
-						# --pure
-						local opt_pure=$4
-						echo "Environment '$env' activated."
-						export EPKG_ACTIVE_ENV=$env
-					else
-						[[ -z "$EPKG_ACTIVE_ENV" ]] && { echo "No environment activated!"; return; }
-						echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
-						unset EPKG_ACTIVE_ENV
-					fi
-					# update PATH
+	
+					[[ -z "$env" ]] && { echo "env_name cannot be empty!"; return; }
+					[[ "$env" == "common" ]] && { echo "$env cannot be activated!"; return; }
+					[[ ! -d "$HOME/.epkg/envs/$env" ]] && { echo "$env not exist!"; return; }
+					# --pure
+					local opt_pure=$4
+					export EPKG_ACTIVE_ENV=$env
+					echo "Environment '$env' activated${4:+ "$opt_pure"}."
+					__epkg_add_appbin_path
+					return
+					;;	
+				deactivate)
+					[ $# -ne 2 ] && { echo "Usage: epkg env deactivate"; return; }
+					[ -z "$EPKG_ACTIVE_ENV" ] && { echo "No environment activated."; return; }
+					
+					echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
+					unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
 					;;
