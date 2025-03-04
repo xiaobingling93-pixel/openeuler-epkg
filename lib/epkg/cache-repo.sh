@@ -35,7 +35,9 @@ cache_repo_index()
 		$epkg_helper mv ${local_cache_path}/repodata/pkg-info.zst.tmp ${local_cache_path}/repodata/pkg-info.zst
 
 		# XXX: temp workaround when no index.json at server side
-		cat > ${local_cache_path}/repodata/index.json <<-EOF
+		$epkg_helper touch ${local_cache_path}/repodata/index.json
+		$epkg_helper chmod 777 ${local_cache_path}/repodata/index.json
+		$epkg_helper cat > ${local_cache_path}/repodata/index.json <<-EOF
 		{
 		  "store-paths": [
 		    {
@@ -60,9 +62,7 @@ cache_repo_index()
 	[[ -f ${local_cache_path}/repodata/index.json ]] || {
 		echo "Failed to sync metadata for repo:"
 		echo "	${repo_url}"
-
-		rm -rf ${local_cache_path}
-
+		$epkg_helper rm -rf ${local_cache_path}
 		return
 	}
 
