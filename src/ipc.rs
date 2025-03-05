@@ -6,11 +6,12 @@ use std::os::unix::fs::chown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use anyhow::Result;
+use nix::{self};
 use nix::unistd::{fork, setuid, Uid, ForkResult};
 use rand::Rng;
-use serde_json::{json, Value};
 use users::{get_current_uid, get_effective_uid};
+use anyhow::Result;
+use serde_json::{json, Value};
 use crate::models::*;
 
 // ======================================================================================
@@ -205,13 +206,13 @@ impl PackageManager {
             let socket_path = create_random_socket_path();
 
             match unsafe { fork() } {
-                Ok(ForkResult::Parent { child: _, .. }) => {
+                Ok(ForkResult::Parent { child, .. }) => {
                     setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
                     self.has_worker_process = true;
+                    self.child_pid = Some(child); 
                 }
                 Ok(ForkResult::Child) => {
                     privilege_worker_main(&socket_path)?;
-                    std::process::exit(0);
                 }
                 Err(e) => panic!("Fork failed: {}", e),
             }
@@ -219,6 +220,19 @@ impl PackageManager {
             self.ipc_socket = socket_path.to_string_lossy().into_owned();
         }
         Ok(())
+    }
+}
+
+impl Drop for PackageManager {
+    fn drop(&mut self) {
+        // remove socket file 
+        if !self.ipc_socket.is_empty() {
+            let _ = std::fs::remove_file(&self.ipc_socket);
+        }
+        // kill work process
+        if let Some(pid) = self.child_pid {
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+        }
     }
 }
 
@@ -248,8 +262,6 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
             Err(e) => eprintln!("Connection error: {}", e),
         }
     }
-
-    fs::remove_file(socket_path)?;
     Ok(())
 }
 
@@ -403,7 +415,6 @@ impl PackageManager {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;
         } else {
-            println!("Unpacking packages: {:?}", files);
             self.send_command(
                 json!({
                     "command": "unpack",
