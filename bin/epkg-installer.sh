@@ -181,7 +181,9 @@ epkg_unpack() {
 
     # unpack epkg static binary
     cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
-    chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
+    if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
+        chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
+    fi
 
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
