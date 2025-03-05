@@ -276,10 +276,8 @@ fn download_file(
 }
 
 impl PackageManager {
-
-    /// Download packages specified by their pkgline strings.
-    pub fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
-
+    // Download packages specified by their pkgline strings.
+    pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
         let output_dir = paths::instance.epkg_pkg_cache_dir.display().to_string();
 
         // Step 1: Compose URLs for each pkgline
@@ -305,7 +303,7 @@ impl PackageManager {
         }
 
         // Step 2: Call the predefined download_urls function
-        download_urls(urls, &output_dir, 6, 6, None)?;
+        self.download_urls(urls, &output_dir, 6, 6, None)?;
         Ok(local_files)
     }
 }

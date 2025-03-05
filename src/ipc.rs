@@ -188,6 +188,7 @@ use crate::models::*;
 
 #[derive(Debug)]
 enum WorkerCommand {
+    Download(Vec<String>, String, usize, usize, Option<String>),
     Unpack(Vec<String>),
     GarbageCollect,
 }
@@ -255,6 +256,18 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
 fn handle_client(stream: &mut UnixStream) -> Result<()> {
     let command = read_command(stream)?;
     match command {
+        WorkerCommand::Download(urls, output_dir, nr_parallel, max_retries, proxy) => {
+            let res = crate::download::download_urls(urls, &output_dir, nr_parallel, max_retries, proxy.as_deref())
+                .and_then(|_| send_response(
+                        stream,
+                        json!({"status": "success", "message": "Downloaded files"})
+                ))
+                .or_else(|e| send_response(
+                        stream,
+                        json!({"status": "error", "message": e.to_string()})
+                ));
+            res?;
+        }
         WorkerCommand::Unpack(files) => {
             let res = crate::store::unpack_packages(files)
                 .and_then(|_| send_response(
@@ -265,7 +278,6 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                         stream,
                         json!({"status": "error", "message": e.to_string()})
                 ));
-
             res?;
         }
         WorkerCommand::GarbageCollect => {
@@ -278,7 +290,6 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                         stream,
                         json!({"status": "error", "message": e.to_string()})
                 ));
-
             res?;
         }
     }
@@ -291,6 +302,18 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
 
     let value: Value = serde_json::from_str(&buf)?;
     match value["command"].as_str() {
+        Some("download") => Ok(WorkerCommand::Download(
+            value["params"]["urls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+            value["params"]["output_dir"].as_str().unwrap().to_string(),
+            value["params"]["nr_parallel"].as_u64().unwrap() as usize,
+            value["params"]["max_retries"].as_u64().unwrap() as usize,
+            value["params"]["proxy"].as_str().map(String::from),
+        )),
         Some("unpack") => Ok(WorkerCommand::Unpack(
             value["params"]["files"]
                 .as_array()
@@ -312,14 +335,32 @@ fn send_response(stream: &mut UnixStream, response: Value) -> Result<()> {
     Ok(())
 }
 
+fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
+    let mut reader = io::BufReader::new(stream);
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
+    if response["status"] == "error" {
+        return Err(anyhow::anyhow!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
+    } else {
+        println!("ipc {} command completed successfully", command);
+    }
+    Ok(())
+}
+
 // send side
 impl PackageManager {
     fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
+        // Send command
         let stream: &UnixStream = self.get_ipc_stream()?;
         let mut writer = io::BufWriter::new(stream);
         serde_json::to_writer(&mut writer, &command)?;
         writer.write_all(b"\n")?;
         writer.flush()?;
+
+        // Receive response
+        receive_response(stream, command["command"].as_str().unwrap())?;
+
         Ok(())
     }
 
@@ -337,6 +378,27 @@ impl PackageManager {
     }
 
     // wrapper functions
+    pub fn download_urls(&mut self, urls: Vec<String>, output_dir: &str, nr_parallel: usize, max_retries: usize, proxy: Option<&str>) -> Result<()> {
+        if !self.has_worker_process {
+            crate::download::download_urls(urls, output_dir, nr_parallel, max_retries, proxy)?;
+        } else {
+            self.send_command(
+                json!({
+                    "command": "download",
+                    "params": {
+                        "urls": urls,
+                        "output_dir": output_dir,
+                        "nr_parallel": nr_parallel,
+                        "max_retries": max_retries,
+                        "proxy": proxy
+                    }
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
+
     pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;
