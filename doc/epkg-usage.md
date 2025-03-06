@@ -1,8 +1,11 @@
 # 介绍
+
 本文介绍EPKG包管理器工作环境如何初始化，以及基本功能如何使用。本文涉及操作结果示例均以非root用户为例。
 
-# 快速上手
+## 快速上手
+
 下面的实例介绍了安装不同软件包版本的方式
+
 ```bash
 # curl 方式安装epkg
 # 安装时可选user/global安装模式，user模式仅当前安装用户可用，global模式全局用户可用
@@ -48,7 +51,8 @@ which tree
 epkg env activate t1
 ```
 
-# EPKG包管理器使用说明
+## EPKG包管理器使用说明
+
 ```bash
 Usage:
     epkg install <package>
@@ -67,15 +71,17 @@ Usage:
     epkg env rollback <history_id>
 ```
 
-## 安装软件
+### 安装软件
+
 功能描述：
-	在当前activate的环境中安装软件
-	若无环境激活，默认安装到main环境中：`epkg env activate <env_name>`
+ 在当前activate的环境中安装软件
+ 若无环境激活，默认安装到main环境中：`epkg env activate <env_name>`
 
 命令：
-	`epkg install <package>`
+ `epkg install <package>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env create t1
 EPKG_ACTIVE_ENV:
@@ -95,15 +101,17 @@ Attention: Install success: v0wrq5sv9r5znsgtgxkbax24r7f6nq80__htop__3.3.0__1.oe2
 [root@vbox ~]#
 ```
 
-## 卸载软件
+### 卸载软件
+
 功能描述：
-	在当前activate的环境中安装软件
-	若无环境激活，默认安装到main环境中：`epkg env activate <env_name>`
+ 在当前activate的环境中安装软件
+ 若无环境激活，默认安装到main环境中：`epkg env activate <env_name>`
 
 命令：
-	`epkg remove <package>`
+ `epkg remove <package>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env activate t1
 Environment 't1' activated.
@@ -116,14 +124,16 @@ Attention: Remove success: v0wrq5sv9r5znsgtgxkbax24r7f6nq80__htop__3.3.0__1.oe24
 [root@vbox ~]#
 ```
 
-## 列出环境
+### 列出环境
+
 功能描述：
-    列出当前epkg所有环境，及激活和注册的环境
+ 列出当前epkg所有环境，及激活和注册的环境
 
 命令：
-    `epkg env list`
+ `epkg env list`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env list
 EPKG_ACTIVE_ENV: t1
@@ -133,14 +143,16 @@ t1                          activated
 main                       registered
 ```
 
-## 创建环境
+### 创建环境
+
 功能描述：
-	创建新环境，默认激活创建的环境
+ 创建新环境，默认激活创建的环境
 
 命令：
-    `epkg env create <env_name>`
+ `epkg env create <env_name>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env create t2
 EPKG_ACTIVE_ENV: t1
@@ -156,14 +168,16 @@ t1
 main                       registered
 ```
 
-## 删除环境
+### 删除环境
+
 功能描述：
-	删除环境
+ 删除环境
 
 命令：
-    `epkg env remove <env_name>`
+ `epkg env remove <env_name>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env remove t2
 EPKG_ACTIVE_ENV: t2
@@ -178,14 +192,16 @@ t1
 main                       registered
 ```
 
-## 激活环境
+### 激活环境
+
 功能描述：
-	激活指定的环境，刷新PATH，并将激活环境设为第一优先级
+ 激活指定的环境，刷新PATH，并将激活环境设为第一优先级
 
 命令：
-	`epkg env activate <env_name>`
+ `epkg env activate <env_name>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env activate main
 Environment 'main' activated.
@@ -199,14 +215,16 @@ main             activated|registered
 /root/.epkg/envs/main/profile-current/usr/app-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
 ```
 
-## 去激活环境
+### 去激活环境
+
 功能描述：
-	去激活环境，去激活当前已激活的环境，刷新PATH
+ 去激活环境，去激活当前已激活的环境，刷新PATH
 
 命令：
-	`epkg env deactivate`
+ `epkg env deactivate`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env activate t1
 Environment 't1' activated.
@@ -218,15 +236,17 @@ Environment 't1' deactivated.
 /root/.epkg/envs/main/profile-current/usr/app-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
 ```
 
-## 注册环境
+### 注册环境
+
 功能描述：
-	持久化注册指定环境，刷新PATH
-	注册的环境在新的shell中依然生效
+ 持久化注册指定环境，刷新PATH
+ 注册的环境在新的shell中依然生效
 
 命令：
-	`epkg env register <env_name>`
+ `epkg env register <env_name>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env register t1
 EPKG_ACTIVE_ENV:
@@ -242,14 +262,16 @@ t1                         registered
 main                       registered
 ```
 
-## 去注册环境
+### 去注册环境
+
 功能描述：
-    持久化去注册指定环境，刷新PATH
+ 持久化去注册指定环境，刷新PATH
 
 命令：
-    `epkg env unregister <env_name>`
+ `epkg env unregister <env_name>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env unregister t1
 EPKG_ACTIVE_ENV:
@@ -258,14 +280,16 @@ Environment t1 had been registered.
 Environment 't1' has been unregistered from PATH.
 ```
 
-## 环境历史
+### 环境历史
+
 功能描述：
-    查看当前激活环境的历史记录
+ 查看当前激活环境的历史记录
 
 命令：
-    `epkg env history`
+ `epkg env history`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env activate t1
 Environment 't1' activated.
@@ -278,7 +302,8 @@ id  | timestamp                  | action     | new_packages | del_packages | co
 3   | 2025-03-06 20:23:45 +08:00 | remove     | 0            | 1            | /opt/epkg/users/public/envs/common/profile-current/usr/bin/epkg remove htop
 ```
 
-## 环境回退
+### 环境回退
+
 功能描述：
     回退激活环境，history_id即epkg env history中查询的id列
 
@@ -286,6 +311,7 @@ id  | timestamp                  | action     | new_packages | del_packages | co
     `epkg env rollback <history_id>`
 
 示例：
+
 ```bash
 [root@vbox ~]# epkg env rollback 2
 Rollback informaton:
