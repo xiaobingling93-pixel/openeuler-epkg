@@ -33,6 +33,7 @@ impl PackageManager {
                         InstalledPackageInfo {
                             install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                             depend_depth: 0,
+                            appbin_flag: true,
                         },
                     );
                 }
@@ -97,11 +98,13 @@ impl PackageManager {
                     if !packages.contains_key(&dpkgline) &&
                         !depend_packages.contains_key(&dpkgline)
                     {
+                        let appbin_flag = spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
                         depend_packages.insert(
                             dpkgline.clone(),
                             InstalledPackageInfo {
                                 install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                                 depend_depth: depth,
+                                appbin_flag: appbin_flag,
                             },
                         );
                     }

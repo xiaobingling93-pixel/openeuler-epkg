@@ -158,9 +158,9 @@ impl PackageManager {
         // Load current_profile_id ~ rollback_id installed-packages.json, filter need new/del packages
         let current_packages = load_installed_packages(&self.options.env, current_profile_id)?;
         let rollback_packages = load_installed_packages(&self.options.env, rollback_id)?;
-        let new_packages: Vec<String> = rollback_packages.keys()
+        let new_packages: Vec<(String, bool)> = rollback_packages.keys()
             .filter(|name| !current_packages.contains_key(*name))
-            .cloned()
+            .map(|name| (name.clone(), rollback_packages[name].appbin_flag))
             .collect();
         let del_packages: Vec<String> = current_packages.keys()
             .filter(|name| !rollback_packages.contains_key(*name))
@@ -172,10 +172,9 @@ impl PackageManager {
 
         // Remove del_packages
         let symlink_dir = self.get_current_profile()?;
-        for pkgline in &new_packages {
-            // Todo: appbin_flag need fix
+        for (pkgline, appbin_flag) in &new_packages {
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
-            self.new_package(&fs_dir, &symlink_dir, false)?;
+            self.new_package(&fs_dir, &symlink_dir, *appbin_flag)?;
         }
         for pkgline in &del_packages {
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
@@ -188,7 +187,7 @@ impl PackageManager {
         fs::copy(&installed_json, &current_json)?;
 
         // Record history
-        self.record_history("rollback", new_packages, del_packages, command_line)?;
+        self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages, command_line)?;
         println!("Rollback success!");
 
         Ok(())

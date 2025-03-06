@@ -112,6 +112,7 @@ pub struct PackageSpec {
 pub struct InstalledPackageInfo {
     pub install_time: u64,
     pub depend_depth: u8,
+    pub appbin_flag: bool,
 }
 
 #[allow(dead_code)]
