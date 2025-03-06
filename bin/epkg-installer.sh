@@ -365,6 +365,7 @@ prepare_conf() {
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
     mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
     cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+    chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 }
 
 # step 0. dependency check
