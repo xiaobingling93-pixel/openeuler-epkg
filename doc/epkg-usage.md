@@ -71,8 +71,10 @@ Usage:
 功能描述：
 	在当前activate的环境中安装软件
 	若无环境激活，默认安装到main环境中：`epkg env activate <env_name>`
+
 命令：
 	`epkg install <package>`
+
 示例：
 ```bash
 [root@vbox ~]# epkg env create t1
@@ -97,8 +99,10 @@ Attention: Install success: v0wrq5sv9r5znsgtgxkbax24r7f6nq80__htop__3.3.0__1.oe2
 功能描述：
 	在当前activate的环境中安装软件
 	若无环境激活，默认安装到main环境中：`epkg env activate <env_name>`
+
 命令：
 	`epkg remove <package>`
+
 示例：
 ```bash
 [root@vbox ~]# epkg env activate t1
@@ -115,9 +119,11 @@ Attention: Remove success: v0wrq5sv9r5znsgtgxkbax24r7f6nq80__htop__3.3.0__1.oe24
 ## 列出环境
 功能描述：
     列出当前epkg所有环境，及激活和注册的环境
+
 命令：
     `epkg env list`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env list
 EPKG_ACTIVE_ENV: t1
@@ -130,9 +136,11 @@ main                       registered
 ## 创建环境
 功能描述：
 	创建新环境，默认激活创建的环境
+
 命令：
     `epkg env create <env_name>`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env create t2
 EPKG_ACTIVE_ENV: t1
@@ -151,9 +159,11 @@ main                       registered
 ## 删除环境
 功能描述：
 	删除环境
+
 命令：
     `epkg env remove <env_name>`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env remove t2
 EPKG_ACTIVE_ENV: t2
@@ -171,9 +181,11 @@ main                       registered
 ## 激活环境
 功能描述：
 	激活指定的环境，刷新PATH，并将激活环境设为第一优先级
+
 命令：
 	`epkg env activate <env_name>`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env activate main
 Environment 'main' activated.
@@ -190,9 +202,11 @@ main             activated|registered
 ## 去激活环境
 功能描述：
 	去激活环境，去激活当前已激活的环境，刷新PATH
+
 命令：
 	`epkg env deactivate`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env activate t1
 Environment 't1' activated.
@@ -208,9 +222,11 @@ Environment 't1' deactivated.
 功能描述：
 	持久化注册指定环境，刷新PATH
 	注册的环境在新的shell中依然生效
+
 命令：
 	`epkg env register <env_name>`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env register t1
 EPKG_ACTIVE_ENV:
@@ -229,9 +245,11 @@ main                       registered
 ## 去注册环境
 功能描述：
     持久化去注册指定环境，刷新PATH
+
 命令：
     `epkg env unregister <env_name>`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env unregister t1
 EPKG_ACTIVE_ENV:
@@ -243,9 +261,11 @@ Environment 't1' has been unregistered from PATH.
 ## 环境历史
 功能描述：
     查看当前激活环境的历史记录
+
 命令：
     `epkg env history`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env activate t1
 Environment 't1' activated.
@@ -261,9 +281,11 @@ id  | timestamp                  | action     | new_packages | del_packages | co
 ## 环境回退
 功能描述：
     回退激活环境，history_id即epkg env history中查询的id列
+
 命令：
     `epkg env rollback <history_id>`
-返回示例：
+
+示例：
 ```bash
 [root@vbox ~]# epkg env rollback 2
 Rollback informaton:
