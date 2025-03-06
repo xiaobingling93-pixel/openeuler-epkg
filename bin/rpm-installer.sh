@@ -82,10 +82,6 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.yaml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.yaml
     echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
 
-    # unpack epkg static binary
-    cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
-    chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
-
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         cp -a $EPKG_MANAGER_DIR/build  $OPT_EPKG
@@ -106,6 +102,10 @@ epkg_unpack() {
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
     fi
+
+    # unpack epkg static binary
+    cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
+    chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
 
     # unpack elf loader
 	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
