@@ -120,12 +120,6 @@ epkg() {
 			local env=$3
 			case "$sub_cmd" in
 				create)
-					# Check Parameters $#==3 or ($#==5 and $5==--repo)
-					if ! { [ $# -eq 3 ] || [ $# -eq 5 -a "$4" = "--repo" ]; }; then
-						echo "Usage: epkg env create|remove <env_name>"
-						return
-					fi
-
 					$epkg_sh "$@" || return
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
@@ -133,11 +127,6 @@ epkg() {
 					return
 					;;	
 				remove)	
-					if [ $# -ne 3 ]; then
-						echo "Usage: epkg env create|remove <env_name>"
-						return
-					fi
-
 					$epkg_sh "$@" || return
 					[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
@@ -170,11 +159,6 @@ epkg() {
 					return
 					;;
 				register|unregister)
-					if [ $# -ne 3 ]; then
-						echo "Usage: epkg env register|unregister <env_name>"
-						return
-					fi
-
 					$epkg_sh "$@" || return
 					# update PATH
 					__epkg_add_appbin_path
