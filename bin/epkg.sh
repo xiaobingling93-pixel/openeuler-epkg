@@ -124,7 +124,7 @@ case "$cmd" in
 				;;
 			"create")
 				# Check Parameters $#==3 or ($#==5 and $5==--repo)
-				if ! { [ $# -eq 3 ] || [ $# -eq 5 -a "$4" = "--repo" ]; }; then
+				if ! { [ $# -eq 1 ] || [ $# -eq 3 -a "$2" = "--repo" ]; }; then
 					echo "Usage: epkg env create <env_name> [--repo <repo_name>]"
 					exit 1
 				fi
@@ -132,7 +132,7 @@ case "$cmd" in
 				__epkg_create_environment "$@"
 				;;
 			"remove")
-				if [ $# -ne 3 ]; then
+				if [ $# -ne 1 ]; then
 					echo "Usage: epkg env remove <env_name>"
 					exit 1
 				fi
@@ -140,7 +140,7 @@ case "$cmd" in
 				__epkg_remove_environment "$@"
 				;;
 			"register")
-				if [ $# -ne 3 ]; then
+				if [ $# -ne 1 ]; then
 					echo "Usage: epkg env register|unregister <env_name>"
 					exit 1
 				fi
@@ -148,7 +148,7 @@ case "$cmd" in
 				__epkg_register_environment "$@"
 				;;
 			"unregister")
-				if [ $# -ne 3 ]; then
+				if [ $# -ne 1 ]; then
 					echo "Usage: epkg env register|unregister <env_name>"
 					exit 1
 				fi
