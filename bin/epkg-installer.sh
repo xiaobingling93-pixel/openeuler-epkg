@@ -204,6 +204,8 @@ epkg_unpack() {
     cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
+    else
+        chmod 755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
     fi
 
     # unpack elf loader
