@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
 
+# openEuler Community: RPM package installation script integrated into Devstation, invoked by the spec file
+# Todo in future: Convert to spec file
+
 ARCH=$(uname -m)
 # Rpm params
 RPM_BUILDROOT_DIR=$(rpmbuild --eval '%{buildroot}')
