@@ -189,6 +189,7 @@ impl PackageManager {
 
         // Record history
         self.record_history("rollback", new_packages, del_packages, command_line)?;
+        println!("Rollback success");
 
         Ok(())
     }
