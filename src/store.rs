@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use tar::Archive;
 use nix::unistd::{chown, User};
 use zstd::stream::read::Decoder;
-use users::{get_current_uid, get_effective_uid};
+use users::get_effective_uid;
 use anyhow::Result;
 use walkdir::WalkDir;
 use crate::paths;
