@@ -257,6 +257,7 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
     chown(socket_path, Some(get_current_uid()), None)?;
 
     for stream in listener.incoming() {
+        // The steam is automatically closed when it goes out of scope.
         match stream {
             Ok(mut stream) => handle_client(&mut stream)?,
             Err(e) => eprintln!("Connection error: {}", e),
@@ -377,6 +378,17 @@ impl PackageManager {
     }
 
     pub fn get_ipc_stream(&mut self) -> Result<&UnixStream> {
+        // The steam is automatically closed when it goes out of scope. see privilege_worker_main function
+        if let Some(ref mut check_stream) = self.ipc_stream {
+            // Send empty byte, Check connect
+            if let Err(e) = check_stream.write(&[]) {
+                if e.kind() == io::ErrorKind::BrokenPipe {
+                    self.ipc_stream = None;
+                    self.ipc_connected = false;
+                }
+            }
+        }
+
         if !self.ipc_connected {
             // Connect to the socket and store the stream in the Option
             self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket)?);
