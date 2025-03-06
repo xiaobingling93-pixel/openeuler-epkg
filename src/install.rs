@@ -70,10 +70,15 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
         }
         symlink(fs_file, &target_path)?;
     } else if file_type.contains("symbolic link") {
-        if let Ok(ln_fs_file) = fs::canonicalize(fs_file) {
-            // fs_file's target symbolic link relative path to "fs_dir"
-            let ln_store_relative = ln_fs_file.strip_prefix(fs_dir)?;
-            handle_symlink(ln_store_relative, rfs_file, symlink_dir)?;
+        if let Ok(link_target) = fs::read_link(fs_file) {
+            let ln_store_relative = if link_target.is_absolute() {
+                link_target.strip_prefix("/").unwrap().to_path_buf()
+            } else {
+                link_target
+            };
+            handle_symlink(&ln_store_relative, rfs_file, symlink_dir)?;
+        } else {
+            return Err(anyhow!("handle_exec failed handle symbolic link {:?}", fs_file));
         }
     }
 
