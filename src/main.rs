@@ -108,6 +108,28 @@ fn main() -> Result<()> {
                 )
         )
         .subcommand(
+            Command::new("localinstall")
+                .about("Install local packages")
+                .arg(
+                    Arg::new("fs_dir")
+                        .num_args(1)
+                        .required(true)
+                        .help("Local filesystem directory to install packages")
+                )
+                .arg(
+                    Arg::new("symlink_dir")
+                        .num_args(1)
+                        .required(true)
+                        .help("Local symlink directory to install packages")
+                )
+                .arg(
+                    Arg::new("appbin")
+                        .long("appbin")
+                        .help("Install appbin packages")
+                        .action(ArgAction::SetTrue)
+                )
+        )
+        .subcommand(
             Command::new("upgrade")
                 .about("upgrade packages")
                 .arg(
@@ -235,6 +257,15 @@ fn main() -> Result<()> {
             package_manager.fork_on_suid()?;
             let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
             package_manager.install_packages(packages_vec.clone(), &command_line)?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("localinstall") {
+        if let Some(fs_dir) = matches.get_one::<String>("fs_dir") {
+            if let Some(symlink_dir) = matches.get_one::<String>("symlink_dir") {
+                let appbin = matches.get_flag("appbin");
+                package_manager.new_package(&fs_dir.clone(), &symlink_dir.clone(), appbin)?;
+            }
         }
     }
 
