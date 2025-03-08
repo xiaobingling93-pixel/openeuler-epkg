@@ -66,9 +66,6 @@ else
 fi
 
 case "$cmd" in
-	"localinstall")
-		local_install_package "$@"
-		;;
 	"install")
 		installroot=""
 		package_arr=()
@@ -93,17 +90,11 @@ case "$cmd" in
 	"update")
 		cache_repo
 		;;
-	"remove")
-		remove_package "$@"
-		;;
 	"upgrade")
 		upgrade_package "$@"
 		;;
 	"search")
 		search_package "$@"
-		;;
-	"list")
-		list_packages "$@"
 		;;
 	"show")
 		# show_package "$@"
@@ -132,15 +123,36 @@ case "$cmd" in
 				__epkg_list_environments
 				;;
 			"create")
+				# Check Parameters $#==3 or ($#==5 and $5==--repo)
+				if ! { [ $# -eq 1 ] || [ $# -eq 3 -a "$2" = "--repo" ]; }; then
+					echo "Usage: epkg env create <env_name> [--repo <repo_name>]"
+					exit 1
+				fi
+
 				__epkg_create_environment "$@"
 				;;
 			"remove")
+				if [ $# -ne 1 ]; then
+					echo "Usage: epkg env remove <env_name>"
+					exit 1
+				fi
+
 				__epkg_remove_environment "$@"
 				;;
 			"register")
+				if [ $# -ne 1 ]; then
+					echo "Usage: epkg env register|unregister <env_name>"
+					exit 1
+				fi
+
 				__epkg_register_environment "$@"
 				;;
 			"unregister")
+				if [ $# -ne 1 ]; then
+					echo "Usage: epkg env register|unregister <env_name>"
+					exit 1
+				fi
+
 				__epkg_unregister_environment "$@"
 				;;
 			"activate")
@@ -148,12 +160,6 @@ case "$cmd" in
 				;;
 			"deactivate")
 				__epkg_deactivate_environment "$@"
-				;;
-			"history")
-				env_history "$@"
-				;;
-			"rollback")
-				env_rollback "$@"
 				;;
 			*)
 				echo "Usage: epkg env [list|create|remove|register|unregister|activate|deactivate|history|rollback]"
@@ -176,6 +182,9 @@ case "$cmd" in
 	"build")
 		run_build "$@"
 		;;
+	# "localinstall")
+	# 	local_install_package "$@"
+	# 	;;
 	*)
 		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|register|unregister|activate|deactivate|history|rollback|help]"
 		;;

@@ -1,6 +1,5 @@
 use std::process::exit;
 use std::collections::HashMap;
-use clap::parser::ValuesRef;
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use crate::models::*;
@@ -22,18 +21,19 @@ impl PackageManager {
     }
 
     /// convert user provided @pkg_names to exact pkglines
-    pub fn resolve_package_info(&self, pkg_names: ValuesRef<String>) -> HashMap<String, InstalledPackageInfo> {
+    pub fn resolve_package_info(&self, pkg_names: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
         let mut packages = HashMap::new();
         let mut missing_names = Vec::new();
 
         for pkgname in pkg_names {
-            if let Some(pkglines) = self.pkgname2lines.get(pkgname) {
+            if let Some(pkglines) = self.pkgname2lines.get(&pkgname) {
                 for pkgline in pkglines {
                     packages.insert(
                         pkgline.clone(),
                         InstalledPackageInfo {
                             install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                             depend_depth: 0,
+                            appbin_flag: true,
                         },
                     );
                 }
@@ -98,11 +98,13 @@ impl PackageManager {
                     if !packages.contains_key(&dpkgline) &&
                         !depend_packages.contains_key(&dpkgline)
                     {
+                        let appbin_flag = spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
                         depend_packages.insert(
                             dpkgline.clone(),
                             InstalledPackageInfo {
                                 install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                                 depend_depth: depth,
+                                appbin_flag: appbin_flag,
                             },
                         );
                     }

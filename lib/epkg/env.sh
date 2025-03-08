@@ -181,18 +181,4 @@ get_active_env() {
 	env=main
 }
 
-env_history() {
-	local env=$1
-
-	ls -l $EPKG_ENVS_ROOT/$env
-}
-
-# Rollback environment to previous state
-env_rollback() {
-	local env=$1
-
-	echo "Environment '$env' rolled back."
-	# Add implementation for rollback (if available)
-}
-
 # vim: sw=4 ts=4 et

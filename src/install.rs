@@ -1,13 +1,12 @@
 use std::fs;
-use std::io;
-use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
+use std::io::SeekFrom;
 use std::path::Path;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
-use clap::parser::ValuesRef;
 use anyhow::Result;
+use anyhow::anyhow;
 use crate::paths;
 use crate::utils::*;
 use crate::models::*;
@@ -71,10 +70,15 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
         }
         symlink(fs_file, &target_path)?;
     } else if file_type.contains("symbolic link") {
-        if let Ok(ln_fs_file) = fs::canonicalize(fs_file) {
-            // fs_file's target symbolic link relative path to "fs_dir"
-            let ln_store_relative = ln_fs_file.strip_prefix(fs_dir)?;
-            handle_symlink(ln_store_relative, rfs_file, symlink_dir)?;
+        if let Ok(link_target) = fs::read_link(fs_file) {
+            let ln_store_relative = if link_target.is_absolute() {
+                link_target.strip_prefix("/").unwrap().to_path_buf()
+            } else {
+                link_target
+            };
+            handle_symlink(&ln_store_relative, rfs_file, symlink_dir)?;
+        } else {
+            return Err(anyhow!("handle_exec failed handle symbolic link {:?}", fs_file));
         }
     }
 
@@ -125,40 +129,16 @@ pub fn handle_elf(target_path: &Path, symlink_dir: &Path, fs_file: &Path) -> Res
 }
 
 pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Result<()> {
-    // println!("Replacing '{}' with '{}' in file {:?}", long_id, replacement, binary_file);
-    // read file data
-    let mut file = fs::OpenOptions::new().read(true).write(true).open(binary_file)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
-    // trans long_id & replacement to bytes
-    let long_id_bytes = long_id.as_bytes();
-    let replacement_bytes = replacement.as_bytes();
-
-    while let Some(position) = buffer.windows(long_id_bytes.len()).position(|window| window == long_id_bytes) {
-        // println!("Replacement successful at position {}", position);
-
-        // length: replacement > long_id_bytes, extend buffer
-        if replacement_bytes.len() > long_id_bytes.len() {
-            buffer.resize(buffer.len() + replacement_bytes.len() - long_id_bytes.len(), 0);
-            buffer[position + replacement_bytes.len()..].rotate_right(replacement_bytes.len() - long_id_bytes.len());
-        }
-
-        // replace
-        buffer[position..position + replacement_bytes.len()].copy_from_slice(replacement_bytes);
-
-        // length: replacement <long_id_bytes, delete redundant bytes
-        if replacement_bytes.len() < long_id_bytes.len() {
-            buffer[position + replacement_bytes.len()..].rotate_left(long_id_bytes.len() - replacement_bytes.len());
-            buffer.truncate(buffer.len() - (long_id_bytes.len() - replacement_bytes.len()));
-        }
+    let data = fs::read(binary_file)?;
+    let pattern = long_id.as_bytes();
+    
+    if let Some(pos) = data.windows(pattern.len()).position(|window| window == pattern) {
+        let mut file = fs::OpenOptions::new().write(true).open(binary_file)?;
+        file.seek(SeekFrom::Start(pos as u64))?;
+        // Write the replacement followed by a null terminator.
+        file.write_all(format!("{}\0", replacement).as_bytes())?;
     }
-
-    // write to file
-    file.seek(io::SeekFrom::Start(0))?;
-    file.write_all(&buffer)?;
-    file.set_len(buffer.len() as u64)?;
-
+    
     Ok(())
 }
 
@@ -212,8 +192,8 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn install_package_files(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
-        let fs_files = list_package_files(&fs_dir)?;
+    pub fn new_package(&self, fs_dir: &str, symlink_dir: &str, appbin_flag: bool) -> Result<()> {
+        let fs_files = list_package_files(&fs_dir).unwrap();
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
             let target_path = Path::new(&symlink_dir).join(rfs_file);
@@ -263,19 +243,18 @@ impl PackageManager {
 
         Ok(())
     }
-    
-    pub fn install_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
-        let origin_pkg_names: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
 
-        self.load_store_paths()?;
-        self.load_installed_packages()?;
+    pub fn install_packages(&mut self, package_specs: Vec<String>, command_line: &str) -> Result<()> {
+        self.load_store_paths().unwrap();
+        self.load_installed_packages().unwrap();
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
         self.resolve_appbin_source(&mut packages_to_install);
-        remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: The following packages are already installed and will be skipped:");
-
         self.collect_recursive_depends(&mut packages_to_install)?;
-        remove_duplicates(&self.installed_packages, &mut packages_to_install, "");
+        remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: The following packages are already installed and will be skipped:");
+        if packages_to_install.is_empty() {
+            return Err(anyhow!("No packages to install"));
+        }
 
         if self.options.verbose {
             println!("appbin_source: {:?}", self.appbin_source);
@@ -284,33 +263,30 @@ impl PackageManager {
         }
 
         let files = self.download_packages(&packages_to_install)?;
-        self.unpack_packages(files)?;
-
-        // Filter self.installed_packages to retain only keys containing "git" or "git-core"
-        // self.installed_packages.retain(|key, _| key.contains("git") || key.contains("git-core"));
-        // packages_to_install.retain(|key, _| key.contains("libnsl2"));
-        // println!("Installed packages:{:?}", packages_to_install);
+        self.unpack_packages(files).unwrap();
 
         // create symlinks
-        let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
+        let symlink_dir = self.get_current_profile()?;
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();
             // appbin_source check
             if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
-                appbin_flag = origin_pkg_names.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
+                appbin_flag = package_specs.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
                 pkg_name = spec.name.clone();
             }
             // install files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
-            self.install_package_files(&fs_dir, &symlink_dir, appbin_flag)?;
+            self.new_package(&fs_dir, &symlink_dir, appbin_flag).unwrap();
             // postinstall
-            self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir))?;
+            self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir)).unwrap();
         }
 
         // Save installed packages
-        self.installed_packages.extend(packages_to_install);
-        self.save_installed_packages()?;
+        self.installed_packages.extend(packages_to_install.clone());
+        self.save_installed_packages().unwrap();
+        self.record_history("install", packages_to_install.keys().cloned().collect(), vec![], command_line)?;
+        println!("Attention: Install success:{}", packages_to_install.keys().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())
     }

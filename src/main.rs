@@ -11,6 +11,7 @@ mod ipc;
 mod store;
 mod paths;
 mod utils;
+mod history;
 use std::env;
 use crate::models::*;
 use crate::ipc::*;
@@ -120,10 +121,17 @@ fn main() -> Result<()> {
             Command::new("remove")
                 .about("Remove packages")
                 .arg(
+                    Arg::new("assume_yes")
+                    .short('y')
+                    .long("assume-yes")
+                    .help("Automatically answer yes to all prompts")
+                    .action(ArgAction::SetTrue)
+                )
+                .arg(
                     Arg::new("package-spec")
-                        .num_args(1..)
-                        .required(true)
-                        .help("Package specifications to remove")
+                    .num_args(1..)
+                    .required(true)
+                    .help("Package specifications to remove")
                 )
         )
         .subcommand(
@@ -150,8 +158,23 @@ fn main() -> Result<()> {
                 .arg(
                     Arg::new("glob-pattern")
                         .num_args(1..)
-                        .required(false)
+                        .required(true)
                         .help("Package glob pattern to list")
+                )
+        )
+        .subcommand(
+            Command::new("history")
+                .about("Show environment history")
+        )
+        .subcommand(
+            Command::new("rollback")
+                .about("Rollback environment to a specific history")
+                .arg(
+                    Arg::new("history-id")
+                        .num_args(1)
+                        .required(true)
+                        .help("History ID to rollback")
+                        .value_parser(clap::value_parser!(u64))
                 )
         )
         .subcommand(
@@ -201,13 +224,17 @@ fn main() -> Result<()> {
     let mut package_manager: PackageManager = Default::default();
     package_manager.options = options;
 
+    // record raw command
+    let command_line = std::env::args().collect::<Vec<String>>().join(" ");
+
     // Handle subcommands
     if let Some(matches) = matches.subcommand_matches("install") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
             package_manager.options.install_suggests = matches.get_flag("install_suggests");
             package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
             package_manager.fork_on_suid()?;
-            package_manager.install_packages(package_specs)?;
+            let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
+            package_manager.install_packages(packages_vec.clone(), &command_line)?;
         }
     }
 
@@ -220,8 +247,10 @@ fn main() -> Result<()> {
 
     if let Some(matches) = matches.subcommand_matches("remove") {
         if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+            let assume_yes = matches.get_flag("assume_yes");
             package_manager.fork_on_suid()?;
-            package_manager.remove_packages(package_specs)?;
+            let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
+            package_manager.remove_packages(packages_vec.clone(), assume_yes, &command_line)?;
         }
     }
 
@@ -232,6 +261,16 @@ fn main() -> Result<()> {
             package_manager.options.list_available = matches.get_flag("list_available");
             privdrop_on_suid();
             package_manager.list_packages(package_specs)?;
+        }
+    }
+
+    if let Some(_matches) = matches.subcommand_matches("history") {
+        package_manager.print_history()?;
+    }
+
+    if let Some(matches) = matches.subcommand_matches("rollback") {
+        if let Some(rollback_id) = matches.get_one::<u64>("history-id") {
+            package_manager.rollback_history(*rollback_id, &command_line)?;
         }
     }
 

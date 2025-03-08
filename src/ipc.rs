@@ -6,11 +6,12 @@ use std::os::unix::fs::chown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use anyhow::Result;
+use nix::{self};
 use nix::unistd::{fork, setuid, Uid, ForkResult};
 use rand::Rng;
-use serde_json::{json, Value};
 use users::{get_current_uid, get_effective_uid};
+use anyhow::Result;
+use serde_json::{json, Value};
 use crate::models::*;
 
 // ======================================================================================
@@ -188,6 +189,7 @@ use crate::models::*;
 
 #[derive(Debug)]
 enum WorkerCommand {
+    Download(Vec<String>, String, usize, usize, Option<String>),
     Unpack(Vec<String>),
     GarbageCollect,
 }
@@ -204,13 +206,13 @@ impl PackageManager {
             let socket_path = create_random_socket_path();
 
             match unsafe { fork() } {
-                Ok(ForkResult::Parent { child: _, .. }) => {
+                Ok(ForkResult::Parent { child, .. }) => {
                     setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
                     self.has_worker_process = true;
+                    self.child_pid = Some(child); 
                 }
                 Ok(ForkResult::Child) => {
                     privilege_worker_main(&socket_path)?;
-                    std::process::exit(0);
                 }
                 Err(e) => panic!("Fork failed: {}", e),
             }
@@ -218,6 +220,19 @@ impl PackageManager {
             self.ipc_socket = socket_path.to_string_lossy().into_owned();
         }
         Ok(())
+    }
+}
+
+impl Drop for PackageManager {
+    fn drop(&mut self) {
+        // remove socket file 
+        if !self.ipc_socket.is_empty() {
+            let _ = std::fs::remove_file(&self.ipc_socket);
+        }
+        // kill work process
+        if let Some(pid) = self.child_pid {
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+        }
     }
 }
 
@@ -242,19 +257,30 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
     chown(socket_path, Some(get_current_uid()), None)?;
 
     for stream in listener.incoming() {
+        // The steam is automatically closed when it goes out of scope.
         match stream {
             Ok(mut stream) => handle_client(&mut stream)?,
             Err(e) => eprintln!("Connection error: {}", e),
         }
     }
-
-    fs::remove_file(socket_path)?;
     Ok(())
 }
 
 fn handle_client(stream: &mut UnixStream) -> Result<()> {
     let command = read_command(stream)?;
     match command {
+        WorkerCommand::Download(urls, output_dir, nr_parallel, max_retries, proxy) => {
+            let res = crate::download::download_urls(urls, &output_dir, nr_parallel, max_retries, proxy.as_deref())
+                .and_then(|_| send_response(
+                        stream,
+                        json!({"status": "success", "message": "Downloaded files"})
+                ))
+                .or_else(|e| send_response(
+                        stream,
+                        json!({"status": "error", "message": e.to_string()})
+                ));
+            res?;
+        }
         WorkerCommand::Unpack(files) => {
             let res = crate::store::unpack_packages(files)
                 .and_then(|_| send_response(
@@ -265,7 +291,6 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                         stream,
                         json!({"status": "error", "message": e.to_string()})
                 ));
-
             res?;
         }
         WorkerCommand::GarbageCollect => {
@@ -278,7 +303,6 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                         stream,
                         json!({"status": "error", "message": e.to_string()})
                 ));
-
             res?;
         }
     }
@@ -291,6 +315,18 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
 
     let value: Value = serde_json::from_str(&buf)?;
     match value["command"].as_str() {
+        Some("download") => Ok(WorkerCommand::Download(
+            value["params"]["urls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+            value["params"]["output_dir"].as_str().unwrap().to_string(),
+            value["params"]["nr_parallel"].as_u64().unwrap() as usize,
+            value["params"]["max_retries"].as_u64().unwrap() as usize,
+            value["params"]["proxy"].as_str().map(String::from),
+        )),
         Some("unpack") => Ok(WorkerCommand::Unpack(
             value["params"]["files"]
                 .as_array()
@@ -312,19 +348,47 @@ fn send_response(stream: &mut UnixStream, response: Value) -> Result<()> {
     Ok(())
 }
 
-// send side
+fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
+    let mut reader = io::BufReader::new(stream);
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
+    if response["status"] == "error" {
+        return Err(anyhow::anyhow!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
+    } else {
+        println!("ipc {} command completed successfully", command);
+    }
+    Ok(())
+}
 
+// send side
 impl PackageManager {
     fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
+        // Send command
         let stream: &UnixStream = self.get_ipc_stream()?;
         let mut writer = io::BufWriter::new(stream);
         serde_json::to_writer(&mut writer, &command)?;
         writer.write_all(b"\n")?;
         writer.flush()?;
+
+        // Receive response
+        receive_response(stream, command["command"].as_str().unwrap())?;
+
         Ok(())
     }
 
     pub fn get_ipc_stream(&mut self) -> Result<&UnixStream> {
+        // The steam is automatically closed when it goes out of scope. see privilege_worker_main function
+        if let Some(ref mut check_stream) = self.ipc_stream {
+            // Send empty byte, Check connect
+            if let Err(e) = check_stream.write(&[]) {
+                if e.kind() == io::ErrorKind::BrokenPipe {
+                    self.ipc_stream = None;
+                    self.ipc_connected = false;
+                }
+            }
+        }
+
         if !self.ipc_connected {
             // Connect to the socket and store the stream in the Option
             self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket)?);
@@ -338,12 +402,31 @@ impl PackageManager {
     }
 
     // wrapper functions
+    pub fn download_urls(&mut self, urls: Vec<String>, output_dir: &str, nr_parallel: usize, max_retries: usize, proxy: Option<&str>) -> Result<()> {
+        if !self.has_worker_process {
+            crate::download::download_urls(urls, output_dir, nr_parallel, max_retries, proxy)?;
+        } else {
+            self.send_command(
+                json!({
+                    "command": "download",
+                    "params": {
+                        "urls": urls,
+                        "output_dir": output_dir,
+                        "nr_parallel": nr_parallel,
+                        "max_retries": max_retries,
+                        "proxy": proxy
+                    }
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
 
     pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;
         } else {
-            println!("Unpacking packages: {:?}", files);
             self.send_command(
                 json!({
                     "command": "unpack",

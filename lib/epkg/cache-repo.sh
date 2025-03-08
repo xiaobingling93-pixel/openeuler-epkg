@@ -34,25 +34,8 @@ cache_repo_index()
 		$epkg_helper curl -# -o ${local_cache_path}/repodata/pkg-info.zst.tmp $repo_url/repodata/pkg-info.zst --retry 5 && \
 		$epkg_helper mv ${local_cache_path}/repodata/pkg-info.zst.tmp ${local_cache_path}/repodata/pkg-info.zst
 
-		# XXX: temp workaround when no index.json at server side
-		cat > ${local_cache_path}/repodata/index.json <<-EOF
-		{
-		  "store-paths": [
-		    {
-		      "filename": "store-paths.zst"
-		    }
-		  ],
-		  "pkg-info": [
-		    {
-		      "filename": "pkg-info.zst"
-		    }
-		  ],
-		  "pkg-files": [
-		  ]
-		}
-		EOF
-		# $epkg_helper curl -# -o ${local_cache_path}/repodata/index.json.tmp $repo_url/repodata/index.json --retry 5 &&\
-		# $epkg_helper mv ${local_cache_path}/repodata/index.json.tmp ${local_cache_path}/repodata/index.json
+		$epkg_helper curl -# -o ${local_cache_path}/repodata/index.json.tmp $repo_url/repodata/index.json --retry 5 &&\
+		$epkg_helper mv ${local_cache_path}/repodata/index.json.tmp ${local_cache_path}/repodata/index.json
 	}
 
 	[[ -f ${local_cache_path}/repodata/store-paths.zst ]] && \
@@ -60,9 +43,7 @@ cache_repo_index()
 	[[ -f ${local_cache_path}/repodata/index.json ]] || {
 		echo "Failed to sync metadata for repo:"
 		echo "	${repo_url}"
-
-		rm -rf ${local_cache_path}
-
+		$epkg_helper rm -rf ${local_cache_path}
 		return
 	}
 

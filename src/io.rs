@@ -1,13 +1,13 @@
-use std::path::Path;
-use std::fs;
-use std::env;
 use glob;
 use serde_json;
 use serde_yaml;
+use std::fs;
+use std::env;
+use std::path::Path;
 use dirs::home_dir;
 use anyhow::{Context, Result, bail};
-use crate::models::*;
 use crate::paths;
+use crate::models::*;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -145,11 +145,8 @@ impl PackageManager {
 
     pub fn load_installed_packages(&mut self) -> Result<()> {
 
-        let file_path: String = format!("{}/.epkg/envs/{}/profile-current/installed-packages.json",
-            env::var("HOME")?,
-            self.options.env,
-        );
-
+        let file_path = format!("{}/{}/profile-current/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env,);
+        
         let contents = fs::read_to_string(&file_path)
             .with_context(|| format!("Failed to read file: {}", file_path))?;
 
@@ -183,4 +180,5 @@ impl PackageManager {
 
         Ok(())
     }
+
 }

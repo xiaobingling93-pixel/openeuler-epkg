@@ -67,6 +67,21 @@ __epkg_append_path() {
 	echo $epkg_appbin_path$SYSTEM_ORIGIN_PATH
 }
 
+__epkg_check_activate_register() {
+	local epkg_registered_envs_dir=$HOME/.epkg/config/registered-envs
+	
+	if [[ -z "$EPKG_ACTIVE_ENV" ]]; then
+		# Check if no registered envs exist
+		if [[ ! -d $epkg_registered_envs_dir || -z "$(ls -A $epkg_registered_envs_dir)" ]]; then
+			echo "No environment activated|registered, please activate|register environment first."
+			return 1
+		fi
+		echo "No environment activated, main environment will be used."
+	fi
+	
+	return 0
+}
+
 # change PATH in bashrc
 export PATH=$(__epkg_append_path)
 
@@ -106,66 +121,68 @@ epkg() {
 			case "$sub_cmd" in
 				create)
 					$epkg_sh "$@" || return
-					# update PATH
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
 					return
-					;;
-				remove)
+					;;	
+				remove)	
 					$epkg_sh "$@" || return
-					# update PATH
-					if [[ "$env" == "$EPKG_ACTIVE_ENV" ]]; then
-						unset EPKG_ACTIVE_ENV
-					fi
+					[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
-					;;
+					;;	
 				activate)
-					if [ -z "$env" ]; then
-						echo "env_name cannot be empty!"
-						return
-					elif [[ "$env" == "common" ]]; then
-						echo "$env cannot be activated!"
-						return
-					elif [ ! -d "$HOME/.epkg/envs/$env" ]; then
-						echo "$env not exist!"
+					# Check Parameters $#==3 or ($#==4 and $4==--pure)
+					if ! { [ $# -eq 3 ] || [ $# -eq 4 -a "$4" = "--pure" ]; }; then
+						echo "Usage: epkg env activate <env_name> [--pure]"
 						return
 					fi
+	
+					[[ -z "$env" ]] && { echo "env_name cannot be empty!"; return; }
+					[[ "$env" == "common" ]] && { echo "$env cannot be activated!"; return; }
+					[[ ! -d "$HOME/.epkg/envs/$env" ]] && { echo "$env not exist!"; return; }
 					# --pure
 					local opt_pure=$4
-					# update PATH
-					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
+					echo "Environment '$env' activated${4:+ "$opt_pure"}."
 					__epkg_add_appbin_path
 					return
-					;;
+					;;	
 				deactivate)
-					# update PATH
+					[ $# -ne 2 ] && { echo "Usage: epkg env deactivate"; return; }
+					[ -z "$EPKG_ACTIVE_ENV" ] && { echo "No environment activated."; return; }
+					
 					echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
 					unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
 					;;
-				register)
+				register|unregister)
 					$epkg_sh "$@" || return
 					# update PATH
 					__epkg_add_appbin_path
 					return
 					;;
-				unregister)
-					$epkg_sh "$@" || return
-					# update PATH
-					__epkg_add_appbin_path
-					return					
+				history|rollback)
+					__epkg_check_activate_register || return
+					shift
+					$epkg_rust "$@"
+					return
 					;;
 			esac
 			;;
-		install)
-			echo "rust epkg install..."
-			$epkg_sh update
+		install|remove)
+			__epkg_check_activate_register || return
+			if [ "$cmd" == "install" ]; then
+				$epkg_sh update
+			fi
 			$epkg_rust "$@"
 			__rehash_path
+			return
+			;;
+		list)
+			$epkg_rust "$@"
 			return
 			;;
 	esac

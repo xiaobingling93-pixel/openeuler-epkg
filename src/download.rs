@@ -5,12 +5,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use dirs::home_dir;
 
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::bounded;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::{Agent, AgentBuilder};
+use crate::paths;
 use crate::models::*;
 
 // Main Features:
@@ -276,15 +276,9 @@ fn download_file(
 }
 
 impl PackageManager {
-
-    /// Download packages specified by their pkgline strings.
-    pub fn download_packages(&self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
-
-        let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        let output_dir = format!(
-            "{}/.cache/epkg/packages",
-            home.display()
-        );
+    // Download packages specified by their pkgline strings.
+    pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
+        let output_dir = paths::instance.epkg_pkg_cache_dir.display().to_string();
 
         // Step 1: Compose URLs for each pkgline
         let mut urls = Vec::new();
@@ -309,7 +303,7 @@ impl PackageManager {
         }
 
         // Step 2: Call the predefined download_urls function
-        download_urls(urls, &output_dir, 6, 6, None)?;
+        self.download_urls(urls, &output_dir, 6, 6, None)?;
         Ok(local_files)
     }
 }

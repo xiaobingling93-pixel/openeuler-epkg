@@ -14,7 +14,7 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
     let dir = Path::new(package_fs_dir);
     let mut paths = Vec::new();
 
-    for entry in fs::read_dir(dir)? {
+    for entry in fs::read_dir(dir).unwrap() {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;

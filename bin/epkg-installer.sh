@@ -179,9 +179,6 @@ epkg_unpack() {
     cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.yaml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.yaml
     echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
 
-    # unpack epkg static binary
-    cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
-
     # unpack epkg build
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         cp -a $EPKG_MANAGER_DIR/build  $OPT_EPKG
@@ -201,6 +198,14 @@ epkg_unpack() {
     else
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
+    fi
+
+    # unpack epkg static binary
+    cp $EPKG_CACHE/$EPKG_STATIC-$ARCH  $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
+    if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
+        chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
+    else
+        chmod 755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC
     fi
 
     # unpack elf loader
@@ -362,6 +367,7 @@ prepare_conf() {
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
     mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
     cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+    chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 }
 
 # step 0. dependency check

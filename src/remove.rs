@@ -1,16 +1,15 @@
 use std::fs;
 use std::path::Path;
 use std::collections::HashMap;
-use clap::parser::ValuesRef;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::paths;
+use crate::utils::*;
 use crate::models::*;
-use crate::utils::list_package_files;
 
 impl PackageManager {
 
-    pub fn remove_package_files(&self, fs_dir: &str, symlink_dir: &str) -> Result<()> {
+    pub fn del_package(&self, fs_dir: &str, symlink_dir: &str) -> Result<()> {
         let fs_files = list_package_files(&fs_dir)?;
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
@@ -40,8 +39,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn remove_packages(&mut self, package_specs: ValuesRef<String>) -> Result<()> {
-
+    pub fn remove_packages(&mut self, package_specs: Vec<String>, assume_yes: bool, command_line: &str) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
@@ -110,30 +108,34 @@ impl PackageManager {
             for package_name in &installed_to_remove {
                 println!("- {}", package_name);
             }
-            println!("Do you want to continue with uninstallation? (y/n):");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).expect("Failed to read input");
-            if input.trim().to_lowercase() != "y" {
-                println!("Aborted removal.");
-                return Ok(());
+            if !assume_yes {
+                println!("Do you want to continue with uninstallation? (y/n):");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).expect("Failed to read input");
+                if input.trim().to_lowercase() != "y" {
+                    println!("Aborted removal.");
+                    return Ok(());
+                }
             }
         } else {
             println!("No packages to remove.");
         }
 
-        // Step 6: Remove package in epkg_env_root/$cur_env/profile-current/ files
-        let symlink_dir = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
+        // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
+        let symlink_dir = self.get_current_profile()?;
         for pkgline in &installed_to_remove {
             // remove files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
-            self.remove_package_files(&fs_dir, &symlink_dir)?;
+            self.del_package(&fs_dir, &symlink_dir)?;
         }
 
-        // Step 7: Save the updated installed_packages
+        //  Step 7: Save installed packages
         for package_name in &installed_to_remove {
             self.installed_packages.remove(package_name);
         } 
         self.save_installed_packages()?;
+        self.record_history("remove", vec![], installed_to_remove.clone(), command_line)?;
+        println!("Attention: Remove success:{}", installed_to_remove.iter().map(|x| format!(" {}", x)).collect::<String>());
 
         Ok(())
     }

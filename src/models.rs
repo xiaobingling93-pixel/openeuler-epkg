@@ -112,6 +112,18 @@ pub struct PackageSpec {
 pub struct InstalledPackageInfo {
     pub install_time: u64,
     pub depend_depth: u8,
+    pub appbin_flag: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
+pub struct ProfileCommand {
+    pub timestamp: String,
+    pub action: String,
+    pub new_packages: Vec<String>,
+    pub del_packages: Vec<String>,
+    pub command_line: String,
 }
 
 // $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
@@ -184,4 +196,5 @@ pub struct PackageManager {
     pub ipc_socket: String,
     pub ipc_stream: Option<UnixStream>,
     pub ipc_connected: bool,
+    pub child_pid: Option<nix::unistd::Pid>,
 }

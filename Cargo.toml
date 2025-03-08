@@ -27,7 +27,7 @@ glob = "0.3.2"
 anyhow = "1.0"
 dirs = "5.0"
 indicatif = "0.17"
-nix = { version = "0.29", features = ["process", "user", "fs"] }
+nix = { version = "0.29", features = ["process", "user", "fs", "signal"] }
 rand = "0.8"
 users = "0.11"
 crossbeam-channel = "0.5"
@@ -35,6 +35,7 @@ rayon = "1.8"
 pathdiff = "0.2.3"
 lazy_static = "1.4"
 tree_magic = "0.2"
+chrono = "0.4"
 
 # https://docs.rs/crate/idna_adapter/latest
 # to make the idna crate not actually support IDNA, run cargo update -p idna_adapter --precise 1.0.0
