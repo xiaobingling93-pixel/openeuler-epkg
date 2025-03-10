@@ -7,15 +7,17 @@ __epkg_init() {
 	if rpm -q epkg >/dev/null 2>&1; then
 		ARCH=$(uname -m)
         echo "epkg package is rpm installed. exec external script."
-		
+
+		local epkg_helper=
+		__get_epkg_helper "install_mode" ""
 		# prepare_conf
-    	cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
-		mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
-		cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-		chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+    	$epkg_helper cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+		$epkg_helper mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
+		$epkg_helper cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+		$epkg_helper chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
 		# Create symlinks for installed packages
-		tar -zxf $EPKG_CACHE/epkg-rootfs-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+		$epkg_helper tar -zxf $EPKG_CACHE/epkg-rootfs-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
 		symlink_dir=$EPKG_COMMON_ROOT/profile-current
 		for pkg in $(ls $EPKG_STORE_ROOT); do
 			fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
@@ -34,9 +36,7 @@ __epkg_init() {
 	else
 		echo "epkg has not been initialized, epkg initialization is in progress ..."
 	fi
-	mkdir -p $EPKG_STORE_ROOT
-	mkdir -p $EPKG_PKG_CACHE_DIR
-	mkdir -p $EPKG_CHANNEL_CACHE_DIR
+	# mkdir $HOME/.epkg/registered-envs
 	mkdir -p $EPKG_CONFIG_DIR/registered-envs
 
 	__epkg_create_environment main     # main user environment
