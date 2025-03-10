@@ -21,7 +21,7 @@ __epkg_init() {
 		symlink_dir=$EPKG_COMMON_ROOT/profile-current
 		for pkg in $(ls $EPKG_STORE_ROOT); do
 			fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
-			$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg localinstall "$fs_dir" "$symlink_dir"
+			$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg install --local --fs "$fs_dir" --symlink "$symlink_dir"
 		done
     fi
 
