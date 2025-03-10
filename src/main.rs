@@ -256,11 +256,11 @@ fn main() -> Result<()> {
     // Handle subcommands
     if let Some(matches) = matches.subcommand_matches("install") {
         if matches.get_flag("local") { 
-            if let (Some(fs_dir), Some(symlink_dir)) = (matches.get_one::<String>("fs_dir"), matches.get_one::<String>("symlink_dir")) {
+            if let (Some(fs_dir), Some(symlink_dir)) = (matches.get_one::<String>("fs"), matches.get_one::<String>("symlink")) {
                 let appbin = matches.get_flag("appbin");
                 package_manager.new_package(&fs_dir.clone(), &symlink_dir.clone(), appbin)?;
             } else {
-                eprintln!("Error: --fs-dir and --symlink-dir are required when using --local");
+                eprintln!("Error: --fs and --symlink are required when using --local");
                 std::process::exit(1);
             }
         } else {
