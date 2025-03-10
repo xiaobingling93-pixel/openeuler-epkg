@@ -267,6 +267,8 @@ impl PackageManager {
 
         // create symlinks
         let symlink_dir = self.get_current_profile()?;
+        let mut appbin_count = 0;
+        let mut appbin_packages = Vec::new();
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             let mut pkg_name = String::new();
@@ -274,6 +276,10 @@ impl PackageManager {
             if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
                 appbin_flag = package_specs.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
                 pkg_name = spec.name.clone();
+                if appbin_flag {
+                    appbin_count += 1;
+                    appbin_packages.push(pkg_name.clone());
+                }
             }
             // install files
             let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
@@ -286,7 +292,11 @@ impl PackageManager {
         self.installed_packages.extend(packages_to_install.clone());
         self.save_installed_packages().unwrap();
         self.record_history("install", packages_to_install.keys().cloned().collect(), vec![], command_line)?;
-        println!("Attention: Install success:{}", packages_to_install.keys().map(|x| format!(" {}", x)).collect::<String>());
+        
+        println!("Installation successful - Total packages: {}, AppBin packages: {}", packages_to_install.len(), appbin_count);
+        if !appbin_packages.is_empty() {
+            println!("AppBin package list: {}", appbin_packages.join(", "));
+        }
 
         Ok(())
     }

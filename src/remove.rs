@@ -135,7 +135,7 @@ impl PackageManager {
         } 
         self.save_installed_packages()?;
         self.record_history("remove", vec![], installed_to_remove.clone(), command_line)?;
-        println!("Attention: Remove success:{}", installed_to_remove.iter().map(|x| format!(" {}", x)).collect::<String>());
+        println!("Remove successful - Total packages: {}", installed_to_remove.len());
 
         Ok(())
     }
