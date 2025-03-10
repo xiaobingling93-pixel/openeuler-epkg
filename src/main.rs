@@ -259,9 +259,6 @@ fn main() -> Result<()> {
             if let (Some(fs_dir), Some(symlink_dir)) = (matches.get_one::<String>("fs"), matches.get_one::<String>("symlink")) {
                 let appbin = matches.get_flag("appbin");
                 package_manager.new_package(&fs_dir.clone(), &symlink_dir.clone(), appbin)?;
-            } else {
-                eprintln!("Error: --fs and --symlink are required when using --local");
-                std::process::exit(1);
             }
         } else {
             if let Some(package_specs) = matches.get_many::<String>("package-spec") {
