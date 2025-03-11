@@ -167,8 +167,26 @@ impl PackageManager {
             .cloned()
             .collect();
 
-        println!("Rollback informaton:");
-        println!("New: {:?}, Del: {:?}", new_packages, del_packages);
+        // print rollback information
+        println!("{:-^100}", "  Rollback informaton  ");
+        println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", "action", "hash", "pkg", "version", "release", "dist");
+        println!("{:-<6}-+-{:-<32}-+-{:-<20}-+-{:-<10}-+-{:-<7}-+-{:-<11}", "", "", "", "", "", "");
+        for pkg in &del_packages {
+            let parts: Vec<&str> = pkg.split("__").collect();
+            if parts.len() >= 4 {
+                let dist = parts[3].split('.').next().unwrap_or("");
+                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", 
+                    "del", parts[0], parts[1], parts[2], dist, parts[3]);
+            }
+        }
+        for (pkg, _) in &new_packages {
+            let parts: Vec<&str> = pkg.split("__").collect();
+            if parts.len() >= 4 {
+                let dist = parts[3].split('.').next().unwrap_or("");
+                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", 
+                    "new", parts[0], parts[1], parts[2], dist, parts[3]);
+            }
+        }
 
         // Remove del_packages
         let symlink_dir = self.get_current_profile()?;

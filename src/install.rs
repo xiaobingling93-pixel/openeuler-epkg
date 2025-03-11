@@ -42,10 +42,7 @@ pub fn remove_duplicates(
 
     if !duplicates.is_empty() {
         if !warn.is_empty() {
-            eprintln!("{}", warn);
-            for package_name in &duplicates {
-                eprintln!("- {}", package_name);
-            }
+            eprintln!("{} ({} packages)", warn, duplicates.len());
         }
 
         // Remove duplicates from `b`
@@ -251,7 +248,7 @@ impl PackageManager {
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
         self.resolve_appbin_source(&mut packages_to_install);
         self.collect_recursive_depends(&mut packages_to_install)?;
-        remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: The following packages are already installed and will be skipped:");
+        remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: Some packages are already installed and will be skipped:");
         if packages_to_install.is_empty() {
             return Err(anyhow!("No packages to install"));
         }
