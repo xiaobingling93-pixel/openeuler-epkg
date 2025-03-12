@@ -57,7 +57,7 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
 
     if file_type.contains("ELF 64-bit LSB") {
         handle_elf(target_path, symlink_dir, fs_file)?;
-    } else if file_type.contains("ASCII text executable") {
+    } else if file_type.contains("ASCII text") {
         let target_path = symlink_dir.join(rfs_file);
         fs::copy(fs_file, &target_path)?;
     } else if file_type.contains("Perl script text executable") {
@@ -68,15 +68,31 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
         symlink(fs_file, &target_path)?;
     } else if file_type.contains("symbolic link") {
         if let Ok(link_target) = fs::read_link(fs_file) {
-            let ln_store_relative = if link_target.is_absolute() {
-                link_target.strip_prefix("/").unwrap().to_path_buf()
+            let target_path = symlink_dir.join(rfs_file);
+            if fs::symlink_metadata(&target_path).is_ok() {
+                fs::remove_file(&target_path).unwrap();
+            }
+
+            // Get new_link_target
+            // python3.11: 
+            //     /root/.epkg/store/2h652gawx5zjpazx83ep2jkcv2kkp0xm__python3__3.11.6__2.oe2403/fs/usr/bin/python3 -> python3.11
+            // ../../bin/pidof: 
+            //     /root/.epkg/store/dkaz2ks577dhyg3gz8n414xvq52x7e9g__procps-ng__4.0.4__5.oe2403/fs/usr/sbin/pidof -> /usr/bin/pidof
+            // ../../lib64/ld-linux-x86-64.so.2: 
+            //     /root/.epkg/store/3ajbdnc50knwxw39j3bgaw86nxs3kt0w__glibc-common__2.38__29.oe2403/fs/usr/bin/ld.so -> ../../lib64/ld-linux-x86-64.so.2
+            let new_link_target = if link_target.is_absolute() {
+                let tmp_fs_file = fs_file.to_str().and_then(|s| s.split("/fs").nth(1)).map(Path::new).ok_or_else(|| anyhow!("Invalid fs path format"))?;
+                let link_target_rel_path = pathdiff::diff_paths(&link_target, tmp_fs_file).unwrap();
+                link_target_rel_path
             } else {
                 link_target
             };
-            handle_symlink(&ln_store_relative, rfs_file, symlink_dir)?;
+            symlink(&new_link_target, &target_path).unwrap();
         } else {
             return Err(anyhow!("handle_exec failed handle symbolic link {:?}", fs_file));
         }
+    } else {
+        println!("Warning: unknown file_type: {:?}, fs_file: {:?}", file_type ,fs_file);
     }
 
     // Add app-bin path
@@ -96,21 +112,6 @@ pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: 
         }
         symlink(rfs_rel_path, appbin_target_path).unwrap();
     }
-
-    Ok(())
-}
-
-pub fn handle_symlink(ln_store_relative: &Path, rfs_file: &Path, symlink_dir: &Path) -> Result<()> {
-    // Get ln_fs_file relative path within the env directory, relative to rfs_file.
-    let joined_path = symlink_dir.join(rfs_file);
-    let ln_env_dirname = joined_path.parent().ok_or_else(|| anyhow::anyhow!("Failed to get parent directory"))?;
-    let ln_env_relative = pathdiff::diff_paths(symlink_dir.join(ln_store_relative), ln_env_dirname).ok_or_else(|| anyhow::anyhow!("Failed to compute relative path"))?;
-    // symlink
-    let target_symlink_path = symlink_dir.join(rfs_file);
-    if fs::symlink_metadata(&target_symlink_path).is_ok() {
-        fs::remove_file(&target_symlink_path).unwrap();
-    }
-    symlink(&ln_env_relative, &target_symlink_path).unwrap();
 
     Ok(())
 }
