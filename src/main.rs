@@ -103,8 +103,34 @@ fn main() -> Result<()> {
                 .arg(
                     Arg::new("package-spec")
                         .num_args(1..)
-                        .required(true)
+                        .required_unless_present("local")
                         .help("Package specifications to install")
+                )        
+                .arg(
+                    Arg::new("local")
+                    .long("local")
+                    .help("Install packages from local filesystem")
+                    .action(ArgAction::SetTrue)
+                )
+                .arg(
+                    Arg::new("fs")
+                    .long("fs")
+                    .help("Local filesystem directory to install packages")
+                    .num_args(1)
+                    .required(false)
+                )
+                .arg(
+                    Arg::new("symlink")
+                    .long("symlink") 
+                    .help("Local symlink directory to install packages")
+                    .num_args(1)
+                    .required(false)
+                )
+                .arg(
+                    Arg::new("appbin")
+                    .long("appbin")
+                    .help("Install appbin packages")
+                    .action(ArgAction::SetTrue)
                 )
         )
         .subcommand(
@@ -229,12 +255,19 @@ fn main() -> Result<()> {
 
     // Handle subcommands
     if let Some(matches) = matches.subcommand_matches("install") {
-        if let Some(package_specs) = matches.get_many::<String>("package-spec") {
-            package_manager.options.install_suggests = matches.get_flag("install_suggests");
-            package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
-            package_manager.fork_on_suid()?;
-            let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-            package_manager.install_packages(packages_vec.clone(), &command_line)?;
+        if matches.get_flag("local") { 
+            if let (Some(fs_dir), Some(symlink_dir)) = (matches.get_one::<String>("fs"), matches.get_one::<String>("symlink")) {
+                let appbin = matches.get_flag("appbin");
+                package_manager.new_package(&fs_dir.clone(), &symlink_dir.clone(), appbin)?;
+            }
+        } else {
+            if let Some(package_specs) = matches.get_many::<String>("package-spec") {
+                package_manager.options.install_suggests = matches.get_flag("install_suggests");
+                package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
+                package_manager.fork_on_suid()?;
+                let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
+                package_manager.install_packages(packages_vec.clone(), &command_line)?;
+            }
         }
     }
 

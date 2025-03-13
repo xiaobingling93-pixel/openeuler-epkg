@@ -9,14 +9,17 @@ __epkg_init() {
 		return 0
 	fi
 
+	# rpm install epkg, need exec external script
+	if rpm -q epkg >/dev/null 2>&1 && [ ! -f "$EPKG_COMMON_ROOT/profile-1/usr/bin/jq" ]; then
+		__rpm_global_install_init
+	fi
+
 	if [[ -d "$PUB_EPKG" && -d "$COMMON_PROFILE_LINK" ]]; then
 		echo "epkg had been initialized, $USER user initialization is in progress ..."
 	else
 		echo "epkg has not been initialized, epkg initialization is in progress ..."
 	fi
-	mkdir -p $EPKG_STORE_ROOT
-	mkdir -p $EPKG_PKG_CACHE_DIR
-	mkdir -p $EPKG_CHANNEL_CACHE_DIR
+	# mkdir $HOME/.epkg/registered-envs
 	mkdir -p $EPKG_CONFIG_DIR/registered-envs
 
 	__epkg_create_environment main     # main user environment
@@ -27,6 +30,30 @@ __epkg_init() {
 __check_epkg_user_init() {
 	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
 		return 1
+	fi
+}
+
+# rpm install init script: DevStation may no internet
+__rpm_global_install_init() {
+	if rpm -q epkg >/dev/null 2>&1; then
+		ARCH=$(uname -m)
+		echo "epkg package is rpm installed. exec external script."
+
+		local epkg_helper=
+		__get_epkg_helper "install_mode" ""
+		# prepare_conf
+		$epkg_helper cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
+		$epkg_helper mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
+		$epkg_helper cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+		$epkg_helper chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+
+		# Create symlinks for installed packages
+		$epkg_helper tar -zxf $EPKG_CACHE/epkg-rootfs-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+		symlink_dir=$EPKG_COMMON_ROOT/profile-current
+		for pkg in $(ls $EPKG_STORE_ROOT); do
+			fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
+			$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg install --local --fs "$fs_dir" --symlink "$symlink_dir"
+		done
 	fi
 }
 

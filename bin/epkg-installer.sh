@@ -165,6 +165,23 @@ epkg_download() {
 	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
     curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH.sha256 $EPKG_URL/$ELF_LOADER-$ARCH.sha256
     epkg_verify_checksum "$ELF_LOADER-$ARCH.sha256"
+
+	# download epkg_rootfs
+    echo "download epkg rootfs"
+    local curl_help=$(curl --help all)
+	if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
+		local curl_opts="--etag-save $EPKG_CACHE/rootfs-etag.tmp --etag-compare $EPKG_CACHE/rootfs-etag.txt"
+	else
+		local curl_opts=
+	fi
+	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
+    curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz.sha256 $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz.sha256
+    epkg_verify_checksum "$EPKG_ROOTFS-$ARCH.tar.gz.sha256"
+	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
+		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
+	else
+		rm -f $EPKG_CACHE/rootfs-etag.tmp
+	fi
 }
 
 epkg_unpack() {
@@ -211,6 +228,10 @@ epkg_unpack() {
     # unpack elf loader
 	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
     chmod a+x $ELFLOADER_EXEC
+
+    # unpack epkg_rootfs
+	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
+    /bin/chmod -R 755 $EPKG_STORE_ROOT
 }
 
 epkg_change_bashrc() {
@@ -248,126 +269,23 @@ epkg_install_common_env() {
     $EPKG_CACHE/$EPKG_STATIC-$ARCH --env 'common' install "${rootfs_packages[@]}"
 }
 
-prepare_epkg_rootfs() {
-	local curl_help=$(curl --help all)
-	if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
-		local curl_opts="--etag-save $EPKG_CACHE/rootfs-etag.tmp --etag-compare $EPKG_CACHE/rootfs-etag.txt"
-	else
-		local curl_opts=
-	fi
-
-	# download epkg_rootfs
-	echo "download epkg rootfs"
-	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
-    curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz.sha256 $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz.sha256
-    epkg_verify_checksum "$EPKG_ROOTFS-$ARCH.tar.gz.sha256"
-	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
-		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
-	else
-		rm -f $EPKG_CACHE/rootfs-etag.tmp
-	fi
-
-	# uncompress epkg_rootfs
-	echo "install epkg rootfs, it will take 3min, please wait patiently.."
-	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
-    /bin/chmod -R 755 $EPKG_STORE_ROOT
-	# create comm profile-1 symlink to store
-	create_rootfs_symlinks
-    echo "Environment common created."
-}
-
-create_rootfs_symlinks() {
-	uncompress_dir="$EPKG_STORE_ROOT"
-	symlink_dir="$EPKG_COMMON_ROOT/profile-1"
-	for pkg in $(ls $EPKG_STORE_ROOT);
-	do
-		local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
-		local fs_files=$(/bin/find $fs_dir \( -type f -o -type l \))
-		create_symlink_by_fs
-	done
-}
-
-create_symlink_by_fs() {
-
-	while IFS= read -r fs_file; do
-		rfs_file=${fs_file#$fs_dir}
-
-		$ROOTFS_LINK/bin/ls $fs_file &> /dev/null || continue
-
-		$ROOTFS_LINK/bin/mkdir -p "$symlink_dir/$($ROOTFS_LINK/bin/dirname "$rfs_file")"
-
-		if [ "${fs_file#*/bin/}" != "$fs_file" ]; then
-			handle_exec "$fs_file" && continue
-		fi
-
-		if [ "${fs_file#*/sbin/}" != "$fs_file" ]; then
-			handle_exec "$fs_file" && continue
-		fi
-
-		if [[ "${fs_file}" == *"/etc/"* ]]; then
-		    $ROOTFS_LINK/bin/cp -r $fs_file $symlink_dir/$rfs_file &> /dev/null
-			continue
-		fi
-
-		[ -e "$symlink_dir/$rfs_file" ] && continue
-
-		[[ "$rfs_file" =~  "/etc/yum.repos.d" ]] && continue
-
-        $ROOTFS_LINK/bin/ln -s "$fs_file" "$symlink_dir/$rfs_file"
-	done <<< "$fs_files"
-}
-
-handle_exec() {
-	local file_type=$($ROOTFS_LINK/bin/file $1)
-	if [[ "$file_type" =~ 'ELF 64-bit LSB shared object' ]]; then
-		handle_elf
-	elif [[ "$file_type" =~ 'ELF 64-bit LSB pie executable' ]]; then
-		handle_elf
-	elif [[ "$file_type" =~ 'ELF 64-bit LSB executable' ]]; then
-		handle_elf
-	elif [[ "$file_type" =~ 'ASCII text executable' ]]; then
-		$ROOTFS_LINK/bin/cp $fs_file $symlink_dir/$rfs_file
-    elif [[ "$file_type" =~ 'symbolic link' ]]; then
-		handle_symlink
-	fi
-}
-
-handle_symlink() {
-	local ln_fs_file=$($ROOTFS_LINK/bin/readlink -f  $fs_file)
-    if [ ! -e "$ln_fs_file" ]; then
-        return 1
-    fi
-
-	local ln_rfs=${ln_fs_file#$fs_dir}
-	ln -sf $symlink_dir/$ln_rfs $symlink_dir/$rfs_file
-}
-
-handle_elf() {
-	local id1="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
-	local id2="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}"
-
-	$ROOTFS_LINK/bin/cp $ELFLOADER_EXEC $symlink_dir/$rfs_file
-    replace_string "$symlink_dir/$rfs_file" "$id1" "$symlink_dir"
-    replace_string "$symlink_dir/$rfs_file" "$id2" "$fs_file"
-}
-
-replace_string() {
-	local binary_file="$1"
-	local long_id="$2"
-	local str="$3"
-
-	local position=$($ROOTFS_LINK/bin/grep -m1 -oba "$long_id" $binary_file | $ROOTFS_LINK/bin/cut -d ":" -f 1)
-	[ -n "$position" ] && {
-		$ROOTFS_LINK/bin/echo -en "$str\0" | $ROOTFS_LINK/bin/dd of=$binary_file bs=1 seek="$position" conv=notrunc status=none
-	}
-}
-
 prepare_conf() {
     # curl resolv.conf
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
     mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
     cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
     chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+}
+
+prepare_epkg_rootfs() {
+	# create comm profile-1 symlink to store
+    echo "install epkg rootfs, it will take 3min, please wait patiently.."
+    local symlink_dir="$EPKG_COMMON_ROOT/profile-1"
+    for pkg in $(ls $EPKG_STORE_ROOT); do
+        local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
+        $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg install --local --fs "$fs_dir" --symlink "$symlink_dir"
+    done
+    echo "Environment common created."
 }
 
 # step 0. dependency check

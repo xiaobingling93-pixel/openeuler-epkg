@@ -7,7 +7,7 @@ release: 7
 license: BSD-3-Clause and MIT
 homepage: https://redis.io
 sources:
-  '0': https://gitee.com/src-openeuler/redis/raw/master/redis-4.0.14.tar.gz
+  '0': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis-4.0.14.tar.gz
   '1': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis.logrotate
   '2': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis-sentinel.service
   '3': https://gitee.com/rkingkoyo/epkg_test/releases/download/redis-4.0.14/redis.service

@@ -54,7 +54,10 @@ pub fn get_file_type(file: &Path) -> Result<String> {
     let mime_type = tree_magic::from_u8(&buffer);
     match mime_type.as_str() {
         "application/x-executable" => Ok("ASCII text executable".to_string()),
+        "application/x-shellscript" => Ok("Bourne-Again shell script, ASCII text executable".to_string()),
+        "application/x-perl" => Ok("Perl script text executable".to_string()),
+        "text/x-python3" => Ok("Python script, ASCII text executable".to_string()),
         "text/x-perl" => Ok("Perl script text executable".to_string()),
-        _ => Ok("Unknown file type".to_string()),
+        _ => Ok(mime_type.to_string()),
     }
 }

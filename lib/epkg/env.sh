@@ -86,6 +86,16 @@ __epkg_create_environment() {
 	local subcmd=$2
 	local repo_path=$3
 
+	if [[  "$subcmd" == "--repo" ]];then
+		if [[ "$repo_path" == *"/"* ]];then
+			init_channel_repo $env ${1%/*} ${1#*/} || return 1
+		else
+			init_channel_repo $env $repo_path || return 1
+		fi
+	else
+		init_channel_repo $env openEuler-24.03-LTS || return 1
+	fi
+
 	if [[ "$env" == "common" ]]; then
 		echo "Environment $env cannot be create."
 		return 1
@@ -107,16 +117,6 @@ __epkg_create_environment() {
 	$epkg_helper ln -sfT "usr/lib64"   "lib64"
 	$epkg_helper ln -sfT "$curr_env_root/$env/profile-1" "$curr_env_root/$env/profile-current"
 	$epkg_helper cp /etc/resolv.conf $curr_env_root/$env/profile-current/etc/resolv.conf
-
-	if [[  "$subcmd" == "--repo" ]];then
-		if [[ "$repo_path" == *"/"* ]];then
-			init_channel_repo $env ${1%/*} ${1#*/}
-		else
-			init_channel_repo $env $repo_path
-		fi
-	else
-		init_channel_repo $env openEuler-24.03-LTS
-	fi
 
 	echo "Environment '$env' has been created."
 }
