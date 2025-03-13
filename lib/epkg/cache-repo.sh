@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/bash
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
@@ -48,8 +48,8 @@ cache_repo_index()
 	}
 
 	# cached medatata file should be decompressed
-	$epkg_helper zstd -d -q ${local_cache_path}/repodata/store-paths.zst
-	$epkg_helper tar --use-compress-program=zstd -xf ${local_cache_path}/repodata/pkg-info.zst -C ${local_cache_path}/
+	$epkg_helper $COMMON_PROFILE_LINK/bin/zstd -d -q ${local_cache_path}/repodata/store-paths.zst
+	$epkg_helper $COMMON_PROFILE_LINK/bin/tar --use-compress-program=zstd -xf ${local_cache_path}/repodata/pkg-info.zst -C ${local_cache_path}/
 
 	echo "Cache repodata succeed: $repo_name"
 }
@@ -97,7 +97,7 @@ cache_repo()
 	__get_epkg_helper "install_mode"
 
 	local old_path=$PATH
-	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
 	if [ -z "$CURRENT_PROFILE_DIR" ]; then
 		local channel_conf_dir=/etc/epkg
 	else
