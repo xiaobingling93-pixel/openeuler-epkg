@@ -66,35 +66,8 @@ else
 fi
 
 case "$cmd" in
-	"install")
-		installroot=""
-		package_arr=()
-		while [[ $# -gt 0 ]];do
-			case "$1" in
-				--installroot=*)
-					installroot="${1#*=}"
-					shift
-					;;
-				*)
-					package_arr+=("$1")
-					shift
-					;;
-			esac
-		done
-		if [ ${#package_arr[@]} -eq 0 ]; then
-			echo "No Packages specified." >&2
-			exit 1
-		fi
-		install_package
-		;;
 	"update")
 		cache_repo
-		;;
-	"upgrade")
-		upgrade_package "$@"
-		;;
-	"search")
-		search_package "$@"
 		;;
 	"show")
 		# show_package "$@"
@@ -155,12 +128,6 @@ case "$cmd" in
 
 				__epkg_unregister_environment "$@"
 				;;
-			"activate")
-				__epkg_activate_environment "$@"
-				;;
-			"deactivate")
-				__epkg_deactivate_environment "$@"
-				;;
 			*)
 				echo "Usage: epkg env [list|create|remove|register|unregister|activate|deactivate|history|rollback]"
 				;;
@@ -182,9 +149,6 @@ case "$cmd" in
 	"build")
 		run_build "$@"
 		;;
-	# "localinstall")
-	# 	local_install_package "$@"
-	# 	;;
 	*)
 		echo "Usage: epkg [install|remove|upgrade|search|list|init|env|create|remove|register|unregister|activate|deactivate|history|rollback|help]"
 		;;

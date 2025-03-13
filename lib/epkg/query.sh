@@ -52,23 +52,6 @@ find_pkg_metadata_json() {
     echo ""
 }
 
-get_sources() {
-    local pkg_name=$1
-    load_enabled_channel_conf
-    local channel_indexs=$(printf "%s\n" "${!channel_array[@]}" | sort -nr)
-    for channel_index in $channel_indexs; do
-        IFS=',' read -r name channel url gpgcheck gpgkey <<< "${channel_array[$channel_index]}"
-        local channel_url=$url
-        local pkg_info_path="$channel_url/pkg-info"
-        local pkg_metadata_file_path="$(find_pkg_metadata_json $pkg_name $pkg_info_path "")"
-        if [[ -f "$pkg_metadata_file_path" ]]; then
-            local pkg_source=$($COMMON_PROFILE_LINK/bin/jq -r '.source' "$pkg_metadata_file_path")
-            echo "$pkg_source"
-            return
-        fi
-    done
-}
-
 get_requires() {
     local pkg_name=$1
     local channel_url=$2
@@ -136,7 +119,6 @@ find_pkg_names() {
         fi
     done
 }
-
 
 # 精准查询
 accurate_query_requires() {

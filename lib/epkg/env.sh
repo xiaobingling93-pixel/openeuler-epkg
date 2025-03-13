@@ -70,17 +70,6 @@ __epkg_unregister_environment() {
 	echo "Environment '$env' has been unregistered from PATH."
 }
 
-__epkg_activate_environment() {
-	local env=$1
-	export EPKG_ACTIVE_ENV=env
-	echo "Environment '$env' activated."
-}
-
-__epkg_deactivate_environment() {
-	echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
-	export EPKG_ACTIVE_ENV=main
-}
-
 __epkg_create_environment() {
 	local env=$1
 	local subcmd=$2
