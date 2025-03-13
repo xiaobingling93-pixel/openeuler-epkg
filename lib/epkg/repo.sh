@@ -9,6 +9,7 @@ init_channel_repo()
 	local repo=$3
 
 	# channel.yaml
+	[[ -f $EPKG_CACHE/epkg-manager/channel/${channel}-channel.yaml ]] || echo "channel ${channel} not found" && return 1
 	local env_channel_yaml=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
 	mkdir -p $(dirname ${env_channel_yaml})
 	cp $EPKG_CACHE/epkg-manager/channel/${channel}-channel.yaml  $env_channel_yaml
@@ -56,6 +57,8 @@ init_channel_repo()
 				mv -f ${tmp_env_channel_json} ${env_channel_json}
 		}
 	done
+
+	return 0
 }
 
 init_repo_conf()
