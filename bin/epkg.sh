@@ -15,7 +15,6 @@ export PATH=$EPKG_COMMON_PROFILE/usr/bin:$PATH
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/paths.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/env.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/init.sh
-source $EPKG_COMMON_PROFILE/usr/lib/epkg/package.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/query.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/cache-repo.sh
