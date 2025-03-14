@@ -52,7 +52,7 @@ pub fn remove_duplicates(
     }
 }
 
-pub fn handle_exec(fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
+pub fn handle_exec(_fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
     let file_type = get_file_type(fs_file)?;
 
     if file_type.contains("ELF 64-bit LSB") {
