@@ -9,6 +9,18 @@ pub fn is_setuid() -> bool {
     true
 }
 
+// Get system architecture
+pub fn get_system_arch() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    return "x86_64";
+    
+    #[cfg(target_arch = "aarch64")]
+    return "aarch64";
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    return "unknown";
+}
+
 // List package/fs files
 pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
     let dir = Path::new(package_fs_dir);

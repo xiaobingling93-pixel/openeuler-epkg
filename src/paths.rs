@@ -14,6 +14,7 @@ pub struct EPKGPaths {
     pub epkg_store_root: PathBuf,
     pub epkg_pkg_cache_dir: PathBuf,
     pub epkg_channel_cache_dir: PathBuf,
+    pub epkg_mananger_cache_dir: PathBuf,
     pub common_profile_link: PathBuf,
     pub elfloader_exec: PathBuf,
     pub epkg_helper_exec: PathBuf,
@@ -44,6 +45,7 @@ impl EPKGPaths {
 
         let epkg_pkg_cache_dir = PathBuf::from(format!("{}/packages", epkg_cache.display()));
         let epkg_channel_cache_dir = PathBuf::from(format!("{}/channel", epkg_cache.display()));
+        let epkg_mananger_cache_dir = PathBuf::from(format!("{}/epkg-manager", epkg_cache.display()));
 
         let common_profile_link = PathBuf::from(format!("{}/profile-current", epkg_common_root.display()));
         let elfloader_exec = PathBuf::from(format!("{}/usr/bin/elf-loader", common_profile_link.display()));
@@ -60,6 +62,7 @@ impl EPKGPaths {
             epkg_store_root,
             epkg_pkg_cache_dir,
             epkg_channel_cache_dir,
+            epkg_mananger_cache_dir,
             common_profile_link,
             elfloader_exec,
             epkg_helper_exec,

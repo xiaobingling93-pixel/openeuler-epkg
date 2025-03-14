@@ -65,9 +65,6 @@ else
 fi
 
 case "$cmd" in
-	"update")
-		cache_repo
-		;;
 	"show")
 		# show_package "$@"
 		subcmd=$1

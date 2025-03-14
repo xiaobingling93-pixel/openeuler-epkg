@@ -174,9 +174,6 @@ epkg() {
 			;;
 		install|remove)
 			__epkg_check_activate_register || return
-			if [ "$cmd" == "install" ]; then
-				$epkg_sh update
-			fi
 			$epkg_rust "$@"
 			__rehash_path
 			return

@@ -1,10 +1,10 @@
 use std::fs;
-use std::io;
+use std::io::{self, BufReader, BufWriter};
 use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
 use tar::Archive;
 use nix::unistd::{chown, User};
-use zstd::stream::read::Decoder;
+use zstd::stream::Decoder;
 use users::get_effective_uid;
 use anyhow::Result;
 use walkdir::WalkDir;
@@ -17,7 +17,7 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
 
         // println!("untar {} {}", file, dir_str);
-        untar_zst(&file, &dir_str)?;
+        untar_zst(&file, &dir_str, true)?;
 
         set_dir_permissions_and_ownership(&dir_str).unwrap();
         // let hash = crate::hash::epkg_store_hash(&dir_str)?;
@@ -34,8 +34,8 @@ pub fn garbage_collect() -> Result<()> {
     Ok(())
 }
 
-fn untar_zst(file_path: &str, output_dir: &str) -> io::Result<()> {
-    if Path::new(output_dir).exists() {
+pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> io::Result<()> {
+    if package_flag && Path::new(output_dir).exists() {
         return Ok(());
     }
 
@@ -52,6 +52,20 @@ fn untar_zst(file_path: &str, output_dir: &str) -> io::Result<()> {
     // Unpack the archive into the output directory
     archive.unpack(output_dir)?;
 
+    Ok(())
+}
+
+pub fn unzst(input_path: &str, output_path: &str) -> io::Result<()> {
+    let input_file = fs::File::open(input_path)?;
+    let reader = BufReader::new(input_file);
+
+    fs::create_dir_all(Path::new(output_path).parent().unwrap())?;
+    let output_file = fs::File::create(output_path)?;
+    let mut writer = BufWriter::new(output_file);
+    
+    let mut decoder = Decoder::new(reader)?;
+    io::copy(&mut decoder, &mut writer)?;
+    
     Ok(())
 }
 

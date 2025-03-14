@@ -12,6 +12,7 @@ mod store;
 mod paths;
 mod utils;
 mod history;
+mod repo;
 use std::env;
 use crate::models::*;
 use crate::ipc::*;
@@ -84,6 +85,10 @@ fn main() -> Result<()> {
                 .long("ignore-missing")
                 .help("Ignore missing packages")
                 .action(ArgAction::SetTrue)
+        )
+        .subcommand(
+            Command::new("update")
+                .about("Update package metadata")
         )
         .subcommand(
             Command::new("install")
@@ -254,6 +259,11 @@ fn main() -> Result<()> {
     let command_line = std::env::args().collect::<Vec<String>>().join(" ");
 
     // Handle subcommands
+    if let Some(_matches) = matches.subcommand_matches("update") {
+        package_manager.fork_on_suid()?;
+        package_manager.cache_repo()?;
+    }
+
     if let Some(matches) = matches.subcommand_matches("install") {
         if matches.get_flag("local") { 
             if let (Some(fs_dir), Some(symlink_dir)) = (matches.get_one::<String>("fs"), matches.get_one::<String>("symlink")) {
@@ -265,6 +275,7 @@ fn main() -> Result<()> {
                 package_manager.options.install_suggests = matches.get_flag("install_suggests");
                 package_manager.options.no_install_recommends = matches.get_flag("no_install_recommends");
                 package_manager.fork_on_suid()?;
+                package_manager.cache_repo()?;
                 let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
                 package_manager.install_packages(packages_vec.clone(), &command_line)?;
             }
