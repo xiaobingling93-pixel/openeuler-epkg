@@ -178,7 +178,7 @@ epkg() {
 			__rehash_path
 			return
 			;;
-		list)
+		list|update)
 			$epkg_rust "$@"
 			return
 			;;
