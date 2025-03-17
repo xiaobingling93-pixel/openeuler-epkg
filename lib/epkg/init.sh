@@ -10,7 +10,7 @@ __epkg_init() {
 	fi
 
 	# rpm install epkg, need exec external script
-	if rpm -q epkg >/dev/null 2>&1 && [ ! -f "$EPKG_COMMON_ROOT/profile-1/usr/bin/jq" ]; then
+	if rpm -q epkg >/dev/null 2>&1 && [ ! -f "$EPKG_COMMON_ROOT/profile-current/etc/resolv.conf" ]; then
 		__rpm_global_install_init
 	fi
 
