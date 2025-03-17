@@ -16,7 +16,6 @@ source $EPKG_COMMON_PROFILE/usr/lib/epkg/paths.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/env.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/init.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
-source $EPKG_COMMON_PROFILE/usr/lib/epkg/query.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/repo.sh
 source $PROJECT_DIR/build/scripts/generic-build.sh
 
