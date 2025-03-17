@@ -64,25 +64,6 @@ else
 fi
 
 case "$cmd" in
-	"show")
-		# show_package "$@"
-		subcmd=$1
-		shift
-		case $subcmd in
-			"--requires")
-				query_requires "$@"
-				;;
-			"--files")
-				show_package_file_list "$@"
-				;;
-			"-f")
-				show_package_file_list "$@"
-				;;
-			*)
-				echo "Usage: epkg show [-f|files|requires|provides(wait...)|whatrequires(wait...)|wahtprovides(wait...)|]"
-				;;
-		esac
-		;;
 	"env")
 		subcmd=$1
 		shift
