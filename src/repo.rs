@@ -13,6 +13,9 @@ impl PackageManager {
         }
 
         let arch = get_system_arch();
+        if arch == "unknown" || arch == "riscv64" || arch == "loongarch64" {
+            return Err(anyhow!("Unsupported system architecture: {}", arch));
+        }
         let repos: Vec<_> = self.env_config.repos.keys().cloned().collect();
         for repo_name in repos {
             let repo_url = format!("{}/{}/{}/", self.env_config.channel.baseurl, &repo_name, arch);
