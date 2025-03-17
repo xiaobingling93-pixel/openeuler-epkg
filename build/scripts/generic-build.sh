@@ -15,21 +15,17 @@ BUILD_PGP_DIR=$BUILD_RESULT_DIR/info/pgp
 BUILD_EPKG_DIR=$BUILD_WORKSPACE_DIR/epkg
 
 dependency_check() {
-	# Check Python 
-	if ! command -v python3 &> /dev/null; then
-		echo "Python3 is not installed. Please install."
-		return 1
-	fi
+	# Check commands
+	for cmd in python3 patch jq tar stat sed curl; do
+		if ! command -v "$cmd" >/dev/null 2>&1; then
+			echo "Command '$cmd' not found, please install first"
+			return 1
+		fi
+	done
 
 	# Check PyYAML 
 	if ! pip show pyyaml &> /dev/null; then
 		echo "pyyaml is not installed. Please pip install."
-		return 1
-	fi
-
-	# Check patch 
-	if ! command -v patch &> /dev/null; then
-		echo "patch is not installed. Please yum install."
 		return 1
 	fi
 
