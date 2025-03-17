@@ -9,32 +9,27 @@ use users::get_effective_uid;
 use anyhow::Result;
 use walkdir::WalkDir;
 use crate::paths;
+use crate::models::*;
 
-pub fn unpack_packages(files: Vec<String>) -> Result<()> {
-    for file in files {
-        let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
-        let dir = paths::instance.epkg_store_root.join(pkgline);
-        let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
-
-        // println!("untar {} {}", file, dir_str);
-        untar_zst(&file, &dir_str, true)?;
-
-        set_dir_permissions_and_ownership(&dir_str).unwrap();
-        // let hash = crate::hash::epkg_store_hash(&dir_str)?;
-        // if hash != pkgline[..32] {
-        //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
-        // }
+impl PackageManager {
+    pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
+        for file in files {
+            let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
+            let dir = paths::instance.epkg_store_root.join(pkgline);
+            let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
+            
+            self.untar_zst(&file, &dir_str, true)?;
+            self.set_perm_and_owner(&dir_str).unwrap();
+            // let hash = crate::hash::epkg_store_hash(&dir_str)?;
+            // if hash != pkgline[..32] {
+            //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
+            // }
+        }
+        Ok(())
     }
-    Ok(())
 }
 
-pub fn garbage_collect() -> Result<()> {
-    // Actual garbage collection implementation would go here
-    println!("Performing garbage collection");
-    Ok(())
-}
-
-pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> io::Result<()> {
+pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Result<()> {
     if package_flag && Path::new(output_dir).exists() {
         return Ok(());
     }
@@ -55,7 +50,7 @@ pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> io::R
     Ok(())
 }
 
-pub fn unzst(input_path: &str, output_path: &str) -> io::Result<()> {
+pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
     let input_file = fs::File::open(input_path)?;
     let reader = BufReader::new(input_file);
 
@@ -69,7 +64,7 @@ pub fn unzst(input_path: &str, output_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn set_dir_permissions_and_ownership(dir_str: &str) -> Result<()> {
+pub fn set_perm_and_owner(dir_str: &str) -> Result<()> {
     // get uid | gid
     let current_uid = get_effective_uid();
     let user_account = User::from_uid(current_uid.into())?.ok_or(anyhow::anyhow!("当前用户未找到"))?;

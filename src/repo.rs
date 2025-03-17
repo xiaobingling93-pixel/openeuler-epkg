@@ -5,7 +5,6 @@ use anyhow::anyhow;
 use crate::utils::*;
 use crate::models::*;
 use crate::paths;
-use crate::store::*;
 
 impl PackageManager {
     pub fn cache_repo(&mut self) -> Result<()> {
@@ -36,9 +35,9 @@ impl PackageManager {
 
         // clean old metadata files and re-init metadata dir
         if local_cache_path.exists() {
-            fs::remove_dir_all(&local_cache_path)?;
+            fs::remove_dir_all(&local_cache_path).unwrap();
         }
-        fs::create_dir_all(local_cache_path.join("repodata"))?;
+        self.create_dir(&local_cache_path.join("repodata"))?;
 
         // sync repo from local & http
         let files = ["store-paths.zst", "pkg-info.zst", "index.json"];
@@ -60,8 +59,8 @@ impl PackageManager {
         }
 
         // cached medatata file should be decompressed
-        untar_zst(repodata_path.join("pkg-info.zst").to_str().unwrap(), local_cache_path.to_str().unwrap(), false)?;
-        unzst(repodata_path.join("store-paths.zst").to_str().unwrap(), repodata_path.join("store-paths").to_str().unwrap())?;
+        self.untar_zst(repodata_path.join("pkg-info.zst").to_str().unwrap(), local_cache_path.to_str().unwrap(), false)?;
+        self.unzst(repodata_path.join("store-paths.zst").to_str().unwrap(), repodata_path.join("store-paths").to_str().unwrap())?;
 
         println!("Cache repodata succeed: {}", repo_name);
         Ok(())

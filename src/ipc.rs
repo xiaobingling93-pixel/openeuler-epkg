@@ -190,8 +190,10 @@ use crate::models::*;
 #[derive(Debug)]
 enum WorkerCommand {
     Download(Vec<String>, String, usize, usize, Option<String>),
-    Unpack(Vec<String>),
-    GarbageCollect,
+    CreateDir(PathBuf),
+    UntarZst(String, String, bool),
+    Unzst(String, String),
+    PermAndOwner(String),
 }
 
 pub fn privdrop_on_suid() {
@@ -281,11 +283,12 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                 ));
             res?;
         }
-        WorkerCommand::Unpack(files) => {
-            let res = crate::store::unpack_packages(files)
+        WorkerCommand::CreateDir(path) => {
+            let res = fs::create_dir_all(&path)
+                .map_err(anyhow::Error::from)
                 .and_then(|_| send_response(
                         stream,
-                        json!({"status": "success", "message": "Unpacked files"})
+                        json!({"status": "success", "message": "Created directory"})
                 ))
                 .or_else(|e| send_response(
                         stream,
@@ -293,11 +296,35 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                 ));
             res?;
         }
-        WorkerCommand::GarbageCollect => {
-            let res = crate::store::garbage_collect()
+        WorkerCommand::UntarZst(file_path, output_dir, package_flag) => {
+            let res = crate::store::untar_zst(&file_path, &output_dir, package_flag)
                 .and_then(|_| send_response(
                         stream,
-                        json!({"status": "success", "message": "GC completed"})
+                        json!({"status": "success", "message": "Unpacked tar zst file"})
+                ))
+                .or_else(|e| send_response(
+                        stream,
+                        json!({"status": "error", "message": e.to_string()})
+                ));
+            res?;
+        }
+        WorkerCommand::Unzst(input_path, output_path) => {
+            let res = crate::store::unzst(&input_path, &output_path)
+                .and_then(|_| send_response(
+                        stream,
+                        json!({"status": "success", "message": "Unpacked zst file"})
+                ))
+                .or_else(|e| send_response(
+                        stream,
+                        json!({"status": "error", "message": e.to_string()})
+                ));
+            res?;
+        }
+        WorkerCommand::PermAndOwner(dir_str) => {
+            let res = crate::store::set_perm_and_owner(&dir_str)
+                .and_then(|_| send_response(
+                        stream,
+                        json!({"status": "success", "message": "Set permission and owner"})
                 ))
                 .or_else(|e| send_response(
                         stream,
@@ -327,15 +354,21 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
             value["params"]["max_retries"].as_u64().unwrap() as usize,
             value["params"]["proxy"].as_str().map(String::from),
         )),
-        Some("unpack") => Ok(WorkerCommand::Unpack(
-            value["params"]["files"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect(),
+        Some("create_dir") => Ok(WorkerCommand::CreateDir(
+            PathBuf::from(value["params"]["path"].as_str().unwrap()),
         )),
-        Some("gc") => Ok(WorkerCommand::GarbageCollect),
+        Some("untar_zst") => Ok(WorkerCommand::UntarZst(
+            value["params"]["file_path"].as_str().unwrap().to_string(),
+            value["params"]["output_dir"].as_str().unwrap().to_string(),
+            value["params"]["package_flag"].as_bool().unwrap(),
+        )),
+        Some("unzst") => Ok(WorkerCommand::Unzst(
+            value["params"]["input_path"].as_str().unwrap().to_string(),
+            value["params"]["output_path"].as_str().unwrap().to_string(),
+        )),
+        Some("set_perm_and_owner") => Ok(WorkerCommand::PermAndOwner(
+            value["params"]["dir_str"].as_str().unwrap().to_string()
+        )),
         _ => Err(anyhow::Error::new(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
     }
 }
@@ -355,17 +388,23 @@ fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
     let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
     if response["status"] == "error" {
         return Err(anyhow::anyhow!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
-    } else {
-        println!("ipc {} command completed successfully", command);
-    }
+    } 
+    // else {
+    //     println!("ipc {} command completed successfully", command);
+    // }
     Ok(())
 }
 
 // send side
 impl PackageManager {
     fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
+        // Get ipc stream
+        self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket)?);
+        let stream = self.ipc_stream
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("IPC stream not initialized"))?;
+
         // Send command
-        let stream: &UnixStream = self.get_ipc_stream()?;
         let mut writer = io::BufWriter::new(stream);
         serde_json::to_writer(&mut writer, &command)?;
         writer.write_all(b"\n")?;
@@ -375,30 +414,6 @@ impl PackageManager {
         receive_response(stream, command["command"].as_str().unwrap())?;
 
         Ok(())
-    }
-
-    pub fn get_ipc_stream(&mut self) -> Result<&UnixStream> {
-        // The steam is automatically closed when it goes out of scope. see privilege_worker_main function
-        if let Some(ref mut check_stream) = self.ipc_stream {
-            // Send empty byte, Check connect
-            if let Err(e) = check_stream.write(&[]) {
-                if e.kind() == io::ErrorKind::BrokenPipe {
-                    self.ipc_stream = None;
-                    self.ipc_connected = false;
-                }
-            }
-        }
-
-        if !self.ipc_connected {
-            // Connect to the socket and store the stream in the Option
-            self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket)?);
-            self.ipc_connected = true;
-        }
-
-        // Unwrap the Option to get the UnixStream
-        self.ipc_stream
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("IPC stream not initialized"))
     }
 
     // wrapper functions
@@ -422,29 +437,69 @@ impl PackageManager {
         Ok(())
     }
 
-
-    pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
+    pub fn create_dir(&mut self, path: &Path) -> Result<()> {
         if !self.has_worker_process {
-            crate::store::unpack_packages(files)?;
+            fs::create_dir_all(path)?;
         } else {
             self.send_command(
                 json!({
-                    "command": "unpack",
+                    "command": "create_dir", 
                     "params": {
-                        "files": files
+                        "path": path
                     }
-                }),
+                })
+            )?;
+        }
+        Ok(())
+    }
+    
+    pub fn untar_zst(&mut self, file_path: &str, output_dir: &str, package_flag: bool) -> Result<()> {
+        if !self.has_worker_process {
+            crate::store::untar_zst(file_path, output_dir, package_flag)?;
+        } else {
+            self.send_command(
+                json!({
+                    "command": "untar_zst",
+                    "params": {
+                        "file_path": file_path,
+                        "output_dir": output_dir,
+                        "package_flag": package_flag
+                    }
+                })
             )?;
         }
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn garbage_collect(&mut self) -> Result<()> {
+    pub fn unzst(&mut self, input_path: &str, output_path: &str) -> Result<()> {
         if !self.has_worker_process {
-            crate::store::garbage_collect()?;
+            crate::store::unzst(input_path, output_path)?;
         } else {
-            self.send_command(json!({"command": "gc"}))?;
+            self.send_command(
+                json!({
+                    "command": "unzst",
+                    "params": {
+                        "input_path": input_path,
+                        "output_path": output_path
+                    }
+                })
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn set_perm_and_owner(&mut self, dir_str: &str) -> Result<()> {
+        if !self.has_worker_process {
+            crate::store::set_perm_and_owner(dir_str)?;
+        } else {
+            self.send_command(
+                json!({
+                    "command": "set_perm_and_owner",
+                    "params": {
+                        "dir_str": dir_str
+                    }
+                })
+            )?;
         }
         Ok(())
     }
