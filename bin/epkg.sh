@@ -16,7 +16,6 @@ source $EPKG_COMMON_PROFILE/usr/lib/epkg/paths.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/env.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/init.sh
 source $EPKG_COMMON_PROFILE/usr/lib/epkg/epkg-rc.sh
-source $EPKG_COMMON_PROFILE/usr/lib/epkg/repo.sh
 source $PROJECT_DIR/build/scripts/generic-build.sh
 
 __get_epkg_help_info() {
@@ -105,19 +104,6 @@ case "$cmd" in
 				;;
 			*)
 				echo "Usage: epkg env [list|create|remove|register|unregister|activate|deactivate|history|rollback]"
-				;;
-		esac
-		;;
-
-	"repo")
-		subcmd=$1
-		shift
-		case $subcmd in
-			"list")
-				list_repos
-				;;
-			*)
-				echo "Usage: epkg repo [list]"
 				;;
 		esac
 		;;

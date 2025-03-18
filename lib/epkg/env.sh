@@ -70,6 +70,22 @@ __epkg_unregister_environment() {
 	echo "Environment '$env' has been unregistered from PATH."
 }
 
+__epkg_init_channel()
+{
+	local env=$1
+	local channel=$2
+	local repo=$3
+
+	# channel.yaml
+	local env_channel_yaml=${HOME}/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
+	mkdir -p $(dirname ${env_channel_yaml})
+	cp $EPKG_CACHE/epkg-manager/channel/${channel}-channel.yaml  $env_channel_yaml
+	# installed-packages.json
+	echo -e "{\n}" > $HOME/.epkg/envs/$env/profile-current/installed-packages.json
+
+	return 0
+}
+
 __epkg_create_environment() {
 	local env=$1
 	local subcmd=$2
@@ -103,12 +119,12 @@ __epkg_create_environment() {
 
 	if [[  "$subcmd" == "--repo" ]];then
 		if [[ "$repo_path" == *"/"* ]];then
-			init_channel_repo $env ${1%/*} ${1#*/} || return 1
+			__epkg_init_channel $env ${1%/*} ${1#*/} || return 1
 		else
-			init_channel_repo $env $repo_path || return 1
+			__epkg_init_channel $env $repo_path || return 1
 		fi
 	else
-		init_channel_repo $env openEuler-24.03-LTS || return 1
+		__epkg_init_channel $env openEuler-24.03-LTS || return 1
 	fi
 
 	echo "Environment '$env' has been created."

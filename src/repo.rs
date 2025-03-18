@@ -68,4 +68,37 @@ impl PackageManager {
         println!("Cache repodata succeed: {}", repo_name);
         Ok(())
     }
+
+    pub fn list_repos(&self) -> Result<()> {
+        let manager_channel_dir = paths::instance.epkg_mananger_cache_dir.join("channel");
+        if !manager_channel_dir.exists() {
+            return Ok(());
+        }
+    
+        println!("{}", "-".repeat(100));
+        println!("{:<20} | {:<15} | {}", "channel", "repo", "url");
+        println!("{}", "-".repeat(100));
+    
+        for entry in fs::read_dir(&manager_channel_dir)? {
+            let path = entry?.path();
+            if !path.is_file() || path.extension().unwrap_or_default() != "yaml" {
+                continue;
+            }
+    
+            let channel_config: EnvConfig = serde_yaml::from_str(
+                &fs::read_to_string(&path)?
+            )?;
+    
+            for repo_name in channel_config.repos.keys() {
+                println!("{:<20} | {:<15} | {}", 
+                    channel_config.channel.name,
+                    repo_name,
+                    channel_config.channel.baseurl
+                );
+            }
+        }
+    
+        println!("{}", "-".repeat(100));
+        Ok(())
+    }
 }

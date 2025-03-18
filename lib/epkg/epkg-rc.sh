@@ -182,6 +182,19 @@ epkg() {
 			$epkg_rust "$@"
 			return
 			;;
+		repo)
+			subcmd=$2
+			case $subcmd in
+				list)
+					$epkg_rust "$@"
+					return
+					;;
+				*)
+					echo "Usage: epkg repo [list]"
+					return
+					;;
+			esac
+			;;
 	esac
 
 	$epkg_sh "$@" || return

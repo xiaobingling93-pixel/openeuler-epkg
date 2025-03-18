@@ -209,6 +209,14 @@ fn main() -> Result<()> {
                 )
         )
         .subcommand(
+            Command::new("repo")
+            .about("Repository management")
+            .subcommand(
+                Command::new("list")
+                .about("List all available repositories")
+            )
+        )
+        .subcommand(
             Command::new("hash")
                 .about("Compute binary package hash")
                 .arg(
@@ -257,7 +265,7 @@ fn main() -> Result<()> {
 
     // record raw command
     let command_line = std::env::args().collect::<Vec<String>>().join(" ");
-
+    println!("command_line: {}", command_line);
     // Handle subcommands
     if let Some(_matches) = matches.subcommand_matches("update") {
         package_manager.fork_on_suid()?;
@@ -315,6 +323,13 @@ fn main() -> Result<()> {
     if let Some(matches) = matches.subcommand_matches("rollback") {
         if let Some(rollback_id) = matches.get_one::<u64>("history-id") {
             package_manager.rollback_history(*rollback_id, &command_line)?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("repo") {
+        if let Some(_matches) = matches.subcommand_matches("list") {
+            package_manager.fork_on_suid()?;
+            package_manager.list_repos()?;
         }
     }
 
