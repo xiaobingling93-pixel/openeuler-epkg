@@ -1,0 +1,6 @@
+channel:
+  name: "ubuntu-focal/"
+  baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/ubuntu-focal/"
+
+repos:
+  everything:
