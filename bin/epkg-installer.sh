@@ -165,23 +165,6 @@ epkg_download() {
 	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
     curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH.sha256 $EPKG_URL/$ELF_LOADER-$ARCH.sha256
     epkg_verify_checksum "$ELF_LOADER-$ARCH.sha256"
-
-	# download epkg_rootfs
-    echo "download epkg rootfs"
-    local curl_help=$(curl --help all)
-	if [ "${curl_help#*--etag-save}" != "$curl_help" ]; then
-		local curl_opts="--etag-save $EPKG_CACHE/rootfs-etag.tmp --etag-compare $EPKG_CACHE/rootfs-etag.txt"
-	else
-		local curl_opts=
-	fi
-	curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz --retry 5
-    curl $curl_opts -# -o $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz.sha256 $EPKG_URL/$EPKG_ROOTFS-$ARCH.tar.gz.sha256
-    epkg_verify_checksum "$EPKG_ROOTFS-$ARCH.tar.gz.sha256"
-	if [ -s $EPKG_CACHE/rootfs-etag.tmp ]; then
-		mv $EPKG_CACHE/rootfs-etag.tmp $EPKG_CACHE/rootfs-etag.txt
-	else
-		rm -f $EPKG_CACHE/rootfs-etag.tmp
-	fi
 }
 
 epkg_unpack() {
@@ -227,10 +210,6 @@ epkg_unpack() {
     # unpack elf loader
 	/bin/cp -f $EPKG_CACHE/$ELF_LOADER-$ARCH $ELFLOADER_EXEC
     chmod a+x $ELFLOADER_EXEC
-
-    # unpack epkg_rootfs
-	/bin/tar -zxf $EPKG_CACHE/$EPKG_ROOTFS-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
-    /bin/chmod -R 755 $EPKG_STORE_ROOT
 }
 
 epkg_change_bashrc() {
