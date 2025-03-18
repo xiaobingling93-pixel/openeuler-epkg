@@ -22,7 +22,6 @@ buildRequires:
 - gawk
 - systemd
 - logrotate
-- shadow-utils
 
 phase:
   prepare: |
