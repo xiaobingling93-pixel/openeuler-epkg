@@ -9,24 +9,21 @@ use users::get_effective_uid;
 use anyhow::Result;
 use walkdir::WalkDir;
 use crate::paths;
-use crate::models::*;
 
-impl PackageManager {
-    pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
-        for file in files {
-            let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
-            let dir = paths::instance.epkg_store_root.join(pkgline);
-            let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
-            
-            self.untar_zst(&file, &dir_str, true)?;
-            self.set_perm_and_owner(&dir_str).unwrap();
-            // let hash = crate::hash::epkg_store_hash(&dir_str)?;
-            // if hash != pkgline[..32] {
-            //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
-            // }
-        }
-        Ok(())
+pub fn unpack_packages(files: Vec<String>) -> Result<()> {
+    for file in files {
+        let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
+        let dir = paths::instance.epkg_store_root.join(pkgline);
+        let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
+        
+        untar_zst(&file, &dir_str, true)?;
+        set_perm_and_owner(&dir_str).unwrap();
+        // let hash = crate::hash::epkg_store_hash(&dir_str)?;
+        // if hash != pkgline[..32] {
+        //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
+        // }
     }
+    Ok(())
 }
 
 pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Result<()> {

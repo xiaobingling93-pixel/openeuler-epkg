@@ -329,7 +329,7 @@ fn main() -> Result<()> {
     if let Some(matches) = matches.subcommand_matches("repo") {
         if let Some(_matches) = matches.subcommand_matches("list") {
             package_manager.fork_on_suid()?;
-            package_manager.list_repos()?;
+            crate::repo::list_repos()?;
         }
     }
 

@@ -190,10 +190,8 @@ use crate::models::*;
 #[derive(Debug)]
 enum WorkerCommand {
     Download(Vec<String>, String, usize, usize, Option<String>),
-    CreateDir(PathBuf),
-    UntarZst(String, String, bool),
-    Unzst(String, String),
-    PermAndOwner(String),
+    Unpack(Vec<String>),
+    CacheRepo(String, String),
 }
 
 pub fn privdrop_on_suid() {
@@ -212,6 +210,17 @@ impl PackageManager {
                     setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
                     self.has_worker_process = true;
                     self.child_pid = Some(child); 
+
+                    // wait for worker to create socket
+                    for _ in 0..3 {
+                        if socket_path.exists() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    if !socket_path.exists() {
+                        return Err(anyhow::anyhow!("Socket file creation timeout"));
+                    }
                 }
                 Ok(ForkResult::Child) => {
                     privilege_worker_main(&socket_path)?;
@@ -227,13 +236,13 @@ impl PackageManager {
 
 impl Drop for PackageManager {
     fn drop(&mut self) {
+        // kill work process
+        if let Some(pid) = self.child_pid {
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);     
+        }
         // remove socket file 
         if !self.ipc_socket.is_empty() {
             let _ = std::fs::remove_file(&self.ipc_socket);
-        }
-        // kill work process
-        if let Some(pid) = self.child_pid {
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
         }
     }
 }
@@ -283,48 +292,23 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
                 ));
             res?;
         }
-        WorkerCommand::CreateDir(path) => {
-            let res = fs::create_dir_all(&path)
-                .map_err(anyhow::Error::from)
+        WorkerCommand::Unpack(files) => {
+            let res = crate::store::unpack_packages(files)
                 .and_then(|_| send_response(
-                        stream,
-                        json!({"status": "success", "message": "Created directory"})
+                    stream,
+                    json!({"status": "success", "message": "Unpacked files"})
                 ))
                 .or_else(|e| send_response(
-                        stream,
-                        json!({"status": "error", "message": e.to_string()})
+                    stream,
+                    json!({"status": "error", "message": e.to_string()})
                 ));
             res?;
         }
-        WorkerCommand::UntarZst(file_path, output_dir, package_flag) => {
-            let res = crate::store::untar_zst(&file_path, &output_dir, package_flag)
+        WorkerCommand::CacheRepo(repo_name, repo_url) => {
+            let res = crate::repo::cache_repo_name(&repo_name, &repo_url)
                 .and_then(|_| send_response(
                         stream,
-                        json!({"status": "success", "message": "Unpacked tar zst file"})
-                ))
-                .or_else(|e| send_response(
-                        stream,
-                        json!({"status": "error", "message": e.to_string()})
-                ));
-            res?;
-        }
-        WorkerCommand::Unzst(input_path, output_path) => {
-            let res = crate::store::unzst(&input_path, &output_path)
-                .and_then(|_| send_response(
-                        stream,
-                        json!({"status": "success", "message": "Unpacked zst file"})
-                ))
-                .or_else(|e| send_response(
-                        stream,
-                        json!({"status": "error", "message": e.to_string()})
-                ));
-            res?;
-        }
-        WorkerCommand::PermAndOwner(dir_str) => {
-            let res = crate::store::set_perm_and_owner(&dir_str)
-                .and_then(|_| send_response(
-                        stream,
-                        json!({"status": "success", "message": "Set permission and owner"})
+                        json!({"status": "success", "message": "Cached repo"})
                 ))
                 .or_else(|e| send_response(
                         stream,
@@ -354,20 +338,17 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
             value["params"]["max_retries"].as_u64().unwrap() as usize,
             value["params"]["proxy"].as_str().map(String::from),
         )),
-        Some("create_dir") => Ok(WorkerCommand::CreateDir(
-            PathBuf::from(value["params"]["path"].as_str().unwrap()),
+        Some("unpack") => Ok(WorkerCommand::Unpack(
+            value["params"]["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
         )),
-        Some("untar_zst") => Ok(WorkerCommand::UntarZst(
-            value["params"]["file_path"].as_str().unwrap().to_string(),
-            value["params"]["output_dir"].as_str().unwrap().to_string(),
-            value["params"]["package_flag"].as_bool().unwrap(),
-        )),
-        Some("unzst") => Ok(WorkerCommand::Unzst(
-            value["params"]["input_path"].as_str().unwrap().to_string(),
-            value["params"]["output_path"].as_str().unwrap().to_string(),
-        )),
-        Some("set_perm_and_owner") => Ok(WorkerCommand::PermAndOwner(
-            value["params"]["dir_str"].as_str().unwrap().to_string()
+        Some("cache_repo") => Ok(WorkerCommand::CacheRepo(
+            value["params"]["repo_name"].as_str().unwrap().to_string(),
+            value["params"]["repo_url"].as_str().unwrap().to_string(),
         )),
         _ => Err(anyhow::Error::new(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
     }
@@ -399,19 +380,19 @@ fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
 impl PackageManager {
     fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
         // Get ipc stream
-        self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket)?);
+        self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket).unwrap());
         let stream = self.ipc_stream
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("IPC stream not initialized"))?;
+            .ok_or_else(|| anyhow::anyhow!("IPC stream not initialized")).unwrap();
 
         // Send command
         let mut writer = io::BufWriter::new(stream);
-        serde_json::to_writer(&mut writer, &command)?;
-        writer.write_all(b"\n")?;
-        writer.flush()?;
+        serde_json::to_writer(&mut writer, &command).unwrap();
+        writer.write_all(b"\n").unwrap();
+        writer.flush().unwrap();
 
         // Receive response
-        receive_response(stream, command["command"].as_str().unwrap())?;
+        receive_response(stream, command["command"].as_str().unwrap()).unwrap();
 
         Ok(())
     }
@@ -432,74 +413,40 @@ impl PackageManager {
                         "proxy": proxy
                     }
                 }),
-            )?;
+            ).unwrap();
         }
         Ok(())
     }
 
-    pub fn create_dir(&mut self, path: &Path) -> Result<()> {
+    pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
         if !self.has_worker_process {
-            fs::create_dir_all(path)?;
+            crate::store::unpack_packages(files)?;
         } else {
             self.send_command(
                 json!({
-                    "command": "create_dir", 
+                    "command": "unpack",
                     "params": {
-                        "path": path
+                        "files": files
                     }
                 })
-            )?;
-        }
-        Ok(())
-    }
-    
-    pub fn untar_zst(&mut self, file_path: &str, output_dir: &str, package_flag: bool) -> Result<()> {
-        if !self.has_worker_process {
-            crate::store::untar_zst(file_path, output_dir, package_flag)?;
-        } else {
-            self.send_command(
-                json!({
-                    "command": "untar_zst",
-                    "params": {
-                        "file_path": file_path,
-                        "output_dir": output_dir,
-                        "package_flag": package_flag
-                    }
-                })
-            )?;
+            ).unwrap();
         }
         Ok(())
     }
 
-    pub fn unzst(&mut self, input_path: &str, output_path: &str) -> Result<()> {
+    pub fn cache_repo_name(&mut self, repo_name: &str, repo_url: &str) -> Result<()> {
         if !self.has_worker_process {
-            crate::store::unzst(input_path, output_path)?;
+            crate::repo::cache_repo_name(repo_name, repo_url)?;
         } else {
             self.send_command(
                 json!({
-                    "command": "unzst",
+                    "command": "cache_repo", 
                     "params": {
-                        "input_path": input_path,
-                        "output_path": output_path
+                        "repo_name": repo_name,
+                        "repo_url": repo_url
                     }
                 })
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn set_perm_and_owner(&mut self, dir_str: &str) -> Result<()> {
-        if !self.has_worker_process {
-            crate::store::set_perm_and_owner(dir_str)?;
-        } else {
-            self.send_command(
-                json!({
-                    "command": "set_perm_and_owner",
-                    "params": {
-                        "dir_str": dir_str
-                    }
-                })
-            )?;
+            ).unwrap();
         }
         Ok(())
     }
