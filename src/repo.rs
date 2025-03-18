@@ -40,7 +40,7 @@ impl PackageManager {
         if local_cache_path.exists() {
             fs::remove_dir_all(&local_cache_path).unwrap();
         }
-        self.create_dir(&local_cache_path.join("repodata"))?;
+        self.create_dir(&local_cache_path.join("repodata")).unwrap();
 
         // sync repo from local & http
         let files = ["store-paths.zst", "pkg-info.zst", "index.json"];

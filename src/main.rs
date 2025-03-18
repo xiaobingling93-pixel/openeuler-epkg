@@ -265,7 +265,7 @@ fn main() -> Result<()> {
 
     // record raw command
     let command_line = std::env::args().collect::<Vec<String>>().join(" ");
-    println!("command_line: {}", command_line);
+
     // Handle subcommands
     if let Some(_matches) = matches.subcommand_matches("update") {
         package_manager.fork_on_suid()?;
