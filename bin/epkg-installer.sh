@@ -252,39 +252,12 @@ EOF
     fi
 }
 
-epkg_install_common_env() {
-    local rootfs_packages=(
-        coreutils tar gzip zstd jq curl grep sed gawk setup which file bash libcap file-libs fuse libpng
-        libstdc++ libtasn1 libtirpc libevent libxcrypt fuse-common cracklib ca-certificates
-        chkconfig ncurses-base pcre2 libffi libsepol basesystem newt ncurses-libs publicsuffix-list
-        krb5-libs glibc openEuler-gpg-keys libnghttp2 oniguruma pam gmp libunistring libidn2 readline
-        openEuler-release attr libselinux mpfr tzdata patchelf crypto-policies libverto audit-libs
-        libcurl libmount zlib p11-kit-trust cyrus-sasl-lib libcap-ng openssl-libs popt libpwquality
-        p11-kit ncurses bc libgcc e2fsprogs gdbm libblkid openEuler-repos libnsl2 openldap brotli keyutils-libs
-        libuuid filesystem findutils slang libpsl libacl libssh info libev libsigsegv
-    )
-
-    # XXX: download repodata first
-    $EPKG_CACHE/$EPKG_STATIC-$ARCH --env 'common' install "${rootfs_packages[@]}"
-}
-
 prepare_conf() {
     # curl resolv.conf
     cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
     mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
     cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
     chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-}
-
-prepare_epkg_rootfs() {
-	# create comm profile-1 symlink to store
-    echo "install epkg rootfs, it will take 3min, please wait patiently.."
-    local symlink_dir="$EPKG_COMMON_ROOT/profile-1"
-    for pkg in $(ls $EPKG_STORE_ROOT); do
-        local fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
-        $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg install --local --fs "$fs_dir" --symlink "$symlink_dir"
-    done
-    echo "Environment common created."
 }
 
 # step 0. dependency check
@@ -302,13 +275,6 @@ epkg_change_bashrc
 
 # step 3. common env init
 prepare_conf
-prepare_epkg_rootfs
-# Todo: add in furture - rootfs simpily install
-# if [ -f $EPKG_CACHE/$EPKG_STATIC-$ARCH ]; then
-#     epkg_install_common_env
-# else
-#     prepare_epkg_rootfs
-# fi
 
 # step 4. automic init
 $EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init

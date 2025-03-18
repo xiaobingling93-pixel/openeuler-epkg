@@ -46,14 +46,6 @@ __rpm_global_install_init() {
 		$epkg_helper mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
 		$epkg_helper cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 		$epkg_helper chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-
-		# Create symlinks for installed packages
-		$epkg_helper tar -zxf $EPKG_CACHE/epkg-rootfs-$ARCH.tar.gz --strip-components=1 -C $EPKG_STORE_ROOT &> /dev/null
-		symlink_dir=$EPKG_COMMON_ROOT/profile-current
-		for pkg in $(ls $EPKG_STORE_ROOT); do
-			fs_dir="$EPKG_STORE_ROOT/$pkg/fs"
-			$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg install --local --fs "$fs_dir" --symlink "$symlink_dir"
-		done
 	fi
 }
 
