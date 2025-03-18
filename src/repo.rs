@@ -90,7 +90,7 @@ impl PackageManager {
             )?;
     
             for repo_name in channel_config.repos.keys() {
-                println!("{:<20} | {:<15} | {}", 
+                println!("{:<30} | {:<15} | {}", 
                     channel_config.channel.name,
                     repo_name,
                     channel_config.channel.baseurl
