@@ -18,7 +18,6 @@ EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_STATIC=epkg
 EPKG_ROOTFS=epkg-rootfs
 EPKG_HELPER=epkg-helper
-EPKG_HASH=epkg-hash
 ELF_LOADER=elf-loader
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
@@ -146,12 +145,6 @@ epkg_download() {
     curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
     epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
 
-    # download epkg-hash
-    echo "download epkg hash"
-    curl -# -o $EPKG_CACHE/$EPKG_HASH-$ARCH $EPKG_URL/$EPKG_HASH-$ARCH
-    curl -# -o $EPKG_CACHE/$EPKG_HASH-$ARCH.sha256 $EPKG_URL/$EPKG_HASH-$ARCH.sha256
-    epkg_verify_checksum "$EPKG_HASH-$ARCH.sha256"
-
     # download epkg_helper in global mode
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
         echo "download epkg helper"
@@ -184,9 +177,6 @@ epkg_unpack() {
     else
         cp -a $EPKG_MANAGER_DIR/build  $HOME_EPKG
     fi
-
-    # unpack epkg hash
-    cp $EPKG_CACHE/$EPKG_HASH-$ARCH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HASH
 
     # unpack epkg_helper
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
