@@ -76,7 +76,7 @@ impl PackageManager {
         }
     
         println!("{}", "-".repeat(100));
-        println!("{:<20} | {:<15} | {}", "channel", "repo", "url");
+        println!("{:<30} | {:<15} | {}", "channel", "repo", "url");
         println!("{}", "-".repeat(100));
     
         for entry in fs::read_dir(&manager_channel_dir)? {
