@@ -9,17 +9,6 @@ pub fn is_setuid() -> bool {
     true
 }
 
-// Get system architecture
-pub fn get_system_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        "loongarch64" => "loongarch64",
-        "riscv64" => "riscv64",
-        _ => "unknown"
-    }
-}
-
 // List package/fs files
 pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
     let dir = Path::new(package_fs_dir);

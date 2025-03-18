@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 use anyhow::Result;
 use anyhow::anyhow;
-use crate::utils::*;
 use crate::models::*;
 use crate::store::*;
 use crate::paths;
@@ -14,7 +13,7 @@ impl PackageManager {
             self.load_env_config().unwrap();
         }
 
-        let arch = get_system_arch();
+        let arch = std::env::consts::ARCH;
         if arch == "unknown" || arch == "riscv64" || arch == "loongarch64" {
             return Err(anyhow!("Unsupported system architecture: {}", arch));
         }
