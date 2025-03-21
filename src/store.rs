@@ -71,7 +71,7 @@ pub fn set_perm_and_owner(dir_str: &str) -> Result<()> {
     // chmod 755, chown USER:USER
     for entry in WalkDir::new(dir_str).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if !path.exists() {
+        if !path.exists() || path.is_symlink() {
             continue;
         }
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
