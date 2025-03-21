@@ -154,7 +154,7 @@ impl PackageManager {
             }
             "ca-certificates" => {
                 fs::copy(
-                    paths::instance.epkg_common_root.join("profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
+                    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
                     symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
                 )?;
             }
