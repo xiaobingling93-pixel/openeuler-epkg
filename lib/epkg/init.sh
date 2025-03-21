@@ -9,11 +9,6 @@ __epkg_init() {
 		return 0
 	fi
 
-	# rpm install epkg, need exec external script
-	if rpm -q epkg >/dev/null 2>&1 && [ ! -f "$EPKG_COMMON_ROOT/profile-current/etc/resolv.conf" ]; then
-		__rpm_global_install_init
-	fi
-
 	if [[ -d "$PUB_EPKG" && -d "$COMMON_PROFILE_LINK" ]]; then
 		echo "epkg had been initialized, $USER user initialization is in progress ..."
 	else
@@ -30,22 +25,6 @@ __epkg_init() {
 __check_epkg_user_init() {
 	if [ ! -d "$EPKG_ENVS_ROOT/main/" ]; then
 		return 1
-	fi
-}
-
-# rpm install init script: DevStation may no internet
-__rpm_global_install_init() {
-	if rpm -q epkg >/dev/null 2>&1; then
-		ARCH=$(uname -m)
-		echo "epkg package is rpm installed. exec external script."
-
-		local epkg_helper=
-		__get_epkg_helper "install_mode" ""
-		# prepare_conf
-		$epkg_helper cp /etc/resolv.conf $EPKG_COMMON_ROOT/profile-current/etc/resolv.conf
-		$epkg_helper mkdir -p $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/
-		$epkg_helper cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-		$epkg_helper chmod 755 $EPKG_COMMON_ROOT/profile-current/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 	fi
 }
 

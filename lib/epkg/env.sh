@@ -2,18 +2,6 @@
 # SPDX-License-Identifier: MulanPSL-2.0+
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
-__get_epkg_helper() {
-	local mode=$1
-	local curr_env_path=$2
-	local global_comm_path=$PUB_EPKG/envs/common/
-
-	if [[ "$mode" == "env_mode" && "$curr_env_path" =~ "$global_comm_path" ]]; then
-		epkg_helper=$EPKG_HELPER_EXEC
-	elif [[ "$mode" == "install_mode" && -d "$global_comm_path" ]]; then
-		epkg_helper=$EPKG_HELPER_EXEC
-	fi
-}
-
 __get_curr_env_root() {
 	local curr_env=$1
 	if [[ "$curr_env" == "common" ]]; then

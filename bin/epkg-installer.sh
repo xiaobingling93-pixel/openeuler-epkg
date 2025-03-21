@@ -17,7 +17,6 @@ EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSI
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_STATIC=epkg
 EPKG_ROOTFS=epkg-rootfs
-EPKG_HELPER=epkg-helper
 ELF_LOADER=elf-loader
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
@@ -145,14 +144,6 @@ epkg_download() {
     curl -# -o $EPKG_CACHE/$EPKG_STATIC-$ARCH.sha256 $EPKG_URL/$EPKG_STATIC-$ARCH.sha256
     epkg_verify_checksum "$EPKG_STATIC-$ARCH.sha256"
 
-    # download epkg_helper in global mode
-    if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        echo "download epkg helper"
-        curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH $EPKG_URL/$EPKG_HELPER-$ARCH
-        curl -# -o $EPKG_CACHE/$EPKG_HELPER-$ARCH.sha256 $EPKG_URL/$EPKG_HELPER-$ARCH.sha256
-        epkg_verify_checksum "$EPKG_HELPER-$ARCH.sha256"
-    fi
-
     # download epkg elf loader
     echo "download epkg elf loader"
 	curl -# -o $EPKG_CACHE/$ELF_LOADER-$ARCH $EPKG_URL/$ELF_LOADER-$ARCH --retry 5
@@ -178,12 +169,10 @@ epkg_unpack() {
         cp -a $EPKG_MANAGER_DIR/build  $HOME_EPKG
     fi
 
-    # unpack epkg_helper
+    # chmod
     if [[ "$EPKG_INSTALL_MODE" == "global" ]]; then
-        /bin/cp -rf $EPKG_CACHE/$EPKG_HELPER-$ARCH $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
         chown -R $USER:$USER $OPT_EPKG
         chmod -R 755 $OPT_EPKG
-        chmod 4755 $EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_HELPER
     else
         chown -R $USER:$USER $HOME_EPKG
         chmod -R 755 $HOME_EPKG
