@@ -2,6 +2,7 @@ mod models;
 mod io;
 mod download;
 mod depends;
+mod parse_requires;
 mod install;
 mod upgrade;
 mod remove;
