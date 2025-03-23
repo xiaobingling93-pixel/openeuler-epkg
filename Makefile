@@ -13,8 +13,13 @@ CHECKSUM_FILE := $(OUTPUT_DIR)/checksums.sha256
 OS_ID := $(shell grep -E '^ID=' /etc/os-release | cut -d= -f2)
 OS_VERSION := $(shell grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
 
+# Default target (development build for local use)
+build:
+	@cargo build
+	@echo "Development build completed. Binary is in target/debug/$(BINARY_NAME)"
+
 # Install dependencies and set up Rust toolchain
-install:
+install-depends:
 	@echo "Detected OS: $(OS_ID) $(OS_VERSION)"
 	@echo "Installing dependencies..."
 ifeq ($(OS_ID),$(filter $(OS_ID),debian ubuntu))
@@ -36,7 +41,7 @@ endif
 	@echo "Installation complete!"
 
 # Build release binaries for all architectures
-build: build-x86_64 build-aarch64 build-riscv64 build-loongarch64
+build-all: build-x86_64 build-aarch64 build-riscv64 build-loongarch64
 
 # Build x86_64 binary
 build-x86_64:
@@ -101,4 +106,4 @@ clean:
 	rm -rf $(OUTPUT_DIR)
 	@echo "Cleaned build artifacts and output directory"
 
-.PHONY: install build build-x86_64 build-aarch64 build-riscv64 build-loongarch64 checksums deploy clean
+.PHONY: install-depends build build-all build-x86_64 build-aarch64 build-riscv64 build-loongarch64 checksums deploy clean
