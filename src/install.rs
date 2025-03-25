@@ -76,13 +76,15 @@ pub fn handle_exec(_fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir:
             // Get new_link_target
             // python3.11: 
             //     /root/.epkg/store/2h652gawx5zjpazx83ep2jkcv2kkp0xm__python3__3.11.6__2.oe2403/fs/usr/bin/python3 -> python3.11
-            // ../../bin/pidof: 
+            // ../bin/pidof: 
             //     /root/.epkg/store/dkaz2ks577dhyg3gz8n414xvq52x7e9g__procps-ng__4.0.4__5.oe2403/fs/usr/sbin/pidof -> /usr/bin/pidof
+            // ../libexec/qemu-kvm: 
+            //     /root/.epkg/store/pbaknz0skh99y3mmdwcs2xxhay5mzbgj__qemu__8.2.0__13.oe2403/fs/usr/bin/qemu-kvm -> /usr/libexec/qemu-kvm
             // ../../lib64/ld-linux-x86-64.so.2: 
             //     /root/.epkg/store/3ajbdnc50knwxw39j3bgaw86nxs3kt0w__glibc-common__2.38__29.oe2403/fs/usr/bin/ld.so -> ../../lib64/ld-linux-x86-64.so.2
             let new_link_target = if link_target.is_absolute() {
                 let tmp_fs_file = fs_file.to_str().and_then(|s| s.split("/fs").nth(1)).map(Path::new).ok_or_else(|| anyhow!("Invalid fs path format"))?;
-                let link_target_rel_path = pathdiff::diff_paths(&link_target, tmp_fs_file).unwrap();
+                let link_target_rel_path = pathdiff::diff_paths(&link_target, tmp_fs_file.parent().unwrap()).unwrap();
                 link_target_rel_path
             } else {
                 link_target
