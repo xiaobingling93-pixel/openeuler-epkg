@@ -7,7 +7,7 @@ from collections import OrderedDict
 desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash', 'dist',
                  'hash_version', 'source', 'description', 'buildRequires', 'requires', 'requiresPre', 'requiresPreun',
                  'requiresPost', 'requiresPostun', "provides", "conflicts", "suggests", "recommends", "supplements",
-                 "enhances", "packager", "installedSize", "section", "priority"]
+                 "enhances", "packager", "origin_url", "installedSize", "section", "priority"]
 
 def run_epkg_hash(path):
     local_path = os.getcwd()
@@ -20,8 +20,10 @@ def update_package_json():
     with open(os.path.join(epkg_conversion_dir, "info", "package.json"), "r") as f:
         content = f.read()
     metadata = json.loads(content)
+    if "ubuntu" in origin_url:
+        metadata['release'] += ".noble"
     metadata["hash"] = run_epkg_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
-    epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.{metadata['dist']}.epkg"
+    epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
     metadata["hash_version"] = "1"
     metadata.setdefault("origin_url", origin_url)
     # 按顺序构建有序字典
