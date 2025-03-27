@@ -62,13 +62,13 @@ def gen_metadata():
         metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
     else:
         metadata["release"] = '0'
-    metadata["release"] = metadata["release"] + ".noble"
     if ":" in metadata["version"]:
         # the ':' exist in the version, should be divided into epoch
-        _, metadata["version"] = metadata["version"].split(":", 1)
+        metadata["epoch"], metadata["version"] = metadata["version"].split(":", 1)
     if "\n" in metadata["description"].strip():
         metadata["summary"], metadata["description"] = metadata["description"].split("\n", 1)
-    metadata["epoch"] = 0
+    if "epoch" not in metadata:
+        metadata["epoch"] = 0
 
 
 if __name__ == '__main__':

@@ -13,7 +13,7 @@ source lib/common.sh
 
 decompress_tar()
 {
-  tar --use-compress-program=unzstd -xvf "${arch_file}" -C "${epkg_conversion_dir}/fs/" 2>/dev/null
+  tar --use-compress-program=unzstd -xf "${arch_file}" -C "${epkg_conversion_dir}/fs/" 2>/dev/null
 }
 
 generate_files()

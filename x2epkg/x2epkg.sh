@@ -6,10 +6,10 @@ ORIGIN_URL=""
 show_help() {
 	cat <<-EOF
 Usage:
-x2epkg xxx.rpm                                # single rpm package
-x2epkg xxx.deb                                # single deb package
-x2epkg file_path/*.rpm                        # several rpms
-x2epkg xxx.rpm --out-dir PATH                 # convert package into output dir
+x2epkg xxx.rpm --origin-url https://***                               # single rpm package
+x2epkg xxx.deb --origin-url https://***                               # single deb package
+x2epkg file_path/*.rpm --origin-url https://***                       # several rpms
+x2epkg xxx.rpm --out-dir PATH --origin_url https://***                # convert package into output dir
 EOF
 }
 
@@ -53,7 +53,7 @@ if [ $# -eq 0 ]; then
 fi
 
 # 检查必要参数
-if [[ -z "$origin_url" ]]; then
+if [[ -z "$ORIGIN_URL" ]]; then
     echo "错误：必须提供 --origin-url 参数" >&2
     show_help
     exit 1
