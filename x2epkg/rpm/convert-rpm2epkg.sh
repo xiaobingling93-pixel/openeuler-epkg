@@ -7,6 +7,7 @@ epkg_repo_path="$OUT_DIR"
 if [ "$epkg_repo_path" == "" ]; then
   epkg_repo_path=$(dirname "$rpm_file")
 fi
+rpm_origin_url="$ORIGIN_URL"
 
 source lib/common.sh
 
@@ -24,7 +25,7 @@ generate_files()
 	tmp_dir=$(mktemp -d)
 	./rpm/gen-install-scriptlets.sh "$rpm_file" "${epkg_conversion_dir}/info/"
 	python3 rpm/gen-package.py "$rpm_file" "${epkg_conversion_dir}/info/" "$tmp_dir"
-	python3 lib/compress2epkg.py "$epkg_repo_path"
+	python3 lib/compress2epkg.py "$epkg_repo_path" "$rpm_origin_url"
 	rm -rf "$tmp_dir"
 }
 

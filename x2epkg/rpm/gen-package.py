@@ -10,6 +10,9 @@ def get_basic_info():
         epoch = "0"
     basic_data = os.popen("rpm -qp --qf '\"name\": \"%{NAME}\", \"version\": \"%{version}\", \"arch\": \"%{arch}\","
                           " \"release\": \"%{release}\"' " + rpm_path).read()
+    lines = basic_data.splitlines()  # 按行分割字符串
+    filtered_lines = [line for line in lines if not line.lower().startswith('warning')]  # 过滤掉以 warning 开头的行
+    basic_data = '\n'.join(filtered_lines)
     json_data = json.loads("{" + basic_data + "}")
     json_data["epoch"] = epoch
     return json_data
@@ -30,6 +33,10 @@ def remove_duplicates(lst):
             result.append(item)
             seen.add(item)
     return result
+
+
+def get_rpm_dist():
+    pass
 
 
 if __name__ == '__main__':

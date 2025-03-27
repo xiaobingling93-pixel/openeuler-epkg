@@ -12,6 +12,7 @@ keywords_map = {
     "Architecture": "arch",
     "Source": "source",
     "Depends": "requires",
+    "Pre-Depends": "requiresPre",
     "Provides": "provides",
     "Conflicts": "conflicts",
     "Recommends": "recommends",
@@ -60,12 +61,14 @@ def gen_metadata():
     if "-" in metadata["version"]:
         metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
     else:
-        metadata["release"] = 0
+        metadata["release"] = '0'
+    metadata["release"] = metadata["release"] + ".noble"
     if ":" in metadata["version"]:
         # the ':' exist in the version, should be divided into epoch
-        metadata["epoch"], metadata["version"] = metadata["version"].split(":", 1)
+        _, metadata["version"] = metadata["version"].split(":", 1)
     if "\n" in metadata["description"].strip():
         metadata["summary"], metadata["description"] = metadata["description"].split("\n", 1)
+    metadata["epoch"] = 0
 
 
 if __name__ == '__main__':
@@ -73,7 +76,7 @@ if __name__ == '__main__':
     output_path = sys.argv[2]
     pkg_name = sys.argv[3]
     metadata = get_basic_info()
-    for keywords in ["Depends", "Build-Depends", "Provides", "Conflicts", "Recommends", "Suggests", "Enhances"]:
+    for keywords in ["Depends", "Build-Depends", "Pre-Depends", "Provides", "Conflicts", "Recommends", "Suggests", "Enhances"]:
         if keywords in metadata and isinstance(metadata[keywords], str):
             metadata[keywords] = [metadata[keywords]]
     gen_metadata()
