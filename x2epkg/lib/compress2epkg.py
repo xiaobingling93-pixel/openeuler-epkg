@@ -4,10 +4,10 @@ import os
 from collections import OrderedDict
 
 # keywords sequence
-desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash',
-                 'hash_version', 'source', 'description', 'buildRequires', 'requires', "provides", "conflicts",
-                 "suggests", "recommends", "supplements", "enhances", "packager", "installedSize", "section",
-                 "priority"]
+desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash', 'dist',
+                 'hash_version', 'source', 'description', 'buildRequires', 'requires', 'requiresPre', 'requiresPreun',
+                 'requiresPost', 'requiresPostun', "provides", "conflicts", "suggests", "recommends", "supplements",
+                 "enhances", "packager", "installedSize", "section", "priority"]
 
 def run_epkg_hash(path):
     local_path = os.getcwd()
@@ -21,8 +21,9 @@ def update_package_json():
         content = f.read()
     metadata = json.loads(content)
     metadata["hash"] = run_epkg_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
-    epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
+    epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.{metadata['dist']}.epkg"
     metadata["hash_version"] = "1"
+    metadata.setdefault("origin_url", origin_url)
     # 按顺序构建有序字典
     ordered_data = OrderedDict()
     for key in desired_order:
@@ -37,9 +38,10 @@ def update_package_json():
 
 if __name__ == '__main__':
     output_path = sys.argv[1]
+    origin_url = sys.argv[2]
     home_path = os.getenv('HOME', '~')
     epkg_conversion_dir = f"{home_path}/epkg_conversion"
 
     epkg_name = update_package_json()
     os.makedirs(f"{output_path}/store/{epkg_name[:2]}/", exist_ok=True)
-    os.system(f"tar --zstd -cvf {output_path}/store/{epkg_name[:2]}/{epkg_name} -C {epkg_conversion_dir} .")
+    os.system(f"tar --zstd -cf {output_path}/store/{epkg_name[:2]}/{epkg_name} -C {epkg_conversion_dir} .")

@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+from datetime import datetime
 
 
 def get_basic_info():
@@ -23,6 +24,14 @@ def get_basic_info():
     return json_data
 
 
+def get_timestamp_date():
+    if "builddate" in metadata:
+        timestamp = metadata["builddate"]
+        # 将包的时间戳转换为’年月日‘字符串
+        dt = datetime.fromtimestamp(int(timestamp))
+        return dt.strftime("%Y%m%d")
+
+
 def gen_metadata():
     keywords_map = {
         "pkgname": "name",
@@ -37,14 +46,17 @@ def gen_metadata():
         if old_key in metadata:
             metadata[new_key] = metadata[old_key]
             del metadata[old_key]
+    if "-" not in metadata["version"]:
+        metadata["release"] = "0"
+    else:
+        metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
+    if "builddate" in metadata:
+        metadata["release"] += get_timestamp_date()
+    metadata["epoch"] = 0
     rm_keywords = ["pkgbase", "replaces", "size", "builddate", "xdata"]
     for _key in rm_keywords:
         if _key in metadata:
             del metadata[_key]
-    if "-" not in metadata["version"]:
-        metadata["release"] = 0
-    else:
-        metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
 
 
 if __name__ == '__main__':

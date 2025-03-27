@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 OUT_DIR=""
+ORIGIN_URL=""
 
 show_help() {
 	cat <<-EOF
@@ -13,7 +14,7 @@ EOF
 }
 
 # 解析命令行参数
-OPT=$(getopt -o h --long out-dir:,help -- "$@")
+OPT=$(getopt -o h --long origin-url:,out-dir:,help -- "$@")
 if [ $? -ne 0 ]; then
     echo "Error: Failed to parse options" >&2
     exit 1
@@ -22,6 +23,10 @@ eval set -- "$OPT"
 
 while true; do
     case "$1" in
+        --origin-url)
+            ORIGIN_URL="$2"
+            shift 2
+            ;;
         --out-dir)
             OUT_DIR="$2"
             shift 2
@@ -47,8 +52,16 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+# 检查必要参数
+if [[ -z "$origin_url" ]]; then
+    echo "错误：必须提供 --origin-url 参数" >&2
+    show_help
+    exit 1
+fi
+
 # 输出目标路径
 echo "Output path is: $OUT_DIR"
+echo "Origin url is: $ORIGIN_URL"
 
 # 批量解压逻辑
 for pkg in "$@"; do

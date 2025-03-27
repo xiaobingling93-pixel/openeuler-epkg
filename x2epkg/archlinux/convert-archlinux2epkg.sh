@@ -7,6 +7,7 @@ epkg_repo_path="$OUT_DIR"
 if [ "$epkg_repo_path" == "" ]; then
   epkg_repo_path=$(dirname "$arch_file")
 fi
+archlinux_origin_url="$ORIGIN_URL"
 
 source lib/common.sh
 
@@ -26,7 +27,7 @@ generate_files()
 	  python3 archlinux/gen-install-scriptlets.py "${epkg_conversion_dir}/fs/.INSTALL" "${epkg_conversion_dir}/info/"
 	fi
 	python3 archlinux/gen-package.py "${epkg_conversion_dir}/fs/.PKGINFO" "${epkg_conversion_dir}/info/" "$tmp_dir"
-	python3 lib/compress2epkg.py "$epkg_repo_path"  # common method
+	python3 lib/compress2epkg.py "$epkg_repo_path" "$archlinux_origin_url"  # common method
   rm -rf "$tmp_dir"
 }
 

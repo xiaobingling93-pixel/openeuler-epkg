@@ -5,6 +5,7 @@
 deb_file=$1
 deb_name=$(basename "$deb_file")
 epkg_repo_path="$OUT_DIR"
+debian_origin_url="$ORIGIN_URL"
 if [ "$epkg_repo_path" == "" ]; then
   epkg_repo_path=$(dirname "$deb_file")
 fi
@@ -20,6 +21,8 @@ decompress_deb()
     tar -xf control.tar.xz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
   elif [ -f control.tar.gz ]; then
     tar -xzf control.tar.gz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
+  elif [ -f control.tar.zst ]; then
+    tar -xf control.tar.zst -C "${epkg_conversion_dir}/info/install" 2>/dev/null
   else
     echo "error: unknown control tarball type"
   fi
@@ -36,7 +39,7 @@ generate_files()
   ./deb/gen-install-scriptlets.sh "${epkg_conversion_dir}/info/install"
   python3 deb/gen-package.py "${epkg_conversion_dir}/info/install/control" "${epkg_conversion_dir}/info/" "${deb_name}"
   rm -f "${epkg_conversion_dir}/info/install/control"
-  python3 lib/compress2epkg.py "$epkg_repo_path"
+  python3 lib/compress2epkg.py "$epkg_repo_path" "$debian_origin_url"
   rm -rf "$tmp_dir"
 }
 
