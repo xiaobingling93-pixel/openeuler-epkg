@@ -93,20 +93,10 @@ def get_json_path(epkg_path):
 
 
 def scan_epkgs():
-    for epkg_path in tqdm(
-        epkg_path_list,
-        desc="Scanning epkgs",
-        ascii=True,
-        total=len(epkg_path_list),
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed} < {remaining}]"
-    ):
-        with tempfile.TemporaryDirectory() as tempdir:
-            extract_tar_zst(epkg_path, tempdir)
-            with open(f"{tempdir}/info/package.json", "r") as f:
-                content = f.read()
-            epkg_json_parent_path = get_json_path(epkg_path)
-            with open(epkg_json_parent_path, "w") as new_f:
-                new_f.write(content)
+    for epkg_path in epkg_path_list:
+        extracted_json_path = extract_tar_zst(epkg_path, parent_dir)
+        target_json_path = get_json_path(epkg_path)
+        os.system(f"mv {extracted_json_path} {target_json_path}")
 
 
 def generate_repodata(repodata_dir):
@@ -122,7 +112,7 @@ def generate_index_json_in_repodata():
 def generate_pkginfo_file_in_repodata(parent_info_dir):
     pkg_info_dir = f"{os.path.dirname(parent_info_dir)}/pkg-info"
     scan_epkgs()
-    compress_dir_to_zst(f"{parent_info_dir}/pkg-info.zst", pkg_info_dir)
+    compress_dir_to_zst(f"{parent_info_dir}/pkg-info.tar.zst", pkg_info_dir)
 
 def generate_storepaths_file_in_repodata(parent_repodata_dir):
     store_path = f"{parent_repodata_dir}/store-paths"

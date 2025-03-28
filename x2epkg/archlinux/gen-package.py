@@ -31,7 +31,8 @@ def gen_metadata():
         "makedepend": "buildRequires",
         "pkgdesc": "description",
         "url": "homepage",
-        "conflict": "conflicts"
+        "conflict": "conflicts",
+        "builddate": "buildTime"
     }
     for old_key, new_key in keywords_map.items():
         if old_key in metadata:
@@ -42,7 +43,7 @@ def gen_metadata():
     else:
         metadata["version"], metadata["release"] = metadata["version"].rsplit("-", 1)
     metadata["epoch"] = 0
-    rm_keywords = ["pkgbase", "replaces", "size", "builddate", "xdata"]
+    rm_keywords = ["pkgbase", "xdata"]
     for _key in rm_keywords:
         if _key in metadata:
             del metadata[_key]
