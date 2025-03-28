@@ -18,7 +18,9 @@ keywords_map = {
     "Recommends": "recommends",
     "Suggests": "suggests",
     "Enhances": "enhances",
-    "Installed-Size": "installedSize",
+    "Breaks": "breaks",
+    "Replaces": "replaces",
+    "Installed-Size": "size",
     "Section": "section",
     "Priority": "priority"
 }

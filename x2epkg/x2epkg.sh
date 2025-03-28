@@ -9,7 +9,7 @@ Usage:
 x2epkg xxx.rpm --origin-url https://***                               # single rpm package
 x2epkg xxx.deb --origin-url https://***                               # single deb package
 x2epkg file_path/*.rpm --origin-url https://***                       # several rpms
-x2epkg xxx.rpm --out-dir PATH --origin_url https://***                # convert package into output dir
+x2epkg xxx.rpm --out-dir PATH --origin-url https://***                # convert package into output dir
 EOF
 }
 

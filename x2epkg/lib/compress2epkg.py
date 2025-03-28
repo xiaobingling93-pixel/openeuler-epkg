@@ -4,10 +4,11 @@ import os
 from collections import OrderedDict
 
 # keywords sequence
-desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash', 'dist',
-                 'hash_version', 'source', 'description', 'buildRequires', 'requires', 'requiresPre', 'requiresPreun',
+desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash',
+                 'hashVersion', 'source', 'description', 'buildRequires', 'requires', 'requiresPre', 'requiresPreun',
                  'requiresPost', 'requiresPostun', "provides", "conflicts", "suggests", "recommends", "supplements",
-                 "enhances", "packager", "origin_url", "installedSize", "section", "priority"]
+                 "enhances", "breaks", "replaces", "packager", "originUrl", "size", "section", "priority",
+                 "buildTime", "buildHost"]
 
 def run_epkg_hash(path):
     local_path = os.getcwd()
@@ -24,8 +25,8 @@ def update_package_json():
         metadata['release'] += ".noble"
     metadata["hash"] = run_epkg_hash(epkg_conversion_dir)  # /root/epkg_conversion contain fs and info
     epkg_file_name = f"{metadata['hash']}__{metadata['name']}__{metadata['version']}__{metadata['release']}.epkg"
-    metadata["hash_version"] = "1"
-    metadata.setdefault("origin_url", origin_url)
+    metadata["hashVersion"] = "1"
+    metadata.setdefault("originUrl", origin_url)
     # 按顺序构建有序字典
     ordered_data = OrderedDict()
     for key in desired_order:
