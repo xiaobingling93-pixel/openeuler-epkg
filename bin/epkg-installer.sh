@@ -9,6 +9,7 @@ if [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "aarch64" ]; then
     echo "Your system architecture is: $ARCH"
     exit 1
 fi
+PAGE_SIZE=$(getconf PAGE_SIZE)
 # Download File
 EPKG_URL=https://repo.oepkgs.net/openeuler/epkg/rootfs/
 # for quick develop-test cycle
@@ -17,7 +18,11 @@ EPKG_MANAGER_URL=https://gitee.com/openeuler/epkg/repository/archive/$EPKG_VERSI
 EPKG_MANAGER_TAR=$EPKG_VERSION.tar.gz
 EPKG_STATIC=epkg
 EPKG_ROOTFS=epkg-rootfs
-ELF_LOADER=elf-loader
+if [ "$PAGE_SIZE" -eq 65536 ]; then
+    ELF_LOADER=elf-loader-64k
+else
+    ELF_LOADER=elf-loader
+fi
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
 PUB_EPKG=$OPT_EPKG/users/public
