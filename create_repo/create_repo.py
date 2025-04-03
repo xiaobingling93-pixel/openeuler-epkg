@@ -94,7 +94,8 @@ def get_json_path(epkg_path):
 
 def scan_epkgs():
     for epkg_path in epkg_path_list:
-        extracted_json_path = extract_tar_zst(epkg_path, parent_dir)
+        extract_tar_zst(epkg_path, parent_dir)
+        extracted_json_path = os.path.join(parent_dir, "info/package.json")
         target_json_path = get_json_path(epkg_path)
         os.system(f"mv {extracted_json_path} {target_json_path}")
 

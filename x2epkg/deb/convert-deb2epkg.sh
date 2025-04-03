@@ -23,6 +23,8 @@ decompress_deb()
     tar -xzf control.tar.gz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
   elif [ -f control.tar.zst ]; then
     tar -xf control.tar.zst -C "${epkg_conversion_dir}/info/install" 2>/dev/null
+  elif [ -f control.tar ]; then
+    tar -xf control.tar -C "${epkg_conversion_dir}/info/install" 2>/dev/null
   else
     echo "error: unknown control tarball type"
   fi

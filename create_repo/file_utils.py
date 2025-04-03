@@ -14,10 +14,19 @@ def clean_exist_dir(targets):
 
 
 def extract_tar_zst(archive_path, extract_dir):
-    result = os.system(f'tar -xf {archive_path} --zstd -C {extract_dir} "./info/package.json"')
-    if result != 0:
-        print("can't decompress the file :", archive_path)
-    return os.path.join(extract_dir, "info/package.json")
+    # extract with command
+    # result = os.system(f'tar -xf {archive_path} --zstd -C {extract_dir} "./info/package.json"')
+    # if result != 0:
+    #     print("can't decompress the file :", archive_path)
+    # return os.path.join(extract_dir, "info/package.json")
+
+    # extract with python module
+    with open(archive_path, "rb") as archive:
+        dctx = zstd.ZstdDecompressor()
+        stream_reader= dctx.stream_reader(archive)
+        tar = tarfile.open(fileobj=stream_reader, mode="r|*")
+        tar.extractall(path=extract_dir)
+        tar.close()
 
 
 def dump_format_json(json_path, content_json):
