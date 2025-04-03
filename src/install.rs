@@ -234,6 +234,15 @@ impl PackageManager {
                 }
             }
 
+            // Check if the path contains "/libexec/"
+            if fs_file.to_string_lossy().contains("/libexec/") {
+                let file_type = get_file_type(&fs_file)?;
+                if file_type.contains("ELF 64-bit LSB") {
+                    handle_elf(&target_path, Path::new(&symlink_dir), &fs_file)?;
+                    continue;
+                }
+            }
+
             // If it is a symbolic link, copy the symbolic link itself; otherwise, create a symbolic link.
             if fs::symlink_metadata(&target_path).is_ok() {
                 fs::remove_file(&target_path).unwrap();
