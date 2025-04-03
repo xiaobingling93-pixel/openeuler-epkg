@@ -50,14 +50,24 @@ pub fn get_file_type(file: &Path) -> Result<String> {
         return Ok("ELF 64-bit LSB".to_string());
     }
 
-    // Check ASCII text executable || Perl script text executable
-    let mime_type = tree_magic::from_u8(&buffer);
-    match mime_type.as_str() {
-        "application/x-executable" => Ok("ASCII text executable".to_string()),
-        "application/x-shellscript" => Ok("Bourne-Again shell script, ASCII text executable".to_string()),
-        "application/x-perl" => Ok("Perl script text executable".to_string()),
-        "text/x-python3" => Ok("Python script, ASCII text executable".to_string()),
-        "text/x-perl" => Ok("Perl script text executable".to_string()),
-        _ => Ok(mime_type.to_string()),
+    // Check if file starts with shebang
+    if buffer.starts_with(b"#!") {
+        let first_line = String::from_utf8_lossy(&buffer[..buffer.iter().position(|&x| x == b'\n').unwrap_or(buffer.len())]);
+        
+        if first_line.contains("/bin/bash") || first_line.contains("/bin/sh") {
+            return Ok("Bourne-Again shell script, ASCII text executable".to_string());
+        } else if first_line.contains("perl") {
+            return Ok("Perl script text executable".to_string());
+        } else if first_line.contains("python") {
+            return Ok("Python script, ASCII text executable".to_string());
+        }
     }
+    
+    // Try to detect if it's ASCII text
+    if buffer.iter().all(|&b| b.is_ascii()) {
+        return Ok("ASCII text".to_string());
+    }
+    
+    // If nothing matches, return binary data
+    Ok("data".to_string())
 }

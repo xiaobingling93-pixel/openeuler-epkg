@@ -34,7 +34,6 @@ crossbeam-channel = "0.5"
 rayon = "1.8"
 pathdiff = "0.2.3"
 lazy_static = "1.4"
-tree_magic = "0.2"
 chrono = "0.4"
 regex = "1.7.3"
 
