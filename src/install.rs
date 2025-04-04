@@ -63,7 +63,7 @@ pub fn handle_exec(_fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir:
             let target_path = symlink_dir.join(rfs_file);
             fs::copy(fs_file, &target_path)?;
         }
-        FileType::PerlScript => {
+        FileType::PerlScript | FileType::RubyScript | FileType::NodeScript | FileType::LuaScript => {
             let target_path = symlink_dir.join(rfs_file);
             if target_path.exists() {
                 fs::remove_file(&target_path)?;

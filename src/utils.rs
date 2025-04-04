@@ -11,6 +11,9 @@ pub enum FileType {
     ShellScript,
     PerlScript,
     PythonScript,
+    RubyScript,
+    NodeScript,
+    LuaScript,
     AsciiText,
     Binary,
 }
@@ -23,6 +26,9 @@ impl FileType {
             FileType::ShellScript => "Shell script, ASCII text executable",
             FileType::PerlScript => "Perl script, ASCII text executable",
             FileType::PythonScript => "Python script, ASCII text executable",
+            FileType::RubyScript => "Ruby script, ASCII text executable",
+            FileType::NodeScript => "Node.js script, ASCII text executable",
+            FileType::LuaScript => "Lua script, ASCII text executable",
             FileType::AsciiText => "ASCII text",
             FileType::Binary => "Binary data",
         }
@@ -82,12 +88,19 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     if buffer.starts_with(b"#!") {
         let first_line = String::from_utf8_lossy(&buffer[..buffer.iter().position(|&x| x == b'\n').unwrap_or(buffer.len())]);
 
-        if first_line.contains("/bin/bash") || first_line.contains("/bin/sh") {
+        // Check for various script types
+        if first_line.contains("sh") || first_line.contains("bash") {
             return Ok(FileType::ShellScript);
         } else if first_line.contains("perl") {
             return Ok(FileType::PerlScript);
         } else if first_line.contains("python") {
             return Ok(FileType::PythonScript);
+        } else if first_line.contains("ruby") {
+            return Ok(FileType::RubyScript);
+        } else if first_line.contains("node") || first_line.contains("nodejs") {
+            return Ok(FileType::NodeScript);
+        } else if first_line.contains("lua") {
+            return Ok(FileType::LuaScript);
         }
     }
 
