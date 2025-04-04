@@ -78,9 +78,14 @@ impl PackageManager {
         );
         move_profile_contents(&cur_profile, &new_profile)?;
 
-        // ln -sf profile-current -> cur_profile
+        // ln -sf profile-current -> profile-{id}
+        // Example: ln -sf profile-current -> profile-1
         fs::remove_file(&profile_current)?;
-        symlink(&new_profile, &profile_current)?;
+        let new_profile_basename = Path::new(&new_profile).file_name()
+            .ok_or_else(|| anyhow!("Failed to get basename of profile directory"))?
+            .to_str()
+            .ok_or_else(|| anyhow!("Failed to convert basename to string"))?;
+        symlink(new_profile_basename, &profile_current)?;
 
         Ok(profile_current)
     }
