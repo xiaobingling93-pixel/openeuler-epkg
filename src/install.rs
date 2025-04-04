@@ -55,46 +55,52 @@ pub fn remove_duplicates(
 pub fn handle_exec(_fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir: &Path, target_path: &Path, appbin_flag: bool) -> Result<()> {
     let file_type = get_file_type(fs_file)?;
 
-    if file_type.contains("ELF 64-bit LSB") {
-        handle_elf(target_path, symlink_dir, fs_file)?;
-    } else if file_type.contains("ASCII text") {
-        let target_path = symlink_dir.join(rfs_file);
-        fs::copy(fs_file, &target_path)?;
-    } else if file_type.contains("Perl script text executable") {
-        let target_path = symlink_dir.join(rfs_file);
-        if target_path.exists() {
-            fs::remove_file(&target_path)?;
+    match file_type {
+        FileType::Elf => {
+            handle_elf(target_path, symlink_dir, fs_file)?;
         }
-        symlink(fs_file, &target_path)?;
-    } else if file_type.contains("symbolic link") {
-        if let Ok(link_target) = fs::read_link(fs_file) {
+        FileType::AsciiText => {
             let target_path = symlink_dir.join(rfs_file);
-            if fs::symlink_metadata(&target_path).is_ok() {
-                fs::remove_file(&target_path).unwrap();
-            }
-
-            // Get new_link_target
-            // python3.11: 
-            //     /root/.epkg/store/2h652gawx5zjpazx83ep2jkcv2kkp0xm__python3__3.11.6__2.oe2403/fs/usr/bin/python3 -> python3.11
-            // ../bin/pidof: 
-            //     /root/.epkg/store/dkaz2ks577dhyg3gz8n414xvq52x7e9g__procps-ng__4.0.4__5.oe2403/fs/usr/sbin/pidof -> /usr/bin/pidof
-            // ../libexec/qemu-kvm: 
-            //     /root/.epkg/store/pbaknz0skh99y3mmdwcs2xxhay5mzbgj__qemu__8.2.0__13.oe2403/fs/usr/bin/qemu-kvm -> /usr/libexec/qemu-kvm
-            // ../../lib64/ld-linux-x86-64.so.2: 
-            //     /root/.epkg/store/3ajbdnc50knwxw39j3bgaw86nxs3kt0w__glibc-common__2.38__29.oe2403/fs/usr/bin/ld.so -> ../../lib64/ld-linux-x86-64.so.2
-            let new_link_target = if link_target.is_absolute() {
-                let tmp_fs_file = fs_file.to_str().and_then(|s| s.split("/fs").nth(1)).map(Path::new).ok_or_else(|| anyhow!("Invalid fs path format"))?;
-                let link_target_rel_path = pathdiff::diff_paths(&link_target, tmp_fs_file.parent().unwrap()).unwrap();
-                link_target_rel_path
-            } else {
-                link_target
-            };
-            symlink(&new_link_target, &target_path).unwrap();
-        } else {
-            return Err(anyhow!("handle_exec failed handle symbolic link {:?}", fs_file));
+            fs::copy(fs_file, &target_path)?;
         }
-    } else {
-        println!("Warning: unknown file_type: {:?}, fs_file: {:?}", file_type ,fs_file);
+        FileType::PerlScript => {
+            let target_path = symlink_dir.join(rfs_file);
+            if target_path.exists() {
+                fs::remove_file(&target_path)?;
+            }
+            symlink(fs_file, &target_path)?;
+        }
+        FileType::Symlink => {
+            if let Ok(link_target) = fs::read_link(fs_file) {
+                let target_path = symlink_dir.join(rfs_file);
+                if fs::symlink_metadata(&target_path).is_ok() {
+                    fs::remove_file(&target_path).unwrap();
+                }
+
+                // Get new_link_target
+                // python3.11:
+                //     /root/.epkg/store/2h652gawx5zjpazx83ep2jkcv2kkp0xm__python3__3.11.6__2.oe2403/fs/usr/bin/python3 -> python3.11
+                // ../bin/pidof:
+                //     /root/.epkg/store/dkaz2ks577dhyg3gz8n414xvq52x7e9g__procps-ng__4.0.4__5.oe2403/fs/usr/sbin/pidof -> /usr/bin/pidof
+                // ../libexec/qemu-kvm:
+                //     /root/.epkg/store/pbaknz0skh99y3mmdwcs2xxhay5mzbgj__qemu__8.2.0__13.oe2403/fs/usr/bin/qemu-kvm -> /usr/libexec/qemu-kvm
+                // ../../lib64/ld-linux-x86-64.so.2:
+                //     /root/.epkg/store/3ajbdnc50knwxw39j3bgaw86nxs3kt0w__glibc-common__2.38__29.oe2403/fs/usr/bin/ld.so -> ../../lib64/ld-linux-x86-64.so.2
+                let new_link_target = if link_target.is_absolute() {
+                    let tmp_fs_file = fs_file.to_str().and_then(|s| s.split("/fs").nth(1)).map(Path::new).ok_or_else(|| anyhow!("Invalid fs path format"))?;
+                    let link_target_rel_path = pathdiff::diff_paths(&link_target, tmp_fs_file.parent().unwrap()).unwrap();
+                    link_target_rel_path
+                } else {
+                    link_target
+                };
+                symlink(&new_link_target, &target_path).unwrap();
+            } else {
+                return Err(anyhow!("handle_exec failed handle symbolic link {:?}", fs_file));
+            }
+        }
+        _ => {
+            println!("Warning: unknown file_type: {:?}, fs_file: {:?}", file_type, fs_file);
+        }
     }
 
     // Add app-bin path
@@ -131,14 +137,14 @@ pub fn handle_elf(target_path: &Path, symlink_dir: &Path, fs_file: &Path) -> Res
 pub fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Result<()> {
     let data = fs::read(binary_file)?;
     let pattern = long_id.as_bytes();
-    
+
     if let Some(pos) = data.windows(pattern.len()).position(|window| window == pattern) {
         let mut file = fs::OpenOptions::new().write(true).open(binary_file)?;
         file.seek(SeekFrom::Start(pos as u64))?;
         // Write the replacement followed by a null terminator.
         file.write_all(format!("{}\0", replacement).as_bytes())?;
     }
-    
+
     Ok(())
 }
 
@@ -197,7 +203,7 @@ impl PackageManager {
         for fs_file in fs_files {
             let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
             let target_path = Path::new(&symlink_dir).join(rfs_file);
-            
+
             // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
             // Create empty directory
             if fs_file.is_dir() {
@@ -217,27 +223,27 @@ impl PackageManager {
             // Check if the path contains "/bin/"
             if fs_file.to_string_lossy().contains("/bin/") {
                 handle_exec(Path::new(&fs_dir), &fs_file, Path::new(&rfs_file), Path::new(&symlink_dir), &target_path, appbin_flag)?;
-                continue; 
+                continue;
             }
-            
+
             // Check if the path contains "/sbin/"
             if fs_file.to_string_lossy().contains("/sbin/") {
                 handle_exec(Path::new(&fs_dir), &fs_file, Path::new(&rfs_file), Path::new(&symlink_dir), &target_path, appbin_flag)?;
-                continue; 
+                continue;
             }
 
             // Check if the path contains "/etc/"
             if fs_file.to_string_lossy().contains("/etc/") {
                 if !fs::symlink_metadata(&fs_file).map(|metadata| metadata.file_type().is_symlink()).unwrap() {
                     fs::copy(fs_file, target_path).unwrap();
-                    continue; 
+                    continue;
                 }
             }
 
             // Check if the path contains "/libexec/"
             if fs_file.to_string_lossy().contains("/libexec/") {
                 let file_type = get_file_type(&fs_file)?;
-                if file_type.contains("ELF 64-bit LSB") {
+                if file_type == FileType::Elf {
                     handle_elf(&target_path, Path::new(&symlink_dir), &fs_file)?;
                     continue;
                 }
@@ -301,7 +307,7 @@ impl PackageManager {
         self.installed_packages.extend(packages_to_install.clone());
         self.save_installed_packages().unwrap();
         self.record_history("install", packages_to_install.keys().cloned().collect(), vec![], command_line)?;
-        
+
         println!("Installation successful - Total packages: {}, AppBin packages: {}", packages_to_install.len(), appbin_count);
         if !appbin_packages.is_empty() {
             println!("AppBin package list: {}", appbin_packages.join(", "));

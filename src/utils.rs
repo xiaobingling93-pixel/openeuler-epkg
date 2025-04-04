@@ -4,6 +4,31 @@ use std::path::Path;
 use std::path::PathBuf;
 use anyhow::Result;
 
+#[derive(Debug, PartialEq)]
+pub enum FileType {
+    Elf,
+    Symlink,
+    ShellScript,
+    PerlScript,
+    PythonScript,
+    AsciiText,
+    Binary,
+}
+
+impl FileType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FileType::Elf => "ELF 64-bit LSB executable",
+            FileType::Symlink => "Symbolic link",
+            FileType::ShellScript => "Shell script, ASCII text executable",
+            FileType::PerlScript => "Perl script, ASCII text executable",
+            FileType::PythonScript => "Python script, ASCII text executable",
+            FileType::AsciiText => "ASCII text",
+            FileType::Binary => "Binary data",
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn is_setuid() -> bool {
     true
@@ -35,39 +60,42 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 }
 
 // Get file type
-pub fn get_file_type(file: &Path) -> Result<String> {
+pub fn get_file_type(file: &Path) -> Result<FileType> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
-    // Check Symbolic link
+
+    // Check Symbolic link first
     if fs::symlink_metadata(&file).map(|metadata| metadata.file_type().is_symlink()).unwrap() {
-        return Ok("symbolic link".to_string());
+        return Ok(FileType::Symlink);
     }
 
-    // Check ELF 64-bit LSB 
+    // Read file contents for other checks
     let mut buffer = Vec::new();
     let mut f = fs::File::open(file)?;
     f.read_to_end(&mut buffer)?;
+
+    // Check ELF 64-bit LSB
     if buffer.starts_with(ELF_MAGIC) {
-        return Ok("ELF 64-bit LSB".to_string());
+        return Ok(FileType::Elf);
     }
 
     // Check if file starts with shebang
     if buffer.starts_with(b"#!") {
         let first_line = String::from_utf8_lossy(&buffer[..buffer.iter().position(|&x| x == b'\n').unwrap_or(buffer.len())]);
-        
+
         if first_line.contains("/bin/bash") || first_line.contains("/bin/sh") {
-            return Ok("Bourne-Again shell script, ASCII text executable".to_string());
+            return Ok(FileType::ShellScript);
         } else if first_line.contains("perl") {
-            return Ok("Perl script text executable".to_string());
+            return Ok(FileType::PerlScript);
         } else if first_line.contains("python") {
-            return Ok("Python script, ASCII text executable".to_string());
+            return Ok(FileType::PythonScript);
         }
     }
-    
+
     // Try to detect if it's ASCII text
     if buffer.iter().all(|&b| b.is_ascii()) {
-        return Ok("ASCII text".to_string());
+        return Ok(FileType::AsciiText);
     }
-    
+
     // If nothing matches, return binary data
-    Ok("data".to_string())
+    Ok(FileType::Binary)
 }
