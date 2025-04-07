@@ -19,6 +19,8 @@ wfg /c/os/archlinux/community% grep install= */trunk/PKGBUILD|wc -l
 
 ## 声明式 add user/group
 
+### archlinux cases
+
 ```
 /c/os/archlinux/community/chrony/trunk/PKGBUILD:
 source=(https://download.tuxfamily.org/chrony/${pkgname}-${pkgver}.tar.gz
@@ -35,6 +37,8 @@ chrony.sysusers:
 chrony.tmpfiles:
     d /var/lib/chrony 0755 chrony chrony - -
 ```
+
+### openEuler cases
 
 系统用户, 文件目录属性, 可以通过以下方式声明, 避免命令式操作.
 
@@ -62,3 +66,9 @@ openEuler% man tmpfiles.d
 
        tmpfiles.d - Configuration for creation, deletion and cleaning of volatile and temporary files
 ```
+
+### sysusers format
+
+- <https://fedoraproject.org/wiki/Changes/Adopting_sysusers.d_format>
+- <https://fedoraproject.org/wiki/Changes/RPMSuportForSystemdSysusers>
+- <https://www.freedesktop.org/software/systemd/man/latest/sysusers.d.html>
