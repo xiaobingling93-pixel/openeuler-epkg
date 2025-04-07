@@ -93,8 +93,10 @@ def get_json_path(epkg_path):
 
 
 def scan_epkgs():
+    tar_support = os.popen("tar --help").read()
+    zstd_support = "--zstd" in tar_support
     for epkg_path in epkg_path_list:
-        extracted_json_path = extract_tar_zst(epkg_path, parent_dir)
+        extracted_json_path = extract_tar_zst(epkg_path, parent_dir, zstd_support)
         target_json_path = get_json_path(epkg_path)
         os.system(f"mv {extracted_json_path} {target_json_path}")
 
