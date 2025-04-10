@@ -14,19 +14,21 @@ source lib/common.sh
 
 decompress_deb()
 {
-  rm -f control.tar.xz control.tar.gz
+  rm -f control.tar* data.tar*
   ar x "${deb_file}"
-  tar -xf data.tar.xz -C "${epkg_conversion_dir}/fs/" 2>/dev/null
-  if [ -f control.tar.xz ]; then
-    tar -xf control.tar.xz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
-  elif [ -f control.tar.gz ]; then
-    tar -xzf control.tar.gz -C "${epkg_conversion_dir}/info/install" 2>/dev/null
-  elif [ -f control.tar.zst ]; then
-    tar -xf control.tar.zst -C "${epkg_conversion_dir}/info/install" 2>/dev/null
-  elif [ -f control.tar ]; then
-    tar -xf control.tar -C "${epkg_conversion_dir}/info/install" 2>/dev/null
+  if [ -f data.tar.gz ]; then
+    tar -xzf data.tar.gz -C "${epkg_conversion_dir}/fs/"
+  elif [ -f data.tar.zst ]; then
+    zstd -d data.tar.zst && tar -xf data.tar -C "${epkg_conversion_dir}/fs/"
   else
-    echo "error: unknown control tarball type"
+    find -name "data.tar*" -exec tar xf {} -C "${epkg_conversion_dir}/fs/" \;
+  fi
+  if [ -f control.tar.gz ]; then
+    tar -xzf control.tar.gz -C "${epkg_conversion_dir}/info/install"
+  elif [ -f control.tar.zst ]; then
+    zstd -d control.tar.zst && tar -xf control.tar -C "${epkg_conversion_dir}/info/install"
+  else
+    find -name "control.tar*" -exec tar xf {} -C "${epkg_conversion_dir}/info/install" \;
   fi
   rm -f "${epkg_conversion_dir}/info/install/"{conffiles,md5sums}
 }
