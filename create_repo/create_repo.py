@@ -16,8 +16,6 @@
 
 import argparse
 import os
-import tempfile
-from tqdm import tqdm
 from pathlib import Path
 from file_utils import clean_exist_dir, extract_tar_zst, dump_format_json, compress_file_to_zst, compress_dir_to_zst
 from create_index import IndexJson
@@ -102,14 +100,14 @@ def scan_epkgs():
 
 
 def generate_repodata(repodata_dir):
-    generate_index_json_in_repodata()
+    generate_index_json_in_repodata(repodata_dir)
     generate_pkginfo_file_in_repodata(repodata_dir)
     generate_storepaths_file_in_repodata(repodata_dir)
 
-def generate_index_json_in_repodata():
+def generate_index_json_in_repodata(repodata_dir):
     index_json_reader = IndexJson()
     index_content = index_json_reader.get_index_json(config_path)
-    dump_format_json(f"{parent_dir}/index.json", index_content)
+    dump_format_json(f"{repodata_dir}/index.json", index_content)
 
 def generate_pkginfo_file_in_repodata(parent_info_dir):
     pkg_info_dir = f"{os.path.dirname(parent_info_dir)}/pkg-info"
