@@ -276,6 +276,25 @@ fn download_file(
 }
 
 impl PackageManager {
+    fn download_or_copy_urls(&mut self, urls: Vec<String>, output_dir: &str, nr_parallel: usize, max_retries: usize, proxy: Option<&str>) -> Result<()> {
+        if urls.is_empty() {
+            return Ok(());
+        }
+        if urls[0].starts_with("/") {
+            for url in urls {
+                let file_name = url.split('/').last().unwrap();
+                let dest_path = format!("{}/{}", output_dir, file_name);
+                if let Err(e) = fs::copy(&url, &dest_path) {
+                    eprintln!("Failed to local copy '{}' to '{}': {}", url, dest_path, e);
+                    return Err(e.into());
+                }
+            }
+        } else {
+            self.download_urls(urls, output_dir, nr_parallel, max_retries, proxy)?;
+        }
+        Ok(())
+    }
+
     // Download packages specified by their pkgline strings.
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
         let output_dir = paths::instance.epkg_pkg_cache_dir.display().to_string();
@@ -303,7 +322,7 @@ impl PackageManager {
         }
 
         // Step 2: Call the predefined download_urls function
-        self.download_urls(urls, &output_dir, 6, 6, None)?;
+        self.download_or_copy_urls(urls, &output_dir, 6, 6, None)?;
         Ok(local_files)
     }
 }

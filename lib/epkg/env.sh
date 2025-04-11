@@ -94,6 +94,7 @@ __epkg_create_environment() {
 
 	mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
 	mkdir -p $curr_env_root/$env/profile-1/etc
+	mkdir -p $curr_env_root/$env/profile-1/var
 
     cd $curr_env_root/$env/profile-1
 	ln -sfT "usr/bin"     "bin"

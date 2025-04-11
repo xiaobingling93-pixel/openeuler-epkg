@@ -1,8 +1,10 @@
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::Path;
 use std::path::PathBuf;
 use anyhow::Result;
+use sha2::{Sha256, Digest};
+use std::fs::File;
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -111,4 +113,20 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
 
     // If nothing matches, return binary data
     Ok(FileType::Binary)
+}
+
+pub fn compute_file_sha256(file_path: &str) -> io::Result<String> {
+    let mut file = File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 4096];
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
 }

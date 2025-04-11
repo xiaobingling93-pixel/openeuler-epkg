@@ -8,6 +8,7 @@ use dirs::home_dir;
 use anyhow::{Context, Result, bail};
 use crate::paths;
 use crate::models::*;
+use crate::parse_requires::*;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -19,7 +20,7 @@ pub fn load_package_json(file_path: &str) -> Result<Package> {
     Ok(package)
 }
 
-fn load_repodata_index(file_path: &str) -> Result<Repodata> {
+pub fn load_repodata_index(file_path: &str) -> Result<Repodata> {
     // Read the file contents
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path))?;
@@ -57,6 +58,15 @@ fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) 
         pkgline,
     );
     let pkg_json = load_package_json(&file_path)?;
+    let format = match pkg_json.origin_url {
+        Some(ref url) => {
+            get_package_format(url)
+        },
+        None => {
+            println!("Package {} missing origin URL", pkg_json.name);
+            None
+        }
+    };
 
     Ok(PackageSpec {
         repo: reponame.to_string(),
@@ -65,6 +75,9 @@ fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) 
         version: parts[2].to_string(),
         release: parts[3].to_string(),
         source: pkg_json.source,
+        provides: pkg_json.provides,
+        priority: pkg_json.priority,
+        format: format,
     })
 }
 
@@ -98,7 +111,6 @@ impl PackageManager {
             self.env_config.channel.name,
             self.options.arch,
         );
-
         for entry in glob::glob(&file_glob).expect("Failed to read glob pattern") {
             match entry {
                 Ok(path) => {
@@ -119,13 +131,16 @@ impl PackageManager {
         if self.repos_data.is_empty() {
             self.load_repodata()?;
         }
-
         for repodata in &self.repos_data {
             for entry in &repodata.store_paths {
                 let file_path = format!(
                     "{}/{}",
                     repodata.dir,
                     entry.filename.strip_suffix(".zst").unwrap()
+                                                       .splitn(3, '-') 
+                                                       .take(2)
+                                                       .collect::<Vec<_>>()
+                                                       .join("-") 
                 );
                 let contents = fs::read_to_string(&file_path)
                     .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
@@ -135,6 +150,23 @@ impl PackageManager {
                             .entry(pkg_spec.name.clone())
                             .or_insert_with(Vec::new)
                             .push(pkgline.to_string());
+                        if let Some(provides) = &pkg_spec.provides {
+                            for provide in provides {
+                                if pkg_spec.format.is_some() {
+                                    let and_deps = match parse_requires(&pkg_spec.format.clone().unwrap().as_str(), provide) {
+                                        Ok(deps) => deps,
+                                        Err(e) => {
+                                            println!("Failed to parse requirement '{}': {}", provide, e);
+                                            continue;
+                                        }
+                                    };
+                                    self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), pkg_spec.name.clone());
+                                }
+                            }
+                        }
+                        if pkg_spec.priority.is_some() && pkg_spec.priority.as_ref().unwrap() == "essential" {
+                            self.essential_pkgnames.insert(pkg_spec.name.clone());
+                        }
                         self.pkghash2spec.insert(pkg_spec.hash.clone(), pkg_spec);
                     }
                 }

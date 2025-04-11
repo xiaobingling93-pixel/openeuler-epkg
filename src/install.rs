@@ -47,7 +47,11 @@ pub fn remove_duplicates(
 
         // Remove duplicates from `b`
         for package_name in duplicates {
-            b.remove(&package_name);
+            // appbin_flag 变更需要处理
+            if a.get(&package_name).unwrap().appbin_flag == 
+               b.get(&package_name).unwrap().appbin_flag {
+                b.remove(&package_name);
+            }
         }
     }
 }

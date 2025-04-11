@@ -2,6 +2,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use std::fmt;
 use std::error::Error;
+use url::Url;
 
 /*
  * Design and Rules for Parsing Package Requirements
@@ -691,6 +692,14 @@ pub fn parse_conda_requires(requires: &str) -> Result<AndDepends, ParseError> {
     Ok(and_depends)
 }
 
+pub fn get_package_format(origin_url: &str) -> Option<String> {
+    let parsed_url = Url::parse(origin_url).ok()?;
+    let path = parsed_url.path();
+    let filename = path.split('/').last()?;
+    let ext = filename.split('.').last()?;
+    Some(ext.to_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1119,5 +1128,17 @@ mod tests {
             has_outer_parentheses(input),
             Err(ParseError::UnbalancedParentheses)
         );
+    }
+
+    #[test]
+    fn test_get_package_format() {
+        let test_url = "https://mirrors.huaweicloud.com/ubuntu//pool/main/u/ubuntu-themes/ubuntu-mono_24.04-0ubuntu1_all.deb";
+        match get_package_format(test_url) {
+            Some(format) => println!("包格式: {}", format),
+            None => println!("无法确定包格式"),
+        }
+        assert_eq!(get_package_format(test_url), Some("deb".to_string()));
+        let rpm_url = "https://repo.openeuler.org/openEuler-24.09/everything/aarch64/Packages/http_load-09Mar2016-1.oe2409.aarch64.rpm";
+        assert_eq!(get_package_format(rpm_url), Some("rpm".to_string()));
     }
 }

@@ -27,11 +27,16 @@ pub struct Package {
     pub description: Option<String>,
 
     #[serde(default)]
-    pub depends: Vec<Dependency>,
+    pub depends: Option<Vec<Dependency>>,
     pub requires: Option<Vec<String>>,
     pub provides: Option<Vec<String>>,
     pub recommends: Option<Vec<String>>,
     pub suggests: Option<Vec<String>>,
+    #[serde(rename = "originUrl")]
+    pub origin_url: Option<String>,
+    #[serde(rename = "requiresPre")]
+    pub requires_pre: Option<Vec<String>>,
+    pub priority: Option<String>,
     #[serde(skip)]
     pub require_caps: Vec<String>,
     #[serde(skip)]
@@ -51,7 +56,7 @@ pub struct Repodata {
     #[serde(rename = "store-paths")]
     pub store_paths: Vec<StorePathsIndex>,
     #[serde(rename = "pkg-info")]
-    pub pkg_info: Vec<PkgInfoIndex>,
+    pub pkg_infos: Vec<PkgInfoIndex>,
     #[serde(rename = "pkg-files")]
     pub pkg_files: Vec<PkgFilesIndex>,
 }
@@ -93,6 +98,9 @@ pub struct PackageSpec {
     pub version: String,
     pub release: String,
     pub source: Option<String>,
+    pub provides: Option<Vec<String>>,
+    pub priority: Option<String>,
+    pub format: Option<String>,
 }
 
 /*
@@ -188,6 +196,8 @@ pub struct PackageManager {
     // pkgname2lines[pkgname] = [pkgline]
     pub pkghash2spec: HashMap<String, PackageSpec>,
     pub pkgname2lines: HashMap<String, Vec<String>>,
+    pub provide2pkgnames: HashMap<String, String>,
+    pub essential_pkgnames: HashSet<String>,
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>,
