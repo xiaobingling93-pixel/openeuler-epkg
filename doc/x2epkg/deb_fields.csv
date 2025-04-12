@@ -1,0 +1,37 @@
+Key,newKey,exampleValue,描述
+Package,name,acl,包名
+Status,drop,install ok installed,软件包安装情况
+Priority,drop,optional,软件包的重要性
+Section,drop,utils,软件包的类别
+Installed-Size,,200,软件包的安装大小
+Maintainer,packager,Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>,维护者
+Architecture,arch,amd64,架构
+Multi-Arch,drop,foreign,表明软件包与不同架构之间的关系
+Version,version,2.3.1-1,版本
+Depends,requires,"libacl1 (= 2.3.1-1), libc6 (>= 2.34)",依赖
+Description,description,"access control list - utilities
+ This package contains the getfacl and setfacl utilities needed for
+ manipulating access control lists. It also contains the chacl IRIX
+ compatible utility.",描述
+Original-Maintainer,drop,Guillem Jover <guillem@debian.org>,初始维护者
+Homepage,homepage,https://savannah.nongnu.org/projects/acl/,网址
+Suggests,suggests,"liblocale-gettext-perl, perl, ecryptfs-utils (>= 67-1)",建议依赖(from adduser)
+Recommends,recommends,initramfs-tools (>= 0.113~) | dracut (>= 044) | tiny-initramfs,强烈建议依赖(from amd64-microcode)
+Breaks,breaks,intel-microcode (<< 2),破坏依赖(from amd64-microcode)
+Replaces,replaces,"core-dump-handler, python-apport (<< 2.2-0ubuntu1)",被覆盖的包
+Provides,provides,core-dump-handler,provides(from apport)
+Conflicts,conflicts,core-dump-handler,conflicts(from apport)
+Source,drop,apt,由什么包的源码编译而来(from apt-transport-https)
+Essential,drop,yes,bool值，为yes时表示极为重要(from base-files)
+Pre-Depends,buildRequires,awk,构建前依赖(from base-files)
+Built-Using,drop,glibc (= 2.35-0ubuntu1),构建时嵌入使用的包(from busybox-static)
+Enhances,enhances,screen,enhances(from byobu)
+Conffiles,drop,"/etc/debian_version 62f807f9edf48f460110889c2ecc3db6
+ /etc/dpkg/origins/debian c47b6815f67ad1aeccb0d4529bd0b990
+ /etc/dpkg/origins/ubuntu ea35901c45553c3451f60476be94d2d8
+ /etc/host.conf 89408008f2585c957c031716600d5a80",配置文件
+Important,drop,yes,bool值，为yes时表示非常重要
+Original-Vcs-Browser,drop,https://salsa.debian.org/glibc-team/glibc,提供原始版本控制系统的浏览器网址(from libc-bin)
+Original-Vcs-Git,drop,https://salsa.debian.org/glibc-team/glibc.git,提供原始版本控制系统的git地址(from libc-bin)
+Protected,drop,yes,bool值，受系统保护，不轻易卸载
+Cnf-Visible-Pkgname,drop,yes,bool值，不被用户操作
