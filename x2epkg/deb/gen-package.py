@@ -6,13 +6,13 @@ keywords_map = {
     "Package": "name",
     "Version": "version",
     "Maintainer": "packager",
+    "Essential": "essential",
     "Build-Depends": "buildRequires",
     "Description": "description",
     "Homepage": "homepage",
     "Architecture": "arch",
-    "Source": "source",
     "Depends": "requires",
-    "Pre-Depends": "requiresPre",
+    "Pre-Depends": "requires",
     "Provides": "provides",
     "Conflicts": "conflicts",
     "Recommends": "recommends",
@@ -47,11 +47,13 @@ def get_basic_info():
             continue
         k, _value = line.split(": ", 1)
         _keywords = k.strip()
+        if _keywords == "essential" and _value == "yes":  # essential作为优先级的一个选项，即最高优先级
+            json_data["priority"] = _keywords
         if ", " in _value:
             for single in _value.split(", "):
                 json_data.setdefault(k.strip(), []).append(single.strip())
         else:
-            json_data[_keywords] = _value.strip()
+            json_data.setdefault(_keywords, _value.strip())
     return json_data
 
 

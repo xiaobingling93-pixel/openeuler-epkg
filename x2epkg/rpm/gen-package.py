@@ -4,7 +4,6 @@ import json
 
 
 def get_basic_info():
-    # TODO(method)
     epoch = os.popen("rpm -qp --qf %{epoch} " + rpm_path).read().strip()
     if epoch == "(none)":
         epoch = "0"
@@ -16,6 +15,16 @@ def get_basic_info():
     basic_data = os.linesep.join(filtered_lines)
     json_data = json.loads("{" + basic_data + "}")
     json_data["epoch"] = epoch
+    keys = ["summary", "description", "group", "platform", "changelogtime", "source"]
+    for k in keys:
+        k_info = os.popen("rpm -qp --qf \"%{" + k + "}\"").read()
+        if k_info == "(none)":
+            continue
+        if k == "source":
+            k = "sourcePkg"
+        elif k == "changelogtime":
+            k = "changelogTime"
+        json_data[k] = k_info
     return json_data
 
 
