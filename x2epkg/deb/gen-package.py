@@ -7,12 +7,16 @@ keywords_map = {
     "Version": "version",
     "Maintainer": "packager",
     "Essential": "essential",
+    "Important": "important",
+    "Protected": "protected",
     "Build-Depends": "buildRequires",
     "Description": "description",
     "Homepage": "homepage",
     "Architecture": "arch",
+    'Multi-Arch': 'multiArch',
+    'Source': 'sourcePkg',
     "Depends": "requires",
-    "Pre-Depends": "requires",
+    "Pre-Depends": "requiresPre",
     "Provides": "provides",
     "Conflicts": "conflicts",
     "Recommends": "recommends",
@@ -22,7 +26,9 @@ keywords_map = {
     "Replaces": "replaces",
     "Installed-Size": "size",
     "Section": "section",
-    "Priority": "priority"
+    "Priority": "priority",
+    "Original-Vcs-Git": "vcs",
+    "Conffiles": "configFiles"
 }
 
 
@@ -47,7 +53,7 @@ def get_basic_info():
             continue
         k, _value = line.split(": ", 1)
         _keywords = k.strip()
-        if _keywords == "essential" and _value == "yes":  # essential作为优先级的一个选项，即最高优先级
+        if _keywords in ["essential", "important", "protected"] and _value == "yes":  # bool值优先级字段作为priority的一个选项，即最高优先级
             json_data["priority"] = _keywords
         if ", " in _value:
             for single in _value.split(", "):
@@ -75,11 +81,21 @@ def gen_metadata():
         metadata["epoch"] = 0
 
 
+def get_conf_files():
+    conf_files_path = pkginfo_path.replace("control", "conffiles")
+    if not os.path.exists(conf_files_path):
+        return
+    with open(conf_files_path, "r") as conf_f:
+        conf_files = conf_f.read().split(os.linesep)
+    metadata.setdefault("confFiles", conf_files)
+
+
 if __name__ == '__main__':
     pkginfo_path = sys.argv[1]
     output_path = sys.argv[2]
     pkg_name = sys.argv[3]
     metadata = get_basic_info()
+    get_conf_files()
     for keywords in ["Depends", "Build-Depends", "Pre-Depends", "Provides", "Conflicts", "Recommends", "Suggests", "Enhances"]:
         if keywords in metadata and isinstance(metadata[keywords], str):
             metadata[keywords] = [metadata[keywords]]

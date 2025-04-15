@@ -1,7 +1,7 @@
-Key,newKey,exampleValueValue,描述,,
-Headeri18ntable,drop,C,英语环境,,
-Sigsize,drop,3227113,签名大小,,
-Sigmd5,drop,wiJ0U8PeTS+GQUjP7fp+rg==,签名的md5,,
+Key,newKey,exampleValueValue,描述
+Headeri18ntable,drop,C,英语环境
+Sigsize,drop,3227113,签名大小
+Sigmd5,drop,wiJ0U8PeTS+GQUjP7fp+rg==,签名的md5
 Rsaheader,signature,"wsDcBAABCAAQBQJmUZLrCRA7R3xgtnVgCwAAkeAL/3jkDAvpDvCAKy+nL9ucuF2Y
 HjIU2HXpshZWQlmnvNzSw5DfDQiIJN3/GUfNkaHCgixZv520ppWzSJbxZEJzYX5f
 fU2Cgqw0IsR5bm45VTABCmdmxF+l2bArUgiJ1MSB2a2dekqSoJtj+0a9IFH2usFo
@@ -10,95 +10,95 @@ ttIkabsi2v/OkZKIEiRA2ODjd2P9tZGrGlMT8GzV3KZMsL9VKK+nZLkwsRBmj2aF
 uOH/xLFnZlzgizgSQZjz6G6bukAbV7f/vZaVeexIAX4CZhYl7hyEY6IrvUTiKuxr
 E6SkxxKEZgOljxddY5Pepdl5BE/SSuPoS9aWIfrPDGwpRpPwA8V3i7B4u396l/tR
 sGZ5wHpXSm1Z3XkbztJsrrCnfgY+IsJMAIlnpR9wSgotj92zqeU0Hs/Ea7knzhjZ
-exx9V3hatv5R1rBZqpbfpHRhyit6KZIuPmFA22W5/A==",签名,,
-Sha1header,drop,12d273436cd1cfe770b0f2df301ca02cc0512c2f,完整性检查sha1,,
-Sha256header,pkgSha256,82a5cfd402800a11a2a1f6265a517fcd48448fef3d5f49c90167c16dbf380c62,完整性检查sha256,,
-Name,name,glibc,名字,,
-Version,version,2.38,版本,,
-Release,release,29.oe2403,小版本,,
-Summary,summary,The GNU libc libraries,概述,,
+exx9V3hatv5R1rBZqpbfpHRhyit6KZIuPmFA22W5/A==",签名
+Sha1header,drop,12d273436cd1cfe770b0f2df301ca02cc0512c2f,完整性检查sha1
+Sha256header,pkgSha256,82a5cfd402800a11a2a1f6265a517fcd48448fef3d5f49c90167c16dbf380c62,完整性检查sha256
+Name,name,glibc,名字
+Version,version,2.38,版本
+Release,release,29.oe2403,小版本
+Summary,summary,The GNU libc libraries,概述
 Description,description,"The GNU C Library project provides the core libraries for the GNU system and
 GNU/Linux systems, as well as many other systems that use Linux as the kernel.
 These libraries provide critical APIs including ISO C11, POSIX.1-2008, BSD,
 OS-specific APIs and more. These APIs include such foundational facilities as
 open, read, write, malloc, printf, getaddrinfo, dlopen, pthread_create, crypt,
- login, exit and more.",描述,,
-Buildtime,buildTime,1716621790,构建时间,,
-Buildhost,buildHost,dc-64g.compass-ci,构建机器,,
-Size,size,11522441,包大小,,
-License,license,LGPLv2+ and LGPLv2+ with exceptions and GPLv2+ and GPLv2+ with exceptions and BSD and Inner-Net and ISC and Public Domain and GFDL,开源协议,,
-Packager,packager,http://openeuler.org,打包者,,
-Group,group,Unspecified,软件包类别,,
-Url,homepage,http://www.gnu.org/software/glibc/,网址,,
-Os,os,linux,系统,,
-Arch,arch,x86_64,架构,,
+ login, exit and more.",描述
+Buildtime,buildTime,1716621790,构建时间
+Buildhost,buildHost,dc-64g.compass-ci,构建机器
+Size,size,11522441,包大小
+License,license,LGPLv2+ and LGPLv2+ with exceptions and GPLv2+ and GPLv2+ with exceptions and BSD and Inner-Net and ISC and Public Domain and GFDL,开源协议
+Packager,packager,http://openeuler.org,打包者
+Group,group,Unspecified,软件包类别
+Url,homepage,http://www.gnu.org/software/glibc/,网址
+Os,os,linux,系统
+Arch,arch,x86_64,架构
 Prein,pre,"-- Check that the running kernel is new enough
 required = '3.2'
 rel = posix.uname(""%r"")
 if rpm.vercmp(rel, required) < 0 then
   error(""FATAL: kernel too old"", 0)
-end",安装前运行时脚本,,
-Postin,post,,安装后运行时脚本,,
-Preun,preun,,卸载前运行时脚本,,
-Postun,postun,,卸载后运行时脚本,,
-Pretrans,pretrans,,事务前运行时脚本,,
-Posttrans,posttrans,,事务后运行时脚本,,
-Filesizes,drop,"0,53058,20475",各个文件的大小，文件太多,,
-Filemodes,drop,"331,883,318,833,188",,,
-Filerdevs,drop,"0,0,0",,,
-Filemtimes,drop,"171,662,197,317,166,000,000,000,000,000",文件的时间戳list,,
-Filedigests,drop,",9173697838895699f71115196ac24a9dee87938c29f33deec56b523208c7e3f2,628e06ea956a17aac3fd26658479f6ab5d36f3ad233d569bd19aa486e030b8e5",,,
-Filelinktos,drop,",,",,,
-Fileflags,drop,"89,0,0",,,
-Fileusername,drop,"root,root,root",,,
-Filegroupname,drop,"root,root,root",,,
-Sourcerpm,sourcePkg,glibc-2.38-29.oe2403.src.rpm,src.rpm,,
-Fileverifyflags,drop,"4294967256,0,0",文件完整性校验值,,
-Providename,provides,"bundled(gnulib),config(glibc),glibc",provides,,
-Requireflags,drop,"0,268435464,8",依赖项的标志,,
-Requirename,requires,"basesystem,config(glibc),glibc-common",requires（包含运行时脚本依赖）,,
-Requireversion,requires,",2.38-29.oe2403,2.38-29.oe2403",requires的版本,,
-Recommendname,recommends,,recommends,,
-Recommendversion,recommends,,recommend的版本,,
-Supplementname,supplements,,supplements,,
-Supplementversion,supplements,,supplement的版本,,
-Enhancename,enhances,,enhances,,
-Enhanceversion,enhances,,enhance的版本,,
-Suggestname,suggests,,suggests,,
-Suggestversion,suggests,,suggest的版本,,
-Rpmversion,drop,4.18.2,打包环境rpm的版本,,
-Changelogtime,changelogTime,"169,080,480,016,841,000,000,000,000,000",最后修改时间,,
-Changelogname,drop,"wangkai <13474090681@163.com> - 4.0.14-6,yaoxin <yao_xin001@hoperun.com> - 4.0.14-5,wushaozheng<wushaozheng@ncti-gba.cn> - 4.0.14-4",,,
-Changelogtext,drop,"- Fix CVE-2022-24834,- Fix CVE-2023-28856,- Fix CVE-2022-36021",changelog,,
-Preinprog,preLang,<lua>,脚本的语言标志,,
-Postinprog,postLang,<lua>,脚本的语言标志,,
-Preunprog,preunLang,,脚本的语言标志,,
-Postunprog,postunLang,,脚本的语言标志,,
-Pretransprog,pretransLang,,脚本的语言标志,,
-Posttransprog,posttransLang,,脚本的语言标志,,
-Cookie,drop,dc-64g.compass-ci 1716621790,构建环境和时间，低版本无,,
-Filedevices,drop,"1,1,1",文件安装设备编号list,,
-Fileinodes,drop,"1,2,3",,,
-Filelangs,drop,",,",文件语言list,,
-Provideflags,drop,"0,268435464,8",provides的标志,,
-Provideversion,provides,",2.38-29.oe2403,2.38-29.oe2403",provides的版本,,
-Dirindexes,drop,"0,1,2",,,
-Basenames,drop,"gai.conf,0-metadata_list-compact_tlv-glibc-2.38-29.oe2403.x86_64,0-metadata_list-compact-glibc-2.38-29.oe2403.x86_64",文件名list,,
-Dirnames,drop,"/etc/,/etc/ima/digest_lists.tlv/,/etc/ima/digest_lists/",目录名list,,
-Optflags,drop,"-O2 -g -grecord-gcc-switches -pipe -fstack-protector-strong  -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/generic-hardened-cc1 -m64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection",,,
-Payloadformat,drop,cpio,压缩格式,,
-Payloadcompressor,drop,xz,压缩工具,,
-Payloadflags,drop,2,压缩格式的标志,,
-Platform,platform,x86_64-openEuler-linux-gnu,软件包的平台,,
-Filecolors,drop,"0,0,0",文件的颜色标志list,,
-Fileclass,drop,"0,1,1",文件的类别list,,
-Classdict,drop,"empty,,ASCII text",类别的值,,
-Filedependsx,drop,"0,0,0",文件依赖名称list,,
-Filedependsn,drop,"0,0,0",文件依赖版本list,,
-Dependsdict,drop,"134,217,728,513,421,000,000,000,000,000",依赖的时间戳list,,
-Sourcepkgid,drop,kj6muwOY/TUck8yNZ9YG6Q==,src包的id,,
-Filedigestalgo,drop,8,hash算法标志,,
-Encoding,drop,utf-8,编码格式,,
-Payloaddigest,drop,e40c8e5705dd5df47ef89863b78c427ce9f2033586c22b8010efc74bb5509e82,完整性校验的hash,,
-Payloaddigestalgo,drop,8,hash算法标志,,
-Payloaddigestalt,drop,50f0884a93bc1a7d24678eb3a45d149b42ad16b95a39af0d6976ba9d9df5388e,完整性校验的备用hash,,
+end",安装前运行时脚本
+Postin,post,,安装后运行时脚本
+Preun,preun,,卸载前运行时脚本
+Postun,postun,,卸载后运行时脚本
+Pretrans,pretrans,,事务前运行时脚本
+Posttrans,posttrans,,事务后运行时脚本
+Filesizes,drop,"0,53058,20475",各个文件的大小，文件太多
+Filemodes,drop,"331,883,318,833,188",
+Filerdevs,drop,"0,0,0",
+Filemtimes,drop,"171,662,197,317,166,000,000,000,000,000",文件的时间戳list
+Filedigests,drop,",9173697838895699f71115196ac24a9dee87938c29f33deec56b523208c7e3f2,628e06ea956a17aac3fd26658479f6ab5d36f3ad233d569bd19aa486e030b8e5",
+Filelinktos,drop,",,",
+Fileflags,drop,"89,0,0",
+Fileusername,drop,"root,root,root",
+Filegroupname,drop,"root,root,root",
+Sourcerpm,source,glibc-2.38-29.oe2403.src.rpm,src.rpm
+Fileverifyflags,drop,"4294967256,0,0",文件完整性校验值
+Providename,provides,"bundled(gnulib),config(glibc),glibc",provides
+Requireflags,drop,"0,268435464,8",依赖项的标志
+Requirename,requires,"basesystem,config(glibc),glibc-common",requires（包含运行时脚本依赖）
+Requireversion,requires,",2.38-29.oe2403,2.38-29.oe2403",requires的版本
+Recommendname,recommends,,recommends
+Recommendversion,recommends,,recommend的版本
+Supplementname,supplements,,supplements
+Supplementversion,supplements,,supplement的版本
+Enhancename,enhances,,enhances
+Enhanceversion,enhances,,enhance的版本
+Suggestname,suggests,,suggests
+Suggestversion,suggests,,suggest的版本
+Rpmversion,drop,4.18.2,打包环境rpm的版本
+Changelogtime,changelogTime,"169,080,480,016,841,000,000,000,000,000",最后修改时间
+Changelogname,changelogName,"wangkai <13474090681@163.com> - 4.0.14-6,yaoxin <yao_xin001@hoperun.com> - 4.0.14-5,wushaozheng<wushaozheng@ncti-gba.cn> - 4.0.14-4",
+Changelogtext,changelogText,"- Fix CVE-2022-24834,- Fix CVE-2023-28856,- Fix CVE-2022-36021",changelog
+Preinprog,preLang,<lua>,脚本的语言标志
+Postinprog,postLang,<lua>,脚本的语言标志
+Preunprog,preunLang,,脚本的语言标志
+Postunprog,postunLang,,脚本的语言标志
+Pretransprog,pretransLang,,脚本的语言标志
+Posttransprog,posttransLang,,脚本的语言标志
+Cookie,cookie,dc-64g.compass-ci 1716621790,构建环境和时间，低版本无
+Filedevices,drop,"1,1,1",文件安装设备编号list
+Fileinodes,drop,"1,2,3",
+Filelangs,drop,",,",文件语言list
+Provideflags,drop,"0,268435464,8",provides的标志
+Provideversion,provides,",2.38-29.oe2403,2.38-29.oe2403",provides的版本
+Dirindexes,drop,"0,1,2",
+Basenames,drop,"gai.conf,0-metadata_list-compact_tlv-glibc-2.38-29.oe2403.x86_64,0-metadata_list-compact-glibc-2.38-29.oe2403.x86_64",文件名list
+Dirnames,drop,"/etc/,/etc/ima/digest_lists.tlv/,/etc/ima/digest_lists/",目录名list
+Optflags,drop,"-O2 -g -grecord-gcc-switches -pipe -fstack-protector-strong  -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/generic-hardened-cc1 -m64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection",
+Payloadformat,drop,cpio,压缩格式
+Payloadcompressor,drop,xz,压缩工具
+Payloadflags,drop,2,压缩格式的标志
+Platform,platform,x86_64-openEuler-linux-gnu,软件包的平台
+Filecolors,drop,"0,0,0",文件的颜色标志list
+Fileclass,drop,"0,1,1",文件的类别list
+Classdict,drop,"empty,,ASCII text",类别的值
+Filedependsx,drop,"0,0,0",文件依赖名称list
+Filedependsn,drop,"0,0,0",文件依赖版本list
+Dependsdict,drop,"134,217,728,513,421,000,000,000,000,000",依赖的时间戳list
+Sourcepkgid,sourcePkgId,kj6muwOY/TUck8yNZ9YG6Q==,src包的id
+Filedigestalgo,drop,8,hash算法标志
+Encoding,drop,utf-8,编码格式
+Payloaddigest,drop,e40c8e5705dd5df47ef89863b78c427ce9f2033586c22b8010efc74bb5509e82,完整性校验的hash
+Payloaddigestalgo,drop,8,hash算法标志
+Payloaddigestalt,drop,50f0884a93bc1a7d24678eb3a45d149b42ad16b95a39af0d6976ba9d9df5388e,完整性校验的备用hash

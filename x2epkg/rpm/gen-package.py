@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 
@@ -15,16 +16,18 @@ def get_basic_info():
     basic_data = os.linesep.join(filtered_lines)
     json_data = json.loads("{" + basic_data + "}")
     json_data["epoch"] = epoch
-    keys = ["summary", "description", "group", "platform", "changelogtime", "source"]
+    keys = ["summary", "description", "group", "platform", "changelogTime", "changelogName", "changelogText",
+            "sourceRpm", "sourcePkgId", "cookie"]
     for k in keys:
-        k_info = os.popen("rpm -qp --qf \"%{" + k + "}\"").read()
+        k_info = os.popen("rpm -qp --qf \"%{" + k.lower() + "}\" " + rpm_path).read()
         if k_info == "(none)":
             continue
-        if k == "source":
+        if k == "sourceRpm":
             k = "sourcePkg"
-        elif k == "changelogtime":
-            k = "changelogTime"
         json_data[k] = k_info
+    content = os.popen(f"rpm -qp --info " + rpm_path).read()
+    signature = re.search("Signature.*: (.*)", content).group(1)
+    json_data["signature"] = signature
     return json_data
 
 
