@@ -14,11 +14,18 @@ touch ${epkg_conversion_dir}/info/{package.json,files}
 
 generate_mtree_files()
 {
+  declare -A user_map group_map
+  while IFS=: read -r name _ uid _; do user_map[$uid]="$name"; done < /etc/passwd
+  while IFS=: read -r name _ gid _; do group_map[$gid]="$name"; done < /etc/group
   find "${epkg_conversion_dir}/fs/" -exec stat -c "%n %a %u %g %F" {} + 2>/dev/null | while read -r path mode uid gid type; do
     relative_path="/${path#$target_dir/}"
 
-    user=$(getent passwd "$uid" | cut -d: -f1)
-    group=$(getent group "$gid" | cut -d: -f1)
+    if [[ "$mode" =~ ^(755|644)$ ]] &&
+       [[ "${user_map[$uid]}" = "root" ]] &&
+       [[ "${group_map[$gid]}" = "root" ]] &&
+       [[ "$file_type" != "file" ]]; then
+        continue
+    fi
 
     [ "$user" = "root" ] && user=""
     [ "$group" = "root" ] && group=""
