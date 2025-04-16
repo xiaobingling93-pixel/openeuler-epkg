@@ -18,9 +18,7 @@ decompress_rpm()
 
 generate_files()
 {
-	find ${epkg_conversion_dir}/fs/ -mindepth 1 -exec stat --format='%n mode=%a size=%s mtime=%Y' {} \; > ${epkg_conversion_dir}/info/files
-
-	sed -i "s|^${epkg_conversion_dir}/fs/||" "${epkg_conversion_dir}/info/files"
+	generate_mtree_files
 	# 生成package.json
 	tmp_dir=$(mktemp -d)
 	./rpm/gen-install-scriptlets.sh "$rpm_file" "${epkg_conversion_dir}/info/"

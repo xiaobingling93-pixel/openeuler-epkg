@@ -2,7 +2,7 @@ Key,newKey,exampleValueValue,描述
 Headeri18ntable,drop,C,英语环境
 Sigsize,drop,3227113,签名大小
 Sigmd5,drop,wiJ0U8PeTS+GQUjP7fp+rg==,签名的md5
-Rsaheader,signature,"wsDcBAABCAAQBQJmUZLrCRA7R3xgtnVgCwAAkeAL/3jkDAvpDvCAKy+nL9ucuF2Y
+Rsaheader,rsaHeader,"wsDcBAABCAAQBQJmUZLrCRA7R3xgtnVgCwAAkeAL/3jkDAvpDvCAKy+nL9ucuF2Y
 HjIU2HXpshZWQlmnvNzSw5DfDQiIJN3/GUfNkaHCgixZv520ppWzSJbxZEJzYX5f
 fU2Cgqw0IsR5bm45VTABCmdmxF+l2bArUgiJ1MSB2a2dekqSoJtj+0a9IFH2usFo
 7QPA6tgZaPI8ecUEC1wg01InBwzJBVzG8hTBZsOhBg1hYerrE6YK/coFUQBEi3u3
@@ -12,7 +12,7 @@ E6SkxxKEZgOljxddY5Pepdl5BE/SSuPoS9aWIfrPDGwpRpPwA8V3i7B4u396l/tR
 sGZ5wHpXSm1Z3XkbztJsrrCnfgY+IsJMAIlnpR9wSgotj92zqeU0Hs/Ea7knzhjZ
 exx9V3hatv5R1rBZqpbfpHRhyit6KZIuPmFA22W5/A==",签名
 Sha1header,drop,12d273436cd1cfe770b0f2df301ca02cc0512c2f,完整性检查sha1
-Sha256header,pkgSha256,82a5cfd402800a11a2a1f6265a517fcd48448fef3d5f49c90167c16dbf380c62,完整性检查sha256
+Sha256header,sha256Header,82a5cfd402800a11a2a1f6265a517fcd48448fef3d5f49c90167c16dbf380c62,完整性检查sha256
 Name,name,glibc,名字
 Version,version,2.38,版本
 Release,release,29.oe2403,小版本
@@ -32,17 +32,17 @@ Group,group,Unspecified,软件包类别
 Url,homepage,http://www.gnu.org/software/glibc/,网址
 Os,os,linux,系统
 Arch,arch,x86_64,架构
-Prein,pre,"-- Check that the running kernel is new enough
+Prein,drop(save to file),"-- Check that the running kernel is new enough
 required = '3.2'
 rel = posix.uname(""%r"")
 if rpm.vercmp(rel, required) < 0 then
   error(""FATAL: kernel too old"", 0)
 end",安装前运行时脚本
-Postin,post,,安装后运行时脚本
-Preun,preun,,卸载前运行时脚本
-Postun,postun,,卸载后运行时脚本
-Pretrans,pretrans,,事务前运行时脚本
-Posttrans,posttrans,,事务后运行时脚本
+Postin,drop(save to file),,安装后运行时脚本
+Preun,drop(save to file),,卸载前运行时脚本
+Postun,drop(save to file),,卸载后运行时脚本
+Pretrans,drop(save to file),,事务前运行时脚本
+Posttrans,drop(save to file),,事务后运行时脚本
 Filesizes,drop,"0,53058,20475",各个文件的大小，文件太多
 Filemodes,drop,"331,883,318,833,188",
 Filerdevs,drop,"0,0,0",
@@ -52,7 +52,7 @@ Filelinktos,drop,",,",
 Fileflags,drop,"89,0,0",
 Fileusername,drop,"root,root,root",
 Filegroupname,drop,"root,root,root",
-Sourcerpm,source,glibc-2.38-29.oe2403.src.rpm,src.rpm
+Sourcerpm,sourcePkg,glibc-2.38-29.oe2403.src.rpm,src.rpm
 Fileverifyflags,drop,"4294967256,0,0",文件完整性校验值
 Providename,provides,"bundled(gnulib),config(glibc),glibc",provides
 Requireflags,drop,"0,268435464,8",依赖项的标志
@@ -70,12 +70,12 @@ Rpmversion,drop,4.18.2,打包环境rpm的版本
 Changelogtime,changelogTime,"169,080,480,016,841,000,000,000,000,000",最后修改时间
 Changelogname,changelogName,"wangkai <13474090681@163.com> - 4.0.14-6,yaoxin <yao_xin001@hoperun.com> - 4.0.14-5,wushaozheng<wushaozheng@ncti-gba.cn> - 4.0.14-4",
 Changelogtext,changelogText,"- Fix CVE-2022-24834,- Fix CVE-2023-28856,- Fix CVE-2022-36021",changelog
-Preinprog,preLang,<lua>,脚本的语言标志
-Postinprog,postLang,<lua>,脚本的语言标志
-Preunprog,preunLang,,脚本的语言标志
-Postunprog,postunLang,,脚本的语言标志
-Pretransprog,pretransLang,,脚本的语言标志
-Posttransprog,posttransLang,,脚本的语言标志
+Preinprog,drop(save to file),<lua>,脚本的语言标志
+Postinprog,drop(save to file),<lua>,脚本的语言标志
+Preunprog,drop(save to file),,脚本的语言标志
+Postunprog,drop(save to file),,脚本的语言标志
+Pretransprog,drop(save to file),,脚本的语言标志
+Posttransprog,drop(save to file),,脚本的语言标志
 Cookie,cookie,dc-64g.compass-ci 1716621790,构建环境和时间，低版本无
 Filedevices,drop,"1,1,1",文件安装设备编号list
 Fileinodes,drop,"1,2,3",

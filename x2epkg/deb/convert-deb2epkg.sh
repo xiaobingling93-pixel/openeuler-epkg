@@ -35,9 +35,7 @@ decompress_deb()
 
 generate_files()
 {
-  find ${epkg_conversion_dir}/fs/ -mindepth 1 -exec stat --format='%n mode=%a size=%s' {} \; > ${epkg_conversion_dir}/info/files
-
-  sed -i "s|^${epkg_conversion_dir}/fs/||" "${epkg_conversion_dir}/info/files"
+  generate_mtree_files
   tmp_dir=$(mktemp -d)
   # 生成package.json
   ./deb/gen-install-scriptlets.sh "${epkg_conversion_dir}/info/install"

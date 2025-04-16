@@ -5,10 +5,12 @@ import json
 keywords_map = {
     "Package": "name",
     "Version": "version",
-    "Maintainer": "packager",
+    "Maintainer": "maintainer",
     "Essential": "essential",
     "Important": "important",
     "Protected": "protected",
+    "Cnf-Visible-Pkgname": "cnfVisiblePkgname",
+    "Original-Maintainer": "originalMaintainer",
     "Build-Depends": "buildRequires",
     "Description": "description",
     "Homepage": "homepage",
@@ -27,8 +29,10 @@ keywords_map = {
     "Installed-Size": "size",
     "Section": "section",
     "Priority": "priority",
-    "Original-Vcs-Git": "vcs",
-    "Conffiles": "configFiles"
+    "Original-Vcs-Git": "originalVcsGit",
+    "Original-Vcs-Browser": "originalVcsBrowser",
+    "Conffiles": "configFiles",
+    "Built-Using": "builtUsing"
 }
 
 
@@ -53,7 +57,7 @@ def get_basic_info():
             continue
         k, _value = line.split(": ", 1)
         _keywords = k.strip()
-        if _keywords in ["essential", "important", "protected"] and _value == "yes":  # bool值优先级字段作为priority的一个选项，即最高优先级
+        if _keywords in ["essential", "important", "protected", "cnfVisiblePkgname"] and _value == "yes":  # bool值优先级字段作为priority的一个选项，即最高优先级
             json_data["priority"] = _keywords
         if ", " in _value:
             for single in _value.split(", "):

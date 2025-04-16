@@ -17,7 +17,7 @@ def get_basic_info():
     json_data = json.loads("{" + basic_data + "}")
     json_data["epoch"] = epoch
     keys = ["summary", "description", "group", "platform", "changelogTime", "changelogName", "changelogText",
-            "sourceRpm", "sourcePkgId", "cookie"]
+            "sourceRpm", "sourcePkgId", "cookie", "rsaHeader", "sha256Header"]
     for k in keys:
         k_info = os.popen("rpm -qp --qf \"%{" + k.lower() + "}\" " + rpm_path).read()
         if k_info == "(none)":
@@ -25,9 +25,6 @@ def get_basic_info():
         if k == "sourceRpm":
             k = "sourcePkg"
         json_data[k] = k_info
-    content = os.popen(f"rpm -qp --info " + rpm_path).read()
-    signature = re.search("Signature.*: (.*)", content).group(1)
-    json_data["signature"] = signature
     return json_data
 
 
