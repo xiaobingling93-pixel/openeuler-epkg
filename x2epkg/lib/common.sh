@@ -39,9 +39,9 @@ generate_mtree_files()
         ;;
     esac
 
-    attributes="type=$file_type"
     [ "$uname" != "root" ] && attributes+=" uname=$uname"
     [ "$gname" != "root" ] && attributes+=" group=$gname"
+    attributes="type=$file_type"
     [ -n "$sha256" ] && attributes+=" sha256=$sha256"
 
     echo "$relative_path $attributes" >> "${epkg_conversion_dir}/info/files"
