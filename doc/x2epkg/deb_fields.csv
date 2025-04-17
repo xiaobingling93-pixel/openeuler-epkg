@@ -3,8 +3,8 @@ Package,name,acl,包名
 Status,drop,install ok installed,软件包安装情况
 Priority,priority,optional,软件包的重要性
 Section,section,utils,软件包的类别
-Installed-Size,size,200,安装大小
-Maintainer,packager,Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>,维护者
+Installed-Size,installedSize,200,安装大小
+Maintainer,maintainer,Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>,维护者
 Architecture,arch,amd64,架构
 Multi-Arch,multiArch,foreign,表明软件包与不同架构之间的关系
 Version,version,2.3.1-1,版本

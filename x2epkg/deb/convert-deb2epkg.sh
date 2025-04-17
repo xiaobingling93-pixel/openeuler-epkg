@@ -30,7 +30,7 @@ decompress_deb()
   else
     find -name "control.tar*" -exec tar xf {} -C "${epkg_conversion_dir}/info/install" \;
   fi
-  rm -f "${epkg_conversion_dir}/info/install/"{conffiles,md5sums}
+  rm -f "${epkg_conversion_dir}/info/install/"{md5sums,shlibs,triggers}
 }
 
 generate_files()

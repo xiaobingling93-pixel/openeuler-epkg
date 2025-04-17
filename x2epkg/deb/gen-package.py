@@ -31,7 +31,7 @@ keywords_map = {
     "Priority": "priority",
     "Original-Vcs-Git": "originalVcsGit",
     "Original-Vcs-Browser": "originalVcsBrowser",
-    "Conffiles": "configFiles",
+    "Conffiles": "conffiles",
     "Built-Using": "builtUsing"
 }
 
@@ -83,15 +83,18 @@ def gen_metadata():
         metadata["summary"], metadata["description"] = metadata["description"].split("\n", 1)
     if "epoch" not in metadata:
         metadata["epoch"] = 0
+    if "arch" in metadata:
+        metadata["arch"] = metadata["arch"].replace("amd", "x86_64").replace("arm64", "aarch64")
 
 
 def get_conf_files():
+    # 读取conffiles的文件，可以作为conffiles字段的内容
     conf_files_path = pkginfo_path.replace("control", "conffiles")
     if not os.path.exists(conf_files_path):
         return
     with open(conf_files_path, "r") as conf_f:
-        conf_files = conf_f.read().split(os.linesep)
-    metadata.setdefault("confFiles", conf_files)
+        conf_files = conf_f.read().strip().split(os.linesep)
+    return conf_files
 
 
 if __name__ == '__main__':
@@ -99,7 +102,9 @@ if __name__ == '__main__':
     output_path = sys.argv[2]
     pkg_name = sys.argv[3]
     metadata = get_basic_info()
-    get_conf_files()
+    conffiles = get_conf_files()
+    if conffiles is not None:
+        metadata.setdefault("conffiles", conffiles)
     for keywords in ["Depends", "Build-Depends", "Pre-Depends", "Provides", "Conflicts", "Recommends", "Suggests", "Enhances"]:
         if keywords in metadata and isinstance(metadata[keywords], str):
             metadata[keywords] = [metadata[keywords]]

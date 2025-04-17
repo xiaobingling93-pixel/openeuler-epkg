@@ -14,40 +14,35 @@ touch ${epkg_conversion_dir}/info/{package.json,files}
 
 generate_mtree_files()
 {
-  declare -A user_map group_map
-  while IFS=: read -r name _ uid _; do user_map[$uid]="$name"; done < /etc/passwd
-  while IFS=: read -r name _ gid _; do group_map[$gid]="$name"; done < /etc/group
-  find "${epkg_conversion_dir}/fs/" -exec stat -c "%n %a %u %g %F" {} + 2>/dev/null | while read -r path mode uid gid type; do
+  find "${epkg_conversion_dir}/fs/" -exec stat -c "%n %a %U %G %F" {} + 2>/dev/null | while read -r path mode uname gname type; do
     relative_path="/${path#${epkg_conversion_dir}/fs/}"
 
-    if [[ "$mode" =~ ^(755|644)$ ]] &&
-       [[ "${user_map[$uid]}" = "root" ]] &&
-       [[ "${group_map[$gid]}" = "root" ]] &&
-       [[ "$file_type" != "file" ]]; then
-        continue
-    fi
-
-    [ "$user" = "root" ] && user=""
-    [ "$group" = "root" ] && group=""
-
-    if [[ "$type" == "regular file" ]]; then
-      file_type="file"
-      sha256=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
-    elif [[ "$type" == "directory" ]]; then
-      file_type="dir"
-      sha256=""
-    else
-      file_type="$type"
-      sha256=""
-    fi
+    case "$type" in
+      "regular file")
+        file_type="file"
+        [[ "$mode" != "644" ]] || attributes+="mode=$mode"
+        sha256=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
+        ;;
+      "directory")
+        file_type="dir"
+        [[ "$mode" != "755" ]] || attributes+="mode=$mode"
+        sha256=""
+        ;;
+      "symbolic link")
+        file_type="link"
+        [[ "$mode" != "777" ]] || attributes+="mode=$mode"
+        sha256=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
+        ;;
+      *)
+        file_type="$type"
+        sha256=""
+        ;;
+    esac
 
     attributes="type=$file_type"
-    if [[ "$mode" != "755" && "$mode" != "644" ]]; then
-      attributes+=" mode=$mode"
-    fi
-    [ -n "$user" ] && attributes+=" user=$user"
-    [ -n "$group" ] && attributes+=" group=$group"
-    [ -n "$sha256" ] && attributes+=" sha256digest=$sha256"
+    [ "$uname" != "root" ] && attributes+=" uname=$uname"
+    [ "$gname" != "root" ] && attributes+=" group=$gname"
+    [ -n "$sha256" ] && attributes+=" sha256=$sha256"
 
     echo "$relative_path $attributes" >> "${epkg_conversion_dir}/info/files"
   done

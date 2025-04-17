@@ -9,7 +9,7 @@ desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'h
                  "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "packager", "originUrl",
                  "size", "section", "priority", "buildTime", "buildHost", 'group', 'cookie', 'platform', 'sourcePkg',
                  'sourcePkgId', 'rsaHeader', 'sha256Header', 'OriginalVcsBrowser', 'OriginalVcsGit', 'builtUsing',
-                 'originalMaintainer', 'configFiles', 'changelogTime', 'changelogName', 'changelogText']
+                 'originalMaintainer', 'conffiles', 'changelogTime', 'changelogName', 'changelogText']
 
 def run_epkg_hash(path):
     local_path = os.getcwd()
