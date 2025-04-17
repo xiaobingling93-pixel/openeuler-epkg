@@ -84,8 +84,40 @@ def gen_metadata():
     if "epoch" not in metadata:
         metadata["epoch"] = 0
     if "arch" in metadata:
-        metadata["arch"] = metadata["arch"].replace("amd", "x86_64").replace("arm64", "aarch64")
+        metadata["arch"] = debian_to_standard_arch(metadata["arch"])
 
+def debian_to_standard_arch(debian_arch):
+    """
+    Convert Debian architecture names to standard arch names.
+    Only includes non-trivial mappings where key ≠ value.
+
+    Args:
+        debian_arch (str): Debian architecture name (e.g., 'amd64', 'armel')
+
+    Returns:
+        str: Standardized architecture name
+    """
+    arch_map = {
+        # x86
+        'i386': 'x86',
+        'i486': 'x86',
+        'i586': 'x86',
+        'i686': 'x86',
+        'amd64': 'x86_64',
+
+        # ARM
+        'armel': 'arm',
+        'armhf': 'armv7',
+        'arm64': 'aarch64',
+        'arm': 'armv5',
+
+        # PowerPC
+        'powerpc': 'ppc',
+        'ppc64el': 'ppc64le'
+    }
+
+    # Handle case sensitivity and return the mapped value or original if not found
+    return arch_map.get(debian_arch.lower(), debian_arch)
 
 def get_conf_files():
     # 读取conffiles的文件，可以作为conffiles字段的内容
