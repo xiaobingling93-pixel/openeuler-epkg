@@ -57,11 +57,14 @@ def get_basic_info():
             continue
         k, _value = line.split(": ", 1)
         _keywords = k.strip()
-        if _keywords in ["essential", "important", "protected", "cnfVisiblePkgname"] and _value == "yes":  # bool值优先级字段作为priority的一个选项，即最高优先级
-            json_data["priority"] = _keywords
+        if _keywords in ["Essential", "Important", "Protected",
+                         "Cnf-Visible-Pkgname"] and _value.strip() == "yes":  # bool值优先级字段作为priority的一个选项，即最高优先级
+            json_data["priority"] = keywords_map[_keywords]
         if ", " in _value:
             for single in _value.split(", "):
                 json_data.setdefault(k.strip(), []).append(single.strip())
+        elif _keywords == "Priority" and "priority" in json_data:
+            continue
         else:
             json_data.setdefault(_keywords, _value.strip())
     return json_data
