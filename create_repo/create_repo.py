@@ -99,20 +99,26 @@ def scan_epkgs():
         os.system(f"mv {extracted_json_path} {target_json_path}")
 
 
-def generate_repodata(repodata_dir):
-    generate_index_json_in_repodata(repodata_dir)
-    generate_pkginfo_file_in_repodata(repodata_dir)
-    generate_storepaths_file_in_repodata(repodata_dir)
+def generate_zst_info(zst_info_tuple):
+    current_date = zst_info_tuple[2].strftime("%Y-%m-%d %H:%M:%S") + " +0800"
+    info = {"filename": os.path.basename(zst_info_tuple[0]), "sha256sum": zst_info_tuple[1], "datetime": current_date}
+    return info
 
-def generate_index_json_in_repodata(repodata_dir):
-    index_json_reader = IndexJson()
+
+def generate_repodata(repodata_dir):
+    pkginfo = generate_zst_info(generate_pkginfo_file_in_repodata(repodata_dir))
+    store_path_info = generate_zst_info(generate_storepaths_file_in_repodata(repodata_dir))
+    generate_index_json_in_repodata(repodata_dir, store_path_info, pkginfo)
+
+def generate_index_json_in_repodata(repodata_dir, store_path_name, pkginfo_name):
+    index_json_reader = IndexJson(store_path_name, pkginfo_name)
     index_content = index_json_reader.get_index_json(config_path)
     dump_format_json(f"{repodata_dir}/index.json", index_content)
 
 def generate_pkginfo_file_in_repodata(parent_info_dir):
     pkg_info_dir = f"{os.path.dirname(parent_info_dir)}/pkg-info"
     scan_epkgs()
-    compress_dir_to_zst(f"{parent_info_dir}/pkg-info.tar.zst", pkg_info_dir)
+    return compress_dir_to_zst(f"{parent_info_dir}/pkg-info.tar.zst", pkg_info_dir)
 
 def generate_storepaths_file_in_repodata(parent_repodata_dir):
     store_path = f"{parent_repodata_dir}/store-paths"
@@ -120,7 +126,7 @@ def generate_storepaths_file_in_repodata(parent_repodata_dir):
         for epkg_path in epkg_path_list:
             epkg_name = os.path.basename(epkg_path)
             f.write(epkg_name[:epkg_name.rfind('.')] + "\n")
-    compress_file_to_zst(store_path)
+    return compress_file_to_zst(store_path)
 
 
 if __name__ == "__main__":

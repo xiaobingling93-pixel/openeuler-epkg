@@ -1,4 +1,5 @@
 # encoding:utf-8
+import datetime
 import os
 import shutil
 import json
@@ -40,16 +41,33 @@ def compress_file_to_zst(file_path):
             compressor = zstd.ZstdCompressor()
             compressor.copy_stream(infile, outfile)
     hash_value = get_file_hash(f"{file_path}.txt.zst")
-    os.system(f"mv {file_path}.txt.zst {file_path}-{hash_value}.txt.zst")
+    current_time = datetime.datetime.now()
+    current_date = current_time.strftime("%Y%m%d")
+    target_file_name = f"{file_path}-{current_date}-{hash_value[:8]}.txt.zst"
+    os.system(f"mv {file_path}.txt.zst {target_file_name}")
     os.remove(file_path)
+    return target_file_name, hash_value, current_time
 
 def compress_dir_to_zst(target_file_path, source_dir_path):
+    """
+    目录压缩成zst文件
+    Args:
+        target_file_path:
+        source_dir_path:
+
+    Returns:
+        被压缩的目标文件地址
+    """
     normalized_path = source_dir_path.rstrip('/')
     work_dir = os.path.dirname(normalized_path)
     source_dir_name = os.path.basename(normalized_path)
     os.system(f"tar --use-compress-program=zstd -cf {target_file_path} -C {work_dir} {source_dir_name}")
-    hash_file_path = target_file_path.replace(".tar.zst", f"-{get_file_hash(target_file_path)}.tar.zst")
+    hash_value = get_file_hash(target_file_path)
+    current_time = datetime.datetime.now()
+    current_date = current_time.strftime("%Y%m%d")
+    hash_file_path = target_file_path.replace(".tar.zst", f"-{current_date}-{hash_value[:8]}.tar.zst")
     os.system(f"mv {target_file_path} {hash_file_path}")
+    return hash_file_path, hash_value, current_time
 
 
 def get_file_hash(file_path):

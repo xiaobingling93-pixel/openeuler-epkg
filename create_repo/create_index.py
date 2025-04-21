@@ -16,10 +16,10 @@ SYSTEM_PKG_FORMAT_MAPPING = {
 
 
 class IndexJson:
-    def __init__(self):
+    def __init__(self, store_info: dict, pkginfo: dict):
         self.json_data = {
-            "store-paths": [{"filename": "store-paths.zst"}],
-            "pkg-info": [{"filename": "pkg-info.zst"}],
+            "store-paths": [store_info],
+            "pkg-info": [pkginfo],
             "pkg-files": [],
             "origin_time": "",      # 溯源的url的repodata的时间
             "create_time": "",      # 执行create-repo的时间
@@ -31,7 +31,7 @@ class IndexJson:
         }
 
     def get_create_time(self):
-        self.json_data["create_time"] = datetime.datetime.now().strftime("%Y%m%d-%H:%M:%S") + " +0800"
+        self.json_data["create_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " +0800"
 
     def get_index_json(self, config_path):
         with open(config_path, "r") as f:
