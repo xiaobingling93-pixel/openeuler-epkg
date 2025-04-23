@@ -1,0 +1,30 @@
+{
+  "name": "ncurses-base",
+  "version": "5.9+20140118",
+  "summary": "basic terminal type definitions",
+  "epoch": 0,
+  "release": "1ubuntu1.noble",
+  "homepage": "http://invisible-island.net/ncurses/",
+  "arch": "all",
+  "hash": "btblk472ob4teixd522qgv6b2c7tk4v4",
+  "maintainer": "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>",
+  "hashVersion": "1",
+  "description": "The ncurses library routines are a terminal-independent method of\nupdating character screens with reasonable optimization.\n.\nThis package contains terminfo data files to support the most common types of\nterminal, including ansi, dumb, linux, rxvt, screen, sun, vt100, vt102, vt220,\nvt52, and xterm.\n",
+  "provides": [
+    "ncurses-runtime"
+  ],
+  "conflicts": [
+    "ncurses",
+    "ncurses-runtime"
+  ],
+  "breaks": "ncurses-term (<< 5.7+20100313-3)",
+  "originUrl": "https://mirrors.huaweicloud.com/ubuntu/pool/main/n/ncurses/ncurses-base_5.9+20140118-1ubuntu1_all.deb",
+  "size": "367",
+  "section": "misc",
+  "priority": "essential",
+  "sourcePkg": "ncurses",
+  "originalMaintainer": "Craig Small <csmall@debian.org>",
+  "conffiles": [
+    "/etc/terminfo/README"
+  ]
+}

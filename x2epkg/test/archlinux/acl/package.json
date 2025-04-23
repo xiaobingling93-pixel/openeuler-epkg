@@ -1,0 +1,28 @@
+{
+  "name": "acl",
+  "version": "2.3.2",
+  "epoch": 0,
+  "license": "LGPL",
+  "release": "1",
+  "homepage": "https://savannah.nongnu.org/projects/acl",
+  "arch": "x86_64",
+  "hash": "lfbmrk57eixrxtnxc3asvjixkaxioq3g",
+  "hashVersion": "1",
+  "description": "Access control list utilities, libraries and headers",
+  "buildRequires": [
+    "attr"
+  ],
+  "requires": [
+    "glibc"
+  ],
+  "provides": [
+    "xfsacl",
+    "libacl.so=1-64"
+  ],
+  "conflicts": "xfsacl",
+  "replaces": "xfsacl",
+  "packager": "Christian Hesse <eworm@archlinux.org>",
+  "originUrl": "https://mirrors.huaweicloud.com/archlinux/core/os/x86_64/acl-2.3.2-1-x86_64.pkg.tar.zst",
+  "size": "337902",
+  "buildTime": "1706086640"
+}

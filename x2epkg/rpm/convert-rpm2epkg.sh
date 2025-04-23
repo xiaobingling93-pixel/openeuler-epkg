@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MulanPSL-2.0+
-# Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
 
 rpm_file=$1
 epkg_repo_path="$OUT_DIR"

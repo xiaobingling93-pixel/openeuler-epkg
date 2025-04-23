@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MulanPSL-2.0+
-# Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
 
 deb_file=$1
 deb_name=$(basename "$deb_file")

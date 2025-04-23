@@ -79,6 +79,14 @@ for pkg in "$@"; do
         echo "archlinux: $pkg"
         source archlinux/convert-archlinux2epkg.sh "${pkg}"
         ;;
+      *.apk)
+        echo "alpine: $pkg"
+        source apk/convert-apk2epkg.sh "${pkg}"
+        ;;
+      *.conda)
+        echo "conda: $pkg"
+        source conda/convert-conda2epkg.sh "${pkg}"
+        ;;
       *)
         help
         exit 1

@@ -1,0 +1,19 @@
+{
+  "name": "_pytorch_select",
+  "version": "0.1",
+  "summary": "Metapackage for establishing variant priority in pytorch variants.",
+  "epoch": 0,
+  "release": "0",
+  "arch": "aarch64",
+  "hash": "zvl6j65v75wpnmavnllu6wyejqkpt4nj",
+  "hashVersion": "1",
+  "requires": [],
+  "originUrl": "https://cache-openeuler.obs.cn-north-4.myhuaweicloud.com/16b2210d1a92940b2a2b642dde543578b40804a7a27269f69461c11976b5e720/_pytorch_select-0.1-cpu_0.conda",
+  "subdir": "linux-aarch64",
+  "requirements": {
+    "build": [],
+    "run": []
+  },
+  "buildTime": 1621729277362,
+  "platform": "linux"
+}

@@ -1,0 +1,22 @@
+Package: ncurses-base
+Source: ncurses
+Version: 5.9+20140118-1ubuntu1
+Architecture: all
+Essential: yes
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Installed-Size: 367
+Conflicts: ncurses, ncurses-runtime
+Breaks: ncurses-term (<< 5.7+20100313-3)
+Provides: ncurses-runtime
+Section: misc
+Priority: required
+Multi-Arch: foreign
+Homepage: http://invisible-island.net/ncurses/
+Description: basic terminal type definitions
+ The ncurses library routines are a terminal-independent method of
+ updating character screens with reasonable optimization.
+ .
+ This package contains terminfo data files to support the most common types of
+ terminal, including ansi, dumb, linux, rxvt, screen, sun, vt100, vt102, vt220,
+ vt52, and xterm.
+Original-Maintainer: Craig Small <csmall@debian.org>

@@ -1,0 +1,32 @@
+{
+  "name": "aaudit-server",
+  "version": "0.7.2",
+  "epoch": 0,
+  "license": "Unknown",
+  "release": "r3",
+  "homepage": "https://alpinelinux.org",
+  "arch": "noarch",
+  "hash": "aoilazylowm76whbr2imsehoy5atwgcp",
+  "maintainer": "Timo Ter\u00e4s <timo.teras@iki.fi>",
+  "hashVersion": "1",
+  "description": "Alpine Auditor",
+  "requires": [
+    "aaudit",
+    "git",
+    "lua5.2",
+    "lua5.2-posix",
+    "lua5.2-cjson",
+    "lua5.2-lzlib"
+  ],
+  "provides": [
+    "cmd:aaudit-repo=0.7.2-r3",
+    "cmd:aaudit-update-keys=0.7.2-r3"
+  ],
+  "packager": "Buildozer <alpine-devel@lists.alpinelinux.org>",
+  "originUrl": "https://mirrors.huaweicloud.com/alpine/v3.21/main/x86_64/aaudit-server-0.7.2-r3.apk",
+  "commit": "9024026ee6838388f8b87e52a17495786ed85d4e",
+  "dataHash": "15cde8c344f04b2b5bf717bdb6b8d4ac071a87efc1b5793df30373ec99b161e8",
+  "size": "14585",
+  "buildTime": "1701958496",
+  "sourcePkg": "aaudit"
+}

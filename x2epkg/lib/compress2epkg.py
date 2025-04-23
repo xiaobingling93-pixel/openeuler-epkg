@@ -7,6 +7,7 @@ from collections import OrderedDict
 desired_order = ['name', 'version', 'summary', 'epoch', 'license', 'release', 'homepage', 'arch', 'hash', 'maintainer',
                  'hashVersion', 'description', 'buildRequires', 'requiresPre', 'requires', "provides", "conflicts",
                  "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "packager", "originUrl",
+                 "recipeMaintainers", "subdir", "constrains", "requirements", "commit", "dataHash",
                  "size", "section", "priority", "buildTime", "buildHost", 'group', 'cookie', 'platform', 'sourcePkg',
                  'sourcePkgId', 'rsaHeader', 'sha256Header', 'OriginalVcsBrowser', 'OriginalVcsGit', 'builtUsing',
                  'originalMaintainer', 'conffiles', 'changelogTime', 'changelogName', 'changelogText']

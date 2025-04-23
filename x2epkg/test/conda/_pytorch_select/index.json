@@ -1,0 +1,12 @@
+{
+  "arch": "aarch64",
+  "build": "cpu_0",
+  "build_number": 0,
+  "depends": [],
+  "name": "_pytorch_select",
+  "platform": "linux",
+  "subdir": "linux-aarch64",
+  "timestamp": 1621729277362,
+  "track_features": "pytorch_cpuonly",
+  "version": "0.1"
+}
