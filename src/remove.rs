@@ -28,8 +28,8 @@ impl PackageManager {
 
             // Remove appbin-file
             if rfs_file.starts_with("usr/bin/") {
-                let rfs_file_appbin = rfs_file.to_string_lossy().replace("/bin", "/app-bin");
-                let appbin_target_path = Path::new(&symlink_dir).join(&rfs_file_appbin);
+                let rfs_file_ebin = rfs_file.to_string_lossy().replace("/bin", "/ebin");
+                let appbin_target_path = Path::new(&symlink_dir).join(&rfs_file_ebin);
                 if fs::symlink_metadata(&appbin_target_path).is_ok() {
                     fs::remove_file(&appbin_target_path).unwrap();
                 }

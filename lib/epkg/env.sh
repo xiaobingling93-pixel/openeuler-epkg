@@ -92,7 +92,7 @@ __epkg_create_environment() {
 	local curr_env_root=
 	__get_curr_env_root $env
 
-	mkdir -p $curr_env_root/$env/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
+	mkdir -p $curr_env_root/$env/profile-1/usr/{ebin,bin,sbin,lib,lib64}
 	mkdir -p $curr_env_root/$env/profile-1/etc
 	mkdir -p $curr_env_root/$env/profile-1/var
 

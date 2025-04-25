@@ -107,22 +107,22 @@ pub fn handle_exec(_fs_dir: &Path, fs_file: &Path, rfs_file: &Path, symlink_dir:
         }
     }
 
-    // Add app-bin path
+    // Add ebin path
     if appbin_flag && rfs_file.starts_with("usr/bin/") {
-        let rfs_file_appbin = rfs_file.to_string_lossy().replace("/bin", "/app-bin");
-        let parent_dir_appbin = Path::new(&rfs_file_appbin).parent().unwrap();
-        let symlink_dir_appbin = symlink_dir.join(parent_dir_appbin);
-        if !symlink_dir_appbin.exists() {
-            fs::create_dir_all(&symlink_dir_appbin)?;
+        let rfs_file_ebin = rfs_file.to_string_lossy().replace("/bin", "/ebin");
+        let parent_dir_ebin = Path::new(&rfs_file_ebin).parent().unwrap();
+        let symlink_dir_ebin = symlink_dir.join(parent_dir_ebin);
+        if !symlink_dir_ebin.exists() {
+            fs::create_dir_all(&symlink_dir_ebin)?;
         }
 
-        let rfs_rel_path = pathdiff::diff_paths(symlink_dir.join(rfs_file), &symlink_dir_appbin).unwrap();
-        let appbin_target_path = symlink_dir.join(rfs_file_appbin);
+        let rfs_rel_path = pathdiff::diff_paths(symlink_dir.join(rfs_file), &symlink_dir_ebin).unwrap();
+        let ebin_target_path = symlink_dir.join(rfs_file_ebin);
 
-        if fs::symlink_metadata(&appbin_target_path).is_ok() {
-            fs::remove_file(&appbin_target_path).unwrap();
+        if fs::symlink_metadata(&ebin_target_path).is_ok() {
+            fs::remove_file(&ebin_target_path).unwrap();
         }
-        symlink(rfs_rel_path, appbin_target_path).unwrap();
+        symlink(rfs_rel_path, ebin_target_path).unwrap();
     }
 
     Ok(())
@@ -160,9 +160,9 @@ impl PackageManager {
                 // usr/bin
                 symlink(symlink_dir.join("usr/lib/golang/bin/go"), symlink_dir.join("usr/bin/go"))?;
                 symlink(symlink_dir.join("usr/lib/golang/bin/gofmt"), symlink_dir.join("usr/bin/gofmt"))?;
-                // usr/app-bin
-                symlink(Path::new("../bin/go"), symlink_dir.join("usr/app-bin/go"))?;
-                symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/app-bin/gofmt"))?;
+                // usr/ebin
+                symlink(Path::new("../bin/go"), symlink_dir.join("usr/ebin/go"))?;
+                symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/ebin/gofmt"))?;
             }
             "ca-certificates" => {
                 fs::copy(
@@ -173,8 +173,8 @@ impl PackageManager {
             "maven" => {
                 // usr/bin
                 symlink(symlink_dir.join("usr/share/maven/bin/mvn"), symlink_dir.join("usr/bin/mvn"))?;
-                // usr/app-bin
-                symlink(Path::new("../bin/mvn"), symlink_dir.join("usr/app-bin/mvn"))?;
+                // usr/ebin
+                symlink(Path::new("../bin/mvn"), symlink_dir.join("usr/ebin/mvn"))?;
             }
             "python3-pip" => {
                 for file in &["pip", "pip3", "pip3.11"] {

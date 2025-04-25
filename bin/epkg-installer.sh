@@ -116,7 +116,7 @@ create_init_home() {
     mkdir -p $EPKG_PKG_CACHE_DIR
     mkdir -p $EPKG_CHANNEL_CACHE_DIR
 
-    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{app-bin,bin,sbin,lib,lib64}
+    mkdir -p $EPKG_COMMON_ROOT/profile-1/usr/{ebin,bin,sbin,lib,lib64}
     mkdir -p $EPKG_COMMON_ROOT/profile-1/etc/epkg
 
     cd $EPKG_COMMON_ROOT/profile-1

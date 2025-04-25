@@ -212,7 +212,7 @@ Environment                    Status
 t1
 main             activated|registered
 [root@vbox ~]# echo $PATH
-/root/.epkg/envs/main/profile-current/usr/app-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
+/root/.epkg/envs/main/profile-current/usr/ebin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
 ```
 
 ### 去激活环境
@@ -229,11 +229,11 @@ main             activated|registered
 [root@vbox ~]# epkg env activate t1
 Environment 't1' activated.
 [root@vbox ~]# echo $PATH
-/root/.epkg/envs/t1/profile-current/usr/app-bin:/root/.epkg/envs/main/profile-current/usr/app-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
+/root/.epkg/envs/t1/profile-current/usr/ebin:/root/.epkg/envs/main/profile-current/usr/ebin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
 [root@vbox ~]# epkg env deactivate
 Environment 't1' deactivated.
 [root@vbox ~]# echo $PATH
-/root/.epkg/envs/main/profile-current/usr/app-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
+/root/.epkg/envs/main/profile-current/usr/ebin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
 ```
 
 ### 注册环境
@@ -253,7 +253,7 @@ EPKG_ACTIVE_ENV:
 Environment t1 exist.
 Environment 't1' has been registered.
 [root@vbox ~]# echo $PATH
-/root/.epkg/envs/t1/profile-current/usr/app-bin:/root/.epkg/envs/main/profile-current/usr/app-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
+/root/.epkg/envs/t1/profile-current/usr/ebin:/root/.epkg/envs/main/profile-current/usr/ebin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
 [root@vbox ~]# epkg env list
 EPKG_ACTIVE_ENV:
 Environment                    Status
