@@ -7,7 +7,6 @@ RUST_TARGET_RISCV64 := riscv64gc-unknown-linux-musl
 RUST_TARGET_LOONGARCH64 := loongarch64-unknown-linux-gnu
 BINARY_NAME := epkg
 OUTPUT_DIR := dist
-CHECKSUM_FILE := $(OUTPUT_DIR)/checksums.sha256
 
 # Detect OS and package manager
 OS_ID := $(shell grep -E '^ID=' /etc/os-release | cut -d= -f2)
@@ -41,64 +40,52 @@ endif
 	@echo "Installation complete!"
 
 # Build release binaries for all architectures
-build-all: build-x86_64 build-aarch64 build-riscv64 build-loongarch64
+release-all: release-x86_64 release-aarch64 release-riscv64 release-loongarch64
 
 # Build x86_64 binary
-build-x86_64:
+release-x86_64:
 	@echo "Building x86_64 binary..."
 	cargo build --release --target $(RUST_TARGET_X86_64)
 	@mkdir -p $(OUTPUT_DIR)
 	cp target/$(RUST_TARGET_X86_64)/release/$(BINARY_NAME) $(OUTPUT_DIR)/$(BINARY_NAME)-x86_64
-	@echo "x86_64 binary built: $(OUTPUT_DIR)/$(BINARY_NAME)-x86_64"
+	@echo "Generating checksum for x86_64 binary..."
+	cd $(OUTPUT_DIR) && sha256sum $(BINARY_NAME)-x86_64 > $(BINARY_NAME)-x86_64.sha256
+	@echo "x86_64 release completed: $(OUTPUT_DIR)/$(BINARY_NAME)-x86_64"
 
 # Build aarch64 binary
-build-aarch64:
+release-aarch64:
 	@echo "Building aarch64 binary..."
 	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
 	RUSTFLAGS="-C linker=aarch64-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc" \
 	cargo build --release --target $(RUST_TARGET_AARCH64)
 	@mkdir -p $(OUTPUT_DIR)
 	cp target/$(RUST_TARGET_AARCH64)/release/$(BINARY_NAME) $(OUTPUT_DIR)/$(BINARY_NAME)-aarch64
-	@echo "aarch64 binary built: $(OUTPUT_DIR)/$(BINARY_NAME)-aarch64"
+	@echo "Generating checksum for aarch64 binary..."
+	cd $(OUTPUT_DIR) && sha256sum $(BINARY_NAME)-aarch64 > $(BINARY_NAME)-aarch64.sha256
+	@echo "aarch64 release completed: $(OUTPUT_DIR)/$(BINARY_NAME)-aarch64"
 
 # Build RISC-V binary
-build-riscv64:
+release-riscv64:
 	@echo "Building RISC-V binary..."
 	CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-gnu-gcc \
 	RUSTFLAGS="-C linker=riscv64-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lm -C link-arg=-lc" \
 	cargo build --release --target $(RUST_TARGET_RISCV64)
 	@mkdir -p $(OUTPUT_DIR)
 	cp target/$(RUST_TARGET_RISCV64)/release/$(BINARY_NAME) $(OUTPUT_DIR)/$(BINARY_NAME)-riscv64
-	@echo "RISC-V binary built: $(OUTPUT_DIR)/$(BINARY_NAME)-riscv64"
+	@echo "Generating checksum for RISC-V binary..."
+	cd $(OUTPUT_DIR) && sha256sum $(BINARY_NAME)-riscv64 > $(BINARY_NAME)-riscv64.sha256
+	@echo "RISC-V release completed: $(OUTPUT_DIR)/$(BINARY_NAME)-riscv64"
 
 # Build LoongArch binary
-build-loongarch64:
+release-loongarch64:
 	@echo "Building LoongArch binary..."
 	CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER=loongarch64-linux-gnu-gcc \
 	cargo build --release --target $(RUST_TARGET_LOONGARCH64)
 	@mkdir -p $(OUTPUT_DIR)
 	cp target/$(RUST_TARGET_LOONGARCH64)/release/$(BINARY_NAME) $(OUTPUT_DIR)/$(BINARY_NAME)-loongarch64
-	@echo "LoongArch binary built: $(OUTPUT_DIR)/$(BINARY_NAME)-loongarch64"
-
-# Generate SHA-256 checksums for all binaries
-checksums:
-	@echo "Generating SHA-256 checksums..."
-	@rm -f $(CHECKSUM_FILE)
-	@for binary in $(OUTPUT_DIR)/$(BINARY_NAME)-*; do \
-		sha256sum $$binary >> $(CHECKSUM_FILE); \
-	done
-	@echo "Checksums saved to $(CHECKSUM_FILE)"
-
-# Deploy binaries (build, checksum, and package)
-deploy: build checksums
-	@echo "Packaging binaries..."
-	tar -czvf $(OUTPUT_DIR)/$(BINARY_NAME)-binaries.tar.gz -C $(OUTPUT_DIR) \
-		$(BINARY_NAME)-x86_64 \
-		$(BINARY_NAME)-aarch64 \
-		$(BINARY_NAME)-riscv64 \
-		$(BINARY_NAME)-loongarch64 \
-		checksums.sha256
-	@echo "Deployment package created: $(OUTPUT_DIR)/$(BINARY_NAME)-binaries.tar.gz"
+	@echo "Generating checksum for LoongArch binary..."
+	cd $(OUTPUT_DIR) && sha256sum $(BINARY_NAME)-loongarch64 > $(BINARY_NAME)-loongarch64.sha256
+	@echo "LoongArch release completed: $(OUTPUT_DIR)/$(BINARY_NAME)-loongarch64"
 
 # Clean build artifacts
 clean:
@@ -106,4 +93,4 @@ clean:
 	rm -rf $(OUTPUT_DIR)
 	@echo "Cleaned build artifacts and output directory"
 
-.PHONY: install-depends build build-all build-x86_64 build-aarch64 build-riscv64 build-loongarch64 checksums deploy clean
+.PHONY: install-depends build release-all release-x86_64 release-aarch64 release-riscv64 release-loongarch64 clean
