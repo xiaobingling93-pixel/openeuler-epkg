@@ -13,6 +13,8 @@ mod store;
 mod paths;
 mod utils;
 mod history;
+mod environment;
+mod path;
 mod repo;
 use std::env;
 use crate::models::*;
@@ -88,6 +90,10 @@ fn main() -> Result<()> {
                 .action(ArgAction::SetTrue)
         )
         .subcommand(
+            Command::new("init")
+                .about("Initialize personal epkg dir layout")
+        )
+        .subcommand(
             Command::new("update")
                 .about("Update package metadata")
         )
@@ -111,7 +117,7 @@ fn main() -> Result<()> {
                         .num_args(1..)
                         .required_unless_present("local")
                         .help("Package specifications to install")
-                )        
+                )
                 .arg(
                     Arg::new("local")
                     .long("local")
@@ -127,7 +133,7 @@ fn main() -> Result<()> {
                 )
                 .arg(
                     Arg::new("symlink")
-                    .long("symlink") 
+                    .long("symlink")
                     .help("Local symlink directory to install packages")
                     .num_args(1)
                     .required(false)
@@ -199,6 +205,84 @@ fn main() -> Result<()> {
                 .about("Show environment history")
         )
         .subcommand(
+            Command::new("env")
+                .about("Environment management")
+                .subcommand(
+                    Command::new("list")
+                        .about("List all environments")
+                )
+                .subcommand(
+                    Command::new("create")
+                        .about("Create a new environment")
+                        .arg(
+                            Arg::new("channel")
+                                .long("channel")
+                                .value_name("CHANNEL")
+                                .required(false)
+                                .help("Set the channel for the environment")
+                        )
+                        .arg(
+                            Arg::new("name")
+                                .num_args(1)
+                                .required(true)
+                                .help("Name of the new environment")
+                        )
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove an environment")
+                        .arg(
+                            Arg::new("name")
+                                .num_args(1)
+                                .required(true)
+                                .help("Name of the environment to remove")
+                        )
+                )
+                .subcommand(
+                    Command::new("register")
+                        .about("Register an environment")
+                        .arg(
+                            Arg::new("name")
+                                .num_args(1)
+                                .required(true)
+                                .help("Name of the environment to register")
+                        )
+                )
+                .subcommand(
+                    Command::new("unregister")
+                        .about("Unregister an environment")
+                        .arg(
+                            Arg::new("name")
+                                .num_args(1)
+                                .required(true)
+                                .help("Name of the environment to unregister")
+                        )
+                )
+                // The below activate/deactivate won't be called by shell env()
+                // since they will only modify ENV vars.
+                .subcommand(
+                    Command::new("activate")
+                        .about("Activate an environment")
+                        .arg(
+                            Arg::new("pure")
+                                .long("pure")
+                                .help("Create a pure environment")
+                                .required(false)
+                                .action(ArgAction::SetTrue)
+                        )
+                        .arg(
+                            Arg::new("name")
+                                .num_args(1)
+                                .required(true)
+                                .help("Name of the environment to activate")
+                        )
+                )
+                .subcommand(
+                    Command::new("deactivate")
+                        .about("Deactivate the current environment")
+                )
+         )
+        .subcommand(
             Command::new("rollback")
                 .about("Rollback environment to a specific history")
                 .arg(
@@ -225,6 +309,16 @@ fn main() -> Result<()> {
                         .num_args(1..)
                         .required(true)
                         .help("Package store dir to compute hash")
+                )
+        )
+        .subcommand(
+            Command::new("build")
+                .about("Build package from source")
+                .arg(
+                    Arg::new("package-yaml")
+                        .num_args(1)
+                        .required(true)
+                        .help("Package YAML file to build")
                 )
         )
         .get_matches();
@@ -268,13 +362,17 @@ fn main() -> Result<()> {
     let command_line = std::env::args().collect::<Vec<String>>().join(" ");
 
     // Handle subcommands
+    if let Some(_matches) = matches.subcommand_matches("init") {
+        package_manager.init()?;
+    }
+
     if let Some(_matches) = matches.subcommand_matches("update") {
         package_manager.fork_on_suid()?;
         package_manager.cache_repo()?;
     }
 
     if let Some(matches) = matches.subcommand_matches("install") {
-        if matches.get_flag("local") { 
+        if matches.get_flag("local") {
             if let (Some(fs_dir), Some(symlink_dir)) = (matches.get_one::<String>("fs"), matches.get_one::<String>("symlink")) {
                 let appbin = matches.get_flag("appbin");
                 package_manager.new_package(&fs_dir.clone(), &symlink_dir.clone(), appbin)?;
@@ -341,6 +439,52 @@ fn main() -> Result<()> {
                 let hash = crate::hash::epkg_store_hash(&dir)?;
                 println!("{}", hash);
             }
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("build") {
+        if let Some(package_yaml) = matches.get_one::<String>("package-yaml") {
+            privdrop_on_suid();
+
+            let build_script = paths::instance.epkg_mananger_cache_dir.join("build/scripts/generic-build.sh");
+            if !build_script.exists() {
+                return Err(anyhow::anyhow!("Build script not found"));
+            }
+
+            let mut command = std::process::Command::new("bash");
+            command.arg(build_script);
+            command.arg(package_yaml.as_str());
+            command.status()?;
+        }
+    }
+
+    if let Some(matches) = matches.subcommand_matches("env") {
+        if let Some(_matches) = matches.subcommand_matches("list") {
+            package_manager.list_environments()?;
+        } else if let Some(matches) = matches.subcommand_matches("create") {
+            if let Some(name) = matches.get_one::<String>("name") {
+                package_manager.options.channel = matches.get_one::<String>("channel").map(|s| s.to_string());
+                package_manager.create_environment(name)?;
+            }
+        } else if let Some(matches) = matches.subcommand_matches("remove") {
+            if let Some(name) = matches.get_one::<String>("name") {
+                package_manager.remove_environment(name)?;
+            }
+        } else if let Some(matches) = matches.subcommand_matches("register") {
+            if let Some(name) = matches.get_one::<String>("name") {
+                package_manager.register_environment(name)?;
+            }
+        } else if let Some(matches) = matches.subcommand_matches("unregister") {
+            if let Some(name) = matches.get_one::<String>("name") {
+                package_manager.unregister_environment(name)?;
+            }
+        } else if let Some(matches) = matches.subcommand_matches("activate") {
+            if let Some(name) = matches.get_one::<String>("name") {
+                package_manager.options.pure = matches.get_flag("pure");
+                package_manager.activate_environment(name)?;
+            }
+        } else if let Some(_matches) = matches.subcommand_matches("deactivate") {
+            package_manager.deactivate_environment()?;
         }
     }
 

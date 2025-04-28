@@ -106,7 +106,6 @@ epkg() {
 	else
 		local epkg_common_profile=$HOME/.epkg/envs/common/profile-current
 	fi
-	local epkg_sh=$epkg_common_profile/usr/bin/epkg.sh
 	local epkg_rust=$epkg_common_profile/usr/bin/epkg
 
 	# issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
@@ -120,14 +119,14 @@ epkg() {
 			local env=$3
 			case "$sub_cmd" in
 				create)
-					$epkg_sh "$@" || return
+					$epkg_rust "$@" || return
 					echo "Environment '$env' activated."
 					export EPKG_ACTIVE_ENV=$env
 					__epkg_add_appbin_path
 					return
 					;;	
 				remove)	
-					$epkg_sh "$@" || return
+					$epkg_rust "$@" || return
 					[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
 					__epkg_add_appbin_path
 					return
@@ -159,15 +158,9 @@ epkg() {
 					return
 					;;
 				register|unregister)
-					$epkg_sh "$@" || return
+					$epkg_rust "$@" || return
 					# update PATH
 					__epkg_add_appbin_path
-					return
-					;;
-				history|rollback)
-					__epkg_check_activate_register || return
-					shift
-					$epkg_rust "$@"
 					return
 					;;
 			esac
@@ -197,7 +190,7 @@ epkg() {
 			;;
 	esac
 
-	$epkg_sh "$@" || return
+	$epkg_rust "$@"
 }
 
 # vim: sw=4 ts=4 et

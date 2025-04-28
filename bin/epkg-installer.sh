@@ -96,7 +96,6 @@ select_installation_mode() {
         EPKG_COMMON_ROOT=$PUB_EPKG/envs/common
         EPKG_STORE_ROOT=$OPT_EPKG/store
         EPKG_CACHE=$OPT_EPKG/cache
-        RC_PATH=/etc/profile.d/epkg.sh
     elif [[ "$mode_choice" == "2" && "$(id -u)" != "0" ]]; then
         echo "Attention: Please use the root user to execute the global installation mode"
         return 1
@@ -162,7 +161,6 @@ epkg_unpack() {
     tar -xvf $EPKG_CACHE/$EPKG_MANAGER_TAR --strip-components 1 -C $EPKG_CACHE/epkg-manager > /dev/null
     local EPKG_MANAGER_DIR=$EPKG_CACHE/epkg-manager
 
-    cp    $EPKG_MANAGER_DIR/bin/epkg.sh                              $EPKG_COMMON_ROOT/profile-1/usr/bin/
     cp -a $EPKG_MANAGER_DIR/lib/epkg                                 $EPKG_COMMON_ROOT/profile-1/usr/lib/
     cp    $EPKG_MANAGER_DIR/channel/openEuler-24.03-LTS-channel.yaml $EPKG_COMMON_ROOT/profile-1/etc/epkg/channel.yaml
     echo -e "{\n}" >                                                 $EPKG_COMMON_ROOT/profile-1/installed-packages.json
@@ -239,7 +237,7 @@ epkg_change_bashrc
 # step 3. common env init
 prepare_conf
 
-# step 4. automic init
-$EPKG_COMMON_ROOT/profile-1/usr/bin/epkg.sh init
+# step 4. auto init for current user
+$EPKG_COMMON_ROOT/profile-1/usr/bin/$EPKG_STATIC init
 
 # vim: sw=4 ts=4 et

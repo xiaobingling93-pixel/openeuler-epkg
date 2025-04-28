@@ -27,6 +27,5 @@ epkg init
 # main scripts/programs in future
 - epkg-installer.sh
 - epkg-rc.sh, shell internal functions for export `PATH/EPKG_ENV_NAME`
-- epkg.sh shell script for trivial commands
 - epkg rust
 - epkg-store rust, may suid

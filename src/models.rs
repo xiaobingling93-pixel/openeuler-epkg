@@ -181,6 +181,10 @@ pub struct EPKGOptions {
     pub list_all: bool,
     pub list_installed: bool,
     pub list_available: bool,
+
+    // env subcommand options
+    pub channel: Option<String>,
+    pub pure: bool,
 }
 
 #[allow(dead_code)]

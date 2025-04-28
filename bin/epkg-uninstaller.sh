@@ -4,7 +4,6 @@
 
 # Global Epkg Path - Only Global Mode Use
 OPT_EPKG=/opt/epkg
-RC_GLOBAL_FILE=/etc/profile.d/epkg.sh
 
 # Clean Record
 EPKG_CLEAN_DIR=
@@ -57,8 +56,7 @@ clean_user_file() {
 
 clean_global_file() {
     /bin/rm -rf $OPT_EPKG
-    /bin/rm -rf $RC_GLOBAL_FILE
-    EPKG_CLEAN_DIR="$OPT_EPKG/ $RC_GLOBAL_FILE $EPKG_CLEAN_DIR"
+    EPKG_CLEAN_DIR="$OPT_EPKG/ $EPKG_CLEAN_DIR"
 
     ALL_USERS=$(getent passwd | awk -F: '$3 >= 1000 {print $1 ":" $6}')
     ALL_USERS=$(echo "$ALL_USERS" | grep -v '^nobody:')
