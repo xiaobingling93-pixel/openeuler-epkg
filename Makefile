@@ -16,6 +16,11 @@ OS_VERSION := $(shell grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr 
 build:
 	@cargo build
 	@echo "Development build completed. Binary is in target/debug/$(BINARY_NAME)"
+	@# for quick develop-debug loop
+	@if [ -d "$$HOME/.epkg/envs/common/profile-current/usr/bin" ]; then \
+		cp --update lib/epkg/epkg-rc.sh "$$HOME/.epkg/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh"; \
+		cp --update target/debug/epkg "$$HOME/.epkg/envs/common/profile-current/usr/bin/epkg"; \
+	fi
 
 # Install dependencies and set up Rust toolchain
 install-depends:
