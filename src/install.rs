@@ -271,7 +271,8 @@ impl PackageManager {
         self.load_installed_packages().unwrap();
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
-        self.resolve_appbin_source(&mut packages_to_install);
+        self.record_appbin_source(&mut packages_to_install);
+        self.collect_essential_packages(&mut packages_to_install)?;
         self.collect_recursive_depends(&mut packages_to_install)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: Some packages are already installed and will be skipped:");
         if packages_to_install.is_empty() {
@@ -279,14 +280,13 @@ impl PackageManager {
         }
 
         if self.options.verbose {
-            println!("appbin_source: {:?}", self.appbin_source);
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
         }
 
         let files = self.download_packages(&packages_to_install)?;
         self.unpack_packages(files).unwrap();
-
+        self.change_appbin_flag_same_source(&mut packages_to_install).unwrap();
         // create symlinks
         let symlink_dir = self.get_current_profile()?;
         let mut appbin_count = 0;
@@ -296,7 +296,7 @@ impl PackageManager {
             let mut pkg_name = String::new();
             // appbin_source check
             if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
-                appbin_flag = package_specs.contains(&spec.name) || spec.source.as_ref().map_or(false, |source| self.appbin_source.contains(source));
+                appbin_flag = _package_info.appbin_flag;
                 pkg_name = spec.name.clone();
                 if appbin_flag {
                     appbin_count += 1;

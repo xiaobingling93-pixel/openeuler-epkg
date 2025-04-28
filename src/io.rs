@@ -8,7 +8,6 @@ use dirs::home_dir;
 use anyhow::{Context, Result, bail};
 use crate::paths;
 use crate::models::*;
-use crate::parse_requires::*;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -43,29 +42,11 @@ pub fn load_repodata_index(file_path: &str) -> Result<Repodata> {
 }
 
 // Function to parse a pkgline into a PackageSpec
-fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) -> Result<PackageSpec> {
+fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
     let parts: Vec<&str> = pkgline.split("__").collect();
     if parts.len() != 4 {
         bail!("Invalid package line format: {}", pkgline);
     }
-
-    let file_path: String = format!("{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
-        paths::instance.epkg_cache.display(),
-        channel,
-        reponame.to_string(),
-        arch,
-        &pkgline[0..2],
-        pkgline,
-    );
-    let pkg_json = load_package_json(&file_path)?;
-    let format = match pkg_json.origin_url {
-        Some(ref url) => {
-            get_package_format(url)
-        },
-        None => {
-            Some("rpm".to_string())
-        }
-    };
 
     Ok(PackageSpec {
         repo: reponame.to_string(),
@@ -73,10 +54,6 @@ fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) 
         name: parts[1].to_string(),
         version: parts[2].to_string(),
         release: parts[3].to_string(),
-        source: pkg_json.source,
-        provides: pkg_json.provides,
-        priority: pkg_json.priority,
-        format: format,
     })
 }
 
@@ -115,8 +92,12 @@ impl PackageManager {
                 Ok(path) => {
                     let path_str = path.to_str().with_context(|| format!("Invalid UTF-8 in path: {:?}", path))?;
                     // Call the global function to load repodata
-                    let repodata = load_repodata_index(path_str)
+                    let mut repodata = load_repodata_index(path_str)
                         .with_context(|| format!("Failed to load repodata from {}", path.display()))?;
+                    let provide_path = path.parent().unwrap().join("provide2pkgnames.txt");
+                    repodata.decode_provide_hashmap(provide_path.to_str().unwrap())?;
+                    let essential_path = path.parent().unwrap().join("essential_pkgnames.txt");
+                    repodata.decode_essential_hashset(essential_path.to_str().unwrap())?;
                     self.repos_data.push(repodata);
                 },
                 Err(e) => println!("{:?}", e),
@@ -131,6 +112,9 @@ impl PackageManager {
             self.load_repodata()?;
         }
         for repodata in &self.repos_data {
+            self.provide2pkgnames.extend(repodata.provide2pkgnames.clone());
+            self.essential_pkgnames.extend(repodata.essential_pkgnames.clone());
+
             for entry in &repodata.store_paths {
                 let file_path = format!(
                     "{}/{}",
@@ -144,28 +128,11 @@ impl PackageManager {
                 let contents = fs::read_to_string(&file_path)
                     .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
                 for pkgline in contents.lines() {
-                    if let Ok(pkg_spec) = parse_package_line(pkgline, &repodata.name, &self.env_config.channel.name, &self.options.arch) {
+                    if let Ok(pkg_spec) = parse_package_line(pkgline, &repodata.name) {
                         self.pkgname2lines
                             .entry(pkg_spec.name.clone())
                             .or_insert_with(Vec::new)
                             .push(pkgline.to_string());
-                        if let Some(provides) = &pkg_spec.provides {
-                            for provide in provides {
-                                if pkg_spec.format.is_some() {
-                                    let and_deps = match parse_requires(&pkg_spec.format.clone().unwrap().as_str(), provide) {
-                                        Ok(deps) => deps,
-                                        Err(e) => {
-                                            println!("Failed to parse requirement '{}': {}", provide, e);
-                                            continue;
-                                        }
-                                    };
-                                    self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), pkg_spec.name.clone());
-                                }
-                            }
-                        }
-                        if pkg_spec.priority.is_some() && pkg_spec.priority.as_ref().unwrap() == "essential" {
-                            self.essential_pkgnames.insert(pkg_spec.name.clone());
-                        }
                         self.pkghash2spec.insert(pkg_spec.hash.clone(), pkg_spec);
                     }
                 }

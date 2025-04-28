@@ -1,6 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use anyhow::Ok;
 use anyhow::Result;
 use anyhow::{anyhow, Context};
@@ -8,7 +11,145 @@ use crate::models::*;
 use crate::store::*;
 use crate::paths;
 use crate::download::*;
-use crate::io::load_repodata_index;
+use crate::parse_requires::*;
+use crate::io::{load_repodata_index, load_package_json};
+
+impl Repodata {
+    pub fn encode_provide_hashmap(&mut self, path: &str) -> Result<()> {
+        let target_path = Path::new(path);
+        if target_path.exists() {
+            fs::remove_file(&target_path)?;
+        }
+        let file = File::create(target_path)?;
+        let mut writer = BufWriter::new(file);
+
+        for (key, values) in self.provide2pkgnames.iter() {
+            writer.write_all(key.as_bytes())?;
+            writer.write_all(b":")?;
+
+            for (i, value) in values.iter().enumerate() {
+                writer.write_all(value.as_bytes())?;
+                if i < values.len() - 1 {
+                    writer.write_all(b",")?;
+                }
+            }
+
+            writer.write_all(b"\n")?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn decode_provide_hashmap(&mut self, file_path: &str) -> Result<()> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    
+        for line_result in reader.lines() {
+            let line = line_result?;
+            if let Some(colon_index) = line.find(":") {
+                let key = line[..colon_index].to_string();
+                let values_str = &line[colon_index + 1..];
+                let values: Vec<String> = values_str
+                    .split(",")
+                    .map(|s| s.to_string())
+                    .collect();
+    
+                map.insert(key, values);
+            }
+        }
+        self.provide2pkgnames = map;
+    
+        Ok(())
+    }
+
+    pub fn encode_essential_hashset(&mut self, path: &str) -> Result<()> {
+        let target_path = Path::new(path);
+        if target_path.exists() {
+            fs::remove_file(&target_path)?;
+        }
+        let file = File::create(target_path)?;
+        let mut writer = BufWriter::new(file);
+
+        for item in self.essential_pkgnames.iter() {
+            writeln!(writer, "{}", item)?;
+        }
+    
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn decode_essential_hashset(&mut self, file_path: &str) -> Result<()> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut hashset: HashSet<String> = HashSet::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            hashset.insert(line);
+        }
+        self.essential_pkgnames = hashset;
+    
+        Ok(())
+    }
+
+    pub fn generate_repo_metadata(&mut self) -> Result<()> {
+        let pkg_info_dir = Path::new(&self.dir).parent().unwrap().join("pkg-info");
+        for entry in &self.store_paths {
+            let file_path = format!(
+                "{}/{}",
+                self.dir,
+                entry.filename.strip_suffix(".zst").unwrap()
+                                                   .splitn(3, '-') 
+                                                   .take(2)
+                                                   .collect::<Vec<_>>()
+                                                   .join("-") 
+            );
+            let contents = fs::read_to_string(&file_path)
+                .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
+            for pkgline in contents.lines() {
+                let file_path: String = format!("{}/{}/{}.json",
+                    pkg_info_dir.display(),
+                    &pkgline[0..2],
+                    pkgline,
+                );
+                let pkg_json = load_package_json(&file_path)?;
+                let format = match pkg_json.origin_url {
+                    Some(ref url) => {
+                        get_package_format(url)
+                    },
+                    None => {
+                        Some("rpm".to_string())
+                    }
+                };
+                if let Some(provides) = &pkg_json.provides {
+                    for provide in provides {
+                        if format.is_some() {
+                            let and_deps = match parse_requires(&format.clone().unwrap().as_str(), provide) {
+                                std::result::Result::Ok(deps) => deps,
+                                Err(e) => {
+                                    println!("Failed to parse requirement '{}': {}", provide, e);
+                                    continue;
+                                }
+                            };
+                            if let Some(pkgnames) = self.provide2pkgnames.get_mut(and_deps[0][0].capability.as_str()) {
+                                pkgnames.push(pkg_json.name.clone());
+                            } else {
+                                self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.name.clone()]);
+                            }
+                        }
+                    }
+                }
+                if pkg_json.priority.is_some() && pkg_json.priority.as_ref().unwrap() == "essential" {
+                    self.essential_pkgnames.insert(pkg_json.name.clone());
+                }
+            }
+        }
+    
+        Ok(())
+    }
+}
 
 impl PackageManager {
     pub fn cache_repo(&mut self) -> Result<()> {
@@ -50,7 +191,7 @@ fn download_repodata(base_url: &str, repodata_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<()> {
+fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<Repodata> {
     let index_file_path = repodata_path.join("index.json");
     let repo_data = load_repodata_index(index_file_path.to_str().unwrap())
                       .with_context(|| format!("Failed to load repodata from {}", repodata_path.display()))?;
@@ -63,7 +204,7 @@ fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<()> {
         untar_zst(pkg_info_zst.to_str().unwrap(), repodata_path.parent().unwrap().to_str().unwrap(), false).unwrap();
     }
 
-    Ok(())
+    Ok(repo_data)
 }
 
 pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
@@ -73,7 +214,8 @@ pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
     };
     // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
     // Check if index.json already exists
-    if local_cache_path.join("repodata/index.json").exists() {
+    if local_cache_path.join("repodata/provide2pkgnames.txt").exists() &&
+       local_cache_path.join("repodata/essential_pkgnames.txt").exists() {
         return Ok(());
     }
     println!("Caching repodata {} from {}", repo_name, repo_url);
@@ -102,7 +244,10 @@ pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
         },
         _ => return Err(anyhow!("Unsupported repo URL scheme")),
     }
-    unzst_all_repodatas(&repodata_path).unwrap();
+    let mut repodata = unzst_all_repodatas(&repodata_path).unwrap();
+    repodata.generate_repo_metadata().unwrap();
+    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.txt").to_str().unwrap()).unwrap();
+    repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap()).unwrap();
 
     println!("Cache repodata succeed: {}", repo_name);
     Ok(())

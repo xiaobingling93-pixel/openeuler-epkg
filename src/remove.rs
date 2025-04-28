@@ -92,7 +92,9 @@ impl PackageManager {
         let mut packages_to_keep: HashMap<String, InstalledPackageInfo> = self
             .installed_packages
             .iter()
-            .filter(|(pkgline, info)| info.depend_depth == 0 && !input_package_info.contains_key(*pkgline))
+            .filter(|(pkgline, info)| (info.depend_depth == 0 && 
+                !input_package_info.contains_key(*pkgline)) || 
+                self.essential_pkgnames.contains(self.pkghash2spec.get(&pkgline[0..32]).unwrap().name.as_str()))
             .map(|(key, value)| (key.clone(), (*value).clone()))
             .collect();
         self.collect_recursive_depends(&mut packages_to_keep)?;

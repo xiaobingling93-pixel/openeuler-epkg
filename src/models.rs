@@ -4,7 +4,7 @@ use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Dependency {
     pub pkgname: String,
     pub hash: String,
@@ -12,7 +12,7 @@ pub struct Dependency {
 
 // $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Package {
     pub name: String,
     pub version: String,
@@ -21,6 +21,7 @@ pub struct Package {
     pub dist: Option<String>,
     pub hash: String,
     pub arch: String,
+    #[serde(rename = "sourcePkg")]
     pub source: Option<String>,
 
     pub summary: Option<String>,
@@ -53,12 +54,18 @@ pub struct Repodata {
     pub name: String,
     #[serde(skip)]
     pub dir: String,
+    #[serde(skip)]
+    pub format: Option<String>,
     #[serde(rename = "store-paths")]
     pub store_paths: Vec<StorePathsIndex>,
     #[serde(rename = "pkg-info")]
     pub pkg_infos: Vec<PkgInfoIndex>,
     #[serde(rename = "pkg-files")]
     pub pkg_files: Vec<PkgFilesIndex>,
+    #[serde(skip)]
+    pub provide2pkgnames: HashMap<String, Vec<String>>,
+    #[serde(skip)]
+    pub essential_pkgnames: HashSet<String>,
 }
 
 // $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
@@ -97,10 +104,6 @@ pub struct PackageSpec {
     pub name: String,
     pub version: String,
     pub release: String,
-    pub source: Option<String>,
-    pub provides: Option<Vec<String>>,
-    pub priority: Option<String>,
-    pub format: Option<String>,
 }
 
 /*
@@ -200,14 +203,15 @@ pub struct PackageManager {
     pub repos_data: Vec<Repodata>,
     pub env_config: EnvConfig,
     pub appbin_source: HashSet<String>,
-
     // loaded from repodata.store_paths files
     // pkghash2spec[hash] = PackageSpec
     // pkgname2lines[pkgname] = [pkgline]
     pub pkghash2spec: HashMap<String, PackageSpec>,
     pub pkgname2lines: HashMap<String, Vec<String>>,
-    pub provide2pkgnames: HashMap<String, String>,
+    pub provide2pkgnames: HashMap<String, Vec<String>>,
     pub essential_pkgnames: HashSet<String>,
+    // cache need to installing packages info
+    pub pkghash2pkg: HashMap<String, Package>,
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>,
@@ -217,3 +221,4 @@ pub struct PackageManager {
     pub ipc_stream: Option<UnixStream>,
     pub child_pid: Option<nix::unistd::Pid>,
 }
+

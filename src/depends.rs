@@ -1,5 +1,5 @@
 use std::process::exit;
-use std::collections::HashMap;
+use std::collections::{HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Ok, Result};
 use crate::models::*;
@@ -21,17 +21,38 @@ impl InstalledPackageInfo {
 }
 
 impl PackageManager {
-
-    pub fn resolve_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) {
+    pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) {
+        let mut tmp_format: Option<String> = None;
         for pkgline in packages.keys() {
-            if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
-                if let Some(source) = spec.source.clone() {
-                    self.appbin_source.insert(source);
-                } else {
-                    println!("Not get source, pkgline: {:#?}", pkgline);
+            let pkg_json = self.load_package_info(pkgline).unwrap();
+            if pkg_json.source.is_some() {
+                self.appbin_source.insert(pkg_json.source.as_ref().unwrap().clone());
+            }
+            if tmp_format.is_none() {
+                tmp_format = match pkg_json.origin_url {
+                    Some(ref url) => {
+                        get_package_format(url)
+                    },
+                    None => {
+                        Some("rpm".to_string())
+                    }
+                };
+            }
+        }
+        self.repos_data[0].format = tmp_format;
+    }
+
+    pub fn change_appbin_flag_same_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        for (pkgline, package_info) in packages.iter_mut() {
+            let pkg_json = self.load_package_info(pkgline.as_str()).unwrap();
+            if package_info.appbin_flag == false && pkg_json.source.is_some() {
+                let Some(source) = &pkg_json.source else { continue };
+                if self.appbin_source.contains(source) {
+                    package_info.appbin_flag = true;
                 }
             }
         }
+        Ok(())
     }
 
     fn add_one_package_installing(&self, pkg_name: &str, depth: u8, ebin_flag: bool, 
@@ -57,7 +78,7 @@ impl PackageManager {
 
         for capability  in capabilities {
             if let Some(pkgname) = self.provide2pkgnames.get(capability .as_str()) {
-                pnames.push(pkgname.clone());
+                pnames.push(pkgname[0].clone());
             } else {
                 // 输入是真正的pkgname
                 pnames.push(capability .clone());
@@ -75,11 +96,22 @@ impl PackageManager {
             }
         }
 
+        packages
+    }
+
+    pub fn collect_essential_packages(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        let mut missing_names = Vec::new();
         for essential_pkgname in &self.essential_pkgnames {
-            self.add_one_package_installing(essential_pkgname.as_str(), 0, false, &mut packages, &mut missing_names);
+            self.add_one_package_installing(essential_pkgname.as_str(), 0, false, packages, &mut missing_names);
+        }
+        if !missing_names.is_empty() {
+            println!("Missing packages: {:#?}", missing_names);
+            if !self.options.ignore_missing {
+                exit(1);
+            }
         }
 
-        packages
+        Ok(())
     }
 
     pub fn collect_recursive_depends(&mut self,
@@ -87,14 +119,10 @@ impl PackageManager {
     ) -> Result<()> {
         let mut depend_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut depth = 1;
-        let mut repo_format: Option<String> = None;
-        if let Some((pkg_hash, _)) = packages.iter().next() {
-            let pkg_hash_str = pkg_hash.as_str();
-            repo_format = self.pkghash2spec[&pkg_hash_str[0..32]].format.clone();
-        }
+        let repo_format: Option<String> = self.repos_data[0].format.clone();
         
         self.collect_depends(&packages, &mut depend_packages, depth, &repo_format)?;
-
+        
         while !depend_packages.is_empty() {
             packages.extend(depend_packages);
             depend_packages = HashMap::new();
@@ -105,55 +133,56 @@ impl PackageManager {
         Ok(())
     }
 
-    fn load_package_info(&self, pkg_hash: &str) -> Result<Package> {
-        let path = format!(
-            "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
-            paths::instance.epkg_cache.display(),
-            self.env_config.channel.name,
-            self.pkghash2spec[&pkg_hash[0..32]].repo,
-            self.options.arch,
-            &pkg_hash[0..2],
-            pkg_hash
-        );
-        load_package_json(&path).map_err(|e| e.into())
+    fn load_package_info(&mut self, pkgline: &str) -> Result<Package> {
+        if let Some(package) = self.pkghash2pkg.get(&pkgline[0..32]) {
+            return Ok(package.clone());
+        } else {
+            let path = format!(
+                "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
+                paths::instance.epkg_cache.display(),
+                self.env_config.channel.name,
+                self.pkghash2spec[&pkgline[0..32]].repo,
+                self.options.arch,
+                &pkgline[0..2],
+                pkgline
+            );
+            let package = load_package_json(&path).unwrap();
+            self.pkghash2pkg.insert(pkgline.to_string(), package.clone());
+            return Ok(package);
+        }
     }
 
     fn process_dependencies(
         &mut self,
-        pkg_info: &Package,
+        dependencies: &Vec<Dependency>,
         packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
         depth: u8,
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
-        if let Some(dependencies) = &pkg_info.depends {
-            for dep in dependencies {
-                let Some(spec) = self.pkghash2spec.get(&dep.hash) else {
-                    missing_deps.push(format!("{}-{}", dep.pkgname, dep.hash));
-                    continue;
-                };
-    
-                let dep_id = format!(
-                    "{}__{}__{}__{}",
-                    spec.hash, spec.name, spec.version, spec.release
+        for dep in dependencies {
+            let Some(spec) = self.pkghash2spec.get(&dep.hash) else {
+                missing_deps.push(format!("{}-{}", dep.pkgname, dep.hash));
+                continue;
+            };
+
+            let dep_id = format!(
+                "{}__{}__{}__{}",
+                spec.hash, spec.name, spec.version, spec.release
+            );
+
+            if !packages.contains_key(&dep_id) && !depend_packages.contains_key(&dep_id) {
+                depend_packages.insert(
+                    dep_id.clone(),
+                    InstalledPackageInfo::new(depth, false),
                 );
-    
-                if !packages.contains_key(&dep_id) && !depend_packages.contains_key(&dep_id) {
-                    let appbin_flag = spec.source
-                        .as_ref()
-                        .map_or(false, |s| self.appbin_source.contains(s));
-                    
-                    depend_packages.insert(
-                        dep_id.clone(),
-                        InstalledPackageInfo::new(depth, appbin_flag),
-                    );
-                }
             }
         }
+        
         Ok(())
     }
 
-    fn process_requirements_impl(
+    fn process_requirements(
         &mut self,
         requirements: &Vec<String>,
         packages: &HashMap<String, InstalledPackageInfo>,
@@ -180,7 +209,7 @@ impl PackageManager {
             };
             for or_depends in and_deps {
                 for pkg_depend in or_depends {
-                    self.process_requirement(
+                    self.process_requirement_impl(
                         &pkg_depend.capability,
                         pkg_format.as_str(),
                         packages,
@@ -194,7 +223,7 @@ impl PackageManager {
         Ok(())
     }
     
-    fn process_requirement(
+    fn process_requirement_impl(
         &mut self,
         capability: &str,
         pkg_format: &str,
@@ -213,7 +242,7 @@ impl PackageManager {
                         return Ok(());
                     }
                 };
-                let Some(hashes) = self.pkgname2lines.get(pkg_mapping_name) else {
+                let Some(hashes) = self.pkgname2lines.get(pkg_mapping_name[0].as_str()) else {
                     missing_deps.push(format!("{}-{}", capability, pkg_format));
                     return Ok(());
                 };
@@ -256,11 +285,12 @@ impl PackageManager {
         repo_format: &Option<String>,
     ) -> Result<()> {
         let mut missing_deps = Vec::new();
-        for pkg_hash in packages.keys() {
-            let pkg_info = self.load_package_info(pkg_hash)?;
+        for pkgline in packages.keys() {
+            let pkg_info = self.load_package_info(pkgline)?;
+
             if pkg_info.requires_pre.is_some() {
                 let Some(requirements) = &pkg_info.requires_pre else { continue };
-                self.process_requirements_impl(
+                self.process_requirements(
                     requirements,
                     packages,
                     depend_packages,
@@ -270,8 +300,9 @@ impl PackageManager {
                 )?;
             }
             if pkg_info.depends.is_some() {
+                let Some(dependencies) = &pkg_info.depends else { continue };
                 self.process_dependencies(
-                    &pkg_info,
+                    dependencies,
                     packages,
                     depend_packages,
                     depth,
@@ -279,7 +310,7 @@ impl PackageManager {
                 )?;
             } else if pkg_info.requires.is_some() {
                 let Some(requirements) = &pkg_info.requires else { continue };
-                self.process_requirements_impl(
+                self.process_requirements(
                     requirements,
                     packages,
                     depend_packages,
