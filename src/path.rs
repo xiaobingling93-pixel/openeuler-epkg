@@ -17,9 +17,6 @@ impl PackageManager {
         if !pure {
             // Add registered environment paths in time order
             path_components.extend(self.get_registered_env_paths()?);
-
-            // Add system paths, excluding epkg paths
-            path_components.extend(self.get_system_paths()?);
         }
 
         // Remove duplicates while preserving order
@@ -78,34 +75,45 @@ impl PackageManager {
         let paths = &*instance;
         let mut path_components = Vec::new();
 
-        let registered_envs_dir = paths.epkg_config_dir.join("registered-envs");
-        if let Ok(entries) = fs::read_dir(&registered_envs_dir) {
-            // Collect entries with their modification times
-            let mut env_entries: Vec<(String, std::time::SystemTime)> = entries
+        // Get paths from prepend directory (main environment)
+        let prepend_dir = paths.epkg_config_dir.join("path.d/prepend");
+        path_components.extend(self.get_priority_sorted_paths(&prepend_dir)?);
+
+        // Get system paths, excluding epkg paths
+        path_components.extend(self.get_system_paths()?);
+
+        // Get paths from append directory (other environments)
+        let append_dir = paths.epkg_config_dir.join("path.d/append");
+        path_components.extend(self.get_priority_sorted_paths(&append_dir)?);
+
+        Ok(path_components)
+    }
+
+    fn get_priority_sorted_paths(&self, dir: &std::path::Path) -> Result<Vec<String>> {
+        let mut entries = Vec::new();
+
+        if let Ok(read_dir) = fs::read_dir(dir) {
+            // Collect entries with their priorities
+            let mut priority_entries: Vec<(i32, String)> = read_dir
                 .filter_map(|entry| {
                     let entry = entry.ok()?;
-                    let env_name = entry.file_name().into_string().ok()?;
-                    let metadata = entry.metadata().ok()?;
-                    let modified = metadata.modified().ok()?;
-                    Some((env_name, modified))
+                    let name = entry.file_name().into_string().ok()?;
+                    // Extract priority from filename (e.g. "10-main" -> 10)
+                    let priority = name.split('-').next()?.parse::<i32>().ok()?;
+                    if let Ok(target) = fs::read_link(entry.path()) {
+                        Some((priority, target.display().to_string()))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
 
-            // Sort by modification time, newest first
-            env_entries.sort_by(|a, b| b.1.cmp(&a.1));
-
-            // Add paths in time order
-            for (env_name, _) in env_entries {
-                let env_path = paths.epkg_envs_root.join(&env_name)
-                    .join("profile-current/usr/ebin");
-
-                if env_path.exists() {
-                    path_components.push(env_path.display().to_string());
-                }
-            }
+            // Sort by priority in ascending order (lower numbers first)
+            priority_entries.sort_by_key(|&(priority, _)| priority);
+            entries.extend(priority_entries.into_iter().map(|(_, path)| path));
         }
 
-        Ok(path_components)
+        Ok(entries)
     }
 
     fn get_system_paths(&self) -> Result<Vec<String>> {

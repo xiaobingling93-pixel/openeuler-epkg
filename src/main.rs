@@ -247,6 +247,13 @@ fn main() -> Result<()> {
                                 .required(true)
                                 .help("Name of the environment to register")
                         )
+                        .arg(
+                            Arg::new("priority")
+                                .long("priority")
+                                .value_name("PRIORITY")
+                                .required(false)
+                                .help("Set the priority for the environment")
+                        )
                 )
                 .subcommand(
                     Command::new("unregister")
@@ -472,6 +479,7 @@ fn main() -> Result<()> {
             }
         } else if let Some(matches) = matches.subcommand_matches("register") {
             if let Some(name) = matches.get_one::<String>("name") {
+                package_manager.options.priority = matches.get_one::<i32>("priority").cloned();
                 package_manager.register_environment(name)?;
             }
         } else if let Some(matches) = matches.subcommand_matches("unregister") {

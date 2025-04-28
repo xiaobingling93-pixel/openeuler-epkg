@@ -185,6 +185,7 @@ pub struct EPKGOptions {
     // env subcommand options
     pub channel: Option<String>,
     pub pure: bool,
+    pub priority: Option<i32>,
 }
 
 #[allow(dead_code)]
