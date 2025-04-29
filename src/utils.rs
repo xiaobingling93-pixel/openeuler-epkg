@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::path::PathBuf;
 use anyhow::Result;
@@ -52,17 +52,13 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
         let path = entry.path();
         let file_type = entry.file_type()?;
 
-        if file_type.is_file() || file_type.is_symlink() {
-            paths.push(path.clone());
-        } else if file_type.is_dir() {
+        if file_type.is_dir() {
             paths.push(path.clone());
             paths.extend(list_package_files(path.to_str().unwrap())?);
+        } else {
+            paths.push(path.clone());
         }
     }
-
-    // Remove duplicates
-    paths.sort();
-    paths.dedup();
 
     Ok(paths)
 }
@@ -72,26 +68,34 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 
     // Check Symbolic link first
-    if fs::symlink_metadata(&file).map(|metadata| metadata.file_type().is_symlink()).unwrap() {
+    if fs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
         return Ok(FileType::Symlink);
     }
 
     // Read file contents for other checks
-    let mut buffer = Vec::new();
-    let mut f = fs::File::open(file)?;
-    f.read_to_end(&mut buffer)?;
-
+    let mut file = fs::File::open(file)?;
     // Check ELF 64-bit LSB
-    if buffer.starts_with(ELF_MAGIC) {
-        return Ok(FileType::Elf);
+    let mut buffer = vec![0;4];
+    if let Ok(_) = file.read_exact(&mut buffer) {
+        if buffer.starts_with(ELF_MAGIC) {
+            return Ok(FileType::Elf);
+        }
+    }
+
+    // Use BufReader for reading lines
+    // Reset file pointer to the beginning
+    file.seek(SeekFrom::Start(0))?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    let bytes_read = reader.read_line(&mut first_line)?;
+    if bytes_read == 0 {
+        return Ok(FileType::AsciiText);
     }
 
     // Check if file starts with shebang
-    if buffer.starts_with(b"#!") {
-        let first_line = String::from_utf8_lossy(&buffer[..buffer.iter().position(|&x| x == b'\n').unwrap_or(buffer.len())]);
-
+    if first_line.starts_with("#!") {
         // Check for various script types
-        if first_line.contains("sh") || first_line.contains("bash") {
+        if first_line.contains("sh") {
             return Ok(FileType::ShellScript);
         } else if first_line.contains("perl") {
             return Ok(FileType::PerlScript);
@@ -99,7 +103,7 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
             return Ok(FileType::PythonScript);
         } else if first_line.contains("ruby") {
             return Ok(FileType::RubyScript);
-        } else if first_line.contains("node") || first_line.contains("nodejs") {
+        } else if first_line.contains("node") {
             return Ok(FileType::NodeScript);
         } else if first_line.contains("lua") {
             return Ok(FileType::LuaScript);
@@ -107,16 +111,19 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     }
 
     // Try to detect if it's ASCII text
-    if buffer.iter().all(|&b| b.is_ascii()) {
-        return Ok(FileType::AsciiText);
+    for line in reader.lines() {
+        let line = line?;
+        if !line.is_ascii() {
+            return Ok(FileType::Binary);
+        }
     }
 
-    // If nothing matches, return binary data
-    Ok(FileType::Binary)
+    return Ok(FileType::AsciiText);
 }
 
-pub fn compute_file_sha256(file_path: &str) -> io::Result<String> {
-    let mut file = File::open(file_path)?;
+pub fn compute_file_sha256(file_path: &str) -> Result<String> {
+    let file = File::open(file_path)?;
+    let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buffer = [0; 4096];
 
