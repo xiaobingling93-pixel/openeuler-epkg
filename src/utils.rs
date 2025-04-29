@@ -128,7 +128,7 @@ pub fn compute_file_sha256(file_path: &str) -> Result<String> {
     let mut buffer = [0; 4096];
 
     loop {
-        let bytes_read = file.read(&mut buffer)?;
+        let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
             break;
         }
