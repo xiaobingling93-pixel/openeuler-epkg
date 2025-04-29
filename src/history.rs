@@ -101,7 +101,7 @@ impl PackageManager {
         };
         let json = serde_json::to_string_pretty(&command)?;
         fs::write(&command_json, json)?;
-    
+
         Ok(())
     }
 
@@ -117,12 +117,12 @@ impl PackageManager {
         for entry in fs::read_dir(&profile_dir)? {
             let path = entry?.path();
             let filename = path.file_name().and_then(|s| s.to_str());
-            
+
             if let Some(profile) = filename {
                 if !profile.starts_with("profile-") || profile == "profile-current" {
                     continue;
                 }
-                
+
                 if let Ok(id) = profile[8..].parse::<u64>() {
                     if let Ok(contents) = fs::read_to_string(path.join("command.json")) {
                         if let Ok(command) = serde_json::from_str(&contents) {
@@ -135,12 +135,12 @@ impl PackageManager {
 
         history_entries.sort_by_key(|entry| entry.0);
         for (id, command) in history_entries {
-            println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", 
-                id, 
-                command.timestamp, 
-                command.action, 
-                command.new_packages.len(), 
-                command.del_packages.len(), 
+            println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}",
+                id,
+                command.timestamp,
+                command.action,
+                command.new_packages.len(),
+                command.del_packages.len(),
                 command.command_line
             );
         }
@@ -180,7 +180,7 @@ impl PackageManager {
             let parts: Vec<&str> = pkg.split("__").collect();
             if parts.len() >= 4 {
                 let dist = parts[3].split('.').next().unwrap_or("");
-                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", 
+                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}",
                     "del", parts[0], parts[1], parts[2], dist, parts[3]);
             }
         }
@@ -188,19 +188,21 @@ impl PackageManager {
             let parts: Vec<&str> = pkg.split("__").collect();
             if parts.len() >= 4 {
                 let dist = parts[3].split('.').next().unwrap_or("");
-                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", 
+                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}",
                     "new", parts[0], parts[1], parts[2], dist, parts[3]);
             }
         }
 
         // Remove del_packages
         let symlink_dir = self.get_current_profile()?;
+        let store_root = paths::instance.get_store_root(&self.options);
+
         for (pkgline, appbin_flag) in &new_packages {
-            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
             self.new_package(&fs_dir, &symlink_dir, *appbin_flag)?;
         }
         for pkgline in &del_packages {
-            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
             self.del_package(&fs_dir, &symlink_dir)?;
         }
 

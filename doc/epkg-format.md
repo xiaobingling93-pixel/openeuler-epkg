@@ -199,7 +199,7 @@ tar文件列表:
 ```yaml
 # $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
 channel:
-  name: "openEuler-24.03-LTS"
+  name: "openeuler:24.03-lts"
   baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/"
 
 repos:

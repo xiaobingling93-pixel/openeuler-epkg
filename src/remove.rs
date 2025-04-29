@@ -125,7 +125,8 @@ impl PackageManager {
         let symlink_dir = self.get_current_profile()?;
         for pkgline in &installed_to_remove {
             // remove files
-            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            let store_root = paths::instance.get_store_root(&self.options);
+            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
             self.del_package(&fs_dir, &symlink_dir)?;
         }
 

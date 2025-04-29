@@ -1,6 +1,7 @@
 use std::fs;
 use std::env;
 use std::path::PathBuf;
+use crate::models::EPKGOptions;
 
 #[allow(dead_code)]
 pub struct EPKGPaths {
@@ -65,6 +66,14 @@ impl EPKGPaths {
             elfloader_exec,
         }
     }
+
+    pub fn get_store_root(&self, options: &EPKGOptions) -> PathBuf {
+        match options.shared_store {
+            true => self.opt_epkg.join("store"),
+            false => self.home_epkg.join("store"),
+        }
+    }
+
 }
 
 lazy_static::lazy_static! {

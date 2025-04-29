@@ -165,10 +165,13 @@ impl PackageManager {
                 symlink(Path::new("../bin/gofmt"), symlink_dir.join("usr/ebin/gofmt"))?;
             }
             "ca-certificates" => {
-                fs::copy(
-                    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-                    symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
-                )?;
+                let source = Path::new("/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem");
+                if source.exists() {
+                    fs::copy(
+                        source,
+                        symlink_dir.join("etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"),
+                    )?;
+                }
             }
             "maven" => {
                 // usr/bin
@@ -301,7 +304,8 @@ impl PackageManager {
                 }
             }
             // install files
-            let fs_dir = format!("{}/{}/fs", paths::instance.epkg_store_root.display(), pkgline);
+            let store_root = paths::instance.get_store_root(&self.options);
+            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
             self.new_package(&fs_dir, &symlink_dir, appbin_flag).unwrap();
             // postinstall
             self.postinstall_scriptlet(&pkg_name, Path::new(&symlink_dir)).unwrap();

@@ -63,8 +63,7 @@ fn parse_package_line(pkgline: &str, reponame: &str, channel: &str, arch: &str) 
             get_package_format(url)
         },
         None => {
-            println!("Package {} missing origin URL", pkg_json.name);
-            None
+            Some("rpm".to_string())
         }
     };
 

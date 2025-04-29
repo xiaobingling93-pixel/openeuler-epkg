@@ -31,7 +31,7 @@ wfg@crystal ~/epkg% zsh
 Your ~/.bashrc or ~/.zshrc
 =>
 # grep -C1 epkg ~/.zshrc
-source $HOME/.epkg/envs/common/profile-current/usr/lib/epkg/epkg-rc.sh
+source $HOME/.epkg/envs/common/profile-current/opt/epkg-manager/lib/epkg-rc.sh
 =>
 1) set PATH
 PATH=$HOME/.epkg/envs/main/profile-current/usr/ebin:...
@@ -55,16 +55,13 @@ wfg@crystal ~% tree ~/.epkg/envs/common/profile-current/
 │   └── resolv.conf
 ├── installed-packages.json
 ├── lib -> usr/lib
+├── opt
+│   └── epkg-manager/lib
+│       └── epkg-rc.sh  # source from .bashrc / .zshrc
 └── usr
-    ├── bin
-    │   ├── elf-loader      # entry point for binary-converted epkg applications
-    │   └── epkg            # static-compiled rust, called by epkg() in epkg-rc.sh
-    └── lib
-        └── epkg
-            ├── env.sh
-            ├── epkg-rc.sh  # source from .bashrc / .zshrc
-            ├── init.sh
-            └── paths.sh
+    └── bin
+        ├── elf-loader      # entry point for binary-converted epkg applications
+        └── epkg            # static-compiled rust, called by epkg() in epkg-rc.sh
 ```
 
 # dir layout in ~/.epkg

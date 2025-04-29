@@ -85,36 +85,6 @@ use crate::models::*;
 
 impl PackageManager {
 
-    pub fn check_init(&self) -> Result<()> {
-        let paths = &*instance;
-
-        if !paths.epkg_envs_root.join("main").exists() {
-            self.init()?;
-        }
-
-        Ok(())
-    }
-
-    pub fn init(&self) -> Result<()> {
-        let paths = &*instance;
-
-        // Check if already initialized
-        if paths.epkg_envs_root.join("main").exists() {
-            eprintln!("epkg was already initialized for user {}", env::var("USER")?);
-            return Ok(());
-        }
-
-        // Create necessary directories
-        fs::create_dir_all(&paths.epkg_config_dir.join("path.d"))?;
-
-        // Create main environment
-        self.create_environment("main")?;
-        self.register_environment("main")?;
-
-        eprintln!("Warning: For changes to take effect, close and re-open your current shell.");
-        Ok(())
-    }
-
     /// Get list of all environment names except 'common'
     ///
     /// This function lists all environment directories in the epkg_envs_root
@@ -169,19 +139,13 @@ impl PackageManager {
     pub fn create_environment(&self, name: &str) -> Result<()> {
         let paths = &*instance;
 
-        // Validate environment name
-        if name == "common" {
-            return Err(anyhow::anyhow!("Environment 'common' cannot be created"));
-        }
-
-        // Check if environment already exists
-        if paths.epkg_envs_root.join(name).exists() {
-            return Err(anyhow::anyhow!("Environment '{}' already exists", name));
-        }
-
         // Create environment directory structure
         let env_root = paths.epkg_envs_root.join(name);
         let profile_1 = env_root.join("profile-1");
+
+        if profile_1.join("installed-packages.json").exists() {
+            return Err(anyhow::anyhow!("Environment already exists: '{}'", name));
+        }
 
         // Create directories
         fs::create_dir_all(profile_1.join("usr/ebin"))?;
@@ -189,7 +153,7 @@ impl PackageManager {
         fs::create_dir_all(profile_1.join("usr/sbin"))?;
         fs::create_dir_all(profile_1.join("usr/lib"))?;
         fs::create_dir_all(profile_1.join("usr/lib64"))?;
-        fs::create_dir_all(profile_1.join("etc"))?;
+        fs::create_dir_all(profile_1.join("etc/epkg"))?;
         fs::create_dir_all(profile_1.join("var"))?;
 
         // Create symlinks
@@ -201,27 +165,23 @@ impl PackageManager {
         // Link profile-current to profile-1
         symlink("profile-1", env_root.join("profile-current"))?;
 
-        // Copy resolv.conf
-        fs::copy("/etc/resolv.conf", profile_1.join("etc/resolv.conf"))?;
-
         // Initialize channel
-        let channel = self.options.channel.clone().unwrap_or("openEuler-24.03-LTS".to_string());
-        let channel_yaml = paths.epkg_cache.join("epkg-manager/channel")
-            .join(format!("{}-channel.yaml", channel));
+        let channel = self.options.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
+        let src_channel_yaml = paths.epkg_envs_root.join("common/profile-current/opt/epkg-manager/channel").join(format!("{}.yaml", channel));
+        let env_channel_yaml = env_root.join("profile-current/etc/epkg/channel.yaml");
 
-        if !channel_yaml.exists() {
-            return Err(anyhow::anyhow!("Channel '{}' not found", channel));
+        if !src_channel_yaml.exists() {
+            return Err(anyhow::anyhow!("Channel not found: '{}'", channel));
         }
 
-        let env_channel_yaml = env_root.join("profile-current/etc/epkg/channel.yaml");
-        fs::create_dir_all(env_channel_yaml.parent().unwrap())?;
-        fs::copy(channel_yaml, env_channel_yaml)?;
+        fs::copy(src_channel_yaml, env_channel_yaml)?;
+        fs::copy("/etc/resolv.conf", profile_1.join("etc/resolv.conf"))?;
 
         // Create empty installed-packages.json
         let installed_packages = env_root.join("profile-current/installed-packages.json");
         fs::write(installed_packages, "{\n}")?;
 
-        println!("Environment '{}' has been created.", name);
+        println!("Environment '{}' has been created in {}", name, env_root.display());
         Ok(())
     }
 
@@ -230,13 +190,13 @@ impl PackageManager {
 
         // Validate environment name
         if name == "common" || name == "main" {
-            return Err(anyhow::anyhow!("Environment '{}' cannot be removed", name));
+            return Err(anyhow::anyhow!("Environment cannot be removed: '{}'", name));
         }
 
         // Check if environment exists
         let env_path = paths.epkg_envs_root.join(name);
         if !env_path.exists() {
-            return Err(anyhow::anyhow!("Environment '{}' does not exist", name));
+            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
         }
 
         // Unregister if registered
@@ -267,7 +227,7 @@ impl PackageManager {
 
         // Check if environment exists
         if !paths.epkg_envs_root.join(name).exists() {
-            return Err(anyhow::anyhow!("Environment '{}' does not exist", name));
+            return Err(anyhow::anyhow!("Environment not exist: '{}'", name));
         }
 
         // Update environment variables EPKG_ACTIVE_ENV and PATH
@@ -304,7 +264,7 @@ impl PackageManager {
         // Check if environment exists
         let env_path = paths.epkg_envs_root.join(name);
         if !env_path.exists() {
-            return Err(anyhow::anyhow!("Environment '{}' does not exist", name));
+            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
         }
 
         // Create path.d directories if they don't exist

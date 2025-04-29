@@ -1,5 +1,5 @@
 channel:
-  name: "openEuler-22.03-LTS-SP4"
+  name: "openeuler:22.03-lts-sp4"
   baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-22.03-LTS-SP4/"
 
 repos:

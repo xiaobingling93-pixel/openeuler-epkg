@@ -1,5 +1,5 @@
 channel:
-  name: "openEuler-24.09"
+  name: "openeuler:24.09"
   baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.09/"
 
 repos:

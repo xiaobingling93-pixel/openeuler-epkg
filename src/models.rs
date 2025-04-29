@@ -184,8 +184,13 @@ pub struct EPKGOptions {
 
     // env subcommand options
     pub channel: Option<String>,
-    pub pure: bool,
     pub priority: Option<i32>,
+    pub public: bool,
+    pub pure: bool,
+
+    // 'init' subcommand options
+    pub shared_store: bool,
+    pub version: String,
 }
 
 #[allow(dead_code)]

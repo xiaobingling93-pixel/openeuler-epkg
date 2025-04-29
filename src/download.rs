@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::bounded;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ureq::{Agent, AgentBuilder};
+use ureq::{Agent, config::Config, tls::TlsConfig, Proxy};
 use crate::paths;
 use crate::models::*;
 
@@ -69,11 +69,11 @@ use crate::models::*;
 //   - Efficient resource usage
 
 #[derive(Debug)]
-struct FatalError;
+struct FatalError(String);
 
 impl std::fmt::Display for FatalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Fatal error")
+        write!(f, "{}", self.0)
     }
 }
 
@@ -87,13 +87,16 @@ pub fn download_urls(
     proxy: Option<&str>,
 ) -> Result<()> {
     // Create HTTP client with optional proxy
-    let client = if let Some(proxy_url) = proxy {
-        AgentBuilder::new()
-            .proxy(ureq::Proxy::new(proxy_url)?)
-            .build()
-    } else {
-        AgentBuilder::new().build()
-    };
+    let config = Config::builder()
+        .tls_config(
+            TlsConfig::builder()
+                .build()
+        )
+        .proxy(proxy.map(|p| Proxy::new(p).unwrap()))
+        .user_agent("curl/8.13.0") // necessary for gitee.com
+        .build();
+
+    let client = Agent::new_with_config(config);
 
     fs::create_dir_all(output_dir)?;
     let multi_progress = MultiProgress::new();
@@ -119,7 +122,8 @@ pub fn download_urls(
 
             s.spawn(move |_| {
                 if let Err(e) = download_task(&client, &url, &output_dir, &multi_progress, max_retries) {
-                    errors.lock().unwrap().push(e);
+                    let error_msg = format!("Failed to download {}: {}", url, e);
+                    errors.lock().unwrap().push(error_msg);
                 }
             });
         }
@@ -127,7 +131,13 @@ pub fn download_urls(
 
     let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
     if !errors.is_empty() {
-        return Err(anyhow!("{} downloads failed", errors.len()));
+        let error_count = errors.len();
+        let error_details = errors.join("\n");
+        return Err(anyhow!(
+            "{} downloads failed:\n{}",
+            error_count,
+            error_details
+        ));
     }
 
     Ok(())
@@ -219,21 +229,58 @@ fn download_file(
         0
     };
 
+    // Create a request that mimics wget
     let mut request = client.get(url);
+
     if downloaded > 0 {
-        request = request.set("Range", &format!("bytes={}-", downloaded));
+        request = request.header("Range", &format!("bytes={}-", downloaded));
     }
 
-    let response = request.call()?;
+    let mut response = match request.call() {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(code)) => {
+            let error_msg = format!("HTTP {} error: {} - {}", code,
+                if code >= 400 && code < 500 { "Client Error" }
+                else { "Server Error" }, url);
+            pb.finish_with_message(error_msg.clone());
+            return if code >= 400 && code < 500 {
+                Err(anyhow!(FatalError(error_msg)))
+            } else {
+                Err(anyhow!(error_msg))
+            };
+        }
+        Err(ureq::Error::Io(e)) => {
+            let error_msg = format!("Network error: {} - {}", e, url);
+            pb.finish_with_message(error_msg.clone());
+            return Err(anyhow!(error_msg));
+        }
+        Err(e) => {
+            let error_msg = format!("Error downloading: {} - {}", e, url);
+            pb.finish_with_message(error_msg.clone());
+            return Err(anyhow!(error_msg));
+        }
+    };
+
     let status = response.status();
 
-    if !(status >= 200 && status < 300) && status != 206 {
-        pb.finish_with_message(format!("HTTP error {}: {}", status, url));
-        return if status >= 400 && status < 500 {
-            Err(anyhow!("Fatal HTTP error: {}", status).context(FatalError))
-        } else {
-            Err(anyhow!("HTTP error: {}", status))
-        };
+    // Check content type to detect HTML login pages
+    if let Some(content_type) = response.headers().get("Content-Type").and_then(|v| v.to_str().ok()) {
+        if content_type.contains("text/html") {
+            let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
+            pb.finish_with_message(error_msg);
+            return Err(anyhow!(FatalError(error_msg.to_string())));
+        }
+    }
+
+    // Check content length to detect suspiciously small files
+    if let Some(content_length) = response.headers().get("Content-Length").and_then(|v| v.to_str().ok()) {
+        if let Ok(length) = content_length.parse::<u64>() {
+            if length < 10 {
+                let error_msg = format!("Received suspiciously small file ({} bytes). This may indicate an error page or authentication issue.", length);
+                pb.finish_with_message(error_msg.clone());
+                return Err(anyhow!(FatalError(error_msg)));
+            }
+        }
     }
 
     if downloaded > 0 && status != 206 {
@@ -242,7 +289,7 @@ fn download_file(
         pb.println(format!("Server doesn't support resume, restarting: {}", url));
     }
 
-    let total_size = response.header("Content-Length")
+    let total_size = response.headers().get("Content-Length").and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0)
         + downloaded;
@@ -254,7 +301,7 @@ fn download_file(
         .append(true)
         .open(part_path)?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.body_mut().as_reader();
     let mut buffer = [0; 8192];
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -267,8 +314,9 @@ fn download_file(
     }
 
     if total_size > 0 && downloaded != total_size {
-        pb.finish_with_message(format!("Incomplete download: {}/{} bytes", downloaded, total_size));
-        return Err(anyhow!("Download incomplete"));
+        let error_msg = format!("Download incomplete - {}", url);
+        pb.finish_with_message(error_msg.clone());
+        return Err(anyhow!(error_msg));
     }
 
     pb.finish_with_message(format!("Downloaded {}", part_path.file_name().unwrap().to_string_lossy()));
