@@ -3,15 +3,47 @@
 # Copyright (c) 2024 Huawei Technologies Co., Ltd. All rights reserved.
 
 # keep clean and minimal -- it's sourced by every user terminal
+
+# PATH prepend/append rules:
+# - Files in path.d/prepend and path.d/append are symlinks named with numeric prefixes
+# - Files are processed in reverse version order (e.g. 10-main before 3-focal)
+# - Each symlink points to an ebin directory in an epkg environment
+# Example path.d/prepend:
+#   10-main -> ~/.epkg/envs/main/profile-current/usr/ebin
+#   3-focal -> ~/.epkg/envs/focal/profile-current/usr/ebin
+# This results in PATH ordering:
+#   /home/user/.epkg/envs/main/profile-current/usr/ebin:
+#   /home/user/.epkg/envs/focal/profile-current/usr/ebin:
+#   [original PATH]
+
+__epkg_ls_pathd() {
+    [ -d "$1" ] || return
+
+    # No need to save/restore directory since function runs in a subshell
+    cd "$1" || return
+
+    local link
+    for link in $(command ls -rv)
+    do
+        readlink -f "$link"
+    done
+}
+
+# TODO: should add path for active env too, and consider de-duplicate paths
 __epkg_add_path() {
+    # For zsh, enable word splitting just for this function
+    if [ -n "$ZSH_VERSION" ]; then
+        setopt local_options SH_WORD_SPLIT
+    fi
+
     local epkg_pathd_dir="$HOME/.epkg/config/path.d"
     local p=
     local new_path=
     local old_path=":$PATH:"
 
     # Build PATH components
-    local prepend_paths=$(ls -v "$epkg_pathd_dir/prepend"/* 2>/dev/null | xargs -I{} readlink -f {})
-    local append_paths=$(ls -v "$epkg_pathd_dir/append"/* 2>/dev/null | xargs -I{} readlink -f {})
+    local  append_paths=$(__epkg_ls_pathd "$epkg_pathd_dir/append")
+    local prepend_paths=$(__epkg_ls_pathd "$epkg_pathd_dir/prepend")
 
     # Construct new PATH
     for p in $prepend_paths; do [ "${old_path%%:$p:*}" = "$old_path" ] && new_path="$new_path:$p"; done
@@ -31,11 +63,23 @@ __epkg_update_path() {
 }
 
 __rehash_path() {
-	if [ -n "${ZSH_VERSION}" ]; then
-		rehash
-	elif [ -n "${BASH_VERSION}" ]; then
-		hash -r
-	fi
+    if [ -n "$ZSH_VERSION" ]; then
+        rehash
+    elif [ -n "$BASH_VERSION" ]; then
+        hash -r
+    elif [ -n "$KSH_VERSION" ]; then
+        hash -r
+    elif [ -n "$FISH_VERSION" ]; then
+        true  # Fish doesn't need explicit rehashing
+    elif [ -n "$YASH_VERSION" ]; then
+        rehash
+    elif [ -n "$TCSH_VERSION" -o -n "$tcsh" ]; then
+        rehash
+    else
+        # Fallback for unknown shells (try common rehash commands)
+        # hash -r: busybox sh; dash
+        hash -r 2>/dev/null || rehash 2>/dev/null || true
+    fi
 }
 
 epkg() {
@@ -59,61 +103,65 @@ epkg() {
 			local env="$3"
 			case "$sub_cmd" in
 				create)
-					$epkg_rust "$@" || return
-					export EPKG_ACTIVE_ENV="$env"
+					"$epkg_rust" "$@" || return
 					__epkg_update_path
-					return
 					;;
 				remove)
-					$epkg_rust "$@" || return
+					"$epkg_rust" "$@" || return
 					[ "$env" = "$EPKG_ACTIVE_ENV" ] && unset EPKG_ACTIVE_ENV
 					__epkg_update_path
-					return
 					;;
 				activate)
-					# Check Parameters $#==3 or ($#==4 and $4==--pure)
-					if [ $# -eq 3 ] || [ $# -eq 4 ] && [ "$4" = "--pure" ]; then
-						:
-					else
-						echo "Usage: epkg env activate <env_name> [--pure]"
-						return
-					fi
-
-					[ -z "$env" ] && { echo "env_name cannot be empty!"; return; }
-					[ "$env" = "common" ] && { echo "$env cannot be activated!"; return; }
-					[ ! -d "$HOME/.epkg/envs/$env" ] && { echo "$env not exist!"; return; }
-					# --pure
-					local opt_pure="$4"
-					export EPKG_ACTIVE_ENV="$env"
-					echo "Environment '$env' activated${4:+ $opt_pure}."
+                    __epkg_activate_environment "$@" || return
 					__epkg_update_path
-					return
 					;;
 				deactivate)
-					[ $# -ne 2 ] && { echo "Usage: epkg env deactivate"; return; }
-					[ -z "$EPKG_ACTIVE_ENV" ] && { echo "No environment activated."; return; }
+					[ $# -ne 2 ] && { echo "Usage: epkg env deactivate"; return 1; }
+					[ -z "$EPKG_ACTIVE_ENV" ] && { echo "No environment activated."; return 0; }
 
 					echo "Environment '$EPKG_ACTIVE_ENV' deactivated."
 					unset EPKG_ACTIVE_ENV
 					__epkg_update_path
-					return
 					;;
 				register|unregister)
-					$epkg_rust "$@" || return
-					# update PATH
+					"$epkg_rust" "$@" || return
 					__epkg_update_path
-					return
 					;;
 			esac
 			;;
 		install|remove)
-			$epkg_rust "$@"
+			"$epkg_rust" "$@" &&
 			__rehash_path
-			return
 			;;
+        *)
+            "$epkg_rust" "$@"
+            ;;
 	esac
+}
 
-	$epkg_rust "$@"
+__epkg_activate_environment()
+{
+    local opt_pure=
+    if [ $# -eq 3 ]; then
+        env="$3"
+    elif [ $# -eq 4 ] && [ "$4" = "--pure" ]; then
+        env="$3"
+        opt_pure="$4"
+    elif [ $# -eq 4 ] && [ "$3" = "--pure" ]; then
+        opt_pure="$3"
+        env="$4"
+    else
+        echo "Usage: epkg env activate [--pure] <env_name>"
+        echo "       epkg env activate <env_name> [--pure]"
+        return 1
+    fi
+
+    [ -z "$env" ] && { echo "env_name cannot be empty!"; return 1; }
+    [ "$env" = "common" ] && { echo "'$env' cannot be activated!"; return 1; }
+    [ ! -d "$HOME/.epkg/envs/$env" ] && { echo "$env not exist!"; return 1; }
+
+    export EPKG_ACTIVE_ENV="$env"
+    echo "Environment '$env' activated${opt_pure:+ $opt_pure}"
 }
 
 # vim: sw=4 ts=4 et
