@@ -216,34 +216,22 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     // Open and extract tar.gz file
     let tar_gz = fs::File::open(tar_path)
         .context("Failed to open tar file")?;
-
-    // Create GzDecoder - this will fail if the file is not a valid gzip
     let tar = GzDecoder::new(tar_gz);
-
-    // Create Archive - this will fail if the file is not a valid tar
     let mut archive = Archive::new(tar);
-
-    // Track extracted files to verify extraction was successful
-    let mut extracted_files = Vec::new();
-    let mut has_errors = false;
 
     // Extract all entries
     for entry in archive.entries()? {
         let mut entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                eprintln!("Error reading tar entry: {}", e);
-                has_errors = true;
-                continue;
+                return Err(anyhow::anyhow!("Error reading tar entry: {}", e));
             }
         };
 
         let path = match entry.path() {
             Ok(path) => path,
             Err(e) => {
-                eprintln!("Error getting entry path: {}", e);
-                has_errors = true;
-                continue;
+                return Err(anyhow::anyhow!("Error getting entry path: {}", e));
             }
         };
 
@@ -252,60 +240,37 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
             continue;
         }
 
-        let full_path = dest_dir.join(path);
-        extracted_files.push(full_path.clone());
+        let full_path = dest_dir.join(path.clone());
 
         // Create parent directories if needed
-        if let Some(parent) = full_path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                eprintln!("Error creating directory {}: {}", parent.display(), e);
-                has_errors = true;
-                continue;
+        if path.is_dir() {
+            if let Err(e) = fs::create_dir_all(&full_path) {
+                return Err(anyhow::anyhow!("Error creating directory {}: {}", full_path.display(), e));
             }
+            continue;
         }
 
-        // Extract the file, handling errors more gracefully
+        // only files
         match entry.unpack(&full_path) {
-            Ok(_) => {},
+            Ok(_) => {
+                // Verify file was created and is readable
+                if !full_path.exists() {
+                    return Err(anyhow::anyhow!("File was not extracted: {}", full_path.display()));
+                }
+                if let Err(e) = fs::metadata(&full_path) {
+                    return Err(anyhow::anyhow!("Cannot access extracted file {}: {}", full_path.display(), e));
+                }
+            },
             Err(e) => {
-                // If error is "file exists", try to remove and retry
                 if e.kind() == ErrorKind::AlreadyExists {
-                    if full_path.is_file() {
-                        if let Err(remove_err) = fs::remove_file(&full_path) {
-                            eprintln!("Error removing existing file {}: {}", full_path.display(), remove_err);
-                            has_errors = true;
-                            continue;
-                        }
-
-                        // Retry unpacking after removing the file
-                        if let Err(retry_err) = entry.unpack(&full_path) {
-                            eprintln!("Error extracting {} after removal: {}", full_path.display(), retry_err);
-                            has_errors = true;
-                        }
-                    } else {
-                        eprintln!("Error extracting {}: file exists and is not a regular file", full_path.display());
-                        has_errors = true;
-                    }
+                    fs::remove_file(&full_path)
+                        .with_context(|| format!("Error removing existing file {}", full_path.display()))?;
+                    entry.unpack(&full_path)
+                        .with_context(|| format!("Error extracting {} after removal", full_path.display()))?;
                 } else {
-                    eprintln!("Error extracting {}: {}", full_path.display(), e);
-                    has_errors = true;
+                    return Err(anyhow::anyhow!("Error extracting {}: {}", full_path.display(), e))
                 }
             }
-        }
-    }
-
-    // Verify extraction was successful
-    if has_errors {
-        return Err(anyhow::anyhow!("Some files failed to extract from {}", tar_path.display()));
-    }
-
-    // Verify all extracted files exist and are readable
-    for file in extracted_files {
-        if !file.exists() {
-            return Err(anyhow::anyhow!("File was not extracted: {}", file.display()));
-        }
-        if let Err(e) = fs::metadata(&file) {
-            return Err(anyhow::anyhow!("Cannot access extracted file {}: {}", file.display(), e));
         }
     }
 
