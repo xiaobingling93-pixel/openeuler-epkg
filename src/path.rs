@@ -1,8 +1,8 @@
 use std::fs;
 use std::env;
 use anyhow::Result;
-use crate::paths::instance;
 use crate::models::*;
+use std::path::Path;
 
 impl PackageManager {
 
@@ -39,10 +39,10 @@ impl PackageManager {
     }
 
     fn get_active_env_paths(&self, active_env: &str, pure: bool) -> Result<Vec<String>> {
-        let paths = &*instance;
         let mut path_components = Vec::new();
 
-        let env_root = paths.epkg_envs_root.join(active_env).join("profile-current");
+        // Use get_env_root instead of directly accessing private_envs
+        let env_root = self.get_env_root(active_env.to_string())?;
 
         // Validate environment exists
         if !env_root.exists() {
@@ -72,18 +72,17 @@ impl PackageManager {
     }
 
     fn get_registered_env_paths(&self) -> Result<Vec<String>> {
-        let paths = &*instance;
         let mut path_components = Vec::new();
 
         // Get paths from prepend directory (main environment)
-        let prepend_dir = paths.epkg_config_dir.join("path.d/prepend");
+        let prepend_dir = self.dirs.home_config.join("path.d/prepend");
         path_components.extend(self.get_priority_sorted_paths(&prepend_dir)?);
 
         // Get system paths, excluding epkg paths
         path_components.extend(self.get_system_paths()?);
 
         // Get paths from append directory (other environments)
-        let append_dir = paths.epkg_config_dir.join("path.d/append");
+        let append_dir = self.dirs.home_config.join("path.d/append");
         path_components.extend(self.get_priority_sorted_paths(&append_dir)?);
 
         Ok(path_components)

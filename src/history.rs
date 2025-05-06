@@ -1,14 +1,14 @@
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use anyhow::anyhow;
 use anyhow::Result;
 use anyhow::Context;
-use crate::paths;
 use crate::models::*;
 
-pub fn move_profile_contents(src_dir: &str, dst_dir: &str) -> Result<()> {
+pub fn move_generation_contents(src_dir: &str, dst_dir: &str) -> Result<()> {
     let src_path = Path::new(src_dir);
     let dst_path = Path::new(dst_dir);
 
@@ -40,65 +40,84 @@ pub fn move_profile_contents(src_dir: &str, dst_dir: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn load_installed_packages(env: &str, profile_id: u64) -> Result<HashMap<String, InstalledPackageInfo>> {
-    let file_path = format!("{}/{}/profile-{}/installed-packages.json", paths::instance.epkg_envs_root.display(), env, profile_id);
-    let contents = fs::read_to_string(&file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
-    let packages: HashMap<String, InstalledPackageInfo> = serde_json::from_str(&contents).with_context(|| format!("Failed to parse JSON from file: {}", file_path))?;
-    Ok(packages)
-}
-
 impl PackageManager {
-
-    pub fn get_current_id(&self) -> Result<u64> {
-        let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
-        let target = fs::read_link(&profile_current).with_context(|| format!("Failed to read symlink: {}", profile_current))?;
-        let parts: Vec<&str> = target.to_str().unwrap().split("-").collect();
-        let current_profile_id = parts[1].parse::<u64>().with_context(|| format!("Failed to parse profile id from '{}'", parts[1]))?;
-        Ok(current_profile_id)
+    pub fn load_installed_packages(&mut self, env: &str, generation_id: u64) -> Result<HashMap<String, InstalledPackageInfo>> {
+        let generations_root = self.get_generations_root(env)?;
+        let file_path = generations_root.join(generation_id.to_string()).join("installed-packages.json");
+        let contents = fs::read_to_string(&file_path).with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+        let packages: HashMap<String, InstalledPackageInfo> = serde_json::from_str(&contents).with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
+        Ok(packages)
     }
 
-    pub fn get_current_profile(&self) -> Result<String> {
-        // Get symlink profile_current
-        let profile_current = format!("{}/{}/profile-current", paths::instance.epkg_envs_root.display(), self.options.env);
-        let current_profile_id = self.get_current_id()?;
+    pub fn get_current_generation_id(&self) -> Result<u64> {
+        let generations_root = self.get_default_generations_root()?;
+        let current_link = generations_root.join("current");
+        let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
+        let generation_id = target.to_str().unwrap().parse::<u64>().with_context(||
+            format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?;
+        Ok(generation_id)
+    }
 
-        // Check profile command json
-        let cur_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, current_profile_id);
-        let command_json = format!("{}/{}/profile-current/command.json", paths::instance.epkg_envs_root.display(), self.options.env);
-        if !Path::new(&command_json).exists() {
-            return Ok(profile_current);
+    pub fn get_generation_path(&self, generation_id: u64) -> Result<PathBuf> {
+        let generations_root = self.get_default_generations_root()?;
+        Ok(generations_root.join(generation_id.to_string()))
+    }
+
+    pub fn get_current_generation_path(&self) -> Result<PathBuf> {
+        let current_id = self.get_current_generation_id()?;
+        self.get_generation_path(current_id)
+    }
+
+    pub fn create_new_generation(&self) -> Result<PathBuf> {
+        // Get current generation info
+        let current_id = self.get_current_generation_id()?;
+        let current_generation = self.get_generation_path(current_id)?;
+
+        // Check if we need to create a new generation
+        let command_json = current_generation.join("command.json");
+        if !command_json.exists() {
+            // Current generation has no command history, just return it
+            return Ok(current_generation);
         }
 
-        // mv profile-{cur}/* -> profile-{new}/*
-        let new_profile = format!(
-            "{}/{}/profile-{}",
-            paths::instance.epkg_envs_root.display(),
-            self.options.env,
-            current_profile_id + 1
-        );
-        move_profile_contents(&cur_profile, &new_profile)?;
+        // Create new generation
+        let new_id = current_id + 1;
+        let new_generation = self.get_generation_path(new_id)?;
 
-        // ln -sf profile-current -> profile-{id}
-        // Example: ln -sf profile-current -> profile-1
-        fs::remove_file(&profile_current)?;
-        let new_profile_basename = Path::new(&new_profile).file_name()
-            .ok_or_else(|| anyhow!("Failed to get basename of profile directory"))?
-            .to_str()
-            .ok_or_else(|| anyhow!("Failed to convert basename to string"))?;
-        symlink(new_profile_basename, &profile_current)?;
+        // Move contents from current to new generation
+        move_generation_contents(current_generation.to_str().unwrap(), new_generation.to_str().unwrap())?;
 
-        Ok(profile_current)
+        // Update current symlink to point to the new generation
+        self.update_current_generation_symlink(new_id)?;
+
+        Ok(new_generation)
+    }
+
+    pub fn update_current_generation_symlink(&self, generation_id: u64) -> Result<()> {
+        let generations_root = self.get_default_generations_root()?;
+        let current_link = generations_root.join("current");
+
+        if current_link.exists() {
+            fs::remove_file(&current_link)?;
+        }
+
+        symlink(&generation_id.to_string(), &current_link)?;
+        Ok(())
     }
 
     pub fn record_history(&mut self, action: &str, new_packages: Vec<String>, del_packages: Vec<String>, command_line: &str) -> Result<()> {
-        let command_json = format!("{}/{}/profile-current/command.json", paths::instance.epkg_envs_root.display(), self.options.env);
-        let command = ProfileCommand {
+        let current_gen_id = self.get_current_generation_id()?;
+        let generations_root = self.get_default_generations_root()?;
+        let command_json = generations_root.join(current_gen_id.to_string()).join("command.json");
+
+        let command = GenerationCommand {
             timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
             action: action.to_string(),
-            new_packages: new_packages,
-            del_packages: del_packages,
+            new_packages,
+            del_packages,
             command_line: command_line.to_string(),
         };
+
         let json = serde_json::to_string_pretty(&command)?;
         fs::write(&command_json, json)?;
 
@@ -110,23 +129,28 @@ impl PackageManager {
         println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", "id", "timestamp", "action", "new_packages", "del_packages", "command line");
         println!("{:-<3}-+-{:-<26}-+-{:-<10}-+-{:-<12}-+-{:-<12}-+-{:-<40}", "", "", "", "", "", "");
 
-        let profile_dir = format!("{}/{}", paths::instance.epkg_envs_root.display(), self.options.env);
-        let mut history_entries: Vec<(u64, ProfileCommand)> = Vec::new();
+        let generations_root = self.get_default_generations_root()?;
+        let mut history_entries: Vec<(u64, GenerationCommand)> = Vec::new();
 
         // Collect history entries
-        for entry in fs::read_dir(&profile_dir)? {
+        for entry in fs::read_dir(&generations_root)? {
             let path = entry?.path();
             let filename = path.file_name().and_then(|s| s.to_str());
 
-            if let Some(profile) = filename {
-                if !profile.starts_with("profile-") || profile == "profile-current" {
+            // Skip 'current' symlink
+            if let Some(gen_name) = filename {
+                if gen_name == "current" {
                     continue;
                 }
 
-                if let Ok(id) = profile[8..].parse::<u64>() {
-                    if let Ok(contents) = fs::read_to_string(path.join("command.json")) {
-                        if let Ok(command) = serde_json::from_str(&contents) {
-                            history_entries.push((id, command));
+                // Process only directories with numeric names (generations)
+                if let Ok(id) = gen_name.parse::<u64>() {
+                    let command_json = path.join("command.json");
+                    if command_json.exists() {
+                        if let Ok(contents) = fs::read_to_string(command_json) {
+                            if let Ok(command) = serde_json::from_str(&contents) {
+                                history_entries.push((id, command));
+                            }
                         }
                     }
                 }
@@ -149,20 +173,24 @@ impl PackageManager {
 
     pub fn rollback_history(&mut self, rollback_id: u64, command_line: &str) -> Result<()> {
         // Check if rollback_id exists
-        let rollback_profile = format!("{}/{}/profile-{}", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
-        if !Path::new(&rollback_profile).exists() {
-            return Err(anyhow!("No such history record: Profile {} does not exist", rollback_id));
+        let generations_root = self.get_default_generations_root()?;
+        let rollback_generation = generations_root.join(rollback_id.to_string());
+
+        if !rollback_generation.exists() {
+            return Err(anyhow!("No such history record: Generation {} does not exist", rollback_id));
         }
 
         // Check if rollback_id is the last id
-        let current_profile_id = self.get_current_id()?;
-        if rollback_id == current_profile_id {
-            return Err(anyhow!("Cannot rollback to the current profile"));
+        let current_generation_id = self.get_current_generation_id()?;
+        if rollback_id == current_generation_id {
+            return Err(anyhow!("Cannot rollback to the current generation"));
         }
 
-        // Load current_profile_id ~ rollback_id installed-packages.json, filter need new/del packages
-        let current_packages = load_installed_packages(&self.options.env, current_profile_id)?;
-        let rollback_packages = load_installed_packages(&self.options.env, rollback_id)?;
+        // Load current and rollback installed-packages.json
+        let current_packages = self.load_installed_packages(&self.options.env, current_generation_id)?;
+        let rollback_packages = self.load_installed_packages(&self.options.env, rollback_id)?;
+
+        // Calculate packages to add/remove
         let new_packages: Vec<(String, bool)> = rollback_packages.keys()
             .filter(|name| !current_packages.contains_key(*name))
             .map(|name| (name.clone(), rollback_packages[name].appbin_flag))
@@ -172,7 +200,7 @@ impl PackageManager {
             .cloned()
             .collect();
 
-        // print rollback information
+        // Print rollback information
         println!("{:-^100}", "  Rollback informaton  ");
         println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", "action", "hash", "pkg", "version", "release", "dist");
         println!("{:-<6}-+-{:-<32}-+-{:-<20}-+-{:-<10}-+-{:-<7}-+-{:-<11}", "", "", "", "", "", "");
@@ -193,23 +221,23 @@ impl PackageManager {
             }
         }
 
-        // Remove del_packages
-        let symlink_dir = self.get_current_profile()?;
-        let store_root = paths::instance.get_store_root(&self.options);
+        // Create a new generation for this rollback operation
+        let generation_path = self.create_new_generation()?;
+        let store_root = self.dirs.epkg_store;
 
+        // Apply package changes
         for (pkgline, appbin_flag) in &new_packages {
             let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.new_package(&fs_dir, &symlink_dir, *appbin_flag)?;
+            self.new_package(&fs_dir, &generation_path.to_str().unwrap(), *appbin_flag)?;
         }
         for pkgline in &del_packages {
             let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.del_package(&fs_dir, &symlink_dir)?;
+            self.del_package(&fs_dir, &generation_path.to_str().unwrap())?;
         }
 
-        // Cp rollback_id installed-packages.json to current profile
-        let installed_json = format!("{}/{}/profile-{}/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env, rollback_id);
-        let current_json = format!("{}/{}/profile-current/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env);
-        fs::copy(&installed_json, &current_json)?;
+        // Copy rollback generation's installed-packages.json to current generation
+        let rollback_json = rollback_generation.join("installed-packages.json");
+        fs::copy(&rollback_json, generation_path.join("installed-packages.json"))?;
 
         // Record history
         self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages, command_line)?;

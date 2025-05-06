@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use anyhow::Result;
 use anyhow::anyhow;
-use crate::paths;
+use crate::dirs;
 use crate::utils::*;
 use crate::models::*;
 
@@ -132,7 +132,7 @@ pub fn handle_elf(target_path: &Path, symlink_dir: &Path, fs_file: &Path) -> Res
     let id1 = "{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
     let id2 = "{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
 
-    fs::copy(&paths::instance.elfloader_exec, &target_path)?;
+    fs::copy(&self.get_env_config(self.options.env.clone())?.env_root + "/usr/bin/elf-loader", &target_path)?;
     replace_string(&target_path, id1, &symlink_dir.to_string_lossy())?;
     replace_string(&target_path, id2, &fs_file.to_string_lossy())?;
     Ok(())
@@ -288,7 +288,7 @@ impl PackageManager {
         self.unpack_packages(files).unwrap();
         self.change_appbin_flag_same_source(&mut packages_to_install).unwrap();
         // create symlinks
-        let symlink_dir = self.get_current_profile()?;
+        let symlink_dir = self.create_new_generation()?;
         let mut appbin_count = 0;
         let mut appbin_packages = Vec::new();
         for (pkgline, _package_info) in &packages_to_install {
@@ -304,7 +304,7 @@ impl PackageManager {
                 }
             }
             // install files
-            let store_root = paths::instance.get_store_root(&self.options);
+            let store_root = self.dirs.epkg_store;
             let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
             self.new_package(&fs_dir, &symlink_dir, appbin_flag).unwrap();
             // postinstall

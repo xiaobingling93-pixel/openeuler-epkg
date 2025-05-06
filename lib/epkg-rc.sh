@@ -9,11 +9,11 @@
 # - Files are processed in reverse version order (e.g. 10-main before 3-focal)
 # - Each symlink points to an ebin directory in an epkg environment
 # Example path.d/prepend:
-#   10-main -> ~/.epkg/envs/main/profile-current/usr/ebin
-#   3-focal -> ~/.epkg/envs/focal/profile-current/usr/ebin
+#   10-main -> ~/.epkg/envs/main/usr/ebin
+#   3-focal -> ~/.epkg/envs/focal/usr/ebin
 # This results in PATH ordering:
-#   /home/user/.epkg/envs/main/profile-current/usr/ebin:
-#   /home/user/.epkg/envs/focal/profile-current/usr/ebin:
+#   /home/user/.epkg/envs/main/usr/ebin:
+#   /home/user/.epkg/envs/focal/usr/ebin:
 #   [original PATH]
 
 __epkg_ls_pathd() {
@@ -86,11 +86,11 @@ epkg() {
 	local cmd="$1"
 
 	if [ -d "/opt/epkg/users/public/envs/common/" ]; then
-		local epkg_common_profile="/opt/epkg/users/public/envs/common/profile-current"
+		local epkg_common_root="/opt/epkg/users/public/envs/common"
 	else
-		local epkg_common_profile="$HOME/.epkg/envs/common/profile-current"
+		local epkg_common_root="$HOME/.epkg/envs/common"
 	fi
-	local epkg_rust="$epkg_common_profile/usr/bin/epkg"
+	local epkg_rust="$epkg_common_root/usr/bin/epkg"
 
 	# issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
 	if [ -n "$EPKG_ACTIVE_ENV" ] && [ ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]; then

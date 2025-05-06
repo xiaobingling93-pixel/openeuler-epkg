@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::bounded;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::{Agent, config::Config, tls::TlsConfig, Proxy};
-use crate::paths;
+use crate::dirs;
 use crate::models::*;
 
 // Main Features:
@@ -345,7 +345,7 @@ impl PackageManager {
 
     // Download packages specified by their pkgline strings.
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
-        let output_dir = paths::instance.epkg_pkg_cache_dir.display().to_string();
+        let output_dir = self.dirs.epkg_pkg_cache.display().to_string();
 
         // Step 1: Compose URLs for each pkgline
         let mut urls = Vec::new();
@@ -354,9 +354,10 @@ impl PackageManager {
             let pkghash = &pkgline[..32]; // Extract the first 32 characters as the hash
             if let Some(spec) = self.pkghash2spec.get(pkghash) {
                 let repo = &spec.repo;
+                let channel_config = self.get_channel_config(self.options.env.clone())?;
                 let url = format!(
                     "{}/{}/{}/store/{}/{}.epkg",
-                    self.env_config.channel.baseurl,
+                    channel_config.baseurl,
                     repo,
                     self.options.arch,
                     &pkgline[..2], // First 2 characters of the hash

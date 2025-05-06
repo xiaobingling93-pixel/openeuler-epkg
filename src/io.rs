@@ -6,7 +6,7 @@ use std::env;
 use std::path::Path;
 use dirs::home_dir;
 use anyhow::{Context, Result, bail};
-use crate::paths;
+use crate::dirs;
 use crate::models::*;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
@@ -59,32 +59,57 @@ fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
 
 impl PackageManager {
 
-    pub fn load_env_config(&mut self) -> Result<()> {
-        let file_path = format!("{}/.epkg/envs/{}/profile-current/etc/epkg/channel.yaml",
-            env::var("HOME")?,
-            self.options.env,
+    pub fn get_env_config(&mut self, env_name: String) -> Result<&EnvConfig> {
+        if self.env_config.contains_key(&env_name) {
+            return Ok(&self.env_config[&env_name]);
+        }
+
+        let env_path = format!("{}/envs/{}.yaml",
+            self.dirs.home_config.display(),
+            env_name
         );
 
         // Read the file contents
+        let contents = fs::read_to_string(&env_path)
+            .with_context(|| format!("Failed to read file: {}", env_path))?;
+
+        // Deserialize the YAML into EnvConfig
+        let env_config: EnvConfig = serde_yaml::from_str(&contents)
+            .with_context(|| format!("Failed to parse YAML from file: {}", env_path))?;
+
+        self.env_config.insert(env_name.clone(), env_config);
+
+        Ok(&self.env_config[&env_name])
+    }
+
+    pub fn get_channel_config(&mut self, env_name: String) -> Result<&ChannelConfig> {
+        if self.channel_config.contains_key(&env_name) {
+            return Ok(&self.channel_config[&env_name]);
+        }
+
+        let env_root = self.get_env_root(env_name.clone())?;
+
+        let file_path = env_root.join("etc/epkg/channel.yaml");
+
+        // Read the file contents
         let contents = fs::read_to_string(&file_path)
-            .with_context(|| format!("Failed to read file: {}", file_path))?;
+            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
-        // Deserialize the YAML into the Config struct
-        self.env_config = serde_yaml::from_str(&contents)
-            .with_context(|| format!("Failed to parse YAML from file: {}", file_path))?;
+        // Deserialize the YAML into the ChannelConfig struct
+        let channel_config: ChannelConfig = serde_yaml::from_str(&contents)
+            .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))?;
 
-        Ok(())
+        self.channel_config.insert(env_name.clone(), channel_config);
+
+        Ok(&self.channel_config[&env_name])
     }
 
     // load repodata/index.json and store to repodata
     pub fn load_repodata(&mut self) -> Result<()> {
-        if self.env_config.channel.name.is_empty() {
-            self.load_env_config()?;
-        }
-
+        let channel_config = self.get_channel_config(self.options.env.clone())?;
         let file_glob: String = format!("{}/channel/{}/*/{}/repodata/index.json",
-            paths::instance.epkg_cache.display(),
-            self.env_config.channel.name,
+            self.dirs.epkg_cache.display(),
+            channel_config.name,
             self.options.arch,
         );
         for entry in glob::glob(&file_glob).expect("Failed to read glob pattern") {
@@ -120,10 +145,10 @@ impl PackageManager {
                     "{}/{}",
                     repodata.dir,
                     entry.filename.strip_suffix(".zst").unwrap()
-                                                       .splitn(3, '-') 
+                                                       .splitn(3, '-')
                                                        .take(2)
                                                        .collect::<Vec<_>>()
-                                                       .join("-") 
+                                                       .join("-")
                 );
                 let contents = fs::read_to_string(&file_path)
                     .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
@@ -142,29 +167,24 @@ impl PackageManager {
     }
 
     pub fn load_installed_packages(&mut self) -> Result<()> {
+        let env_root = self.get_default_env_root()?;
+        let file_path = env_root.join("installed-packages.json");
 
-        let file_path = format!("{}/{}/profile-current/installed-packages.json", paths::instance.epkg_envs_root.display(), self.options.env,);
-        
         let contents = fs::read_to_string(&file_path)
-            .with_context(|| format!("Failed to read file: {}", file_path))?;
+            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
         self.installed_packages = serde_json::from_str(&contents)
-            .with_context(|| format!("Failed to parse JSON from file: {}", file_path))?;
+            .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
 
         Ok(())
     }
 
-    pub fn save_installed_packages(&self) -> Result<()> {
-        // Get the home directory
-        let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    pub fn save_installed_packages(&mut self) -> Result<()> {
+        // Get the generations root
+        let generations_root = self.get_default_generations_root()?;
 
         // Construct the file path
-        let file_path = home
-            .join(".epkg")
-            .join("envs")
-            .join(self.options.env.clone())
-            .join("profile-current")
-            .join("installed-packages.json");
+        let file_path = generations_root.join("current").join("installed-packages.json");
 
         // Serialize the installed packages to JSON
         let json = serde_json::to_string_pretty(&self.installed_packages)?;

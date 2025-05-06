@@ -3,7 +3,7 @@ use std::path::Path;
 use std::collections::HashMap;
 use anyhow::Result;
 use anyhow::anyhow;
-use crate::paths;
+use crate::dirs;
 use crate::utils::*;
 use crate::models::*;
 
@@ -123,11 +123,11 @@ impl PackageManager {
             println!("No packages to remove.");
         }
 
-        // Step 6: Remove package in epkg_envs_root/$cur_env/profile-current/ files
-        let symlink_dir = self.get_current_profile()?;
+        // Step 6: Remove package files
+        let symlink_dir = self.create_new_generation()?;
         for pkgline in &installed_to_remove {
             // remove files
-            let store_root = paths::instance.get_store_root(&self.options);
+            let store_root = self.dirs.epkg_store;
             let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
             self.del_package(&fs_dir, &symlink_dir)?;
         }

@@ -8,12 +8,12 @@ use zstd::stream::Decoder;
 use users::get_effective_uid;
 use anyhow::Result;
 use walkdir::WalkDir;
-use crate::paths;
+use crate::models::PackageManager;
 
-pub fn unpack_packages(files: Vec<String>) -> Result<()> {
+pub fn unpack_packages(files: Vec<String>, package_manager: &PackageManager) -> Result<()> {
     for file in files {
         let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
-        let dir = paths::instance.epkg_store_root.join(pkgline);
+        let dir = package_manager.dirs.epkg_store.join(pkgline);
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
         
         untar_zst(&file, &dir_str, true)?;

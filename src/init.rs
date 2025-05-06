@@ -3,7 +3,6 @@ use std::env;
 use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
 use anyhow::{Result, Context};
-use crate::paths::instance;
 use crate::models::*;
 use crate::download::download_urls;
 use crate::utils;
@@ -11,9 +10,7 @@ use crate::utils;
 impl PackageManager {
 
     pub fn check_init(&self) -> Result<()> {
-        let paths = &*instance;
-
-        if !paths.epkg_envs_root.join("main").exists() {
+        if !self.get_env_root("main".to_string())?.exists() {
             self.init()?;
         }
 
@@ -21,20 +18,18 @@ impl PackageManager {
     }
 
     pub fn init(&self) -> Result<()> {
-        let paths = &*instance;
-
-        if !paths.epkg_envs_root.join("common").exists() {
+        if !self.get_env_root("common".to_string())?.exists() {
             self.install_epkg()?;
         }
 
         // Check if already initialized
-        if paths.epkg_envs_root.join("main").exists() {
+        if self.get_env_root("main".to_string())?.exists() {
             eprintln!("epkg was already initialized for user {}", env::var("USER")?);
             return Ok(());
         }
 
         // Create necessary directories
-        fs::create_dir_all(&paths.epkg_config_dir.join("path.d"))?;
+        fs::create_dir_all(&self.dirs.home_config.join("path.d"))?;
 
         // Create main environment
         self.create_environment("main")?;
@@ -49,12 +44,11 @@ impl PackageManager {
         self.validate_architecture()?;
 
         // Set up installation paths
-        let paths = &*instance;
-        fs::create_dir_all(&paths.epkg_cache)
+        fs::create_dir_all(&self.dirs.epkg_cache)
             .context("Failed to create cache directory")?;
-        fs::create_dir_all(&paths.epkg_pkg_cache_dir)
+        fs::create_dir_all(&self.dirs.epkg_pkg_cache)
             .context("Failed to create package cache directory")?;
-        fs::create_dir_all(&paths.epkg_channel_cache_dir)
+        fs::create_dir_all(&self.dirs.epkg_channel_cache)
             .context("Failed to create channel cache directory")?;
 
         // Download required files
@@ -78,7 +72,6 @@ impl PackageManager {
     }
 
     fn download_required_files(&self) -> Result<()> {
-        let paths = &*instance;
         let arch = env::consts::ARCH;
 
         // Set up URLs
@@ -97,35 +90,27 @@ impl PackageManager {
         ];
 
         // Download with better error handling
-        download_urls(urls, &paths.epkg_cache.to_str().unwrap(), 6, 6, None)
+        download_urls(urls, &self.dirs.epkg_cache.to_str().unwrap(), 6, 6, None)
             .context("Failed to download required files")?;
 
         // Verify the downloaded files exist
-        let epkg_manager_tar = paths.epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        let epkg_manager_tar = self.dirs.epkg_cache.join(format!("{}.tar.gz", epkg_version));
         if !epkg_manager_tar.exists() {
             return Err(anyhow::anyhow!("Failed to download epkg manager tar file from {}", epkg_manager_url));
         }
 
         // Verify checksums
-        utils::verify_sha256sum(&paths.epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch)))?;
+        utils::verify_sha256sum(&self.dirs.epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch)))?;
 
         Ok(())
     }
 
     fn setup_common_environment(&self) -> Result<()> {
-        let paths = &*instance;
+        let common_env_root = self.get_env_root("common".to_string())?;
 
-        // Get paths for common environment
-        let common_root = paths.epkg_envs_root.join("common");
-        let profile_1 = common_root.join("profile-1");
+        self.setup_epkg_manager(&common_env_root)?;
+        self.setup_common_binaries(&common_env_root)?;
 
-        // Set up epkg manager files
-        self.setup_epkg_manager(&profile_1)?;
-
-        // Set up common binaries
-        self.setup_common_binaries(&profile_1)?;
-
-        // Create common environment using create_environment
         self.create_environment("common")?;
 
         Ok(())
@@ -143,15 +128,14 @@ impl PackageManager {
     // -rw-rw-r-- root/root      7609 2025-04-29 10:56 epkg-master/bin/epkg-installer.sh
     // -rw-rw-r-- root/root      2196 2025-04-29 10:56 epkg-master/bin/epkg-uninstaller.sh
     // drwxrwxr-x root/root         0 2025-04-29 10:56 epkg-master/build/
-    fn setup_epkg_manager(&self, profile_1: &Path) -> Result<()> {
-        let paths = &*instance;
+    fn setup_epkg_manager(&self, env_root: &Path) -> Result<()> {
         let epkg_version = &self.options.version;
 
         // Extract epkg-manager tar
-        let env_opt = profile_1.join("opt");
+        let env_opt = env_root.join("opt");
         let epkg_manager_dir = env_opt.join("epkg-manager");
         let epkg_extracted_dir = format!("epkg-{}", epkg_version);
-        let epkg_manager_tar = paths.epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        let epkg_manager_tar = self.dirs.epkg_cache.join(format!("{}.tar.gz", epkg_version));
 
         println!("Extracting epkg manager from {}", epkg_manager_tar.display());
 
@@ -175,10 +159,9 @@ impl PackageManager {
         Ok(())
     }
 
-    fn setup_common_binaries(&self, profile_1: &Path) -> Result<()> {
-        let paths = &*instance;
+    fn setup_common_binaries(&self, env_root: &Path) -> Result<()> {
         let arch = env::consts::ARCH;
-        let usr_bin = profile_1.join("usr/bin");
+        let usr_bin = env_root.join("usr/bin");
 
         fs::create_dir_all(&usr_bin)?;
 
@@ -189,7 +172,7 @@ impl PackageManager {
         ).context("Failed to copy epkg binary")?;
 
         fs::copy(
-            &paths.epkg_cache.join(format!("elf-loader-{}", arch)),
+            &self.dirs.epkg_cache.join(format!("elf-loader-{}", arch)),
             &usr_bin.join("elf-loader")
         ).context("Failed to copy elf-loader binary")?;
 
@@ -206,7 +189,6 @@ impl PackageManager {
     }
 
     fn update_shell_rc(&self) -> Result<()> {
-        let paths = &*instance;
         let shell = env::var("SHELL")?;
         let shell = Path::new(&shell)
             .file_name()
@@ -219,9 +201,11 @@ impl PackageManager {
             _ => return Err(anyhow::anyhow!("Unsupported shell: {}", shell)),
         };
 
+        // Get the common environment root path using get_env_root
+        let common_env_root = self.get_env_root("common".to_string())?;
         let rc_content = format!(
-            "\n# epkg begin\nsource {}\n# epkg end\n",
-            paths.epkg_envs_root.join("common/profile-current/opt/epkg-manager/lib/epkg-rc.sh").display()
+            "\n# epkg begin\nsource {}/usr/opt/epkg-manager/lib/epkg-rc.sh\n# epkg end\n",
+            common_env_root.display()
         );
 
         // Read existing content

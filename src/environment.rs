@@ -2,8 +2,8 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::env;
 use anyhow::Result;
-use crate::paths::instance;
 use crate::models::*;
+use std::path::Path;
 
 // epkg PATH management
 //
@@ -20,10 +20,10 @@ use crate::models::*;
 // Example structure:
 // .epkg/config/path.d/
 // ├── prepend/
-// │   ├── 10-main -> ~/.epkg/envs/main/profile-current/usr/ebin
-// │   └── 20-debian12 -> ~/.epkg/envs/debian12/profile-current/usr/ebin
+// │   ├── 10-main -> ~/.epkg/envs/main/usr/ebin
+// │   └── 20-debian12 -> ~/.epkg/envs/debian12/usr/ebin
 // └── append/
-//     └── 10-archlinux -> ~/.epkg/envs/archlinux/profile-current/usr/ebin
+//     └── 10-archlinux -> ~/.epkg/envs/archlinux/usr/ebin
 //
 // Paths are processed in numeric order (ascending) within each directory.
 // The final PATH is constructed as:
@@ -92,10 +92,10 @@ impl PackageManager {
     ///
     /// Returns a Vec of environment names.
     pub fn get_all_env_names(&self) -> Result<Vec<String>> {
-        let paths = &*instance;
-
-        // Get all environments except common
-        let all_envs: Vec<String> = fs::read_dir(&paths.epkg_envs_root)?
+        // Note: This method still uses private_envs directly since we need to
+        // list all available environments from the directory, not access a specific one
+        // Note: In the future, this could be refactored to not depend on the directory structure
+        let all_envs: Vec<String> = fs::read_dir(&self.dirs.private_envs)?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let name = entry.file_name().into_string().ok()?;
@@ -137,64 +137,70 @@ impl PackageManager {
     }
 
     pub fn create_environment(&self, name: &str) -> Result<()> {
-        let paths = &*instance;
-
         // Create environment directory structure
-        let env_root = paths.epkg_envs_root.join(name);
-        let profile_1 = env_root.join("profile-1");
+        let env_root = self.get_env_root(name.to_string())?;
 
-        if profile_1.join("installed-packages.json").exists() {
+        // Create generations directory with first generation
+        let generations_root = self.get_generations_root(name)?;
+        let gen_1_dir = generations_root.join("1");
+
+        if gen_1_dir.join("installed-packages.json").exists() {
             return Err(anyhow::anyhow!("Environment already exists: '{}'", name));
         }
 
-        // Create directories
-        fs::create_dir_all(profile_1.join("usr/ebin"))?;
-        fs::create_dir_all(profile_1.join("usr/bin"))?;
-        fs::create_dir_all(profile_1.join("usr/sbin"))?;
-        fs::create_dir_all(profile_1.join("usr/lib"))?;
-        fs::create_dir_all(profile_1.join("usr/lib64"))?;
-        fs::create_dir_all(profile_1.join("etc/epkg"))?;
-        fs::create_dir_all(profile_1.join("var"))?;
+        // Create directories for generation 1
+        fs::create_dir_all(&generations_root)?;
+        fs::create_dir_all(env_root.join("usr/ebin"))?;
+        fs::create_dir_all(env_root.join("usr/bin"))?;
+        fs::create_dir_all(env_root.join("usr/sbin"))?;
+        fs::create_dir_all(env_root.join("usr/lib"))?;
+        fs::create_dir_all(env_root.join("usr/lib64"))?;
+        fs::create_dir_all(env_root.join("etc/epkg"))?;
+        fs::create_dir_all(env_root.join("var"))?;
 
-        // Create symlinks
-        symlink("usr/bin", profile_1.join("bin"))?;
-        symlink("usr/sbin", profile_1.join("sbin"))?;
-        symlink("usr/lib", profile_1.join("lib"))?;
-        symlink("usr/lib64", profile_1.join("lib64"))?;
+        // Create symlinks in generation 1
+        symlink("usr/bin", env_root.join("ebin"))?;
+        symlink("usr/bin", env_root.join("bin"))?;
+        symlink("usr/sbin", env_root.join("sbin"))?;
+        symlink("usr/lib", env_root.join("lib"))?;
+        symlink("usr/lib64", env_root.join("lib64"))?;
 
-        // Link profile-current to profile-1
-        symlink("profile-1", env_root.join("profile-current"))?;
+        // Create "current" symlink in generations directory pointing to generation 1
+        symlink("1", generations_root.join("current"))?;
 
         // Initialize channel
         let channel = self.options.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
-        let src_channel_yaml = paths.epkg_envs_root.join("common/profile-current/opt/epkg-manager/channel").join(format!("{}.yaml", channel));
-        let env_channel_yaml = env_root.join("profile-current/etc/epkg/channel.yaml");
+        let common_env_root = self.get_env_root("common".to_string())?;
+        let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
+        let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
 
         if !src_channel_yaml.exists() {
             return Err(anyhow::anyhow!("Channel not found: '{}'", channel));
         }
 
         fs::copy(src_channel_yaml, env_channel_yaml)?;
-        fs::copy("/etc/resolv.conf", profile_1.join("etc/resolv.conf"))?;
+        fs::copy("/etc/resolv.conf", env_root.join("etc/resolv.conf"))?;
 
-        // Create empty installed-packages.json
-        let installed_packages = env_root.join("profile-current/installed-packages.json");
+        // Create metadata files
+        let installed_packages = gen_1_dir.join("installed-packages.json");
         fs::write(installed_packages, "{\n}")?;
+
+        // Create command.json to record the creation command
+        let command_json = gen_1_dir.join("command.json");
+        fs::write(command_json, "{\n  \"command\": \"epkg env create\",\n  \"timestamp\": \"0\"\n}")?;
 
         println!("Environment '{}' has been created in {}", name, env_root.display());
         Ok(())
     }
 
     pub fn remove_environment(&self, name: &str) -> Result<()> {
-        let paths = &*instance;
-
         // Validate environment name
         if name == "common" || name == "main" {
             return Err(anyhow::anyhow!("Environment cannot be removed: '{}'", name));
         }
 
         // Check if environment exists
-        let env_path = paths.epkg_envs_root.join(name);
+        let env_path = self.get_env_root(name.to_string())?;
         if !env_path.exists() {
             return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
         }
@@ -210,7 +216,7 @@ impl PackageManager {
         }
 
         // Rename to hide environment
-        let hidden_path = paths.epkg_envs_root.join(format!(".{}", name));
+        let hidden_path = self.dirs.private_envs.join(format!(".{}", name));
         fs::rename(env_path, hidden_path)?;
 
         println!("Environment '{}' has been removed.", name);
@@ -218,15 +224,13 @@ impl PackageManager {
     }
 
     pub fn activate_environment(&self, name: &str) -> Result<()> {
-        let paths = &*instance;
-
         // Validate environment name
         if name == "common" {
             return Err(anyhow::anyhow!("Environment 'common' cannot be activated"));
         }
 
         // Check if environment exists
-        if !paths.epkg_envs_root.join(name).exists() {
+        if !self.get_env_root(name.to_string())?.exists() {
             return Err(anyhow::anyhow!("Environment not exist: '{}'", name));
         }
 
@@ -254,22 +258,20 @@ impl PackageManager {
     }
 
     pub fn register_environment(&self, name: &str) -> Result<()> {
-        let paths = &*instance;
-
         // Validate environment name
         if name == "common" {
             return Err(anyhow::anyhow!("Environment 'common' cannot be registered"));
         }
 
         // Check if environment exists
-        let env_path = paths.epkg_envs_root.join(name);
+        let env_path = self.dirs.private_envs.join(name);
         if !env_path.exists() {
             return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
         }
 
         // Create path.d directories if they don't exist
-        let prepend_dir = paths.epkg_config_dir.join("path.d/prepend");
-        let append_dir = paths.epkg_config_dir.join("path.d/append");
+        let prepend_dir = self.dirs.home_config.join("path.d/prepend");
+        let append_dir = self.dirs.home_config.join("path.d/append");
 
         // Get priority from options or auto-detect
         let priority = if let Some(priority) = self.options.priority {
@@ -287,7 +289,7 @@ impl PackageManager {
         };
 
         // Create symlink in appropriate directory
-        let ebin_path = env_path.join("profile-current/usr/ebin");
+        let ebin_path = env_path.join("usr/ebin");
         let symlink_path = if priority >= 0 {
             fs::create_dir_all(&prepend_dir)?;
             prepend_dir.join(format!("{}-{}", priority, name))
@@ -309,15 +311,13 @@ impl PackageManager {
     }
 
     pub fn unregister_environment(&self, name: &str) -> Result<()> {
-        let paths = &*instance;
-
         // Validate environment name
         if name == "common" {
             return Err(anyhow::anyhow!("Environment 'common' cannot be unregistered"));
         }
 
         // Remove symlinks from both prepend and append directories
-        let glob_pattern = paths.epkg_config_dir.join(format!("path.d/{{prepend,append}}/*-{}*", name));
+        let glob_pattern = self.dirs.home_config.join(format!("path.d/{{prepend,append}}/*-{}*", name));
         for path in glob::glob(glob_pattern.to_str().unwrap())? {
             if let Ok(path) = path {
                 fs::remove_file(path)?;
@@ -337,14 +337,13 @@ impl PackageManager {
     /// Example structure:
     /// .epkg/config/path.d/
     /// ├── prepend/
-    /// │   ├── 10-main -> ~/.epkg/envs/main/profile-current/usr/ebin
-    /// │   └── 20-debian12 -> ~/.epkg/envs/debian12/profile-current/usr/ebin
+    /// │   ├── 10-main -> ~/.epkg/envs/main/usr/ebin
+    /// │   └── 20-debian12 -> ~/.epkg/envs/debian12/usr/ebin
     /// └── append/
-    ///     └── 10-archlinux -> ~/.epkg/envs/archlinux/profile-current/usr/ebin
+    ///     └── 10-archlinux -> ~/.epkg/envs/archlinux/usr/ebin
     ///
     /// Returns a Vec of unique environment names found in both directories.
     pub fn get_registered_env_names(&self) -> Result<Vec<String>> {
-        let paths = &*instance;
         let mut env_names = std::collections::HashSet::new();
 
         // Helper function to extract env name from symlink name
@@ -371,8 +370,8 @@ impl PackageManager {
         };
 
         // Process both directories
-        process_dir(&paths.epkg_config_dir.join("path.d/prepend"))?;
-        process_dir(&paths.epkg_config_dir.join("path.d/append"))?;
+        process_dir(&self.dirs.home_config.join("path.d/prepend"))?;
+        process_dir(&self.dirs.home_config.join("path.d/append"))?;
 
         // Convert HashSet to sorted Vec
         let mut result: Vec<String> = env_names.into_iter().collect();
@@ -380,4 +379,147 @@ impl PackageManager {
         Ok(result)
     }
 
+    /// Switch environment to a specific generation or rollback N generations
+    pub fn switch_environment(&self, name: &str, generation: &str) -> Result<()> {
+        // Validate environment name
+        if name == "common" {
+            return Err(anyhow::anyhow!("Environment 'common' cannot be switched"));
+        }
+
+        // Check if environment exists
+        let env_root = self.get_env_root(name.to_string())?;
+        if !env_root.exists() {
+            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
+        }
+
+        // Determine target generation
+        let generations_root = self.get_generations_root(name)?;
+        let current_symlink = generations_root.join("current");
+
+        let target_generation = if generation.starts_with("-") {
+            // Rollback N generations
+            let rollback_count: i32 = generation[1..].parse()
+                .map_err(|_| anyhow::anyhow!("Invalid rollback count: '{}'", generation))?;
+
+            if rollback_count <= 0 {
+                return Err(anyhow::anyhow!("Rollback count must be positive: '{}'", rollback_count));
+            }
+
+            // Read current generation
+            let current_gen = fs::read_link(&current_symlink)?
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid current generation symlink"))?
+                .to_string_lossy()
+                .parse::<i32>()?;
+
+            let target_gen = current_gen - rollback_count;
+            if target_gen <= 0 {
+                return Err(anyhow::anyhow!("Cannot rollback beyond generation 1"));
+            }
+
+            target_gen.to_string()
+        } else {
+            // Direct generation specification
+            generation.to_string()
+        };
+
+        // Verify target generation exists
+        let target_gen_dir = generations_root.join(&target_generation);
+        if !target_gen_dir.exists() {
+            return Err(anyhow::anyhow!("Generation {} does not exist", target_generation));
+        }
+
+        // Update current symlink
+        if current_symlink.exists() {
+            fs::remove_file(&current_symlink)?;
+        }
+        symlink(&target_generation, &current_symlink)?;
+
+        println!("Environment '{}' switched to generation {}", name, target_generation);
+        Ok(())
+    }
+
+    /// List available generations for an environment
+    pub fn list_generations(&self, name: &str) -> Result<()> {
+        // Validate environment name
+        if name == "common" {
+            return Err(anyhow::anyhow!("Environment 'common' has no generations"));
+        }
+
+        // Check if environment exists
+        let env_root = self.get_env_root(name.to_string())?;
+        if !env_root.exists() {
+            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
+        }
+
+        // Get generations directory
+        let generations_root = self.get_generations_root(name)?;
+        if !generations_root.exists() {
+            return Err(anyhow::anyhow!("No generations found for environment: '{}'", name));
+        }
+
+        // Get current generation
+        let current_gen = fs::read_link(generations_root.join("current"))
+            .ok()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str().map(|s| s.to_string()));
+
+        // List all generations
+        let mut generations: Vec<String> = fs::read_dir(&generations_root)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                if name.chars().all(|c| c.is_digit(10)) {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort numerically
+        generations.sort_by(|a, b| {
+            a.parse::<i32>().unwrap_or(0).cmp(&b.parse::<i32>().unwrap_or(0))
+        });
+
+        // Print table header
+        println!("{:<12}  {:<10}  {}", "Generation", "Status", "Command");
+        println!("{}", "-".repeat(60));
+
+        // Print each generation with its status
+        for gen in generations {
+            let gen_dir = generations_root.join(&gen);
+            let command_file = gen_dir.join("command.json");
+
+            // Try to read command from command.json
+            let command = if command_file.exists() {
+                match fs::read_to_string(&command_file) {
+                    Ok(content) => {
+                        // Simple extraction, in real code you'd use serde
+                        content.lines()
+                            .find(|line| line.contains("\"command\""))
+                            .unwrap_or("")
+                            .trim()
+                            .replace("\"command\":", "")
+                            .replace("\"", "")
+                            .trim()
+                            .to_string()
+                    },
+                    Err(_) => "unknown".to_string()
+                }
+            } else {
+                "unknown".to_string()
+            };
+
+            let status = if Some(&gen) == current_gen.as_ref() {
+                "current"
+            } else {
+                ""
+            };
+
+            println!("{:<12}  {:<10}  {}", gen, status, command);
+        }
+
+        Ok(())
+    }
 }

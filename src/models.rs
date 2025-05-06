@@ -109,7 +109,7 @@ pub struct PackageSpec {
 }
 
 /*
-    # /home/${user}/.epkg/envs/${env}/profile-current/installed-packages.json
+    # ${env_root}/generations/current/installed-packages.json
     {
       "${pkghash1}__${pkgname}__${pkgver}__${pkgrel}": {
         "install_time": xxx,
@@ -131,7 +131,7 @@ pub struct InstalledPackageInfo {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
-pub struct ProfileCommand {
+pub struct GenerationCommand {
     pub timestamp: String,
     pub action: String,
     pub new_packages: Vec<String>,
@@ -139,21 +139,44 @@ pub struct ProfileCommand {
     pub command_line: String,
 }
 
-// $HOME/.epkg/envs/${env}/profile-current/etc/epkg/channel.yaml
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[derive(Default)]
 pub struct EnvConfig {
-    pub channel: Channel,
-    pub repos: HashMap<String, RepoConfig>,
+    pub name: String,
+    pub env_base: String,
+    pub env_root: String,
+
+    pub public: bool,
+
+    pub register_to_path: bool,
+    pub register_priority: i32,
+
+    pub env_vars: HashMap<String, String>,
+
+    pub installed_packages: HashMap<String, String>,
 }
 
+// # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
+// # On `epkg init`, may copy from $EPKG_SRC/channel/${channel}.yaml
+// channel:
+//   name: "openeuler:24.03-lts"
+//   baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/"
+//
+// repos:
+//   everything:
+//     # url: defaults to ${channel.baseurl}/$reponame
+//   mysql:
+//       enabled = false
+//       # a repo can specify its own url
+//       url = "http://third.party/repo/dir"
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[derive(Default)]
-pub struct Channel {
+pub struct ChannelConfig {
     pub name: String,
     pub baseurl: String,
+    pub repos: HashMap<String, RepoConfig>,
 }
 
 fn default_as_true() -> bool { true }
@@ -163,6 +186,7 @@ fn default_as_true() -> bool { true }
 pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
+    pub url: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -198,12 +222,34 @@ pub struct EPKGOptions {
     pub version: String,
 }
 
+#[derive(Debug)]
+pub struct EPKGDirs {
+    // Base directories
+    pub opt_epkg: PathBuf,
+    pub home_epkg: PathBuf,
+
+    // Subdirectories
+    pub home_config: PathBuf,
+    pub private_envs: PathBuf,
+    pub public_envs: PathBuf,
+
+    // Subdirectories depend on EPKGOptions
+    pub epkg_store: PathBuf,
+    pub epkg_cache: PathBuf,
+    pub epkg_pkg_cache: PathBuf,
+    pub epkg_channel_cache: PathBuf,
+    pub epkg_manager_cache: PathBuf,
+}
+
 #[allow(dead_code)]
 #[derive(Default)]
 pub struct PackageManager {
     pub options: EPKGOptions,
+    pub dirs: EPKGDirs,
+    pub env_config: HashMap<String, EnvConfig>,
+    pub channel_config: HashMap<String, ChannelConfig>,
+
     pub repos_data: Vec<Repodata>,
-    pub env_config: EnvConfig,
     pub appbin_source: HashSet<String>,
     // loaded from repodata.store_paths files
     // pkghash2spec[hash] = PackageSpec

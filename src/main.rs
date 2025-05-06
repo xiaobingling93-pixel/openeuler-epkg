@@ -10,7 +10,7 @@ mod list;
 mod hash;
 mod ipc;
 mod store;
-mod paths;
+mod dirs;
 mod utils;
 mod history;
 mod environment;
@@ -416,10 +416,18 @@ fn main() -> Result<()> {
                 let uid = nix::unistd::geteuid();
                 uid.is_root()
             });
+
         package_manager.options.version = sub_matches.get_one::<String>("version")
             .map(|s| s.to_string())
             .unwrap_or_else(|| "master".to_string());
+        package_manager.dirs = EPKGDirs::builder()
+            .with_options(package_manager.options)
+            .build()?;
         package_manager.init()?;
+    } else {
+        package_manager.dirs = EPKGDirs::builder()
+            .with_options(package_manager.options)
+            .build()?;
     }
 
     if let Some(_sub_matches) = matches.subcommand_matches("update") {
@@ -502,7 +510,7 @@ fn main() -> Result<()> {
         if let Some(package_yaml) = sub_matches.get_one::<String>("package-yaml") {
             privdrop_on_suid();
 
-            let build_script = paths::instance.epkg_mananger_cache_dir.join("build/scripts/generic-build.sh");
+            let build_script = package_manager.dirs.epkg_manager_cache.join("build/scripts/generic-build.sh");
             if !build_script.exists() {
                 return Err(anyhow::anyhow!("Build script not found"));
             }

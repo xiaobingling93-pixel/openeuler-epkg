@@ -5,7 +5,7 @@ use anyhow::{bail, Ok, Result};
 use crate::models::*;
 use crate::io::load_package_json;
 use crate::parse_requires::*;
-use crate::paths;
+use crate::dirs;
 
 impl InstalledPackageInfo {
     fn new(depth: u8, appbin_flag: bool) -> Self {
@@ -137,10 +137,11 @@ impl PackageManager {
         if let Some(package) = self.pkghash2pkg.get(&pkgline[0..32]) {
             return Ok(package.clone());
         } else {
+            let channel_config = self.get_channel_config(self.options.env.clone())?;
             let path = format!(
                 "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
-                paths::instance.epkg_cache.display(),
-                self.env_config.channel.name,
+                self.dirs.epkg_cache.display(),
+                channel_config.name,
                 self.pkghash2spec[&pkgline[0..32]].repo,
                 self.options.arch,
                 &pkgline[0..2],

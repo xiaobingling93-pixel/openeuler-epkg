@@ -150,7 +150,7 @@ impl PackageManager {
                             // Print the package details
                             println!(
                                 LIST_OUTPUT_FORMAT!(),
-                                self.env_config.channel.name,
+                                self.get_channel_config(self.options.env.clone())?.name,
                                 repodata.name,
                                 pkgname,
                                 version_release,
@@ -163,7 +163,8 @@ impl PackageManager {
         }
         
         if !header_printed {
-            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, self.env_config.channel.name);
+            let channel_config = self.get_channel_config(self.options.env.clone())?;
+            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, channel_config.name);
         }
 
         Ok(())
