@@ -199,4 +199,24 @@ impl PackageManager {
         Ok(())
     }
 
+    pub fn save_env_config(&mut self, env_name: &str) -> Result<()> {
+        let env_config = self.env_config.get(env_name)
+            .ok_or_else(|| anyhow::anyhow!("Environment config not found: {}", env_name))?;
+
+        let env_path = format!("{}/envs/{}.yaml",
+            self.dirs.home_config.display(),
+            env_name
+        );
+
+        // Serialize the EnvConfig to YAML
+        let yaml = serde_yaml::to_string(env_config)
+            .with_context(|| format!("Failed to serialize environment config to YAML"))?;
+
+        // Write the YAML to the file
+        fs::write(&env_path, yaml)
+            .with_context(|| format!("Failed to write environment config to file: {}", env_path))?;
+
+        Ok(())
+    }
+
 }

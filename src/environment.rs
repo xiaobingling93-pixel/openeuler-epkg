@@ -328,7 +328,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn register_environment(&self, name: &str) -> Result<()> {
+    pub fn register_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
         if name == "common" {
             return Err(anyhow::anyhow!("Environment 'common' cannot be registered"));
@@ -377,11 +377,19 @@ impl PackageManager {
         // Create new symlink
         symlink(&ebin_path, &symlink_path)?;
 
+        // Update and save environment config
+        let env_config = self.get_env_config(name.to_string())?;
+        let mut env_config = env_config.clone();
+        env_config.register_to_path = true;
+        env_config.register_priority = priority;
+        self.env_config.insert(name.to_string(), env_config);
+        self.save_env_config(name)?;
+
         println!("Environment '{}' has been registered with priority {}.", name, priority);
         Ok(())
     }
 
-    pub fn unregister_environment(&self, name: &str) -> Result<()> {
+    pub fn unregister_environment(&mut self, name: &str) -> Result<()> {
         // Remove symlinks from both prepend and append directories
         let glob_pattern = self.dirs.home_config.join(format!("path.d/{{prepend,append}}/*-{}*", name));
         for path in glob::glob(glob_pattern.to_str().unwrap())? {
@@ -389,6 +397,14 @@ impl PackageManager {
                 fs::remove_file(path)?;
             }
         }
+
+        // Update and save environment config
+        let env_config = self.get_env_config(name.to_string())?;
+        let mut env_config = env_config.clone();
+        env_config.register_to_path = false;
+        env_config.register_priority = 0;
+        self.env_config.insert(name.to_string(), env_config);
+        self.save_env_config(name)?;
 
         println!("Environment '{}' has been unregistered.", name);
         Ok(())
