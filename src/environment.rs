@@ -87,50 +87,85 @@ impl PackageManager {
 
     /// Get list of all environment names except 'common'
     ///
-    /// This function lists all environment directories in the epkg_envs_root
-    /// directory, excluding the special 'common' environment.
+    /// This function lists all environment directories in both private and public
+    /// locations, excluding the special 'common' environment.
     ///
-    /// Returns a Vec of environment names.
-    pub fn get_all_env_names(&self) -> Result<Vec<String>> {
-        // Note: This method still uses private_envs directly since we need to
-        // list all available environments from the directory, not access a specific one
-        // Note: In the future, this could be refactored to not depend on the directory structure
-        let all_envs: Vec<String> = fs::read_dir(&self.dirs.private_envs)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let name = entry.file_name().into_string().ok()?;
-                if name != "common" {
-                    Some(name)
-                } else {
-                    None
-                }
-            })
-            .collect();
+    /// Returns a Vec of (env_name, is_public, owner) tuples.
+    pub fn get_all_env_names(&self) -> Result<Vec<(String, bool, String)>> {
+        let mut all_envs = Vec::new();
+        let current_user = env::var("USER").unwrap_or_default();
 
+        // Get private environments
+        if let Ok(entries) = fs::read_dir(&self.dirs.private_envs) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let name = entry.file_name().into_string().unwrap_or_default();
+                    if name != "common" {
+                        all_envs.push((name, false, current_user.clone()));
+                    }
+                }
+            }
+        }
+
+        // Get public environments
+        if let Ok(entries) = fs::read_dir(&self.dirs.public_envs) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    if let Ok(owner_entries) = fs::read_dir(entry.path()) {
+                        let owner = entry.file_name().into_string().unwrap_or_default();
+                        for owner_entry in owner_entries {
+                            if let Ok(owner_entry) = owner_entry {
+                                let name = owner_entry.file_name().into_string().unwrap_or_default();
+                                if name != "common" {
+                                    all_envs.push((name, true, owner.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by name
+        all_envs.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(all_envs)
     }
 
     pub fn list_environments(&self) -> Result<()> {
-
         // Get all environments except common
         let all_envs = self.get_all_env_names()?;
         let registered_envs: Vec<String> = self.get_registered_env_names()?;
-        let active_env = env::var("EPKG_ACTIVE_ENV").ok();
+
+        // Get active environments list once and convert to HashSet for O(1) lookups
+        let active_list: std::collections::HashSet<&str> = env::var("EPKG_ACTIVE_ENV")
+            .ok()
+            .map(|active| active.split(':').collect())
+            .unwrap_or_default();
 
         // Print table header
-        println!("{:<15}  {:>20}", "Environment", "Status");
-        println!("{}", "-".repeat(35));
+        println!("{:<15}  {:<10}  {:<10}  {:<20}", "Environment", "Type", "Owner", "Status");
+        println!("{}", "-".repeat(55));
 
         // Print each environment with its status
-        for env in all_envs {
+        for (env, is_public, owner) in all_envs {
             let mut status = Vec::new();
-            if Some(&env) == active_env.as_ref() {
+
+            // Check if environment is in active list - O(1) lookup
+            if active_list.contains(env.as_str()) {
                 status.push("activated");
             }
+
             if registered_envs.contains(&env) {
                 status.push("registered");
             }
-            println!("{:<15}  {:>20}", env, status.join(","));
+
+            let env_type = if is_public { "public" } else { "private" };
+            println!("{:<15}  {:<10}  {:<10}  {:<20}",
+                env,
+                env_type,
+                owner,
+                status.join(",")
+            );
         }
 
         Ok(())
