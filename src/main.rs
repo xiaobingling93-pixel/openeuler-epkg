@@ -28,7 +28,7 @@ use clap::{Arg, ArgAction, Command};
 fn main() -> Result<()> {
     env_logger::init();
 
-    // Create the CLI app
+    // Create the CLI app, prefer the CLAP Builder API for more controls
     let matches = Command::new("epkg")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
@@ -372,7 +372,7 @@ fn main() -> Result<()> {
         env.to_string()
     } else if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
         // Use the environment variable if set
-        active_env
+        active_env.trim_end_matches(':').to_string()
     } else {
         // Use the default value
         "main".to_string()

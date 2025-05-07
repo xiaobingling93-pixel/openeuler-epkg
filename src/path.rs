@@ -9,9 +9,12 @@ impl PackageManager {
     pub fn update_path(&self, pure: bool) -> Result<()> {
         let mut path_components = Vec::new();
 
-        // Add active environment paths
+        // Add active environment paths in reverse order (last activated first)
         if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
-            path_components.extend(self.get_active_env_paths(&active_env, pure)?);
+            let active_envs: Vec<&str> = active_env.split(':').collect();
+            for env_name in active_envs.iter().rev() {
+                path_components.extend(self.get_active_env_paths(env_name, pure)?);
+            }
         }
 
         if !pure {

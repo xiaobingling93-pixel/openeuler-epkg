@@ -269,26 +269,62 @@ impl PackageManager {
             return Err(anyhow::anyhow!("Environment not exist: '{}'", name));
         }
 
+        // Get current active environments
+        let mut active_envs = env::var("EPKG_ACTIVE_ENV")
+            .ok()
+            .map(|active| active.split(':').map(String::from).collect::<Vec<String>>())
+            .unwrap_or_default();
+
+        // Check if environment is already active
+        if active_envs.contains(&name.to_string()) {
+            return Err(anyhow::anyhow!("Environment '{}' is already active", name));
+        }
+
+        // Add new environment to the stack
+        active_envs.push(name.to_string());
+
         // Update environment variables EPKG_ACTIVE_ENV and PATH
         // For eval by caller shell.
         println!("# Activate environment '{}'{}", name, if self.options.pure { " in pure mode" } else { "" });
-        println!("export EPKG_ACTIVE_ENV={}", name);
+        println!("export EPKG_ACTIVE_ENV={}", active_envs.join(":"));
 
-        env::set_var("EPKG_ACTIVE_ENV", name);
+        env::set_var("EPKG_ACTIVE_ENV", active_envs.join(":"));
         self.update_path(self.options.pure)?;
 
         Ok(())
     }
 
     pub fn deactivate_environment(&self) -> Result<()> {
-        if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
-            // Update environment variables EPKG_ACTIVE_ENV and PATH
-            // For eval by caller shell.
-            println!("# Deactivate environment '{}'", active_env);
+        let active_env = match env::var("EPKG_ACTIVE_ENV") {
+            Ok(env) => env,
+            Err(_) => {
+                eprintln!("Warning: No environment is currently active");
+                return Ok(());
+            }
+        };
+
+        let mut active_envs: Vec<String> = active_env.split(':').map(String::from).collect();
+
+        if active_envs.is_empty() {
+            return Err(anyhow::anyhow!("No environment is currently active"));
+        }
+
+        // Remove the last activated environment
+        let deactivated_env = active_envs.pop().unwrap();
+
+        // Update environment variables EPKG_ACTIVE_ENV and PATH
+        // For eval by caller shell.
+        println!("# Deactivate environment '{}'", deactivated_env);
+
+        if active_envs.is_empty() {
             println!("unset EPKG_ACTIVE_ENV");
             env::remove_var("EPKG_ACTIVE_ENV");
-            self.update_path(false)?;
+        } else {
+            println!("export EPKG_ACTIVE_ENV={}", active_envs.join(":"));
+            env::set_var("EPKG_ACTIVE_ENV", active_envs.join(":"));
         }
+
+        self.update_path(false)?;
         Ok(())
     }
 
