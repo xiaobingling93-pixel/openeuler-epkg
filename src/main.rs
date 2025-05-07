@@ -85,7 +85,6 @@ fn main() -> Result<()> {
                 .arg(arg!(--available "List available packages"))
                 .arg(arg!(<GLOB_PATTERN> "Package glob pattern to list"))
         )
-        .subcommand(Command::new("history").about("Show environment history"))
         .subcommand(
             Command::new("env")
                 .about("Environment management")
@@ -95,6 +94,7 @@ fn main() -> Result<()> {
                         .about("Create a new environment")
                         .arg(arg!(--channel <CHANNEL> "Set the channel for the environment"))
                         .arg(arg!(--public "Usable by all users in the machine"))
+                        .arg(arg!(--path <PATH> "Specify custom path for the environment"))
                         .arg(arg!(<ENV_NAME> "Name of the new environment"))
                 )
                 .subcommand(
@@ -117,9 +117,15 @@ fn main() -> Result<()> {
                     Command::new("activate")
                         .about("Activate an environment")
                         .arg(arg!(--pure "Create a pure environment"))
+                        .arg(arg!(--stack "Stack this environment on top of the current one"))
                         .arg(arg!(<ENV_NAME> "Name of the environment to activate"))
                 )
                 .subcommand(Command::new("deactivate").about("Deactivate the current environment"))
+        )
+        .subcommand(
+            Command::new("history")
+                .about("Show environment history")
+                .arg(arg!([MAX_GENERATIONS] "Maximum number of generations to show").value_parser(clap::value_parser!(u64)))
         )
         .subcommand(
             Command::new("rollback")
@@ -159,7 +165,7 @@ fn main() -> Result<()> {
         |s| s.to_string()
     );
     options.simulate       = matches.get_flag("simulate");
-    options.download_only  = matches.get_flag("download-only"); 
+    options.download_only  = matches.get_flag("download-only");
     options.quiet          = matches.get_flag("quiet");
     options.verbose        = matches.get_flag("verbose");
     options.assume_yes     = matches.get_flag("assume-yes");
@@ -265,6 +271,9 @@ impl PackageManager {
     }
 
     fn command_history(&mut self) -> Result<()> {
+        if let Some(max_generations) = sub_matches.get_one::<u64>("MAX_GENERATIONS") {
+            self.options.max_generations = Some(*max_generations);
+        }
         self.print_history()
     }
 
@@ -317,6 +326,7 @@ impl PackageManager {
             Some(("create", sub_matches)) => {
                 if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
                     self.options.channel = sub_matches.get_one::<String>("channel").cloned();
+                    self.options.env_path = sub_matches.get_one::<String>("path").cloned();
                     self.options.public = sub_matches.get_flag("public");
                     self.create_environment(name)
                 } else {
@@ -348,6 +358,7 @@ impl PackageManager {
             Some(("activate", sub_matches)) => {
                 if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
                     self.options.pure = sub_matches.get_flag("pure");
+                    self.options.stack = sub_matches.get_flag("stack");
                     self.activate_environment(name)
                 } else {
                     Ok(())

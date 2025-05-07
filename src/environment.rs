@@ -5,6 +5,8 @@ use anyhow::Result;
 use crate::models::*;
 use std::path::Path;
 use uuid;
+use std::path::PathBuf;
+use serde_json;
 
 // epkg PATH management
 //
@@ -190,7 +192,11 @@ impl PackageManager {
 
     pub fn create_environment(&self, name: &str) -> Result<()> {
         // Create environment directory structure
-        let env_root = self.get_env_root(name.to_string())?;
+        let env_root = if let Some(path) = &self.options.env_path {
+            PathBuf::from(path)
+        } else {
+            self.get_env_root(name.to_string())?
+        };
 
         // Create generations directory with first generation
         let generations_root = self.get_generations_root(name)?;
@@ -340,9 +346,13 @@ impl PackageManager {
         } else {
             name.to_string()
         };
-        let new_active_envs = match &original_active_envs {
-            Some(envs) => format!("{}:{}", name_with_pure_mark, envs),
-            None => name_with_pure_mark.to_string(),
+        let new_active_envs = if self.options.stack {
+            match &original_active_envs {
+                Some(envs) => format!("{}:{}", name_with_pure_mark, envs),
+                None => name_with_pure_mark.to_string(),
+            }
+        } else {
+            name_with_pure_mark.to_string()
         };
 
         // Action 1: Show export commands for shell eval

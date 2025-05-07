@@ -216,6 +216,11 @@ pub struct EPKGOptions {
     pub priority: Option<i32>,
     pub public: bool,
     pub pure: bool,
+    pub stack: bool,
+    pub env_path: Option<String>,
+
+    // history subcommand options
+    pub max_generations: Option<u64>,
 
     // 'init' subcommand options
     pub shared_store: bool,

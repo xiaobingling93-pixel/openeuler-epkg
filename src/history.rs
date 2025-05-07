@@ -158,6 +158,17 @@ impl PackageManager {
         }
 
         history_entries.sort_by_key(|entry| entry.0);
+
+        // Limit number of generations to show if max_generations is set
+        if let Some(max) = self.options.max_generations {
+            let start = if history_entries.len() > max as usize {
+                history_entries.len() - max as usize
+            } else {
+                0
+            };
+            history_entries = history_entries[start..].to_vec();
+        }
+
         for (id, command) in history_entries {
             println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}",
                 id,
