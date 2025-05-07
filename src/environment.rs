@@ -7,6 +7,8 @@ use std::path::Path;
 use uuid;
 use std::path::PathBuf;
 use serde_json;
+use serde_yaml;
+use std::collections::HashMap;
 
 // epkg PATH management
 //
@@ -190,23 +192,11 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn create_environment(&self, name: &str) -> Result<()> {
-        // Create environment directory structure
-        let env_root = if let Some(path) = &self.options.env_path {
-            PathBuf::from(path)
-        } else {
-            self.get_env_root(name.to_string())?
-        };
-
-        // Create generations directory with first generation
-        let generations_root = self.get_generations_root(name)?;
+    fn create_environment_directories(&self, env_root: &Path) -> Result<()> {
+        let generations_root = env_root.join("generations");
         let gen_1_dir = generations_root.join("1");
 
-        if gen_1_dir.join("installed-packages.json").exists() {
-            return Err(anyhow::anyhow!("Environment already exists: '{}'", name));
-        }
-
-        // Create directories for generation 1
+        // Create base directories
         fs::create_dir_all(&generations_root)?;
         fs::create_dir_all(env_root.join("usr/ebin"))?;
         fs::create_dir_all(env_root.join("usr/bin"))?;
@@ -226,17 +216,6 @@ impl PackageManager {
         // Create "current" symlink in generations directory pointing to generation 1
         symlink("1", generations_root.join("current"))?;
 
-        // Initialize channel
-        let channel = self.options.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
-        let common_env_root = self.get_env_root("common".to_string())?;
-        let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
-        let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
-
-        if !src_channel_yaml.exists() {
-            return Err(anyhow::anyhow!("Channel not found: '{}'", channel));
-        }
-
-        fs::copy(src_channel_yaml, env_channel_yaml)?;
         fs::copy("/etc/resolv.conf", env_root.join("etc/resolv.conf"))?;
 
         // Create metadata files
@@ -246,6 +225,85 @@ impl PackageManager {
         // Create command.json to record the creation command
         let command_json = gen_1_dir.join("command.json");
         fs::write(command_json, "{\n  \"command\": \"epkg env create\",\n  \"timestamp\": \"0\"\n}")?;
+
+        Ok(())
+    }
+
+    pub fn create_environment(&self, name: &str) -> Result<()> {
+        let env_base = if &self.options.public {
+            self.dirs.public_envs.join(name)
+        } else {
+            self.dirs.private_envs.join(name)
+        };
+
+        let env_root = if let Some(path) = &self.options.env_path {
+            PathBuf::from(path)
+        } else {
+            env_base.clone()
+        };
+
+        if env_base.exists() {
+            return Err(anyhow::anyhow!("Environment already exists at path: '{}'", env_base.display()));
+        }
+
+        self.create_environment_directories(&env_root)?;
+
+        // Initialize channel and environment config
+        let mut env_config = if let Some(config_path) = &self.options.config_file {
+            let config_contents = fs::read_to_string(config_path)
+                .with_context(|| format!("Failed to read config file: {}", config_path))?;
+
+            // Parse configs separately
+            let env_config: EnvConfig = serde_yaml::from_str(&config_contents)
+                .with_context(|| format!("Failed to parse env config from file: {}", config_path))?;
+            let channel_config: ChannelConfig = serde_yaml::from_str(&config_contents)
+                .with_context(|| format!("Failed to parse channel config from file: {}", config_path))?;
+
+            // Save channel config
+            let channel_yaml = serde_yaml::to_string(&channel_config)?;
+            fs::write(&env_channel_yaml, channel_yaml)?;
+
+            // Store channel config
+            self.channel_config.insert(name.to_string(), channel_config);
+
+            env_config
+        } else {
+            // Initialize channel from command line option or default
+            let channel = self.options.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
+            let common_env_root = self.get_env_root("common".to_string())?;
+            let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
+            let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
+
+            if !src_channel_yaml.exists() {
+                return Err(anyhow::anyhow!("Channel not found: '{}'", channel));
+            }
+
+            fs::copy(src_channel_yaml, &env_channel_yaml)?;
+
+            EnvConfig::default()
+        };
+
+        // Override config values with command line options
+        env_config.name = name.to_string();
+        env_config.env_base = env_base.to_string_lossy().to_string();
+        env_config.env_root = env_root.to_string_lossy().to_string();
+        env_config.public = self.options.public;
+        env_config.register_to_path = false;
+        env_config.register_priority = 0;
+
+        // Store environment config
+        self.env_config.insert(name.to_string(), env_config.clone());
+
+        // Save environment config
+        let env_config_path = self.dirs.home_config.join("envs").join(format!("{}.yaml", name));
+        fs::create_dir_all(env_config_path.parent().unwrap())?;
+        let yaml = serde_yaml::to_string(&env_config)?;
+        fs::write(env_config_path, yaml)?;
+
+        // Install packages if any
+        if !env_config.installed_packages.is_empty() {
+            self.install_pkglines(&env_config.installed_packages)?;
+        }
 
         println!("Environment '{}' has been created in {}", name, env_root.display());
         Ok(())
@@ -689,6 +747,51 @@ impl PackageManager {
             };
 
             println!("{:<12}  {:<10}  {}", gen, status, command);
+        }
+
+        Ok(())
+    }
+
+    pub fn export_environment(&self, name: &str, output: Option<String>) -> Result<()> {
+        // Get environment config
+        let env_config = self.get_env_config(name.to_string())?;
+
+        // Get channel config
+        let channel_config = self.get_channel_config(name.to_string())?;
+
+        // Get installed packages
+        let generations_root = self.get_generations_root(name)?;
+        let current_gen = fs::read_link(generations_root.join("current"))?;
+        let installed_packages_path = current_gen.join("installed-packages.json");
+        if installed_packages_path.exists() {
+            let contents = fs::read_to_string(&installed_packages_path)?;
+            env_config.installed_packages = serde_json::from_str(&contents)?;
+        } else {
+            warn!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display());
+            return Err(anyhow::anyhow!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
+        };
+
+        // Serialize each config separately
+        let env_yaml = serde_yaml::to_string(&env_config)?;
+        let channel_yaml = serde_yaml::to_string(&channel_config)?;
+
+        // Skip leading "---" if present
+        let channel_yaml = if channel_yaml.starts_with("---\n") {
+            &channel_yaml[4..]
+        } else {
+            &channel_yaml
+        };
+
+        // Combine into single YAML document
+        let combined_yaml = format!("{}\n{}\n",
+            env_yaml, channel_yaml);
+
+        // Write to file or stdout
+        if let Some(output_path) = output {
+            fs::write(&output_path, combined_yaml)?;
+            println!("Environment configuration exported to {}", output_path);
+        } else {
+            println!("{}", combined_yaml);
         }
 
         Ok(())

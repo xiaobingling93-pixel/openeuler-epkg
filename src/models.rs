@@ -140,7 +140,7 @@ pub struct GenerationCommand {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct EnvConfig {
     pub name: String,
@@ -154,7 +154,9 @@ pub struct EnvConfig {
 
     pub env_vars: HashMap<String, String>,
 
-    pub installed_packages: HashMap<String, String>,
+    // Only for importing from exported config file
+    #[serde(skip_serializing)]
+    pub installed_packages: HashMap<String, InstalledPackageInfo>,
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
@@ -171,7 +173,7 @@ pub struct EnvConfig {
 //       # a repo can specify its own url
 //       url = "http://third.party/repo/dir"
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct ChannelConfig {
     pub name: String,
@@ -182,7 +184,7 @@ pub struct ChannelConfig {
 fn default_as_true() -> bool { true }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
@@ -201,6 +203,7 @@ pub struct EPKGOptions {
     pub verbose: bool,
     pub assume_yes: bool,
     pub ignore_missing: bool,
+    pub command_line: String,
 
     // install subcommand options
     pub install_suggests: bool,
@@ -218,6 +221,7 @@ pub struct EPKGOptions {
     pub pure: bool,
     pub stack: bool,
     pub env_path: Option<String>,
+    pub config_file: Option<String>,
 
     // history subcommand options
     pub max_generations: Option<u64>,

@@ -266,7 +266,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn install_packages(&mut self, package_specs: Vec<String>, command_line: &str) -> Result<()> {
+    pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_store_paths().unwrap();
         self.load_installed_packages().unwrap();
 
@@ -278,7 +278,10 @@ impl PackageManager {
         if packages_to_install.is_empty() {
             return Err(anyhow!("No packages to install"));
         }
+        install_pkglines(packages_to_install);
+    }
 
+    pub fn install_pkglines(&mut self, packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
         if self.options.verbose {
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
@@ -314,7 +317,7 @@ impl PackageManager {
         // Save installed packages
         self.installed_packages.extend(packages_to_install.clone());
         self.save_installed_packages().unwrap();
-        self.record_history("install", packages_to_install.keys().cloned().collect(), vec![], command_line)?;
+        self.record_history("install", packages_to_install.keys().cloned().collect(), vec![])?;
 
         println!("Installation successful - Total packages: {}, AppBin packages: {}", packages_to_install.len(), appbin_count);
         if !appbin_packages.is_empty() {

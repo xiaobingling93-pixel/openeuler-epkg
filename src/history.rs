@@ -105,7 +105,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn record_history(&mut self, action: &str, new_packages: Vec<String>, del_packages: Vec<String>, command_line: &str) -> Result<()> {
+    pub fn record_history(&mut self, action: &str, new_packages: Vec<String>, del_packages: Vec<String>) -> Result<()> {
         let current_gen_id = self.get_current_generation_id()?;
         let generations_root = self.get_default_generations_root()?;
         let command_json = generations_root.join(current_gen_id.to_string()).join("command.json");
@@ -115,7 +115,7 @@ impl PackageManager {
             action: action.to_string(),
             new_packages,
             del_packages,
-            command_line: command_line.to_string(),
+            command_line: self.options.command_line.to_string(),
         };
 
         let json = serde_json::to_string_pretty(&command)?;
@@ -182,7 +182,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn rollback_history(&mut self, rollback_id: u64, command_line: &str) -> Result<()> {
+    pub fn rollback_history(&mut self, rollback_id: u64) -> Result<()> {
         // Check if rollback_id exists
         let generations_root = self.get_default_generations_root()?;
         let rollback_generation = generations_root.join(rollback_id.to_string());
@@ -251,7 +251,7 @@ impl PackageManager {
         fs::copy(&rollback_json, generation_path.join("installed-packages.json"))?;
 
         // Record history
-        self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages, command_line)?;
+        self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages)?;
         println!("Rollback success!");
 
         Ok(())

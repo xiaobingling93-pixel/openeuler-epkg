@@ -74,7 +74,6 @@ fn main() -> Result<()> {
         .subcommand(
             Command::new("remove")
                 .about("Remove packages")
-                .arg(arg!(-y --assume-yes "Automatically answer yes to all prompts"))
                 .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to remove"))
         )
         .subcommand(
@@ -92,10 +91,11 @@ fn main() -> Result<()> {
                 .subcommand(
                     Command::new("create")
                         .about("Create a new environment")
+                        .arg(arg!(<ENV_NAME> "Name of the new environment"))
                         .arg(arg!(--channel <CHANNEL> "Set the channel for the environment"))
                         .arg(arg!(--public "Usable by all users in the machine"))
                         .arg(arg!(--path <PATH> "Specify custom path for the environment"))
-                        .arg(arg!(<ENV_NAME> "Name of the new environment"))
+                        .arg(arg!(--config <FILE> "Configuration file to use"))
                 )
                 .subcommand(
                     Command::new("remove")
@@ -116,11 +116,17 @@ fn main() -> Result<()> {
                 .subcommand(
                     Command::new("activate")
                         .about("Activate an environment")
+                        .arg(arg!(<ENV_NAME> "Name of the environment to activate"))
                         .arg(arg!(--pure "Create a pure environment"))
                         .arg(arg!(--stack "Stack this environment on top of the current one"))
-                        .arg(arg!(<ENV_NAME> "Name of the environment to activate"))
                 )
                 .subcommand(Command::new("deactivate").about("Deactivate the current environment"))
+                .subcommand(
+                    Command::new("export")
+                        .about("Export environment configuration")
+                        .arg(arg!(<ENV_NAME> "Name of the environment to export"))
+                        .arg(arg!(-o --output <FILE> "Output file path"))
+                )
         )
         .subcommand(
             Command::new("history")
@@ -170,22 +176,20 @@ fn main() -> Result<()> {
     options.verbose        = matches.get_flag("verbose");
     options.assume_yes     = matches.get_flag("assume-yes");
     options.ignore_missing = matches.get_flag("ignore-missing");
+    options.command_line   = std::env::args().collect::<Vec<String>>().join(" ");
 
     let mut package_manager: PackageManager = Default::default();
     package_manager.options = options;
 
-    // record raw command
-    let command_line = std::env::args().collect::<Vec<String>>().join(" ");
-
     match matches.subcommand() {
         Some(("init",    sub_matches)) => package_manager.command_init(sub_matches)?,
         Some(("update",  _))           => package_manager.command_update()?,
-        Some(("install", sub_matches)) => package_manager.command_install(sub_matches, &command_line)?,
+        Some(("install", sub_matches)) => package_manager.command_install(sub_matches)?,
         Some(("upgrade", sub_matches)) => package_manager.command_upgrade(sub_matches)?,
-        Some(("remove",  sub_matches)) => package_manager.command_remove(sub_matches, &command_line)?,
+        Some(("remove",  sub_matches)) => package_manager.command_remove(sub_matches)?,
         Some(("list",    sub_matches)) => package_manager.command_list(sub_matches)?,
         Some(("history", _))           => package_manager.command_history()?,
-        Some(("rollback",sub_matches)) => package_manager.command_rollback(sub_matches, &command_line)?,
+        Some(("rollback",sub_matches)) => package_manager.command_rollback(sub_matches)?,
         Some(("repo",    sub_matches)) => package_manager.command_repo(sub_matches)?,
         Some(("hash",    sub_matches)) => package_manager.command_hash(sub_matches)?,
         Some(("build",   sub_matches)) => package_manager.command_build(sub_matches)?,
@@ -224,7 +228,7 @@ impl PackageManager {
         self.cache_repo()
     }
 
-    fn command_install(&mut self, sub_matches: &clap::ArgMatches, command_line: &str) -> Result<()> {
+    fn command_install(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if sub_matches.get_flag("local") {
             if let (Some(fs_dir), Some(symlink_dir)) = (sub_matches.get_one::<String>("fs"), sub_matches.get_one::<String>("symlink")) {
                 let appbin = sub_matches.get_flag("appbin");
@@ -236,7 +240,7 @@ impl PackageManager {
             self.fork_on_suid()?;
             self.cache_repo()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
-            self.install_packages(packages_vec, command_line)?;
+            self.install_packages(packages_vec)?;
         }
         Ok(())
     }
@@ -249,12 +253,11 @@ impl PackageManager {
         Ok(())
     }
 
-    fn command_remove(&mut self, sub_matches: &clap::ArgMatches, command_line: &str) -> Result<()> {
+    fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            let assume_yes = sub_matches.get_flag("assume-yes");
             self.fork_on_suid()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
-            self.remove_packages(packages_vec, assume_yes, command_line)?;
+            self.remove_packages(packages_vec)?;
         }
         Ok(())
     }
@@ -277,9 +280,9 @@ impl PackageManager {
         self.print_history()
     }
 
-    fn command_rollback(&mut self, sub_matches: &clap::ArgMatches, command_line: &str) -> Result<()> {
+    fn command_rollback(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(rollback_id) = sub_matches.get_one::<u64>("GEN_ID") {
-            self.rollback_history(*rollback_id, command_line)?;
+            self.rollback_history(*rollback_id)?;
         }
         Ok(())
     }
@@ -327,6 +330,7 @@ impl PackageManager {
                 if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
                     self.options.channel = sub_matches.get_one::<String>("channel").cloned();
                     self.options.env_path = sub_matches.get_one::<String>("path").cloned();
+                    self.options.config_file = sub_matches.get_one::<String>("config").cloned();
                     self.options.public = sub_matches.get_flag("public");
                     self.create_environment(name)
                 } else {
@@ -365,6 +369,14 @@ impl PackageManager {
                 }
             }
             Some(("deactivate", _)) => self.deactivate_environment(),
+            Some(("export", sub_matches)) => {
+                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                    let output = sub_matches.get_one::<String>("output").cloned();
+                    self.export_environment(name, output)
+                } else {
+                    Ok(())
+                }
+            }
             _ => Ok(()),
         }
     }
