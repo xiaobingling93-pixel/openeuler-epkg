@@ -17,345 +17,129 @@ mod environment;
 mod init;
 mod path;
 mod repo;
+
 use std::env;
 use crate::models::*;
 use crate::ipc::*;
 use anyhow::Result;
 use pretty_env_logger::env_logger;
 
-use clap::{Arg, ArgAction, Command};
+use clap::{arg, ArgAction, Command};
 
 fn main() -> Result<()> {
     env_logger::init();
 
-    // Create the CLI app, prefer the CLAP Builder API for more controls
+    // Create the CLI app, prefer the clap Builder API for more controls
     let matches = Command::new("epkg")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
         .author("Duan Pengjie <pengjieduan@gmail.com>")
         .author("Yingjiahui <ying_register@163.com>")
         .about("The EPKG package manager")
-        .arg(
-            Arg::new("env")
-                .long("env")
-                .value_name("ENV")
-                .help("Select the environment")
-                .num_args(1)
-                .value_parser(clap::value_parser!(String))
-        )
-        .arg(
-            Arg::new("arch")
-                .long("arch")
-                .value_name("ARCH")
-                .help("Select the CPU architecture")
-                .num_args(1)
-                .value_parser(clap::value_parser!(String))
-        )
-        .arg(
-            Arg::new("simulate")
-                .short('s')
-                .long("simulate")
-                .aliases(&["dry-run"])
-                .help("Simulated run without changing the system")
-                .action(ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("download_only")
-                .long("download-only")
-                .help("Download packages without installing")
-                .action(ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("quiet")
-                .short('q')
-                .long("quiet")
-                .help("Suppress output")
-                .action(ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Verbose operation, show debug messages")
-                .action(ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("assume_yes")
-                .short('y')
-                .long("assume-yes")
-                .help("Automatically answer yes to all prompts")
-                .action(ArgAction::SetTrue)
-        )
-        .arg(
-            Arg::new("ignore_missing")
-                .short('m')
-                .long("ignore-missing")
-                .help("Ignore missing packages")
-                .action(ArgAction::SetTrue)
-        )
+        .arg(arg!(-e --env <ENV> "Select the environment").default_value("main"))
+        .arg(arg!(--arch <ARCH> "Select the CPU architecture").default_value(std::env::consts::ARCH))
+        .arg(arg!(-s --simulate "Simulated run without changing the system").aliases(["dry-run"]))
+        .arg(arg!(--download-only "Download packages without installing"))
+        .arg(arg!(-q --quiet "Suppress output"))
+        .arg(arg!(-v --verbose "Verbose operation, show debug messages"))
+        .arg(arg!(-y --assume-yes "Automatically answer yes to all prompts"))
+        .arg(arg!(-m --ignore-missing "Ignore missing packages"))
         .subcommand(
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
+                .arg(arg!(--version <VERSION> "Version of epkg to install").default_value("master"))
                 .arg(
-                    Arg::new("version")
-                        .long("version")
-                        .help("Version of epkg to install")
-                        .value_name("VERSION")
-                        .default_value("master")
-                        .num_args(1)
-                        .value_parser(clap::value_parser!(String))
-                )
-                .arg(
-                    Arg::new("store")
-                        .long("store")
-                        .value_name("STORE")
-                        .help("Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
+                    arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
                         .default_value("auto")
-                        .num_args(1)
-                        .value_parser(["shared", "private", "auto"])
+                        .value_parser(["shared", "private", "auto"]),
                 )
         )
-        .subcommand(
-            Command::new("update")
-                .about("Update package metadata")
-        )
+        .subcommand(Command::new("update").about("Update package metadata"))
         .subcommand(
             Command::new("install")
                 .about("Install packages")
-                .arg(
-                    Arg::new("install_suggests")
-                    .long("install-suggests")
-                    .help("Consider suggested packages as a dependency for installing")
-                    .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("no_install_recommends")
-                    .long("no-install-recommends")
-                    .help("Do not consider recommended packages as a dependency for installing")
-                    .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("package-spec")
-                        .num_args(1..)
-                        .required_unless_present("local")
-                        .help("Package specifications to install")
-                )
-                .arg(
-                    Arg::new("local")
-                    .long("local")
-                    .help("Install packages from local filesystem")
-                    .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("fs")
-                    .long("fs")
-                    .help("Local filesystem directory to install packages")
-                    .num_args(1)
-                    .required(false)
-                )
-                .arg(
-                    Arg::new("symlink")
-                    .long("symlink")
-                    .help("Local symlink directory to install packages")
-                    .num_args(1)
-                    .required(false)
-                )
-                .arg(
-                    Arg::new("appbin")
-                    .long("appbin")
-                    .help("Install appbin packages")
-                    .action(ArgAction::SetTrue)
-                )
+                .arg(arg!(--install-suggests "Consider suggested packages as a dependency for installing"))
+                .arg(arg!(--no-install-recommends "Do not consider recommended packages as a dependency for installing"))
+                .arg(arg!([PACKAGE_SPEC] ... "Package specifications to install").required_unless_present("local"))
+                .arg(arg!(--local "Install packages from local filesystem"))
+                .arg(arg!(--fs <DIR> "Local filesystem directory to install packages"))
+                .arg(arg!(--symlink <DIR> "Local symlink directory to install packages"))
+                .arg(arg!(--appbin "Install appbin packages"))
         )
         .subcommand(
             Command::new("upgrade")
                 .about("upgrade packages")
-                .arg(
-                    Arg::new("package-spec")
-                        .num_args(1..)
-                        .required(false)
-                        .help("Package specifications to upgrade")
-                )
+                .arg(arg!([PACKAGE_SPEC] ... "Package specifications to upgrade"))
         )
         .subcommand(
             Command::new("remove")
                 .about("Remove packages")
-                .arg(
-                    Arg::new("assume_yes")
-                    .short('y')
-                    .long("assume-yes")
-                    .help("Automatically answer yes to all prompts")
-                    .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("package-spec")
-                    .num_args(1..)
-                    .required(true)
-                    .help("Package specifications to remove")
-                )
+                .arg(arg!(-y --assume-yes "Automatically answer yes to all prompts"))
+                .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to remove"))
         )
         .subcommand(
             Command::new("list")
                 .about("List packages")
-                .arg(
-                    Arg::new("list_all")
-                        .long("all")
-                        .help("List all packages")
-                        .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("list_installed")
-                        .long("installed")
-                        .help("List installed packages")
-                        .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("list_available")
-                        .long("available")
-                        .help("List available packages")
-                        .action(ArgAction::SetTrue)
-                )
-                .arg(
-                    Arg::new("glob-pattern")
-                        .num_args(1..)
-                        .required(true)
-                        .help("Package glob pattern to list")
-                )
+                .arg(arg!(--all "List all packages"))
+                .arg(arg!(--installed "List installed packages"))
+                .arg(arg!(--available "List available packages"))
+                .arg(arg!(<GLOB_PATTERN> "Package glob pattern to list"))
         )
-        .subcommand(
-            Command::new("history")
-                .about("Show environment history")
-        )
+        .subcommand(Command::new("history").about("Show environment history"))
         .subcommand(
             Command::new("env")
                 .about("Environment management")
-                .subcommand(
-                    Command::new("list")
-                        .about("List all environments")
-                )
+                .subcommand(Command::new("list").about("List all environments"))
                 .subcommand(
                     Command::new("create")
                         .about("Create a new environment")
-                        .arg(
-                            Arg::new("channel")
-                                .long("channel")
-                                .value_name("CHANNEL")
-                                .required(false)
-                                .help("Set the channel for the environment")
-                        )
-                        .arg(
-                            Arg::new("public")
-                                .long("public")
-                                .required(false)
-                                .action(ArgAction::SetTrue)
-                                .help("Usable by all users in the machine")
-                        )
-                        .arg(
-                            Arg::new("name")
-                                .num_args(1)
-                                .required(true)
-                                .help("Name of the new environment")
-                        )
+                        .arg(arg!(--channel <CHANNEL> "Set the channel for the environment"))
+                        .arg(arg!(--public "Usable by all users in the machine"))
+                        .arg(arg!(<ENV_NAME> "Name of the new environment"))
                 )
                 .subcommand(
                     Command::new("remove")
                         .about("Remove an environment")
-                        .arg(
-                            Arg::new("name")
-                                .num_args(1)
-                                .required(true)
-                                .help("Name of the environment to remove")
-                        )
+                        .arg(arg!(<ENV_NAME> "Name of the environment to remove"))
                 )
                 .subcommand(
                     Command::new("register")
                         .about("Register an environment")
-                        .arg(
-                            Arg::new("name")
-                                .num_args(1)
-                                .required(true)
-                                .help("Name of the environment to register")
-                        )
-                        .arg(
-                            Arg::new("priority")
-                                .long("priority")
-                                .value_name("PRIORITY")
-                                .required(false)
-                                .help("Set the priority for the environment")
-                        )
+                        .arg(arg!(<ENV_NAME> "Name of the environment to register"))
+                        .arg(arg!(--priority <PRIORITY> "Set the priority for the environment"))
                 )
                 .subcommand(
                     Command::new("unregister")
                         .about("Unregister an environment")
-                        .arg(
-                            Arg::new("name")
-                                .num_args(1)
-                                .required(true)
-                                .help("Name of the environment to unregister")
-                        )
+                        .arg(arg!(<ENV_NAME> "Name of the environment to unregister"))
                 )
-                // The below activate/deactivate won't be called by shell env()
-                // since they will only modify ENV vars.
                 .subcommand(
                     Command::new("activate")
                         .about("Activate an environment")
-                        .arg(
-                            Arg::new("pure")
-                                .long("pure")
-                                .help("Create a pure environment")
-                                .required(false)
-                                .action(ArgAction::SetTrue)
-                        )
-                        .arg(
-                            Arg::new("name")
-                                .num_args(1)
-                                .required(true)
-                                .help("Name of the environment to activate")
-                        )
+                        .arg(arg!(--pure "Create a pure environment"))
+                        .arg(arg!(<ENV_NAME> "Name of the environment to activate"))
                 )
-                .subcommand(
-                    Command::new("deactivate")
-                        .about("Deactivate the current environment")
-                )
-         )
+                .subcommand(Command::new("deactivate").about("Deactivate the current environment"))
+        )
         .subcommand(
             Command::new("rollback")
                 .about("Rollback environment to a specific history")
-                .arg(
-                    Arg::new("history-id")
-                        .num_args(1)
-                        .required(true)
-                        .help("History ID to rollback")
-                        .value_parser(clap::value_parser!(u64))
-                )
+                .arg(arg!(<GEN_ID> "Generation ID to rollback to").value_parser(clap::value_parser!(u64)))
         )
         .subcommand(
             Command::new("repo")
-            .about("Repository management")
-            .subcommand(
-                Command::new("list")
-                .about("List all available repositories")
-            )
+                .about("Repository management")
+                .subcommand(Command::new("list").about("List all available repositories"))
         )
         .subcommand(
             Command::new("hash")
                 .about("Compute binary package hash")
-                .arg(
-                    Arg::new("package-store-dir")
-                        .num_args(1..)
-                        .required(true)
-                        .help("Package store dir to compute hash")
-                )
+                .arg(arg!(<PACKAGE_STORE_DIR> ... "Package store dir to compute hash"))
         )
         .subcommand(
             Command::new("build")
                 .about("Build package from source")
-                .arg(
-                    Arg::new("package-yaml")
-                        .num_args(1)
-                        .required(true)
-                        .help("Package YAML file to build")
-                )
+                .arg(arg!(<PACKAGE_YAML> "Package YAML file to build"))
         )
         .get_matches();
 
@@ -366,30 +150,20 @@ fn main() -> Result<()> {
 
     // Create EPKGOptions and PackageManager instance
     let mut options: EPKGOptions = Default::default();
-
-    options.env = if let Some(env) = matches.get_one::<String>("env") {
-        // Use the command-line argument if provided
-        env.to_string()
-    } else if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
-        // Use the environment variable if set
-        active_env.trim_end_matches(':').to_string()
-    } else {
-        // Use the default value
-        "main".to_string()
-    };
-
-    options.arch = if let Some(arch) = matches.get_one::<String>("arch") {
-        arch.to_string()
-    } else {
-        std::env::consts::ARCH.to_string()
-    };
-
-    options.simulate            = matches.get_flag("simulate");
-    options.download_only       = matches.get_flag("download_only");
-    options.quiet               = matches.get_flag("quiet");
-    options.verbose             = matches.get_flag("verbose");
-    options.assume_yes          = matches.get_flag("assume_yes");
-    options.ignore_missing      = matches.get_flag("ignore_missing");
+    options.env = matches.get_one::<String>("env").map_or_else(
+        || env::var("EPKG_ACTIVE_ENV").map(|s| s.trim_end_matches(':').to_string()).unwrap_or_else(|_| "main".to_string()),
+        |s| s.to_string()
+    );
+    options.arch = matches.get_one::<String>("arch").map_or_else(
+        || std::env::consts::ARCH.to_string(),
+        |s| s.to_string()
+    );
+    options.simulate       = matches.get_flag("simulate");
+    options.download_only  = matches.get_flag("download-only"); 
+    options.quiet          = matches.get_flag("quiet");
+    options.verbose        = matches.get_flag("verbose");
+    options.assume_yes     = matches.get_flag("assume-yes");
+    options.ignore_missing = matches.get_flag("ignore-missing");
 
     let mut package_manager: PackageManager = Default::default();
     package_manager.options = options;
@@ -397,162 +171,191 @@ fn main() -> Result<()> {
     // record raw command
     let command_line = std::env::args().collect::<Vec<String>>().join(" ");
 
-    // Handle subcommands
-    if let Some(sub_matches) = matches.subcommand_matches("init") {
-        // Set options from command line
-        package_manager.options.shared_store = sub_matches.get_one::<String>("store")
+    match matches.subcommand() {
+        Some(("init",    sub_matches)) => package_manager.command_init(sub_matches)?,
+        Some(("update",  _))           => package_manager.command_update()?,
+        Some(("install", sub_matches)) => package_manager.command_install(sub_matches, &command_line)?,
+        Some(("upgrade", sub_matches)) => package_manager.command_upgrade(sub_matches)?,
+        Some(("remove",  sub_matches)) => package_manager.command_remove(sub_matches, &command_line)?,
+        Some(("list",    sub_matches)) => package_manager.command_list(sub_matches)?,
+        Some(("history", _))           => package_manager.command_history()?,
+        Some(("rollback",sub_matches)) => package_manager.command_rollback(sub_matches, &command_line)?,
+        Some(("repo",    sub_matches)) => package_manager.command_repo(sub_matches)?,
+        Some(("hash",    sub_matches)) => package_manager.command_hash(sub_matches)?,
+        Some(("build",   sub_matches)) => package_manager.command_build(sub_matches)?,
+        Some(("env",     sub_matches)) => package_manager.command_env(sub_matches)?,
+        _ => {} // No subcommand or unknown subcommand
+    }
+
+    Ok(())
+}
+
+// Command handlers
+impl PackageManager {
+
+    fn command_init(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        self.options.shared_store = sub_matches.get_one::<String>("store")
             .map(|s| match s.as_str() {
                 "shared" => true,
                 "private" => false,
-                "auto" => {
-                    // Use shared if root, private otherwise
-                    let uid = nix::unistd::geteuid();
-                    uid.is_root()
-                }
-                _ => false // Default to private if unknown value
+                "auto" => nix::unistd::geteuid().is_root(),
+                _ => false
             })
-            .unwrap_or_else(|| {
-                // Default to auto behavior if no store specified
-                let uid = nix::unistd::geteuid();
-                uid.is_root()
-            });
+            .unwrap_or_else(|| nix::unistd::geteuid().is_root());
 
-        package_manager.options.version = sub_matches.get_one::<String>("version")
+        self.options.version = sub_matches.get_one::<String>("version")
             .map(|s| s.to_string())
             .unwrap_or_else(|| "master".to_string());
-        package_manager.dirs = EPKGDirs::builder()
-            .with_options(package_manager.options)
+
+        self.dirs = EPKGDirs::builder()
+            .with_options(self.options.clone())
             .build()?;
-        package_manager.init()?;
-    } else {
-        package_manager.dirs = EPKGDirs::builder()
-            .with_options(package_manager.options)
-            .build()?;
+        self.init()
     }
 
-    if let Some(_sub_matches) = matches.subcommand_matches("update") {
-        package_manager.fork_on_suid()?;
-        package_manager.cache_repo()?;
+    fn command_update(&mut self) -> Result<()> {
+        self.fork_on_suid()?;
+        self.cache_repo()
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("install") {
+    fn command_install(&mut self, sub_matches: &clap::ArgMatches, command_line: &str) -> Result<()> {
         if sub_matches.get_flag("local") {
             if let (Some(fs_dir), Some(symlink_dir)) = (sub_matches.get_one::<String>("fs"), sub_matches.get_one::<String>("symlink")) {
                 let appbin = sub_matches.get_flag("appbin");
-                package_manager.new_package(&fs_dir.clone(), &symlink_dir.clone(), appbin)?;
+                self.new_package(fs_dir, symlink_dir, appbin)?;
             }
-        } else {
-            if let Some(package_specs) = sub_matches.get_many::<String>("package-spec") {
-                package_manager.options.install_suggests = sub_matches.get_flag("install_suggests");
-                package_manager.options.no_install_recommends = sub_matches.get_flag("no_install_recommends");
-                package_manager.fork_on_suid()?;
-                package_manager.cache_repo()?;
-                let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-                package_manager.install_packages(packages_vec.clone(), &command_line)?;
-            }
+        } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+            self.options.install_suggests = sub_matches.get_flag("install-suggests");
+            self.options.no_install_recommends = sub_matches.get_flag("no-install-recommends");
+            self.fork_on_suid()?;
+            self.cache_repo()?;
+            let packages_vec: Vec<String> = package_specs.cloned().collect();
+            self.install_packages(packages_vec, command_line)?;
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("upgrade") {
-        if let Some(package_specs) = sub_matches.get_many::<String>("package-spec") {
-            package_manager.fork_on_suid()?;
-            package_manager.upgrade_packages(package_specs)?;
+    fn command_upgrade(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+            self.fork_on_suid()?;
+            self.upgrade_packages(package_specs)?;
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("remove") {
-        if let Some(package_specs) = sub_matches.get_many::<String>("package-spec") {
-            let assume_yes = sub_matches.get_flag("assume_yes");
-            package_manager.fork_on_suid()?;
-            let packages_vec: Vec<String> = package_specs.clone().map(|s| s.clone()).collect();
-            package_manager.remove_packages(packages_vec.clone(), assume_yes, &command_line)?;
+    fn command_remove(&mut self, sub_matches: &clap::ArgMatches, command_line: &str) -> Result<()> {
+        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+            let assume_yes = sub_matches.get_flag("assume-yes");
+            self.fork_on_suid()?;
+            let packages_vec: Vec<String> = package_specs.cloned().collect();
+            self.remove_packages(packages_vec, assume_yes, command_line)?;
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("list") {
-        if let Some(package_specs) = sub_matches.get_one::<String>("glob-pattern") {
-            package_manager.options.list_all = sub_matches.get_flag("list_all");
-            package_manager.options.list_installed = sub_matches.get_flag("list_installed");
-            package_manager.options.list_available = sub_matches.get_flag("list_available");
+    fn command_list(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(glob_pattern) = sub_matches.get_one::<String>("GLOB_PATTERN") {
+            self.options.list_all = sub_matches.get_flag("all");
+            self.options.list_installed = sub_matches.get_flag("installed");
+            self.options.list_available = sub_matches.get_flag("available");
             privdrop_on_suid();
-            package_manager.list_packages(package_specs)?;
+            self.list_packages(glob_pattern)?;
         }
+        Ok(())
     }
 
-    if let Some(_sub_matches) = matches.subcommand_matches("history") {
-        package_manager.print_history()?;
+    fn command_history(&mut self) -> Result<()> {
+        self.print_history()
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("rollback") {
-        if let Some(rollback_id) = sub_matches.get_one::<u64>("history-id") {
-            package_manager.rollback_history(*rollback_id, &command_line)?;
+    fn command_rollback(&mut self, sub_matches: &clap::ArgMatches, command_line: &str) -> Result<()> {
+        if let Some(rollback_id) = sub_matches.get_one::<u64>("GEN_ID") {
+            self.rollback_history(*rollback_id, command_line)?;
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("repo") {
-        if let Some(_sub_matches) = sub_matches.subcommand_matches("list") {
-            package_manager.fork_on_suid()?;
+    fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(_) = sub_matches.subcommand_matches("list") {
+            self.fork_on_suid()?;
             crate::repo::list_repos()?;
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("hash") {
-        if let Some(package_store_dir) = sub_matches.get_many::<String>("package-store-dir") {
+    fn command_hash(&self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
             privdrop_on_suid();
-            for dir in package_store_dir {
-                let hash = crate::hash::epkg_store_hash(&dir)?;
+            for dir in package_store_dirs {
+                let hash = crate::hash::epkg_store_hash(dir)?;
                 println!("{}", hash);
             }
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("build") {
-        if let Some(package_yaml) = sub_matches.get_one::<String>("package-yaml") {
+    fn command_build(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
             privdrop_on_suid();
 
-            let build_script = package_manager.dirs.epkg_manager_cache.join("build/scripts/generic-build.sh");
+            let build_script = self.dirs.epkg_manager_cache.join("build/scripts/generic-build.sh");
             if !build_script.exists() {
                 return Err(anyhow::anyhow!("Build script not found"));
             }
 
             let mut command = std::process::Command::new("bash");
             command.arg(build_script);
-            command.arg(package_yaml.as_str());
+            command.arg(package_yaml);
             command.status()?;
         }
+        Ok(())
     }
 
-    if let Some(sub_matches) = matches.subcommand_matches("env") {
-        if let Some(_sub_matches) = sub_matches.subcommand_matches("list") {
-            package_manager.list_environments()?;
-        } else if let Some(sub_matches) = sub_matches.subcommand_matches("create") {
-            if let Some(name) = sub_matches.get_one::<String>("name") {
-                package_manager.options.channel = sub_matches.get_one::<String>("channel").map(|s| s.to_string());
-                package_manager.options.public = sub_matches.get_flag("public");
-                package_manager.create_environment(name)?;
+    fn command_env(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        match sub_matches.subcommand() {
+            Some(("list", _)) => self.list_environments(),
+            Some(("create", sub_matches)) => {
+                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                    self.options.channel = sub_matches.get_one::<String>("channel").cloned();
+                    self.options.public = sub_matches.get_flag("public");
+                    self.create_environment(name)
+                } else {
+                    Ok(())
+                }
             }
-        } else if let Some(sub_matches) = sub_matches.subcommand_matches("remove") {
-            if let Some(name) = sub_matches.get_one::<String>("name") {
-                package_manager.remove_environment(name)?;
+            Some(("remove", sub_matches)) => {
+                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                    self.remove_environment(name)
+                } else {
+                    Ok(())
+                }
             }
-        } else if let Some(sub_matches) = sub_matches.subcommand_matches("register") {
-            if let Some(name) = sub_matches.get_one::<String>("name") {
-                package_manager.options.priority = sub_matches.get_one::<i32>("priority").cloned();
-                package_manager.register_environment(name)?;
+            Some(("register", sub_matches)) => {
+                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                    self.options.priority = sub_matches.get_one::<i32>("priority").cloned();
+                    self.register_environment(name)
+                } else {
+                    Ok(())
+                }
             }
-        } else if let Some(sub_matches) = sub_matches.subcommand_matches("unregister") {
-            if let Some(name) = sub_matches.get_one::<String>("name") {
-                package_manager.unregister_environment(name)?;
+            Some(("unregister", sub_matches)) => {
+                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                    self.unregister_environment(name)
+                } else {
+                    Ok(())
+                }
             }
-        } else if let Some(sub_matches) = sub_matches.subcommand_matches("activate") {
-            if let Some(name) = sub_matches.get_one::<String>("name") {
-                package_manager.options.pure = sub_matches.get_flag("pure");
-                package_manager.activate_environment(name)?;
+            Some(("activate", sub_matches)) => {
+                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                    self.options.pure = sub_matches.get_flag("pure");
+                    self.activate_environment(name)
+                } else {
+                    Ok(())
+                }
             }
-        } else if let Some(_sub_matches) = sub_matches.subcommand_matches("deactivate") {
-            package_manager.deactivate_environment()?;
+            Some(("deactivate", _)) => self.deactivate_environment(),
+            _ => Ok(()),
         }
     }
 
-    Ok(())
 }
