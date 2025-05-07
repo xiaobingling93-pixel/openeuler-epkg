@@ -311,11 +311,6 @@ impl PackageManager {
     }
 
     pub fn unregister_environment(&self, name: &str) -> Result<()> {
-        // Validate environment name
-        if name == "common" {
-            return Err(anyhow::anyhow!("Environment 'common' cannot be unregistered"));
-        }
-
         // Remove symlinks from both prepend and append directories
         let glob_pattern = self.dirs.home_config.join(format!("path.d/{{prepend,append}}/*-{}*", name));
         for path in glob::glob(glob_pattern.to_str().unwrap())? {
@@ -381,11 +376,6 @@ impl PackageManager {
 
     /// Switch environment to a specific generation or rollback N generations
     pub fn switch_environment(&self, name: &str, generation: &str) -> Result<()> {
-        // Validate environment name
-        if name == "common" {
-            return Err(anyhow::anyhow!("Environment 'common' cannot be switched"));
-        }
-
         // Check if environment exists
         let env_root = self.get_env_root(name.to_string())?;
         if !env_root.exists() {
@@ -441,11 +431,6 @@ impl PackageManager {
 
     /// List available generations for an environment
     pub fn list_generations(&self, name: &str) -> Result<()> {
-        // Validate environment name
-        if name == "common" {
-            return Err(anyhow::anyhow!("Environment 'common' has no generations"));
-        }
-
         // Check if environment exists
         let env_root = self.get_env_root(name.to_string())?;
         if !env_root.exists() {
