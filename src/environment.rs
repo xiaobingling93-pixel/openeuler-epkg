@@ -240,15 +240,30 @@ impl PackageManager {
             return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
         }
 
-        // Unregister if registered
-        self.unregister_environment(name)?;
+        // Check if environment is active and handle stacked environments
+        if let Ok(active_envs) = env::var("EPKG_ACTIVE_ENV") {
+            let env_stack: Vec<&str> = active_envs.split(':').collect();
 
-        // Deactivate if this is the active environment
-        if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
-            if active_env == name {
-                self.deactivate_environment()?;
+            if let Some(pos) = env_stack.iter().position(|&x| x == name) {
+                if pos == 0 {
+                    // If it's the first environment, we can remove it
+                    let new_stack = env_stack[1..].join(":");
+                    env::set_var("EPKG_ACTIVE_ENV", &new_stack);
+                    self.deactivate_environment()?;
+                } else {
+                    // If it's in the middle of the stack, return error
+                    return Err(anyhow::anyhow!(
+                        "Cannot remove environment '{}' as it is in the middle of active environment stack. \
+                        Please deactivate environments in reverse order: {}",
+                        name,
+                        env_stack[..=pos].join(" -> ")
+                    ));
+                }
             }
         }
+
+        // Unregister if registered
+        self.unregister_environment(name)?;
 
         // Rename to hide environment
         let hidden_path = self.dirs.private_envs.join(format!(".{}", name));
