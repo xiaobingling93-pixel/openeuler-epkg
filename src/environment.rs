@@ -4,6 +4,7 @@ use std::env;
 use anyhow::Result;
 use crate::models::*;
 use std::path::Path;
+use uuid;
 
 // epkg PATH management
 //
@@ -82,6 +83,22 @@ use std::path::Path;
 //   epkg env activate project-dev                  # Activate project environment
 //   epkg env activate test-env --pure              # Activate in pure mode (no inherited paths)
 //   epkg env deactivate                            # Return to default environment
+
+// Helper function to handle environment variable changes
+// Note: PATH is handled by update_path() instead of push_env_var(), since PATH could be changed by
+// interleaved (de)activate/(un)register calls.
+fn push_env_var(script: &mut String, key: &str, new_value: Option<String>, original_value: Option<String>) {
+    // Set new value (print to stdout)
+    if let Some(v) = &new_value {
+        println!("; export {}={}", key, v);
+    }
+
+    // Prepare restore command (store in script)
+    match original_value {
+        Some(v) => script.push_str(&format!("; export {}={}\n", key, v)),
+        None => script.push_str(&format!("; unset {}\n", key)),
+    }
+}
 
 impl PackageManager {
 
@@ -269,7 +286,7 @@ impl PackageManager {
         let hidden_path = self.dirs.private_envs.join(format!(".{}", name));
         fs::rename(env_path, hidden_path)?;
 
-        println!("Environment '{}' has been removed.", name);
+        println!("# Environment '{}' has been removed.", name);
         Ok(())
     }
 
@@ -284,27 +301,67 @@ impl PackageManager {
             return Err(anyhow::anyhow!("Environment not exist: '{}'", name));
         }
 
-        // Get current active environments
-        let mut active_envs = env::var("EPKG_ACTIVE_ENV")
-            .ok()
-            .map(|active| active.split(':').map(String::from).collect::<Vec<String>>())
-            .unwrap_or_default();
+        // Get current environment states
+        let original_active_envs = env::var("EPKG_ACTIVE_ENV").ok();
+        let original_session_path = env::var("EPKG_SESSION_PATH").ok();
 
         // Check if environment is already active
-        if active_envs.contains(&name.to_string()) {
-            return Err(anyhow::anyhow!("Environment '{}' is already active", name));
+        if let Some(active_envs) = &original_active_envs {
+            if active_envs.split(':').any(|env| env == name) {
+                return Err(anyhow::anyhow!("Environment '{}' is already active", name));
+            }
+            // Check if pure mode is incompatible with stack mode
+            if self.options.pure && self.options.stack {
+                return Err(anyhow::anyhow!("Cannot use pure mode with stack mode"));
+            }
+            // Check if non-stack mode is incompatible with existing active environments
+            if !self.options.stack && !active_envs.is_empty() {
+                return Err(anyhow::anyhow!("Cannot activate environment in non-stack mode when other environments are active. Please deactivate them first."));
+            }
         }
 
-        // Add new environment to the stack
-        active_envs.push(name.to_string());
+        // Get environment config for env_vars
+        let env_config = self.get_env_config(name.to_string())?;
 
-        // Update environment variables EPKG_ACTIVE_ENV and PATH
-        // For eval by caller shell.
+        // Initialize deactivate script
+        let mut script = String::new();
+
+        // Handle session path
+        let session_path = original_session_path.unwrap_or_else(|| {
+            let path = format!("deactivate-{}", uuid::Uuid::new_v4());
+            println!("; export EPKG_SESSION_PATH=\"{}\"", path);
+            script.push_str(&format!("; unset EPKG_SESSION_PATH\n"));
+            path
+        });
+
+        // Prepare new active envs
+        let name_with_pure_mark = if self.options.pure {
+            format!("{}@", name)
+        } else {
+            name.to_string()
+        };
+        let new_active_envs = match &original_active_envs {
+            Some(envs) => format!("{}:{}", name_with_pure_mark, envs),
+            None => name_with_pure_mark.to_string(),
+        };
+
+        // Action 1: Show export commands for shell eval
         println!("# Activate environment '{}'{}", name, if self.options.pure { " in pure mode" } else { "" });
-        println!("export EPKG_ACTIVE_ENV={}", active_envs.join(":"));
+        push_env_var(&mut script, "EPKG_ACTIVE_ENV", Some(new_active_envs), original_active_envs);
+        env::set_var("EPKG_ACTIVE_ENV", new_active_envs);
 
-        env::set_var("EPKG_ACTIVE_ENV", active_envs.join(":"));
-        self.update_path(self.options.pure)?;
+        // Export env_vars from config
+        for (key, value) in &env_config.env_vars {
+            let original_value = env::var(key).ok();
+            push_env_var(&mut script, key, Some(value.clone()), original_value);
+        }
+
+        // Update PATH
+        self.update_path()?;
+
+        // Action 2: Create deactivate shell script
+        let deactivate_script = format!("{}-{}.sh", session_path, name);
+        fs::write(&deactivate_script, script)?;
 
         Ok(())
     }
@@ -314,6 +371,13 @@ impl PackageManager {
             Ok(env) => env,
             Err(_) => {
                 eprintln!("Warning: No environment is currently active");
+                return Ok(());
+            }
+        };
+        let session_path = match env::var("EPKG_SESSION_PATH") {
+            Ok(path) => path,
+            Err(_) => {
+                eprintln!("Warning: EPKG_SESSION_PATH not set");
                 return Ok(());
             }
         };
@@ -327,19 +391,27 @@ impl PackageManager {
         // Remove the last activated environment
         let deactivated_env = active_envs.pop().unwrap();
 
-        // Update environment variables EPKG_ACTIVE_ENV and PATH
-        // For eval by caller shell.
-        println!("# Deactivate environment '{}'", deactivated_env);
+        let deactivate_script = format!("{}-{}.sh", session_path, deactivated_env);
+        let script = fs::read_to_string(&deactivate_script)
+            .with_context(|| format!("Failed to read deactivate script: {}", deactivate_script))?;
+        println!("{}", script);
+
+        if let Err(e) = fs::remove_file(&deactivate_script) {
+            eprintln!("Warning: Could not remove deactivate script: {}", e);
+        }
 
         if active_envs.is_empty() {
-            println!("unset EPKG_ACTIVE_ENV");
+            // println!("unset EPKG_ACTIVE_ENV");
             env::remove_var("EPKG_ACTIVE_ENV");
         } else {
-            println!("export EPKG_ACTIVE_ENV={}", active_envs.join(":"));
+            // println!("export EPKG_ACTIVE_ENV={}", active_envs.join(":"));
             env::set_var("EPKG_ACTIVE_ENV", active_envs.join(":"));
         }
 
-        self.update_path(false)?;
+        // Update environment variables EPKG_ACTIVE_ENV and PATH
+        // For eval by caller shell.
+        println!("# Deactivate environment '{}'", deactivated_env);
+        self.update_path()?;
         Ok(())
     }
 
@@ -400,7 +472,8 @@ impl PackageManager {
         self.env_config.insert(name.to_string(), env_config);
         self.save_env_config(name)?;
 
-        println!("Environment '{}' has been registered with priority {}.", name, priority);
+        self.update_path()?;
+        println!("# Environment '{}' has been registered with priority {}.", name, priority);
         Ok(())
     }
 
@@ -421,7 +494,8 @@ impl PackageManager {
         self.env_config.insert(name.to_string(), env_config);
         self.save_env_config(name)?;
 
-        println!("Environment '{}' has been unregistered.", name);
+        self.update_path()?;
+        println!("# Environment '{}' has been unregistered.", name);
         Ok(())
     }
 

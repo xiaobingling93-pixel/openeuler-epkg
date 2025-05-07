@@ -6,14 +6,21 @@ use std::path::Path;
 
 impl PackageManager {
 
-    pub fn update_path(&self, pure: bool) -> Result<()> {
+    pub fn update_path(&self) -> Result<()> {
         let mut path_components = Vec::new();
+        let mut pure = false;
 
         // Add active environment paths in reverse order (last activated first)
         if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
             let active_envs: Vec<&str> = active_env.split(':').collect();
             for env_name in active_envs.iter().rev() {
-                path_components.extend(self.get_active_env_paths(env_name, pure)?);
+                let (env_name, is_pure) = if env_name.ends_with('@') {
+                    (&env_name[..env_name.len()-1], true)
+                } else {
+                    (env_name, false)
+                };
+                pure = pure && is_pure;
+                path_components.extend(self.get_active_env_paths(env_name, is_pure)?);
             }
         }
 
@@ -36,7 +43,7 @@ impl PackageManager {
 
         // Update PATH
         env::set_var("PATH", &new_path);
-        println!("export PATH={}", &new_path);
+        println!("; export PATH=\"{}\"", &new_path);
 
         Ok(())
     }
@@ -44,7 +51,6 @@ impl PackageManager {
     fn get_active_env_paths(&self, active_env: &str, pure: bool) -> Result<Vec<String>> {
         let mut path_components = Vec::new();
 
-        // Use get_env_root instead of directly accessing private_envs
         let env_root = self.get_env_root(active_env.to_string())?;
 
         // Validate environment exists
