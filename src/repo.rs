@@ -13,6 +13,7 @@ use crate::paths;
 use crate::download::*;
 use crate::parse_requires::*;
 use crate::io::{load_repodata_index, load_package_json};
+use crate::utils::copy_all;
 
 impl Repodata {
     pub fn encode_provide_hashmap(&mut self, path: &str) -> Result<()> {
@@ -24,17 +25,8 @@ impl Repodata {
         let mut writer = BufWriter::new(file);
 
         for (key, values) in self.provide2pkgnames.iter() {
-            writer.write_all(key.as_bytes())?;
-            writer.write_all(b":")?;
-
-            for (i, value) in values.iter().enumerate() {
-                writer.write_all(value.as_bytes())?;
-                if i < values.len() - 1 {
-                    writer.write_all(b",")?;
-                }
-            }
-
-            writer.write_all(b"\n")?;
+            let line = format!("{}:{}", key, values.join(","));
+            writeln!(writer, "{}", line)?;
         }
 
         writer.flush()?;
@@ -46,17 +38,11 @@ impl Repodata {
         let reader = BufReader::new(file);
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
     
-        for line_result in reader.lines() {
-            let line = line_result?;
-            if let Some(colon_index) = line.find(":") {
-                let key = line[..colon_index].to_string();
-                let values_str = &line[colon_index + 1..];
-                let values: Vec<String> = values_str
-                    .split(",")
-                    .map(|s| s.to_string())
-                    .collect();
-    
-                map.insert(key, values);
+        for (line_num, line_result) in reader.lines().enumerate() {
+            let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path))?;
+            if let Some((key, values)) = line.split_once(":") {
+                let values: Vec<String> = values.split(",").map(|s| s.to_string()).collect();
+                map.insert(key.to_string(), values);
             }
         }
         self.provide2pkgnames = map;
@@ -125,23 +111,21 @@ impl Repodata {
                 };
                 if let Some(provides) = &pkg_json.provides {
                     for provide in provides {
-                        if format.is_some() {
-                            let and_deps = match parse_requires(&format.clone().unwrap().as_str(), provide) {
-                                std::result::Result::Ok(deps) => deps,
-                                Err(e) => {
-                                    println!("Failed to parse requirement '{}': {}", provide, e);
-                                    continue;
-                                }
-                            };
-                            if let Some(pkgnames) = self.provide2pkgnames.get_mut(and_deps[0][0].capability.as_str()) {
-                                pkgnames.push(pkg_json.name.clone());
-                            } else {
-                                self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.name.clone()]);
+                        let and_deps = match parse_requires(&format.clone().unwrap().as_str(), provide) {
+                            std::result::Result::Ok(deps) => deps,
+                            Err(e) => {
+                                println!("Failed to parse requirement '{}': {}", provide, e);
+                                continue;
                             }
+                        };
+                        if let Some(pkgnames) = self.provide2pkgnames.get_mut(and_deps[0][0].capability.as_str()) {
+                            pkgnames.push(pkg_json.name.clone());
+                        } else {
+                            self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.name.clone()]);
                         }
                     }
                 }
-                if pkg_json.priority.is_some() && pkg_json.priority.as_ref().unwrap() == "essential" {
+                if matches!(pkg_json.priority.as_deref(), Some("essential")) {
                     self.essential_pkgnames.insert(pkg_json.name.clone());
                 }
             }
@@ -154,17 +138,17 @@ impl Repodata {
 impl PackageManager {
     pub fn cache_repo(&mut self) -> Result<()> {
         if self.env_config.channel.name.is_empty() {
-            self.load_env_config().unwrap();
+            self.load_env_config()?;
         }
 
         let arch = std::env::consts::ARCH;
-        if arch == "unknown" || arch == "riscv64" || arch == "loongarch64" {
+        if !ARCHES.contains(&arch) {
             return Err(anyhow!("Unsupported system architecture: {}", arch));
         }
         let repos: Vec<_> = self.env_config.repos.keys().cloned().collect();
         for repo_name in repos {
             let repo_url = format!("{}/{}/{}/", self.env_config.channel.baseurl, &repo_name, arch);
-            self.cache_repo_name(&repo_name, &repo_url).unwrap();
+            self.cache_repo_name(&repo_name, &repo_url)?;
         }
         Ok(())
     }
@@ -172,7 +156,7 @@ impl PackageManager {
 
 fn download_repodata(base_url: &str, repodata_path: &PathBuf) -> Result<()> {
     let index_url = format!("{}/index.json", base_url);
-    download_urls(vec![index_url], repodata_path.to_str().unwrap(), 1, 6, None).unwrap();
+    download_urls(vec![index_url], repodata_path.to_str().unwrap(), 1, 6, None)?;
     let index_file_path = repodata_path.join("index.json");
     let repo_data = load_repodata_index(index_file_path.to_str().unwrap())
                       .with_context(|| format!("Failed to load repodata from {}", repodata_path.display()))?;
@@ -185,7 +169,7 @@ fn download_repodata(base_url: &str, repodata_path: &PathBuf) -> Result<()> {
                     .collect();
     for filename in all_filenames {
         let zst_url = format!("{}/{}", base_url, filename);
-        download_urls(vec![zst_url], repodata_path.to_str().unwrap(), 1, 6, None).unwrap();
+        download_urls(vec![zst_url], repodata_path.to_str().unwrap(), 1, 6, None)?;
     }
 
     Ok(())
@@ -197,11 +181,11 @@ fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<Repodata> {
                       .with_context(|| format!("Failed to load repodata from {}", repodata_path.display()))?;
     for store_path in &repo_data.store_paths {
         let store_path_zst = repodata_path.join(&store_path.filename);
-        unzst(store_path_zst.to_str().unwrap(), repodata_path.join("store-paths").to_str().unwrap()).unwrap();
+        unzst(store_path_zst.to_str().unwrap(), repodata_path.join("store-paths").to_str().unwrap())?;
     }
     for pkg_info in &repo_data.pkg_infos {
         let pkg_info_zst = repodata_path.join(&pkg_info.filename);
-        untar_zst(pkg_info_zst.to_str().unwrap(), repodata_path.parent().unwrap().to_str().unwrap(), false).unwrap();
+        untar_zst(pkg_info_zst.to_str().unwrap(), repodata_path.parent().unwrap().to_str().unwrap(), false)?;
     }
 
     Ok(repo_data)
@@ -212,42 +196,36 @@ pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
         Some(idx) => paths::instance.epkg_channel_cache_dir.join(&repo_url[idx + 9..]),
         None => return Err(anyhow!("Invalid repo URL format: no /channel/ found")),
     };
+    let repodata_path = local_cache_path.join("repodata");
     // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
     // Check if index.json already exists
-    if local_cache_path.join("repodata/provide2pkgnames.txt").exists() &&
-       local_cache_path.join("repodata/essential_pkgnames.txt").exists() {
+    if repodata_path.join("provide2pkgnames.txt").exists() &&
+       repodata_path.join("essential_pkgnames.txt").exists() {
         return Ok(());
     }
     println!("Caching repodata {} from {}", repo_name, repo_url);
 
     // clean old metadata files and re-init metadata dir
     if local_cache_path.exists() {
-        fs::remove_dir_all(&local_cache_path).unwrap();
+        fs::remove_dir_all(&local_cache_path)?;
     }
-    fs::create_dir_all(&local_cache_path.join("repodata")).unwrap();
 
     // sync repo from local & http
-    let repodata_path = local_cache_path.join("repodata");
     match repo_url {
         url if url.starts_with('/') => {
             let src_path = Path::new(url).join("repodata");
-            for src_entry in fs::read_dir(src_path)? {
-                let entry = src_entry?;
-                let src_path = entry.path();
-                let dst_path = repodata_path.join(entry.file_name());
-                fs::copy(src_path, dst_path).unwrap();
-            }
+            copy_all(src_path, repodata_path.clone())?;
         },
         url if url.starts_with("http") => {
             let repo_url = format!("{}/repodata", url);
-            download_repodata( repo_url.as_str(), &repodata_path).unwrap();
+            download_repodata( repo_url.as_str(), &repodata_path)?;
         },
         _ => return Err(anyhow!("Unsupported repo URL scheme")),
     }
-    let mut repodata = unzst_all_repodatas(&repodata_path).unwrap();
-    repodata.generate_repo_metadata().unwrap();
-    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.txt").to_str().unwrap()).unwrap();
-    repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap()).unwrap();
+    let mut repodata = unzst_all_repodatas(&repodata_path)?;
+    repodata.generate_repo_metadata()?;
+    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.txt").to_str().unwrap())?;
+    repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap())?;
 
     println!("Cache repodata succeed: {}", repo_name);
     Ok(())
@@ -263,7 +241,7 @@ pub fn list_repos() -> Result<()> {
     println!("{:<30} | {:<15} | {}", "channel", "repo", "url");
     println!("{}", "-".repeat(100));
 
-    for entry in fs::read_dir(&manager_channel_dir).unwrap() {
+    for entry in fs::read_dir(&manager_channel_dir)? {
         let path = entry?.path();
         if !path.is_file() || path.extension().unwrap_or_default() != "yaml" {
             continue;

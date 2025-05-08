@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 
+pub const ARCHES: &[&str] = &["aarch64", "x86_64"];
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Dependency {
