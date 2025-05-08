@@ -295,7 +295,7 @@ impl PackageManager {
         self.env_config.insert(name.to_string(), env_config.clone());
 
         // Save environment config
-        let env_config_path = self.dirs.home_config.join("envs").join(format!("{}.yaml", name));
+        let env_config_path = self.get_env_config_path(name);
         fs::create_dir_all(env_config_path.parent().unwrap())?;
         let yaml = serde_yaml::to_string(&env_config)?;
         fs::write(env_config_path, yaml)?;
@@ -794,6 +794,72 @@ impl PackageManager {
             println!("{}", combined_yaml);
         }
 
+        Ok(())
+    }
+
+    /// Get environment configuration value
+    pub fn get_environment_config(&self, name: &str) -> Result<()> {
+        let env_name = &self.options.env;
+        let config = self.get_env_config(env_name)?;
+
+        // Split name by dots to handle nested fields
+        let parts: Vec<&str> = name.split('.').collect();
+        let mut current = serde_yaml::to_value(&config)?;
+
+        for part in parts {
+            current = current.get(part)
+                .ok_or_else(|| anyhow::anyhow!("Configuration key not found: {}", name))?
+                .clone();
+        }
+
+        println!("{}", current);
+        Ok(())
+    }
+
+    /// Set environment configuration value
+    pub fn set_environment_config(&self, name: &str, value: &str) -> Result<()> {
+        let env_name = &self.options.env;
+        let mut config = self.get_env_config(env_name)?;
+
+        // Split name by dots to handle nested fields
+        let parts: Vec<&str> = name.split('.').collect();
+        let mut current = &mut config;
+
+        // Navigate to the correct field
+        for (i, part) in parts.iter().enumerate() {
+            if i == parts.len() - 1 {
+                // Last part - set the value
+                match part {
+                    "name" => current.name = value.to_string(),
+                    "env_base" => current.env_base = value.to_string(),
+                    "env_root" => current.env_root = value.to_string(),
+                    "public" => current.public = value.parse()?,
+                    "register_to_path" => current.register_to_path = value.parse()?,
+                    "register_priority" => current.register_priority = value.parse()?,
+                    _ => {
+                        // Handle env_vars
+                        if part.starts_with("env_vars.") {
+                            let var_name = &part[9..]; // Skip "env_vars."
+                            current.env_vars.insert(var_name.to_string(), value.to_string());
+                        } else {
+                            return Err(anyhow::anyhow!("Unknown configuration key: {}", name));
+                        }
+                    }
+                }
+            } else {
+                // Not the last part - navigate deeper
+                match part {
+                    "env_vars" => {
+                        // Skip env_vars as it's handled in the last part
+                        continue;
+                    }
+                    _ => return Err(anyhow::anyhow!("Invalid configuration path: {}", name)),
+                }
+            }
+        }
+
+        self.env_config.insert(env_name.to_string(), config);
+        self.save_env_config(env_name)?;
         Ok(())
     }
 }

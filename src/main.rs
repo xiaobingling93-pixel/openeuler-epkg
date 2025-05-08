@@ -128,6 +128,25 @@ fn main() -> Result<()> {
                         .arg(arg!(-o --output <FILE> "Output file path"))
                 )
                 .subcommand(Command::new("path").about("Update PATH environment variable"))
+                .subcommand(
+                    Command::new("config")
+                        .about("Configure environment settings")
+                        .subcommand(
+                            Command::new("edit")
+                                .about("Edit environment configuration file")
+                        )
+                        .subcommand(
+                            Command::new("get")
+                                .about("Get environment configuration value")
+                                .arg(arg!(<NAME> "Configuration name to get"))
+                        )
+                        .subcommand(
+                            Command::new("set")
+                                .about("Set environment configuration value")
+                                .arg(arg!(<NAME> "Configuration name to set"))
+                                .arg(arg!(<VALUE> "Value to set"))
+                        )
+                )
         )
         .subcommand(
             Command::new("history")
@@ -379,6 +398,26 @@ impl PackageManager {
                 }
             }
             Some(("path", _)) => self.update_path(),
+            Some(("config", sub_matches)) => {
+                match sub_matches.subcommand() {
+                    Some(("edit", _)) => self.edit_environment_config(),
+                    Some(("get", sub_matches)) => {
+                        if let Some(name) = sub_matches.get_one::<String>("NAME") {
+                            self.get_environment_config(name)
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Some(("set", sub_matches)) => {
+                        if let (Some(name), Some(value)) = (sub_matches.get_one::<String>("NAME"), sub_matches.get_one::<String>("VALUE")) {
+                            self.set_environment_config(name, value)
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    _ => Ok(()),
+                }
+            }
             _ => Ok(()),
         }
     }

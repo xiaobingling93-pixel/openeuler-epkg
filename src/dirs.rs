@@ -92,6 +92,11 @@ impl PackageManager {
         self.get_generations_root(self.options.env.clone())
     }
 
+    /// Get the path to an environment's configuration file
+    pub fn get_env_config_path(&self, env_name: &str) -> PathBuf {
+        self.dirs.home_config.join("envs").join(format!("{}.yaml", env_name))
+    }
+
 }
 
 fn get_xdg_cache() -> io::Result<PathBuf> {

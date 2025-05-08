@@ -59,23 +59,21 @@ fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
 
 impl PackageManager {
 
+    /// Load environment configuration from in-memory hash or on-disk file
     pub fn get_env_config(&mut self, env_name: String) -> Result<&EnvConfig> {
         if self.env_config.contains_key(&env_name) {
             return Ok(&self.env_config[&env_name]);
         }
 
-        let env_path = format!("{}/envs/{}.yaml",
-            self.dirs.home_config.display(),
-            env_name
-        );
+        let config_path = self.get_env_config_path(env_name);
 
         // Read the file contents
-        let contents = fs::read_to_string(&env_path)
-            .with_context(|| format!("Failed to read file: {}", env_path))?;
+        let contents = fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read file: {}", config_path))?;
 
         // Deserialize the YAML into EnvConfig
         let env_config: EnvConfig = serde_yaml::from_str(&contents)
-            .with_context(|| format!("Failed to parse YAML from file: {}", env_path))?;
+            .with_context(|| format!("Failed to parse YAML from file: {}", config_path))?;
 
         self.env_config.insert(env_name.clone(), env_config);
 
@@ -199,22 +197,38 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Save environment configuration to file
     pub fn save_env_config(&mut self, env_name: &str) -> Result<()> {
         let env_config = self.env_config.get(env_name)
             .ok_or_else(|| anyhow::anyhow!("Environment config not found: {}", env_name))?;
 
-        let env_path = format!("{}/envs/{}.yaml",
-            self.dirs.home_config.display(),
-            env_name
-        );
+        let config_path = self.get_env_config_path(env_name);
 
         // Serialize the EnvConfig to YAML
         let yaml = serde_yaml::to_string(env_config)
             .with_context(|| format!("Failed to serialize environment config to YAML"))?;
 
         // Write the YAML to the file
-        fs::write(&env_path, yaml)
-            .with_context(|| format!("Failed to write environment config to file: {}", env_path))?;
+        fs::write(&config_path, yaml)
+            .with_context(|| format!("Failed to write environment config to file: {}", config_path))?;
+
+        Ok(())
+    }
+
+    /// Edit environment configuration file
+    pub fn edit_environment_config(&self) -> Result<()> {
+        let env_name = &self.options.env;
+        let config_path = self.get_env_config_path(env_name);
+
+        // Open editor
+        let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let status = std::process::Command::new(editor)
+            .arg(&config_path)
+            .status()?;
+
+        if !status.success() {
+            return Err(anyhow::anyhow!("Editor exited with non-zero status"));
+        }
 
         Ok(())
     }
