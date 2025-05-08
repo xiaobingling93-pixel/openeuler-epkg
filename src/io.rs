@@ -164,16 +164,21 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn load_installed_packages(&mut self) -> Result<()> {
-        let env_root = self.get_default_env_root()?;
-        let file_path = env_root.join("installed-packages.json");
+    pub fn read_installed_packages(&mut self, env: &str, generation_id: u64) -> Result<HashMap<String, InstalledPackageInfo>> {
+        let generations_root = self.get_generations_root(env)?;
+        let file_path = generations_root.join(generation_id.to_string()).join("installed-packages.json");
 
         let contents = fs::read_to_string(&file_path)
             .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
-        self.installed_packages = serde_json::from_str(&contents)
+        let packages: HashMap<String, InstalledPackageInfo> = serde_json::from_str(&contents)
             .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
 
+        Ok(packages)
+    }
+
+    pub fn load_installed_packages(&mut self) -> Result<()> {
+        self.installed_packages = read_installed_packages(self.options.env.clone)?;
         Ok(())
     }
 

@@ -8,46 +8,7 @@ use anyhow::Result;
 use anyhow::Context;
 use crate::models::*;
 
-pub fn move_generation_contents(src_dir: &str, dst_dir: &str) -> Result<()> {
-    let src_path = Path::new(src_dir);
-    let dst_path = Path::new(dst_dir);
-
-    if !src_path.exists() {
-        return Err(anyhow!("Source directory '{}' does not exist", src_path.display()));
-    }
-
-    // Create destination directory
-    fs::create_dir_all(dst_path).with_context(|| format!("Failed to create destination directory '{}'", dst_path.display()))?;
-
-    // Exclude installed-packages.json and command.json
-    let excluded = ["installed-packages.json", "command.json"];
-
-    for entry in fs::read_dir(src_path)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
-
-        if excluded.contains(&file_name_str.as_ref()) {
-            continue;
-        }
-
-        let src_entry_path = entry.path();
-        let dst_entry_path = dst_path.join(&file_name);
-
-        fs::rename(&src_entry_path, &dst_entry_path)
-            .with_context(|| format!("Failed to move '{}' to '{}'", src_entry_path.display(), dst_entry_path.display()))?;
-    }
-    Ok(())
-}
-
 impl PackageManager {
-    pub fn load_installed_packages(&mut self, env: &str, generation_id: u64) -> Result<HashMap<String, InstalledPackageInfo>> {
-        let generations_root = self.get_generations_root(env)?;
-        let file_path = generations_root.join(generation_id.to_string()).join("installed-packages.json");
-        let contents = fs::read_to_string(&file_path).with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-        let packages: HashMap<String, InstalledPackageInfo> = serde_json::from_str(&contents).with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
-        Ok(packages)
-    }
 
     pub fn get_current_generation_id(&self) -> Result<u64> {
         let generations_root = self.get_default_generations_root()?;
@@ -84,8 +45,14 @@ impl PackageManager {
         let new_id = current_id + 1;
         let new_generation = self.get_generation_path(new_id)?;
 
-        // Move contents from current to new generation
-        move_generation_contents(current_generation.to_str().unwrap(), new_generation.to_str().unwrap())?;
+        // Create new generation directory
+        fs::create_dir_all(&new_generation)?;
+
+        // FHS directories are now at root level
+        // So only copy metadata files from current to new generation.
+        // No need copy installed-packages.json since its JSON data will be
+        // loaded from old generation dir and saved to new generation dir.
+        fs::copy(command_json, new_generation.join("command.json"))?;
 
         // Update current symlink to point to the new generation
         self.update_current_generation_symlink(new_id)?;
@@ -209,8 +176,8 @@ impl PackageManager {
         }
 
         // Load current and rollback installed-packages.json
-        let current_packages = self.load_installed_packages(&self.options.env, current_generation_id)?;
-        let rollback_packages = self.load_installed_packages(&self.options.env, target_id)?;
+        let current_packages = self.read_installed_packages(&self.options.env, current_generation_id)?;
+        let rollback_packages = self.read_installed_packages(&self.options.env, target_id)?;
 
         // Calculate packages to add/remove
         let new_packages: Vec<(String, bool)> = rollback_packages.keys()
@@ -244,22 +211,23 @@ impl PackageManager {
         }
 
         // Create a new generation for this rollback operation
-        let generation_path = self.create_new_generation()?;
+        let new_generation = self.create_new_generation()?;
         let store_root = self.dirs.epkg_store;
+        let env_root = self.get_default_env_root()?;
 
-        // Apply package changes
+        // Apply package changes directly to FHS directories at root level
         for (pkgline, appbin_flag) in &new_packages {
             let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.new_package(&fs_dir, &generation_path.to_str().unwrap(), *appbin_flag)?;
+            self.new_package(&fs_dir, env_root.to_str().unwrap(), *appbin_flag)?;
         }
         for pkgline in &del_packages {
             let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.del_package(&fs_dir, &generation_path.to_str().unwrap())?;
+            self.del_package(&fs_dir, env_root.to_str().unwrap())?;
         }
 
         // Copy rollback generation's installed-packages.json to current generation
         let rollback_json = rollback_generation.join("installed-packages.json");
-        fs::copy(&rollback_json, generation_path.join("installed-packages.json"))?;
+        fs::copy(&rollback_json, new_generation.join("installed-packages.json"))?;
 
         // Record history
         self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages)?;
