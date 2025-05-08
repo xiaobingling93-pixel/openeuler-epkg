@@ -3,18 +3,20 @@ use std::path::Path;
 use std::collections::HashMap;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::Context;
 use crate::dirs;
 use crate::utils::*;
 use crate::models::*;
 
 impl PackageManager {
 
-    pub fn del_package(&self, fs_dir: &str, symlink_dir: &str) -> Result<()> {
+    pub fn del_package(&self, fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
         let fs_files = list_package_files(&fs_dir)?;
         for fs_file in fs_files {
-            let rfs_file = fs_file.strip_prefix(&fs_dir).unwrap();
-            let target_path = Path::new(&symlink_dir).join(rfs_file);
-            // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, rfs_file, target_path);
+            let fhs_file = fs_file.strip_prefix(&fs_dir)
+                .map_err(|e| anyhow!("Failed to strip prefix from path: {}", e))?;
+            let target_path = env_root.join(fhs_file);
+            // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, fhs_file, target_path);
 
             // Skip dir
             if target_path.is_dir() {
@@ -23,15 +25,16 @@ impl PackageManager {
 
             // Remove file (include symlink)
             if fs::symlink_metadata(&target_path).is_ok() {
-                fs::remove_file(&target_path).unwrap();
+                fs::remove_file(&target_path)?;
             }
-
             // Remove appbin-file
-            if rfs_file.starts_with("usr/bin/") {
-                let rfs_file_ebin = rfs_file.to_string_lossy().replace("/bin", "/ebin");
-                let appbin_target_path = Path::new(&symlink_dir).join(&rfs_file_ebin);
+            if fhs_file.starts_with("usr/bin/") || fhs_file.starts_with("usr/sbin/") {
+                let ebin_file = fhs_file.to_string_lossy()
+                    .replace("/bin", "/ebin")
+                    .replace("/sbin", "/ebin");
+                let appbin_target_path = env_root.join(&ebin_file);
                 if fs::symlink_metadata(&appbin_target_path).is_ok() {
-                    fs::remove_file(&appbin_target_path).unwrap();
+                    fs::remove_file(&appbin_target_path)?;
                 }
             }
         }
@@ -42,7 +45,8 @@ impl PackageManager {
     pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
-        let mut input_package_info = self.resolve_package_info(package_specs.clone());
+        let mut input_package_info = self.resolve_package_info(package_specs.clone())
+            .with_context(|| "Failed to resolve package information")?;
 
         // Step 1: Find duplicates between installed_packages and input_package_info
         let duplicates: Vec<String> = input_package_info
@@ -61,7 +65,9 @@ impl PackageManager {
         // Step 2: Check if packages is being depended on by installed packages
         let duplicates_depended: Vec<String> = duplicates
             .iter()
-            .filter(|name| self.installed_packages[*name].depend_depth > 0)
+            .filter(|name| self.installed_packages.get(*name)
+                .map(|info| info.depend_depth > 0)
+                .unwrap_or(false))
             .cloned()
             .collect();
         if !duplicates_depended.is_empty() {
@@ -94,7 +100,10 @@ impl PackageManager {
             .iter()
             .filter(|(pkgline, info)| (info.depend_depth == 0 && 
                 !input_package_info.contains_key(*pkgline)) || 
-                self.essential_pkgnames.contains(self.pkghash2spec.get(&pkgline[0..32]).unwrap().name.as_str()))
+                self.essential_pkgnames.contains(
+                    self.pkghash2spec.get(&pkgline[0..32])
+                        .ok_or_else(|| anyhow!("Failed to find package spec for hash"))?
+                        .name.as_str()))
             .map(|(key, value)| (key.clone(), (*value).clone()))
             .collect();
         self.collect_recursive_depends(&mut packages_to_keep)?;
@@ -113,7 +122,8 @@ impl PackageManager {
             if !self.options.assume_yes {
                 println!("Do you want to continue with uninstallation? (y/n):");
                 let mut input = String::new();
-                std::io::stdin().read_line(&mut input).expect("Failed to read input");
+                std::io::stdin().read_line(&mut input)
+                    .with_context(|| "Failed to read user input")?;
                 if input.trim().to_lowercase() != "y" {
                     println!("Aborted removal.");
                     return Ok(());
@@ -124,15 +134,15 @@ impl PackageManager {
         }
 
         // Step 6: Remove package files
-        let symlink_dir = self.create_new_generation()?;
+        self.create_new_generation()?;
+        let env_root = self.get_default_env_root()?;
+        let store_root = self.dirs.epkg_store;
         for pkgline in &installed_to_remove {
-            // remove files
-            let store_root = self.dirs.epkg_store;
-            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.del_package(&fs_dir, &symlink_dir)?;
+            // remove link files
+            self.del_package(store_root.join(pkgline).join("fs"), &env_root)?;
         }
 
-        //  Step 7: Save installed packages
+        // Step 7: Save installed packages
         for package_name in &installed_to_remove {
             self.installed_packages.remove(package_name);
         } 

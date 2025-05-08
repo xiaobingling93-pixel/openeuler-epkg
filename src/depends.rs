@@ -24,7 +24,7 @@ impl PackageManager {
     pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) {
         let mut tmp_format: Option<String> = None;
         for pkgline in packages.keys() {
-            let pkg_json = self.load_package_info(pkgline).unwrap();
+            let pkg_json = self.load_package_info(pkgline)?;
             if pkg_json.source.is_some() {
                 self.appbin_source.insert(pkg_json.source.as_ref().unwrap().clone());
             }
@@ -44,7 +44,7 @@ impl PackageManager {
 
     pub fn change_appbin_flag_same_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
         for (pkgline, package_info) in packages.iter_mut() {
-            let pkg_json = self.load_package_info(pkgline.as_str()).unwrap();
+            let pkg_json = self.load_package_info(pkgline.as_str())?;
             if package_info.appbin_flag == false && pkg_json.source.is_some() {
                 let Some(source) = &pkg_json.source else { continue };
                 if self.appbin_source.contains(source) {
@@ -147,7 +147,7 @@ impl PackageManager {
                 &pkgline[0..2],
                 pkgline
             );
-            let package = load_package_json(&path).unwrap();
+            let package = load_package_json(&path)?;
             self.pkghash2pkg.insert(pkgline.to_string(), package.clone());
             return Ok(package);
         }
