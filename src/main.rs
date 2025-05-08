@@ -135,9 +135,9 @@ fn main() -> Result<()> {
                 .arg(arg!([MAX_GENERATIONS] "Maximum number of generations to show").value_parser(clap::value_parser!(u64)))
         )
         .subcommand(
-            Command::new("rollback")
-                .about("Rollback environment to a specific history")
-                .arg(arg!(<GEN_ID> "Generation ID to rollback to").value_parser(clap::value_parser!(u64)))
+            Command::new("restore")
+                .about("Restore environment to a specific generation")
+                .arg(arg!(<GEN_ID> "Generation ID to restore to (negative number for relative rollback)").value_parser(clap::value_parser!(i64)))
         )
         .subcommand(
             Command::new("repo")
@@ -190,7 +190,7 @@ fn main() -> Result<()> {
         Some(("remove",  sub_matches)) => package_manager.command_remove(sub_matches)?,
         Some(("list",    sub_matches)) => package_manager.command_list(sub_matches)?,
         Some(("history", _))           => package_manager.command_history()?,
-        Some(("rollback",sub_matches)) => package_manager.command_rollback(sub_matches)?,
+        Some(("restore", sub_matches)) => package_manager.command_restore(sub_matches)?,
         Some(("repo",    sub_matches)) => package_manager.command_repo(sub_matches)?,
         Some(("hash",    sub_matches)) => package_manager.command_hash(sub_matches)?,
         Some(("build",   sub_matches)) => package_manager.command_build(sub_matches)?,
@@ -281,8 +281,8 @@ impl PackageManager {
         self.print_history()
     }
 
-    fn command_rollback(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(rollback_id) = sub_matches.get_one::<u64>("GEN_ID") {
+    fn command_restore(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(rollback_id) = sub_matches.get_one::<i64>("GEN_ID") {
             self.rollback_history(*rollback_id)?;
         }
         Ok(())

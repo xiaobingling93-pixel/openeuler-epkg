@@ -182,24 +182,35 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn rollback_history(&mut self, rollback_id: u64) -> Result<()> {
-        // Check if rollback_id exists
+    pub fn rollback_history(&mut self, rollback_id: i64) -> Result<()> {
         let generations_root = self.get_default_generations_root()?;
-        let rollback_generation = generations_root.join(rollback_id.to_string());
+        let current_generation_id = self.get_current_generation_id()?;
 
+        // Handle negative rollback IDs (relative rollback)
+        let target_id = if rollback_id < 0 {
+            let abs_rollback = rollback_id.abs() as u64;
+            if abs_rollback >= current_generation_id {
+                return Err(anyhow!("Cannot rollback beyond generation 1"));
+            }
+            current_generation_id - abs_rollback
+        } else {
+            rollback_id as u64
+        };
+
+        // Check if target_id exists
+        let rollback_generation = generations_root.join(target_id.to_string());
         if !rollback_generation.exists() {
-            return Err(anyhow!("No such history record: Generation {} does not exist", rollback_id));
+            return Err(anyhow!("No such history record: Generation {} does not exist", target_id));
         }
 
-        // Check if rollback_id is the last id
-        let current_generation_id = self.get_current_generation_id()?;
-        if rollback_id == current_generation_id {
-            return Err(anyhow!("Cannot rollback to the current generation"));
+        // Check if target_id is the current id
+        if target_id == current_generation_id {
+            return Err(anyhow!("Cannot restore to the current generation"));
         }
 
         // Load current and rollback installed-packages.json
         let current_packages = self.load_installed_packages(&self.options.env, current_generation_id)?;
-        let rollback_packages = self.load_installed_packages(&self.options.env, rollback_id)?;
+        let rollback_packages = self.load_installed_packages(&self.options.env, target_id)?;
 
         // Calculate packages to add/remove
         let new_packages: Vec<(String, bool)> = rollback_packages.keys()
