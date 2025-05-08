@@ -127,6 +127,7 @@ fn main() -> Result<()> {
                         .arg(arg!(<ENV_NAME> "Name of the environment to export"))
                         .arg(arg!(-o --output <FILE> "Output file path"))
                 )
+                .subcommand(Command::new("path").about("Update PATH environment variable"))
         )
         .subcommand(
             Command::new("history")
@@ -377,6 +378,7 @@ impl PackageManager {
                     Ok(())
                 }
             }
+            Some(("path", _)) => self.update_path(),
             _ => Ok(()),
         }
     }
