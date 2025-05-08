@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::env;
-use anyhow::Result;
+use anyhow::{Result, Context};
 use crate::models::*;
 use std::path::Path;
 use uuid;

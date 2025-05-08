@@ -19,6 +19,7 @@ mod path;
 mod repo;
 
 use std::env;
+use std::path::PathBuf;
 use crate::models::*;
 use crate::ipc::*;
 use anyhow::Result;
@@ -64,7 +65,7 @@ fn main() -> Result<()> {
                 .arg(arg!(--local "Install packages from local filesystem"))
                 .arg(arg!(--fs <DIR> "Local filesystem directory to install packages"))
                 .arg(arg!(--symlink <DIR> "Local symlink directory to install packages"))
-                .arg(arg!(--appbin "Install appbin packages"))
+                .arg(arg!(--ebin "Install package binaries to ebin/"))
         )
         .subcommand(
             Command::new("upgrade")
@@ -190,6 +191,11 @@ fn main() -> Result<()> {
         || std::env::consts::ARCH.to_string(),
         |s| s.to_string()
     );
+
+    if !SUPPORT_ARCH_LIST.contains(&options.arch) {
+        return Err(anyhow!("Unsupported system architecture: {}", arch));
+    }
+
     options.simulate       = matches.get_flag("simulate");
     options.download_only  = matches.get_flag("download-only");
     options.quiet          = matches.get_flag("quiet");
@@ -251,8 +257,10 @@ impl PackageManager {
     fn command_install(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if sub_matches.get_flag("local") {
             if let (Some(fs_dir), Some(symlink_dir)) = (sub_matches.get_one::<String>("fs"), sub_matches.get_one::<String>("symlink")) {
-                let appbin = sub_matches.get_flag("appbin");
-                self.new_package(fs_dir, symlink_dir, appbin)?;
+                let ebin = sub_matches.get_flag("ebin");
+                let fs_dir = PathBuf::from(fs_dir);
+                let symlink_dir = PathBuf::from(symlink_dir);
+                self.new_package(&fs_dir, &symlink_dir, ebin)?;
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.options.install_suggests = sub_matches.get_flag("install-suggests");

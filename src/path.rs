@@ -17,7 +17,7 @@ impl PackageManager {
                 let (env_name, is_pure) = if env_name.ends_with('@') {
                     (&env_name[..env_name.len()-1], true)
                 } else {
-                    (env_name, false)
+                    (&env_name, false)
                 };
                 pure = pure && is_pure;
                 path_components.extend(self.get_active_env_paths(env_name, is_pure)?);

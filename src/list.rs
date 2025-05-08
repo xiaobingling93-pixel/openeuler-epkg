@@ -106,7 +106,7 @@ impl PackageManager {
 
         let mut header_printed = false;
 
-        // Iterate over all repositories
+        let channel_name = self.get_channel_config(self.options.env.clone())?.name.clone();
         for repodata in &self.repos_data {
             for entry in &repodata.store_paths {
                 // Construct the file path
@@ -150,7 +150,7 @@ impl PackageManager {
                             // Print the package details
                             println!(
                                 LIST_OUTPUT_FORMAT!(),
-                                self.get_channel_config(self.options.env.clone())?.name,
+                                channel_name,
                                 repodata.name,
                                 pkgname,
                                 version_release,
@@ -163,8 +163,7 @@ impl PackageManager {
         }
         
         if !header_printed {
-            let channel_config = self.get_channel_config(self.options.env.clone())?;
-            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, channel_config.name);
+            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, channel_name);
         }
 
         Ok(())

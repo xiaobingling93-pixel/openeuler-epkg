@@ -1,2 +1,3 @@
 # Cargo build
 target/
+dist/

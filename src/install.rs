@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
+use std::os::unix::fs::PermissionsExt;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::dirs;

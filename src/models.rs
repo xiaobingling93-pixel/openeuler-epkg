@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 
-pub const ARCHES: &[&str] = &["aarch64", "x86_64"];
+pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +142,7 @@ pub struct GenerationCommand {
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
+#[derive(Clone)]
 pub struct EnvConfig {
     pub name: String,
     pub env_base: String,
@@ -193,6 +194,7 @@ pub struct RepoConfig {
 
 #[allow(dead_code)]
 #[derive(Default)]
+#[derive(Clone)]
 pub struct EPKGOptions {
     // common options
     pub env: String,
