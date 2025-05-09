@@ -202,7 +202,7 @@ pub struct RepoConfig {
 }
 
 #[allow(dead_code)]
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct EPKGConfig {
     pub common: CommonOptions,
     pub install: InstallOptions,
@@ -219,7 +219,7 @@ pub struct EPKGConfig {
     pub matches: clap::ArgMatches,
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct CommonOptions {
     #[serde(skip)]
     pub env: String,
@@ -236,20 +236,20 @@ pub struct CommonOptions {
     pub ignore_missing: bool,
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct InstallOptions {
     pub install_suggests: bool,
     pub no_install_recommends: bool,
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct ListOptions {
     pub list_all: bool,
     pub list_installed: bool,
     pub list_available: bool,
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct EnvOptions {
     pub channel: Option<String>,
     pub priority: Option<i32>,
@@ -263,11 +263,11 @@ pub struct EnvOptions {
     pub import_file: Option<String>,
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct HistoryOptions {
     pub max_generations: Option<u32>,
 }
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct InitOptions {
     #[serde(skip)]
     pub shared_store: bool,
