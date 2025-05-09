@@ -2,8 +2,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::LazyLock;
+use crate::parse_cmdline;
+use crate::parse_options_common;
+use crate::parse_options_subcommand;
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
+pub const PURE_ENV_SUFFIX: char = '!';
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -99,7 +105,7 @@ pub struct PkgFilesIndex {
 
 // parsed from pkgline
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PackageSpec {
     pub repo: String,
     pub hash: String,
@@ -176,6 +182,7 @@ pub struct EnvConfig {
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
+#[derive(Clone)]
 pub struct ChannelConfig {
     pub name: String,
     pub baseurl: String,
@@ -186,6 +193,8 @@ fn default_as_true() -> bool { true }
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
+#[derive(Default)]
+#[derive(Clone)]
 pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
@@ -193,50 +202,89 @@ pub struct RepoConfig {
 }
 
 #[allow(dead_code)]
-#[derive(Default)]
-#[derive(Clone)]
-pub struct EPKGOptions {
-    // common options
+#[derive(Default, Clone, Deserialize)]
+pub struct EPKGConfig {
+    pub common: CommonOptions,
+    pub install: InstallOptions,
+    pub list: ListOptions,
+    pub env: EnvOptions,
+    pub history: HistoryOptions,
+    pub init: InitOptions,
+
+    #[serde(skip)]
+    pub config_file: String,
+    #[serde(skip)]
+    pub command_line: String,
+    #[serde(skip)]
+    pub matches: clap::ArgMatches,
+}
+
+#[derive(Default, Clone, Deserialize)]
+pub struct CommonOptions {
+    #[serde(skip)]
     pub env: String,
+    #[serde(skip)]
     pub arch: String,
+    #[serde(skip)]
     pub download_only: bool,
+    #[serde(skip)]
     pub simulate: bool,
+
     pub quiet: bool,
     pub verbose: bool,
     pub assume_yes: bool,
     pub ignore_missing: bool,
-    pub command_line: String,
+}
 
-    // install subcommand options
+#[derive(Default, Clone, Deserialize)]
+pub struct InstallOptions {
     pub install_suggests: bool,
     pub no_install_recommends: bool,
+}
 
-    // list subcommand options
+#[derive(Default, Clone, Deserialize)]
+pub struct ListOptions {
     pub list_all: bool,
     pub list_installed: bool,
     pub list_available: bool,
+}
 
-    // env subcommand options
+#[derive(Default, Clone, Deserialize)]
+pub struct EnvOptions {
     pub channel: Option<String>,
     pub priority: Option<i32>,
     pub public: bool,
     pub pure: bool,
     pub stack: bool,
+
+    #[serde(skip)]
     pub env_path: Option<String>,
-    pub config_file: Option<String>,
+    #[serde(skip)]
+    pub import_file: Option<String>,
+}
 
-    // history subcommand options
-    pub max_generations: Option<u64>,
-
-    // 'init' subcommand options
+#[derive(Default, Clone, Deserialize)]
+pub struct HistoryOptions {
+    pub max_generations: Option<u32>,
+}
+#[derive(Default, Clone, Deserialize)]
+pub struct InitOptions {
+    #[serde(skip)]
     pub shared_store: bool,
+    #[serde(default = "default_version")]
     pub version: String,
+}
+
+fn default_version() -> String {
+    "master".to_string()
 }
 
 #[derive(Debug)]
 pub struct EPKGDirs {
     // Base directories
+    #[allow(dead_code)]
     pub opt_epkg: PathBuf,
+    #[allow(dead_code)]
     pub home_epkg: PathBuf,
 
     // Subdirectories
@@ -255,8 +303,6 @@ pub struct EPKGDirs {
 #[allow(dead_code)]
 #[derive(Default)]
 pub struct PackageManager {
-    pub options: EPKGOptions,
-    pub dirs: EPKGDirs,
     pub env_config: HashMap<String, EnvConfig>,
     pub channel_config: HashMap<String, ChannelConfig>,
 
@@ -281,3 +327,24 @@ pub struct PackageManager {
     pub child_pid: Option<nix::unistd::Pid>,
 }
 
+static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
+    let matches = parse_cmdline();
+    let config = parse_options_common(&matches);
+    parse_options_subcommand(&matches, config)
+});
+
+static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
+    EPKGDirs::builder()
+        .with_options(config().clone())
+        .build()
+        .expect("Failed to initialize EPKGDirs")
+});
+
+// 获取全局配置的公共接口
+pub fn config() -> &'static EPKGConfig {
+    &CONFIG
+}
+
+pub fn dirs() -> &'static EPKGDirs {
+    &DIRS
+}

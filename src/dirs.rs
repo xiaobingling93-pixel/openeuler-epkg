@@ -1,12 +1,12 @@
 use std::env;
 use std::path::PathBuf;
 use std::io::{self, ErrorKind};
-use crate::models::EPKGOptions;
-use crate::models::EPKGDirs;
+use crate::models::*;
+use anyhow::Result;
 
 #[derive(Default)]
 pub struct EPKGDirsBuilder {
-    options: Option<EPKGOptions>,
+    options: Option<EPKGConfig>,
     custom_home: Option<PathBuf>,
     custom_opt: Option<PathBuf>,
 }
@@ -17,8 +17,8 @@ impl EPKGDirs {
     }
 
     // Helper method to create dirs using proper path joining
-    fn build_dirs(options: &EPKGOptions, home_epkg: &PathBuf, opt_epkg: &PathBuf) -> io::Result<Self> {
-        let (store_root, cache_root) = if options.shared_store {
+    fn build_dirs(options: &EPKGConfig, home_epkg: &PathBuf, opt_epkg: &PathBuf) -> io::Result<Self> {
+        let (store_root, cache_root) = if options.init.shared_store {
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
             (home_epkg.join("store"), get_xdg_cache()?.join("epkg"))
@@ -44,11 +44,12 @@ impl EPKGDirs {
 }
 
 impl EPKGDirsBuilder {
-    pub fn with_options(mut self, options: EPKGOptions) -> Self {
+    pub fn with_options(mut self, options: EPKGConfig) -> Self {
         self.options = Some(options);
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_custom_home(mut self, path: PathBuf) -> Self {
         self.custom_home = Some(path);
         self
@@ -80,7 +81,7 @@ impl PackageManager {
     }
 
     pub fn get_default_env_root(&mut self) -> Result<PathBuf> {
-        self.get_env_root(self.options.env.clone())
+        self.get_env_root(config().common.env.clone())
     }
 
     pub fn get_generations_root(&mut self, env_name: &str) -> Result<PathBuf> {
@@ -89,14 +90,13 @@ impl PackageManager {
     }
 
     pub fn get_default_generations_root(&mut self) -> Result<PathBuf> {
-        self.get_generations_root(self.options.env.clone())
+        self.get_generations_root(&config().common.env)
     }
+}
 
-    /// Get the path to an environment's configuration file
-    pub fn get_env_config_path(&self, env_name: &str) -> PathBuf {
-        self.dirs.home_config.join("envs").join(format!("{}.yaml", env_name))
-    }
-
+/// Get the path to an environment's configuration file
+pub fn get_env_config_path(env_name: &str) -> PathBuf {
+    dirs().home_config.join("envs").join(format!("{}.yaml", env_name))
 }
 
 fn get_xdg_cache() -> io::Result<PathBuf> {

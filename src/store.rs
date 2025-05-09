@@ -8,14 +8,14 @@ use zstd::stream::Decoder;
 use users::get_effective_uid;
 use anyhow::Result;
 use walkdir::WalkDir;
-use crate::models::PackageManager;
+use crate::models::dirs;
 
-pub fn unpack_packages(files: Vec<String>, package_manager: &PackageManager) -> Result<()> {
+pub fn unpack_packages(files: Vec<String>) -> Result<()> {
     for file in files {
         let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
-        let dir = package_manager.dirs.epkg_store.join(pkgline);
+        let dir = dirs().epkg_store.join(pkgline);
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
-        
+
         untar_zst(&file, &dir_str, true)?;
         set_perm_and_owner(&dir_str).unwrap();
         // let hash = crate::hash::epkg_store_hash(&dir_str)?;
@@ -54,10 +54,10 @@ pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
     fs::create_dir_all(Path::new(output_path).parent().unwrap())?;
     let output_file = fs::File::create(output_path)?;
     let mut writer = BufWriter::new(output_file);
-    
+
     let mut decoder = Decoder::new(reader)?;
     io::copy(&mut decoder, &mut writer)?;
-    
+
     Ok(())
 }
 

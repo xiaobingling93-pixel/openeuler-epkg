@@ -1,17 +1,14 @@
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 use std::collections::HashMap;
-use anyhow::Result;
-use anyhow::anyhow;
-use anyhow::Context;
-use crate::dirs;
+use anyhow::{Result, anyhow, Context};
 use crate::utils::*;
 use crate::models::*;
 
 impl PackageManager {
 
     pub fn del_package(&self, fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
-        let fs_files = list_package_files(&fs_dir)?;
+        let fs_files = list_package_files(fs_dir.to_str().unwrap())?;
         for fs_file in fs_files {
             let fhs_file = fs_file.strip_prefix(&fs_dir)
                 .map_err(|e| anyhow!("Failed to strip prefix from path: {}", e))?;
@@ -45,8 +42,7 @@ impl PackageManager {
     pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_store_paths()?;
         self.load_installed_packages()?;
-        let mut input_package_info = self.resolve_package_info(package_specs.clone())
-            .with_context(|| "Failed to resolve package information")?;
+        let mut input_package_info = self.resolve_package_info(package_specs.clone());
 
         // Step 1: Find duplicates between installed_packages and input_package_info
         let duplicates: Vec<String> = input_package_info
@@ -98,12 +94,16 @@ impl PackageManager {
         let mut packages_to_keep: HashMap<String, InstalledPackageInfo> = self
             .installed_packages
             .iter()
-            .filter(|(pkgline, info)| (info.depend_depth == 0 && 
-                !input_package_info.contains_key(*pkgline)) || 
-                self.essential_pkgnames.contains(
-                    self.pkghash2spec.get(&pkgline[0..32])
-                        .ok_or_else(|| anyhow!("Failed to find package spec for hash"))?
-                        .name.as_str()))
+            .filter(|(pkgline, info)| {
+                if info.depend_depth == 0 && !input_package_info.contains_key(*pkgline) {
+                    return true;
+                }
+                if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
+                    self.essential_pkgnames.contains(spec.name.as_str())
+                } else {
+                    false
+                }
+            })
             .map(|(key, value)| (key.clone(), (*value).clone()))
             .collect();
         self.collect_recursive_depends(&mut packages_to_keep)?;
@@ -119,7 +119,7 @@ impl PackageManager {
             for package_name in &installed_to_remove {
                 println!("- {}", package_name);
             }
-            if !self.options.assume_yes {
+            if !config().common.assume_yes {
                 println!("Do you want to continue with uninstallation? (y/n):");
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)
@@ -136,16 +136,16 @@ impl PackageManager {
         // Step 6: Remove package files
         self.create_new_generation()?;
         let env_root = self.get_default_env_root()?;
-        let store_root = self.dirs.epkg_store;
+        let store_root = dirs().epkg_store.clone();
         for pkgline in &installed_to_remove {
             // remove link files
-            self.del_package(store_root.join(pkgline).join("fs"), &env_root)?;
+            self.del_package(&store_root.join(pkgline).join("fs"), &env_root)?;
         }
 
         // Step 7: Save installed packages
         for package_name in &installed_to_remove {
             self.installed_packages.remove(package_name);
-        } 
+        }
         self.save_installed_packages()?;
         self.record_history("remove", vec![], installed_to_remove.clone())?;
         println!("Remove successful - Total packages: {}", installed_to_remove.len());

@@ -1,14 +1,14 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::env;
-use anyhow::{Result, Context};
-use crate::models::*;
 use std::path::Path;
-use uuid;
 use std::path::PathBuf;
+use anyhow::{Result, Context};
 use serde_json;
 use serde_yaml;
-use std::collections::HashMap;
+use crate::models::*;
+use crate::dirs::*;
+use log::warn;
 
 // epkg PATH management
 //
@@ -117,7 +117,7 @@ impl PackageManager {
         let current_user = env::var("USER").unwrap_or_default();
 
         // Get private environments
-        if let Ok(entries) = fs::read_dir(&self.dirs.private_envs) {
+        if let Ok(entries) = fs::read_dir(&dirs().private_envs) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let name = entry.file_name().into_string().unwrap_or_default();
@@ -129,7 +129,7 @@ impl PackageManager {
         }
 
         // Get public environments
-        if let Ok(entries) = fs::read_dir(&self.dirs.public_envs) {
+        if let Ok(entries) = fs::read_dir(&dirs().public_envs) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     if let Ok(owner_entries) = fs::read_dir(entry.path()) {
@@ -158,9 +158,9 @@ impl PackageManager {
         let registered_envs: Vec<String> = self.get_registered_env_names()?;
 
         // Get active environments list once and convert to HashSet for O(1) lookups
-        let active_list: std::collections::HashSet<&str> = env::var("EPKG_ACTIVE_ENV")
+        let active_list: Vec<String> = env::var("EPKG_ACTIVE_ENV")
             .ok()
-            .map(|active| active.split(':').collect())
+            .map(|active| active.split(':').map(String::from).collect())
             .unwrap_or_default();
 
         // Print table header
@@ -172,7 +172,7 @@ impl PackageManager {
             let mut status = Vec::new();
 
             // Check if environment is in active list - O(1) lookup
-            if active_list.contains(env.as_str()) {
+            if active_list.contains(&env) {
                 status.push("activated");
             }
 
@@ -229,14 +229,14 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn create_environment(&self, name: &str) -> Result<()> {
-        let env_base = if &self.options.public {
-            self.dirs.public_envs.join(name)
+    pub fn create_environment(&mut self, name: &str) -> Result<()> {
+        let env_base = if config().env.public {
+            dirs().public_envs.join(name)
         } else {
-            self.dirs.private_envs.join(name)
+            dirs().private_envs.join(name)
         };
 
-        let env_root = if let Some(path) = &self.options.env_path {
+        let env_root = if let Some(path) = &config().env.env_path {
             PathBuf::from(path)
         } else {
             env_base.clone()
@@ -248,8 +248,9 @@ impl PackageManager {
 
         self.create_environment_directories(&env_root)?;
 
+        let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
         // Initialize channel and environment config
-        let mut env_config = if let Some(config_path) = &self.options.config_file {
+        let mut env_config = if let Some(config_path) = &config().env.import_file {
             let config_contents = fs::read_to_string(config_path)
                 .with_context(|| format!("Failed to read config file: {}", config_path))?;
 
@@ -269,10 +270,9 @@ impl PackageManager {
             env_config
         } else {
             // Initialize channel from command line option or default
-            let channel = self.options.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
+            let channel = config().env.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
             let common_env_root = self.get_env_root("common".to_string())?;
             let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
-            let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
 
             if !src_channel_yaml.exists() {
                 return Err(anyhow::anyhow!("Channel not found: '{}'", channel));
@@ -287,7 +287,7 @@ impl PackageManager {
         env_config.name = name.to_string();
         env_config.env_base = env_base.to_string_lossy().to_string();
         env_config.env_root = env_root.to_string_lossy().to_string();
-        env_config.public = self.options.public;
+        env_config.public = config().env.public;
         env_config.register_to_path = false;
         env_config.register_priority = 0;
 
@@ -295,21 +295,21 @@ impl PackageManager {
         self.env_config.insert(name.to_string(), env_config.clone());
 
         // Save environment config
-        let env_config_path = self.get_env_config_path(name);
+        let env_config_path = get_env_config_path(name);
         fs::create_dir_all(env_config_path.parent().unwrap())?;
         let yaml = serde_yaml::to_string(&env_config)?;
         fs::write(env_config_path, yaml)?;
 
         // Install packages if any
         if !env_config.installed_packages.is_empty() {
-            self.install_pkglines(&env_config.installed_packages)?;
+            self.install_pkglines(env_config.installed_packages)?;
         }
 
         println!("Environment '{}' has been created in {}", name, env_root.display());
         Ok(())
     }
 
-    pub fn remove_environment(&self, name: &str) -> Result<()> {
+    pub fn remove_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
         if name == "common" || name == "main" {
             return Err(anyhow::anyhow!("Environment cannot be removed: '{}'", name));
@@ -347,14 +347,14 @@ impl PackageManager {
         self.unregister_environment(name)?;
 
         // Rename to hide environment
-        let hidden_path = self.dirs.private_envs.join(format!(".{}", name));
+        let hidden_path = dirs().private_envs.join(format!(".{}", name));
         fs::rename(env_path, hidden_path)?;
 
         println!("# Environment '{}' has been removed.", name);
         Ok(())
     }
 
-    pub fn activate_environment(&self, name: &str) -> Result<()> {
+    pub fn activate_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
         if name == "common" {
             return Err(anyhow::anyhow!("Environment 'common' cannot be activated"));
@@ -375,11 +375,11 @@ impl PackageManager {
                 return Err(anyhow::anyhow!("Environment '{}' is already active", name));
             }
             // Check if pure mode is incompatible with stack mode
-            if self.options.pure && self.options.stack {
+            if config().env.pure && config().env.stack {
                 return Err(anyhow::anyhow!("Cannot use pure mode with stack mode"));
             }
             // Check if non-stack mode is incompatible with existing active environments
-            if !self.options.stack && !active_envs.is_empty() {
+            if !config().env.stack && !active_envs.is_empty() {
                 return Err(anyhow::anyhow!("Cannot activate environment in non-stack mode when other environments are active. Please deactivate them first."));
             }
         }
@@ -399,12 +399,12 @@ impl PackageManager {
         });
 
         // Prepare new active envs
-        let name_with_pure_mark = if self.options.pure {
-            format!("{}@", name)
+        let name_with_pure_mark = if config().env.pure {
+            format!("{}{}", name, PURE_ENV_SUFFIX.to_string())
         } else {
             name.to_string()
         };
-        let new_active_envs = if self.options.stack {
+        let new_active_envs = if config().env.stack {
             match &original_active_envs {
                 Some(envs) => format!("{}:{}", name_with_pure_mark, envs),
                 None => name_with_pure_mark.to_string(),
@@ -414,9 +414,9 @@ impl PackageManager {
         };
 
         // Action 1: Show export commands for shell eval
-        println!("# Activate environment '{}'{}", name, if self.options.pure { " in pure mode" } else { "" });
-        push_env_var(&mut script, "EPKG_ACTIVE_ENV", Some(new_active_envs), original_active_envs);
-        env::set_var("EPKG_ACTIVE_ENV", new_active_envs);
+        println!("# Activate environment '{}'{}", name, if config().env.pure { " in pure mode" } else { "" });
+        push_env_var(&mut script, "EPKG_ACTIVE_ENV", Some(new_active_envs.clone()), original_active_envs);
+        std::env::set_var("EPKG_ACTIVE_ENV", new_active_envs);
 
         // Export env_vars from config
         for (key, value) in &env_config.env_vars {
@@ -434,7 +434,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn deactivate_environment(&self) -> Result<()> {
+    pub fn deactivate_environment(&mut self) -> Result<()> {
         let active_env = match env::var("EPKG_ACTIVE_ENV") {
             Ok(env) => env,
             Err(_) => {
@@ -490,17 +490,17 @@ impl PackageManager {
         }
 
         // Check if environment exists
-        let env_path = self.dirs.private_envs.join(name);
+        let env_path = dirs().private_envs.join(name);
         if !env_path.exists() {
             return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
         }
 
         // Create path.d directories if they don't exist
-        let prepend_dir = self.dirs.home_config.join("path.d/prepend");
-        let append_dir = self.dirs.home_config.join("path.d/append");
+        let prepend_dir = dirs().home_config.join("path.d/prepend");
+        let append_dir = dirs().home_config.join("path.d/append");
 
         // Get priority from options or auto-detect
-        let priority = if let Some(priority) = self.options.priority {
+        let priority = if let Some(priority) = config().env.priority {
             priority
         } else {
             // Auto-detect first available priority
@@ -537,8 +537,8 @@ impl PackageManager {
         let mut env_config = env_config.clone();
         env_config.register_to_path = true;
         env_config.register_priority = priority;
-        self.env_config.insert(name.to_string(), env_config);
-        self.save_env_config(name)?;
+        self.env_config.insert(name.to_string(), env_config.clone());
+        self.save_env_config(&name)?;
 
         self.update_path()?;
         println!("# Environment '{}' has been registered with priority {}.", name, priority);
@@ -547,7 +547,7 @@ impl PackageManager {
 
     pub fn unregister_environment(&mut self, name: &str) -> Result<()> {
         // Remove symlinks from both prepend and append directories
-        let glob_pattern = self.dirs.home_config.join(format!("path.d/{{prepend,append}}/*-{}*", name));
+        let glob_pattern = dirs().home_config.join(format!("path.d/{{prepend,append}}/*-{}*", name));
         for path in glob::glob(glob_pattern.to_str().unwrap())? {
             if let Ok(path) = path {
                 fs::remove_file(path)?;
@@ -559,8 +559,8 @@ impl PackageManager {
         let mut env_config = env_config.clone();
         env_config.register_to_path = false;
         env_config.register_priority = 0;
-        self.env_config.insert(name.to_string(), env_config);
-        self.save_env_config(name)?;
+        self.env_config.insert(name.to_string(), env_config.clone());
+        self.save_env_config(&name)?;
 
         self.update_path()?;
         println!("# Environment '{}' has been unregistered.", name);
@@ -609,8 +609,8 @@ impl PackageManager {
         };
 
         // Process both directories
-        process_dir(&self.dirs.home_config.join("path.d/prepend"))?;
-        process_dir(&self.dirs.home_config.join("path.d/append"))?;
+        process_dir(&dirs().home_config.join("path.d/prepend"))?;
+        process_dir(&dirs().home_config.join("path.d/append"))?;
 
         // Convert HashSet to sorted Vec
         let mut result: Vec<String> = env_names.into_iter().collect();
@@ -618,63 +618,8 @@ impl PackageManager {
         Ok(result)
     }
 
-    /// Switch environment to a specific generation or rollback N generations
-    pub fn switch_environment(&self, name: &str, generation: &str) -> Result<()> {
-        // Check if environment exists
-        let env_root = self.get_env_root(name.to_string())?;
-        if !env_root.exists() {
-            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
-        }
-
-        // Determine target generation
-        let generations_root = self.get_generations_root(name)?;
-        let current_symlink = generations_root.join("current");
-
-        let target_generation = if generation.starts_with("-") {
-            // Rollback N generations
-            let rollback_count: i32 = generation[1..].parse()
-                .map_err(|_| anyhow::anyhow!("Invalid rollback count: '{}'", generation))?;
-
-            if rollback_count <= 0 {
-                return Err(anyhow::anyhow!("Rollback count must be positive: '{}'", rollback_count));
-            }
-
-            // Read current generation
-            let current_gen = fs::read_link(&current_symlink)?
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid current generation symlink"))?
-                .to_string_lossy()
-                .parse::<i32>()?;
-
-            let target_gen = current_gen - rollback_count;
-            if target_gen <= 0 {
-                return Err(anyhow::anyhow!("Cannot rollback beyond generation 1"));
-            }
-
-            target_gen.to_string()
-        } else {
-            // Direct generation specification
-            generation.to_string()
-        };
-
-        // Verify target generation exists
-        let target_gen_dir = generations_root.join(&target_generation);
-        if !target_gen_dir.exists() {
-            return Err(anyhow::anyhow!("Generation {} does not exist", target_generation));
-        }
-
-        // Update current symlink
-        if current_symlink.exists() {
-            fs::remove_file(&current_symlink)?;
-        }
-        symlink(&target_generation, &current_symlink)?;
-
-        println!("Environment '{}' switched to generation {}", name, target_generation);
-        Ok(())
-    }
-
-    /// List available generations for an environment
-    pub fn list_generations(&self, name: &str) -> Result<()> {
+    #[allow(dead_code)]
+    pub fn list_generations(&mut self, name: &str) -> Result<()> {
         // Check if environment exists
         let env_root = self.get_env_root(name.to_string())?;
         if !env_root.exists() {
@@ -688,18 +633,15 @@ impl PackageManager {
         }
 
         // Get current generation
-        let current_gen = fs::read_link(generations_root.join("current"))
-            .ok()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str().map(|s| s.to_string()));
+        let current_id = self.get_current_generation_id()?;
 
         // List all generations
-        let mut generations: Vec<String> = fs::read_dir(&generations_root)?
+        let mut generations: Vec<u32> = fs::read_dir(&generations_root)?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let name = entry.file_name().into_string().ok()?;
                 if name.chars().all(|c| c.is_digit(10)) {
-                    Some(name)
+                    name.parse::<u32>().ok()
                 } else {
                     None
                 }
@@ -707,9 +649,7 @@ impl PackageManager {
             .collect();
 
         // Sort numerically
-        generations.sort_by(|a, b| {
-            a.parse::<i32>().unwrap_or(0).cmp(&b.parse::<i32>().unwrap_or(0))
-        });
+        generations.sort();
 
         // Print table header
         println!("{:<12}  {:<10}  {}", "Generation", "Status", "Command");
@@ -717,7 +657,7 @@ impl PackageManager {
 
         // Print each generation with its status
         for gen in generations {
-            let gen_dir = generations_root.join(&gen);
+            let gen_dir = generations_root.join(gen.to_string());
             let command_file = gen_dir.join("command.json");
 
             // Try to read command from command.json
@@ -740,7 +680,7 @@ impl PackageManager {
                 "unknown".to_string()
             };
 
-            let status = if Some(&gen) == current_gen.as_ref() {
+            let status = if gen == current_id {
                 "current"
             } else {
                 ""
@@ -752,28 +692,28 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn export_environment(&self, name: &str, output: Option<String>) -> Result<()> {
-        // Get environment config
-        let env_config = self.get_env_config(name.to_string())?;
-
-        // Get channel config
-        let channel_config = self.get_channel_config(name.to_string())?;
+    pub fn export_environment(&mut self, name: &str, output: Option<String>) -> Result<()> {
+        // Get environment config and channel config first
+        let env_config = self.get_env_config(name.to_string())?.clone();
+        let generations_root = self.get_generations_root(name)?;
 
         // Get installed packages
-        let generations_root = self.get_generations_root(name)?;
         let current_gen = fs::read_link(generations_root.join("current"))?;
         let installed_packages_path = current_gen.join("installed-packages.json");
+        let mut env_config = env_config;
+
         if installed_packages_path.exists() {
             let contents = fs::read_to_string(&installed_packages_path)?;
             env_config.installed_packages = serde_json::from_str(&contents)?;
         } else {
             warn!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display());
             return Err(anyhow::anyhow!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
-        };
+        }
 
         // Serialize each config separately
-        let env_yaml = serde_yaml::to_string(&env_config)?;
+        let channel_config = self.get_channel_config(name.to_string())?;
         let channel_yaml = serde_yaml::to_string(&channel_config)?;
+        let env_yaml = serde_yaml::to_string(&env_config)?;
 
         // Skip leading "---" if present
         let channel_yaml = if channel_yaml.starts_with("---\n") {
@@ -798,8 +738,8 @@ impl PackageManager {
     }
 
     /// Get environment configuration value
-    pub fn get_environment_config(&self, name: &str) -> Result<()> {
-        let env_name = &self.options.env;
+    pub fn get_environment_config(&mut self, name: &str) -> Result<()> {
+        let env_name = config().common.env.clone();
         let config = self.get_env_config(env_name)?;
 
         // Split name by dots to handle nested fields
@@ -812,54 +752,42 @@ impl PackageManager {
                 .clone();
         }
 
-        println!("{}", current);
+        println!("{:?}", current);
         Ok(())
     }
 
     /// Set environment configuration value
-    pub fn set_environment_config(&self, name: &str, value: &str) -> Result<()> {
-        let env_name = &self.options.env;
-        let mut config = self.get_env_config(env_name)?;
+    pub fn set_environment_config(&mut self, name: &str, value: &str) -> Result<()> {
+        let env_name = config().common.env.clone();
+        let _config = self.get_env_config(env_name.clone())?; // load from file
 
         // Split name by dots to handle nested fields
         let parts: Vec<&str> = name.split('.').collect();
-        let mut current = &mut config;
 
-        // Navigate to the correct field
-        for (i, part) in parts.iter().enumerate() {
-            if i == parts.len() - 1 {
-                // Last part - set the value
-                match part {
-                    "name" => current.name = value.to_string(),
-                    "env_base" => current.env_base = value.to_string(),
-                    "env_root" => current.env_root = value.to_string(),
-                    "public" => current.public = value.parse()?,
-                    "register_to_path" => current.register_to_path = value.parse()?,
-                    "register_priority" => current.register_priority = value.parse()?,
-                    _ => {
-                        // Handle env_vars
-                        if part.starts_with("env_vars.") {
-                            let var_name = &part[9..]; // Skip "env_vars."
-                            current.env_vars.insert(var_name.to_string(), value.to_string());
-                        } else {
-                            return Err(anyhow::anyhow!("Unknown configuration key: {}", name));
-                        }
-                    }
-                }
-            } else {
-                // Not the last part - navigate deeper
-                match part {
-                    "env_vars" => {
-                        // Skip env_vars as it's handled in the last part
-                        continue;
-                    }
-                    _ => return Err(anyhow::anyhow!("Invalid configuration path: {}", name)),
-                }
-            }
+        // Validate that we're only setting top-level fields
+        if parts.len() != 1 {
+            return Err(anyhow::anyhow!("Can only set top-level configuration keys"));
         }
 
-        self.env_config.insert(env_name.to_string(), config);
-        self.save_env_config(env_name)?;
+        // Get a mutable reference to the config
+        let config = self.env_config.get_mut(&env_name)
+            .ok_or_else(|| anyhow::anyhow!("Environment not found: {}", env_name))?;
+
+        // Set the value directly on config
+        match parts[0] {
+            "name" => config.name = value.to_string(),
+            "env_base" => config.env_base = value.to_string(),
+            "env_root" => config.env_root = value.to_string(),
+            "public" => config.public = value.parse()?,
+            "register_to_path" => config.register_to_path = value.parse()?,
+            "register_priority" => config.register_priority = value.parse()?,
+            _ => return Err(anyhow::anyhow!("Unknown configuration key: {}", parts[0]))
+        }
+
+        // Save the updated config
+        // self.env_config.insert(env_name.clone(), config.clone());
+        self.save_env_config(&env_name)?;
+
         Ok(())
     }
 }

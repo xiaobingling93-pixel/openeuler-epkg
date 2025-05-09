@@ -209,7 +209,7 @@ impl PackageManager {
                 Ok(ForkResult::Parent { child, .. }) => {
                     setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
                     self.has_worker_process = true;
-                    self.child_pid = Some(child); 
+                    self.child_pid = Some(child);
 
                     // wait for worker to create socket
                     for _ in 0..3 {
@@ -238,9 +238,9 @@ impl Drop for PackageManager {
     fn drop(&mut self) {
         // kill work process
         if let Some(pid) = self.child_pid {
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);     
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
         }
-        // remove socket file 
+        // remove socket file
         if !self.ipc_socket.is_empty() {
             let _ = std::fs::remove_file(&self.ipc_socket);
         }
@@ -293,15 +293,16 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
             res?;
         }
         WorkerCommand::Unpack(files) => {
-            let res = crate::store::unpack_packages(files)
-                .and_then(|_| send_response(
+            let res = match crate::store::unpack_packages(files) {
+                Ok(_) => send_response(
                     stream,
                     json!({"status": "success", "message": "Unpacked files"})
-                ))
-                .or_else(|e| send_response(
+                ),
+                Err(e) => send_response(
                     stream,
                     json!({"status": "error", "message": e.to_string()})
-                ));
+                )
+            };
             res?;
         }
         WorkerCommand::CacheRepo(repo_name, repo_url) => {
@@ -369,7 +370,7 @@ fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
     let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
     if response["status"] == "error" {
         return Err(anyhow::anyhow!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
-    } 
+    }
     // else {
     //     println!("ipc {} command completed successfully", command);
     // }
@@ -434,13 +435,14 @@ impl PackageManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn cache_repo_name(&mut self, repo_name: &str, repo_url: &str) -> Result<()> {
         if !self.has_worker_process {
             crate::repo::cache_repo_name(repo_name, repo_url)?;
         } else {
             self.send_command(
                 json!({
-                    "command": "cache_repo", 
+                    "command": "cache_repo",
                     "params": {
                         "repo_name": repo_name,
                         "repo_url": repo_url

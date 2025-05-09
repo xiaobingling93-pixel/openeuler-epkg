@@ -4,10 +4,10 @@ use serde_yaml;
 use std::fs;
 use std::env;
 use std::path::Path;
-use dirs::home_dir;
 use anyhow::{Context, Result, bail};
-use crate::dirs;
+use crate::dirs::*;
 use crate::models::*;
+use std::collections::HashMap;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -65,15 +65,15 @@ impl PackageManager {
             return Ok(&self.env_config[&env_name]);
         }
 
-        let config_path = self.get_env_config_path(env_name);
+        let config_path = get_env_config_path(&env_name);
 
         // Read the file contents
         let contents = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read file: {}", config_path))?;
+            .with_context(|| format!("Failed to read file: {}", config_path.display()))?;
 
         // Deserialize the YAML into EnvConfig
         let env_config: EnvConfig = serde_yaml::from_str(&contents)
-            .with_context(|| format!("Failed to parse YAML from file: {}", config_path))?;
+            .with_context(|| format!("Failed to parse YAML from file: {}", config_path.display()))?;
 
         self.env_config.insert(env_name.clone(), env_config);
 
@@ -104,11 +104,11 @@ impl PackageManager {
 
     // load repodata/index.json and store to repodata
     pub fn load_repodata(&mut self) -> Result<()> {
-        let channel_config = self.get_channel_config(self.options.env.clone())?;
+        let channel_config = self.get_channel_config(config().common.env.clone())?;
         let file_glob: String = format!("{}/channel/{}/*/{}/repodata/index.json",
-            self.dirs.epkg_cache.display(),
+            dirs().epkg_cache.display(),
             channel_config.name,
-            self.options.arch,
+            config().common.arch,
         );
         for entry in glob::glob(&file_glob).expect("Failed to read glob pattern") {
             match entry {
@@ -164,7 +164,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn read_installed_packages(&mut self, env: &str, generation_id: u64) -> Result<HashMap<String, InstalledPackageInfo>> {
+    pub fn read_installed_packages(&mut self, env: &str, generation_id: u32) -> Result<HashMap<String, InstalledPackageInfo>> {
         let generations_root = self.get_generations_root(env)?;
         let file_path = generations_root.join(generation_id.to_string()).join("installed-packages.json");
 
@@ -178,7 +178,8 @@ impl PackageManager {
     }
 
     pub fn load_installed_packages(&mut self) -> Result<()> {
-        self.installed_packages = read_installed_packages(self.options.env.clone)?;
+        let generation_id = self.get_current_generation_id()?;
+        self.installed_packages = self.read_installed_packages(&config().common.env, generation_id)?;
         Ok(())
     }
 
@@ -195,7 +196,7 @@ impl PackageManager {
         // Write the JSON to the file
         fs::write(&file_path, json)?;
 
-        if self.options.verbose {
+        if config().common.verbose {
             println!("Installed packages saved to: {}", file_path.display());
         }
 
@@ -207,7 +208,7 @@ impl PackageManager {
         let env_config = self.env_config.get(env_name)
             .ok_or_else(|| anyhow::anyhow!("Environment config not found: {}", env_name))?;
 
-        let config_path = self.get_env_config_path(env_name);
+        let config_path = get_env_config_path(env_name);
 
         // Serialize the EnvConfig to YAML
         let yaml = serde_yaml::to_string(env_config)
@@ -215,15 +216,15 @@ impl PackageManager {
 
         // Write the YAML to the file
         fs::write(&config_path, yaml)
-            .with_context(|| format!("Failed to write environment config to file: {}", config_path))?;
+            .with_context(|| format!("Failed to write environment config to file: {}", config_path.display()))?;
 
         Ok(())
     }
 
     /// Edit environment configuration file
     pub fn edit_environment_config(&self) -> Result<()> {
-        let env_name = &self.options.env;
-        let config_path = self.get_env_config_path(env_name);
+        let env_name = &config().common.env;
+        let config_path = get_env_config_path(env_name);
 
         // Open editor
         let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());

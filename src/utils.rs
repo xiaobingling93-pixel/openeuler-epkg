@@ -24,6 +24,7 @@ pub enum FileType {
 }
 
 impl FileType {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             FileType::Elf => "ELF 64-bit LSB executable",

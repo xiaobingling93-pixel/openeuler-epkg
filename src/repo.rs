@@ -9,7 +9,6 @@ use anyhow::Result;
 use anyhow::{anyhow, Context};
 use crate::models::*;
 use crate::store::*;
-use crate::dirs;
 use crate::download::*;
 use crate::parse_requires::*;
 use crate::io::{load_repodata_index, load_package_json};
@@ -37,7 +36,7 @@ impl Repodata {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    
+
         for (line_num, line_result) in reader.lines().enumerate() {
             let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path))?;
             if let Some((key, values)) = line.split_once(":") {
@@ -46,7 +45,7 @@ impl Repodata {
             }
         }
         self.provide2pkgnames = map;
-    
+
         Ok(())
     }
 
@@ -61,7 +60,7 @@ impl Repodata {
         for item in self.essential_pkgnames.iter() {
             writeln!(writer, "{}", item)?;
         }
-    
+
         writer.flush()?;
         Ok(())
     }
@@ -76,7 +75,7 @@ impl Repodata {
             hashset.insert(line);
         }
         self.essential_pkgnames = hashset;
-    
+
         Ok(())
     }
 
@@ -87,10 +86,10 @@ impl Repodata {
                 "{}/{}",
                 self.dir,
                 entry.filename.strip_suffix(".zst").unwrap()
-                                                   .splitn(3, '-') 
+                                                   .splitn(3, '-')
                                                    .take(2)
                                                    .collect::<Vec<_>>()
-                                                   .join("-") 
+                                                   .join("-")
             );
             let contents = fs::read_to_string(&file_path)
                 .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
@@ -130,7 +129,7 @@ impl Repodata {
                 }
             }
         }
-    
+
         Ok(())
     }
 }
@@ -138,21 +137,21 @@ impl Repodata {
 impl PackageManager {
 
     pub fn cache_repo(&mut self) -> Result<()> {
-        let channel_config = self.get_channel_config(self.options.env.clone())?;
+        let channel_config = self.get_channel_config(config().common.env.clone())?;
 
-        for (repo_name, repo_config) in channel_config.repos {
+        for (repo_name, repo_config) in &channel_config.repos {
             // Skip disabled repos
             if !repo_config.enabled {
                 continue;
             }
 
             // Use configured URL or construct default URL
-            let repo_url = match repo_config.url {
-                Some(url) => url,
-                None => format!("{}/{}/{}/", channel_config.baseurl, &repo_name, arch)
+            let repo_url = match &repo_config.url {
+                Some(url) => url.clone(),
+                None => format!("{}/{}/{}/", channel_config.baseurl, &repo_name, config().common.arch)
             };
 
-            self.cache_repo_name(&repo_name, &repo_url)?;
+            cache_repo_name(&repo_name, &repo_url)?;
         }
         Ok(())
     }
@@ -196,77 +195,86 @@ fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<Repodata> {
     Ok(repo_data)
 }
 
-impl PackageManager {
-    pub fn cache_repo_name(&self, repo_name: &str, repo_url: &str) -> Result<()> {
-        let local_cache_path = match repo_url.find("/channel/") {
-            Some(idx) => self.dirs.epkg_channel_cache.join(&repo_url[idx + 9..]),
-            None => return Err(anyhow!("Invalid repo URL format: no /channel/ found")),
-        };
-        let repodata_path = local_cache_path.join("repodata");
-        // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
-        // Check if index.json already exists
-        if repodata_path.join("provide2pkgnames.txt").exists() &&
-           repodata_path.join("essential_pkgnames.txt").exists() {
-            return Ok(());
-        }
-        println!("Caching repodata {} from {}", repo_name, repo_url);
+pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
+    let local_cache_path = match repo_url.find("/channel/") {
+        Some(idx) => &dirs().epkg_channel_cache.join(&repo_url[idx + 9..]),
+        None => return Err(anyhow!("Invalid repo URL format: no /channel/ found")),
+    };
+    let repodata_path = local_cache_path.join("repodata");
+    // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
+    // Check if index.json already exists
+    if repodata_path.join("provide2pkgnames.txt").exists() &&
+       repodata_path.join("essential_pkgnames.txt").exists() {
+        return Ok(());
+    }
+    println!("Caching repodata {} from {}", repo_name, repo_url);
 
-        // clean old metadata files and re-init metadata dir
-        if local_cache_path.exists() {
-            fs::remove_dir_all(&local_cache_path)?;
-        }
-
-        // sync repo from local & http
-        match repo_url {
-            url if url.starts_with('/') => {
-                let src_path = Path::new(url).join("repodata");
-                copy_all(src_path, repodata_path.clone())?;
-            },
-            url if url.starts_with("http") => {
-                let repo_url = format!("{}/repodata", url);
-                download_repodata(repo_url.as_str(), &repodata_path).unwrap();
-            },
-            _ => return Err(anyhow!("Unsupported repo URL scheme")),
-        }
-        let mut repodata = unzst_all_repodatas(&repodata_path)?;
-        repodata.generate_repo_metadata()?;
-        repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.txt").to_str().unwrap())?;
-        repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap())?;
-
-        println!("Cache repodata succeed: {}", repo_name);
-        Ok(())
+    // clean old metadata files and re-init metadata dir
+    if local_cache_path.exists() {
+        fs::remove_dir_all(&local_cache_path)?;
     }
 
-    pub fn list_repos(&self) -> Result<()> {
-        let manager_channel_dir = self.dirs.epkg_manager_cache.join("channel");
-        if !manager_channel_dir.exists() {
-            return Ok(());
+    // sync repo from local & http
+    match repo_url {
+        url if url.starts_with('/') => {
+            let src_path = Path::new(url).join("repodata");
+            copy_all(src_path, repodata_path.clone())?;
+        },
+        url if url.starts_with("http") => {
+            let repo_url = format!("{}/repodata", url);
+            download_repodata(repo_url.as_str(), &repodata_path).unwrap();
+        },
+        _ => return Err(anyhow!("Unsupported repo URL scheme")),
+    }
+    let mut repodata = unzst_all_repodatas(&repodata_path)?;
+    repodata.generate_repo_metadata()?;
+    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.txt").to_str().unwrap())?;
+    repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap())?;
+
+    println!("Cache repodata succeed: {}", repo_name);
+    Ok(())
+}
+pub fn list_repos() -> Result<()> {
+    let manager_channel_dir = &dirs().epkg_manager_cache.join("channel");
+    if !manager_channel_dir.exists() {
+        return Ok(());
+    }
+
+    println!("{}", "-".repeat(100));
+    println!("{:<30} | {:<15} | {}", "channel", "repo", "url");
+    println!("{}", "-".repeat(100));
+
+    for entry in fs::read_dir(&manager_channel_dir)? {
+        let path = entry?.path();
+        if !path.is_file() || path.extension().unwrap_or_default() != "yaml" {
+            continue;
         }
 
-        println!("{}", "-".repeat(100));
-        println!("{:<30} | {:<15} | {}", "channel", "repo", "url");
-        println!("{}", "-".repeat(100));
+        let channel_config: ChannelConfig = serde_yaml::from_str(
+            &fs::read_to_string(&path)?
+        )?;
 
-        for entry in fs::read_dir(&manager_channel_dir)? {
-            let path = entry?.path();
-            if !path.is_file() || path.extension().unwrap_or_default() != "yaml" {
+        for (repo_name, repo_config) in &channel_config.repos {
+            // Skip disabled repos
+            if !repo_config.enabled {
                 continue;
             }
 
-            let channel_config: EnvConfig = serde_yaml::from_str(
-                &fs::read_to_string(&path)?
-            )?;
+            // Use configured URL or construct default URL
+            let repo_url = match &repo_config.url {
+                Some(url) => url.clone(),
+                None => format!("{}/{}/{}/", channel_config.baseurl, &repo_name, config().common.arch)
+            };
 
-            for repo_name in channel_config.repos.keys() {
-                println!("{:<30} | {:<15} | {}", 
-                    channel_config.channel.name,
-                    repo_name,
-                    channel_config.channel.baseurl
-                );
-            }
+            println!("{:<30} | {:<15} | {}",
+                channel_config.name,
+                repo_name,
+                repo_url
+            );
         }
-
-        println!("{}", "-".repeat(100));
-        Ok(())
     }
+
+    println!("{}", "-".repeat(100));
+    Ok(())
 }
+

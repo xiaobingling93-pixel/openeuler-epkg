@@ -9,7 +9,8 @@ use crate::utils;
 
 impl PackageManager {
 
-    pub fn check_init(&self) -> Result<()> {
+    #[allow(dead_code)]
+    pub fn check_init(&mut self) -> Result<()> {
         if !self.get_env_root("main".to_string())?.exists() {
             self.init()?;
         }
@@ -17,7 +18,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn init(&self) -> Result<()> {
+    pub fn init(&mut self) -> Result<()> {
         if !self.get_env_root("common".to_string())?.exists() {
             self.install_epkg()?;
         }
@@ -29,7 +30,7 @@ impl PackageManager {
         }
 
         // Create necessary directories
-        fs::create_dir_all(&self.dirs.home_config.join("path.d"))?;
+        fs::create_dir_all(&dirs().home_config.join("path.d"))?;
 
         // Create main environment
         self.create_environment("main")?;
@@ -39,16 +40,16 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn install_epkg(&self) -> Result<()> {
+    pub fn install_epkg(&mut self) -> Result<()> {
         // Validate architecture
         self.validate_architecture()?;
 
         // Set up installation paths
-        fs::create_dir_all(&self.dirs.epkg_cache)
+        fs::create_dir_all(&dirs().epkg_cache)
             .context("Failed to create cache directory")?;
-        fs::create_dir_all(&self.dirs.epkg_pkg_cache)
+        fs::create_dir_all(&dirs().epkg_pkg_cache)
             .context("Failed to create package cache directory")?;
-        fs::create_dir_all(&self.dirs.epkg_channel_cache)
+        fs::create_dir_all(&dirs().epkg_channel_cache)
             .context("Failed to create channel cache directory")?;
 
         // Download required files
@@ -76,7 +77,7 @@ impl PackageManager {
 
         // Set up URLs
         let epkg_url = "https://repo.oepkgs.net/openeuler/epkg/rootfs/";
-        let epkg_version = &self.options.version;
+        let epkg_version = &config().init.version;
         let epkg_manager_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
         let elf_loader = "elf-loader";
 
@@ -90,22 +91,22 @@ impl PackageManager {
         ];
 
         // Download with better error handling
-        download_urls(urls, &self.dirs.epkg_cache.to_str().unwrap(), 6, 6, None)
+        download_urls(urls, &dirs().epkg_cache.to_str().unwrap(), 6, 6, None)
             .context("Failed to download required files")?;
 
         // Verify the downloaded files exist
-        let epkg_manager_tar = self.dirs.epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        let epkg_manager_tar = dirs().epkg_cache.join(format!("{}.tar.gz", epkg_version));
         if !epkg_manager_tar.exists() {
             return Err(anyhow::anyhow!("Failed to download epkg manager tar file from {}", epkg_manager_url));
         }
 
         // Verify checksums
-        utils::verify_sha256sum(&self.dirs.epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch)))?;
+        utils::verify_sha256sum(&dirs().epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch)))?;
 
         Ok(())
     }
 
-    fn setup_common_environment(&self) -> Result<()> {
+    fn setup_common_environment(&mut self) -> Result<()> {
         let common_env_root = self.get_env_root("common".to_string())?;
 
         self.setup_epkg_manager(&common_env_root)?;
@@ -129,13 +130,13 @@ impl PackageManager {
     // -rw-rw-r-- root/root      2196 2025-04-29 10:56 epkg-master/bin/epkg-uninstaller.sh
     // drwxrwxr-x root/root         0 2025-04-29 10:56 epkg-master/build/
     fn setup_epkg_manager(&self, env_root: &Path) -> Result<()> {
-        let epkg_version = &self.options.version;
+        let epkg_version = &config().init.version;
 
         // Extract epkg-manager tar
         let env_opt = env_root.join("opt");
         let epkg_manager_dir = env_opt.join("epkg-manager");
         let epkg_extracted_dir = format!("epkg-{}", epkg_version);
-        let epkg_manager_tar = self.dirs.epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        let epkg_manager_tar = dirs().epkg_cache.join(format!("{}.tar.gz", epkg_version));
 
         println!("Extracting epkg manager from {}", epkg_manager_tar.display());
 
@@ -172,12 +173,12 @@ impl PackageManager {
         ).context("Failed to copy epkg binary")?;
 
         fs::copy(
-            &self.dirs.epkg_cache.join(format!("elf-loader-{}", arch)),
+            &dirs().epkg_cache.join(format!("elf-loader-{}", arch)),
             &usr_bin.join("elf-loader")
         ).context("Failed to copy elf-loader binary")?;
 
         // Set permissions based on installation mode
-        let mode = if self.options.shared_store {
+        let mode = if config().init.shared_store {
             0o4755 // setuid + rwxr-xr-x
         } else {
             0o755 // rwxr-xr-x
@@ -188,7 +189,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn update_shell_rc(&self) -> Result<()> {
+    fn update_shell_rc(&mut self) -> Result<()> {
         let shell = env::var("SHELL")?;
         let shell = Path::new(&shell)
             .file_name()

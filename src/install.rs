@@ -8,11 +8,10 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
-use anyhow::Result;
+use anyhow::{Result};
 use anyhow::anyhow;
-use crate::dirs;
-use crate::utils::*;
 use crate::models::*;
+use crate::utils::*;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgline, info)
@@ -105,7 +104,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
 
         let metadata = fs::symlink_metadata(fs_file)?;
         if metadata.file_type().is_symlink() {
-            shortcut_symlink(store_fs_dir, fs_file, fhs_file, &target_path);
+            shortcut_symlink(store_fs_dir, fs_file, &target_path)?;
         } else {
             if fhs_file.starts_with("etc/") {
                 fs::copy(fs_file, &target_path)?;
@@ -118,7 +117,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
 }
 
 // like symlink() but removes one level of indirection
-fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, fhs_file: &Path, target_path: &Path) -> Result<()> {
+fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, target_path: &Path) -> Result<()> {
     if let Ok(link_target) = fs::read_link(fs_file) {
         // Get new_link_target
         // python3.11:
@@ -252,10 +251,10 @@ impl PackageManager {
 
     // link files from env_root to store_fs_dir
     pub fn new_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, appbin_flag: bool) -> Result<()> {
-        let fs_files = list_package_files(store_fs_dir)?;
-        mirror_dir(Path::new(env_root), Path::new(store_fs_dir), &fs_files)?;
+        let fs_files = list_package_files(store_fs_dir.to_str().unwrap())?;
+        mirror_dir(env_root, store_fs_dir, &fs_files)?;
         if appbin_flag {
-            create_ebin_wrappers(Path::new(env_root), &fs_files)?;
+            create_ebin_wrappers(env_root, &fs_files)?;
         }
         Ok(())
     }
@@ -265,7 +264,7 @@ impl PackageManager {
         self.load_installed_packages()?;
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
-        self.record_appbin_source(&mut packages_to_install);
+        let _ = self.record_appbin_source(&mut packages_to_install);
         self.collect_essential_packages(&mut packages_to_install)?;
         self.collect_recursive_depends(&mut packages_to_install)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: Some packages are already installed and will be skipped:");
@@ -275,8 +274,8 @@ impl PackageManager {
         self.install_pkglines(packages_to_install)
     }
 
-    pub fn install_pkglines(&mut self, packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        if self.options.verbose {
+    pub fn install_pkglines(&mut self, mut packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        if config().common.verbose {
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
         }
@@ -288,10 +287,11 @@ impl PackageManager {
 
         let mut appbin_count = 0;
         let mut appbin_packages = Vec::new();
-        let env_root = self.get_default_env_root();
-        let store_root = self.dirs.epkg_store;
+        let env_root = self.get_default_env_root()?.clone();
+        let store_root = dirs().epkg_store.clone();
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
+            #[allow(unused_assignments)]
             let mut pkg_name = String::new();
             // appbin_source check
             if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
@@ -302,7 +302,8 @@ impl PackageManager {
                     appbin_packages.push(pkg_name.clone());
                 }
             }
-            self.new_package(store_root.join(pkgline).join("fs"), env_root, appbin_flag)?;
+            let store_fs_dir = store_root.join(pkgline).join("fs");
+            self.new_package(&store_fs_dir, &env_root, appbin_flag)?;
         }
 
         // Save installed packages

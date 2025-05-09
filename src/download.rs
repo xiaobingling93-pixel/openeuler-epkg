@@ -345,7 +345,7 @@ impl PackageManager {
 
     // Download packages specified by their pkgline strings.
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
-        let output_dir = self.dirs.epkg_pkg_cache.display().to_string();
+        let output_dir = dirs().epkg_pkg_cache.display().to_string();
 
         // Step 1: Compose URLs for each pkgline
         let mut urls = Vec::new();
@@ -353,13 +353,14 @@ impl PackageManager {
         for pkgline in packages.keys() {
             let pkghash = &pkgline[..32]; // Extract the first 32 characters as the hash
             if let Some(spec) = self.pkghash2spec.get(pkghash) {
+                let spec = spec.clone();
                 let repo = &spec.repo;
-                let channel_config = self.get_channel_config(self.options.env.clone())?;
+                let channel_config = self.get_channel_config(config().common.env.clone())?;
                 let url = format!(
                     "{}/{}/{}/store/{}/{}.epkg",
                     channel_config.baseurl,
                     repo,
-                    self.options.arch,
+                    config().common.arch,
                     &pkgline[..2], // First 2 characters of the hash
                     pkgline
                 );

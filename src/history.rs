@@ -1,7 +1,5 @@
 use std::fs;
-use std::path::Path;
 use std::path::PathBuf;
-use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -10,26 +8,27 @@ use crate::models::*;
 
 impl PackageManager {
 
-    pub fn get_current_generation_id(&self) -> Result<u64> {
+    pub fn get_current_generation_id(&mut self) -> Result<u32> {
         let generations_root = self.get_default_generations_root()?;
         let current_link = generations_root.join("current");
         let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
-        let generation_id = target.to_str().unwrap().parse::<u64>().with_context(||
+        let generation_id = target.to_str().unwrap().parse::<u32>().with_context(||
             format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?;
         Ok(generation_id)
     }
 
-    pub fn get_generation_path(&self, generation_id: u64) -> Result<PathBuf> {
+    pub fn get_generation_path(&mut self, generation_id: u32) -> Result<PathBuf> {
         let generations_root = self.get_default_generations_root()?;
         Ok(generations_root.join(generation_id.to_string()))
     }
 
-    pub fn get_current_generation_path(&self) -> Result<PathBuf> {
+    #[allow(dead_code)]
+    pub fn get_current_generation_path(&mut self) -> Result<PathBuf> {
         let current_id = self.get_current_generation_id()?;
         self.get_generation_path(current_id)
     }
 
-    pub fn create_new_generation(&self) -> Result<PathBuf> {
+    pub fn create_new_generation(&mut self) -> Result<PathBuf> {
         // Get current generation info
         let current_id = self.get_current_generation_id()?;
         let current_generation = self.get_generation_path(current_id)?;
@@ -60,7 +59,7 @@ impl PackageManager {
         Ok(new_generation)
     }
 
-    pub fn update_current_generation_symlink(&self, generation_id: u64) -> Result<()> {
+    pub fn update_current_generation_symlink(&mut self, generation_id: u32) -> Result<()> {
         let generations_root = self.get_default_generations_root()?;
         let current_link = generations_root.join("current");
 
@@ -82,7 +81,7 @@ impl PackageManager {
             action: action.to_string(),
             new_packages,
             del_packages,
-            command_line: self.options.command_line.to_string(),
+            command_line: config().command_line.to_string(),
         };
 
         let json = serde_json::to_string_pretty(&command)?;
@@ -92,12 +91,12 @@ impl PackageManager {
     }
 
     pub fn print_history(&mut self) -> Result<()> {
-        println!("{}  {} env history  {}", "-".repeat(50), self.options.env, "-".repeat(50));
+        println!("{}  {} env history  {}", "-".repeat(50), config().common.env, "-".repeat(50));
         println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", "id", "timestamp", "action", "new_packages", "del_packages", "command line");
         println!("{:-<3}-+-{:-<26}-+-{:-<10}-+-{:-<12}-+-{:-<12}-+-{:-<40}", "", "", "", "", "", "");
 
         let generations_root = self.get_default_generations_root()?;
-        let mut history_entries: Vec<(u64, GenerationCommand)> = Vec::new();
+        let mut history_entries: Vec<(u32, GenerationCommand)> = Vec::new();
 
         // Collect history entries
         for entry in fs::read_dir(&generations_root)? {
@@ -111,7 +110,7 @@ impl PackageManager {
                 }
 
                 // Process only directories with numeric names (generations)
-                if let Ok(id) = gen_name.parse::<u64>() {
+                if let Ok(id) = gen_name.parse::<u32>() {
                     let command_json = path.join("command.json");
                     if command_json.exists() {
                         if let Ok(contents) = fs::read_to_string(command_json) {
@@ -127,7 +126,7 @@ impl PackageManager {
         history_entries.sort_by_key(|entry| entry.0);
 
         // Limit number of generations to show if max_generations is set
-        if let Some(max) = self.options.max_generations {
+        if let Some(max) = config().history.max_generations {
             let start = if history_entries.len() > max as usize {
                 history_entries.len() - max as usize
             } else {
@@ -149,19 +148,19 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn rollback_history(&mut self, rollback_id: i64) -> Result<()> {
+    pub fn rollback_history(&mut self, rollback_id: i32) -> Result<()> {
         let generations_root = self.get_default_generations_root()?;
         let current_generation_id = self.get_current_generation_id()?;
 
         // Handle negative rollback IDs (relative rollback)
         let target_id = if rollback_id < 0 {
-            let abs_rollback = rollback_id.abs() as u64;
+            let abs_rollback : u32 = rollback_id.abs() as u32;
             if abs_rollback >= current_generation_id {
                 return Err(anyhow!("Cannot rollback beyond generation 1"));
             }
             current_generation_id - abs_rollback
         } else {
-            rollback_id as u64
+            rollback_id as u32
         };
 
         // Check if target_id exists
@@ -176,8 +175,8 @@ impl PackageManager {
         }
 
         // Load current and rollback installed-packages.json
-        let current_packages = self.read_installed_packages(&self.options.env, current_generation_id)?;
-        let rollback_packages = self.read_installed_packages(&self.options.env, target_id)?;
+        let current_packages = self.read_installed_packages(&config().common.env, current_generation_id)?;
+        let rollback_packages = self.read_installed_packages(&config().common.env, target_id)?;
 
         // Calculate packages to add/remove
         let new_packages: Vec<(String, bool)> = rollback_packages.keys()
@@ -212,17 +211,17 @@ impl PackageManager {
 
         // Create a new generation for this rollback operation
         let new_generation = self.create_new_generation()?;
-        let store_root = self.dirs.epkg_store;
+        let store_root = dirs().epkg_store.clone();
         let env_root = self.get_default_env_root()?;
 
         // Apply package changes directly to FHS directories at root level
         for (pkgline, appbin_flag) in &new_packages {
-            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.new_package(&fs_dir, env_root.to_str().unwrap(), *appbin_flag)?;
+            let fs_dir = store_root.join(pkgline).join("fs");
+            self.new_package(&fs_dir, &env_root, *appbin_flag)?;
         }
         for pkgline in &del_packages {
-            let fs_dir = format!("{}/{}/fs", store_root.display(), pkgline);
-            self.del_package(&fs_dir, env_root.to_str().unwrap())?;
+            let fs_dir = store_root.join(pkgline).join("fs");
+            self.del_package(&fs_dir, &env_root)?;
         }
 
         // Copy rollback generation's installed-packages.json to current generation

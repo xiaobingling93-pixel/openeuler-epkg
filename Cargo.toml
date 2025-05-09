@@ -38,6 +38,8 @@ pathdiff = "0.2.3"
 lazy_static = "1.4"
 chrono = "0.4"
 regex = "1.7.3"
+uuid = { version = "1.7", features = ["v4"] }
+log = "0.4"
 
 # https://docs.rs/crate/idna_adapter/latest
 # to make the idna crate not actually support IDNA, run cargo update -p idna_adapter --precise 1.0.0

@@ -106,7 +106,7 @@ impl PackageManager {
 
         let mut header_printed = false;
 
-        let channel_name = self.get_channel_config(self.options.env.clone())?.name.clone();
+        let channel_name = self.get_channel_config(config().common.env.clone())?.name.clone();
         for repodata in &self.repos_data {
             for entry in &repodata.store_paths {
                 // Construct the file path
