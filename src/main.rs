@@ -79,6 +79,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .author("Duan Pengjie <pengjieduan@gmail.com>")
         .author("Yingjiahui <ying_register@163.com>")
         .about("The EPKG package manager")
+        .arg_required_else_help(true) // This will show help if no args are provided
         .arg(arg!(-c --config <FILE> "Configuration file to use"))
         .arg(arg!(-e --env <ENV> "Select the environment"))
         .arg(arg!(--arch <ARCH> "Select the CPU architecture").default_value(std::env::consts::ARCH))
@@ -101,6 +102,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .subcommand(
             Command::new("env")
                 .about("Environment management")
+                .arg_required_else_help(true)
                 .subcommand(
                     Command::new("list")
                         .about("List all environments")
@@ -154,6 +156,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .subcommand(
                     Command::new("config")
                         .about("Configure environment settings")
+                        .arg_required_else_help(true)
                         .subcommand(
                             Command::new("edit")
                                 .about("Edit environment configuration file")
