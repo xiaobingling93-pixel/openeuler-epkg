@@ -36,6 +36,7 @@ epkg() {
                 path|register|unregister|activate|deactivate|remove)
                     local output
                     output=$("$epkg_rust" "$@") || return
+                    echo "$output"
                     eval "$output" || return
                     __rehash_path
                     ;;
@@ -75,6 +76,6 @@ __rehash_path() {
 }
 
 # change PATH in bashrc
-epkg env path
+epkg env path >/dev/null
 
 # vim: sw=4 ts=4 et
