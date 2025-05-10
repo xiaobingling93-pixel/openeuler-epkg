@@ -493,10 +493,14 @@ impl PackageManager {
             return Err(anyhow::anyhow!("Environment 'common' cannot be registered"));
         }
 
-        // Check if environment exists
-        let env_path = dirs().private_envs.join(name);
-        if !env_path.exists() {
-            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
+        let env_config = match self.get_env_config(name.to_string()) {
+            Ok(config) => config,
+            Err(_) => return Err(anyhow::anyhow!("Environment '{}' does not exist", name))
+        };
+
+        if env_config.register_to_path {
+            println!("# Environment '{}' is already registered.", name);
+            return Ok(());
         }
 
         // Create path.d directories if they don't exist
@@ -519,7 +523,7 @@ impl PackageManager {
         };
 
         // Create symlink in appropriate directory
-        let ebin_path = env_path.join("usr/ebin");
+        let ebin_path = Path::new(&env_config.env_root).join("usr/ebin");
         let symlink_path = if priority >= 0 {
             fs::create_dir_all(&prepend_dir)?;
             prepend_dir.join(format!("{}-{}", priority, name))
@@ -537,7 +541,6 @@ impl PackageManager {
         symlink(&ebin_path, &symlink_path)?;
 
         // Update and save environment config
-        let env_config = self.get_env_config(name.to_string())?;
         let mut env_config = env_config.clone();
         env_config.register_to_path = true;
         env_config.register_priority = priority;
@@ -550,16 +553,28 @@ impl PackageManager {
     }
 
     pub fn unregister_environment(&mut self, name: &str) -> Result<()> {
+        // Check if already unregistered
+        let env_config = self.get_env_config(name.to_string())?;
+        if !env_config.register_to_path {
+            println!("# Environment '{}' is not registered.", name);
+            return Ok(());
+        }
+
         // Remove symlinks from both prepend and append directories
-        let glob_pattern = dirs().home_config.join(format!("path.d/{{prepend,append}}/*-{}*", name));
-        for path in glob::glob(glob_pattern.to_str().unwrap())? {
-            if let Ok(path) = path {
-                fs::remove_file(path)?;
+        let prepend_pattern = dirs().home_config.join(format!("path.d/prepend/*-{}", name));
+        let append_pattern = dirs().home_config.join(format!("path.d/append/*-{}", name));
+
+        for pattern in &[prepend_pattern, append_pattern] {
+            for path in glob::glob(pattern.to_str().unwrap())? {
+                if let Ok(path) = path {
+                    if path.exists() {
+                        fs::remove_file(&path)?;
+                    }
+                }
             }
         }
 
         // Update and save environment config
-        let env_config = self.get_env_config(name.to_string())?;
         let mut env_config = env_config.clone();
         env_config.register_to_path = false;
         env_config.register_priority = 0;
