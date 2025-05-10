@@ -396,7 +396,7 @@ impl PackageManager {
 
         // Handle session path
         let session_path = original_session_path.unwrap_or_else(|| {
-            let path = format!("deactivate-{}", uuid::Uuid::new_v4());
+            let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), rand::random::<u32>());
             println!("; export EPKG_SESSION_PATH=\"{}\"", path);
             script.push_str(&format!("; unset EPKG_SESSION_PATH\n"));
             path
