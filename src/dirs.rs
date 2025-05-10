@@ -60,11 +60,7 @@ impl EPKGDirsBuilder {
 
         let home_epkg = match self.custom_home {
             Some(path) => path,
-            None => {
-                let home = env::var("HOME")
-                    .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME environment variable not found"))?;
-                PathBuf::from(home).join(".epkg")
-            }
+            None => get_home_epkg_path()
         };
 
         let opt_epkg = self.custom_opt.unwrap_or_else(|| PathBuf::from("/opt/epkg"));
@@ -95,8 +91,15 @@ impl PackageManager {
 }
 
 /// Get the path to an environment's configuration file
+/// $HOME/.epkg/config/envs/$env.yaml
 pub fn get_env_config_path(env_name: &str) -> PathBuf {
     dirs().home_config.join("envs").join(format!("{}.yaml", env_name))
+}
+
+/// $HOME/.epkg
+pub fn get_home_epkg_path() -> PathBuf {
+    let home = env::var("HOME").expect("HOME environment variable not set");
+    PathBuf::from(home).join(".epkg")
 }
 
 fn get_xdg_cache() -> io::Result<PathBuf> {

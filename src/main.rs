@@ -229,7 +229,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
     let mut config: EPKGConfig = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
-            let default_config = dirs().home_config.join("options.yaml");
+            let default_config = dirs::get_home_epkg_path().join("config").join("options.yaml");
             if default_config.exists() {
                 parse_yaml_config(default_config.to_str().unwrap())
             } else {
@@ -260,7 +260,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
     config.common.ignore_missing    = matches.get_flag("ignore-missing");
     config.command_line             = std::env::args().collect::<Vec<String>>().join(" ");
     config.matches                  = matches.clone();
-    
+
     config
 }
 
