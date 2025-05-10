@@ -215,8 +215,6 @@ pub struct EPKGConfig {
     pub config_file: String,
     #[serde(skip)]
     pub command_line: String,
-    #[serde(skip)]
-    pub matches: clap::ArgMatches,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
@@ -327,8 +325,12 @@ pub struct PackageManager {
     pub child_pid: Option<nix::unistd::Pid>,
 }
 
+pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
+    parse_cmdline()
+});
+
 static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
-    let matches = parse_cmdline();
+    let matches = &CLAP_MATCHES;
     let config = parse_options_common(&matches);
     parse_options_subcommand(&matches, config)
 });

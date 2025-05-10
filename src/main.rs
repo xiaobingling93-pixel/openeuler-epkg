@@ -33,10 +33,11 @@ fn main() -> Result<()> {
     setup_logging();
 
     // 第一次访问会触发命令行解析和配置初始化
-    log::debug!("Application starting with config: {:#?}", config());
+    log::trace!("Application starting with config: {:#?}", config());
 
     let mut package_manager: PackageManager = Default::default();
-    match config().matches.subcommand() {
+    let matches = &CLAP_MATCHES;
+    match matches.subcommand() {
         Some(("init",       sub_matches))  =>  package_manager.command_init(sub_matches)?,
         Some(("env",        sub_matches))  =>  package_manager.command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  package_manager.command_list(sub_matches)?,
@@ -276,7 +277,6 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
     config.common.assume_yes        = matches.get_flag("assume-yes");
     config.common.ignore_missing    = matches.get_flag("ignore-missing");
     config.command_line             = std::env::args().collect::<Vec<String>>().join(" ");
-    config.matches                  = matches.clone();
 
     config
 }
