@@ -33,14 +33,14 @@ epkg() {
         env)
             local sub_cmd="$2"
             case "$sub_cmd" in
-                create)
-                    "$epkg_rust" "$@" || return
-                    ;;
-                *)
+                path|register|unregister|activate|deactivate|remove)
                     local output
                     output=$("$epkg_rust" "$@") || return
-                    eval "$output"
+                    eval "$output" || return
                     __rehash_path
+                    ;;
+                *)
+                    "$epkg_rust" "$@"
                     ;;
             esac
             ;;
@@ -75,6 +75,6 @@ __rehash_path() {
 }
 
 # change PATH in bashrc
-builtin epkg env hash
+epkg env path
 
 # vim: sw=4 ts=4 et

@@ -2,16 +2,18 @@ use std::fs;
 use std::env;
 use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
 use anyhow::{Result, Context};
 use crate::models::*;
 use crate::download::download_urls;
 use crate::utils;
+use crate::dirs::find_env_root;
 
 impl PackageManager {
 
     #[allow(dead_code)]
     pub fn check_init(&mut self) -> Result<()> {
-        if !self.get_env_root("main".to_string())?.exists() {
+        if find_env_root("main").is_none() {
             self.init()?;
         }
 
@@ -19,12 +21,12 @@ impl PackageManager {
     }
 
     pub fn init(&mut self) -> Result<()> {
-        if !self.get_env_root("common".to_string())?.exists() {
+        if find_env_root("common").is_none() {
             self.install_epkg()?;
         }
 
         // Check if already initialized
-        if self.get_env_root("main".to_string())?.exists() {
+        if find_env_root("main").is_some() {
             eprintln!("epkg was already initialized for user {}", env::var("USER")?);
             return Ok(());
         }
@@ -41,9 +43,6 @@ impl PackageManager {
     }
 
     pub fn install_epkg(&mut self) -> Result<()> {
-        // Validate architecture
-        self.validate_architecture()?;
-
         // Set up installation paths
         fs::create_dir_all(&dirs().epkg_cache)
             .context("Failed to create cache directory")?;
@@ -51,9 +50,6 @@ impl PackageManager {
             .context("Failed to create package cache directory")?;
         fs::create_dir_all(&dirs().epkg_channel_cache)
             .context("Failed to create channel cache directory")?;
-
-        // Download required files
-        self.download_required_files()?;
 
         // Set up common environment
         self.setup_common_environment()?;
@@ -64,50 +60,78 @@ impl PackageManager {
         Ok(())
     }
 
-    fn validate_architecture(&self) -> Result<()> {
-        let arch = env::consts::ARCH;
-        match arch {
-            "x86_64" | "aarch64" | "riscv64" | "loongarch64" => Ok(()),
-            _ => Err(anyhow::anyhow!("Unsupported architecture: {}", arch))
-        }
-    }
-
-    fn download_required_files(&self) -> Result<()> {
-        let arch = env::consts::ARCH;
-
-        // Set up URLs
-        let epkg_url = "https://repo.oepkgs.net/openeuler/epkg/rootfs/";
+    fn download_required_files(&self, env_root: &Path) -> Result<()> {
+        let arch = &config().common.arch;
         let epkg_version = &config().init.version;
+        let dirs = dirs();
+
+        // Set up URLs and paths
+        let epkg_url = "https://repo.oepkgs.net/openeuler/epkg/rootfs/";
         let epkg_manager_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
         let elf_loader = "elf-loader";
+        let epkg_manager_tar = dirs.epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        let elf_loader_path = dirs.epkg_cache.join(format!("{}-{}", elf_loader, arch));
+        let elf_loader_sha = dirs.epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch));
 
-        println!("Downloading epkg manager from \n- {}\n- {}", epkg_manager_url, epkg_url);
+        // Check if running from git repo
+        let current_exe = std::env::current_exe()?;
+        let repo_root = current_exe.parent().unwrap().parent().unwrap().parent().unwrap();
+        let git_dir = repo_root.join(".git");
 
-        // Download files
-        let urls = vec![
-            epkg_manager_url.clone(),
-            format!("{}{}-{}",          epkg_url, elf_loader, arch),
-            format!("{}{}-{}.sha256",   epkg_url, elf_loader, arch),
-        ];
+        // Collect urls for downloading in parallel
+        let mut urls = Vec::new();
 
-        // Download with better error handling
-        download_urls(urls, &dirs().epkg_cache.to_str().unwrap(), 6, 6, None)
+        if git_dir.exists() {
+            // Create symlink directly to git working directory
+            let env_opt = env_root.join("opt");
+            let epkg_manager_dir = env_opt.join("epkg-manager");
+            fs::create_dir_all(env_opt)?;
+            symlink(repo_root.to_str().unwrap(), &epkg_manager_dir)?;
+            println!("Using local git repository for epkg manager");
+        } else {
+            println!("Downloading epkg manager from {}", epkg_manager_url);
+            urls.push(epkg_manager_url.clone());
+        }
+
+        // Check for local elf-loader
+        let local_loader = repo_root.parent().unwrap()
+            .join("elf-loader/src/loader");
+
+        if local_loader.exists() {
+            fs::copy(&local_loader, &elf_loader_path)?;
+            println!("Using local elf-loader from {}", local_loader.display());
+        } else {
+            println!("Downloading elf-loader from {}", epkg_url);
+            urls.extend(vec![
+                format!("{}{}-{}",        epkg_url, elf_loader, arch),
+                format!("{}{}-{}.sha256", epkg_url, elf_loader, arch)
+            ]);
+        }
+
+        if urls.is_empty() {
+            return Ok(());
+        }
+
+        download_urls(urls, dirs.epkg_cache.to_str().unwrap(), 6, 6, None)
             .context("Failed to download required files")?;
 
-        // Verify the downloaded files exist
-        let epkg_manager_tar = dirs().epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        // Verify checksums
+        if !local_loader.exists() {
+            utils::verify_sha256sum(&elf_loader_sha)
+                .context("Failed to verify elf-loader checksum")?;
+        }
+
         if !epkg_manager_tar.exists() {
             return Err(anyhow::anyhow!("Failed to download epkg manager tar file from {}", epkg_manager_url));
         }
-
-        // Verify checksums
-        utils::verify_sha256sum(&dirs().epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch)))?;
 
         Ok(())
     }
 
     fn setup_common_environment(&mut self) -> Result<()> {
-        let common_env_root = self.get_env_root("common".to_string())?;
+        let common_env_root = self.new_env_base("common");
+
+        self.download_required_files(&common_env_root)?;
 
         self.setup_epkg_manager(&common_env_root)?;
         self.setup_common_binaries(&common_env_root)?;
@@ -138,6 +162,10 @@ impl PackageManager {
         let epkg_extracted_dir = format!("epkg-{}", epkg_version);
         let epkg_manager_tar = dirs().epkg_cache.join(format!("{}.tar.gz", epkg_version));
 
+        if epkg_manager_dir.exists() {
+            return Ok(());
+        }
+
         println!("Extracting epkg manager from {}", epkg_manager_tar.display());
 
         // Create opt directory if it doesn't exist
@@ -152,7 +180,7 @@ impl PackageManager {
             fs::remove_file(&epkg_manager_dir).ok();
         }
 
-        if let Err(e) = std::os::unix::fs::symlink(&epkg_extracted_dir, &epkg_manager_dir) {
+        if let Err(e) = symlink(&epkg_extracted_dir, &epkg_manager_dir) {
             eprintln!("Warning: Failed to create symlink from epkg-manager to {}: {}",
                      epkg_extracted_dir, e);
         }
@@ -202,10 +230,9 @@ impl PackageManager {
             _ => return Err(anyhow::anyhow!("Unsupported shell: {}", shell)),
         };
 
-        // Get the common environment root path using get_env_root
         let common_env_root = self.get_env_root("common".to_string())?;
         let rc_content = format!(
-            "\n# epkg begin\nsource {}/usr/opt/epkg-manager/lib/epkg-rc.sh\n# epkg end\n",
+            "\n# epkg begin\nsource {}/opt/epkg-manager/lib/epkg-rc.sh\n# epkg end\n",
             common_env_root.display()
         );
 

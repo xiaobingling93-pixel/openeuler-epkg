@@ -197,7 +197,7 @@ impl PackageManager {
         let gen_1_dir = generations_root.join("1");
 
         // Create base directories
-        fs::create_dir_all(&generations_root)?;
+        fs::create_dir_all(&gen_1_dir)?;
         fs::create_dir_all(env_root.join("usr/ebin"))?;
         fs::create_dir_all(env_root.join("usr/bin"))?;
         fs::create_dir_all(env_root.join("usr/sbin"))?;
@@ -229,12 +229,16 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn create_environment(&mut self, name: &str) -> Result<()> {
-        let env_base = if config().env.public {
+    pub fn new_env_base(&self, name: &str) -> PathBuf {
+        if config().env.public {
             dirs().public_envs.join(name)
         } else {
             dirs().private_envs.join(name)
-        };
+        }
+    }
+
+    pub fn create_environment(&mut self, name: &str) -> Result<()> {
+        let env_base = self.new_env_base(name);
 
         let env_root = if let Some(path) = &config().env.env_path {
             PathBuf::from(path)
@@ -242,13 +246,13 @@ impl PackageManager {
             env_base.clone()
         };
 
-        if env_base.exists() {
+        let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
+        if env_channel_yaml.exists() {
             return Err(anyhow::anyhow!("Environment already exists at path: '{}'", env_base.display()));
         }
 
         self.create_environment_directories(&env_root)?;
 
-        let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
         // Initialize channel and environment config
         let mut env_config = if let Some(config_path) = &config().env.import_file {
             let config_contents = fs::read_to_string(config_path)
@@ -270,8 +274,9 @@ impl PackageManager {
             env_config
         } else {
             // Initialize channel from command line option or default
-            let channel = config().env.channel.clone().unwrap_or("openeuler:24.03-lts".to_string());
-            let common_env_root = self.get_env_root("common".to_string())?;
+            let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
+            let common_env_root = find_env_root("common")
+                .ok_or_else(|| anyhow::anyhow!("Common environment not found"))?;
             let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
 
             if !src_channel_yaml.exists() {

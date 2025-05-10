@@ -10,6 +10,8 @@ use crate::parse_options_subcommand;
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
+pub const DEFAULT_CHANNEL: &str = &"openeuler:24.03-lts";
+pub const DEFAULT_VERSION: &str = &"master"; // epkg init will download this version from gitee
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -274,7 +276,7 @@ pub struct InitOptions {
 }
 
 fn default_version() -> String {
-    "master".to_string()
+    DEFAULT_VERSION.to_string()
 }
 
 #[derive(Debug)]

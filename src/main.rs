@@ -91,7 +91,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .subcommand(
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
-                .arg(arg!(--version <VERSION> "Version of epkg to install"))
+                .arg(arg!(--version <VERSION>).help(format!("Version of epkg to install [default: {}]", DEFAULT_VERSION)))
                 .arg(
                     arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
                         .default_value("auto")
@@ -272,10 +272,20 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
 
     config.common.simulate          = matches.get_flag("simulate");
     config.common.download_only     = matches.get_flag("download-only");
-    config.common.quiet             = matches.get_flag("quiet");
-    config.common.verbose           = matches.get_flag("verbose");
-    config.common.assume_yes        = matches.get_flag("assume-yes");
-    config.common.ignore_missing    = matches.get_flag("ignore-missing");
+
+    if matches.contains_id("quiet") {
+        config.common.quiet             = matches.get_flag("quiet");
+    }
+    if matches.contains_id("verbose") {
+        config.common.verbose           = matches.get_flag("verbose");
+    }
+    if matches.contains_id("assume-yes") {
+        config.common.assume_yes        = matches.get_flag("assume-yes");
+    }
+    if matches.contains_id("ignore-missing") {
+        config.common.ignore_missing    = matches.get_flag("ignore-missing");
+    }
+
     config.command_line             = std::env::args().collect::<Vec<String>>().join(" ");
 
     config
@@ -310,9 +320,18 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         })
         .unwrap_or_else(|| nix::unistd::geteuid().is_root());
 
-    config.init.version = sub_matches.get_one::<String>("version")
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "master".to_string());
+    if let Some(version) = sub_matches.get_one::<String>("version") {
+        config.init.version = version.to_string();
+    } else if config.init.version.is_empty() {
+        config.init.version = DEFAULT_VERSION.to_string();
+    }
+
+    // compose options for creating "common" env, must be done here since
+    // config() content will freeze after first call, and some routines rely on it.
+    config.common.env = "common".to_string();
+    config.env.public = config.init.shared_store;
+    config.env.channel = Some(DEFAULT_CHANNEL.to_string());
+
     Ok(())
 }
 
@@ -322,10 +341,14 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             if let Some(env_name) = sub_matches.get_one::<String>("ENV_NAME") {
                 config.common.env = env_name.to_string();
             }
-            config.env.channel = sub_matches.get_one::<String>("channel").cloned();
+            if let Some(channel) = sub_matches.get_one::<String>("channel") {
+                config.env.channel = Some(channel.to_string());
+            }
+            if sub_matches.contains_id("public") {
+                config.env.public = sub_matches.get_flag("public");
+            }
             config.env.env_path = sub_matches.get_one::<String>("path").cloned();
             config.env.import_file = sub_matches.get_one::<String>("import").cloned();
-            config.env.public = sub_matches.get_flag("public");
         }
         Some(("remove", sub_matches)) => {
             if let Some(env_name) = sub_matches.get_one::<String>("ENV_NAME") {
@@ -347,8 +370,12 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             if let Some(env_name) = sub_matches.get_one::<String>("ENV_NAME") {
                 config.common.env = env_name.to_string();
             }
-            config.env.pure = sub_matches.get_flag("pure");
-            config.env.stack = sub_matches.get_flag("stack");
+            if sub_matches.contains_id("pure") {
+                config.env.pure = sub_matches.get_flag("pure");
+            }
+            if sub_matches.contains_id("stack") {
+                config.env.stack = sub_matches.get_flag("stack");
+            }
         }
         Some(("export", sub_matches)) => {
             if let Some(env_name) = sub_matches.get_one::<String>("ENV_NAME") {
@@ -361,16 +388,26 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
 }
 
 fn parse_options_list(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    config.list.list_all = sub_matches.get_flag("all");
-    config.list.list_installed = sub_matches.get_flag("installed");
-    config.list.list_available = sub_matches.get_flag("available");
+    if sub_matches.contains_id("list-all") {
+        config.list.list_all = sub_matches.get_flag("all");
+    }
+    if sub_matches.contains_id("list-installed") {
+        config.list.list_installed = sub_matches.get_flag("installed");
+    }
+    if sub_matches.contains_id("list-available") {
+        config.list.list_available = sub_matches.get_flag("available");
+    }
     Ok(())
 }
 
 fn parse_options_install(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(_package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-        config.install.install_suggests = sub_matches.get_flag("install-suggests");
-        config.install.no_install_recommends = sub_matches.get_flag("no-install-recommends");
+        if sub_matches.contains_id("install-suggests") {
+            config.install.install_suggests = sub_matches.get_flag("install-suggests");
+        }
+        if sub_matches.contains_id("no-install-recommends") {
+            config.install.no_install_recommends = sub_matches.get_flag("no-install-recommends");
+        }
     }
     Ok(())
 }

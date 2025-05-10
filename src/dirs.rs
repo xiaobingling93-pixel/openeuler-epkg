@@ -90,6 +90,26 @@ impl PackageManager {
     }
 }
 
+// Find the path to an environment's root directory, the path is canonicalized and exists
+// Returns None if the environment is not found
+pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
+    // Check private env first
+    let private_env_base = dirs().home_epkg.join("envs").join(env_name);
+    if private_env_base.exists() {
+        return std::fs::canonicalize(private_env_base).ok();
+    }
+
+    // Check public env
+    if let Ok(username) = get_username() {
+        let public_env_base = dirs().opt_epkg.join("envs").join(username).join(env_name);
+        if public_env_base.exists() {
+            return std::fs::canonicalize(public_env_base).ok();
+        }
+    }
+
+    None
+}
+
 /// Get the path to an environment's configuration file
 /// $HOME/.epkg/config/envs/$env.yaml
 pub fn get_env_config_path(env_name: &str) -> PathBuf {
