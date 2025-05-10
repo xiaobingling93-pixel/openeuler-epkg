@@ -21,18 +21,19 @@ mod repo;
 use std::env;
 use std::path::PathBuf;
 use std::process::exit;
+use std::io::Write;
 use crate::models::*;
 use crate::ipc::*;
 use anyhow::Result;
-use pretty_env_logger::env_logger;
-
 use clap::{arg, Command};
+use env_logger;
+use log;
 
 fn main() -> Result<()> {
-    env_logger::init();
+    setup_logging();
 
     // 第一次访问会触发命令行解析和配置初始化
-    // println!("Application starting with config: {:?}", config());
+    log::debug!("Application starting with config: {:#?}", config());
 
     let mut package_manager: PackageManager = Default::default();
     match config().matches.subcommand() {
@@ -52,6 +53,22 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn setup_logging() {
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {} {}:{}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.args()
+            )
+        })
+        .init();
 }
 
 pub fn parse_cmdline() -> clap::ArgMatches {

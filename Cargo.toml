@@ -13,7 +13,6 @@ opt-level = "z"  # Optimize for size.
 # panic = "abort"
 
 [dependencies]
-pretty_env_logger = "0.5"
 clap = { version = "4.4", features = ["derive"] }
 ureq = { version = "3.0", features = ["json", "gzip", "rustls", "cookies"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
@@ -40,6 +39,7 @@ chrono = "0.4"
 regex = "1.7.3"
 uuid = { version = "1.7", features = ["v4"] }
 log = "0.4"
+env_logger = { version = "0.11.8", default-features = false }
 
 # https://docs.rs/crate/idna_adapter/latest
 # to make the idna crate not actually support IDNA, run cargo update -p idna_adapter --precise 1.0.0
