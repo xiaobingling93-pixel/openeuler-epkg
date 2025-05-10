@@ -108,20 +108,18 @@ impl Repodata {
                         Some("rpm".to_string())
                     }
                 };
-                if let Some(provides) = &pkg_json.provides {
-                    for provide in provides {
-                        let and_deps = match parse_requires(&format.clone().unwrap().as_str(), provide) {
-                            std::result::Result::Ok(deps) => deps,
-                            Err(e) => {
-                                println!("Failed to parse requirement '{}': {}", provide, e);
-                                continue;
-                            }
-                        };
-                        if let Some(pkgnames) = self.provide2pkgnames.get_mut(and_deps[0][0].capability.as_str()) {
-                            pkgnames.push(pkg_json.name.clone());
-                        } else {
-                            self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.name.clone()]);
+                for provide in &pkg_json.provides {
+                    let and_deps = match parse_requires(&format.clone().unwrap().as_str(), provide) {
+                        std::result::Result::Ok(deps) => deps,
+                        Err(e) => {
+                            println!("Failed to parse requirement '{}': {}", provide, e);
+                            continue;
                         }
+                    };
+                    if let Some(pkgnames) = self.provide2pkgnames.get_mut(and_deps[0][0].capability.as_str()) {
+                        pkgnames.push(pkg_json.name.clone());
+                    } else {
+                        self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.name.clone()]);
                     }
                 }
                 if matches!(pkg_json.priority.as_deref(), Some("essential")) {
@@ -148,7 +146,12 @@ impl PackageManager {
             // Use configured URL or construct default URL
             let repo_url = match &repo_config.url {
                 Some(url) => url.clone(),
-                None => format!("{}/{}/{}/", channel_config.baseurl, &repo_name, config().common.arch)
+                None => format!(
+                    "{}/{}/{}/",
+                    channel_config.baseurl.clone().unwrap_or_default(),
+                    &repo_name,
+                    config().common.arch
+                )
             };
 
             cache_repo_name(&repo_name, &repo_url)?;
@@ -234,6 +237,7 @@ pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
     println!("Cache repodata succeed: {}", repo_name);
     Ok(())
 }
+
 pub fn list_repos() -> Result<()> {
     let manager_channel_dir = &dirs().epkg_manager_cache.join("channel");
     if !manager_channel_dir.exists() {
@@ -263,7 +267,12 @@ pub fn list_repos() -> Result<()> {
             // Use configured URL or construct default URL
             let repo_url = match &repo_config.url {
                 Some(url) => url.clone(),
-                None => format!("{}/{}/{}/", channel_config.baseurl, &repo_name, config().common.arch)
+                None => format!(
+                    "{}/{}/{}/",
+                    channel_config.baseurl.clone().unwrap_or_default(),
+                    &repo_name,
+                    config().common.arch
+                )
             };
 
             println!("{:<30} | {:<15} | {}",

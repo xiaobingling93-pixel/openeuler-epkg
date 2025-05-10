@@ -293,10 +293,9 @@ impl PackageManager {
         for pkgline in packages.keys() {
             let pkg_info = self.load_package_info(pkgline)?;
 
-            if pkg_info.requires_pre.is_some() {
-                let Some(requirements) = &pkg_info.requires_pre else { continue };
+            if !pkg_info.requires_pre.is_empty() {
                 self.process_requirements(
-                    requirements,
+                    &pkg_info.requires_pre,
                     packages,
                     depend_packages,
                     depth,
@@ -304,19 +303,17 @@ impl PackageManager {
                     &mut missing_deps,
                 )?;
             }
-            if pkg_info.depends.is_some() {
-                let Some(dependencies) = &pkg_info.depends else { continue };
+            if !pkg_info.depends.is_empty() {
                 self.process_dependencies(
-                    dependencies,
+                    &pkg_info.depends,
                     packages,
                     depend_packages,
                     depth,
                     &mut missing_deps,
                 )?;
-            } else if pkg_info.requires.is_some() {
-                let Some(requirements) = &pkg_info.requires else { continue };
+            } else if !pkg_info.requires.is_empty() {
                 self.process_requirements(
-                    requirements,
+                    &pkg_info.requires,
                     packages,
                     depend_packages,
                     depth,

@@ -28,25 +28,40 @@ pub struct Package {
     pub version: String,
     pub release: String,
     // pub epoch: Option<u32>, XXX fix x2epkg output type first, then use this
+    #[serde(default)]
     pub dist: Option<String>,
-    pub hash: String,
-    pub arch: String,
+    #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub pkgid: Option<String>, // RPM repodata xml: has pkgid, but no hash
+    #[serde(default)]
+    pub arch: Option<String>,
+    #[serde(default)]
     #[serde(rename = "sourcePkg")]
     pub source: Option<String>,
 
+    #[serde(default)]
     pub summary: Option<String>,
+    #[serde(default)]
     pub description: Option<String>,
 
     #[serde(default)]
-    pub depends: Option<Vec<Dependency>>,
-    pub requires: Option<Vec<String>>,
-    pub provides: Option<Vec<String>>,
-    pub recommends: Option<Vec<String>>,
-    pub suggests: Option<Vec<String>>,
+    pub depends: Vec<Dependency>,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(default)]
+    pub provides: Vec<String>,
+    #[serde(default)]
+    pub recommends: Vec<String>,
+    #[serde(default)]
+    pub suggests: Vec<String>,
+    #[serde(default)]
     #[serde(rename = "originUrl")]
     pub origin_url: Option<String>,
+    #[serde(default)]
     #[serde(rename = "requiresPre")]
-    pub requires_pre: Option<Vec<String>>,
+    pub requires_pre: Vec<String>,
+    #[serde(default)]
     pub priority: Option<String>,
     #[serde(skip)]
     pub require_caps: Vec<String>,
@@ -64,14 +79,19 @@ pub struct Repodata {
     pub name: String,
     #[serde(skip)]
     pub dir: String,
-    #[serde(skip)]
+    #[serde(default)]
     pub format: Option<String>,
+
+    #[serde(default)]
     #[serde(rename = "store-paths")]
     pub store_paths: Vec<StorePathsIndex>,
+    #[serde(default)]
     #[serde(rename = "pkg-info")]
     pub pkg_infos: Vec<PkgInfoIndex>,
+    #[serde(default)]
     #[serde(rename = "pkg-files")]
     pub pkg_files: Vec<PkgFilesIndex>,
+
     #[serde(skip)]
     pub provide2pkgnames: HashMap<String, Vec<String>>,
     #[serde(skip)]
@@ -85,24 +105,30 @@ pub struct Repodata {
 #[derive(Debug, Deserialize)]
 pub struct StorePathsIndex {
     pub filename: String,
-    // pub checksum: String,
-    // pub datetime: String,
+    #[serde(default)]
+    pub sha256sum: Option<String>,
+    #[serde(default)]
+    pub datetime: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PkgInfoIndex {
     pub filename: String,
-    // pub checksum: String,
-    // pub datetime: String,
+    #[serde(default)]
+    pub sha256sum: Option<String>,
+    #[serde(default)]
+    pub datetime: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PkgFilesIndex {
     pub filename: String,
-    // pub checksum: String,
-    // pub datetime: String,
+    #[serde(default)]
+    pub sha256sum: Option<String>,
+    #[serde(default)]
+    pub datetime: Option<String>,
 }
 
 // parsed from pkgline
@@ -131,8 +157,10 @@ pub struct PackageSpec {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackageInfo {
-    pub install_time: u64,
     pub depend_depth: u8,
+    #[serde(default)]
+    pub install_time: u64,
+    #[serde(default)]
     pub appbin_flag: bool,
 }
 
@@ -142,9 +170,11 @@ pub struct InstalledPackageInfo {
 pub struct GenerationCommand {
     pub timestamp: String,
     pub action: String,
-    pub new_packages: Vec<String>,
-    pub del_packages: Vec<String>,
     pub command_line: String,
+    #[serde(default)]
+    pub new_packages: Vec<String>,
+    #[serde(default)]
+    pub del_packages: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -156,15 +186,20 @@ pub struct EnvConfig {
     pub env_base: String,
     pub env_root: String,
 
+    #[serde(default)]
     pub public: bool,
 
+    #[serde(default)]
     pub register_to_path: bool,
+    #[serde(default)]
     pub register_priority: i32,
 
+    #[serde(default)]
     pub env_vars: HashMap<String, String>,
 
     // Only for importing from exported config file
     #[serde(skip_serializing)]
+    #[serde(default)]
     pub installed_packages: HashMap<String, InstalledPackageInfo>,
 }
 
@@ -187,7 +222,9 @@ pub struct EnvConfig {
 #[derive(Clone)]
 pub struct ChannelConfig {
     pub name: String,
-    pub baseurl: String,
+    #[serde(default)]
+    pub baseurl: Option<String>,
+    #[serde(default)]
     pub repos: HashMap<String, RepoConfig>,
 }
 
@@ -200,17 +237,24 @@ fn default_as_true() -> bool { true }
 pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
+    #[serde(default)]
     pub url: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct EPKGConfig {
+    #[serde(default)]
     pub common: CommonOptions,
+    #[serde(default)]
     pub install: InstallOptions,
+    #[serde(default)]
     pub list: ListOptions,
+    #[serde(default)]
     pub env: EnvOptions,
+    #[serde(default)]
     pub history: HistoryOptions,
+    #[serde(default)]
     pub init: InitOptions,
 
     #[serde(skip)]
@@ -230,31 +274,45 @@ pub struct CommonOptions {
     #[serde(skip)]
     pub simulate: bool,
 
+    #[serde(default)]
     pub quiet: bool,
+    #[serde(default)]
     pub verbose: bool,
+    #[serde(default)]
     pub assume_yes: bool,
+    #[serde(default)]
     pub ignore_missing: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct InstallOptions {
+    #[serde(default)]
     pub install_suggests: bool,
+    #[serde(default)]
     pub no_install_recommends: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct ListOptions {
+    #[serde(default)]
     pub list_all: bool,
+    #[serde(default)]
     pub list_installed: bool,
+    #[serde(default)]
     pub list_available: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct EnvOptions {
+    #[serde(default)]
     pub channel: Option<String>,
+    #[serde(default)]
     pub priority: Option<i32>,
+    #[serde(default)]
     pub public: bool,
+    #[serde(default)]
     pub pure: bool,
+    #[serde(default)]
     pub stack: bool,
 
     #[serde(skip)]
@@ -265,8 +323,10 @@ pub struct EnvOptions {
 
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct HistoryOptions {
+    #[serde(default)]
     pub max_generations: Option<u32>,
 }
+
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct InitOptions {
     #[serde(skip)]

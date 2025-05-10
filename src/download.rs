@@ -358,7 +358,7 @@ impl PackageManager {
                 let channel_config = self.get_channel_config(config().common.env.clone())?;
                 let url = format!(
                     "{}/{}/{}/store/{}/{}.epkg",
-                    channel_config.baseurl,
+                    channel_config.baseurl.clone().unwrap_or_default(),
                     repo,
                     config().common.arch,
                     &pkgline[..2], // First 2 characters of the hash

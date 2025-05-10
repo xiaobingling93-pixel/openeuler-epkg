@@ -192,7 +192,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn create_environment_directories(&self, env_root: &Path) -> Result<()> {
+    fn create_environment_directories(&mut self, env_root: &Path) -> Result<()> {
         let generations_root = env_root.join("generations");
         let gen_1_dir = generations_root.join("1");
 
@@ -222,9 +222,8 @@ impl PackageManager {
         let installed_packages = gen_1_dir.join("installed-packages.json");
         fs::write(installed_packages, "{\n}")?;
 
-        // Create command.json to record the creation command
-        let command_json = gen_1_dir.join("command.json");
-        fs::write(command_json, "{\n  \"command\": \"epkg env create\",\n  \"timestamp\": \"0\"\n}")?;
+        // Record the environment creation in command history
+        self.record_history("create", Vec::new(), Vec::new())?;
 
         Ok(())
     }
