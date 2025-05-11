@@ -63,8 +63,8 @@ impl PackageManager {
 
     /// Load environment configuration from in-memory hash or on-disk file
     pub fn get_env_config(&mut self, env_name: String) -> Result<&EnvConfig> {
-        if self.env_config.contains_key(&env_name) {
-            return Ok(&self.env_config[&env_name]);
+        if self.envs_config.contains_key(&env_name) {
+            return Ok(&self.envs_config[&env_name]);
         }
 
         let config_path = get_env_config_path(&env_name);
@@ -77,14 +77,14 @@ impl PackageManager {
         let env_config: EnvConfig = serde_yaml::from_str(&contents)
             .with_context(|| format!("Failed to parse YAML from file: {}", config_path.display()))?;
 
-        self.env_config.insert(env_name.clone(), env_config);
+        self.envs_config.insert(env_name.clone(), env_config);
 
-        Ok(&self.env_config[&env_name])
+        Ok(&self.envs_config[&env_name])
     }
 
     pub fn get_channel_config(&mut self, env_name: String) -> Result<&ChannelConfig> {
-        if self.channel_config.contains_key(&env_name) {
-            return Ok(&self.channel_config[&env_name]);
+        if self.channels_config.contains_key(&env_name) {
+            return Ok(&self.channels_config[&env_name]);
         }
 
         let env_root = self.get_env_root(env_name.clone())?;
@@ -99,9 +99,9 @@ impl PackageManager {
         let channel_config: ChannelConfig = serde_yaml::from_str(&contents)
             .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))?;
 
-        self.channel_config.insert(env_name.clone(), channel_config);
+        self.channels_config.insert(env_name.clone(), channel_config);
 
-        Ok(&self.channel_config[&env_name])
+        Ok(&self.channels_config[&env_name])
     }
 
     // load repodata/index.json and store to repodata
@@ -259,7 +259,7 @@ impl PackageManager {
 
     /// Save environment configuration to file
     pub fn save_env_config(&mut self, env_name: &str) -> Result<()> {
-        let env_config = self.env_config.get(env_name)
+        let env_config = self.envs_config.get(env_name)
             .ok_or_else(|| anyhow::anyhow!("Environment config not found: {}", env_name))?;
 
         let config_path = get_env_config_path(env_name);

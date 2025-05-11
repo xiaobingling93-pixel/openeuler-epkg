@@ -311,10 +311,10 @@ pub struct EnvConfig {
 
 epkg rust should implement `get_env_config(env_name)`:
 ```
-    return self.env_config[$env_name] if exists
+    return self.envs_config[$env_name] if exists
     for file in $HOME/.epkg/config/*.yaml
         env_name = $file basename
-        return self.env_config[$env_name] = load yaml from $file
+        return self.envs_config[$env_name] = load yaml from $file
 ```
 
 # Major scenes

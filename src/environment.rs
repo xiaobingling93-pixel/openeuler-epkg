@@ -264,7 +264,7 @@ impl PackageManager {
             fs::write(&env_channel_yaml, channel_yaml)?;
 
             // Store channel config
-            self.channel_config.insert(name.to_string(), channel_config);
+            self.channels_config.insert(name.to_string(), channel_config);
 
             env_config
         } else {
@@ -292,7 +292,7 @@ impl PackageManager {
         env_config.register_priority = 0;
 
         // Store environment config
-        self.env_config.insert(name.to_string(), env_config.clone());
+        self.envs_config.insert(name.to_string(), env_config.clone());
 
         // Save environment config
         let env_config_path = get_env_config_path(name);
@@ -549,7 +549,7 @@ impl PackageManager {
         let mut env_config = env_config.clone();
         env_config.register_to_path = true;
         env_config.register_priority = priority;
-        self.env_config.insert(name.to_string(), env_config.clone());
+        self.envs_config.insert(name.to_string(), env_config.clone());
         self.save_env_config(&name)?;
 
         self.update_path()?;
@@ -583,7 +583,7 @@ impl PackageManager {
         let mut env_config = env_config.clone();
         env_config.register_to_path = false;
         env_config.register_priority = 0;
-        self.env_config.insert(name.to_string(), env_config.clone());
+        self.envs_config.insert(name.to_string(), env_config.clone());
         self.save_env_config(&name)?;
 
         self.update_path()?;
@@ -794,7 +794,7 @@ impl PackageManager {
         }
 
         // Get a mutable reference to the config
-        let config = self.env_config.get_mut(&env_name)
+        let config = self.envs_config.get_mut(&env_name)
             .ok_or_else(|| anyhow::anyhow!("Environment not found: {}", env_name))?;
 
         // Set the value directly on config
@@ -809,7 +809,7 @@ impl PackageManager {
         }
 
         // Save the updated config
-        // self.env_config.insert(env_name.clone(), config.clone());
+        // self.envs_config.insert(env_name.clone(), config.clone());
         self.save_env_config(&env_name)?;
 
         Ok(())

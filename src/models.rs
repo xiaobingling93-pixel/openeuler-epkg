@@ -370,8 +370,8 @@ pub struct EPKGDirs {
 #[allow(dead_code)]
 #[derive(Default)]
 pub struct PackageManager {
-    pub env_config: HashMap<String, EnvConfig>,
-    pub channel_config: HashMap<String, ChannelConfig>,
+    pub envs_config: HashMap<String, EnvConfig>,            // key: env_name
+    pub channels_config: HashMap<String, ChannelConfig>,    // key: env_name
 
     pub repos_data: Vec<Repodata>,
     pub appbin_source: HashSet<String>,
