@@ -1,8 +1,8 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::fmt;
+use std::path::Path;
 use std::error::Error;
-use url::Url;
 
 /*
  * Design and Rules for Parsing Package Requirements
@@ -693,11 +693,9 @@ pub fn parse_conda_requires(requires: &str) -> Result<AndDepends, ParseError> {
 }
 
 pub fn get_package_format(origin_url: &str) -> Option<String> {
-    let parsed_url = Url::parse(origin_url).ok()?;
-    let path = parsed_url.path();
-    let filename = path.split('/').last()?;
-    let ext = filename.split('.').last()?;
-    Some(ext.to_lowercase())
+    let path = Path::new(origin_url);
+    let ext = path.extension().and_then(|s| s.to_str())?;
+    Some(ext.to_string())
 }
 
 #[cfg(test)]

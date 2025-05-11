@@ -22,6 +22,8 @@ use std::env;
 use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
+use time::OffsetDateTime;
+use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::*;
 use anyhow::Result;
@@ -62,7 +64,10 @@ fn setup_logging() {
             writeln!(
                 buf,
                 "[{} {} {}:{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                match OffsetDateTime::now_local() {
+                    Ok(dt) => dt.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
+                    Err(_) => "<local_time_err>".to_string(),
+                },
                 record.level(),
                 record.file().unwrap_or("unknown"),
                 record.line().unwrap_or(0),

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::os::unix::fs::symlink;
 use anyhow::anyhow;
 use anyhow::Result;
+use time::OffsetDateTime;
+use time::macros::format_description;
 use anyhow::Context;
 use crate::models::*;
 
@@ -77,7 +79,7 @@ impl PackageManager {
         let command_json = generations_root.join(current_gen_id.to_string()).join("command.json");
 
         let command = GenerationCommand {
-            timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+            timestamp: OffsetDateTime::now_local()?.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
             action: action.to_string(),
             new_packages,
             del_packages,

@@ -3,12 +3,13 @@ use std::io;
 use std::io::BufRead; // for .read_line()
 use std::io::Write;
 use std::os::unix::fs::chown;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use nix::{self};
 use nix::unistd::{fork, setuid, Uid, ForkResult};
-use rand::Rng;
 use users::{get_current_uid, get_effective_uid};
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -252,7 +253,7 @@ fn is_suid() -> bool {
 }
 
 fn create_random_socket_path() -> PathBuf {
-    let mut rng = rand::thread_rng();
+        let mut rng = StdRng::from_entropy();
     PathBuf::from(format!(
         "/tmp/epkg-{}-{:x}.sock",
         get_effective_uid(),

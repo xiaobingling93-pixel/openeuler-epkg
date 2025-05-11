@@ -3,6 +3,8 @@ use std::os::unix::fs::symlink;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use anyhow::{Result, Context};
 use serde_json;
 use serde_yaml;
@@ -399,7 +401,7 @@ impl PackageManager {
 
         // Handle session path
         let session_path = original_session_path.unwrap_or_else(|| {
-            let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), rand::random::<u32>());
+            let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), StdRng::from_entropy().gen::<u32>());
             println!("; export EPKG_SESSION_PATH=\"{}\"", path);
             script.push_str(&format!("; unset EPKG_SESSION_PATH\n"));
             path

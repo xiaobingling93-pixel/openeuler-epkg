@@ -192,7 +192,7 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
             continue;
         }
 
-        let lib_regex = regex::Regex::new(r"\.(?:so|so\.\d+)$").unwrap();
+        let lib_regex = regex::Regex::new(r"\.(so|so\.\d+)$").unwrap();
         if lib_regex.is_match(&path_str) {
             continue;
         }

@@ -101,7 +101,7 @@ pub fn download_urls(
     fs::create_dir_all(output_dir)?;
     let multi_progress = MultiProgress::new();
 
-    let (sender, receiver) = bounded(urls.len());
+    let (sender, receiver) = bounded::<String>(urls.len());
     for url in urls {
         sender.send(url)?;
     }
