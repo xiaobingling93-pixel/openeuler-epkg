@@ -2,7 +2,6 @@ use std::fs;
 use std::io::Seek;
 use std::io::Write;
 use std::io::SeekFrom;
-use std::io::BufRead;
 use std::path::Path;
 use std::path::PathBuf;
 use std::collections::HashMap;
@@ -222,79 +221,114 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
             handle_elf(&ebin_path, env_root, fs_file)
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
         }
-        FileType::ShellScript | FileType::PerlScript | FileType::PythonScript | FileType::RubyScript | FileType::NodeScript | FileType::LuaScript => {
-
-            let env_shell_bang_line = if first_line.starts_with("#!") {
-                let interpreter_with_params = first_line[2..].trim();
-                let (interpreter_path, params) = match interpreter_with_params.split_once(' ') {
-                    Some((path, params)) => {
-                        (path, params)
-                    },
-                    None => {
-                        (interpreter_with_params, "")
-                    }
-                };
-                log::debug!("interpreter_path: '{}', params: '{}'", interpreter_path, params);
-
-                let interpreter_basename = Path::new(interpreter_path).file_name()
-                    .ok_or_else(|| anyhow!("Failed to get interpreter basename"))?
-                    .to_string_lossy();
-
-                let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
-                let env_interpreter = Path::new(&env_interpreter_path);
-
-                // use format!() instead of join() to enforce simple string operation
-                let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
-                let interpreter_in_env = Path::new(&interpreter_in_env);
-                if !interpreter_in_env.exists() {
-                    return Err(anyhow!("Interpreter {} not found in environment at {}", interpreter_path, interpreter_in_env.display()));
-                }
-
-                if !env_interpreter.exists() {
-                    let store_interpreter = fs::canonicalize(&interpreter_in_env)
-                        .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
-                    log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
-                        env_interpreter, env_root, store_interpreter, interpreter_in_env);
-                    handle_elf(env_interpreter, env_root, &store_interpreter)?;
-                }
-
-                format!("#!{} {}\n", env_interpreter_path, params)
-            } else {
-                String::new()
-            };
-
-            let mut wrapper = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&ebin_path)
-                .with_context(|| format!("Failed to open {} for create_ebin_wrapper", ebin_path.display()))?;
-
-            if !env_shell_bang_line.is_empty() {
-                wrapper.write_all(env_shell_bang_line.as_bytes())?;
-            }
-
-            // Add language-specific exec command
-            let exec_cmd = match file_type {
-                FileType::ShellScript => format!("exec {:?} \"$@\"\n", fs_file),
-                FileType::PythonScript => format!("exec(open({:?}).read())\n", fs_file),
-                FileType::RubyScript => format!("load({:?})\n", fs_file),
-                FileType::LuaScript => format!("dofile({:?})\n", fs_file),
-                _ => format!("exec {:?} \"$@\"\n", fs_file),
-            };
-            wrapper.write_all(exec_cmd.as_bytes())
-                .with_context(|| format!("Failed to write exec command to {}", ebin_path.display()))?;
-
-            // Make the wrapper executable
-            let mut perms = fs::metadata(&ebin_path)
-                .with_context(|| format!("Failed to get metadata for {} for create_ebin_wrapper", ebin_path.display()))?
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&ebin_path, perms)
-                .with_context(|| format!("Failed to set permissions for {}", ebin_path.display()))?;
+        FileType::ShellScript
+        | FileType::PerlScript
+        | FileType::PythonScript
+        | FileType::RubyScript
+        | FileType::NodeScript
+        | FileType::LuaScript => {
+            create_script_wrapper(env_root, fs_file, &ebin_path, file_type, &first_line)?;
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn create_script_wrapper(
+    env_root: &Path,
+    fs_file: &Path,
+    ebin_path: &Path,
+    file_type: FileType,
+    first_line: &str,
+) -> Result<()> {
+    let env_shell_bang_line = create_shebang_line(env_root, first_line)?;
+    let exec_cmd = get_exec_command(file_type, fs_file);
+
+    let mut wrapper = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(ebin_path)
+        .with_context(|| format!("Failed to open {} for create_script_wrapper", ebin_path.display()))?;
+
+    if !env_shell_bang_line.is_empty() {
+        wrapper.write_all(env_shell_bang_line.as_bytes())?;
+    }
+
+    wrapper.write_all(exec_cmd.as_bytes())
+        .with_context(|| format!("Failed to write exec command to {}", ebin_path.display()))?;
+
+    set_wrapper_permissions(ebin_path)?;
+    Ok(())
+}
+
+fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
+    if !first_line.starts_with("#!") {
+        return Err(anyhow!("No shebang line found"));
+    }
+
+    let interpreter_with_params = first_line[2..].trim();
+    // Example: interpreter_with_params = "/bin/sh"
+    let (interpreter_path, params) = match interpreter_with_params.split_once(' ') {
+        Some((path, params)) => (path, params),  // Example: path="/usr/bin/env", params="python3"
+        None => (interpreter_with_params, ""),   // Example: path="/bin/sh", params=""
+    };
+    log::debug!("interpreter_path: '{}', params: '{}'", interpreter_path, params);
+
+    let interpreter_basename = Path::new(interpreter_path).file_name()
+        .ok_or_else(|| anyhow!("Failed to get interpreter basename"))?
+        .to_string_lossy();
+    // Example: interpreter_basename = "sh"
+
+    // Example: env_interpreter_path = "/home/wfg/.epkg/envs/main/ebin/sh"
+    let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
+    let env_interpreter = Path::new(&env_interpreter_path);
+
+    // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
+    // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
+    // use format!() instead of Path::join() to enforce simple string operation
+    let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
+    let interpreter_in_env = Path::new(&interpreter_in_env);
+    if !interpreter_in_env.exists() {
+        return Err(anyhow!("Interpreter {} not found in environment at {}", interpreter_path, interpreter_in_env.display()));
+    }
+
+    if !env_interpreter.exists() {
+        // Example: store_interpreter = "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
+        let store_interpreter = fs::canonicalize(&interpreter_in_env)
+            .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
+        log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
+            env_interpreter, env_root, store_interpreter, interpreter_in_env);
+        // Example output:
+        // handle_elf params:
+        // env_interpreter="/home/wfg/.epkg/envs/main/ebin/sh",
+        // env_root="/home/wfg/.epkg/envs/main",
+        // store_interpreter="/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash",
+        // interpreter_in_env="/home/wfg/.epkg/envs/main/bin/sh"
+        handle_elf(env_interpreter, env_root, &store_interpreter)?;
+    }
+
+    // Example output: "#!/home/wfg/.epkg/envs/main/ebin/sh "
+    Ok(format!("#!{} {}\n", env_interpreter_path, params))
+}
+
+fn get_exec_command(file_type: FileType, fs_file: &Path) -> String {
+    match file_type {
+        FileType::ShellScript => format!("exec {:?} \"$@\"\n", fs_file),
+        FileType::PythonScript => format!("exec(open({:?}).read())\n", fs_file),
+        FileType::RubyScript => format!("load({:?})\n", fs_file),
+        FileType::LuaScript => format!("dofile({:?})\n", fs_file),
+        _ => format!("exec {:?} \"$@\"\n", fs_file),
+    }
+}
+
+fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
+    let mut perms = fs::metadata(ebin_path)
+        .with_context(|| format!("Failed to get metadata for {} for set_wrapper_permissions", ebin_path.display()))?
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(ebin_path, perms)
+        .with_context(|| format!("Failed to set permissions for {}", ebin_path.display()))?;
     Ok(())
 }
 
