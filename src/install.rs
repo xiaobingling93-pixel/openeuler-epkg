@@ -262,7 +262,8 @@ fn create_script_wrapper(
     Ok(())
 }
 
-fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
+/// Parse a shebang line into interpreter path and parameters
+fn parse_shebang_line(first_line: &str) -> Result<(String, String)> {
     if !first_line.starts_with("#!") {
         return Err(anyhow!("No shebang line found"));
     }
@@ -270,33 +271,75 @@ fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
     let interpreter_with_params = first_line[2..].trim();
     // Example: interpreter_with_params = "/bin/sh"
     let (interpreter_path, params) = match interpreter_with_params.split_once(' ') {
-        Some((path, params)) => (path, params),  // Example: path="/usr/bin/env", params="python3"
-        None => (interpreter_with_params, ""),   // Example: path="/bin/sh", params=""
+        Some((path, params)) => (path.to_string(), params.to_string()),  // Example: path="/usr/bin/env", params="python3"
+        None => (interpreter_with_params.to_string(), String::new()),    // Example: path="/bin/sh", params=""
     };
     log::debug!("interpreter_path: '{}', params: '{}'", interpreter_path, params);
 
-    let interpreter_basename = Path::new(interpreter_path).file_name()
-        .ok_or_else(|| anyhow!("Failed to get interpreter basename"))?
-        .to_string_lossy();
-    // Example: interpreter_basename = "sh"
+    Ok((interpreter_path, params))
+}
 
+/// Find and link the appropriate interpreter if it doesn't exist
+fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) -> Result<()> {
+    if interpreter_in_env.exists() {
+        return Ok(());
+    }
+
+    // Get the parent directory to search in
+    let parent = interpreter_in_env.parent()
+        .ok_or_else(|| anyhow!("Failed to get parent directory of {}", interpreter_in_env.display()))?;
+
+    // Find candidate interpreters based on the type
+    let targets = match interpreter_basename {
+        // For shell scripts, look for bash or dash as alternatives
+        "sh" => glob::glob(&format!("{}/{{bash,dash}}", parent.display()))
+            .with_context(|| "Failed to glob for shell interpreters")?,
+
+        // For other interpreters (python, ruby etc), look for versioned variants
+        // e.g. python3.8, python3.9 etc
+        _ => glob::glob(&format!("{}?*", interpreter_in_env.display()))
+            .with_context(|| format!("Failed to glob for {} interpreters", interpreter_basename))?
+    };
+
+    // Find the "latest" interpreter by comparing filenames
+    let target = targets
+        .filter_map(Result::ok)
+        .max_by(|a, b| {
+            let a_name = a.file_name().unwrap_or_default().to_string_lossy();
+            let b_name = b.file_name().unwrap_or_default().to_string_lossy();
+            a_name.cmp(&b_name)
+        })
+        .ok_or_else(|| anyhow!("No suitable interpreter found for {}", interpreter_basename))?;
+
+    // Create a symlink from the found interpreter to the expected location
+    symlink(&target, interpreter_in_env)
+        .with_context(|| format!("Failed to create symlink from {} to {}",
+            target.display(), interpreter_in_env.display()))?;
+
+    Ok(())
+}
+
+/// Create the wrapper for the interpreter in the ebin directory
+fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpreter_basename: &str) -> Result<String> {
     // Example: env_interpreter_path = "/home/wfg/.epkg/envs/main/ebin/sh"
     let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
     let env_interpreter = Path::new(&env_interpreter_path);
 
-    // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
-    // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
-    // use format!() instead of Path::join() to enforce simple string operation
-    let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
-    let interpreter_in_env = Path::new(&interpreter_in_env);
-    if !interpreter_in_env.exists() {
-        return Err(anyhow!("Interpreter {} not found in environment at {}", interpreter_path, interpreter_in_env.display()));
-    }
-
     if !env_interpreter.exists() {
+        // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
+        // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
+        // use format!() instead of Path::join() to enforce simple string operation
+        let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
+        let interpreter_in_env = Path::new(&interpreter_in_env);
+
+        // Find and link the interpreter if needed
+        find_link_interpreter(interpreter_in_env, interpreter_basename)?;
+
         // Example: store_interpreter = "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
-        let store_interpreter = fs::canonicalize(&interpreter_in_env)
+        // Create the wrapper
+        let store_interpreter = fs::canonicalize(interpreter_in_env)
             .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
+
         log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
             env_interpreter, env_root, store_interpreter, interpreter_in_env);
         // Example output:
@@ -307,6 +350,18 @@ fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
         // interpreter_in_env="/home/wfg/.epkg/envs/main/bin/sh"
         handle_elf(env_interpreter, env_root, &store_interpreter)?;
     }
+
+    Ok(env_interpreter_path)
+}
+
+fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
+    let (interpreter_path, params) = parse_shebang_line(first_line)?;
+
+    let interpreter_basename = Path::new(&interpreter_path).file_name()
+        .ok_or_else(|| anyhow!("Failed to get interpreter basename"))?
+        .to_string_lossy();
+
+    let env_interpreter_path = create_interpreter_wrapper(env_root, &interpreter_path, &interpreter_basename)?;
 
     // Example output: "#!/home/wfg/.epkg/envs/main/ebin/sh "
     Ok(format!("#!{} {}\n", env_interpreter_path, params))
