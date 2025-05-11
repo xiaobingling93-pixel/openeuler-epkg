@@ -243,7 +243,9 @@ impl PackageManager {
                 let pkg_mapping_name = match self.provide2pkgnames.get(capability) {
                     Some(pkg_name) => pkg_name,
                     None => {
-                        missing_deps.push(format!("{}-{}", capability, pkg_format));
+                        if !capability.starts_with("rpmlib(") {
+                            missing_deps.push(format!("{}-{}", capability, pkg_format));
+                        }
                         return Ok(());
                     }
                 };
