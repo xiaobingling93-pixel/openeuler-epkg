@@ -355,10 +355,13 @@ impl PackageManager {
             if let Some(spec) = self.pkghash2spec.get(pkghash) {
                 let spec = spec.clone();
                 let repo = &spec.repo;
+                // XXX: this only works for single-repo channel. The actual mapping is
+                // - 1 channel could have N repos
+                // - 1 repo (each may have its own url) could have M packages
                 let channel_config = self.get_channel_config(config().common.env.clone())?;
                 let url = format!(
                     "{}/{}/{}/store/{}/{}.epkg",
-                    channel_config.baseurl.clone().unwrap_or_default(),
+                    channel_config.channel.baseurl.clone().unwrap_or_default(),
                     repo,
                     config().common.arch,
                     &pkgline[..2], // First 2 characters of the hash

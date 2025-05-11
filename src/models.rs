@@ -221,11 +221,18 @@ pub struct EnvConfig {
 #[derive(Default)]
 #[derive(Clone)]
 pub struct ChannelConfig {
+    pub channel: ChannelInfo,
+    #[serde(default)]
+    pub repos: HashMap<String, RepoConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[derive(Default)]
+#[derive(Clone)]
+pub struct ChannelInfo {
     pub name: String,
     #[serde(default)]
     pub baseurl: Option<String>,
-    #[serde(default)]
-    pub repos: HashMap<String, RepoConfig>,
 }
 
 fn default_as_true() -> bool { true }

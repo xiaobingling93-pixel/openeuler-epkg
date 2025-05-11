@@ -107,7 +107,7 @@ impl PackageManager {
         let channel_config = self.get_channel_config(config().common.env.clone())?;
         let file_glob: String = format!("{}/channel/{}/*/{}/repodata/index.json",
             dirs().epkg_cache.display(),
-            channel_config.name,
+            channel_config.channel.name,
             config().common.arch,
         );
         for entry in glob::glob(&file_glob).expect("Failed to read glob pattern") {

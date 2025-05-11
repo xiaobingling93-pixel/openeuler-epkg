@@ -148,7 +148,7 @@ impl PackageManager {
                 Some(url) => url.clone(),
                 None => format!(
                     "{}/{}/{}/",
-                    channel_config.baseurl.clone().unwrap_or_default(),
+                    channel_config.channel.baseurl.clone().ok_or_else(|| anyhow::anyhow!("baseurl not configured"))?,
                     &repo_name,
                     config().common.arch
                 )
@@ -269,14 +269,14 @@ pub fn list_repos() -> Result<()> {
                 Some(url) => url.clone(),
                 None => format!(
                     "{}/{}/{}/",
-                    channel_config.baseurl.clone().unwrap_or_default(),
+                    channel_config.channel.baseurl.clone().ok_or_else(|| anyhow::anyhow!("baseurl not configured"))?,
                     &repo_name,
                     config().common.arch
                 )
             };
 
             println!("{:<30} | {:<15} | {}",
-                channel_config.name,
+                channel_config.channel.name,
                 repo_name,
                 repo_url
             );
