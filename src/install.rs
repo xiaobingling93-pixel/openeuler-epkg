@@ -10,8 +10,10 @@ use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 use anyhow::{Result};
 use anyhow::anyhow;
+use anyhow::Context;
 use crate::models::*;
 use crate::utils::*;
+use crate::dirs::find_env_root;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgline, info)
@@ -59,21 +61,38 @@ fn remove_duplicates(
 }
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
-    let id1 = "{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
-    let id2 = "{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
+    // Constants for placeholder strings in elf-loader
+    const SOURCE_ENV_DIR_PLACEHOLDER: &str = "{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
+    const TARGET_ELF_PATH_PLACEHOLDER: &str = "{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
 
-    fs::copy(env_root.join("/usr/bin/elf-loader"), &target_path)?;
-    replace_string(&target_path, id1, &env_root.to_string_lossy())?;
-    replace_string(&target_path, id2, &fs_file.to_string_lossy())?;
+    // Get common environment root path
+    let common_env_root = find_env_root("common")
+        .ok_or_else(|| anyhow::anyhow!("Common environment not found"))?;
+
+    // Copy elf-loader from common environment
+    let elf_loader_path = common_env_root.join("usr/bin/elf-loader");
+    fs::copy(&elf_loader_path, target_path)
+        .with_context(|| format!(
+            "Failed to copy elf-loader from {} to {}",
+            elf_loader_path.display(),
+            target_path.display()
+        ))?;
+
+    // Replace placeholder strings with actual paths
+    replace_string(target_path, SOURCE_ENV_DIR_PLACEHOLDER, &env_root.to_string_lossy())?;
+    replace_string(target_path, TARGET_ELF_PATH_PLACEHOLDER, &fs_file.to_string_lossy())?;
+
     Ok(())
 }
 
 fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Result<()> {
-    let data = fs::read(binary_file)?;
+    let data = fs::read(binary_file)
+        .with_context(|| format!("Failed to read {} for replace_string", binary_file.display()))?;
     let pattern = long_id.as_bytes();
 
     if let Some(pos) = data.windows(pattern.len()).position(|window| window == pattern) {
-        let mut file = fs::OpenOptions::new().write(true).open(binary_file)?;
+        let mut file = fs::OpenOptions::new().write(true).open(binary_file)
+            .with_context(|| format!("Failed to open {} for replace_string", binary_file.display()))?;
         file.seek(SeekFrom::Start(pos as u64))?;
         // Write the replacement followed by a null terminator.
         file.write_all(format!("{}\0", replacement).as_bytes())?;
@@ -97,19 +116,24 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
             continue;
         }
 
-        if target_path.exists() {
-            eprintln!("Warning: File {} already exists, overwriting", target_path.display());
-            fs::remove_file(&target_path)?;
+        if fs::symlink_metadata(&target_path).is_ok() {
+            eprintln!("Warning: File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
+            fs::remove_file(&target_path)
+                .with_context(|| format!("Failed to remove {} for mirror_dir", target_path.display()))?;
         }
 
-        let metadata = fs::symlink_metadata(fs_file)?;
+        let metadata = fs::symlink_metadata(fs_file)
+            .with_context(|| format!("Failed to get metadata for {} for mirror_dir", fs_file.display()))?;
         if metadata.file_type().is_symlink() {
-            shortcut_symlink(store_fs_dir, fs_file, &target_path)?;
+            shortcut_symlink(store_fs_dir, fs_file, &target_path)
+                .with_context(|| format!("Failed to shortcut_symlink from {} to {}", fs_file.display(), target_path.display()))?;
         } else {
             if fhs_file.starts_with("etc/") {
-                fs::copy(fs_file, &target_path)?;
+                fs::copy(fs_file, &target_path)
+                    .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
             } else {
-                symlink(fs_file, &target_path)?;
+                symlink(fs_file, &target_path)
+                    .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
             }
         }
     }
@@ -138,7 +162,8 @@ fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, target_path: &Path) -> 
                 .join(link_target)
         };
 
-        symlink(&new_link_target, target_path)?;
+        symlink(&new_link_target, target_path)
+            .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
     }
     Ok(())
 }
@@ -173,13 +198,15 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
         }
 
         // Skip if not executable
-        let metadata = fs::metadata(fs_file)?;
+        let metadata = fs::metadata(fs_file)
+            .with_context(|| format!("Failed to get metadata for {} for create_ebin_wrappers", fs_file.display()))?;
         let mode = metadata.permissions().mode();
         if mode & 0o111 == 0 {
             continue;
         }
 
-        create_ebin_wrapper(env_root, fs_file)?;
+        create_ebin_wrapper(env_root, fs_file)
+            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file.display()))?;
     }
     Ok(())
 }
@@ -192,15 +219,18 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
 
     // Create ebin directory if it doesn't exist
     if let Some(parent) = ebin_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create ebin directory for {}", ebin_path.display()))?;
     }
 
     match file_type {
         FileType::Elf => {
-            handle_elf(&ebin_path, env_root, fs_file)?;
+            handle_elf(&ebin_path, env_root, fs_file)
+                .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
         }
         FileType::ShellScript | FileType::PerlScript | FileType::PythonScript | FileType::RubyScript | FileType::NodeScript | FileType::LuaScript => {
-            let file = fs::File::open(fs_file)?;
+            let file = fs::File::open(fs_file)
+                .with_context(|| format!("Failed to open {} for create_ebin_wrapper", fs_file.display()))?;
             let mut reader = std::io::BufReader::new(file);
             let mut first_line = String::new();
             reader.read_line(&mut first_line)?;
@@ -221,7 +251,8 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&ebin_path)?;
+                .open(&ebin_path)
+                .with_context(|| format!("Failed to open {} for create_ebin_wrapper", ebin_path.display()))?;
 
             if !env_shell_bang_line.is_empty() {
                 wrapper.write_all(env_shell_bang_line.as_bytes())?;
@@ -235,12 +266,16 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
                 FileType::LuaScript => format!("dofile({:?})\n", fs_file),
                 _ => format!("exec {:?}\n", fs_file),
             };
-            wrapper.write_all(exec_cmd.as_bytes())?;
+            wrapper.write_all(exec_cmd.as_bytes())
+                .with_context(|| format!("Failed to write exec command to {}", ebin_path.display()))?;
 
             // Make the wrapper executable
-            let mut perms = fs::metadata(&ebin_path)?.permissions();
+            let mut perms = fs::metadata(&ebin_path)
+                .with_context(|| format!("Failed to get metadata for {} for create_ebin_wrapper", ebin_path.display()))?
+                .permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&ebin_path, perms)?;
+            fs::set_permissions(&ebin_path, perms)
+                .with_context(|| format!("Failed to set permissions for {}", ebin_path.display()))?;
         }
         _ => {}
     }
@@ -303,7 +338,8 @@ impl PackageManager {
                 }
             }
             let store_fs_dir = store_root.join(pkgline).join("fs");
-            self.new_package(&store_fs_dir, &env_root, appbin_flag)?;
+            self.new_package(&store_fs_dir, &env_root, appbin_flag)
+                .with_context(|| format!("Failed to install package {}", pkgline))?;
         }
 
         // Save installed packages
