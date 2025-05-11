@@ -24,7 +24,7 @@ impl Repodata {
         let mut writer = BufWriter::new(file);
 
         for (key, values) in self.provide2pkgnames.iter() {
-            let line = format!("{}:{}", key, values.join(","));
+            let line = format!("{}: {}", key, values.join(" "));
             writeln!(writer, "{}", line)?;
         }
 
@@ -39,8 +39,8 @@ impl Repodata {
 
         for (line_num, line_result) in reader.lines().enumerate() {
             let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path))?;
-            if let Some((key, values)) = line.split_once(":") {
-                let values: Vec<String> = values.split(",").map(|s| s.to_string()).collect();
+            if let Some((key, values)) = line.split_once(": ") {
+                let values: Vec<String> = values.split(" ").map(|s| s.to_string()).collect();
                 map.insert(key.to_string(), values);
             }
         }
@@ -206,7 +206,7 @@ pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
     let repodata_path = local_cache_path.join("repodata");
     // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
     // Check if index.json already exists
-    if repodata_path.join("provide2pkgnames.txt").exists() &&
+    if repodata_path.join("provide2pkgnames.yaml").exists() &&
        repodata_path.join("essential_pkgnames.txt").exists() {
         return Ok(());
     }
@@ -231,7 +231,7 @@ pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
     }
     let mut repodata = unzst_all_repodatas(&repodata_path)?;
     repodata.generate_repo_metadata()?;
-    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.txt").to_str().unwrap())?;
+    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.yaml").to_str().unwrap())?;
     repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap())?;
 
     println!("Cache repodata succeed: {}", repo_name);
