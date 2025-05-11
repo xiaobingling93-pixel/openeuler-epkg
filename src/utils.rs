@@ -19,8 +19,7 @@ pub enum FileType {
     RubyScript,
     NodeScript,
     LuaScript,
-    AsciiText,
-    Binary,
+    Others,
 }
 
 impl FileType {
@@ -35,8 +34,7 @@ impl FileType {
             FileType::RubyScript => "Ruby script, ASCII text executable",
             FileType::NodeScript => "Node.js script, ASCII text executable",
             FileType::LuaScript => "Lua script, ASCII text executable",
-            FileType::AsciiText => "ASCII text",
-            FileType::Binary => "Binary data",
+            FileType::Others => "Other file type",
         }
     }
 }
@@ -68,12 +66,12 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 }
 
 // Get file type
-pub fn get_file_type(file: &Path) -> Result<FileType> {
+pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 
     // Check Symbolic link first
     if fs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
-        return Ok(FileType::Symlink);
+        return Ok((FileType::Symlink, String::new()));
     }
 
     // Read file contents for other checks
@@ -82,7 +80,7 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     let mut buffer = vec![0;4];
     if let Ok(_) = file.read_exact(&mut buffer) {
         if buffer.starts_with(ELF_MAGIC) {
-            return Ok(FileType::Elf);
+            return Ok((FileType::Elf, String::new()));
         }
     }
 
@@ -93,36 +91,23 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     let mut first_line = String::new();
     let bytes_read = reader.read_line(&mut first_line)?;
     if bytes_read == 0 {
-        return Ok(FileType::AsciiText);
+        return Ok((FileType::Others, String::new()));
     }
 
     // Check if file starts with shebang
     if first_line.starts_with("#!") {
+        let script_line0 = first_line.trim_end().to_string();
         // Check for various script types
-        if first_line.contains("sh") {
-            return Ok(FileType::ShellScript);
-        } else if first_line.contains("perl") {
-            return Ok(FileType::PerlScript);
-        } else if first_line.contains("python") {
-            return Ok(FileType::PythonScript);
-        } else if first_line.contains("ruby") {
-            return Ok(FileType::RubyScript);
-        } else if first_line.contains("node") {
-            return Ok(FileType::NodeScript);
-        } else if first_line.contains("lua") {
-            return Ok(FileType::LuaScript);
+        if script_line0.contains("sh")              { return Ok((FileType::ShellScript,  script_line0));
+        } else if script_line0.contains("perl")     { return Ok((FileType::PerlScript,   script_line0));
+        } else if script_line0.contains("python")   { return Ok((FileType::PythonScript, script_line0));
+        } else if script_line0.contains("ruby")     { return Ok((FileType::RubyScript,   script_line0));
+        } else if script_line0.contains("node")     { return Ok((FileType::NodeScript,   script_line0));
+        } else if script_line0.contains("lua")      { return Ok((FileType::LuaScript,    script_line0));
         }
     }
 
-    // Try to detect if it's ASCII text
-    for line in reader.lines() {
-        let line = line?;
-        if !line.is_ascii() {
-            return Ok(FileType::Binary);
-        }
-    }
-
-    return Ok(FileType::AsciiText);
+    Ok((FileType::Others, String::new()))
 }
 
 pub fn compute_file_sha256(file_path: &str) -> Result<String> {

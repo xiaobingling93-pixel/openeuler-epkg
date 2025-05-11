@@ -212,16 +212,10 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
 }
 
 fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
-    let file_type = get_file_type(fs_file)?;
+    let (file_type, first_line) = get_file_type(fs_file)?;
     let basename = fs_file.file_name()
         .ok_or_else(|| anyhow!("Failed to get filename for {}", fs_file.display()))?;
     let ebin_path = env_root.join("usr/ebin").join(basename);
-
-    // Create ebin directory if it doesn't exist
-    if let Some(parent) = ebin_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create ebin directory for {}", ebin_path.display()))?;
-    }
 
     match file_type {
         FileType::Elf => {
@@ -229,11 +223,6 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
         }
         FileType::ShellScript | FileType::PerlScript | FileType::PythonScript | FileType::RubyScript | FileType::NodeScript | FileType::LuaScript => {
-            let file = fs::File::open(fs_file)
-                .with_context(|| format!("Failed to open {} for create_ebin_wrapper", fs_file.display()))?;
-            let mut reader = std::io::BufReader::new(file);
-            let mut first_line = String::new();
-            reader.read_line(&mut first_line)?;
 
             let env_shell_bang_line = if first_line.starts_with("#!") {
                 let interpreter_with_params = first_line[2..].trim();
