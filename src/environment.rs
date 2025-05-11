@@ -198,6 +198,8 @@ impl PackageManager {
 
         // Create base directories
         fs::create_dir_all(&gen_1_dir)?;
+        fs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
+                                                        // won't go to PATH
         fs::create_dir_all(env_root.join("usr/ebin"))?;
         fs::create_dir_all(env_root.join("usr/sbin"))?;
         fs::create_dir_all(env_root.join("usr/bin"))?;
@@ -207,7 +209,6 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("var"))?;
 
         // Create symlinks in generation 1
-        symlink("usr/ebin", env_root.join("ebin"))?;
         symlink("usr/sbin", env_root.join("sbin"))?;
         symlink("usr/bin", env_root.join("bin"))?;
         symlink("usr/lib", env_root.join("lib"))?;

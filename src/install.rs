@@ -237,12 +237,39 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
 
             let env_shell_bang_line = if first_line.starts_with("#!") {
                 let interpreter_with_params = first_line[2..].trim();
-                let interpreter_path = interpreter_with_params.split_whitespace().next()
-                    .ok_or_else(|| anyhow!("Failed to parse interpreter path from shebang"))?;
+                let (interpreter_path, params) = match interpreter_with_params.split_once(' ') {
+                    Some((path, params)) => {
+                        (path, params)
+                    },
+                    None => {
+                        (interpreter_with_params, "")
+                    }
+                };
+                log::debug!("interpreter_path: '{}', params: '{}'", interpreter_path, params);
+
                 let interpreter_basename = Path::new(interpreter_path).file_name()
                     .ok_or_else(|| anyhow!("Failed to get interpreter basename"))?
                     .to_string_lossy();
-                format!("#!{}/usr/ebin/{}\n", env_root.display(), interpreter_basename)
+
+                let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
+                let env_interpreter = Path::new(&env_interpreter_path);
+
+                // use format!() instead of join() to enforce simple string operation
+                let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
+                let interpreter_in_env = Path::new(&interpreter_in_env);
+                if !interpreter_in_env.exists() {
+                    return Err(anyhow!("Interpreter {} not found in environment at {}", interpreter_path, interpreter_in_env.display()));
+                }
+
+                if !env_interpreter.exists() {
+                    let store_interpreter = fs::canonicalize(&interpreter_in_env)
+                        .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
+                    log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
+                        env_interpreter, env_root, store_interpreter, interpreter_in_env);
+                    handle_elf(env_interpreter, env_root, &store_interpreter)?;
+                }
+
+                format!("#!{} {}\n", env_interpreter_path, params)
             } else {
                 String::new()
             };
@@ -260,11 +287,11 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
 
             // Add language-specific exec command
             let exec_cmd = match file_type {
-                FileType::ShellScript => format!("exec {:?}\n", fs_file),
+                FileType::ShellScript => format!("exec {:?} \"$@\"\n", fs_file),
                 FileType::PythonScript => format!("exec(open({:?}).read())\n", fs_file),
                 FileType::RubyScript => format!("load({:?})\n", fs_file),
                 FileType::LuaScript => format!("dofile({:?})\n", fs_file),
-                _ => format!("exec {:?}\n", fs_file),
+                _ => format!("exec {:?} \"$@\"\n", fs_file),
             };
             wrapper.write_all(exec_cmd.as_bytes())
                 .with_context(|| format!("Failed to write exec command to {}", ebin_path.display()))?;
