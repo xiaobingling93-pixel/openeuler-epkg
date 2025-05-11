@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use crate::dirs::*;
 use crate::models::*;
 use std::collections::HashMap;
+use log;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
@@ -48,13 +49,14 @@ fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
         bail!("Invalid package line format: {}", pkgline);
     }
 
-    Ok(PackageSpec {
+    let spec = PackageSpec {
         repo: reponame.to_string(),
         hash: parts[0].to_string(),
         name: parts[1].to_string(),
         version: parts[2].to_string(),
         release: parts[3].to_string(),
-    })
+    };
+    Ok(spec)
 }
 
 impl PackageManager {
@@ -104,41 +106,84 @@ impl PackageManager {
 
     // load repodata/index.json and store to repodata
     pub fn load_repodata(&mut self) -> Result<()> {
+        log::trace!("Starting load_repodata");
         let channel_config = self.get_channel_config(config().common.env.clone())?;
         let file_glob: String = format!("{}/channel/{}/*/{}/repodata/index.json",
             dirs().epkg_cache.display(),
             channel_config.channel.name,
             config().common.arch,
         );
+        log::debug!("Searching for repodata files with pattern: {}", file_glob);
+
+        let mut total_repos = 0;
+        let mut total_store_paths = 0;
+        let mut total_pkg_infos = 0;
+
         for entry in glob::glob(&file_glob).expect("Failed to read glob pattern") {
             match entry {
                 Ok(path) => {
+                    total_repos += 1;
+                    log::trace!("Found repodata file: {}", path.display());
                     let path_str = path.to_str().with_context(|| format!("Invalid UTF-8 in path: {:?}", path))?;
                     // Call the global function to load repodata
                     let mut repodata = load_repodata_index(path_str)
                         .with_context(|| format!("Failed to load repodata from {}", path.display()))?;
+
+                    log::trace!("Loading provides for repo: {}", repodata.name);
                     let provide_path = path.parent().unwrap().join("provide2pkgnames.txt");
                     repodata.decode_provide_hashmap(provide_path.to_str().unwrap())?;
+
+                    log::trace!("Loading essential packages for repo: {}", repodata.name);
                     let essential_path = path.parent().unwrap().join("essential_pkgnames.txt");
                     repodata.decode_essential_hashset(essential_path.to_str().unwrap())?;
+
+                    total_store_paths += repodata.store_paths.len();
+                    total_pkg_infos += repodata.pkg_infos.len();
+
+                    log::debug!("Loaded repository: {}", repodata.name);
+                    log::debug!("  Store paths: {}", repodata.store_paths.len());
+                    log::debug!("  Package infos: {}", repodata.pkg_infos.len());
+                    log::debug!("  Provides: {}", repodata.provide2pkgnames.len());
+                    log::debug!("  Essential packages: {}", repodata.essential_pkgnames.len());
+
                     self.repos_data.push(repodata);
                 },
-                Err(e) => println!("{:?}", e),
+                Err(e) => {
+                    log::warn!("Error processing repodata entry: {:?}", e);
+                    println!("{:?}", e);
+                },
             }
         }
+
+        log::debug!("Repodata loading statistics:");
+        log::debug!("  Total repositories found: {}", total_repos);
+        log::debug!("  Total store paths: {}", total_store_paths);
+        log::debug!("  Total package infos: {}", total_pkg_infos);
+        log::debug!("  Total repositories loaded: {}", self.repos_data.len());
 
         Ok(())
     }
 
     pub fn load_store_paths(&mut self) -> Result<()> {
+        log::trace!("Starting load_store_paths");
         if self.repos_data.is_empty() {
+            log::trace!("Repos data is empty, loading repodata first");
             self.load_repodata()?;
         }
+
+        let mut total_provides = 0;
+        let mut total_essential = 0;
+
         for repodata in &self.repos_data {
+            log::trace!("Processing repodata for repo: {}", repodata.name);
             self.provide2pkgnames.extend(repodata.provide2pkgnames.clone());
             self.essential_pkgnames.extend(repodata.essential_pkgnames.clone());
 
+            total_provides += repodata.provide2pkgnames.len();
+            total_essential += repodata.essential_pkgnames.len();
+
             for entry in &repodata.store_paths {
+                log::trace!("Processing store path entry: {}", entry.filename);
                 let file_path = format!(
                     "{}/{}",
                     repodata.dir,
@@ -148,6 +193,7 @@ impl PackageManager {
                                                        .collect::<Vec<_>>()
                                                        .join("-")
                 );
+                log::trace!("Reading store paths from file: {}", file_path);
                 let contents = fs::read_to_string(&file_path)
                     .with_context(|| format!("Failed to load store-paths from {}", file_path))?;
                 for pkgline in contents.lines() {
@@ -161,6 +207,14 @@ impl PackageManager {
                 }
             }
         }
+
+        log::debug!("Store paths loading statistics:");
+        log::debug!("  Total repositories processed: {}", self.repos_data.len());
+        log::debug!("  Total provides loaded: {}", total_provides);
+        log::debug!("  Total essential packages: {}", total_essential);
+        log::debug!("  Unique package names: {}", self.pkgname2lines.len());
+        log::debug!("  Unique package hashes: {}", self.pkghash2spec.len());
+
         Ok(())
     }
 
