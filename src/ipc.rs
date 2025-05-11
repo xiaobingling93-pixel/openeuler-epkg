@@ -191,7 +191,7 @@ use crate::models::*;
 enum WorkerCommand {
     Download(Vec<String>, String, usize, usize, Option<String>),
     Unpack(Vec<String>),
-    CacheRepo(String, String),
+    CacheRepo(String, String, String),
 }
 
 pub fn privdrop_on_suid() {
@@ -305,8 +305,8 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
             };
             res?;
         }
-        WorkerCommand::CacheRepo(repo_name, repo_url) => {
-            let res = crate::repo::cache_repo_name(&repo_name, &repo_url)
+        WorkerCommand::CacheRepo(channel_name, repo_name, repo_url) => {
+            let res = crate::repo::cache_repo_name(&channel_name, &repo_name, &repo_url)
                 .and_then(|_| send_response(
                         stream,
                         json!({"status": "success", "message": "Cached repo"})
@@ -348,6 +348,7 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
                 .collect(),
         )),
         Some("cache_repo") => Ok(WorkerCommand::CacheRepo(
+            value["params"]["channel_name"].as_str().unwrap().to_string(),
             value["params"]["repo_name"].as_str().unwrap().to_string(),
             value["params"]["repo_url"].as_str().unwrap().to_string(),
         )),
@@ -436,14 +437,15 @@ impl PackageManager {
     }
 
     #[allow(dead_code)]
-    pub fn cache_repo_name(&mut self, repo_name: &str, repo_url: &str) -> Result<()> {
+    pub fn cache_repo_name(&mut self, channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
         if !self.has_worker_process {
-            crate::repo::cache_repo_name(repo_name, repo_url)?;
+            crate::repo::cache_repo_name(channel_name, repo_name, repo_url)?;
         } else {
             self.send_command(
                 json!({
                     "command": "cache_repo",
                     "params": {
+                        "channel_name": channel_name,
                         "repo_name": repo_name,
                         "repo_url": repo_url
                     }

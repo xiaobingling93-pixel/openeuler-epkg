@@ -130,7 +130,7 @@ impl PackageManager {
                         .with_context(|| format!("Failed to load repodata from {}", path.display()))?;
 
                     log::trace!("Loading provides for repo: {}", repodata.name);
-                    let provide_path = path.parent().unwrap().join("provide2pkgnames.txt");
+                    let provide_path = path.parent().unwrap().join("provide2pkgnames.yaml");
                     repodata.decode_provide_hashmap(provide_path.to_str().unwrap())?;
 
                     log::trace!("Loading essential packages for repo: {}", repodata.name);

@@ -154,7 +154,7 @@ impl PackageManager {
                 )
             };
 
-            cache_repo_name(&repo_name, &repo_url)?;
+            cache_repo_name(&channel_config.channel.name, &repo_name, &repo_url)?;
         }
         Ok(())
     }
@@ -198,11 +198,8 @@ fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<Repodata> {
     Ok(repo_data)
 }
 
-pub fn cache_repo_name(repo_name: &str, repo_url: &str) -> Result<()> {
-    let local_cache_path = match repo_url.find("/channel/") {
-        Some(idx) => &dirs().epkg_channel_cache.join(&repo_url[idx + 9..]),
-        None => return Err(anyhow!("Invalid repo URL format: no /channel/ found")),
-    };
+pub fn cache_repo_name(channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
+    let local_cache_path = dirs().epkg_channel_cache.join(channel_name).join(repo_name).join(&config().common.arch);
     let repodata_path = local_cache_path.join("repodata");
     // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
     // Check if index.json already exists
