@@ -43,6 +43,7 @@ impl PackageManager {
         self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
+        log::debug!("Input package specs: {:?}", package_specs);
 
         // Step 1: Find duplicates between installed_packages and input_package_info
         let duplicates: Vec<String> = input_package_info
@@ -57,6 +58,7 @@ impl PackageManager {
             }
             return Err(anyhow!("Error: Unable to find packages"));
         }
+        log::debug!("Found duplicate packages: {:?}", duplicates);
 
         // Step 2: Check if packages is being depended on by installed packages
         let duplicates_depended: Vec<String> = duplicates
@@ -96,10 +98,15 @@ impl PackageManager {
             .iter()
             .filter(|(pkgline, info)| {
                 if info.depend_depth == 0 && !input_package_info.contains_key(*pkgline) {
+                    log::debug!("Keeping independent package: {}", pkgline);
                     return true;
                 }
                 if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
-                    self.essential_pkgnames.contains(spec.name.as_str())
+                    let is_essential = self.essential_pkgnames.contains(spec.name.as_str());
+                    if is_essential {
+                        log::debug!("Keeping essential package: {} ({})", pkgline, spec.name);
+                    }
+                    is_essential
                 } else {
                     false
                 }
@@ -107,6 +114,8 @@ impl PackageManager {
             .map(|(key, value)| (key.clone(), (*value).clone()))
             .collect();
         self.collect_recursive_depends(&mut packages_to_keep)?;
+        log::debug!("Packages to keep: {:?}", packages_to_keep.keys());
+
         let installed_to_remove: Vec<String> = self.installed_packages
             .keys()
             .filter(|name| !packages_to_keep.contains_key(*name))
@@ -139,6 +148,7 @@ impl PackageManager {
         let store_root = dirs().epkg_store.clone();
         for pkgline in &installed_to_remove {
             // remove link files
+            log::debug!("Removing files for package {} from {:?}", pkgline, store_root.join(pkgline).join("fs"));
             self.del_package(&store_root.join(pkgline).join("fs"), &env_root)?;
         }
 
