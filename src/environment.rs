@@ -199,17 +199,17 @@ impl PackageManager {
         // Create base directories
         fs::create_dir_all(&gen_1_dir)?;
         fs::create_dir_all(env_root.join("usr/ebin"))?;
-        fs::create_dir_all(env_root.join("usr/bin"))?;
         fs::create_dir_all(env_root.join("usr/sbin"))?;
+        fs::create_dir_all(env_root.join("usr/bin"))?;
         fs::create_dir_all(env_root.join("usr/lib"))?;
         fs::create_dir_all(env_root.join("usr/lib64"))?;
         fs::create_dir_all(env_root.join("etc/epkg"))?;
         fs::create_dir_all(env_root.join("var"))?;
 
         // Create symlinks in generation 1
-        symlink("usr/bin", env_root.join("ebin"))?;
-        symlink("usr/bin", env_root.join("bin"))?;
+        symlink("usr/ebin", env_root.join("ebin"))?;
         symlink("usr/sbin", env_root.join("sbin"))?;
+        symlink("usr/bin", env_root.join("bin"))?;
         symlink("usr/lib", env_root.join("lib"))?;
         symlink("usr/lib64", env_root.join("lib64"))?;
 
@@ -217,13 +217,6 @@ impl PackageManager {
         symlink("1", generations_root.join("current"))?;
 
         fs::copy("/etc/resolv.conf", env_root.join("etc/resolv.conf"))?;
-
-        // Create metadata files
-        let installed_packages = gen_1_dir.join("installed-packages.json");
-        fs::write(installed_packages, "{\n}")?;
-
-        // Record the environment creation in command history
-        self.record_history("create", Vec::new(), Vec::new())?;
 
         Ok(())
     }
@@ -307,6 +300,15 @@ impl PackageManager {
         // Install packages if any
         if !env_config.installed_packages.is_empty() {
             self.install_pkglines(env_config.installed_packages)?;
+        } else {
+            // Create metadata files
+            let generations_root = env_root.join("generations");
+            let gen_1_dir = generations_root.join("1");
+            let installed_packages = gen_1_dir.join("installed-packages.json");
+            fs::write(installed_packages, "{\n}")?;
+
+            // Record the environment creation in command history
+            self.record_history("create", Vec::new(), Vec::new())?;
         }
 
         println!("Environment '{}' has been created in {}", name, env_root.display());
