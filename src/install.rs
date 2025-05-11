@@ -142,20 +142,22 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
 // like symlink() but removes one level of indirection
 fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, target_path: &Path) -> Result<()> {
     if let Ok(link_target) = fs::read_link(fs_file) {
-        // Get new_link_target
-        // python3.11:
-        //     /root/.epkg/store/2h652gawx5zjpazx83ep2jkcv2kkp0xm__python3__3.11.6__2.oe2403/fs/usr/bin/python3 -> python3.11
-        // ../bin/pidof:
-        //     /root/.epkg/store/dkaz2ks577dhyg3gz8n414xvq52x7e9g__procps-ng__4.0.4__5.oe2403/fs/usr/sbin/pidof -> /usr/bin/pidof
-        // ../libexec/qemu-kvm:
-        //     /root/.epkg/store/pbaknz0skh99y3mmdwcs2xxhay5mzbgj__qemu__8.2.0__13.oe2403/fs/usr/bin/qemu-kvm -> /usr/libexec/qemu-kvm
-        // ../../lib64/ld-linux-x86-64.so.2:
-        //     /root/.epkg/store/3ajbdnc50knwxw39j3bgaw86nxs3kt0w__glibc-common__2.38__29.oe2403/fs/usr/bin/ld.so -> ../../lib64/ld-linux-x86-64.so.2
+        // Handle different types of symlinks:
+        // 1. Absolute paths: e.g. /usr/bin/python3 -> /usr/bin/python3.11
+        //    Join with store_fs_dir to make it relative to the package root
+        // 2. Parent-relative paths: e.g. ../bin/pidof -> /usr/bin/pidof
+        //    Use normalize_join to resolve the ../ components against store_fs_dir
+        // 3. Sibling-relative paths: e.g. python3 -> python3.11
+        //    Join with the parent directory of the source file
         let new_link_target = if link_target.is_absolute() {
-            store_fs_dir.join(link_target)
+            // For absolute paths like /usr/bin/python3.11, make them relative to store_fs_dir
+            // Note: Using Path.join() here would incorrectly handle absolute paths by discarding the base path
+            PathBuf::from(format!("{}/{}", store_fs_dir.display(), link_target.display()))
         } else if link_target.starts_with("../") {
+            // For parent-relative paths like ../bin/pidof, normalize against store_fs_dir
             normalize_join(store_fs_dir, &link_target)
         } else {
+            // For sibling-relative paths like python3.11, join with source file's parent
             fs_file.parent()
                 .ok_or_else(|| anyhow!("Failed to get parent directory for {}", fs_file.display()))?
                 .join(link_target)
