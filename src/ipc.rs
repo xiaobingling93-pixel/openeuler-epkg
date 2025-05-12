@@ -307,7 +307,7 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
             res?;
         }
         WorkerCommand::CacheRepo(channel_name, repo_name, repo_url) => {
-            let res = crate::repo::cache_repo_name(&channel_name, &repo_name, &repo_url)
+            let res = crate::repo::cache_single_repository(&channel_name, &repo_name, &repo_url)
                 .and_then(|_| send_response(
                         stream,
                         json!({"status": "success", "message": "Cached repo"})
@@ -348,7 +348,7 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect(),
         )),
-        Some("cache_repo") => Ok(WorkerCommand::CacheRepo(
+        Some("cache_single_repository") => Ok(WorkerCommand::CacheRepo(
             value["params"]["channel_name"].as_str().unwrap().to_string(),
             value["params"]["repo_name"].as_str().unwrap().to_string(),
             value["params"]["repo_url"].as_str().unwrap().to_string(),
@@ -438,21 +438,21 @@ impl PackageManager {
     }
 
     #[allow(dead_code)]
-    pub fn cache_repo_name(&mut self, channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
-        if !self.has_worker_process {
-            crate::repo::cache_repo_name(channel_name, repo_name, repo_url)?;
-        } else {
-            self.send_command(
-                json!({
-                    "command": "cache_repo",
-                    "params": {
-                        "channel_name": channel_name,
-                        "repo_name": repo_name,
-                        "repo_url": repo_url
-                    }
-                })
-            ).unwrap();
-        }
-        Ok(())
+    pub fn cache_single_repository(&mut self, channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
+	if !self.has_worker_process {
+	    crate::repo::cache_single_repository(channel_name, repo_name, repo_url)?;
+	} else {
+	    self.send_command(
+		json!({
+		    "command": "cache_single_repository",
+		    "params": {
+			"channel_name": channel_name,
+			"repo_name": repo_name,
+			"repo_url": repo_url
+		    }
+		})
+	    ).unwrap();
+	}
+	Ok(())
     }
 }

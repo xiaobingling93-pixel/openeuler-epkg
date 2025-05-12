@@ -15,7 +15,7 @@ use crate::io::{load_repodata_index, load_package_json};
 use crate::utils::copy_all;
 
 impl Repodata {
-    pub fn encode_provide_hashmap(&mut self, path: &str) -> Result<()> {
+    pub fn save_package_provides(&mut self, path: &str) -> Result<()> {
         let target_path = Path::new(path);
         if target_path.exists() {
             fs::remove_file(&target_path)?;
@@ -32,7 +32,7 @@ impl Repodata {
         Ok(())
     }
 
-    pub fn decode_provide_hashmap(&mut self, file_path: &str) -> Result<()> {
+    pub fn load_package_provides(&mut self, file_path: &str) -> Result<()> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -49,7 +49,7 @@ impl Repodata {
         Ok(())
     }
 
-    pub fn encode_essential_hashset(&mut self, path: &str) -> Result<()> {
+    pub fn save_essential_packages(&mut self, path: &str) -> Result<()> {
         let target_path = Path::new(path);
         if target_path.exists() {
             fs::remove_file(&target_path)?;
@@ -65,7 +65,7 @@ impl Repodata {
         Ok(())
     }
 
-    pub fn decode_essential_hashset(&mut self, file_path: &str) -> Result<()> {
+    pub fn load_essential_packages(&mut self, file_path: &str) -> Result<()> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let mut hashset: HashSet<String> = HashSet::new();
@@ -134,7 +134,7 @@ impl Repodata {
 
 impl PackageManager {
 
-    pub fn cache_repo(&mut self) -> Result<()> {
+    pub fn cache_channel_repositories(&mut self) -> Result<()> {
         let channel_config = self.get_channel_config(config().common.env.clone())?;
 
         for (repo_name, repo_config) in &channel_config.repos {
@@ -154,7 +154,7 @@ impl PackageManager {
                 )
             };
 
-            cache_repo_name(&channel_config.channel.name, &repo_name, &repo_url)?;
+            cache_single_repository(&channel_config.channel.name, &repo_name, &repo_url)?;
         }
         Ok(())
     }
@@ -198,7 +198,7 @@ fn unzst_all_repodatas(repodata_path: &PathBuf) -> Result<Repodata> {
     Ok(repo_data)
 }
 
-pub fn cache_repo_name(channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
+pub fn cache_single_repository(channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
     let local_cache_path = dirs().epkg_channel_cache.join(channel_name).join(repo_name).join(&config().common.arch);
     let repodata_path = local_cache_path.join("repodata");
     // [TODO] should check index.json pkg-info-xxx.zst store-paths-xxx.zst all valid
@@ -228,8 +228,8 @@ pub fn cache_repo_name(channel_name: &str, repo_name: &str, repo_url: &str) -> R
     }
     let mut repodata = unzst_all_repodatas(&repodata_path)?;
     repodata.generate_repo_metadata()?;
-    repodata.encode_provide_hashmap(repodata_path.join("provide2pkgnames.yaml").to_str().unwrap())?;
-    repodata.encode_essential_hashset(repodata_path.join("essential_pkgnames.txt").to_str().unwrap())?;
+    repodata.save_package_provides(repodata_path.join("provide2pkgnames.yaml").to_str().unwrap())?;
+    repodata.save_essential_packages(repodata_path.join("essential_pkgnames.txt").to_str().unwrap())?;
 
     println!("Cache repodata succeed: {}", repo_name);
     Ok(())

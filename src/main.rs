@@ -556,7 +556,7 @@ impl PackageManager {
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
-            self.cache_repo()?;
+            self.cache_channel_repositories()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.install_packages(packages_vec)?;
         }
@@ -593,7 +593,7 @@ impl PackageManager {
 
     fn command_update(&mut self) -> Result<()> {
         self.fork_on_suid()?;
-        self.cache_repo()
+        self.cache_channel_repositories()
     }
 
     fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
