@@ -143,7 +143,7 @@ impl PackageManager {
         }
 
         // Step 6: Remove package files
-        self.create_new_generation()?;
+        let new_generation = self.create_new_generation()?;
         let env_root = self.get_default_env_root()?;
         let store_root = dirs().epkg_store.clone();
         for pkgline in &installed_to_remove {
@@ -156,8 +156,12 @@ impl PackageManager {
         for package_name in &installed_to_remove {
             self.installed_packages.remove(package_name);
         }
-        self.save_installed_packages()?;
+        self.save_installed_packages(&new_generation)?;
         self.record_history("remove", vec![], installed_to_remove.clone())?;
+
+        // Last step: update current symlink to point to the new generation
+        self.update_current_generation_symlink(new_generation)?;
+
         println!("Remove successful - Total packages: {}", installed_to_remove.len());
 
         Ok(())

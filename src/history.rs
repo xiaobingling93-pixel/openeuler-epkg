@@ -55,13 +55,10 @@ impl PackageManager {
         // loaded from old generation dir and saved to new generation dir.
         fs::copy(command_json, new_generation.join("command.json"))?;
 
-        // Update current symlink to point to the new generation
-        self.update_current_generation_symlink(new_id)?;
-
         Ok(new_generation)
     }
 
-    pub fn update_current_generation_symlink(&mut self, generation_id: u32) -> Result<()> {
+    pub fn update_current_generation_symlink(&mut self, new_generation: PathBuf) -> Result<()> {
         let generations_root = self.get_default_generations_root()?;
         let current_link = generations_root.join("current");
 
@@ -69,7 +66,7 @@ impl PackageManager {
             fs::remove_file(&current_link)?;
         }
 
-        symlink(&generation_id.to_string(), &current_link)?;
+        symlink(&new_generation.file_name().unwrap(), &current_link)?;
         Ok(())
     }
 
@@ -232,6 +229,10 @@ impl PackageManager {
 
         // Record history
         self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages)?;
+
+        // Last step: update current symlink to point to the new generation
+        self.update_current_generation_symlink(new_generation)?;
+
         println!("Rollback success!");
 
         Ok(())

@@ -425,7 +425,7 @@ impl PackageManager {
         let files = self.download_packages(&packages_to_install)?;
         self.unpack_packages(files)?;
         self.change_appbin_flag_same_source(&mut packages_to_install)?;
-        self.create_new_generation()?;
+        let new_generation = self.create_new_generation()?;
 
         let mut appbin_count = 0;
         let mut appbin_packages = Vec::new();
@@ -451,8 +451,11 @@ impl PackageManager {
 
         // Save installed packages
         self.installed_packages.extend(packages_to_install.clone());
-        self.save_installed_packages()?;
+        self.save_installed_packages(&new_generation)?;
         self.record_history("install", packages_to_install.keys().cloned().collect(), vec![])?;
+
+        // Last step: update current symlink to point to the new generation
+        self.update_current_generation_symlink(new_generation)?;
 
         println!("Installation successful - Total packages: {}, AppBin packages: {}", packages_to_install.len(), appbin_count);
         if !appbin_packages.is_empty() {

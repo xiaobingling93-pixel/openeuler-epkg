@@ -4,10 +4,11 @@ use serde_yaml;
 use std::fs;
 use std::env;
 use std::path::Path;
+use std::path::PathBuf;
+use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 use crate::dirs::*;
 use crate::models::*;
-use std::collections::HashMap;
 use log;
 
 pub fn load_package_json(file_path: &str) -> Result<Package> {
@@ -237,12 +238,9 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn save_installed_packages(&mut self) -> Result<()> {
-        // Get the generations root
-        let generations_root = self.get_default_generations_root()?;
-
+    pub fn save_installed_packages(&mut self, new_generation: &PathBuf) -> Result<()> {
         // Construct the file path
-        let file_path = generations_root.join("current").join("installed-packages.json");
+        let file_path = new_generation.join("installed-packages.json");
 
         // Serialize the installed packages to JSON
         let json = serde_json::to_string_pretty(&self.installed_packages)?;
