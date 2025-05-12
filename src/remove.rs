@@ -7,7 +7,7 @@ use crate::models::*;
 
 impl PackageManager {
 
-    pub fn del_package(&self, fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
+    pub fn unlink_package(&self, fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
         let fs_files = list_package_files(fs_dir.to_str().unwrap())?;
         for fs_file in fs_files {
             let fhs_file = fs_file.strip_prefix(&fs_dir)
@@ -149,7 +149,7 @@ impl PackageManager {
         for pkgline in &installed_to_remove {
             // remove link files
             log::debug!("Removing files for package {} from {:?}", pkgline, store_root.join(pkgline).join("fs"));
-            self.del_package(&store_root.join(pkgline).join("fs"), &env_root)?;
+            self.unlink_package(&store_root.join(pkgline).join("fs"), &env_root)?;
         }
 
         // Step 7: Save installed packages

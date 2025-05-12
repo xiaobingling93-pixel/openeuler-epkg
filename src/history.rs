@@ -229,7 +229,7 @@ impl PackageManager {
 
         for pkgline in &del_packages {
             let fs_dir = store_root.join(pkgline).join("fs");
-            self.del_package(&fs_dir, &env_root)?;
+            self.unlink_package(&fs_dir, &env_root)?;
         }
 
         // Copy rollback generation's installed-packages.json to current generation
