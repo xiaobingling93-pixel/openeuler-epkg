@@ -43,7 +43,7 @@ fn remove_duplicates(
 
     if !duplicates.is_empty() {
         if !warn.is_empty() {
-            eprintln!("{} ({} packages)", warn, duplicates.len());
+            log::info!("{} {:?}", warn, duplicates);
         }
 
         // Remove duplicates from `b`
@@ -114,7 +114,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
         }
 
         if fs::symlink_metadata(&target_path).is_ok() {
-            eprintln!("Warning: File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
+            log::info!("Warning: File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
             fs::remove_file(&target_path)
                 .with_context(|| format!("Failed to remove {} for mirror_dir", target_path.display()))?;
         }
