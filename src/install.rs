@@ -392,10 +392,17 @@ fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
 impl PackageManager {
 
     // link files from env_root to store_fs_dir
-    pub fn new_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, appbin_flag: bool) -> Result<()> {
+    pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
         let fs_files = list_package_files(store_fs_dir.to_str().unwrap())?;
         mirror_dir(env_root, store_fs_dir, &fs_files)?;
+        Ok(())
+    }
+
+    // - run post-install scriptlets
+    // - create ebin wrappers
+    pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, appbin_flag: bool) -> Result<()> {
         if appbin_flag {
+            let fs_files = list_package_files(store_fs_dir.to_str().unwrap())?;
             create_ebin_wrappers(env_root, &fs_files)?;
         }
         Ok(())
@@ -431,6 +438,15 @@ impl PackageManager {
         let mut appbin_packages = Vec::new();
         let env_root = self.get_default_env_root()?.clone();
         let store_root = dirs().epkg_store.clone();
+
+        // First phase: Link all packages
+        for (pkgline, _package_info) in &packages_to_install {
+            let store_fs_dir = store_root.join(pkgline).join("fs");
+            self.link_package(&store_fs_dir, &env_root)
+                .with_context(|| format!("Failed to link package {}", pkgline))?;
+        }
+
+        // Second phase: Expose packages and handle appbin flags
         for (pkgline, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             #[allow(unused_assignments)]
@@ -445,8 +461,8 @@ impl PackageManager {
                 }
             }
             let store_fs_dir = store_root.join(pkgline).join("fs");
-            self.new_package(&store_fs_dir, &env_root, appbin_flag)
-                .with_context(|| format!("Failed to install package {}", pkgline))?;
+            self.expose_package(&store_fs_dir, &env_root, appbin_flag)
+                .with_context(|| format!("Failed to expose package {}", pkgline))?;
         }
 
         // Save installed packages

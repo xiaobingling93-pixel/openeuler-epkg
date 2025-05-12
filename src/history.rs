@@ -214,10 +214,18 @@ impl PackageManager {
         let env_root = self.get_default_env_root()?;
 
         // Apply package changes directly to FHS directories at root level
+        // First phase: Link all packages
+        for (pkgline, _) in &new_packages {
+            let fs_dir = store_root.join(pkgline).join("fs");
+            self.link_package(&fs_dir, &env_root)?;
+        }
+
+        // Second phase: Expose packages and handle appbin flags
         for (pkgline, appbin_flag) in &new_packages {
             let fs_dir = store_root.join(pkgline).join("fs");
-            self.new_package(&fs_dir, &env_root, *appbin_flag)?;
+            self.expose_package(&fs_dir, &env_root, *appbin_flag)?;
         }
+
         for pkgline in &del_packages {
             let fs_dir = store_root.join(pkgline).join("fs");
             self.del_package(&fs_dir, &env_root)?;

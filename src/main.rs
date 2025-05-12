@@ -548,7 +548,10 @@ impl PackageManager {
                 let ebin = sub_matches.get_flag("ebin");
                 let fs_dir = PathBuf::from(fs_dir);
                 let symlink_dir = PathBuf::from(symlink_dir);
-                self.new_package(&fs_dir, &symlink_dir, ebin)?;
+                // First phase: Link the package
+                self.link_package(&fs_dir, &symlink_dir)?;
+                // Second phase: Expose the package if ebin flag is set
+                self.expose_package(&fs_dir, &symlink_dir, ebin)?;
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
