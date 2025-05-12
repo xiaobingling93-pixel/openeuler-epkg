@@ -3,7 +3,9 @@ use std::env;
 use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
-use anyhow::{Result, Context};
+use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre;
 use crate::models::*;
 use crate::download::download_urls;
 use crate::utils;
@@ -122,7 +124,7 @@ impl PackageManager {
         }
 
         if !epkg_manager_tar.exists() {
-            return Err(anyhow::anyhow!("Failed to download epkg manager tar file from {}", epkg_manager_url));
+            return Err(eyre::eyre!("Failed to download epkg manager tar file from {}", epkg_manager_url));
         }
 
         Ok(())
@@ -222,12 +224,12 @@ impl PackageManager {
         let shell = Path::new(&shell)
             .file_name()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid shell path"))?;
+            .ok_or_else(|| eyre::eyre!("Invalid shell path"))?;
 
         let rc_path = match shell {
             "bash" => env::var("HOME")? + "/.bashrc",
             "zsh" => env::var("HOME")? + "/.zshrc",
-            _ => return Err(anyhow::anyhow!("Unsupported shell: {}", shell)),
+            _ => return Err(eyre::eyre!("Unsupported shell: {}", shell)),
         };
 
         let common_env_root = self.get_env_root("common".to_string())?;

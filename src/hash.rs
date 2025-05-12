@@ -7,7 +7,7 @@ use base32;
 use walkdir::WalkDir;
 use sha2;
 use sha2::Digest;
-use anyhow::Result;
+use color_eyre::Result;
 
 // Step 1: Compute SHA256 hash  Output: 32-byte bytes object.
 // Step 2: Compress(XOR) hash   Output: 20-byte bytearray.

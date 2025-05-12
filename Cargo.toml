@@ -25,7 +25,6 @@ flate2 = { version = "1.1", features = ["rust_backend"], default-features = fals
 sha2 = { version = "0.10", default-features = false }
 base32 = { version = "0.5.1", default-features = false }
 glob = { version = "0.3", default-features = false }
-anyhow = { version = "1.0", default-features = false }
 dirs = { version = "6.0", default-features = false }
 indicatif = { version = "0.17", default-features = false }
 nix = { version = "0.30", features = ["process", "user", "fs", "signal"], default-features = false }
@@ -40,7 +39,13 @@ regex = { version = "1.11.1", features = ["std", "unicode-perl"], default-featur
 uuid = { version = "1.16", features = ["v4"], default-features = false }
 log = { version = "0.4", default-features = false }
 env_logger = { version = "0.11.8", default-features = false }
+color-eyre = { version = "0.6" }
+# color-eyre = { version = "0.6", features = ["capture-spantrace"], default-features = false }
 
 # Optional but recommended for better progress bars
 [dependencies.console]
 version = "0.15"
+
+# https://docs.rs/color-eyre/latest/color_eyre/#improving-perf-on-debug-builds
+[profile.dev.package.backtrace]
+opt-level = 3

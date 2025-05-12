@@ -4,9 +4,9 @@ use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use anyhow::Ok;
-use anyhow::Result;
-use anyhow::{anyhow, Context};
+use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre;
 use crate::models::*;
 use crate::store::*;
 use crate::download::*;
@@ -148,7 +148,7 @@ impl PackageManager {
                 Some(url) => url.clone(),
                 None => format!(
                     "{}/{}/{}/",
-                    channel_config.channel.baseurl.clone().ok_or_else(|| anyhow::anyhow!("baseurl not configured"))?,
+                    channel_config.channel.baseurl.clone().ok_or_else(|| eyre::eyre!("baseurl not configured"))?,
                     &repo_name,
                     config().common.arch
                 )
@@ -224,7 +224,7 @@ pub fn cache_repo_name(channel_name: &str, repo_name: &str, repo_url: &str) -> R
             let repo_url = format!("{}/repodata", url);
             download_repodata(repo_url.as_str(), &repodata_path).unwrap();
         },
-        _ => return Err(anyhow!("Unsupported repo URL scheme")),
+        _ => return Err(eyre::eyre!("Unsupported repo URL scheme")),
     }
     let mut repodata = unzst_all_repodatas(&repodata_path)?;
     repodata.generate_repo_metadata()?;
@@ -266,7 +266,7 @@ pub fn list_repos() -> Result<()> {
                 Some(url) => url.clone(),
                 None => format!(
                     "{}/{}/{}/",
-                    channel_config.channel.baseurl.clone().ok_or_else(|| anyhow::anyhow!("baseurl not configured"))?,
+                    channel_config.channel.baseurl.clone().ok_or_else(|| eyre::eyre!("baseurl not configured"))?,
                     &repo_name,
                     config().common.arch
                 )

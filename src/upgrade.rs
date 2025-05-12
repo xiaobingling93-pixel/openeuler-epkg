@@ -1,5 +1,5 @@
 use clap::parser::ValuesRef;
-use anyhow::Result;
+use color_eyre::Result;
 use crate::models::*;
 
 impl PackageManager {

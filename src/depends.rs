@@ -1,7 +1,8 @@
 use std::process::exit;
 use std::collections::{HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::{bail, Ok, Result};
+use color_eyre::Result;
+use color_eyre::eyre;
 use crate::models::*;
 use crate::io::load_package_json;
 use crate::parse_requires::*;
@@ -140,7 +141,7 @@ impl PackageManager {
 
         let spec = self.pkghash2spec.get(&pkgline[0..32])
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Package spec not found"))?;
+            .ok_or_else(|| eyre::eyre!("Package spec not found"))?;
 
         let channel_config = self.get_channel_config(config().common.env.clone())?;
         let path = format!(
@@ -280,7 +281,7 @@ impl PackageManager {
             println!("Missing dependencies ignored: {:?}", missing);
             Ok(())
         } else {
-            bail!("Missing dependencies found: {:?}", missing)
+            eyre::bail!("Missing dependencies found: {:?}", missing)
         }
     }
 

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
-use anyhow::{Result, anyhow, Context};
+use color_eyre::eyre::{self, Result, WrapErr};
 use crate::utils::*;
 use crate::models::*;
 
@@ -11,7 +11,7 @@ impl PackageManager {
         let fs_files = list_package_files(fs_dir.to_str().unwrap())?;
         for fs_file in fs_files {
             let fhs_file = fs_file.strip_prefix(&fs_dir)
-                .map_err(|e| anyhow!("Failed to strip prefix from path: {}", e))?;
+                .map_err(|e| eyre::eyre!("Failed to strip prefix from path: {}", e))?;
             let target_path = env_root.join(fhs_file);
             // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, fhs_file, target_path);
 
@@ -56,7 +56,7 @@ impl PackageManager {
             for package_name in package_specs.clone() {
                 eprintln!("- {}", package_name);
             }
-            return Err(anyhow!("Error: Unable to find packages"));
+            return Err(eyre::eyre!("Error: Unable to find packages"));
         }
         log::debug!("Found duplicate packages: {:?}", duplicates);
 
@@ -73,7 +73,7 @@ impl PackageManager {
             for package_name in &duplicates_depended {
                 eprintln!("- {}", package_name);
             }
-            return Err(anyhow!("Cannot remove packages that are depended on by others"));
+            return Err(eyre::eyre!("Cannot remove packages that are depended on by others"));
         }
 
         // Step 3: Find non-duplicates (packages not installed), Remove non-duplicates from input_package_info

@@ -1,6 +1,7 @@
 use std::fs;
 use std::env;
-use anyhow::Result;
+use color_eyre::Result;
+use color_eyre::eyre;
 use crate::models::*;
 
 impl PackageManager {
@@ -35,7 +36,7 @@ impl PackageManager {
 
         // Validate we have at least one path
         if path_components.is_empty() {
-            return Err(anyhow::anyhow!("No valid paths found to update PATH"));
+            return Err(eyre::eyre!("No valid paths found to update PATH"));
         }
 
         // Join paths with colons
@@ -55,7 +56,7 @@ impl PackageManager {
 
         // Validate environment exists
         if !env_root.exists() {
-            return Err(anyhow::anyhow!("Active environment '{}' does not exist", active_env));
+            return Err(eyre::eyre!("Active environment '{}' does not exist", active_env));
         }
 
         // Add ebin path

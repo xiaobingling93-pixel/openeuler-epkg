@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use color_eyre::{eyre, Result};
+use color_eyre::eyre::WrapErr;
 use crossbeam_channel::bounded;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::{Agent, config::Config, tls::TlsConfig, Proxy};
@@ -133,7 +134,7 @@ pub fn download_urls(
     if !errors.is_empty() {
         let error_count = errors.len();
         let error_details = errors.join("\n");
-        return Err(anyhow!(
+        return Err(eyre::eyre!(
             "{} downloads failed:\n{}",
             error_count,
             error_details
@@ -151,7 +152,7 @@ fn download_task(
     max_retries: usize,
 ) -> Result<()> {
     let file_name = url.split('/').last()
-        .ok_or_else(|| anyhow!("Invalid URL: {}", url))?;
+        .ok_or_else(|| eyre::eyre!("Invalid URL: {}", url))?;
     let final_path = Path::new(output_dir).join(file_name);
     let part_path = final_path.with_extension("part");
 
@@ -244,20 +245,20 @@ fn download_file(
                 else { "Server Error" }, url);
             pb.finish_with_message(error_msg.clone());
             return if code >= 400 && code < 500 {
-                Err(anyhow!(FatalError(error_msg)))
+                Err(eyre::eyre!(FatalError(error_msg)))
             } else {
-                Err(anyhow!(error_msg))
+                Err(eyre::eyre!(error_msg))
             };
         }
         Err(ureq::Error::Io(e)) => {
             let error_msg = format!("Network error: {} - {}", e, url);
             pb.finish_with_message(error_msg.clone());
-            return Err(anyhow!(error_msg));
+            return Err(eyre::eyre!(error_msg));
         }
         Err(e) => {
             let error_msg = format!("Error downloading: {} - {}", e, url);
             pb.finish_with_message(error_msg.clone());
-            return Err(anyhow!(error_msg));
+            return Err(eyre::eyre!(error_msg));
         }
     };
 
@@ -268,7 +269,7 @@ fn download_file(
         if content_type.contains("text/html") {
             let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
             pb.finish_with_message(error_msg);
-            return Err(anyhow!(FatalError(error_msg.to_string())));
+            return Err(eyre::eyre!(FatalError(error_msg.to_string())));
         }
     }
 
@@ -278,7 +279,7 @@ fn download_file(
             if length < 10 {
                 let error_msg = format!("Received suspiciously small file ({} bytes). This may indicate an error page or authentication issue.", length);
                 pb.finish_with_message(error_msg.clone());
-                return Err(anyhow!(FatalError(error_msg)));
+                return Err(eyre::eyre!(FatalError(error_msg)));
             }
         }
     }
@@ -316,7 +317,7 @@ fn download_file(
     if total_size > 0 && downloaded != total_size {
         let error_msg = format!("Download incomplete - {}", url);
         pb.finish_with_message(error_msg.clone());
-        return Err(anyhow!(error_msg));
+        return Err(eyre::eyre!(error_msg));
     }
 
     pb.finish_with_message(format!("Downloaded {}", part_path.file_name().unwrap().to_string_lossy()));
@@ -370,7 +371,7 @@ impl PackageManager {
                 urls.push(url);
                 local_files.push(format!("{}/{}.epkg", output_dir, pkgline));
             } else {
-                return Err(anyhow::anyhow!("Package spec not found for {}", pkgline));
+                return Err(eyre::eyre!("Package spec not found for {}", pkgline));
             }
         }
 

@@ -2,7 +2,8 @@ use std::env;
 use std::path::PathBuf;
 use std::io::{self, ErrorKind};
 use crate::models::*;
-use anyhow::Result;
+use color_eyre::Result;
+
 
 #[derive(Default)]
 pub struct EPKGDirsBuilder {

@@ -5,7 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-use anyhow::{Result, Context};
+use color_eyre::Result;
+use color_eyre::eyre;
+use color_eyre::eyre::WrapErr;
 use serde_json;
 use serde_yaml;
 use crate::models::*;
@@ -243,7 +245,7 @@ impl PackageManager {
 
         let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
         if env_channel_yaml.exists() {
-            return Err(anyhow::anyhow!("Environment already exists at path: '{}'", env_base.display()));
+            return Err(eyre::eyre!("Environment already exists at path: '{}'", env_base.display()));
         }
 
         self.create_environment_directories(&env_root)?;
@@ -271,11 +273,11 @@ impl PackageManager {
             // Initialize channel from command line option or default
             let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
             let common_env_root = find_env_root("common")
-                .ok_or_else(|| anyhow::anyhow!("Common environment not found"))?;
+                .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
             let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
 
             if !src_channel_yaml.exists() {
-                return Err(anyhow::anyhow!("Channel not found: '{}'", channel));
+                return Err(eyre::eyre!("Channel not found: '{}'", channel));
             }
 
             fs::copy(src_channel_yaml, &env_channel_yaml)?;
@@ -321,13 +323,13 @@ impl PackageManager {
     pub fn remove_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
         if name == "common" || name == "main" {
-            return Err(anyhow::anyhow!("Environment cannot be removed: '{}'", name));
+            return Err(eyre::eyre!("Environment cannot be removed: '{}'", name));
         }
 
         // Check if environment exists
         let env_path = self.get_env_root(name.to_string())?;
         if !env_path.exists() {
-            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
+            return Err(eyre::eyre!("Environment does not exist: '{}'", name));
         }
 
         // Check if environment is active and handle stacked environments
@@ -342,7 +344,7 @@ impl PackageManager {
                     self.deactivate_environment()?;
                 } else {
                     // If it's in the middle of the stack, return error
-                    return Err(anyhow::anyhow!(
+                    return Err(eyre::eyre!(
                         "Cannot remove environment '{}' as it is in the middle of active environment stack. \
                         Please deactivate environments in reverse order: {}",
                         name,
@@ -366,12 +368,12 @@ impl PackageManager {
     pub fn activate_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
         if name == "common" {
-            return Err(anyhow::anyhow!("Environment 'common' cannot be activated"));
+            return Err(eyre::eyre!("Environment 'common' cannot be activated"));
         }
 
         // Check if environment exists
         if !self.get_env_root(name.to_string())?.exists() {
-            return Err(anyhow::anyhow!("Environment not exist: '{}'", name));
+            return Err(eyre::eyre!("Environment not exist: '{}'", name));
         }
 
         // Get current environment states
@@ -381,15 +383,15 @@ impl PackageManager {
         // Check if environment is already active
         if let Some(active_envs) = &original_active_envs {
             if active_envs.split(':').any(|env| env == name) {
-                return Err(anyhow::anyhow!("Environment '{}' is already active", name));
+                return Err(eyre::eyre!("Environment '{}' is already active", name));
             }
             // Check if pure mode is incompatible with stack mode
             if config().env.pure && config().env.stack {
-                return Err(anyhow::anyhow!("Cannot use pure mode with stack mode"));
+                return Err(eyre::eyre!("Cannot use pure mode with stack mode"));
             }
             // Check if non-stack mode is incompatible with existing active environments
             if !config().env.stack && !active_envs.is_empty() {
-                return Err(anyhow::anyhow!("Cannot activate environment in non-stack mode when other environments are active. Please deactivate them first."));
+                return Err(eyre::eyre!("Cannot activate environment in non-stack mode when other environments are active. Please deactivate them first."));
             }
         }
 
@@ -462,7 +464,7 @@ impl PackageManager {
         let mut active_envs: Vec<String> = active_env.split(':').map(String::from).collect();
 
         if active_envs.is_empty() {
-            return Err(anyhow::anyhow!("No environment is currently active"));
+            return Err(eyre::eyre!("No environment is currently active"));
         }
 
         // Remove the last activated environment
@@ -495,12 +497,12 @@ impl PackageManager {
     pub fn register_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
         if name == "common" {
-            return Err(anyhow::anyhow!("Environment 'common' cannot be registered"));
+            return Err(eyre::eyre!("Environment 'common' cannot be registered"));
         }
 
         let env_config = match self.get_env_config(name.to_string()) {
             Ok(config) => config,
-            Err(_) => return Err(anyhow::anyhow!("Environment '{}' does not exist", name))
+            Err(_) => return Err(eyre::eyre!("Environment '{}' does not exist", name))
         };
 
         if env_config.register_to_path {
@@ -623,7 +625,7 @@ impl PackageManager {
                     let entry = entry?;
                     let name = entry.file_name()
                         .into_string()
-                        .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in filename"))?;
+                        .map_err(|_| eyre::eyre!("Invalid UTF-8 in filename"))?;
                     if let Some(env_name) = extract_env_name(&name) {
                         env_names.insert(env_name);
                     }
@@ -647,13 +649,13 @@ impl PackageManager {
         // Check if environment exists
         let env_root = self.get_env_root(name.to_string())?;
         if !env_root.exists() {
-            return Err(anyhow::anyhow!("Environment does not exist: '{}'", name));
+            return Err(eyre::eyre!("Environment does not exist: '{}'", name));
         }
 
         // Get generations directory
         let generations_root = self.get_generations_root(name)?;
         if !generations_root.exists() {
-            return Err(anyhow::anyhow!("No generations found for environment: '{}'", name));
+            return Err(eyre::eyre!("No generations found for environment: '{}'", name));
         }
 
         // Get current generation
@@ -731,7 +733,7 @@ impl PackageManager {
             env_config.installed_packages = serde_json::from_str(&contents)?;
         } else {
             warn!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display());
-            return Err(anyhow::anyhow!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
+            return Err(eyre::eyre!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
         }
 
         // Serialize each config separately
@@ -772,7 +774,7 @@ impl PackageManager {
 
         for part in parts {
             current = current.get(part)
-                .ok_or_else(|| anyhow::anyhow!("Configuration key not found: {}", name))?
+                .ok_or_else(|| eyre::eyre!("Configuration key not found: {}", name))?
                 .clone();
         }
 
@@ -790,12 +792,12 @@ impl PackageManager {
 
         // Validate that we're only setting top-level fields
         if parts.len() != 1 {
-            return Err(anyhow::anyhow!("Can only set top-level configuration keys"));
+            return Err(eyre::eyre!("Can only set top-level configuration keys"));
         }
 
         // Get a mutable reference to the config
         let config = self.envs_config.get_mut(&env_name)
-            .ok_or_else(|| anyhow::anyhow!("Environment not found: {}", env_name))?;
+            .ok_or_else(|| eyre::eyre!("Environment not found: {}", env_name))?;
 
         // Set the value directly on config
         match parts[0] {
@@ -805,7 +807,7 @@ impl PackageManager {
             "public" => config.public = value.parse()?,
             "register_to_path" => config.register_to_path = value.parse()?,
             "register_priority" => config.register_priority = value.parse()?,
-            _ => return Err(anyhow::anyhow!("Unknown configuration key: {}", parts[0]))
+            _ => return Err(eyre::eyre!("Unknown configuration key: {}", parts[0]))
         }
 
         // Save the updated config

@@ -6,7 +6,8 @@ use tar::Archive;
 use nix::unistd::{chown, User};
 use zstd::stream::Decoder;
 use users::get_effective_uid;
-use anyhow::Result;
+use color_eyre::Result;
+use color_eyre::eyre;
 use walkdir::WalkDir;
 use crate::models::dirs;
 
@@ -64,7 +65,7 @@ pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
 pub fn set_perm_and_owner(dir_str: &str) -> Result<()> {
     // get uid | gid
     let current_uid = get_effective_uid();
-    let user_account = User::from_uid(current_uid.into())?.ok_or(anyhow::anyhow!("当前用户未找到"))?;
+    let user_account = User::from_uid(current_uid.into())?.ok_or(eyre::eyre!("当前用户未找到"))?;
     let uid = Some(user_account.uid);
     let gid = Some(user_account.gid);
 

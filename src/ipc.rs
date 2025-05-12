@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use nix::{self};
 use nix::unistd::{fork, setuid, Uid, ForkResult};
 use users::{get_current_uid, get_effective_uid};
-use anyhow::Result;
+use color_eyre::eyre::{self, Result};
 use serde_json::{json, Value};
 use crate::models::*;
 
@@ -220,7 +220,7 @@ impl PackageManager {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     if !socket_path.exists() {
-                        return Err(anyhow::anyhow!("Socket file creation timeout"));
+                        return Err(eyre::eyre!("Socket file creation timeout"));
                     }
                 }
                 Ok(ForkResult::Child) => {
@@ -353,7 +353,7 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
             value["params"]["repo_name"].as_str().unwrap().to_string(),
             value["params"]["repo_url"].as_str().unwrap().to_string(),
         )),
-        _ => Err(anyhow::Error::new(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
+        _ => Err(eyre::eyre!(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
     }
 }
 
@@ -371,7 +371,7 @@ fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
     reader.read_line(&mut response_line).unwrap();
     let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
     if response["status"] == "error" {
-        return Err(anyhow::anyhow!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
+        return Err(eyre::eyre!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
     }
     // else {
     //     println!("ipc {} command completed successfully", command);
@@ -386,7 +386,7 @@ impl PackageManager {
         self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket).unwrap());
         let stream = self.ipc_stream
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("IPC stream not initialized")).unwrap();
+            .ok_or_else(|| eyre::eyre!("IPC stream not initialized")).unwrap();
 
         // Send command
         let mut writer = io::BufWriter::new(stream);

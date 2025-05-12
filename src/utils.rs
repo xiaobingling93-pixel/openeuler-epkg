@@ -2,8 +2,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, ErrorKind};
 use std::path::Path;
 use std::path::PathBuf;
-use anyhow::Result;
-use anyhow::Context;
+use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre;
 use sha2::{Sha256, Digest};
 use std::fs::File;
 use tar::Archive;
@@ -147,11 +148,11 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
     let file_path = checksum_file.with_extension("");
 
     if !checksum_file.exists() {
-        return Err(anyhow::anyhow!("Checksum file not found: {}", checksum_file.display()));
+        return Err(eyre::eyre!("Checksum file not found: {}", checksum_file.display()));
     }
 
     if !file_path.exists() {
-        return Err(anyhow::anyhow!("File not found: {}", file_path.display()));
+        return Err(eyre::eyre!("File not found: {}", file_path.display()));
     }
 
     // Read expected checksum from file
@@ -160,14 +161,14 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
         .trim()
         .split_whitespace()
         .next()
-        .ok_or_else(|| anyhow::anyhow!("Invalid checksum file format"))?;
+        .ok_or_else(|| eyre::eyre!("Invalid checksum file format"))?;
 
     // Compute actual checksum
     let actual_checksum = compute_file_sha256(file_path.to_str().unwrap())?;
 
     // Compare checksums
     if actual_checksum != expected_checksum {
-        return Err(anyhow::anyhow!(
+        return Err(eyre::eyre!(
             "Checksum verification failed for {}: expected {}, got {}",
             file_path.display(),
             expected_checksum,
@@ -190,13 +191,13 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
 pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     // Verify tar file exists and is readable
     if !tar_path.exists() {
-        return Err(anyhow::anyhow!("Tar file not found: {}", tar_path.display()));
+        return Err(eyre::eyre!("Tar file not found: {}", tar_path.display()));
     }
 
     // Check if file is empty
     let metadata = fs::metadata(tar_path)?;
     if metadata.len() == 0 {
-        return Err(anyhow::anyhow!("Tar file is empty: {}", tar_path.display()));
+        return Err(eyre::eyre!("Tar file is empty: {}", tar_path.display()));
     }
 
     // Open and extract tar.gz file
@@ -210,14 +211,14 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
         let mut entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                return Err(anyhow::anyhow!("Error reading tar entry: {}", e));
+                return Err(eyre::eyre!("Error reading tar entry: {}", e));
             }
         };
 
         let path = match entry.path() {
             Ok(path) => path,
             Err(e) => {
-                return Err(anyhow::anyhow!("Error getting entry path: {}", e));
+                return Err(eyre::eyre!("Error getting entry path: {}", e));
             }
         };
 
@@ -231,7 +232,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
         // Create parent directories if needed
         if path.is_dir() {
             if let Err(e) = fs::create_dir_all(&full_path) {
-                return Err(anyhow::anyhow!("Error creating directory {}: {}", full_path.display(), e));
+                return Err(eyre::eyre!("Error creating directory {}: {}", full_path.display(), e));
             }
             continue;
         }
@@ -241,10 +242,10 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
             Ok(_) => {
                 // Verify file was created and is readable
                 if !full_path.exists() {
-                    return Err(anyhow::anyhow!("File was not extracted: {}", full_path.display()));
+                    return Err(eyre::eyre!("File was not extracted: {}", full_path.display()));
                 }
                 if let Err(e) = fs::metadata(&full_path) {
-                    return Err(anyhow::anyhow!("Cannot access extracted file {}: {}", full_path.display(), e));
+                    return Err(eyre::eyre!("Cannot access extracted file {}: {}", full_path.display(), e));
                 }
             },
             Err(e) => {
@@ -254,7 +255,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
                     entry.unpack(&full_path)
                         .with_context(|| format!("Error extracting {} after removal", full_path.display()))?;
                 } else {
-                    return Err(anyhow::anyhow!("Error extracting {}: {}", full_path.display(), e))
+                    return Err(eyre::eyre!("Error extracting {}: {}", full_path.display(), e))
                 }
             }
         }

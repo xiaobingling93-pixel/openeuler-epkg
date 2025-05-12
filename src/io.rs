@@ -6,7 +6,7 @@ use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::collections::HashMap;
-use anyhow::{Context, Result, bail};
+use color_eyre::eyre::{self, bail, Result, ContextCompat, WrapErr};
 use crate::dirs::*;
 use crate::models::*;
 use log;
@@ -258,7 +258,7 @@ impl PackageManager {
     /// Save environment configuration to file
     pub fn save_env_config(&mut self, env_name: &str) -> Result<()> {
         let env_config = self.envs_config.get(env_name)
-            .ok_or_else(|| anyhow::anyhow!("Environment config not found: {}", env_name))?;
+            .ok_or_else(|| eyre::eyre!("Environment config not found: {}", env_name))?;
 
         let config_path = get_env_config_path(env_name);
 
@@ -285,7 +285,7 @@ impl PackageManager {
             .status()?;
 
         if !status.success() {
-            return Err(anyhow::anyhow!("Editor exited with non-zero status"));
+            return Err(eyre::eyre!("Editor exited with non-zero status"));
         }
 
         Ok(())

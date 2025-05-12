@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
 use std::os::unix::fs::symlink;
-use anyhow::anyhow;
-use anyhow::Result;
+use color_eyre::eyre;
+use color_eyre::eyre::WrapErr;
+use color_eyre::Result;
 use time::OffsetDateTime;
 use time::macros::format_description;
-use anyhow::Context;
+
 use crate::models::*;
 
 impl PackageManager {
@@ -155,7 +156,7 @@ impl PackageManager {
         let target_id = if rollback_id < 0 {
             let abs_rollback : u32 = rollback_id.abs() as u32;
             if abs_rollback >= current_generation_id {
-                return Err(anyhow!("Cannot rollback beyond generation 1"));
+                return Err(eyre::eyre!("Cannot rollback beyond generation 1"));
             }
             current_generation_id - abs_rollback
         } else {
@@ -165,12 +166,12 @@ impl PackageManager {
         // Check if target_id exists
         let rollback_generation = generations_root.join(target_id.to_string());
         if !rollback_generation.exists() {
-            return Err(anyhow!("No such history record: Generation {} does not exist", target_id));
+            return Err(eyre::eyre!("No such history record: Generation {} does not exist", target_id));
         }
 
         // Check if target_id is the current id
         if target_id == current_generation_id {
-            return Err(anyhow!("Cannot restore to the current generation"));
+            return Err(eyre::eyre!("Cannot restore to the current generation"));
         }
 
         // Load current and rollback installed-packages.json

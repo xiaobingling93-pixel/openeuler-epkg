@@ -26,7 +26,8 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::*;
-use anyhow::Result;
+use color_eyre::Result;
+use color_eyre::eyre;
 use clap::{arg, Command};
 use env_logger;
 use log;
@@ -620,7 +621,7 @@ impl PackageManager {
 
             let build_script = dirs().epkg_manager_cache.join("build/scripts/generic-build.sh");
             if !build_script.exists() {
-                return Err(anyhow::anyhow!("Build script not found"));
+                return Err(eyre::eyre!("Build script not found"));
             }
 
             let mut command = std::process::Command::new("bash");

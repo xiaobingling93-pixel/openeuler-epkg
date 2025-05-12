@@ -7,9 +7,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
-use anyhow::{Result};
-use anyhow::anyhow;
-use anyhow::Context;
+use color_eyre::eyre::{self, Result, Context};
 use crate::models::*;
 use crate::utils::*;
 use crate::dirs::find_env_root;
@@ -66,7 +64,7 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
 
     // Get common environment root path
     let common_env_root = find_env_root("common")
-        .ok_or_else(|| anyhow::anyhow!("Common environment not found"))?;
+        .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
 
     // Copy elf-loader from common environment
     let elf_loader_path = common_env_root.join("usr/bin/elf-loader");
@@ -159,7 +157,7 @@ fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, target_path: &Path) -> 
         } else {
             // For sibling-relative paths like python3.11, join with source file's parent
             fs_file.parent()
-                .ok_or_else(|| anyhow!("Failed to get parent directory for {}", fs_file.display()))?
+                .ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", fs_file.display()))?
                 .join(link_target)
         };
 
@@ -215,7 +213,7 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
 fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
     let (file_type, first_line) = get_file_type(fs_file)?;
     let basename = fs_file.file_name()
-        .ok_or_else(|| anyhow!("Failed to get filename for {}", fs_file.display()))?;
+        .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file.display()))?;
     let ebin_path = env_root.join("usr/ebin").join(basename);
 
     match file_type {
@@ -267,7 +265,7 @@ fn create_script_wrapper(
 /// Parse a shebang line into interpreter path and parameters
 fn parse_shebang_line(first_line: &str) -> Result<(String, String)> {
     if !first_line.starts_with("#!") {
-        return Err(anyhow!("No shebang line found"));
+        return Err(eyre::eyre!("No shebang line found"));
     }
 
     let interpreter_with_params = first_line[2..].trim();
@@ -289,7 +287,7 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
 
     // Get the parent directory to search in
     let parent = interpreter_in_env.parent()
-        .ok_or_else(|| anyhow!("Failed to get parent directory of {}", interpreter_in_env.display()))?;
+        .ok_or_else(|| eyre::eyre!("Failed to get parent directory of {}", interpreter_in_env.display()))?;
 
     // Find candidate interpreters based on the type
     let targets = match interpreter_basename {
@@ -311,7 +309,7 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
             let b_name = b.file_name().unwrap_or_default().to_string_lossy();
             a_name.cmp(&b_name)
         })
-        .ok_or_else(|| anyhow!("No suitable interpreter found for {}", interpreter_basename))?;
+        .ok_or_else(|| eyre::eyre!("No suitable interpreter found for {}", interpreter_basename))?;
 
     // Create a symlink from the found interpreter to the expected location
     symlink(&target, interpreter_in_env)
@@ -360,7 +358,7 @@ fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
     let (interpreter_path, params) = parse_shebang_line(first_line)?;
 
     let interpreter_basename = Path::new(&interpreter_path).file_name()
-        .ok_or_else(|| anyhow!("Failed to get interpreter basename"))?
+        .ok_or_else(|| eyre::eyre!("Failed to get interpreter basename"))?
         .to_string_lossy();
 
     let env_interpreter_path = create_interpreter_wrapper(env_root, &interpreter_path, &interpreter_basename)?;
@@ -418,7 +416,7 @@ impl PackageManager {
         self.collect_recursive_depends(&mut packages_to_install)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: Some packages are already installed and will be skipped:");
         if packages_to_install.is_empty() {
-            return Err(anyhow!("No packages to install"));
+            return Err(eyre::eyre!("No packages to install"));
         }
         self.install_pkglines(packages_to_install)
     }
