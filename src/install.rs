@@ -199,7 +199,7 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
         }
 
         // Skip if not executable or is directory
-        let metadata = fs::metadata(fs_file)
+        let metadata = fs::symlink_metadata(fs_file)
             .with_context(|| format!("Failed to get metadata for {} for create_ebin_wrappers", fs_file.display()))?;
         let mode = metadata.permissions().mode();
         if mode & 0o111 == 0 || metadata.is_dir() {
