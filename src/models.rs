@@ -200,7 +200,10 @@ pub struct EnvConfig {
     // Only for importing from exported config file
     #[serde(skip_serializing)]
     #[serde(default)]
-    pub installed_packages: HashMap<String, InstalledPackageInfo>,
+    pub packages: HashMap<String, InstalledPackageInfo>,
+    #[serde(skip_serializing)]
+    #[serde(default)]
+    pub pypi_packages: HashMap<String, InstalledPackageInfo>,
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml

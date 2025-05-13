@@ -303,8 +303,8 @@ impl PackageManager {
         fs::write(env_config_path, yaml)?;
 
         // Install packages if any
-        if !env_config.installed_packages.is_empty() {
-            self.install_pkglines(env_config.installed_packages)?;
+        if !env_config.packages.is_empty() {
+            self.install_pkglines(env_config.packages)?;
         } else {
             // Create metadata files
             let generations_root = env_root.join("generations");
@@ -730,7 +730,7 @@ impl PackageManager {
 
         if installed_packages_path.exists() {
             let contents = fs::read_to_string(&installed_packages_path)?;
-            env_config.installed_packages = serde_json::from_str(&contents)?;
+            env_config.packages = serde_json::from_str(&contents)?;
         } else {
             warn!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display());
             return Err(eyre::eyre!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
