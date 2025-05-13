@@ -36,6 +36,7 @@
     - race-condition: users see new index.json, however its referenced files not ready yet
   - minimal download and computing:
     - index.json to include slices for incremental updates
+      Refer to <https://conda.discourse.group/t/how-we-reduced-condas-index-fetch-bandwidth-by-99/257>
     - make local indexing per-slice (or per-repo)
       - should be at least per-repo
         - to avoid consistence detection + re-indexing after user enable/disable a repo using vim at any time
@@ -100,6 +101,23 @@ Create below files (per-slice)
    (may optimize the multi-value to multi-packages.idx, or use string value to store multiple hex)
 2. `provide2pkgnames.idx` (on-disk) hash (capability => pkgname(s))
 3. `essential_pkgnames.txt` (one line per pkgname)
+
+## the 1M packages challenge
+
+If packages go up by 10x-100x, it'll no longer be feasible to pre-cache all
+repodata locally.
+
+- the repo index file (store-paths.txt) will be ~100MB for 1M packages, according to this:
+```
+wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/repodata% wc -l store-paths
+18688 store-paths
+wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/repodata% du store-paths
+1.3M    store-paths
+```
+
+- packages.txt will be even larger, so have to be split and downloaded on-demand
+  during the depends DAG walking. Refer to <https://prefix.dev/blog/sharded_repodata>
+  It creates one shard per *pkgname*.
 
 ```
 # misc old ideas
