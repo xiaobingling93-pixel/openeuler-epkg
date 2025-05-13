@@ -6,16 +6,17 @@ use tar::Archive;
 use nix::unistd::{chown, User};
 use zstd::stream::Decoder;
 use users::get_effective_uid;
-use anyhow::Result;
+use color_eyre::Result;
+use color_eyre::eyre;
 use walkdir::WalkDir;
-use crate::paths;
+use crate::models::dirs;
 
 pub fn unpack_packages(files: Vec<String>) -> Result<()> {
     for file in files {
         let pkgline = file.split('/').last().expect(&format!("invalid package file name {}", file)).strip_suffix(".epkg").unwrap();
-        let dir = paths::instance.epkg_store_root.join(pkgline);
+        let dir = dirs().epkg_store.join(pkgline);
         let dir_str = dir.to_string_lossy().to_owned(); // Convert to String
-        
+
         untar_zst(&file, &dir_str, true)?;
         set_perm_and_owner(&dir_str).unwrap();
         // let hash = crate::hash::epkg_store_hash(&dir_str)?;
@@ -54,17 +55,17 @@ pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
     fs::create_dir_all(Path::new(output_path).parent().unwrap())?;
     let output_file = fs::File::create(output_path)?;
     let mut writer = BufWriter::new(output_file);
-    
+
     let mut decoder = Decoder::new(reader)?;
     io::copy(&mut decoder, &mut writer)?;
-    
+
     Ok(())
 }
 
 pub fn set_perm_and_owner(dir_str: &str) -> Result<()> {
     // get uid | gid
     let current_uid = get_effective_uid();
-    let user_account = User::from_uid(current_uid.into())?.ok_or(anyhow::anyhow!("当前用户未找到"))?;
+    let user_account = User::from_uid(current_uid.into())?.ok_or(eyre::eyre!("当前用户未找到"))?;
     let uid = Some(user_account.uid);
     let gid = Some(user_account.gid);
 

@@ -1,17 +1,28 @@
 use std::fs;
 use std::env;
-use anyhow::Result;
-use crate::paths::instance;
+use color_eyre::Result;
+use color_eyre::eyre;
 use crate::models::*;
 
 impl PackageManager {
 
-    pub fn update_path(&self, pure: bool) -> Result<()> {
+    pub fn update_path(&mut self) -> Result<()> {
         let mut path_components = Vec::new();
+        let mut pure = false;
 
-        // Add active environment paths
+        // Add active environment paths (last activated first)
         if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
-            path_components.extend(self.get_active_env_paths(&active_env, pure)?);
+            let active_envs: Vec<&str> = active_env.split(':').collect();
+            for env_name in active_envs.iter() {
+                let (env_name, is_pure) = if env_name.ends_with(PURE_ENV_SUFFIX) {
+                    (env_name[..env_name.len()-1].to_string(), true)
+                } else {
+                    (env_name.to_string(), false)
+                };
+                pure = pure && is_pure;
+                path_components.extend(self.get_active_env_paths(&env_name, is_pure)?);
+            }
+
         }
 
         if !pure {
@@ -25,7 +36,7 @@ impl PackageManager {
 
         // Validate we have at least one path
         if path_components.is_empty() {
-            return Err(anyhow::anyhow!("No valid paths found to update PATH"));
+            return Err(eyre::eyre!("No valid paths found to update PATH"));
         }
 
         // Join paths with colons
@@ -33,20 +44,19 @@ impl PackageManager {
 
         // Update PATH
         env::set_var("PATH", &new_path);
-        println!("export PATH={}", &new_path);
+        println!("; export PATH=\"{}\"", &new_path);
 
         Ok(())
     }
 
-    fn get_active_env_paths(&self, active_env: &str, pure: bool) -> Result<Vec<String>> {
-        let paths = &*instance;
+    fn get_active_env_paths(&mut self, active_env: &str, pure: bool) -> Result<Vec<String>> {
         let mut path_components = Vec::new();
 
-        let env_root = paths.epkg_envs_root.join(active_env).join("profile-current");
+        let env_root = self.get_env_root(active_env.to_string())?;
 
         // Validate environment exists
         if !env_root.exists() {
-            return Err(anyhow::anyhow!("Active environment '{}' does not exist", active_env));
+            return Err(eyre::eyre!("Active environment '{}' does not exist", active_env));
         }
 
         // Add ebin path
@@ -72,18 +82,17 @@ impl PackageManager {
     }
 
     fn get_registered_env_paths(&self) -> Result<Vec<String>> {
-        let paths = &*instance;
         let mut path_components = Vec::new();
 
         // Get paths from prepend directory (main environment)
-        let prepend_dir = paths.epkg_config_dir.join("path.d/prepend");
+        let prepend_dir = dirs().home_config.join("path.d/prepend");
         path_components.extend(self.get_priority_sorted_paths(&prepend_dir)?);
 
         // Get system paths, excluding epkg paths
         path_components.extend(self.get_system_paths()?);
 
         // Get paths from append directory (other environments)
-        let append_dir = paths.epkg_config_dir.join("path.d/append");
+        let append_dir = dirs().home_config.join("path.d/append");
         path_components.extend(self.get_priority_sorted_paths(&append_dir)?);
 
         Ok(path_components)

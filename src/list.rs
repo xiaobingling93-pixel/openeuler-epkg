@@ -1,5 +1,6 @@
 use std::fs;
-use anyhow::{Context, Result};
+use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
 use crate::models::*;
 
 // ======================================================================================
@@ -106,7 +107,7 @@ impl PackageManager {
 
         let mut header_printed = false;
 
-        // Iterate over all repositories
+        let channel_name = self.get_channel_config(config().common.env.clone())?.channel.name.clone();
         for repodata in &self.repos_data {
             for entry in &repodata.store_paths {
                 // Construct the file path
@@ -150,7 +151,7 @@ impl PackageManager {
                             // Print the package details
                             println!(
                                 LIST_OUTPUT_FORMAT!(),
-                                self.env_config.channel.name,
+                                channel_name,
                                 repodata.name,
                                 pkgname,
                                 version_release,
@@ -163,7 +164,7 @@ impl PackageManager {
         }
         
         if !header_printed {
-            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, self.env_config.channel.name);
+            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, channel_name);
         }
 
         Ok(())

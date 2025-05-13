@@ -1,11 +1,11 @@
 use std::process::exit;
 use std::collections::{HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::{bail, Ok, Result};
+use color_eyre::Result;
+use color_eyre::eyre;
 use crate::models::*;
 use crate::io::load_package_json;
 use crate::parse_requires::*;
-use crate::paths;
 
 impl InstalledPackageInfo {
     fn new(depth: u8, appbin_flag: bool) -> Self {
@@ -21,10 +21,10 @@ impl InstalledPackageInfo {
 }
 
 impl PackageManager {
-    pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) {
+    pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
         let mut tmp_format: Option<String> = None;
         for pkgline in packages.keys() {
-            let pkg_json = self.load_package_info(pkgline).unwrap();
+            let pkg_json = self.load_package_info(pkgline)?;
             if pkg_json.source.is_some() {
                 self.appbin_source.insert(pkg_json.source.as_ref().unwrap().clone());
             }
@@ -40,11 +40,12 @@ impl PackageManager {
             }
         }
         self.repos_data[0].format = tmp_format;
+        Ok(())
     }
 
     pub fn change_appbin_flag_same_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
         for (pkgline, package_info) in packages.iter_mut() {
-            let pkg_json = self.load_package_info(pkgline.as_str()).unwrap();
+            let pkg_json = self.load_package_info(pkgline.as_str())?;
             if package_info.appbin_flag == false && pkg_json.source.is_some() {
                 let Some(source) = &pkg_json.source else { continue };
                 if self.appbin_source.contains(source) {
@@ -55,7 +56,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn add_one_package_installing(&self, pkg_name: &str, depth: u8, ebin_flag: bool, 
+    fn add_one_package_installing(&self, pkg_name: &str, depth: u8, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) {
         if let Some(pkglines) = self.pkgname2lines.get(pkg_name) {
@@ -90,8 +91,8 @@ impl PackageManager {
         }
 
         if !missing_names.is_empty() {
-            println!("Missing packages: {:#?}", missing_names);
-            if !self.options.ignore_missing {
+            eprintln!("Missing packages: {:#?}", missing_names);
+            if !config().common.ignore_missing {
                 exit(1);
             }
         }
@@ -106,7 +107,7 @@ impl PackageManager {
         }
         if !missing_names.is_empty() {
             println!("Missing packages: {:#?}", missing_names);
-            if !self.options.ignore_missing {
+            if !config().common.ignore_missing {
                 exit(1);
             }
         }
@@ -120,9 +121,9 @@ impl PackageManager {
         let mut depend_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut depth = 1;
         let repo_format: Option<String> = self.repos_data[0].format.clone();
-        
+
         self.collect_depends(&packages, &mut depend_packages, depth, &repo_format)?;
-        
+
         while !depend_packages.is_empty() {
             packages.extend(depend_packages);
             depend_packages = HashMap::new();
@@ -136,20 +137,25 @@ impl PackageManager {
     fn load_package_info(&mut self, pkgline: &str) -> Result<Package> {
         if let Some(package) = self.pkghash2pkg.get(&pkgline[0..32]) {
             return Ok(package.clone());
-        } else {
-            let path = format!(
-                "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
-                paths::instance.epkg_cache.display(),
-                self.env_config.channel.name,
-                self.pkghash2spec[&pkgline[0..32]].repo,
-                self.options.arch,
-                &pkgline[0..2],
-                pkgline
-            );
-            let package = load_package_json(&path).unwrap();
-            self.pkghash2pkg.insert(pkgline.to_string(), package.clone());
-            return Ok(package);
         }
+
+        let spec = self.pkghash2spec.get(&pkgline[0..32])
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("Package spec not found"))?;
+
+        let channel_config = self.get_channel_config(config().common.env.clone())?;
+        let path = format!(
+            "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
+            dirs().epkg_cache.display(),
+            channel_config.channel.name,
+            spec.repo,
+            config().common.arch,
+            &pkgline[0..2],
+            pkgline
+        );
+        let package = load_package_json(&path)?;
+        self.pkghash2pkg.insert(pkgline.to_string(), package.clone());
+        Ok(package)
     }
 
     fn process_dependencies(
@@ -178,7 +184,7 @@ impl PackageManager {
                 );
             }
         }
-        
+
         Ok(())
     }
 
@@ -198,7 +204,7 @@ impl PackageManager {
                 return Ok(());
             }
         };
-    
+
         for req in requirements {
             let and_deps = match parse_requires(&pkg_format, req) {
                 std::result::Result::Ok(deps) => deps,
@@ -222,7 +228,7 @@ impl PackageManager {
         }
         Ok(())
     }
-    
+
     fn process_requirement_impl(
         &mut self,
         capability: &str,
@@ -238,7 +244,9 @@ impl PackageManager {
                 let pkg_mapping_name = match self.provide2pkgnames.get(capability) {
                     Some(pkg_name) => pkg_name,
                     None => {
-                        missing_deps.push(format!("{}-{}", capability, pkg_format));
+                        if !capability.starts_with("rpmlib(") {
+                            missing_deps.push(format!("{}-{}", capability, pkg_format));
+                        }
                         return Ok(());
                     }
                 };
@@ -249,7 +257,7 @@ impl PackageManager {
                 hashes
             }
         };
-    
+
         for hash in pkg_hashes {
             if !packages.contains_key(hash) && !depend_packages.contains_key(hash) {
                 depend_packages.insert(
@@ -260,7 +268,7 @@ impl PackageManager {
         }
         Ok(())
     }
-    
+
     fn handle_missing_dependencies(
         &self,
         missing: Vec<String>
@@ -268,12 +276,12 @@ impl PackageManager {
         if missing.is_empty() {
             return Ok(());
         }
-    
-        if self.options.ignore_missing {
+
+        if config().common.ignore_missing {
             println!("Missing dependencies ignored: {:?}", missing);
             Ok(())
         } else {
-            bail!("Missing dependencies found: {:?}", missing)
+            eyre::bail!("Missing dependencies found: {:?}", missing)
         }
     }
 
@@ -288,10 +296,9 @@ impl PackageManager {
         for pkgline in packages.keys() {
             let pkg_info = self.load_package_info(pkgline)?;
 
-            if pkg_info.requires_pre.is_some() {
-                let Some(requirements) = &pkg_info.requires_pre else { continue };
+            if !pkg_info.requires_pre.is_empty() {
                 self.process_requirements(
-                    requirements,
+                    &pkg_info.requires_pre,
                     packages,
                     depend_packages,
                     depth,
@@ -299,19 +306,17 @@ impl PackageManager {
                     &mut missing_deps,
                 )?;
             }
-            if pkg_info.depends.is_some() {
-                let Some(dependencies) = &pkg_info.depends else { continue };
+            if !pkg_info.depends.is_empty() {
                 self.process_dependencies(
-                    dependencies,
+                    &pkg_info.depends,
                     packages,
                     depend_packages,
                     depth,
                     &mut missing_deps,
                 )?;
-            } else if pkg_info.requires.is_some() {
-                let Some(requirements) = &pkg_info.requires else { continue };
+            } else if !pkg_info.requires.is_empty() {
                 self.process_requirements(
-                    requirements,
+                    &pkg_info.requires,
                     packages,
                     depend_packages,
                     depth,
@@ -320,7 +325,7 @@ impl PackageManager {
                 )?;
             }
         }
-    
+
         self.handle_missing_dependencies(missing_deps)?;
         Ok(())
     }

@@ -42,10 +42,31 @@ check_architecture() {
 setup_environment() {
     # Create cache directory
     mkdir -p "$EPKG_CACHE" || exit
-    cd       "$EPKG_CACHE" || exit
+}
+
+check_git_tree() {
+    # Get script directory using realpath
+    local SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+    # Go up one level since script is in bin/
+    local PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
+
+    if [ -d "$PROJECT_ROOT/.git" ] && [ -x "$PROJECT_ROOT/target/debug/epkg" ]; then
+        EPKG_PATH="$PROJECT_ROOT/target/debug/epkg"
+        return 0
+    fi
+    return 1
 }
 
 download_files() {
+    # Skip download if running from git tree
+    if check_git_tree; then
+        echo
+        print_info "Using local binary from git tree: $EPKG_PATH"
+        return
+    fi
+
+    cd "$EPKG_CACHE" || exit
+
     echo
     print_info "Source URL: $EPKG_URL"
     print_info "Destination: $EPKG_CACHE"
@@ -56,9 +77,9 @@ download_files() {
 
     echo "Downloading $EPKG_STATIC-$ARCH ..."
     curl -# -o "$EPKG_STATIC-$ARCH"        "$EPKG_URL/$EPKG_STATIC-$ARCH" --retry 5 || print_error "Failed to download binary"
-}
+    chmod +x "./$EPKG_STATIC-$ARCH"
+    EPKG_PATH=./$EPKG_STATIC-$ARCH
 
-verify_checksum() {
     command -v sha256sum >/dev/null || return
     sha256sum -c "$EPKG_STATIC-$ARCH.sha256" || exit
 }
@@ -75,8 +96,7 @@ initialize_epkg() {
     fi
 
     # Initialize epkg
-    chmod +x "./$EPKG_STATIC-$ARCH"
-    "./$EPKG_STATIC-$ARCH" init --store=$store_mode || exit
+    "$EPKG_PATH" init --store=$store_mode || exit
 }
 
 print_completion() {
@@ -100,7 +120,6 @@ main() {
     print_banner
     setup_environment
     download_files
-    verify_checksum
     initialize_epkg
     print_completion
 }

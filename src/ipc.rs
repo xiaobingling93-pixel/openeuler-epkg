@@ -3,14 +3,15 @@ use std::io;
 use std::io::BufRead; // for .read_line()
 use std::io::Write;
 use std::os::unix::fs::chown;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use nix::{self};
 use nix::unistd::{fork, setuid, Uid, ForkResult};
-use rand::Rng;
 use users::{get_current_uid, get_effective_uid};
-use anyhow::Result;
+use color_eyre::eyre::{self, Result};
 use serde_json::{json, Value};
 use crate::models::*;
 
@@ -191,7 +192,7 @@ use crate::models::*;
 enum WorkerCommand {
     Download(Vec<String>, String, usize, usize, Option<String>),
     Unpack(Vec<String>),
-    CacheRepo(String, String),
+    CacheRepo(String, String, String),
 }
 
 pub fn privdrop_on_suid() {
@@ -209,7 +210,7 @@ impl PackageManager {
                 Ok(ForkResult::Parent { child, .. }) => {
                     setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
                     self.has_worker_process = true;
-                    self.child_pid = Some(child); 
+                    self.child_pid = Some(child);
 
                     // wait for worker to create socket
                     for _ in 0..3 {
@@ -219,7 +220,7 @@ impl PackageManager {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     if !socket_path.exists() {
-                        return Err(anyhow::anyhow!("Socket file creation timeout"));
+                        return Err(eyre::eyre!("Socket file creation timeout"));
                     }
                 }
                 Ok(ForkResult::Child) => {
@@ -238,9 +239,9 @@ impl Drop for PackageManager {
     fn drop(&mut self) {
         // kill work process
         if let Some(pid) = self.child_pid {
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);     
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
         }
-        // remove socket file 
+        // remove socket file
         if !self.ipc_socket.is_empty() {
             let _ = std::fs::remove_file(&self.ipc_socket);
         }
@@ -252,7 +253,7 @@ fn is_suid() -> bool {
 }
 
 fn create_random_socket_path() -> PathBuf {
-    let mut rng = rand::thread_rng();
+        let mut rng = StdRng::from_entropy();
     PathBuf::from(format!(
         "/tmp/epkg-{}-{:x}.sock",
         get_effective_uid(),
@@ -293,19 +294,20 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
             res?;
         }
         WorkerCommand::Unpack(files) => {
-            let res = crate::store::unpack_packages(files)
-                .and_then(|_| send_response(
+            let res = match crate::store::unpack_packages(files) {
+                Ok(_) => send_response(
                     stream,
                     json!({"status": "success", "message": "Unpacked files"})
-                ))
-                .or_else(|e| send_response(
+                ),
+                Err(e) => send_response(
                     stream,
                     json!({"status": "error", "message": e.to_string()})
-                ));
+                )
+            };
             res?;
         }
-        WorkerCommand::CacheRepo(repo_name, repo_url) => {
-            let res = crate::repo::cache_repo_name(&repo_name, &repo_url)
+        WorkerCommand::CacheRepo(channel_name, repo_name, repo_url) => {
+            let res = crate::repo::cache_single_repository(&channel_name, &repo_name, &repo_url)
                 .and_then(|_| send_response(
                         stream,
                         json!({"status": "success", "message": "Cached repo"})
@@ -346,11 +348,12 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect(),
         )),
-        Some("cache_repo") => Ok(WorkerCommand::CacheRepo(
+        Some("cache_single_repository") => Ok(WorkerCommand::CacheRepo(
+            value["params"]["channel_name"].as_str().unwrap().to_string(),
             value["params"]["repo_name"].as_str().unwrap().to_string(),
             value["params"]["repo_url"].as_str().unwrap().to_string(),
         )),
-        _ => Err(anyhow::Error::new(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
+        _ => Err(eyre::eyre!(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
     }
 }
 
@@ -368,8 +371,8 @@ fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
     reader.read_line(&mut response_line).unwrap();
     let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
     if response["status"] == "error" {
-        return Err(anyhow::anyhow!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
-    } 
+        return Err(eyre::eyre!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
+    }
     // else {
     //     println!("ipc {} command completed successfully", command);
     // }
@@ -383,7 +386,7 @@ impl PackageManager {
         self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket).unwrap());
         let stream = self.ipc_stream
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("IPC stream not initialized")).unwrap();
+            .ok_or_else(|| eyre::eyre!("IPC stream not initialized")).unwrap();
 
         // Send command
         let mut writer = io::BufWriter::new(stream);
@@ -434,20 +437,22 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn cache_repo_name(&mut self, repo_name: &str, repo_url: &str) -> Result<()> {
-        if !self.has_worker_process {
-            crate::repo::cache_repo_name(repo_name, repo_url)?;
-        } else {
-            self.send_command(
-                json!({
-                    "command": "cache_repo", 
-                    "params": {
-                        "repo_name": repo_name,
-                        "repo_url": repo_url
-                    }
-                })
-            ).unwrap();
-        }
-        Ok(())
+    #[allow(dead_code)]
+    pub fn cache_single_repository(&mut self, channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
+	if !self.has_worker_process {
+	    crate::repo::cache_single_repository(channel_name, repo_name, repo_url)?;
+	} else {
+	    self.send_command(
+		json!({
+		    "command": "cache_single_repository",
+		    "params": {
+			"channel_name": channel_name,
+			"repo_name": repo_name,
+			"repo_url": repo_url
+		    }
+		})
+	    ).unwrap();
+	}
+	Ok(())
     }
 }

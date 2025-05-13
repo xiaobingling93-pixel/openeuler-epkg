@@ -2,8 +2,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, ErrorKind};
 use std::path::Path;
 use std::path::PathBuf;
-use anyhow::Result;
-use anyhow::Context;
+use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre;
 use sha2::{Sha256, Digest};
 use std::fs::File;
 use tar::Archive;
@@ -19,11 +20,11 @@ pub enum FileType {
     RubyScript,
     NodeScript,
     LuaScript,
-    AsciiText,
-    Binary,
+    Others,
 }
 
 impl FileType {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             FileType::Elf => "ELF 64-bit LSB executable",
@@ -34,8 +35,7 @@ impl FileType {
             FileType::RubyScript => "Ruby script, ASCII text executable",
             FileType::NodeScript => "Node.js script, ASCII text executable",
             FileType::LuaScript => "Lua script, ASCII text executable",
-            FileType::AsciiText => "ASCII text",
-            FileType::Binary => "Binary data",
+            FileType::Others => "Other file type",
         }
     }
 }
@@ -67,12 +67,12 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 }
 
 // Get file type
-pub fn get_file_type(file: &Path) -> Result<FileType> {
+pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 
     // Check Symbolic link first
     if fs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
-        return Ok(FileType::Symlink);
+        return Ok((FileType::Symlink, String::new()));
     }
 
     // Read file contents for other checks
@@ -81,7 +81,7 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     let mut buffer = vec![0;4];
     if let Ok(_) = file.read_exact(&mut buffer) {
         if buffer.starts_with(ELF_MAGIC) {
-            return Ok(FileType::Elf);
+            return Ok((FileType::Elf, String::new()));
         }
     }
 
@@ -92,36 +92,23 @@ pub fn get_file_type(file: &Path) -> Result<FileType> {
     let mut first_line = String::new();
     let bytes_read = reader.read_line(&mut first_line)?;
     if bytes_read == 0 {
-        return Ok(FileType::AsciiText);
+        return Ok((FileType::Others, String::new()));
     }
 
     // Check if file starts with shebang
     if first_line.starts_with("#!") {
+        let script_line0 = first_line.trim_end().to_string();
         // Check for various script types
-        if first_line.contains("sh") {
-            return Ok(FileType::ShellScript);
-        } else if first_line.contains("perl") {
-            return Ok(FileType::PerlScript);
-        } else if first_line.contains("python") {
-            return Ok(FileType::PythonScript);
-        } else if first_line.contains("ruby") {
-            return Ok(FileType::RubyScript);
-        } else if first_line.contains("node") {
-            return Ok(FileType::NodeScript);
-        } else if first_line.contains("lua") {
-            return Ok(FileType::LuaScript);
+        if script_line0.contains("sh")              { return Ok((FileType::ShellScript,  script_line0));
+        } else if script_line0.contains("perl")     { return Ok((FileType::PerlScript,   script_line0));
+        } else if script_line0.contains("python")   { return Ok((FileType::PythonScript, script_line0));
+        } else if script_line0.contains("ruby")     { return Ok((FileType::RubyScript,   script_line0));
+        } else if script_line0.contains("node")     { return Ok((FileType::NodeScript,   script_line0));
+        } else if script_line0.contains("lua")      { return Ok((FileType::LuaScript,    script_line0));
         }
     }
 
-    // Try to detect if it's ASCII text
-    for line in reader.lines() {
-        let line = line?;
-        if !line.is_ascii() {
-            return Ok(FileType::Binary);
-        }
-    }
-
-    return Ok(FileType::AsciiText);
+    Ok((FileType::Others, String::new()))
 }
 
 pub fn compute_file_sha256(file_path: &str) -> Result<String> {
@@ -161,11 +148,11 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
     let file_path = checksum_file.with_extension("");
 
     if !checksum_file.exists() {
-        return Err(anyhow::anyhow!("Checksum file not found: {}", checksum_file.display()));
+        return Err(eyre::eyre!("Checksum file not found: {}", checksum_file.display()));
     }
 
     if !file_path.exists() {
-        return Err(anyhow::anyhow!("File not found: {}", file_path.display()));
+        return Err(eyre::eyre!("File not found: {}", file_path.display()));
     }
 
     // Read expected checksum from file
@@ -174,14 +161,14 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
         .trim()
         .split_whitespace()
         .next()
-        .ok_or_else(|| anyhow::anyhow!("Invalid checksum file format"))?;
+        .ok_or_else(|| eyre::eyre!("Invalid checksum file format"))?;
 
     // Compute actual checksum
     let actual_checksum = compute_file_sha256(file_path.to_str().unwrap())?;
 
     // Compare checksums
     if actual_checksum != expected_checksum {
-        return Err(anyhow::anyhow!(
+        return Err(eyre::eyre!(
             "Checksum verification failed for {}: expected {}, got {}",
             file_path.display(),
             expected_checksum,
@@ -204,13 +191,13 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
 pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     // Verify tar file exists and is readable
     if !tar_path.exists() {
-        return Err(anyhow::anyhow!("Tar file not found: {}", tar_path.display()));
+        return Err(eyre::eyre!("Tar file not found: {}", tar_path.display()));
     }
 
     // Check if file is empty
     let metadata = fs::metadata(tar_path)?;
     if metadata.len() == 0 {
-        return Err(anyhow::anyhow!("Tar file is empty: {}", tar_path.display()));
+        return Err(eyre::eyre!("Tar file is empty: {}", tar_path.display()));
     }
 
     // Open and extract tar.gz file
@@ -224,14 +211,14 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
         let mut entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                return Err(anyhow::anyhow!("Error reading tar entry: {}", e));
+                return Err(eyre::eyre!("Error reading tar entry: {}", e));
             }
         };
 
         let path = match entry.path() {
             Ok(path) => path,
             Err(e) => {
-                return Err(anyhow::anyhow!("Error getting entry path: {}", e));
+                return Err(eyre::eyre!("Error getting entry path: {}", e));
             }
         };
 
@@ -245,7 +232,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
         // Create parent directories if needed
         if path.is_dir() {
             if let Err(e) = fs::create_dir_all(&full_path) {
-                return Err(anyhow::anyhow!("Error creating directory {}: {}", full_path.display(), e));
+                return Err(eyre::eyre!("Error creating directory {}: {}", full_path.display(), e));
             }
             continue;
         }
@@ -255,10 +242,10 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
             Ok(_) => {
                 // Verify file was created and is readable
                 if !full_path.exists() {
-                    return Err(anyhow::anyhow!("File was not extracted: {}", full_path.display()));
+                    return Err(eyre::eyre!("File was not extracted: {}", full_path.display()));
                 }
                 if let Err(e) = fs::metadata(&full_path) {
-                    return Err(anyhow::anyhow!("Cannot access extracted file {}: {}", full_path.display(), e));
+                    return Err(eyre::eyre!("Cannot access extracted file {}: {}", full_path.display(), e));
                 }
             },
             Err(e) => {
@@ -268,7 +255,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
                     entry.unpack(&full_path)
                         .with_context(|| format!("Error extracting {} after removal", full_path.display()))?;
                 } else {
-                    return Err(anyhow::anyhow!("Error extracting {}: {}", full_path.display(), e))
+                    return Err(eyre::eyre!("Error extracting {}: {}", full_path.display(), e))
                 }
             }
         }
