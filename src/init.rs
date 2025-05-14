@@ -79,6 +79,7 @@ impl PackageManager {
         let current_exe = std::env::current_exe()?;
         let repo_root = current_exe.parent().unwrap().parent().unwrap().parent().unwrap();
         let git_dir = repo_root.join(".git");
+        let mut need_download_epkg_manager: bool = false;
 
         // Collect urls for downloading in parallel
         let mut urls = Vec::new();
@@ -87,12 +88,15 @@ impl PackageManager {
             // Create symlink directly to git working directory
             let env_opt = env_root.join("opt");
             let epkg_manager_dir = env_opt.join("epkg-manager");
-            fs::create_dir_all(env_opt)?;
-            symlink(repo_root.to_str().unwrap(), &epkg_manager_dir)?;
+            if !env_opt.exists() {
+                fs::create_dir_all(env_opt)?;
+                symlink(repo_root.to_str().unwrap(), &epkg_manager_dir)?;
+            }
             println!("Using local git repository for epkg manager");
         } else {
             println!("Downloading epkg manager from {}", epkg_manager_url);
             urls.push(epkg_manager_url.clone());
+            need_download_epkg_manager = true;
         }
 
         // Check for local elf-loader
@@ -123,7 +127,7 @@ impl PackageManager {
                 .context("Failed to verify elf-loader checksum")?;
         }
 
-        if !epkg_manager_tar.exists() {
+        if need_download_epkg_manager && !epkg_manager_tar.exists() {
             return Err(eyre::eyre!("Failed to download epkg manager tar file from {}", epkg_manager_url));
         }
 

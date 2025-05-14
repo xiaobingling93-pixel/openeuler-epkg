@@ -27,14 +27,14 @@ impl EPKGDirs {
 
         // Get username - if it fails, the error will propagate upward
         let username = get_username()?;
-        let user_envs = opt_epkg.join(format!("users/{}/envs", username));
+        let user_pubenvs = opt_epkg.join(format!("envs/{}", username));
 
         Ok(Self {
             opt_epkg: opt_epkg.clone(),
             home_epkg: home_epkg.clone(),
             home_config: home_epkg.join("config"),
             private_envs: home_epkg.join("envs"),
-            public_envs: user_envs,
+            public_envs: user_pubenvs,
             epkg_store: store_root,
             epkg_cache: cache_root.clone(),
             epkg_pkg_cache: cache_root.join("packages"),
