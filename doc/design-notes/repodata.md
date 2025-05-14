@@ -119,8 +119,33 @@ wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/repodata% du sto
   during the depends DAG walking. Refer to <https://prefix.dev/blog/sharded_repodata>
   It creates one shard per *pkgname*.
 
+The possible solution: append-only shards
+- maintain per-slice shard index file
+    name: `shards-$date-$hash.txt`
+    lines: `shard_name shard_size`
+    alternative: can be optimized to a big binary array, since sharding logic is predefined
+- shard files must be stored online *uncompressed*, however may use HTTP compression to save download bandwidth
+- split repodata into shards by *prefix of pkgname*
+  - 2-digit: up to 36**2=1296 shard files, shards.txt size < `30B * 1296 = 37KB`, smaller when compressed
+  - 3-digit: up to 36**3=46656 shard files, shards.txt size < `30B * 46656 = 1.3MB`, or `4B * 46656 = 182KB` for binary format
+  - for "libxxx" packages, prefix shall count from "xxx"
+  - to avoid inbalanced shards, could use `shard_name=hash_of(pkgname)`, however it'll reduce compress ratio
+  - may start from 2-digit sharding, years later switch to 3-digit smoothly in forward compatible way
 ```
-# misc old ideas
+79MB: packages.json for 18k packages
+79MB * 10/36/36.0 = 583kb: 2-digit shards for total 180k packages
+79MB * 100/36/36/36.0 = 166kb: 3-digit shards for total 1.8M packages
+```
+- client side `epkg update/install`: slice + appending helps 100x less
+  bandwidth: incremental download new contents, if the size in shard index is
+  larger than local cache
+- client side `epkg env create`: sharding helps 10x-1000x less bandwidth:
+  typically one environment won't install too many packages (much less than /
+  OS installation), it could be wasteful to pre-download all repodata for all
+  packages.
+
+## misc old ideas
+```
 - 1 store-paths.txt index (pkgname => pkgline(s))
 - 1 filelist.idx hash index (pkgname => filelist.txt locations)
 - 1 fulltext2pkgnames.idx index (full text words => pkgname(s))
