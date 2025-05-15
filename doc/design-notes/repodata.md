@@ -202,7 +202,7 @@ location: packages/$pkgline.epkg
     1 user, or epkg invocation
         {X} EnvConfig
         {X} ChannelConfig
-            {X}*{Y} RepoData
+            {X}*{Y} RepoIndex
                 {X}*{Y}*[Z] RepoSlice
                     {X}*{Y}*[Z] StorePathsIndex
                     {X}*{Y}*[Z] PkgInfoIndex

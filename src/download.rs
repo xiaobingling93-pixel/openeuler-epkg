@@ -5,14 +5,197 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::sync::mpsc::Sender;
+use std::sync::LazyLock;
 
 use color_eyre::{eyre, Result};
 use color_eyre::eyre::WrapErr;
-use crossbeam_channel::bounded;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::{Agent, config::Config, tls::TlsConfig, Proxy};
 use crate::dirs;
 use crate::models::*;
+
+#[derive(Debug, Clone)]
+pub struct DownloadTask {
+    pub url: String,
+    pub output_dir: String,
+    pub max_retries: usize,
+    pub data_channel: Option<Sender<Vec<u8>>>,
+    pub status: Arc<std::sync::Mutex<DownloadStatus>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DownloadStatus {
+    Pending,
+    Downloading,
+    Completed,
+    Failed(String),
+}
+
+impl DownloadTask {
+    pub fn new(url: String, output_dir: String, max_retries: usize) -> Self {
+        Self {
+            url,
+            output_dir,
+            max_retries,
+            data_channel: None,
+            status: Arc::new(std::sync::Mutex::new(DownloadStatus::Pending)),
+        }
+    }
+
+    pub fn with_data_channel(mut self, channel: Sender<Vec<u8>>) -> Self {
+        self.data_channel = Some(channel);
+        self
+    }
+
+    pub fn get_status(&self) -> DownloadStatus {
+        self.status.lock().unwrap().clone()
+    }
+}
+
+pub struct DownloadManager {
+    client: Agent,
+    multi_progress: MultiProgress,
+    tasks: Arc<std::sync::Mutex<Vec<DownloadTask>>>,
+    pool: rayon::ThreadPool,
+    is_processing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DownloadManager {
+    pub fn new(nr_parallel: usize, proxy: Option<&str>) -> Result<Self> {
+        let config = Config::builder()
+            .tls_config(
+                TlsConfig::builder()
+                    .build()
+            )
+            .proxy(proxy.map(|p| Proxy::new(p).unwrap()))
+            .user_agent("curl/8.13.0")
+            .build();
+
+        let client = Agent::new_with_config(config);
+        let multi_progress = MultiProgress::new();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(nr_parallel)
+            .build()?;
+
+        Ok(Self {
+            client,
+            multi_progress,
+            tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pool,
+            is_processing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
+    pub fn submit_task(&self, task: DownloadTask) -> Result<()> {
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.push(task);
+        Ok(())
+    }
+
+    pub fn wait_for_task(&self, task_id: usize) -> Result<DownloadStatus> {
+        loop {
+            let tasks = self.tasks.lock().unwrap();
+            if let Some(task) = tasks.get(task_id) {
+                let status = task.get_status();
+                match status {
+                    DownloadStatus::Completed | DownloadStatus::Failed(_) => return Ok(status),
+                    _ => {}
+                }
+            }
+            drop(tasks);
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    pub fn start_processing(&self) -> Result<()> {
+        if self.is_processing.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        self.is_processing.store(true, std::sync::atomic::Ordering::Relaxed);
+        let tasks = Arc::clone(&self.tasks);
+        let client = self.client.clone();
+        let multi_progress = self.multi_progress.clone();
+        let is_processing = Arc::clone(&self.is_processing);
+
+        self.pool.spawn(move || {
+            loop {
+                let mut tasks_guard = tasks.lock().unwrap();
+                let pending_tasks: Vec<_> = tasks_guard.iter_mut()
+                    .filter(|t| matches!(t.get_status(), DownloadStatus::Pending))
+                    .collect();
+
+                if pending_tasks.is_empty() {
+                    // Check if all tasks are completed or failed
+                    let all_done = tasks_guard.iter()
+                        .all(|t| matches!(t.get_status(), DownloadStatus::Completed | DownloadStatus::Failed(_)));
+                    if all_done {
+                        is_processing.store(false, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                    drop(tasks_guard);
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+
+                for task in pending_tasks {
+                    let client = client.clone();
+                    let multi_progress = multi_progress.clone();
+                    let task = task.clone();
+
+                    rayon::spawn(move || {
+                        *task.status.lock().unwrap() = DownloadStatus::Downloading;
+                        if let Err(e) = download_task(
+                            &client,
+                            &task.url,
+                            &task.output_dir,
+                            &multi_progress,
+                            task.max_retries,
+                            task.data_channel,
+                        ) {
+                            *task.status.lock().unwrap() = DownloadStatus::Failed(e.to_string());
+                        } else {
+                            *task.status.lock().unwrap() = DownloadStatus::Completed;
+                        }
+                    });
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    pub fn wait_for_all_tasks(&self) -> Result<()> {
+        while self.is_processing.load(std::sync::atomic::Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        // Check for any failed tasks
+        let tasks = self.tasks.lock().unwrap();
+        let errors: Vec<String> = tasks.iter()
+            .filter_map(|t| {
+                if let DownloadStatus::Failed(e) = t.get_status() {
+                    Some(format!("Failed to download {}: {}", t.url, e))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !errors.is_empty() {
+            let error_count = errors.len();
+            let error_details = errors.join("\n");
+            return Err(eyre::eyre!(
+                "{} downloads failed:\n{}",
+                error_count,
+                error_details
+            ));
+        }
+
+        Ok(())
+    }
+}
 
 // Main Features:
 //
@@ -80,68 +263,41 @@ impl std::fmt::Display for FatalError {
 
 impl std::error::Error for FatalError {}
 
+pub static DOWNLOAD_MANAGER: LazyLock<DownloadManager> = LazyLock::new(|| {
+    let config = config();
+    DownloadManager::new(config.common.nr_parallel, config.common.proxy.as_deref())
+        .expect("Failed to initialize download manager")
+});
+
+pub fn submit_download_task(task: DownloadTask) -> Result<()> {
+    DOWNLOAD_MANAGER.submit_task(task)
+}
+
 pub fn download_urls(
     urls: Vec<String>,
     output_dir: &str,
-    nr_parallel: usize,
     max_retries: usize,
-    proxy: Option<&str>,
-) -> Result<()> {
-    // Create HTTP client with optional proxy
-    let config = Config::builder()
-        .tls_config(
-            TlsConfig::builder()
-                .build()
-        )
-        .proxy(proxy.map(|p| Proxy::new(p).unwrap()))
-        .user_agent("curl/8.13.0") // necessary for gitee.com
-        .build();
-
-    let client = Agent::new_with_config(config);
+    async_mode: bool,
+) -> Result<Vec<DownloadTask>> {
+    let mut submitted_tasks = Vec::new();
+    for url in urls {
+        let task = DownloadTask::new(url, output_dir.to_string(), max_retries);
+        submit_download_task(task.clone())?;
+        submitted_tasks.push(task);
+    }
 
     fs::create_dir_all(output_dir)?;
-    let multi_progress = MultiProgress::new();
+    DOWNLOAD_MANAGER.start_processing()?;
 
-    let (sender, receiver) = bounded::<String>(urls.len());
-    for url in urls {
-        sender.send(url)?;
-    }
-    drop(sender);
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(nr_parallel)
-        .build()?;
-
-    let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
-
-    pool.scope(|s| {
-        for url in receiver {
-            let client = client.clone();
-            let output_dir = output_dir.to_string();
-            let multi_progress = multi_progress.clone();
-            let errors = Arc::clone(&errors);
-
-            s.spawn(move |_| {
-                if let Err(e) = download_task(&client, &url, &output_dir, &multi_progress, max_retries) {
-                    let error_msg = format!("Failed to download {}: {}", url, e);
-                    errors.lock().unwrap().push(error_msg);
-                }
-            });
+    if !async_mode {
+        // Wait for each task one by one (in submitted order)
+        for (i, _task) in submitted_tasks.iter().enumerate() {
+            DOWNLOAD_MANAGER.wait_for_task(i)?;
         }
-    });
-
-    let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
-    if !errors.is_empty() {
-        let error_count = errors.len();
-        let error_details = errors.join("\n");
-        return Err(eyre::eyre!(
-            "{} downloads failed:\n{}",
-            error_count,
-            error_details
-        ));
+        Ok(Vec::new())
+    } else {
+        Ok(submitted_tasks)
     }
-
-    Ok(())
 }
 
 /// Downloads a file from a URL to the output directory.
@@ -154,6 +310,7 @@ fn download_task(
     output_dir: &str,
     multi_progress: &MultiProgress,
     max_retries: usize,
+    data_channel: Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
     let final_path = if let Some((_, str_b)) = url.split_once("///") {
         Path::new(output_dir).join(str_b)
@@ -166,6 +323,9 @@ fn download_task(
 
     if final_path.exists() {
         return Ok(());
+    }
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)?;
     }
 
     let pb = multi_progress.add(ProgressBar::new(0));
@@ -180,7 +340,8 @@ fn download_task(
         url,
         &part_path,
         &pb,
-        max_retries
+        max_retries,
+        data_channel,
     );
 
     pb.finish_and_clear();
@@ -202,11 +363,12 @@ fn download_file_with_retries(
     part_path: &Path,
     pb: &ProgressBar,
     max_retries: usize,
+    data_channel: Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
     let mut retries = 0;
 
     loop {
-        match download_file(client, url, part_path, pb) {
+        match download_file(client, url, part_path, pb, data_channel.clone()) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if e.downcast_ref::<FatalError>().is_some() {
@@ -231,6 +393,7 @@ fn download_file(
     url: &str,
     part_path: &Path,
     pb: &ProgressBar,
+    data_channel: Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
     let mut downloaded = if part_path.exists() {
         fs::metadata(part_path)?.len()
@@ -238,8 +401,7 @@ fn download_file(
         0
     };
 
-    // Create a request that mimics wget
-    let mut request = client.get(url);
+    let mut request = client.get(url.replace("///", "/"));
 
     if downloaded > 0 {
         request = request.header("Range", &format!("bytes={}-", downloaded));
@@ -281,17 +443,6 @@ fn download_file(
         }
     }
 
-    // Check content length to detect suspiciously small files
-    if let Some(content_length) = response.headers().get("Content-Length").and_then(|v| v.to_str().ok()) {
-        if let Ok(length) = content_length.parse::<u64>() {
-            if length < 10 {
-                let error_msg = format!("Received suspiciously small file ({} bytes). This may indicate an error page or authentication issue.", length);
-                pb.finish_with_message(error_msg.clone());
-                return Err(eyre::eyre!(FatalError(error_msg)));
-            }
-        }
-    }
-
     if downloaded > 0 && status != 206 {
         fs::remove_file(part_path)?;
         downloaded = 0;
@@ -307,11 +458,13 @@ fn download_file(
 
     let mut file = OpenOptions::new()
         .create(true)
+        .write(true)
         .append(true)
         .open(part_path)?;
 
     let mut reader = response.body_mut().as_reader();
-    let mut buffer = [0; 8192];
+    let mut buffer = vec![0; 8192];
+
     loop {
         let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
@@ -320,10 +473,16 @@ fn download_file(
         file.write_all(&buffer[..bytes_read])?;
         downloaded += bytes_read as u64;
         pb.set_position(downloaded);
+
+        if let Some(channel) = &data_channel {
+            if let Err(_) = channel.send(buffer[..bytes_read].to_vec()) {
+                // Channel was closed, but we continue downloading
+            }
+        }
     }
 
     if total_size > 0 && downloaded != total_size {
-        let error_msg = format!("Download incomplete - {}", url);
+        let error_msg = format!("Downloaded size ({}) does not match Content-Length ({})", downloaded, total_size);
         pb.finish_with_message(error_msg.clone());
         return Err(eyre::eyre!(error_msg));
     }
@@ -333,7 +492,7 @@ fn download_file(
 }
 
 impl PackageManager {
-    fn download_or_copy_urls(&mut self, urls: Vec<String>, output_dir: &str, nr_parallel: usize, max_retries: usize, proxy: Option<&str>) -> Result<()> {
+    fn download_or_copy_urls(&mut self, urls: Vec<String>, output_dir: &str, max_retries: usize, async_mode: bool) -> Result<()> {
         if urls.is_empty() {
             return Ok(());
         }
@@ -347,13 +506,13 @@ impl PackageManager {
                 }
             }
         } else {
-            self.download_urls(urls, output_dir, nr_parallel, max_retries, proxy)?;
+            download_urls(urls, output_dir, max_retries, async_mode)?;
         }
         Ok(())
     }
 
     // Download packages specified by their pkgline strings.
-    pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<Vec<String>> {
+    pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>, async_mode: bool) -> Result<Vec<String>> {
         let output_dir = dirs().epkg_pkg_cache.display().to_string();
 
         // Step 1: Compose URLs for each pkgline
@@ -370,7 +529,7 @@ impl PackageManager {
                 let channel_config = self.get_channel_config(config().common.env.clone())?;
                 let url = format!(
                     "{}/{}/{}/store/{}/{}.epkg",
-                    channel_config.channel.baseurl.clone().unwrap_or_default(),
+                    channel_config.index_url.clone(),
                     repo,
                     config().common.arch,
                     &pkgline[..2], // First 2 characters of the hash
@@ -384,7 +543,13 @@ impl PackageManager {
         }
 
         // Step 2: Call the predefined download_urls function
-        self.download_or_copy_urls(urls, &output_dir, 6, 6, None)?;
+        self.download_or_copy_urls(urls, &output_dir, 6, async_mode)?;
         Ok(local_files)
+    }
+
+    // Wait for all pending downloads to complete
+    pub fn wait_for_downloads(&self) -> Result<()> {
+        let _ = DOWNLOAD_MANAGER.wait_for_all_tasks()?;
+        Ok(())
     }
 }

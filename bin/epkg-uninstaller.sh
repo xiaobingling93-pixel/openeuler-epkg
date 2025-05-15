@@ -41,8 +41,9 @@ clean_user_file() {
         EPKG_CLEAN_DIR="$home/.epkg/ $EPKG_CLEAN_DIR"
     fi
     if [ -d $home/.cache/epkg/ ]; then
-        /bin/rm -rf $home/.cache/epkg/
-        EPKG_CLEAN_DIR="$home/.cache/epkg/ $EPKG_CLEAN_DIR"
+        # Don't remove $home/.cache/epkg/downloads for quick development cycle
+        /bin/rm -rf $home/.cache/epkg/channel
+        EPKG_CLEAN_DIR="$home/.cache/epkg/channel $EPKG_CLEAN_DIR"
     fi
 
     bashrc_file="$home/$RC_FILE"

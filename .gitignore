@@ -1,3 +1,4 @@
 # Cargo build
 target/
 dist/
+*.swp

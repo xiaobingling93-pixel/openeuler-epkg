@@ -173,15 +173,7 @@ use crate::models::*;
 //    }
 //    ```
 //
-// 2. `PackageManager::install_packages()`:
-//    ```
-//    let files = self.download_packages(&packages_to_install)?;
-// => self.unpack_packages(files)?;
-//    self.installed_packages.extend(packages_to_install);
-//    self.save_installed_packages()?;
-//    ```
-//
-// 3. `PackageManager::store_gc()`:
+// 2. `PackageManager::store_gc()`:
 //    ```
 // => self.garbage_collect()?;
 //    ```
@@ -190,9 +182,7 @@ use crate::models::*;
 
 #[derive(Debug)]
 enum WorkerCommand {
-    Download(Vec<String>, String, usize, usize, Option<String>),
     Unpack(Vec<String>),
-    CacheRepo(String, String, String),
 }
 
 pub fn privdrop_on_suid() {
@@ -281,18 +271,6 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
 fn handle_client(stream: &mut UnixStream) -> Result<()> {
     let command = read_command(stream)?;
     match command {
-        WorkerCommand::Download(urls, output_dir, nr_parallel, max_retries, proxy) => {
-            let res = crate::download::download_urls(urls, &output_dir, nr_parallel, max_retries, proxy.as_deref())
-                .and_then(|_| send_response(
-                        stream,
-                        json!({"status": "success", "message": "Downloaded files"})
-                ))
-                .or_else(|e| send_response(
-                        stream,
-                        json!({"status": "error", "message": e.to_string()})
-                ));
-            res?;
-        }
         WorkerCommand::Unpack(files) => {
             let res = match crate::store::unpack_packages(files) {
                 Ok(_) => send_response(
@@ -306,18 +284,6 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
             };
             res?;
         }
-        WorkerCommand::CacheRepo(channel_name, repo_name, repo_url) => {
-            let res = crate::repo::cache_single_repository(&channel_name, &repo_name, &repo_url)
-                .and_then(|_| send_response(
-                        stream,
-                        json!({"status": "success", "message": "Cached repo"})
-                ))
-                .or_else(|e| send_response(
-                        stream,
-                        json!({"status": "error", "message": e.to_string()})
-                ));
-            res?;
-        }
     }
     Ok(())
 }
@@ -328,18 +294,6 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
 
     let value: Value = serde_json::from_str(&buf)?;
     match value["command"].as_str() {
-        Some("download") => Ok(WorkerCommand::Download(
-            value["params"]["urls"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect(),
-            value["params"]["output_dir"].as_str().unwrap().to_string(),
-            value["params"]["nr_parallel"].as_u64().unwrap() as usize,
-            value["params"]["max_retries"].as_u64().unwrap() as usize,
-            value["params"]["proxy"].as_str().map(String::from),
-        )),
         Some("unpack") => Ok(WorkerCommand::Unpack(
             value["params"]["files"]
                 .as_array()
@@ -347,11 +301,6 @@ fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect(),
-        )),
-        Some("cache_single_repository") => Ok(WorkerCommand::CacheRepo(
-            value["params"]["channel_name"].as_str().unwrap().to_string(),
-            value["params"]["repo_name"].as_str().unwrap().to_string(),
-            value["params"]["repo_url"].as_str().unwrap().to_string(),
         )),
         _ => Err(eyre::eyre!(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
     }
@@ -400,27 +349,6 @@ impl PackageManager {
         Ok(())
     }
 
-    // wrapper functions
-    pub fn download_urls(&mut self, urls: Vec<String>, output_dir: &str, nr_parallel: usize, max_retries: usize, proxy: Option<&str>) -> Result<()> {
-        if !self.has_worker_process {
-            crate::download::download_urls(urls, output_dir, nr_parallel, max_retries, proxy)?;
-        } else {
-            self.send_command(
-                json!({
-                    "command": "download",
-                    "params": {
-                        "urls": urls,
-                        "output_dir": output_dir,
-                        "nr_parallel": nr_parallel,
-                        "max_retries": max_retries,
-                        "proxy": proxy
-                    }
-                }),
-            ).unwrap();
-        }
-        Ok(())
-    }
-
     pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;
@@ -437,22 +365,4 @@ impl PackageManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn cache_single_repository(&mut self, channel_name: &str, repo_name: &str, repo_url: &str) -> Result<()> {
-	if !self.has_worker_process {
-	    crate::repo::cache_single_repository(channel_name, repo_name, repo_url)?;
-	} else {
-	    self.send_command(
-		json!({
-		    "command": "cache_single_repository",
-		    "params": {
-			"channel_name": channel_name,
-			"repo_name": repo_name,
-			"repo_url": repo_url
-		    }
-		})
-	    ).unwrap();
-	}
-	Ok(())
-    }
 }

@@ -1,0 +1,132 @@
+# Global mirrors that host multiple distributions
+huawei:
+  name: "Huawei Cloud Mirror"
+  url: "https://mirrors.huaweicloud.com"
+  priority: 10
+  supports:
+    - debian
+    - ubuntu
+    - fedora
+    - opensuse
+    - openeuler
+    - rocky
+    - almalinux
+    - alpine
+
+tsinghua:
+  name: "Tsinghua University Mirror"
+  url: "https://mirrors.tuna.tsinghua.edu.cn"
+  priority: 20
+  supports:
+    - debian
+    - ubuntu
+    - fedora
+    - opensuse
+    - openeuler
+    - rocky
+    - almalinux
+    - archlinux
+    - alpine
+
+ustc:
+  name: "USTC Mirror"
+  url: "https://mirrors.ustc.edu.cn"
+  priority: 30
+  supports:
+    - debian
+    - ubuntu
+    - fedora
+    - opensuse
+    - openeuler
+    - archlinux
+    - alpine
+
+rackspace:
+  name: "Rackspace Mirror"
+  url: "https://mirror.rackspace.com"
+  priority: 40
+  supports:
+    - debian
+    - ubuntu
+    - fedora
+    - centos
+    - rocky
+    - almalinux
+
+netease:
+  name: "Netease Mirror"
+  url: "https://mirrors.163.com"
+  priority: 50
+  supports:
+    - debian
+    - ubuntu
+    - fedora
+    - centos
+
+# Distribution-specific mirrors
+debian_official:
+  name: "Debian Official Mirror"
+  url: "https://deb.debian.org"
+  priority: 1
+  supports:
+    - debian
+
+ubuntu_official:
+  name: "Ubuntu Official Mirror"
+  url: "https://archive.ubuntu.com"
+  priority: 1
+  supports:
+    - ubuntu
+
+# https://dl.fedoraproject.org/pub/fedora/linux/releases/42/Everything/x86_64/os/repodata/
+fedora_official:
+  name: "Fedora Official Mirror"
+  url: "https://dl.fedoraproject.org/pub"
+  priority: 1
+  supports:
+    - fedora
+
+opensuse_official:
+  name: "openSUSE Official Mirror"
+  url: "https://download.opensuse.org"
+  priority: 1
+  supports:
+    - opensuse
+
+openeuler_official:
+  name: "openEuler Official Mirror"
+  url: "https://repo.openeuler.org"
+  top_level: true
+  priority: 1
+  supports:
+    - openeuler
+
+rocky_official:
+  name: "Rocky Linux Official Mirror"
+  url: "https://dl.rockylinux.org/pub"
+  priority: 1
+  supports:
+    - rocky
+
+almalinux_official:
+  name: "AlmaLinux Official Mirror"
+  url: "https://repo.almalinux.org"
+  priority: 1
+  supports:
+    - almalinux
+
+archlinux_official:
+  name: "Arch Linux Official Mirror"
+  url: "https://geo.mirror.pkgbuild.com"
+  top_level: true
+  priority: 1
+  supports:
+    - archlinux
+
+alpine_official:
+  name: "Alpine Linux Official Mirror"
+  url: "https://dl-cdn.alpinelinux.org"
+  top_level: true
+  priority: 1
+  supports:
+    - alpine

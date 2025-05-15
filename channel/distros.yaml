@@ -1,0 +1,217 @@
+# Distribution repository configurations
+# This file defines the repository structures and metadata for various Linux distributions
+# Each distribution section contains:
+# - distro: Distribution name
+# - format: Package format (deb, rpm, pacman, apk, conda)
+# - versions: List of supported versions (first one is official, others are aliases)
+# - repos: Available repositories for the distribution
+# - index_locations_template: URL templates for repository metadata files
+#   Variables in templates:
+#   - {version}: Distribution version
+#   - {VERSION}: Uppercase version (for specific cases)
+#   - {repo}: Repository name
+#   - {arch}: Architecture (e.g., x86_64, aarch64; will be auto mapped to amd64, arm64 for deb)
+
+debian:
+  distro: debian
+  format: deb
+  versions:
+    - sid unstable # First value is official and used for {version} interpolation, others are aliases
+    - testing
+    - trixie    12 12.10 Debian12.10
+    - bookworm  11 11.11 Debian11.11
+    - bullseye  10 10.13 Debian10.13
+  repos:
+    - main
+    - contrib
+    - non-free
+  index_locations_template:
+    # Example URLs:
+    # https://mirrors.huaweicloud.com/debian/dists/trixie/contrib/binary-amd64/Packages.xz
+    # https://mirrors.huaweicloud.com/debian/dists/trixie/contrib/Contents-amd64.gz
+    - debian/dists/{version}/{repo}/binary-{arch}/Packages.xz
+    - debian/dists/{version}-updates/{repo}/binary-{arch}/Packages.xz
+    - debian-security/dists/{version}/{repo}/binary-{arch}/Packages.xz
+
+ubuntu:
+  distro: ubuntu
+  format: deb
+  versions: # First value is official, others are aliases
+    - noble   24.04
+    - mantic  23.10
+    - lunar   23.04
+    - jammy   22.04
+    - kinetic 22.10
+    - focal   20.04
+  repos:
+    - main
+    - universe
+    - restricted
+    - multiverse
+  index_locations_template:
+    # Example URLs:
+    # http://ports.ubuntu.com/ubuntu-ports/dists/noble/main/binary-arm64/Packages.xz
+    # http://ports.ubuntu.com/ubuntu-ports/dists/noble/Contents-arm64.gz
+    - ubuntu/dists/{version}/{repo}/binary-{arch}/Packages.xz
+    - ubuntu/dists/{version}-updates/{repo}/binary-{arch}/Packages.xz
+    - ubuntu/dists/{version}-security/{repo}/binary-{arch}/Packages.xz
+
+openeuler:
+  distro: openeuler
+  format: rpm
+  versions: # LTS versions are marked with -lts suffix
+    - 25.03
+    - 24.09
+    - 24.03-lts-sp1
+    - 24.03-lts 24.03
+    - 23.09
+    - 23.03
+    - 22.09
+    - 22.03-lts-sp4
+    - 22.03-lts-sp3
+    - 22.03-lts-sp2
+    - 22.03-lts-sp1
+    - 22.03-lts-64kb
+    - 22.03-lts 22.03
+    - 21.09
+    - 21.03
+    - 20.09
+    - 20.03-lts-sp4
+    - 20.03-lts-sp3
+    - 20.03-lts-sp2
+    - 20.03-lts-sp1
+    - 20.03-lts 20.03
+  repos:
+    - OS
+    - update
+    - everything
+    - EPOL/main
+    - EPOL/update/main
+  index_locations_template:
+    # Example URLs:
+    # https://mirrors.huaweicloud.com/openeuler/openEuler-24.03-LTS-SP1/OS/aarch64/repodata/repomd.xml
+    # https://mirrors.huaweicloud.com/openeuler/openEuler-24.09/update/x86_64/
+    - openEuler-{VERSION}/{repo}/{arch}/repodata/repomd.xml # {VERSION} is uppercase {version}
+
+opensuse:
+  distro: opensuse
+  format: rpm
+  versions: # Leap versions
+    - "16.0"
+    - "15.6"
+    - "15.5"
+    - "15.4"
+    - "15.3"
+  repos:
+    - oss
+    - non-oss
+  index_locations_template:
+    # Example URLs:
+    # https://mirrors.tuna.tsinghua.edu.cn/opensuse/distribution/leap/16.0/repo/oss/aarch64/repodata/
+    # https://mirrors.tuna.tsinghua.edu.cn/opensuse/update/leap/15.6/oss/repodata/
+    - distribution/leap/{version}/repo/{repo}/{arch}/repodata/repomd.xml
+    - update/leap/{version}/{repo}/repodata/repomd.xml
+
+fedora:
+  distro: fedora
+  format: rpm
+  versions:
+    - "42"
+    - "41"
+    - "40"
+    - "39"
+    - "38"
+  repos:
+    - Everything
+  index_locations_template:
+    # Example URLs:
+    # https://mirrors.tuna.tsinghua.edu.cn/fedora/releases/42/Everything/x86_64/os/repodata/repomd.xml
+    # https://mirrors.tuna.tsinghua.edu.cn/fedora/updates/41/Everything/aarch64/repodata/repomd.xml
+    - releases/{version}/{repo}/{arch}/repodata/repomd.xml
+    - updates/{version}/{repo}/{arch}/repodata/repomd.xml
+
+rocky:
+  distro: rocky
+  format: rpm
+  versions: # RHEL-compatible versions
+    - "9"
+    - "8"
+    - "9.4"
+    - "9.3"
+    - "9.2"
+    - "8.9"
+    - "8.8"
+  repos:
+    - BaseOS
+    - AppStream
+    - extras
+  index_locations_template:
+    # Example URLs:
+    # https://mirror.rackspace.com/rocky/9.5/BaseOS/aarch64/os/repodata/
+    - {version}/{repo}/{arch}/os/repodata/repomd.xml
+
+almalinux:
+  distro: almalinux
+  format: rpm
+  versions: # RHEL-compatible versions
+    - "9"
+    - "8"
+    - "9.4"
+    - "9.3"
+    - "9.2"
+    - "8.9"
+    - "8.8"
+  repos:
+    - BaseOS
+    - AppStream
+    - extras
+  index_locations_template:
+    # Example URLs:
+    # https://raw.repo.almalinux.org/almalinux/9.5/BaseOS/x86_64/os/repodata/
+    - {version}/{repo}/{arch}/os/repodata/repomd.xml
+
+archlinux:
+  distro: archlinux
+  format: pacman
+  versions: # Rolling release
+    - "latest"
+  repos:
+    - core
+    - extra
+    - community
+  index_locations_template:
+    # Example URLs:
+    # https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db.tar.gz
+    # Note: .files.tar.gz is a superset of .db.tar.gz
+    - {repo}/os/{arch}/{repo}.files.tar.gz
+
+alpine:
+  distro: alpine
+  format: apk
+  versions: # Stable releases
+    - "3.19"
+    - "3.18"
+    - "3.17"
+    - "3.16"
+    - "3.15"
+  repos:
+    - main
+    - community
+  index_locations_template:
+    # Example URLs:
+    # https://dl-cdn.alpinelinux.org/v3.9/main/x86_64/APKINDEX.tar.gz
+    - v{version}/{repo}/{arch}/APKINDEX.tar.gz
+
+anaconda:
+  distro: anaconda
+  format: conda
+  versions: # Latest release
+    - "latest"
+  repos:
+    - main
+    - free
+    - r
+  index_locations_template:
+    # Example URLs:
+    # https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-aarch64/repodata.json.zst
+    - pkgs/{repo}/linux-{arch}/repodata.json.zst

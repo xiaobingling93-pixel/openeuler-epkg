@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::io::{self, ErrorKind};
 use crate::models::*;
+use crate::repo::RepoRevise;
 use color_eyre::Result;
 use color_eyre::eyre;
 
@@ -39,6 +40,7 @@ impl EPKGDirs {
             epkg_cache: cache_root.clone(),
             epkg_pkg_cache: cache_root.join("packages"),
             epkg_channel_cache: cache_root.join("channel"),
+            epkg_downloads_cache: cache_root.join("downloads"),
         })
     }
 }
@@ -108,6 +110,12 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+pub fn get_repo_dir(repo: &RepoRevise) -> Result<PathBuf> {
+    let channel_dir = dirs().epkg_cache.join("channel");
+    let repo_dir = channel_dir.join(&repo.channel).join(repo.repodata_name.clone()).join(repo.arch.clone());
+    Ok(repo_dir)
 }
 
 /// Find the first existing dir:

@@ -48,6 +48,7 @@ pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Resul
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
     let input_file = fs::File::open(input_path)?;
     let reader = BufReader::new(input_file);

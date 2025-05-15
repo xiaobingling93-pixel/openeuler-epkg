@@ -273,10 +273,12 @@ impl PackageManager {
         } else {
             // Initialize channel from command line option or default
             let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
-            let common_env_root = find_env_root("common")
-                .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
-            let src_channel_yaml = common_env_root.join("opt/epkg-manager/channel").join(format!("{}.yaml", channel));
-
+            let epkg_src = get_epkg_manager_path()?;
+            let mut src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", channel));
+            if !src_channel_yaml.exists() {
+                let repo_name = channel.split(":").next().unwrap_or(&channel);
+                src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", repo_name));
+            }
             if !src_channel_yaml.exists() {
                 return Err(eyre::eyre!("Channel not found: '{}'", channel));
             }

@@ -9,6 +9,8 @@ use sha2::{Sha256, Digest};
 use std::fs::File;
 use tar::Archive;
 use flate2::read::GzDecoder;
+use xz2;
+use zstd;
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -276,6 +278,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
 /// # 返回值
 /// * `Ok(())` - 复制操作成功完成。
 /// * `Err` - 复制过程中出现 I/O 错误，如无法获取元数据、创建目录失败或复制文件失败等。
+#[allow(dead_code)]
 pub fn copy_all<P: AsRef<Path>>(src: P, dst: P) -> Result<()> {
     let metadata = fs::metadata(&src)
         .with_context(|| format!("Failed to get metadata for {}", src.as_ref().display()))?;
@@ -292,5 +295,46 @@ pub fn copy_all<P: AsRef<Path>>(src: P, dst: P) -> Result<()> {
     } else {
         fs::copy(src, dst)?;
     }
+    Ok(())
+}
+
+/// Decompress a file based on its extension
+/// 
+/// # Arguments
+/// * `input_path` - Path to the compressed input file
+/// * `output_path` - Path where the decompressed file should be written
+/// * `extension` - The file extension (e.g. "gz", "xz", "zst")
+/// 
+/// # Returns
+/// * `Result<()>` - Ok if decompression was successful, Err otherwise
+pub fn decompress_file(input_path: &Path, output_path: &Path, extension: &str) -> Result<()> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let input_file = fs::File::open(input_path)
+        .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
+    let mut output = fs::File::create(output_path)
+        .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+
+    match extension {
+        "gz" => {
+            let mut decoder = GzDecoder::new(input_file);
+            std::io::copy(&mut decoder, &mut output)
+                .with_context(|| format!("Failed to decompress gz file from {} to {}", input_path.display(), output_path.display()))?;
+        }
+        "xz" => {
+            let mut decoder = xz2::read::XzDecoder::new(input_file);
+            std::io::copy(&mut decoder, &mut output)
+                .with_context(|| format!("Failed to decompress xz file from {} to {}", input_path.display(), output_path.display()))?;
+        }
+        "zst" => {
+            let mut decoder = zstd::stream::read::Decoder::new(input_file)?;
+            std::io::copy(&mut decoder, &mut output)
+                .with_context(|| format!("Failed to decompress zst file from {} to {}", input_path.display(), output_path.display()))?;
+        }
+        _ => return Err(eyre::eyre!("Unsupported compression format for file: {}", input_path.display())),
+    }
+
     Ok(())
 }

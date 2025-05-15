@@ -34,7 +34,7 @@ use crate::models::*;
 // OUTPUT FORMAT:
 //   The command outputs a table with the following columns:
 //
-//   - Channel: The channel name (e.g., "openEuler-24.09").
+//   - Channel: The channel (e.g., "openEuler-24.09").
 //   - Repo: The repository name (e.g., "everything").
 //   - Package: The package name (e.g., "texlive-xdvi").
 //   - Version-Release: The package version and release (e.g., "20210325-8").
@@ -107,7 +107,7 @@ impl PackageManager {
 
         let mut header_printed = false;
 
-        let channel_name = self.get_channel_config(config().common.env.clone())?.channel.name.clone();
+        let channel = self.get_channel_config(config().common.env.clone())?.channel.clone();
         for repodata in &self.repos_data {
             for entry in &repodata.store_paths {
                 // Construct the file path
@@ -151,7 +151,7 @@ impl PackageManager {
                             // Print the package details
                             println!(
                                 LIST_OUTPUT_FORMAT!(),
-                                channel_name,
+                                channel,
                                 repodata.name,
                                 pkgname,
                                 version_release,
@@ -164,7 +164,7 @@ impl PackageManager {
         }
         
         if !header_printed {
-            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, channel_name);
+            eprintln!("No packages found matching the pattern: {},  in the repo: {}", glob_pattern, channel);
         }
 
         Ok(())

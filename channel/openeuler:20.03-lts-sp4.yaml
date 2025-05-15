@@ -4,3 +4,5 @@ channel:
 
 repos:
   everything:
+    url:
+    enabled:

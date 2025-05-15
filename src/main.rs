@@ -17,6 +17,8 @@ mod environment;
 mod init;
 mod path;
 mod repo;
+mod deb_repo;
+mod rpm_repo;
 
 use std::env;
 use std::path::Path;
@@ -563,7 +565,7 @@ impl PackageManager {
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
-            self.cache_channel_repositories()?;
+            self.revise_channel_metadata()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.install_packages(packages_vec)?;
         }
@@ -600,7 +602,7 @@ impl PackageManager {
 
     fn command_update(&mut self) -> Result<()> {
         self.fork_on_suid()?;
-        self.cache_channel_repositories()
+        self.revise_channel_metadata()
     }
 
     fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {

@@ -428,7 +428,7 @@ impl PackageManager {
             print_packages_by_depend_depth(&packages_to_install);
         }
 
-        let files = self.download_packages(&packages_to_install)?;
+        let files = self.download_packages(&packages_to_install, false)?;
         self.unpack_packages(files)?;
         self.change_appbin_flag_same_source(&mut packages_to_install)?;
         let new_generation = self.create_new_generation()?;

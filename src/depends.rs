@@ -147,7 +147,7 @@ impl PackageManager {
         let path = format!(
             "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
             dirs().epkg_cache.display(),
-            channel_config.channel.name,
+            channel_config.channel,
             spec.repo,
             config().common.arch,
             &pkgline[0..2],

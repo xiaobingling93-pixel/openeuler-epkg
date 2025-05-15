@@ -13,6 +13,35 @@ pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"openeuler:24.03-lts";
 pub const DEFAULT_VERSION: &str = &"master"; // epkg init will download this version from gitee
 
+// Package format types
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub enum PackageFormat {
+    #[serde(rename = "epkg")]
+    Epkg,
+    #[serde(rename = "deb")]
+    Deb,
+    #[serde(rename = "rpm")]
+    Rpm,
+    #[serde(rename = "apk")]
+    Apk,
+    #[serde(rename = "pacman")]
+    Pacman,
+    #[serde(rename = "conda")]
+    Conda,
+}
+
+// Mirror configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Mirror {
+    pub url: String,
+    #[serde(default)]
+    pub priority: u32,
+    #[serde(default)]
+    pub top_level: bool,
+    #[serde(default)]
+    pub supports: Vec<String>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Dependency {
@@ -39,6 +68,8 @@ pub struct Package {
     #[serde(default)]
     #[serde(rename = "sourcePkg")]
     pub source: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
 
     #[serde(default)]
     pub summary: Option<String>,
@@ -87,10 +118,10 @@ pub struct Repodata {
     pub store_paths: Vec<StorePathsIndex>,
     #[serde(default)]
     #[serde(rename = "pkg-info")]
-    pub pkg_infos: Vec<PkgInfoIndex>,
+    pub pkg_infos: Vec<FileInfo>,
     #[serde(default)]
     #[serde(rename = "pkg-files")]
-    pub pkg_files: Vec<PkgFilesIndex>,
+    pub pkg_files: Vec<FileInfo>,
 
     #[serde(skip)]
     pub provide2pkgnames: HashMap<String, Vec<String>>,
@@ -111,24 +142,14 @@ pub struct StorePathsIndex {
     pub datetime: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct PkgInfoIndex {
+pub struct FileInfo {
     pub filename: String,
-    #[serde(default)]
-    pub sha256sum: Option<String>,
-    #[serde(default)]
-    pub datetime: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct PkgFilesIndex {
-    pub filename: String,
-    #[serde(default)]
-    pub sha256sum: Option<String>,
-    #[serde(default)]
-    pub datetime: Option<String>,
+    pub sha256sum: String,
+    pub datetime: String,
+    #[allow(dead_code)]
+    pub size: u64,
 }
 
 // parsed from pkgline
@@ -208,34 +229,53 @@ pub struct EnvConfig {
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
 // # On `epkg init`, may copy from $EPKG_SRC/channel/${channel}.yaml
-// channel:
-//   name: "openeuler:24.03-lts"
-//   baseurl: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-24.03-LTS/"
+// distro: "openeuler"
+// version: "24.03-lts"
+// index_url: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-$VERSION/$repo/$arch/repodata/repomd.xml"
 //
 // repos:
 //   everything:
-//     # url: defaults to ${channel.baseurl}/$reponame
+//     # index_url: defaults to top level index_url
+//     # enabled: false # defaults to true
 //   mysql:
-//       enabled = false
-//       # a repo can specify its own url
-//       url = "http://third.party/repo/dir"
+//     # a repo can specify its own url
+//     index_url: "http://third.party/repo/dir/"
+
+// Implement Default for PackageFormat
+impl Default for PackageFormat {
+    fn default() -> Self {
+        PackageFormat::Epkg
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 #[derive(Clone)]
 pub struct ChannelConfig {
-    pub channel: ChannelInfo,
     #[serde(default)]
-    pub repos: HashMap<String, RepoConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[derive(Default)]
-#[derive(Clone)]
-pub struct ChannelInfo {
-    pub name: String,
+    pub format: PackageFormat,
     #[serde(default)]
-    pub baseurl: Option<String>,
+    pub distro: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub versions: Vec<String>,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
+    #[serde(default)]
+    pub repodata_indice: HashMap<String, RepoIndex>, // local repo data, key: repodata_name
+    #[serde(default)]
+    pub mirrors: Vec<Mirror>,
+    pub index_url: String,
+    #[serde(default)]
+    pub index_url_updates: Option<String>,
+    #[serde(default)]
+    pub index_url_security: Option<String>,
 }
 
 fn default_as_true() -> bool { true }
@@ -248,7 +288,33 @@ pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub url: Option<String>,
+    pub index_url: Option<String>,
+    #[serde(default)]
+    pub index_url_updates: Option<String>,
+    #[serde(default)]
+    pub index_url_security: Option<String>,
+    #[serde(default)]
+    pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct RepoIndex {
+    pub repo_shards: Vec<RepoShard>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[allow(dead_code)]
+pub struct RepoShard {
+    #[serde(default)]
+    pub packages: FileInfo,
+    #[serde(default)]
+    pub filelist: Option<FileInfo>,
+
+    #[serde(skip)]
+    pub provide2pkgnames: HashMap<String, Vec<String>>,
+    #[serde(skip)]
+    pub essential_pkgnames: HashSet<String>,
 }
 
 #[allow(dead_code)]
@@ -294,6 +360,17 @@ pub struct CommonOptions {
     pub assume_yes: bool,
     #[serde(default)]
     pub ignore_missing: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub need_revise: bool,
+    #[serde(default = "default_nr_parallel")]
+    pub nr_parallel: usize,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+fn default_nr_parallel() -> usize {
+    6
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
@@ -369,6 +446,7 @@ pub struct EPKGDirs {
     pub epkg_cache: PathBuf,
     pub epkg_pkg_cache: PathBuf,
     pub epkg_channel_cache: PathBuf,
+    pub epkg_downloads_cache: PathBuf,
 }
 
 #[allow(dead_code)]
@@ -391,6 +469,8 @@ pub struct PackageManager {
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>,
+
+    pub mirrors: HashMap<String, Mirror>,   // key: mirror id
 
     pub has_worker_process: bool,
     pub ipc_socket: String,
