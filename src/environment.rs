@@ -133,7 +133,8 @@ impl PackageManager {
         }
 
         // Get public environments
-        if let Ok(entries) = fs::read_dir(&dirs().public_envs) {
+        let public_envs_parent = dirs().public_envs.parent().unwrap_or_else(||Path::new("."));
+        if let Ok(entries) = fs::read_dir(public_envs_parent) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     if let Ok(owner_entries) = fs::read_dir(entry.path()) {
