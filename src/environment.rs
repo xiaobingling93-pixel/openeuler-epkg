@@ -98,13 +98,13 @@ use log::warn;
 fn push_env_var(script: &mut String, key: &str, new_value: Option<String>, original_value: Option<String>) {
     // Set new value (print to stdout)
     if let Some(v) = &new_value {
-        println!("; export {}={}", key, v);
+        println!("export {}={}", key, v);
     }
 
     // Prepare restore command (store in script)
     match original_value {
-        Some(v) => script.push_str(&format!("; export {}={}\n", key, v)),
-        None => script.push_str(&format!("; unset {}\n", key)),
+        Some(v) => script.push_str(&format!("export {}={}\n", key, v)),
+        None => script.push_str(&format!("unset {}\n", key)),
     }
 }
 
@@ -405,8 +405,8 @@ impl PackageManager {
         // Handle session path
         let session_path = original_session_path.unwrap_or_else(|| {
             let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), StdRng::from_entropy().gen::<u32>());
-            println!("; export EPKG_SESSION_PATH=\"{}\"", path);
-            script.push_str(&format!("; unset EPKG_SESSION_PATH\n"));
+            println!("export EPKG_SESSION_PATH=\"{}\"", path);
+            script.push_str(&format!("unset EPKG_SESSION_PATH\n"));
             path
         });
 
