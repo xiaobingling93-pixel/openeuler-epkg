@@ -44,7 +44,7 @@ impl PackageManager {
 
         // Update PATH
         env::set_var("PATH", &new_path);
-        println!("; export PATH=\"{}\"", &new_path);
+        println!("export PATH=\"{}\"", &new_path);
 
         Ok(())
     }
