@@ -13,6 +13,7 @@ use crate::download::*;
 use crate::parse_requires::*;
 use crate::io::{load_repodata_index, load_package_json};
 use crate::utils::copy_all;
+use crate::dirs::find_env_root;
 
 impl Repodata {
     pub fn save_package_provides(&mut self, path: &str) -> Result<()> {
@@ -236,7 +237,9 @@ pub fn cache_single_repository(channel_name: &str, repo_name: &str, repo_url: &s
 }
 
 pub fn list_repos() -> Result<()> {
-    let manager_channel_dir = &dirs().epkg_manager_cache.join("channel");
+    let common_env_root = find_env_root("common")
+                .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
+    let manager_channel_dir = common_env_root.join("opt/epkg-manager/channel");
     if !manager_channel_dir.exists() {
         return Ok(());
     }
