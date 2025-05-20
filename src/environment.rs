@@ -125,7 +125,7 @@ impl PackageManager {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let name = entry.file_name().into_string().unwrap_or_default();
-                    if name != "common" {
+                    if name != "common"  && !name.starts_with('.') {
                         all_envs.push((name, false, current_user.clone()));
                     }
                 }
