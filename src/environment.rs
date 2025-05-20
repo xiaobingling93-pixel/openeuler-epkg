@@ -340,8 +340,6 @@ impl PackageManager {
             if let Some(pos) = env_stack.iter().position(|&x| x == name) {
                 if pos == 0 {
                     // If it's the first environment, we can remove it
-                    let new_stack = env_stack[1..].join(":");
-                    env::set_var("EPKG_ACTIVE_ENV", &new_stack);
                     self.deactivate_environment()?;
                 } else {
                     // If it's in the middle of the stack, return error
