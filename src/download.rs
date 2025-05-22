@@ -144,6 +144,10 @@ pub fn download_urls(
     Ok(())
 }
 
+/// Downloads a file from a URL to the output directory.
+/// - For normal URLs: output_dir/last_url_segment
+/// - For URLs with triple slashes: output_dir/everything_after_triple_slash
+///   Example: "https://example.com///foo/bar.txt" -> output_dir/foo/bar.txt
 fn download_task(
     client: &Agent,
     url: &str,
@@ -151,9 +155,13 @@ fn download_task(
     multi_progress: &MultiProgress,
     max_retries: usize,
 ) -> Result<()> {
-    let file_name = url.split('/').last()
-        .ok_or_else(|| eyre::eyre!("Invalid URL: {}", url))?;
-    let final_path = Path::new(output_dir).join(file_name);
+    let final_path = if let Some((_, str_b)) = url.split_once("///") {
+        Path::new(output_dir).join(str_b)
+    } else {
+        let file_name = url.split('/').last()
+            .ok_or_else(|| eyre::eyre!("Invalid URL: {}", url))?;
+        Path::new(output_dir).join(file_name)
+    };
     let part_path = final_path.with_extension("part");
 
     if final_path.exists() {
@@ -165,7 +173,7 @@ fn download_task(
         .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
         .unwrap()
         .progress_chars("=> "));
-    pb.set_message(file_name.to_string());
+    pb.set_message(final_path.display().to_string());
 
     let result = download_file_with_retries(
         client,
