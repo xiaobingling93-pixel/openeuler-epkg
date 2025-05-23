@@ -271,6 +271,8 @@ pub struct EPKGConfig {
     pub config_file: String,
     #[serde(skip)]
     pub command_line: String,
+    #[serde(skip)]
+    pub subcommand: String,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]

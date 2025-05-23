@@ -19,6 +19,7 @@ mod path;
 mod repo;
 
 use std::env;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
@@ -26,6 +27,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::*;
+use crate::dirs::get_epkg_manager_path;
 use color_eyre::Result;
 use color_eyre::eyre;
 use clap::{arg, Command};
@@ -301,6 +303,11 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
 }
 
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> EPKGConfig {
+    config.subcommand = matches.subcommand().map(|(name, _)| name.to_string()).unwrap_or_default();
+    if config.subcommand != "init" {
+        config.init.shared_store = nix::unistd::geteuid().is_root() && Path::new("/opt/epkg/store").exists();
+    }
+
     match matches.subcommand() {
         Some(("init",       sub_matches))  =>  parse_options_init(&mut config, sub_matches).expect("Failed to parse init options"),
         Some(("env",        sub_matches))  =>  parse_options_env(&mut config, sub_matches).expect("Failed to parse env options"),
