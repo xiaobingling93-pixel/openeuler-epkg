@@ -367,7 +367,6 @@ pub struct EPKGDirs {
     pub epkg_cache: PathBuf,
     pub epkg_pkg_cache: PathBuf,
     pub epkg_channel_cache: PathBuf,
-    pub epkg_manager_cache: PathBuf,
 }
 
 #[allow(dead_code)]

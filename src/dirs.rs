@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::io::{self, ErrorKind};
 use crate::models::*;
 use color_eyre::Result;
-
+use color_eyre::eyre;
 
 #[derive(Default)]
 pub struct EPKGDirsBuilder {
@@ -39,7 +39,6 @@ impl EPKGDirs {
             epkg_cache: cache_root.clone(),
             epkg_pkg_cache: cache_root.join("packages"),
             epkg_channel_cache: cache_root.join("channel"),
-            epkg_manager_cache: cache_root.join("manager"),
         })
     }
 }
@@ -109,6 +108,15 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Find the first existing dir:
+/// - $HOME/.epkg/envs/common/opt/epkg-manager
+/// - /opt/epkg/envs/root/common/opt/epkg-manager
+pub fn get_epkg_manager_path() -> Result<PathBuf> {
+    let common_env_root = find_env_root("common")
+                .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
+    Ok(common_env_root.join("opt/epkg-manager"))
 }
 
 /// Get the path to an environment's configuration file

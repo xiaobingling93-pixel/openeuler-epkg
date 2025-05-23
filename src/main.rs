@@ -619,7 +619,9 @@ impl PackageManager {
         if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
             privdrop_on_suid();
 
-            let build_script = dirs().epkg_manager_cache.join("build/scripts/generic-build.sh");
+            let epkg_manager_path = get_epkg_manager_path()
+                .map_err(|_| eyre::eyre!("epkg-manager not installed"))?;
+            let build_script = epkg_manager_path.join("build/scripts/generic-build.sh");
             if !build_script.exists() {
                 return Err(eyre::eyre!("Build script not found"));
             }
