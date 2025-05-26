@@ -152,8 +152,9 @@ fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, target_path: &Path) -> 
             // Note: Using Path.join() here would incorrectly handle absolute paths by discarding the base path
             PathBuf::from(format!("{}/{}", store_fs_dir.display(), link_target.display()))
         } else if link_target.starts_with("../") {
-            // For parent-relative paths like ../bin/pidof, normalize against store_fs_dir
-            normalize_join(store_fs_dir, &link_target)
+            // For parent-relative paths like ../bin/pidof, normalize against fs_file
+            normalize_join(fs_file.parent().ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", fs_file.display()))?,
+                           &link_target)
         } else {
             // For sibling-relative paths like python3.11, join with source file's parent
             fs_file.parent()
