@@ -2,12 +2,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
+use std::sync::mpsc;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use rayon::prelude::*;
 
 use std::io::Read;
-use crate::models::{FileInfo, RepoIndex, RepoShard};
+use crate::models::FileInfo;
 use crate::repo::{url_to_cache_path, RepoRevise};
 use crate::download::download_urls;
 use crate::dirs;
@@ -17,7 +18,6 @@ use color_eyre::eyre::WrapErr;
 use sha2::{Sha256, Digest};
 use hex;
 use crate::download::DownloadTask;
-use crate::download::DOWNLOAD_MANAGER;
 use crate::download::submit_download_task;
 
 const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
@@ -71,7 +71,7 @@ pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     Ok(())
 }
 
-pub fn revise_repodata<'a>(scope: &rayon::Scope<'a>, repo: &RepoRevise) -> Result<bool> {
+pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>) -> Result<bool> {
     let repo_dir = dirs::get_repo_dir(&repo).unwrap();
     let release_path = url_to_cache_path(&repo.index_url)?;
 
@@ -90,15 +90,19 @@ pub fn revise_repodata<'a>(scope: &rayon::Scope<'a>, repo: &RepoRevise) -> Resul
     let repo_dir = Arc::new(repo_dir.clone());
 
     // Filter out items that don't need revision
-    let revises: Vec<_> = info.into_iter()
+    let info_clone = info.clone();
+    let revises: Vec<_> = info_clone.iter()
         .filter(|revise| revise.need_revise)
+        .cloned()
         .collect();
 
     if revises.is_empty() {
         return Ok(false);
     }
 
-    scope.spawn(move |_| {
+    let info_clone2 = info.clone();
+    let result_tx = result_tx.clone();
+    std::thread::spawn(move || {
         // Process items in parallel using Rayon
         let _results: Vec<Result<FileInfo>> = revises.par_iter()
             .map(|revise| {
@@ -119,7 +123,15 @@ pub fn revise_repodata<'a>(scope: &rayon::Scope<'a>, repo: &RepoRevise) -> Resul
                 // Process data blocks as they arrive
                 process_data(data_rx, &repo_dir, &revise)
             })
-        .collect();
+            .collect();
+
+        let mut packages_metafiles = Vec::new();
+        for revise in info_clone2 {
+            if revise.path.ends_with("/Packages.xz") {
+                packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
+            }
+        }
+        let _ = result_tx.send(packages_metafiles);
     });
     Ok(true)
 }

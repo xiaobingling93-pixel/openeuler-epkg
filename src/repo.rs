@@ -3,7 +3,8 @@ use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
-use crate::dirs::get_repo_dir; // Fix: import get_repo_dir
+use std::sync::mpsc;
+
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -247,66 +248,88 @@ fn select_mirror(mirrors: &Vec<&Mirror>, distro: &str, format: PackageFormat) ->
 
 fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()> {
     let mut revised = Vec::new();
-    rayon::scope(|s| {
-        for repo in all_repos {
-            let repo = repo.clone();  // Clone repo before passing to revise_repodata
-            match format {
-                PackageFormat::Deb => {
-                    if let Ok(true) = crate::deb_repo::revise_repodata(s, &repo) {
-                        revised.push(repo);
-                    }
-                },
-                PackageFormat::Rpm => {
-                    if let Err(e) = crate::rpm_repo::revise_repodata(&repo) {
-                        eprintln!("Error processing repo: {}", e);
-                    } else {
-                        revised.push(repo);
-                    }
-                },
-                _ => eprintln!("Unknown repo type: {:?}", format),
-            }
-        }
-    });
+    let (tx, rx) = mpsc::channel();
 
-    if !revised.is_empty() {
-        save_repo_index_json(revised)?;
+    for repo in all_repos {
+        let repo = repo.clone();
+        match format {
+            PackageFormat::Deb => {
+                if let Ok(true) = crate::deb_repo::revise_repodata(&repo, &tx) {
+                    revised.push(repo);
+                }
+            },
+            PackageFormat::Rpm => {
+                if let Err(e) = crate::rpm_repo::revise_repodata(&repo) {
+                    eprintln!("Error processing repo: {}", e);
+                } else {
+                    revised.push(repo);
+                }
+            },
+            _ => eprintln!("Unknown repo type: {:?}", format),
+        }
     }
+
+    // Reader thread (or main thread) waits for all writers to finish
+    if !revised.is_empty() {
+        drop(tx);
+
+        while let Ok(packages_metafiles) = rx.recv() {
+            save_repo_index_json(packages_metafiles)?;
+        }
+    }
+
     Ok(())
 }
 
-pub fn save_repo_index_json(revised_repos: Vec<RepoRevise>) -> Result<()> {
-    let mut repo_index = RepoIndex::default();
-
-    for repo in &revised_repos {
-        let repo_dir = get_repo_dir(repo).unwrap();
-        // Find all packages metadata files
-        let pattern = repo_dir.join(".packages*.json");
-        for entry in glob::glob(pattern.to_str().unwrap())? {
-            let packages_metafile = entry?;
-            // Load packages info
-            let packages_info_str = fs::read_to_string(&packages_metafile)?;
-            let packages_info: FileInfo = serde_json::from_str(&packages_info_str)?;
-            // Try to load corresponding filelist if it exists
-            let mut filelist_info = None;
-            let filelist_metafile = packages_metafile.to_str().unwrap()
-                .replace(".packages", ".filelist");
-            if Path::new(&filelist_metafile).exists() {
-                let filelist_content = fs::read_to_string(&filelist_metafile)?;
-                let filelist: FileInfo = serde_json::from_str(&filelist_content)?;
-                filelist_info = Some(filelist);
-            }
-            // Add shard to repo index
-            repo_index.repo_shards.push(RepoShard {
-                packages: packages_info,
-                filelist: filelist_info,
-                essential_pkgnames: std::collections::HashSet::new(),
-                provide2pkgnames: std::collections::HashMap::new(),
-            });
-        }
-        // Save the index for each repo
-        let index_path = repo_dir.join("RepoIndex.json");
-        fs::write(index_path, serde_json::to_string_pretty(&repo_index)?)?;
+pub fn save_repo_index_json(packages_metafiles: Vec<PathBuf>) -> Result<()> {
+    if packages_metafiles.is_empty() {
+        return Ok(());
     }
+
+    // Get the repo directory from the first metafile
+    let cloned = packages_metafiles.clone();
+    let repo_dir = cloned[0].parent()
+        .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?;
+
+    let mut repo_index = RepoIndex {
+        repo_shards: Vec::new(),
+    };
+
+    // Process each packages metafile
+    for packages_metafile in packages_metafiles {
+        // Load packages info
+        let packages_info_str = fs::read_to_string(&packages_metafile)
+            .with_context(|| format!("Failed to read packages metafile: {}", packages_metafile.display()))?;
+        let packages_info: FileInfo = serde_json::from_str(&packages_info_str)
+            .with_context(|| format!("Failed to parse packages info from: {}", packages_metafile.display()))?;
+
+        // Try to load corresponding filelist if it exists
+        let mut filelist_info = None;
+        let filelist_metafile = packages_metafile.to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
+            .replace(".packages", ".filelist");
+        if Path::new(&filelist_metafile).exists() {
+            let filelist_content = fs::read_to_string(&filelist_metafile)
+                .with_context(|| format!("Failed to read filelist: {}", filelist_metafile))?;
+            let filelist: FileInfo = serde_json::from_str(&filelist_content)
+                .with_context(|| format!("Failed to parse filelist info from: {}", filelist_metafile))?;
+            filelist_info = Some(filelist);
+        }
+
+        // Add shard to repo index
+        repo_index.repo_shards.push(RepoShard {
+            packages: packages_info,
+            filelist: filelist_info,
+            essential_pkgnames: std::collections::HashSet::new(),
+            provide2pkgnames: std::collections::HashMap::new(),
+        });
+    }
+
+    // Save the index for the repo
+    let index_path = repo_dir.join("RepoIndex.json");
+    fs::write(&index_path, serde_json::to_string_pretty(&repo_index)?)
+        .with_context(|| format!("Failed to write repo index to: {}", index_path.display()))?;
+
     Ok(())
 }
 
