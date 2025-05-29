@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::io::Read;
+use std::io::Write;
 use crate::models::FileInfo;
 use crate::repo::{url_to_cache_path, RepoRevise};
 use crate::dirs;
@@ -493,6 +494,16 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let mut output = String::new();
     let mut partial_line = String::new();
 
+    // Open output file for appending before the loop
+    use std::fs::OpenOptions;
+    use std::io::BufWriter;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)
+        .context(format!("Failed to open output file: {:?}", output_path))?;
+    let mut writer = BufWriter::new(file);
+
     // Collect data and calculate hash incrementally
     loop {
         match decoder.read(&mut decompressed) {
@@ -539,8 +550,8 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
                 }
 
                 new_hasher.update(output.as_bytes());
-                fs::write(&output_path, &output)
-                    .context(format!("Failed to write to output file: {:?}", output_path))?;
+                writer.write_all(output.as_bytes())
+                    .context(format!("Failed to append to output file: {:?}", output_path))?;
                 output.clear();
             }
             Err(e) => {
@@ -551,6 +562,7 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     }
 
     // Get the final hash from the ReceiverReader
+    writer.flush().context(format!("Failed to flush output file: {:?}", output_path))?;
     let calculated_hash = hex::encode(origin_hasher.finalize());
     let expected_hash = &revise.hash;
     if calculated_hash != *expected_hash {
