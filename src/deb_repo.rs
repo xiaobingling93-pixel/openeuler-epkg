@@ -5,7 +5,6 @@ use std::time::SystemTime;
 use std::sync::mpsc;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use rayon::prelude::*;
 use std::io::Read;
 use crate::models::FileInfo;
 use crate::repo::{url_to_cache_path, RepoRevise};
@@ -87,9 +86,14 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
     let info_clone2 = info.clone();
     let result_tx = result_tx.clone();
     std::thread::spawn(move || {
-        // Process items in parallel using Rayon
-        let _results: Vec<Result<FileInfo>> = revises.par_iter()
-            .map(|revise| {
+        let mut handles = Vec::new();
+
+        // Process files in parallel std::thread
+        for revise in revises {
+            let repo_dir = Arc::clone(&repo_dir);
+            let revise = revise.clone();
+
+            let handle = std::thread::spawn(move || {
                 let (data_tx, data_rx) = channel();
 
                 // Create and submit download task
@@ -106,8 +110,15 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
 
                 // Process data blocks as they arrive
                 process_data(data_rx, &repo_dir, &revise)
-            })
-            .collect();
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            let _ = handle.join().unwrap();
+        }
 
         let mut packages_metafiles = Vec::new();
         for revise in info_clone2 {
