@@ -44,6 +44,7 @@ log = { version = "0.4", default-features = false }
 env_logger = { version = "0.11.8", default-features = false }
 color-eyre = { version = "0.6" }
 # color-eyre = { version = "0.6", features = ["capture-spantrace"], default-features = false }
+filetime = "0.2"
 
 # Optional but recommended for better progress bars
 [dependencies.console]

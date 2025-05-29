@@ -1,16 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
+use std::time::SystemTime;
 use std::sync::mpsc;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use rayon::prelude::*;
-
 use std::io::Read;
 use crate::models::FileInfo;
 use crate::repo::{url_to_cache_path, RepoRevise};
-use crate::download::download_urls;
 use crate::dirs;
 use color_eyre::eyre;
 use color_eyre::eyre::Result;
@@ -19,6 +17,7 @@ use sha2::{Sha256, Digest};
 use hex;
 use crate::download::DownloadTask;
 use crate::download::submit_download_task;
+use crate::repo::refresh_download;
 
 const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
     ("Package", "pkgname"),
@@ -51,24 +50,6 @@ pub struct DebianReleaseItem {
     pub size: u64,
     pub path: String,
     pub download_path: PathBuf,
-}
-
-pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
-    // Check if already updated in last 1 day
-    if path.exists() {
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata.modified()?;
-        let now = SystemTime::now();
-        if let Ok(duration) = now.duration_since(modified) {
-            if duration < Duration::from_secs(24 * 60 * 60) {
-                return Ok(());
-            }
-        }
-    }
-
-    // Download Release file
-    download_urls(vec![repo.index_url.clone()], dirs().epkg_downloads_cache.to_str().unwrap(), 6, false)?;
-    Ok(())
 }
 
 pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>) -> Result<bool> {

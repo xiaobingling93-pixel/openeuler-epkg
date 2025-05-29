@@ -328,6 +328,7 @@ fn download_task(
         fs::create_dir_all(parent)?;
     }
 
+    // Create progress bar but don't show it yet
     let pb = multi_progress.add(ProgressBar::new(0));
     pb.set_style(ProgressStyle::default_bar()
         .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
@@ -335,6 +336,7 @@ fn download_task(
         .progress_chars("=> "));
     pb.set_message(final_path.display().to_string());
 
+    // Start the download
     let result = download_file_with_retries(
         client,
         url,
@@ -344,7 +346,12 @@ fn download_task(
         data_channel,
     );
 
-    pb.finish_and_clear();
+    // Only show progress bar after download has started
+    if result.is_ok() {
+        pb.finish_with_message(format!("Downloaded {}", part_path.file_name().unwrap().to_string_lossy()));
+    } else {
+        pb.finish_and_clear();
+    }
 
     match result {
         Ok(()) => fs::rename(&part_path, &final_path)?,

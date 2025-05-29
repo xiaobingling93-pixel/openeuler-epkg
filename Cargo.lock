@@ -318,6 +318,7 @@ dependencies = [
  "crossbeam-channel",
  "dirs",
  "env_logger",
+ "filetime",
  "flate2",
  "glob",
  "hex",

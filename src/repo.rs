@@ -4,18 +4,18 @@ use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
-
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::time::{SystemTime, Duration};
+use filetime;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
 use crate::models::*;
-
-
 use crate::parse_requires::*;
 use crate::io::load_package_json;
-
 use crate::dirs::find_env_root;
+use crate::dirs::get_repo_dir;
+use crate::download::download_urls;
 
 #[derive(Clone)]
 pub struct RepoRevise {
@@ -345,6 +345,40 @@ pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
         // this should never happen, error instead
         eyre::bail!("Error: cannot determine cache path for url: {}", url);
     }
+}
+
+pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+    // Check if already updated in last 1 day
+    if path.exists() {
+        let metadata = fs::metadata(&path)?;
+        let modified = metadata.modified()?;
+        let now = SystemTime::now();
+        if let Ok(duration) = now.duration_since(modified) {
+            if duration < Duration::from_secs(24 * 60 * 60) {
+
+                let repo_dir = get_repo_dir(&repo).unwrap();
+                let index_path = repo_dir.join("RepoIndex.json");
+                if index_path.exists() {
+                    let metadata = fs::metadata(&index_path)?;
+                    let modified = metadata.modified()?;
+                    let now = SystemTime::now();
+                    if let Ok(duration) = now.duration_since(modified) {
+                        if duration < Duration::from_secs(24 * 60 * 60) {
+                            return Ok(());
+                        } else {
+                            let now = SystemTime::now();
+                            filetime::set_file_mtime(&index_path, filetime::FileTime::from_system_time(now))?; // prevent downloads for 1 day
+                        }
+                    }
+                }
+
+            }
+        }
+    }
+
+    // Download Release file
+    download_urls(vec![repo.index_url.clone()], dirs().epkg_downloads_cache.to_str().unwrap(), 6, false)?;
+    Ok(())
 }
 
 pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
