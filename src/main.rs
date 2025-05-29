@@ -25,6 +25,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
+use std::backtrace::Backtrace;
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
@@ -32,12 +33,14 @@ use crate::ipc::*;
 use crate::dirs::get_epkg_manager_path;
 use color_eyre::Result;
 use color_eyre::eyre;
+use ctrlc;
 use clap::{arg, Command};
 use env_logger;
 use log;
 
 fn main() -> Result<()> {
     setup_logging();
+    setup_ctrlc();
 
     // 第一次访问会触发命令行解析和配置初始化
     log::trace!("Application starting with config: {:#?}", config());
@@ -80,6 +83,24 @@ fn setup_logging() {
             )
         })
         .init();
+}
+
+fn setup_ctrlc() {
+    if !std::env::var("RUST_BACKTRACE").is_ok() {
+        return;
+    }
+
+    // Set up Ctrl-C handler
+    ctrlc::set_handler(move || {
+        println!("\nReceived Ctrl-C! Printing backtrace...");
+
+        // Capture and print the backtrace
+        let backtrace = Backtrace::capture();
+        println!("{:#?}", backtrace);
+
+        // Exit gracefully
+        std::process::exit(1);
+    }).expect("Failed to set Ctrl-C handler");
 }
 
 pub fn parse_cmdline() -> clap::ArgMatches {
