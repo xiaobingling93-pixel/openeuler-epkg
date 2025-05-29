@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::SystemTime;
 use std::sync::mpsc;
 use std::sync::mpsc::{channel, Receiver};
@@ -17,7 +18,7 @@ use hex;
 use crate::download::DownloadTask;
 use crate::download::submit_download_task;
 use crate::download::DOWNLOAD_MANAGER;
-use crate::repo::refresh_download;
+use crate::repo;
 
 use lazy_static::lazy_static;
 
@@ -66,7 +67,7 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
     let repo_dir = dirs::get_repo_dir(&repo).unwrap();
     let release_path = url_to_cache_path(&repo.index_url)?;
 
-    refresh_download(&release_path, &repo)?;
+    repo::refresh_download(&release_path, &repo)?;
 
     // Parse Release file
     let release_content = fs::read_to_string(&release_path)
@@ -369,6 +370,8 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     log::debug!("Starting to process packages content for {}", revise.path);
     let output_path = repo_dir.join(format!("packages-{}.txt", revise.arch));
     let json_path = repo_dir.join(format!(".packages-{}.json", revise.arch));
+    let provide2pkgnames_path = repo_dir.join(format!("provide2pkgnames-{}.yaml", revise.arch));
+    let essential_pkgnames_path = repo_dir.join(format!("essential_pkgnames-{}.txt", revise.arch));
     log::debug!("Output paths - txt: {:?}, json: {:?}", output_path, json_path);
 
     let mut origin_hasher = Sha256::new();
@@ -378,7 +381,7 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let mut decompressed = vec![0u8; 65536];
     let mut current_pkgname: String = String::new();
     let mut provide2pkgnames = HashMap::new();
-    let mut essential_pkgnames: Vec<String> = vec![];
+    let mut essential_pkgnames: HashSet<String> = HashSet::new();
     let mut total_bytes = 0;
     let mut output = String::new();
     let mut partial_line = String::new();
@@ -465,6 +468,8 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
         .context("Failed to serialize file info to JSON")?;
     fs::write(&json_path, json_content)
         .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
+    repo::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)?;
+    repo::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)?;
     log::debug!("Successfully processed packages content");
     Ok(file_info)
 }
@@ -473,7 +478,7 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
 fn process_line(line: &str,
                 current_pkgname: &mut String,
                 provide2pkgnames: &mut HashMap<String, Vec<String>>,
-                essential_pkgnames: &mut Vec<String>,
+                essential_pkgnames: &mut HashSet<String>,
                 output: &mut String) {
     if line.is_empty() {
         output.push_str("\n");
@@ -496,7 +501,7 @@ fn process_line(line: &str,
             }
         } else if key == "Essential" {
             output.push_str(&format!("\n{}: {}", "priority", "essential"));
-            essential_pkgnames.push(current_pkgname.clone());
+            essential_pkgnames.insert(current_pkgname.clone());
         } else {
             log::warn!("Unexpected key in line -- {}: {}", key, value);
         }
