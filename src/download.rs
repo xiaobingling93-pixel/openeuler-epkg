@@ -481,6 +481,7 @@ fn download_file(
 
     let mut reader = response.body_mut().as_reader();
     let mut buffer = vec![0; 8192];
+    let mut last_update = std::time::Instant::now();
 
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -489,7 +490,13 @@ fn download_file(
         }
         file.write_all(&buffer[..bytes_read])?;
         downloaded += bytes_read as u64;
-        pb.set_position(downloaded);
+
+        // Update progress bar more frequently
+        let now = std::time::Instant::now();
+        if now.duration_since(last_update) > Duration::from_millis(300) {
+            pb.set_position(downloaded);
+            last_update = now;
+        }
 
         if let Some(channel) = &data_channel {
             if let Err(_) = channel.send(buffer[..bytes_read].to_vec()) {
@@ -497,6 +504,9 @@ fn download_file(
             }
         }
     }
+
+    // Final progress update
+    pb.set_position(downloaded);
 
     if total_size > 0 && downloaded != total_size {
         let error_msg = format!("Downloaded size ({}) does not match Content-Length ({})", downloaded, total_size);
