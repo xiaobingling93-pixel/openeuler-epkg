@@ -1,0 +1,20 @@
+format: deb
+distro: debian
+version: trixie
+versions:
+- trixie    12 12.10 Debian12.10  # First value is official and used for $version interpolation, others are aliases
+- bookworm  11 11.11 Debian11.11
+- bullseye  10 10.13 Debian10.13
+- testing
+- sid unstable
+repos:
+  main:
+  contrib:
+  non-free:
+index_url:          $mirror/debian/dists/$version/Release
+# index_url_updates:  $mirror/debian/dists/$version-updates/Release
+# index_url_security: $mirror/debian-security/dists/$version/Release
+
+# Example URLs:
+# https://mirrors.huaweicloud.com/debian/dists/trixie/contrib/binary-amd64/Packages.xz
+# https://mirrors.huaweicloud.com/debian/dists/trixie/contrib/Contents-amd64.gz

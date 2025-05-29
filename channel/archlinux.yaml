@@ -1,0 +1,13 @@
+format: pacman
+distro: archlinux
+versions: # Rolling release
+- "latest"
+repos:
+  core:
+  extra:
+  community:
+index_url: $mirror/$repo/os/$arch/$repo.files.tar.gz
+
+# Example URLs:
+# https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db.tar.gz
+# Note: .files.tar.gz is a superset of .db.tar.gz

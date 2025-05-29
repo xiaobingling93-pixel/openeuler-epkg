@@ -1,0 +1,36 @@
+format: rpm
+distro: openeuler
+version: 24.03-lts-sp1
+versions: # LTS versions are marked with -lts suffix
+- 25.03
+- 24.09
+- 24.03-lts-sp1
+- 24.03-lts 24.03
+- 23.09
+- 23.03
+- 22.09
+- 22.03-lts-sp4
+- 22.03-lts-sp3
+- 22.03-lts-sp2
+- 22.03-lts-sp1
+- 22.03-lts-64kb
+- 22.03-lts 22.03
+- 21.09
+- 21.03
+- 20.09
+- 20.03-lts-sp4
+- 20.03-lts-sp3
+- 20.03-lts-sp2
+- 20.03-lts-sp1
+- 20.03-lts 20.03
+repos:
+  OS:
+  update:
+  everything:
+  EPOL/main:
+  EPOL/update/main:
+index_url: $mirror/openEuler-$VERSION/$repo/$arch/repodata/repomd.xml # $VERSION is uppercase $version
+
+# Example URLs:
+# https://mirrors.huaweicloud.com/openeuler/openEuler-24.03-LTS-SP1/OS/aarch64/repodata/repomd.xml
+# https://mirrors.huaweicloud.com/openeuler/openEuler-24.09/update/x86_64/

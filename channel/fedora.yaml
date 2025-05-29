@@ -1,0 +1,16 @@
+format: rpm
+distro: fedora
+versions:
+- "42"
+- "41"
+- "40"
+- "39"
+- "38"
+repos:
+  Everything:
+index_url: $mirror/releases/$version/$repo/$arch/repodata/repomd.xml
+index_url_updates: $mirror/updates/$version/$repo/$arch/repodata/repomd.xml
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/fedora/releases/42/Everything/x86_64/os/repodata/repomd.xml
+# https://mirrors.tuna.tsinghua.edu.cn/fedora/updates/41/Everything/aarch64/repodata/repomd.xml

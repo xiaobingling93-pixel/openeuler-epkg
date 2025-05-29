@@ -1,0 +1,27 @@
+format: deb
+distro: ubuntu
+version: noble
+versions: # First value is official, others are aliases
+- noble   24.04
+- mantic  23.10
+- lunar   23.04
+- jammy   22.04
+- kinetic 22.10
+- focal   20.04
+repos:
+  main:
+  universe:
+  restricted:
+  multiverse:
+index_url:          $mirror/ubuntu/dists/$version/Release
+index_url_updates:  $mirror/ubuntu/dists/$version-updates/Release
+index_url_security: $mirror/ubuntu/dists/$version-security/Release
+
+# Packages url:
+# - ubuntu/dists/{version}/{repo}/binary-{arch}/Packages.xz
+# - ubuntu/dists/{version}-updates/{repo}/binary-{arch}/Packages.xz
+# - ubuntu/dists/{version}-security/{repo}/binary-{arch}/Packages.xz
+#
+# Example URLs:
+# http://ports.ubuntu.com/ubuntu-ports/dists/noble/main/binary-arm64/Packages.xz
+# http://ports.ubuntu.com/ubuntu-ports/dists/noble/Contents-arm64.gz
