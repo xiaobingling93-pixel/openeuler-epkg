@@ -280,7 +280,7 @@ impl PackageManager {
 
                     log::trace!("Loading essential packages for repo: {}", repodata.name);
                     let essential_path = path.parent().unwrap().join("essential_pkgnames.txt");
-                    repodata.load_essential_packages(essential_path.to_str().unwrap())?;
+                    repodata.load_essential_packages(&essential_path)?;
 
                     total_store_paths += repodata.store_paths.len();
                     total_pkg_infos += repodata.pkg_infos.len();

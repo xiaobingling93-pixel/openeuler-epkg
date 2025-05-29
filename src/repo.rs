@@ -65,33 +65,12 @@ impl Repodata {
     }
 
     #[allow(dead_code)]
-    pub fn save_essential_packages(&mut self, path: &str) -> Result<()> {
-        let target_path = Path::new(path);
-        if target_path.exists() {
-            fs::remove_file(&target_path)?;
-        }
-        let file = File::create(target_path)?;
-        let mut writer = BufWriter::new(file);
-
-        for item in self.essential_pkgnames.iter() {
-            writeln!(writer, "{}", item)?;
-        }
-
-        writer.flush()?;
-        Ok(())
+    pub fn save_essential_packages(&mut self, path: &PathBuf) -> Result<()> {
+        serialize_essential_pkgnames(path, &self.essential_pkgnames)
     }
 
-    pub fn load_essential_packages(&mut self, file_path: &str) -> Result<()> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut hashset: HashSet<String> = HashSet::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            hashset.insert(line);
-        }
-        self.essential_pkgnames = hashset;
-
+    pub fn load_essential_packages(&mut self, file_path: &PathBuf) -> Result<()> {
+        self.essential_pkgnames = deserialize_essential_pkgnames(file_path)?;
         Ok(())
     }
 
@@ -474,5 +453,31 @@ pub fn list_repos() -> Result<()> {
 
     println!("{}", "-".repeat(100));
     Ok(())
+}
+
+/// Serializes essential package names to a file
+pub fn serialize_essential_pkgnames(path: &PathBuf, pkgnames: &HashSet<String>) -> Result<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+
+    for item in pkgnames.iter() {
+        writeln!(writer, "{}", item)?;
+    }
+
+    Ok(())
+}
+
+/// Deserializes essential package names from a file
+pub fn deserialize_essential_pkgnames(file_path: &PathBuf) -> Result<HashSet<String>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut hashset: HashSet<String> = HashSet::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        hashset.insert(line);
+    }
+
+    Ok(hashset)
 }
 
