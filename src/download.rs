@@ -344,7 +344,7 @@ fn download_task(
         .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
         .unwrap()
         .progress_chars("=> "));
-    pb.set_message(final_path.display().to_string());
+    pb.set_message(url.to_string());
 
     // Start the download
     let result = download_file_with_retries(
@@ -358,9 +358,9 @@ fn download_task(
 
     // Only show progress bar after download has started
     if result.is_ok() {
-        pb.finish_with_message(format!("Downloaded {}", part_path.file_name().unwrap().to_string_lossy()));
+        pb.finish_with_message(format!("Downloaded {}", final_path.to_string_lossy()));
     } else {
-        pb.finish_and_clear();
+        pb.finish_with_message(format!("Error: {:?}", result));
     }
 
     match result {
