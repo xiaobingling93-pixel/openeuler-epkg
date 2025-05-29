@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::sync::mpsc::Sender;
 use std::sync::LazyLock;
 
@@ -14,6 +14,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::{Agent, config::Config, tls::TlsConfig, Proxy};
 use crate::dirs;
 use crate::models::*;
+use time::{OffsetDateTime, format_description::well_known::Rfc2822};
+use filetime::set_file_mtime;
 
 #[derive(Debug, Clone)]
 pub struct DownloadTask {
@@ -332,7 +334,7 @@ fn download_task(
     let part_path = final_path.with_extension("part");
 
     if final_path.exists() {
-        return Ok(());
+        fs::rename(&final_path, &part_path)?;
     }
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)?;
@@ -405,6 +407,22 @@ fn download_file_with_retries(
     }
 }
 
+pub fn send_file_to_channel(
+    part_path: &Path,
+    data_channel: Sender<Vec<u8>>,
+) -> Result<()> {
+    // The channel receivers process_packages_content()/process_filelist_content() expect full file
+    // to decompress and compute hash, so send the existing file content first. This fixes bug
+    // "Decompression error: stream/file format not recognized"
+    let mut existing_file = std::fs::File::open(part_path)?;
+    let mut existing_file_buffer = Vec::new();
+    existing_file.read_to_end(&mut existing_file_buffer)?;
+    if let Err(_) = data_channel.send(existing_file_buffer) {
+        // Ignore send error for existing file data
+    }
+    Ok(())
+}
+
 fn download_file(
     client: &Agent,
     url: &str,
@@ -423,10 +441,38 @@ fn download_file(
     if downloaded > 0 {
         request = request.header("Range", &format!("bytes={}-", downloaded));
     }
-
     let mut response = match request.call() {
         Ok(response) => response,
         Err(ureq::Error::StatusCode(code)) => {
+            if code == 416 && downloaded > 0 { // The requested byte range is outside the size of the file
+                // Send a request to check remote size and time, then compare with local
+                let remote_metadata = client.get(url.replace("///", "/")).call()?;
+                let remote_size = remote_metadata.headers().get("Content-Length").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                let _remote_last_modified = remote_metadata.headers().get("Last-Modified").and_then(|s| {
+                    s.to_str().ok().and_then(|s| {
+                        OffsetDateTime::parse(s, &Rfc2822).ok()
+                    })
+                }).unwrap_or_else(|| OffsetDateTime::now_utc());
+
+                let local_metadata = fs::metadata(part_path)?;
+                let local_size = local_metadata.len();
+                let _local_last_modified = local_metadata.modified()?;
+                let _local_last_modified: OffsetDateTime = _local_last_modified.into();
+
+                if remote_size == local_size {
+                    let message = format!("Remote file unchanged, skipping download");
+                    pb.finish_with_message(message.clone());
+                    if let Some(channel) = &data_channel {
+                        send_file_to_channel(part_path, channel.clone())?;
+                    }
+                    return Ok(());
+                } else {
+                    let error_msg = format!("Remote file changed, restarting from 0");
+                    pb.finish_with_message(error_msg.clone());
+                    fs::remove_file(part_path)?;
+                    return Err(eyre::eyre!(error_msg))
+                }
+            }
             let error_msg = format!("HTTP {} error: {} - {}", code,
                 if code >= 400 && code < 500 { "Client Error" }
                 else { "Server Error" }, url);
@@ -478,12 +524,7 @@ fn download_file(
     // "Decompression error: stream/file format not recognized"
     if downloaded > 0 {
         if let Some(channel) = &data_channel {
-            let mut existing_file = std::fs::File::open(part_path)?;
-            let mut existing_file_buffer = Vec::new();
-            existing_file.read_to_end(&mut existing_file_buffer)?;
-            if let Err(_) = channel.send(existing_file_buffer) {
-                // Ignore send error for existing file data
-            }
+            send_file_to_channel(part_path, channel.clone())?;
         }
     }
 
@@ -527,6 +568,14 @@ fn download_file(
         let error_msg = format!("Downloaded size ({}) does not match Content-Length ({})", downloaded, total_size);
         pb.finish_with_message(error_msg.clone());
         return Err(eyre::eyre!(error_msg));
+    }
+
+    if let Some(last_modified) = response.headers().get("Last-Modified")
+        .and_then(|s| s.to_str().ok())
+        .and_then(|s| OffsetDateTime::parse(s, &Rfc2822).ok())
+    {
+        let system_time = filetime::FileTime::from_system_time(last_modified.into());
+        set_file_mtime(part_path, system_time)?;
     }
 
     pb.finish_with_message(format!("Downloaded {}", part_path.file_name().unwrap().to_string_lossy()));
