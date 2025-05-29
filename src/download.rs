@@ -473,6 +473,21 @@ fn download_file(
     pb.set_length(total_size);
     pb.set_position(downloaded);
 
+    // The channel receivers process_packages_content()/process_filelist_content() expect full file
+    // to decompress and compute hash, so send the existing file content first. This fixes bug
+    // "Decompression error: stream/file format not recognized"
+    if downloaded > 0 {
+        if let Some(channel) = &data_channel {
+            let mut existing_file = std::fs::File::open(part_path)?;
+            let mut existing_file_buffer = Vec::new();
+            existing_file.read_to_end(&mut existing_file_buffer)?;
+            if let Err(_) = channel.send(existing_file_buffer) {
+                // Ignore send error for existing file data
+            }
+        }
+    }
+
+    // Open the file in append mode to resume partial downloads
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
