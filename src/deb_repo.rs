@@ -16,6 +16,7 @@ use sha2::{Sha256, Digest};
 use hex;
 use crate::download::DownloadTask;
 use crate::download::submit_download_task;
+use crate::download::DOWNLOAD_MANAGER;
 use crate::repo::refresh_download;
 
 const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
@@ -108,6 +109,9 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
                     return Err(e);
                 }
 
+                let _ = &DOWNLOAD_MANAGER.start_processing()?;
+
+                log::debug!("process_data for {:?}", revise);
                 // Process data blocks as they arrive
                 process_data(data_rx, &repo_dir, &revise)
             });
@@ -342,8 +346,10 @@ fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianR
 }
 
 fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianReleaseItem) -> Result<FileInfo> {
+    log::debug!("Starting to process packages content for {}", revise.path);
     let output_path = repo_dir.join(format!("packages-{}.txt", revise.arch));
     let json_path = repo_dir.join(format!(".packages-{}.json", revise.arch));
+    log::debug!("Output paths - txt: {:?}, json: {:?}", output_path, json_path);
 
     let mut origin_hasher = Sha256::new();
     let mut new_hasher = Sha256::new();
@@ -352,12 +358,17 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let mut decompressed = vec![0u8; 8192];
     let mut current_package = HashMap::new();
     let mut current_key: Option<String> = None;
+    let mut total_bytes = 0;
 
     // Collect data and calculate hash incrementally
     loop {
         match decoder.read(&mut decompressed) {
-            Ok(0) => break, // EOF
+            Ok(0) => {
+                log::debug!("Reached EOF after processing {} bytes", total_bytes);
+                break;
+            }
             Ok(n) => {
+                total_bytes += n;
                 origin_hasher.update(&decompressed[..n]);
                 let content = String::from_utf8_lossy(&decompressed[..n]);
                 let mut output = String::new();
@@ -383,30 +394,41 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
                     }
                 }
                 new_hasher.update(output.as_bytes());
-                fs::write(&output_path, output)?;
+                fs::write(&output_path, output)
+                    .context(format!("Failed to write to output file: {:?}", output_path))?;
             }
-            Err(e) => return Err(eyre::eyre!("Decompression error: {}", e)),
+            Err(e) => {
+                log::error!("Decompression error: {}", e);
+                return Err(eyre::eyre!("Failed to decompress file {}: {}", revise.path, e));
+            }
         }
     }
 
     // Verify hash
     let calculated_hash = hex::encode(origin_hasher.finalize());
     let expected_hash = &revise.hash;
+    log::debug!("Hash verification - calculated: {}, expected: {}", calculated_hash, expected_hash);
     if calculated_hash != *expected_hash {
-        return Err(eyre::eyre!("Hash verification failed for {}", revise.path));
+        log::error!("Hash verification failed for {}", revise.path);
+        return Err(eyre::eyre!("Hash verification failed for {}: calculated {}, expected {}",
+            revise.path, calculated_hash, expected_hash));
     }
 
     // Compute sha256sum of processed content
     let new_hash = new_hasher.finalize();
-    let metadata = fs::metadata(&output_path)?;
+    let metadata = fs::metadata(&output_path)
+        .context(format!("Failed to get metadata for file: {:?}", output_path))?;
     let file_info = FileInfo {
         filename: output_path.file_name().unwrap().to_string_lossy().into_owned(),
         sha256sum: hex::encode(new_hash),
         datetime: metadata.modified()?.duration_since(SystemTime::UNIX_EPOCH)?.as_secs().to_string(),
         size: metadata.len(),
     };
-    let json_content = serde_json::to_string_pretty(&file_info)?;
-    fs::write(&json_path, json_content)?;
+    let json_content = serde_json::to_string_pretty(&file_info)
+        .context("Failed to serialize file info to JSON")?;
+    fs::write(&json_path, json_content)
+        .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
+    log::debug!("Successfully processed packages content");
     Ok(file_info)
 }
 

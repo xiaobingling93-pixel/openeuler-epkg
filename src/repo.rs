@@ -273,6 +273,7 @@ fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()>
     // Reader thread (or main thread) waits for all writers to finish
     if !revised.is_empty() {
         drop(tx);
+        log::debug!("revise repo index for {:#?}", revised);
 
         while let Ok(packages_metafiles) = rx.recv() {
             save_repo_index_json(packages_metafiles)?;
@@ -286,6 +287,8 @@ pub fn save_repo_index_json(packages_metafiles: Vec<PathBuf>) -> Result<()> {
     if packages_metafiles.is_empty() {
         return Ok(());
     }
+
+    log::debug!("save_repo_index_json for {:#?}", packages_metafiles);
 
     // Get the repo directory from the first metafile
     let cloned = packages_metafiles.clone();
