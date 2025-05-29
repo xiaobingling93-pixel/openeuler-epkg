@@ -144,8 +144,15 @@ impl DownloadManager {
                     let multi_progress = multi_progress.clone();
                     let task = task.clone();
 
+                    // Create a channel to signal when download starts
+                    let (start_tx, start_rx) = std::sync::mpsc::channel();
+
                     rayon::spawn(move || {
                         *task.status.lock().unwrap() = DownloadStatus::Downloading;
+
+                        // Signal that download is starting
+                        let _ = start_tx.send(());
+
                         if let Err(e) = download_task(
                             &client,
                             &task.url,
@@ -159,6 +166,9 @@ impl DownloadManager {
                             *task.status.lock().unwrap() = DownloadStatus::Completed;
                         }
                     });
+
+                    // Wait for download to start before continuing
+                    let _ = start_rx.recv();
                 }
             }
         });
