@@ -22,19 +22,24 @@ use crate::repo;
 use crate::config;
 
 use lazy_static::lazy_static;
-
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
+
         m.insert("Package",         "pkgname");
+        m.insert("Source",          "source");
         m.insert("Version",         "version");
         m.insert("Installed-Size",  "installedSize");
         m.insert("Maintainer",      "maintainer");
         m.insert("Architecture",    "arch");
         m.insert("Depends",         "requires");
         m.insert("Pre-Depends",     "requiresPre");
+        m.insert("Recommends",      "recommends");
+        m.insert("Enhances",        "enhances");
         m.insert("Provides",        "provides");
         m.insert("Description",     "summary");
+        m.insert("Description-md5", "descriptionMd5");
+        m.insert("Multi-Arch",      "multiArch");
         m.insert("Homepage",        "homepage");
         m.insert("Tag",             "tag");
         m.insert("Section",         "section");
@@ -43,6 +48,41 @@ lazy_static! {
         m.insert("Size",            "size");
         m.insert("MD5sum",          "md5sum");
         m.insert("SHA256",          "sha256");
+        m.insert("Suggests",        "suggests");
+        m.insert("Breaks",          "breaks");
+        m.insert("Replaces",        "replaces");
+        m.insert("Conflicts",       "conflicts");
+        m.insert("Protected",       "protected");
+        m.insert("Essential",       "essential");
+        m.insert("Important",       "important");
+        m.insert("Build-Essential", "buildEssential");
+        m.insert("Build-Ids",       "buildIds");
+        m.insert("Comment",         "comment");
+
+        m.insert("Ruby-Versions",               "rubyVersions");
+        m.insert("Lua-Versions",                "luaVersions");
+        m.insert("Python-Version",              "pythonVersion");
+        m.insert("Python-Egg-Name",             "pythonEggName");
+        m.insert("Built-Using",                 "builtUsing");
+        m.insert("Static-Built-Using",          "staticBuiltUsing");
+        m.insert("Javascript-Built-Using",      "javascriptBuiltUsing");
+        m.insert("X-Cargo-Built-Using", 	"xCargoBuiltUsing");
+        m.insert("Built-Using-Newlib-Source",   "builtUsingNewlibSource");
+        m.insert("Go-Import-Path",              "goImportPath");
+        m.insert("Ghc-Package",                 "ghcPackage");
+        m.insert("Original-Maintainer",         "originalMaintainer");
+        m.insert("Efi-Vendor",                  "efiVendor");
+        m.insert("Cnf-Ignore-Commands",         "cnfIgnoreCommands");
+        m.insert("Cnf-Visible-Pkgname",         "cnfVisiblePkgname");
+        m.insert("Cnf-Extra-Commands",          "cnfExtraCommands");
+        m.insert("Gstreamer-Version",           "gstreamerVersion");
+        m.insert("Gstreamer-Elements",          "gstreamerElements");
+        m.insert("Gstreamer-Uri-Sources",       "gstreamerUriSources");
+        m.insert("Gstreamer-Uri-Sinks",         "gstreamerUriSinks");
+        m.insert("Gstreamer-Encoders",          "gstreamerEncoders");
+        m.insert("Gstreamer-Decoders",          "gstreamerDecoders");
+        m.insert("Postgresql-Catversion",       "postgresqlCatversion");
+
         m
     };
 }
@@ -546,6 +586,11 @@ fn process_line(line: &str,
             if key == "Package" {
                 current_pkgname.clear();
                 current_pkgname.push_str(value);
+            } else if key == "Essential" {
+                output.push_str(&format!("\n{}: {}", "priority", "essential"));
+                essential_pkgnames.insert(current_pkgname.clone());
+            } else if key == "Important" {
+                output.push_str(&format!("\n{}: {}", "priority", "important"));
             } else if key == "Provides" {
                 // Example value: "nvidia-open-kernel-535.247.01, nvidia-open-kernel-dkms-any (= 535.247.01)"
                 let provides: Vec<&str> = value.split(", ")
@@ -555,9 +600,6 @@ fn process_line(line: &str,
                     provide2pkgnames.entry(provide.to_string()).or_insert(Vec::new()).push(current_pkgname.clone());
                 }
             }
-        } else if key == "Essential" {
-            output.push_str(&format!("\n{}: {}", "priority", "essential"));
-            essential_pkgnames.insert(current_pkgname.clone());
         } else {
             log::warn!("Unexpected key in line -- {}: {}", key, value);
         }
