@@ -141,10 +141,11 @@ impl DownloadManager {
                     continue;
                 }
 
-                for task in pending_tasks {
+                for task0 in pending_tasks {
                     let client = client.clone();
                     let multi_progress = multi_progress.clone();
-                    let task = task.clone();
+                    let task = task0.clone();
+                    task0.data_channel.take();  // unblock recv()
 
                     // Create a channel to signal when download starts
                     let (start_tx, start_rx) = std::sync::mpsc::channel();
@@ -387,7 +388,7 @@ fn download_file_with_retries(
     let mut retries = 0;
 
     loop {
-        match download_file(client, url, part_path, pb, data_channel.clone()) {
+        match download_file(client, url, part_path, pb, &data_channel) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if e.downcast_ref::<FatalError>().is_some() {
@@ -409,7 +410,7 @@ fn download_file_with_retries(
 
 pub fn send_file_to_channel(
     part_path: &Path,
-    data_channel: Sender<Vec<u8>>,
+    data_channel: &Sender<Vec<u8>>,
 ) -> Result<()> {
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
@@ -428,7 +429,7 @@ fn download_file(
     url: &str,
     part_path: &Path,
     pb: &ProgressBar,
-    data_channel: Option<Sender<Vec<u8>>>,
+    data_channel: &Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
     let mut downloaded = if part_path.exists() {
         fs::metadata(part_path)?.len()
@@ -463,7 +464,7 @@ fn download_file(
                     let message = format!("Remote file unchanged, skipping download");
                     pb.finish_with_message(message.clone());
                     if let Some(channel) = &data_channel {
-                        send_file_to_channel(part_path, channel.clone())?;
+                        send_file_to_channel(part_path, &channel)?;
                     }
                     return Ok(());
                 } else {
@@ -524,7 +525,7 @@ fn download_file(
     // "Decompression error: stream/file format not recognized"
     if downloaded > 0 {
         if let Some(channel) = &data_channel {
-            send_file_to_channel(part_path, channel.clone())?;
+            send_file_to_channel(part_path, &channel)?;
         }
     }
 
