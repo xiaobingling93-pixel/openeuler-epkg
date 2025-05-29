@@ -361,16 +361,19 @@ pub struct CommonOptions {
     #[serde(default)]
     pub ignore_missing: bool,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub need_revise: bool,
+    pub proxy: Option<String>,
     #[serde(default = "default_nr_parallel")]
     pub nr_parallel: usize,
-    #[serde(default)]
-    pub proxy: Option<String>,
+    #[serde(default = "default_parallel_processing")]
+    pub parallel_processing: bool,
 }
 
 fn default_nr_parallel() -> usize {
     6
+}
+
+fn default_parallel_processing() -> bool {
+    false
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]

@@ -19,6 +19,7 @@ use crate::download::DownloadTask;
 use crate::download::submit_download_task;
 use crate::download::DOWNLOAD_MANAGER;
 use crate::repo;
+use crate::config;
 
 use lazy_static::lazy_static;
 
@@ -63,40 +64,12 @@ pub struct DebianReleaseItem {
     pub output_path: PathBuf,
 }
 
-pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
-    let release_path = url_to_cache_path(&repo.index_url)?;
-
-    repo::refresh_download(&release_path, &repo)?;
-
-    // Parse Release file
-    let release_content = fs::read_to_string(&release_path)
-        .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
-    let release_dir = release_path.parent().unwrap();
-    let info = parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?;
-
-    if info.is_empty() {
-        return Ok(false);
-    }
-
-    let repo_dir = Arc::new(repo_dir.clone());
-
-    // Filter out items that don't need revision
-    let info_clone = info.clone();
-    let revises: Vec<_> = info_clone.iter()
-        .filter(|revise| revise.need_download || revise.need_convert)
-        .cloned()
-        .collect();
-
-    if revises.is_empty() {
-        return Ok(false);
-    }
-
-    log::debug!("repo: {:?}", repo);
-    log::debug!("revises: {:#?}", revises);
-
-    let info_clone2 = info.clone();
-    let result_tx = result_tx.clone();
+fn process_revises_parallel(
+    revises: Vec<DebianReleaseItem>,
+    repo_dir: Arc<PathBuf>,
+    info_clone2: Vec<DebianReleaseItem>,
+    result_tx: mpsc::Sender<Vec<PathBuf>>
+) {
     std::thread::spawn(move || {
         let mut handles = Vec::new();
 
@@ -141,8 +114,91 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
                 packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
             }
         }
+        log::debug!("sending packages_metafiles {:?}", packages_metafiles);
         let _ = result_tx.send(packages_metafiles);
     });
+}
+
+fn process_revises_sequential(
+    revises: Vec<DebianReleaseItem>,
+    repo_dir: &PathBuf,
+    info_clone2: Vec<DebianReleaseItem>,
+    result_tx: mpsc::Sender<Vec<PathBuf>>
+) -> Result<()> {
+    // Process files sequentially
+    for revise in revises {
+        let (data_tx, data_rx) = channel();
+
+        // Create and submit download task
+        let task = DownloadTask::new(
+            revise.url.clone(),
+            dirs().epkg_downloads_cache.to_str().unwrap().to_string(),
+            6
+        ).with_data_channel(data_tx);
+
+        // Submit download task
+        if let Err(e) = submit_download_task(task) {
+            return Err(e);
+        }
+
+        let _ = &DOWNLOAD_MANAGER.start_processing()?;
+
+        log::debug!("process_data for {:?}", revise);
+        // Process data blocks as they arrive
+        process_data(data_rx, repo_dir, &revise)?;
+    }
+
+    let mut packages_metafiles = Vec::new();
+    for revise in info_clone2 {
+        if revise.path.ends_with("/Packages.xz") {
+            packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
+        }
+    }
+    log::debug!("sending packages_metafiles {:?}", packages_metafiles);
+    let _ = result_tx.send(packages_metafiles);
+    Ok(())
+}
+
+pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>) -> Result<bool> {
+    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+    let release_path = url_to_cache_path(&repo.index_url)?;
+
+    repo::refresh_download(&release_path, &repo)?;
+
+    // Parse Release file
+    let release_content = fs::read_to_string(&release_path)
+        .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
+    let release_dir = release_path.parent().unwrap();
+    let info = parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?;
+
+    if info.is_empty() {
+        return Ok(false);
+    }
+
+    let repo_dir = Arc::new(repo_dir.clone());
+
+    // Filter out items that don't need revision
+    let info_clone = info.clone();
+    let revises: Vec<_> = info_clone.iter()
+        .filter(|revise| revise.need_download || revise.need_convert)
+        .cloned()
+        .collect();
+
+    if revises.is_empty() {
+        return Ok(false);
+    }
+
+    log::debug!("repo: {:?}", repo);
+    log::debug!("revises: {:#?}", revises);
+
+    let info_clone2 = info.clone();
+    let result_tx = result_tx.clone();
+
+    if config().common.parallel_processing {
+        process_revises_parallel(revises, repo_dir, info_clone2, result_tx);
+    } else {
+        process_revises_sequential(revises, &repo_dir, info_clone2, result_tx)?;
+    }
     Ok(true)
 }
 
