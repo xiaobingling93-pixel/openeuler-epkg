@@ -19,24 +19,32 @@ use crate::download::submit_download_task;
 use crate::download::DOWNLOAD_MANAGER;
 use crate::repo::refresh_download;
 
-const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
-    ("Package", "pkgname"),
-    ("Version", "version"),
-    ("Installed-Size", "installedSize"),
-    ("Maintainer", "maintainer"),
-    ("Architecture", "arch"),
-    ("Depends", "requires"),
-    ("Pre-Depends", "requiresPre"),
-    ("Description", "summary"),
-    ("Homepage", "homepage"),
-    ("Tag", "tag"),
-    ("Section", "section"),
-    ("Priority", "priority"),
-    ("Filename", "location"),
-    ("Size", "size"),
-    ("MD5sum", "md5sum"),
-    ("SHA256", "sha256"),
-];
+use lazy_static::lazy_static;
+
+lazy_static! {
+    pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
+        let mut m = std::collections::HashMap::new();
+        m.insert("Package",         "pkgname");
+        m.insert("Version",         "version");
+        m.insert("Installed-Size",  "installedSize");
+        m.insert("Maintainer",      "maintainer");
+        m.insert("Architecture",    "arch");
+        m.insert("Depends",         "requires");
+        m.insert("Pre-Depends",     "requiresPre");
+        m.insert("Provides",        "provides");
+        m.insert("Description",     "summary");
+        m.insert("Homepage",        "homepage");
+        m.insert("Tag",             "tag");
+        m.insert("Section",         "section");
+        m.insert("Priority",        "priority");
+        m.insert("Filename",        "location");
+        m.insert("Size",            "size");
+        m.insert("MD5sum",          "md5sum");
+        m.insert("SHA256",          "sha256");
+        m
+    };
+}
+
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -367,47 +375,64 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let mut new_hasher = Sha256::new();
     let reader = ReceiverReader::new(data_rx);
     let mut decoder = xz2::read::XzDecoder::new(reader);
-    let mut decompressed = vec![0u8; 8192];
-    let mut current_package = HashMap::new();
-    let mut current_key: Option<String> = None;
+    let mut decompressed = vec![0u8; 65536];
+    let mut current_pkgname: String = String::new();
+    let mut provide2pkgnames = HashMap::new();
+    let mut essential_pkgnames: Vec<String> = vec![];
     let mut total_bytes = 0;
+    let mut output = String::new();
+    let mut partial_line = String::new();
 
     // Collect data and calculate hash incrementally
     loop {
         match decoder.read(&mut decompressed) {
             Ok(0) => {
                 log::debug!("Reached EOF after processing {} bytes", total_bytes);
+                // Process any remaining partial line
+                if !partial_line.is_empty() {
+                    process_line(&partial_line,
+                        &mut current_pkgname,
+                        &mut provide2pkgnames,
+                        &mut essential_pkgnames,
+                        &mut output);
+                }
                 break;
             }
             Ok(n) => {
                 total_bytes += n;
                 origin_hasher.update(&decompressed[..n]);
                 let content = String::from_utf8_lossy(&decompressed[..n]);
-                let mut output = String::new();
-                for line in content.lines() {
-                    if line.trim().is_empty() {
-                        if let Some(key) = current_key.take() {
-                            let _key_ref = &key;
-                            if let Some(new_key) = PACKAGE_KEY_MAPPING.iter().find(|(k, _)| *k == key) {
-                                output.push_str(&format!("{}: {}\n", new_key.1, current_package[&key]));
-                            }
-                        }
-                        if !current_package.is_empty() {
-                            output.push_str("\n");
-                            current_package.clear();
-                        }
-                    } else if let Some((key, value)) = line.split_once(':') {
-                        if current_key.is_some() {
-                            current_package.insert(current_key.take().unwrap(), value.trim().to_string());
-                        }
-                        current_key = Some(key.trim().to_string());
-                    } else if let Some(key) = current_key.take() {
-                        current_package.entry(key.to_string()).or_insert_with(String::new).push_str(line.trim());
+
+                // Combine with any partial line from previous chunk
+                let full_content = if !partial_line.is_empty() {
+                    let combined = partial_line.clone() + &content;
+                    partial_line.clear();
+                    combined
+                } else {
+                    content.to_string()
+                };
+
+                // Split into lines, keeping the last partial line
+                let mut lines: Vec<&str> = full_content.lines().collect();
+                if !full_content.ends_with('\n') {
+                    if let Some(last_line) = lines.pop() {
+                        partial_line = last_line.to_string();
                     }
                 }
+
+                // Process complete lines
+                for line in lines {
+                    process_line(line,
+                        &mut current_pkgname,
+                        &mut provide2pkgnames,
+                        &mut essential_pkgnames,
+                        &mut output);
+                }
+
                 new_hasher.update(output.as_bytes());
-                fs::write(&output_path, output)
+                fs::write(&output_path, &output)
                     .context(format!("Failed to write to output file: {:?}", output_path))?;
+                output.clear();
             }
             Err(e) => {
                 log::error!("Decompression error: {}", e);
@@ -442,6 +467,42 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
         .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
     log::debug!("Successfully processed packages content");
     Ok(file_info)
+}
+
+// Helper function to process a single line
+fn process_line(line: &str,
+                current_pkgname: &mut String,
+                provide2pkgnames: &mut HashMap<String, Vec<String>>,
+                essential_pkgnames: &mut Vec<String>,
+                output: &mut String) {
+    if line.is_empty() {
+        output.push_str("\n");
+    } else if line.starts_with(" ") {
+        output.push_str(line);
+    } else if let Some((key, value)) = line.split_once(": ") {
+        if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
+            output.push_str(&format!("\n{}: {}", mapped_key, value));
+            if key == "Package" {
+                current_pkgname.clear();
+                current_pkgname.push_str(value);
+            } else if key == "Provides" {
+                // Example value: "nvidia-open-kernel-535.247.01, nvidia-open-kernel-dkms-any (= 535.247.01)"
+                let provides: Vec<&str> = value.split(", ")
+                    .map(|s| s.split_whitespace().next().unwrap())
+                    .collect();
+                for provide in provides {
+                    provide2pkgnames.entry(provide.to_string()).or_insert(Vec::new()).push(current_pkgname.clone());
+                }
+            }
+        } else if key == "Essential" {
+            output.push_str(&format!("\n{}: {}", "priority", "essential"));
+            essential_pkgnames.push(current_pkgname.clone());
+        } else {
+            log::warn!("Unexpected key in line -- {}: {}", key, value);
+        }
+    } else {
+        log::warn!("Unexpected line format: {}", line);
+    }
 }
 
 fn process_filelist_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianReleaseItem) -> Result<FileInfo> {
