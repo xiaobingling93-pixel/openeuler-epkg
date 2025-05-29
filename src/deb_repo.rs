@@ -81,6 +81,9 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
         return Ok(false);
     }
 
+    log::debug!("repo: {:?}", repo);
+    log::debug!("revises: {:#?}", revises);
+
     let info_clone2 = info.clone();
     let result_tx = result_tx.clone();
     std::thread::spawn(move || {

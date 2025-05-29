@@ -18,6 +18,7 @@ use crate::dirs::get_repo_dir;
 use crate::download::download_urls;
 
 #[derive(Clone)]
+#[derive(Debug)]
 pub struct RepoRevise {
     pub arch: String,
     pub channel: String,
