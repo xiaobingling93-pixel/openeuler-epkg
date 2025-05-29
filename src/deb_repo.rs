@@ -567,6 +567,7 @@ fn process_line(line: &str,
 }
 
 fn process_filelist_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianReleaseItem) -> Result<FileInfo> {
+    log::debug!("Processing filelist content for arch: {:?}", revise);
     let mut hasher = Sha256::new();
 
     // Process data and calculate hash incrementally
@@ -577,30 +578,55 @@ fn process_filelist_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     // Verify hash
     let calculated_hash = hex::encode(hasher.finalize());
     if calculated_hash != revise.hash {
-        return Err(eyre::eyre!("Hash verification failed for {}", revise.path));
+        log::error!("Hash verification failed for {}: expected {}, got {}",
+            revise.path, revise.hash, calculated_hash);
+        return Err(eyre::eyre!("Hash verification failed for {}: expected {}, got {}",
+            revise.path, revise.hash, calculated_hash));
     }
+    log::debug!("Hash verification successful for {}", revise.path);
 
     // Create symbolic link from contents_path to repo_dir
     // "Contents-all.gz"
     let output_path = repo_dir.join(format!("filelist-{}.gz", revise.arch));
     let json_path = repo_dir.join(format!(".filelist-{}.json", revise.arch));
     if output_path.exists() {
-	fs::remove_file(&output_path)?;
+        log::debug!("Removing existing filelist at {}", output_path.display());
+        fs::remove_file(&output_path)
+            .with_context(|| format!("Failed to remove existing filelist at {}", output_path.display()))?;
     }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(revise.download_path.clone(), &output_path)?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_file(revise.download_path, &output_path)?;
 
-    let metadata = fs::metadata(&output_path)?;
+    log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(revise.download_path.clone(), &output_path)
+        .with_context(|| format!("Failed to create symlink from {} to {}",
+            revise.download_path.display(), output_path.display()))?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(revise.download_path, &output_path)
+        .with_context(|| format!("Failed to create symlink from {} to {}",
+            revise.download_path.display(), output_path.display()))?;
+
+    let metadata = fs::metadata(&output_path)
+        .with_context(|| format!("Failed to get metadata for {}", output_path.display()))?;
     let file_info = FileInfo {
-        filename: output_path.file_name().unwrap().to_string_lossy().into_owned(),
+        filename: output_path.file_name()
+            .ok_or_else(|| eyre::eyre!("Failed to get filename from path: {}", output_path.display()))?
+            .to_string_lossy()
+            .into_owned(),
         sha256sum: calculated_hash,
-        datetime: metadata.modified()?.duration_since(SystemTime::UNIX_EPOCH)?.as_secs().to_string(),
+        datetime: metadata.modified()?
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs()
+            .to_string(),
         size: metadata.len(),
     };
-    let json_content = serde_json::to_string_pretty(&file_info)?;
-    fs::write(&json_path, json_content)?;
+
+    log::debug!("Writing filelist metadata to {}", json_path.display());
+    let json_content = serde_json::to_string_pretty(&file_info)
+        .with_context(|| format!("Failed to serialize file info to JSON for {}", output_path.display()))?;
+    fs::write(&json_path, json_content)
+        .with_context(|| format!("Failed to write JSON metadata to {}", json_path.display()))?;
+
+    log::debug!("Successfully processed filelist content for arch: {}", revise.arch);
     Ok(file_info)
 }
 
