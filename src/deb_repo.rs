@@ -416,27 +416,37 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
 }
 
 // Add this struct before using XzDecoder
-struct ReceiverReader {
+struct ReceiverReader<'a> {
     receiver: Receiver<Vec<u8>>,
     current_chunk: Vec<u8>,
     position: usize,
+    hasher: Option<&'a mut Sha256>,
 }
 
-impl ReceiverReader {
+impl<'a> ReceiverReader<'a> {
     fn new(receiver: Receiver<Vec<u8>>) -> Self {
         Self {
             receiver,
             current_chunk: Vec::new(),
             position: 0,
+            hasher: None,
         }
+    }
+
+    fn with_hasher(mut self, hasher: &'a mut Sha256) -> Self {
+        self.hasher = Some(hasher);
+        self
     }
 }
 
-impl std::io::Read for ReceiverReader {
+impl<'a> std::io::Read for ReceiverReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.position >= self.current_chunk.len() {
             match self.receiver.recv() {
                 Ok(chunk) => {
+                    if let Some(hasher) = &mut self.hasher {
+                        hasher.update(&chunk);
+                    }
                     self.current_chunk = chunk;
                     self.position = 0;
                 }
@@ -472,9 +482,10 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
 
     let mut origin_hasher = Sha256::new();
     let mut new_hasher = Sha256::new();
-    let reader = ReceiverReader::new(data_rx);
+    let reader = ReceiverReader::new(data_rx).with_hasher(&mut origin_hasher);
     let mut decoder = xz2::read::XzDecoder::new(reader);
     let mut decompressed = vec![0u8; 65536];
+
     let mut current_pkgname: String = String::new();
     let mut provide2pkgnames = HashMap::new();
     let mut essential_pkgnames: HashSet<String> = HashSet::new();
@@ -499,7 +510,6 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
             }
             Ok(n) => {
                 total_bytes += n;
-                origin_hasher.update(&decompressed[..n]);
                 let content = String::from_utf8_lossy(&decompressed[..n]);
 
                 // Combine with any partial line from previous chunk
@@ -540,17 +550,16 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
         }
     }
 
-    // Verify hash
+    // Get the final hash from the ReceiverReader
     let calculated_hash = hex::encode(origin_hasher.finalize());
     let expected_hash = &revise.hash;
-    log::debug!("Hash verification - calculated: {}, expected: {}", calculated_hash, expected_hash);
     if calculated_hash != *expected_hash {
-        log::error!("Hash verification failed for {}", revise.path);
+        log::error!("Hash verification failed for {} - calculated: {}, expected: {}", revise.path, calculated_hash, expected_hash);
         return Err(eyre::eyre!("Hash verification failed for {}: calculated {}, expected {}",
             revise.path, calculated_hash, expected_hash));
     }
 
-    // Compute sha256sum of processed content
+    // Compute final hash and save metadata
     let new_hash = new_hasher.finalize();
     let metadata = fs::metadata(&output_path)
         .context(format!("Failed to get metadata for file: {:?}", output_path))?;
