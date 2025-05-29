@@ -306,6 +306,11 @@ pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
 }
 
 pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+    use std::sync::LazyLock;
+    // Prevent duplicate downloads
+    static DOWNLOADING_RELEASES: LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
+        LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+
     // Check if already updated in last 1 day
     if path.exists() {
         let metadata = fs::metadata(&path)?;
@@ -313,7 +318,6 @@ pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
         let now = SystemTime::now();
         if let Ok(duration) = now.duration_since(modified) {
             if duration < Duration::from_secs(24 * 60 * 60) {
-
                 let repo_dir = get_repo_dir(&repo).unwrap();
                 let index_path = repo_dir.join("RepoIndex.json");
                 if index_path.exists() {
@@ -329,10 +333,16 @@ pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
                         }
                     }
                 }
-
             }
         }
     }
+
+    // Thread-safe access to static HashSet
+    let mut downloading = DOWNLOADING_RELEASES.lock().unwrap();
+    if downloading.contains(path) {
+        return Ok(());
+    }
+    downloading.insert(path.clone());
 
     // Download Release file
     download_urls(vec![repo.index_url.clone()], dirs().epkg_downloads_cache.to_str().unwrap(), 6, false)?;
