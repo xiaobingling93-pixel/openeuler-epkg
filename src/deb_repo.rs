@@ -521,32 +521,40 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
             }
             Ok(n) => {
                 total_bytes += n;
-                let content = String::from_utf8_lossy(&decompressed[..n]);
+                let content = &decompressed[..n];
+                let mut pos = 0;
 
-                // Combine with any partial line from previous chunk
-                let full_content = if !partial_line.is_empty() {
-                    let combined = partial_line.clone() + &content;
-                    partial_line.clear();
-                    combined
-                } else {
-                    content.to_string()
-                };
+                while pos < content.len() {
+                    // Find the next newline
+                    if let Some(newline_pos) = content[pos..].iter().position(|&b| b == b'\n') {
+                        let newline_pos = pos + newline_pos;
 
-                // Split into lines, keeping the last partial line
-                let mut lines: Vec<&str> = full_content.lines().collect();
-                if !full_content.ends_with('\n') {
-                    if let Some(last_line) = lines.pop() {
-                        partial_line = last_line.to_string();
+                        // If we have a partial line, combine it with the content up to the newline
+                        if partial_line.is_empty() {
+                            // No partial line, just process the line up to the newline
+                            let line = String::from_utf8_lossy(&content[pos..newline_pos]);
+                            process_line(&line,
+                                &mut current_pkgname,
+                                &mut provide2pkgnames,
+                                &mut essential_pkgnames,
+                                &mut output);
+                        } else {
+                            let line = String::from_utf8_lossy(&content[pos..newline_pos]);
+                            let full_line = partial_line.clone() + &line;
+                            process_line(&full_line,
+                                &mut current_pkgname,
+                                &mut provide2pkgnames,
+                                &mut essential_pkgnames,
+                                &mut output);
+                            partial_line.clear();
+                        }
+
+                        pos = newline_pos + 1;
+                    } else {
+                        // No more newlines, save the rest as partial
+                        partial_line.push_str(&String::from_utf8_lossy(&content[pos..]));
+                        break;
                     }
-                }
-
-                // Process complete lines
-                for line in lines {
-                    process_line(line,
-                        &mut current_pkgname,
-                        &mut provide2pkgnames,
-                        &mut essential_pkgnames,
-                        &mut output);
                 }
 
                 new_hasher.update(output.as_bytes());
@@ -600,6 +608,7 @@ fn process_line(line: &str,
     if line.is_empty() {
         output.push_str("\n");
     } else if line.starts_with(" ") {
+        // This is a continuation line, append it to the previous line
         output.push_str(line);
     } else if let Some((key, value)) = line.split_once(": ") {
         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
@@ -615,7 +624,8 @@ fn process_line(line: &str,
             } else if key == "Provides" {
                 // Example value: "nvidia-open-kernel-535.247.01, nvidia-open-kernel-dkms-any (= 535.247.01)"
                 let provides: Vec<&str> = value.split(", ")
-                    .map(|s| s.split_whitespace().next().unwrap())
+                    .map(|s| s.split_whitespace().next().unwrap_or(""))
+                    .filter(|s| !s.is_empty())
                     .collect();
                 for provide in provides {
                     provide2pkgnames.entry(provide.to_string()).or_insert(Vec::new()).push(current_pkgname.clone());
