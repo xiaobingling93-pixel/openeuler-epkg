@@ -30,37 +30,12 @@ pub struct RepoRevise {
 #[allow(dead_code)]
 impl Repodata {
     #[allow(dead_code)]
-    pub fn save_package_provides(&mut self, path: &str) -> Result<()> {
-        let target_path = Path::new(path);
-        if target_path.exists() {
-            fs::remove_file(&target_path)?;
-        }
-        let file = File::create(target_path)?;
-        let mut writer = BufWriter::new(file);
-
-        for (key, values) in self.provide2pkgnames.iter() {
-            let line = format!("{}: {}", key, values.join(" "));
-            writeln!(writer, "{}", line)?;
-        }
-
-        writer.flush()?;
-        Ok(())
+    pub fn save_package_provides(&mut self, path: &PathBuf) -> Result<()> {
+        serialize_provide2pkgnames(path, &self.provide2pkgnames)
     }
 
-    pub fn load_package_provides(&mut self, file_path: &str) -> Result<()> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut map: HashMap<String, Vec<String>> = HashMap::new();
-
-        for (line_num, line_result) in reader.lines().enumerate() {
-            let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path))?;
-            if let Some((key, values)) = line.split_once(": ") {
-                let values: Vec<String> = values.split(" ").map(|s| s.to_string()).collect();
-                map.insert(key.to_string(), values);
-            }
-        }
-        self.provide2pkgnames = map;
-
+    pub fn load_package_provides(&mut self, file_path: &PathBuf) -> Result<()> {
+        self.provide2pkgnames = deserialize_provide2pkgnames(file_path)?;
         Ok(())
     }
 
@@ -479,5 +454,35 @@ pub fn deserialize_essential_pkgnames(file_path: &PathBuf) -> Result<HashSet<Str
     }
 
     Ok(hashset)
+}
+
+/// Serializes package provides mapping to a file
+pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<String, Vec<String>>) -> Result<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+
+    for (key, values) in provide2pkgnames.iter() {
+        let line = format!("{}: {}", key, values.join(" "));
+        writeln!(writer, "{}", line)?;
+    }
+
+    Ok(())
+}
+
+/// Deserializes package provides mapping from a file
+pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<String, Vec<String>>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (line_num, line_result) in reader.lines().enumerate() {
+        let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path.display()))?;
+        if let Some((key, values)) = line.split_once(": ") {
+            let values: Vec<String> = values.split(" ").map(|s| s.to_string()).collect();
+            map.insert(key.to_string(), values);
+        }
+    }
+
+    Ok(map)
 }
 

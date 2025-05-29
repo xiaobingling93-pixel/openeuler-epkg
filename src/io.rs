@@ -276,7 +276,7 @@ impl PackageManager {
 
                     log::trace!("Loading provides for repo: {}", repodata.name);
                     let provide_path = path.parent().unwrap().join("provide2pkgnames.yaml");
-                    repodata.load_package_provides(provide_path.to_str().unwrap())?;
+                    repodata.load_package_provides(&provide_path)?;
 
                     log::trace!("Loading essential packages for repo: {}", repodata.name);
                     let essential_path = path.parent().unwrap().join("essential_pkgnames.txt");
