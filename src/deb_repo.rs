@@ -42,7 +42,8 @@ const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
 #[derive(Debug, Clone)]
 pub struct DebianReleaseItem {
     pub repo_name: String,
-    pub need_revise: bool,
+    pub need_download: bool,
+    pub need_convert: bool,
     pub arch: String,
     pub url: String,
     pub hash_type: String,
@@ -50,6 +51,7 @@ pub struct DebianReleaseItem {
     pub size: u64,
     pub path: String,
     pub download_path: PathBuf,
+    pub output_path: PathBuf,
 }
 
 pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>) -> Result<bool> {
@@ -73,7 +75,7 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
     // Filter out items that don't need revision
     let info_clone = info.clone();
     let revises: Vec<_> = info_clone.iter()
-        .filter(|revise| revise.need_revise)
+        .filter(|revise| revise.need_download || revise.need_convert)
         .cloned()
         .collect();
 
@@ -204,6 +206,13 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                         continue;
                     }
 
+                    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+                    let output_path = if is_packages {
+                        repo_dir.join(format!("packages-{}.txt", arch))
+                    } else {
+                        repo_dir.join(format!("filelist-{}.gz", arch))
+                    };
+
                     // --- EXAMPLES FOR PATH AND URL CONSTRUCTION ---
                     // Given:
                     //   repo.index_url = "$mirror/debian/dists/$version/Release"
@@ -243,7 +252,8 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
 
                     // Check if we need to revise by checking if the file exists
                     let download_path = &release_dir.join(&location);
-                    let need_revise = !download_path.exists();
+                    let need_download = !download_path.exists();
+                    let need_convert = !output_path.exists();
 
                     // Construct the download URL
                     let baseurl = if repo.index_url.ends_with("/Release") {
@@ -258,7 +268,7 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                     // Example output for info vector:
                     // DebianReleaseItem {
                     //     repo_name: "main",
-                    //     need_revise: true,
+                    //     need_download: true,
                     //     arch: "x86_64",
                     //     url: "http://mirrors.163.com///debian/dists/trixie/main/binary-amd64/by-hash/SHA256/aaa",
                     //     hash_type: "SHA256",
@@ -270,13 +280,15 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
 
                     info.push(DebianReleaseItem {
                         repo_name,
-                        need_revise,
+                        need_download,
+                        need_convert,
                         arch,
                         url,
                         hash_type: current_hash_type.clone(),
                         hash,
                         size,
                         path,
+                        output_path,
                         download_path: download_path.to_path_buf(),
                     });
                 }
