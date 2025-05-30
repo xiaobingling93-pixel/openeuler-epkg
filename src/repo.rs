@@ -330,13 +330,13 @@ fn touch_file_mtime(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn check_repo_index_age(repo: &RepoRevise) -> Result<bool> {
+fn check_repo_index_age(repo: &RepoRevise, duration: std::time::Duration) -> Result<bool> {
     let repo_dir = get_repo_dir(&repo).unwrap();
     let index_path = repo_dir.join("RepoIndex.json");
     if !index_path.exists() {
         return Ok(false);
     }
-    let is_recent = is_file_recent(&index_path, Duration::from_secs(24 * 60 * 60))?;
+    let is_recent = is_file_recent(&index_path, duration)?;
     if !is_recent {
         touch_file_mtime(&index_path)?;
     }
@@ -360,11 +360,24 @@ fn should_skip_duplicate_downloads(path: &PathBuf) -> bool {
 }
 
 pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
-    // Check if release file is recent
-    if is_file_recent(path, Duration::from_secs(24 * 60 * 60))? {
-        // If release file is recent, check repo index age
-        if check_repo_index_age(repo)? {
-            return Ok(());
+    let expire_secs = config().common.metadata_expire;
+
+    // if never auto update
+    if expire_secs == 0 &&
+        config().subcommand != "update" {
+        return Ok(());
+    }
+
+    // if not always update
+    if !(expire_secs < 0 ||
+        config().subcommand == "update") {
+        let duration = std::time::Duration::from_secs(expire_secs.try_into().unwrap());
+        // Check if release file is recent
+        if is_file_recent(path, duration)? {
+            // If release file is recent, check repo index age
+            if check_repo_index_age(repo, duration)? {
+                return Ok(());
+            }
         }
     }
 

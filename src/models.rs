@@ -370,6 +370,11 @@ pub struct CommonOptions {
     #[serde(default)]
     pub ignore_missing: bool,
     #[serde(default)]
+    // N: expire after N seconds
+    // 0: never expire (the default)
+    // -1: always expire
+    pub metadata_expire: i32,
+    #[serde(default)]
     pub proxy: Option<String>,
     #[serde(default = "default_nr_parallel")]
     pub nr_parallel: usize,
