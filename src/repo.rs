@@ -445,7 +445,10 @@ pub fn serialize_essential_pkgnames(path: &PathBuf, pkgnames: &HashSet<String>) 
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
 
-    for item in pkgnames.iter() {
+    let mut sorted_names: Vec<_> = pkgnames.iter().collect();
+    sorted_names.sort();
+
+    for item in sorted_names {
         writeln!(writer, "{}", item)?;
     }
 
@@ -471,7 +474,10 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
 
-    for (key, values) in provide2pkgnames.iter() {
+    let mut sorted_names: Vec<_> = provide2pkgnames.iter().collect();
+    sorted_names.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (key, values) in sorted_names {
         let line = format!("{}: {}", key, values.join(" "));
         writeln!(writer, "{}", line)?;
     }
