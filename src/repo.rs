@@ -502,3 +502,56 @@ pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<Strin
     Ok(map)
 }
 
+// Function to serialize pkgname2ranges to a file
+pub fn serialize_pkgname2offsets(path: &PathBuf, pkgname2ranges: &HashMap<String, Vec<PackageRange>>) -> Result<()> {
+    let mut file = fs::File::create(path)
+        .with_context(|| format!("Failed to create index file: {}", path.display()))?;
+
+    // Sort package names before writing
+    let mut sorted_packages: Vec<_> = pkgname2ranges.iter().collect();
+    sorted_packages.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (pkgname, offsets) in sorted_packages {
+        let offset_str = offsets.iter()
+            .map(|o| format!("{:x} {:x}", o.begin, o.len))
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(file, "{}: {}", pkgname, offset_str)
+            .with_context(|| format!("Failed to write to index file: {}", path.display()))?;
+    }
+    Ok(())
+}
+
+// Function to deserialize pkgname2ranges from a file
+pub fn deserialize_pkgname2offsets(path: &PathBuf) -> Result<HashMap<String, Vec<PackageRange>>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read index file: {}", path.display()))?;
+
+    let mut pkgname2ranges = HashMap::new();
+    for line in content.lines() {
+        if let Some((pkgname, offsets_str)) = line.split_once(": ") {
+            let offsets: Vec<PackageRange> = offsets_str
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .chunks(2)
+                .filter_map(|chunk| {
+                    if chunk.len() == 2 {
+                        let begin = usize::from_str_radix(chunk[0], 16).ok()?;
+                        let len = usize::from_str_radix(chunk[1], 16).ok()?;
+                        Some(PackageRange {
+                            begin,
+                            len,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !offsets.is_empty() {
+                pkgname2ranges.insert(pkgname.to_string(), offsets);
+            }
+        }
+    }
+    Ok(pkgname2ranges)
+}
+

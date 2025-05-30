@@ -49,6 +49,13 @@ pub struct Dependency {
     pub hash: String,
 }
 
+// Structure to hold begin offset and length for a package
+#[derive(Debug, Clone)]
+pub struct PackageRange {
+    pub begin: usize,
+    pub len: usize,
+}
+
 // $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]

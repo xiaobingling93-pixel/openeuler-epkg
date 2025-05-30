@@ -8,7 +8,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::io::Read;
 use std::io::Write;
-use crate::models::FileInfo;
+use crate::models::*;
 use crate::repo::{url_to_cache_path, RepoRevise};
 use crate::dirs;
 use color_eyre::eyre;
@@ -87,7 +87,6 @@ lazy_static! {
         m
     };
 }
-
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -479,7 +478,8 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let json_path = repo_dir.join(format!(".packages-{}.json", revise.arch));
     let provide2pkgnames_path = repo_dir.join(format!("provide2pkgnames-{}.yaml", revise.arch));
     let essential_pkgnames_path = repo_dir.join(format!("essential_pkgnames-{}.txt", revise.arch));
-    log::debug!("Output paths - txt: {:?}, json: {:?}", output_path, json_path);
+    let index_path = repo_dir.join(format!("packages-{}.idx", revise.arch));
+    log::debug!("Output paths - txt: {:?}, json: {:?}, idx: {:?}", output_path, json_path, index_path);
 
     let mut origin_hasher = Sha256::new();
     let mut new_hasher = Sha256::new();
@@ -490,9 +490,12 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let mut current_pkgname: String = String::new();
     let mut provide2pkgnames = HashMap::new();
     let mut essential_pkgnames: HashSet<String> = HashSet::new();
+    let mut pkgname2ranges: HashMap<String, Vec<PackageRange>> = HashMap::new();
     let mut total_bytes = 0;
     let mut output = String::new();
     let mut partial_line = String::new();
+    let mut output_offset = 0;
+    let mut package_begin_offset = 0;
 
     // Open output file for appending before the loop
     use std::fs::OpenOptions;
@@ -510,13 +513,14 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
             Ok(0) => {
                 log::debug!("Reached EOF after processing {} bytes", total_bytes);
                 // Process any remaining partial line
-                if !partial_line.is_empty() {
-                    process_line(&partial_line,
-                        &mut current_pkgname,
-                        &mut provide2pkgnames,
-                        &mut essential_pkgnames,
-                        &mut output);
-                }
+                process_line(&partial_line,
+                    &mut current_pkgname,
+                    &mut provide2pkgnames,
+                    &mut essential_pkgnames,
+                    &mut output,
+                    &mut pkgname2ranges,
+                    &mut output_offset,
+                    &mut package_begin_offset);
                 break;
             }
             Ok(n) => {
@@ -537,7 +541,10 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
                                 &mut current_pkgname,
                                 &mut provide2pkgnames,
                                 &mut essential_pkgnames,
-                                &mut output);
+                                &mut output,
+                                &mut pkgname2ranges,
+                                &mut output_offset,
+                                &mut package_begin_offset);
                         } else {
                             let line = String::from_utf8_lossy(&content[pos..newline_pos]);
                             let full_line = partial_line.clone() + &line;
@@ -545,7 +552,10 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
                                 &mut current_pkgname,
                                 &mut provide2pkgnames,
                                 &mut essential_pkgnames,
-                                &mut output);
+                                &mut output,
+                                &mut pkgname2ranges,
+                                &mut output_offset,
+                                &mut package_begin_offset);
                             partial_line.clear();
                         }
 
@@ -560,6 +570,7 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
                 new_hasher.update(output.as_bytes());
                 writer.write_all(output.as_bytes())
                     .context(format!("Failed to append to output file: {:?}", output_path))?;
+                output_offset += output.len();
                 output.clear();
             }
             Err(e) => {
@@ -578,6 +589,9 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
         return Err(eyre::eyre!("Hash verification failed for {}: calculated {}, expected {}",
             revise.path, calculated_hash, expected_hash));
     }
+
+    // Save package offsets to index file
+    repo::serialize_pkgname2offsets(&index_path, &pkgname2ranges)?;
 
     // Compute final hash and save metadata
     let new_hash = new_hasher.finalize();
@@ -604,9 +618,22 @@ fn process_line(line: &str,
                 current_pkgname: &mut String,
                 provide2pkgnames: &mut HashMap<String, Vec<String>>,
                 essential_pkgnames: &mut HashSet<String>,
-                output: &mut String) {
+                output: &mut String,
+                pkgname2ranges: &mut HashMap<String, Vec<PackageRange>>,
+                output_offset: &mut usize,
+                package_begin_offset: &mut usize) {
     if line.is_empty() {
         output.push_str("\n");
+        // If we hit an empty line and have a current package, record its end offset
+        if !current_pkgname.is_empty() {
+            let current_offset = *output_offset + output.len();
+            pkgname2ranges.entry(current_pkgname.clone()).or_insert(Vec::new()).push(PackageRange {
+                begin: *package_begin_offset,
+                len: current_offset - *package_begin_offset,
+            });
+            *package_begin_offset = current_offset;
+        }
+        current_pkgname.clear();
     } else if line.starts_with(" ") {
         // This is a continuation line, append it to the previous line
         output.push_str(line);
@@ -614,6 +641,7 @@ fn process_line(line: &str,
         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
             output.push_str(&format!("\n{}: {}", mapped_key, value));
             if key == "Package" {
+                // Start tracking the new package
                 current_pkgname.clear();
                 current_pkgname.push_str(value);
             } else if key == "Essential" {
