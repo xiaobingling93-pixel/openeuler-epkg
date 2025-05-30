@@ -373,7 +373,7 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     }
 
     // Download Release file
-    download_urls(vec![repo.index_url.clone()], dirs().epkg_downloads_cache.to_str().unwrap(), 6, false)?;
+    download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)?;
     Ok(())
 }
 

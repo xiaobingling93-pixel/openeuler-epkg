@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -20,7 +21,7 @@ use filetime::set_file_mtime;
 #[derive(Debug, Clone)]
 pub struct DownloadTask {
     pub url: String,
-    pub output_dir: String,
+    pub output_dir: PathBuf,
     pub max_retries: usize,
     pub data_channel: Option<Sender<Vec<u8>>>,
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
@@ -35,7 +36,7 @@ pub enum DownloadStatus {
 }
 
 impl DownloadTask {
-    pub fn new(url: String, output_dir: String, max_retries: usize) -> Self {
+    pub fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
         Self {
             url,
             output_dir,
@@ -288,13 +289,13 @@ pub fn submit_download_task(task: DownloadTask) -> Result<()> {
 
 pub fn download_urls(
     urls: Vec<String>,
-    output_dir: &str,
+    output_dir: &Path,
     max_retries: usize,
     async_mode: bool,
 ) -> Result<Vec<DownloadTask>> {
     let mut submitted_tasks = Vec::new();
     for url in urls {
-        let task = DownloadTask::new(url, output_dir.to_string(), max_retries);
+        let task = DownloadTask::new(url, output_dir.to_path_buf(), max_retries);
         submit_download_task(task.clone())?;
         submitted_tasks.push(task);
     }
@@ -320,17 +321,17 @@ pub fn download_urls(
 fn download_task(
     client: &Agent,
     url: &str,
-    output_dir: &str,
+    output_dir: &Path,
     multi_progress: &MultiProgress,
     max_retries: usize,
     data_channel: Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
     let final_path = if let Some((_, str_b)) = url.split_once("///") {
-        Path::new(output_dir).join(str_b)
+        output_dir.join(str_b)
     } else {
         let file_name = url.split('/').last()
             .ok_or_else(|| eyre::eyre!("Invalid URL: {}", url))?;
-        Path::new(output_dir).join(file_name)
+        output_dir.join(file_name)
     };
     let part_path = final_path.with_extension("part");
 
@@ -584,16 +585,16 @@ fn download_file(
 }
 
 impl PackageManager {
-    fn download_or_copy_urls(&mut self, urls: Vec<String>, output_dir: &str, max_retries: usize, async_mode: bool) -> Result<()> {
+    fn download_or_copy_urls(&mut self, urls: Vec<String>, output_dir: &Path, max_retries: usize, async_mode: bool) -> Result<()> {
         if urls.is_empty() {
             return Ok(());
         }
         if urls[0].starts_with("/") {
             for url in urls {
                 let file_name = url.split('/').last().unwrap();
-                let dest_path = format!("{}/{}", output_dir, file_name);
+                let dest_path = output_dir.join(file_name);
                 if let Err(e) = fs::copy(&url, &dest_path) {
-                    eprintln!("Failed to local copy '{}' to '{}': {}", url, dest_path, e);
+                    eprintln!("Failed to local copy '{}' to '{}': {}", url, dest_path.display(), e);
                     return Err(e.into());
                 }
             }
@@ -605,7 +606,7 @@ impl PackageManager {
 
     // Download packages specified by their pkgline strings.
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>, async_mode: bool) -> Result<Vec<String>> {
-        let output_dir = dirs().epkg_pkg_cache.display().to_string();
+        let output_dir = dirs().epkg_pkg_cache.clone();
 
         // Step 1: Compose URLs for each pkgline
         let mut urls = Vec::new();
@@ -628,7 +629,7 @@ impl PackageManager {
                     pkgline
                 );
                 urls.push(url);
-                local_files.push(format!("{}/{}.epkg", output_dir, pkgline));
+                local_files.push(format!("{}/{}.epkg", output_dir.display(), pkgline));
             } else {
                 return Err(eyre::eyre!("Package spec not found for {}", pkgline));
             }

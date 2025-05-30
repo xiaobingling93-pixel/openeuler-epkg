@@ -124,7 +124,7 @@ fn process_revises_parallel(
                 // Create and submit download task
                 let task = DownloadTask::new(
                     revise.url.clone(),
-                    dirs().epkg_downloads_cache.to_str().unwrap().to_string(),
+                    dirs().epkg_downloads_cache.clone(),
                     6
                 ).with_data_channel(data_tx);
 
@@ -172,7 +172,7 @@ fn process_revises_sequential(
         // Create and submit download task
         let task = DownloadTask::new(
             revise.url.clone(),
-            dirs().epkg_downloads_cache.to_str().unwrap().to_string(),
+            dirs().epkg_downloads_cache.clone(),
             6
         ).with_data_channel(data_tx);
 

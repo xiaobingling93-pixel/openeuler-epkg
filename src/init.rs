@@ -118,7 +118,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        download_urls(urls, dirs.epkg_cache.to_str().unwrap(), 6, false)
+        download_urls(urls, &dirs.epkg_cache, 6, false)
             .context("Failed to download required files")?;
 
         // Verify checksums

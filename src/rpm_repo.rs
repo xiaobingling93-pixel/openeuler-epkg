@@ -59,7 +59,7 @@ pub fn revise_repodata(repo: &RepoRevise) -> Result<()> {
 
     // Download repomd.xml file
     let release_dir = repomd_path.parent().unwrap();
-    download_urls(vec![repo.index_url.clone()], dirs().epkg_downloads_cache.to_str().unwrap(), 6, false)?;
+    download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)?;
 
     // Parse repomd.xml file
     let release_content = fs::read_to_string(&repomd_path)?;
@@ -182,7 +182,7 @@ fn parse_repomd_file(repo_name: &str, content: &str, release_dir: &PathBuf, inde
 fn download_revises(info: &[RpmReleaseItem]) -> Result<()> {
     // Download all files
     let urls: Vec<String> = info.iter().map(|r| r.url.clone()).collect();
-    download_urls(urls, dirs().epkg_downloads_cache.to_str().unwrap(), 1, false)?;
+    download_urls(urls, &dirs().epkg_downloads_cache, 1, false)?;
 
     // Unpack compressed files
     unpack_compressed_files(info)?;
