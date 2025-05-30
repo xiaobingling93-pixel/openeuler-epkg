@@ -104,103 +104,6 @@ pub struct DebianReleaseItem {
     pub output_path: PathBuf,
 }
 
-fn process_revises_parallel(
-    revises: Vec<DebianReleaseItem>,
-    repo_dir: Arc<PathBuf>,
-    info_clone2: Vec<DebianReleaseItem>,
-    result_tx: mpsc::Sender<bool>
-) {
-    std::thread::spawn(move || {
-        let mut handles = Vec::new();
-
-        // Process files in parallel std::thread
-        for revise in revises {
-            let repo_dir = Arc::clone(&repo_dir);
-            let revise = revise.clone();
-
-            let handle = std::thread::spawn(move || {
-                let (data_tx, data_rx) = channel();
-
-                // Create and submit download task
-                let task = DownloadTask::new(
-                    revise.url.clone(),
-                    dirs().epkg_downloads_cache.clone(),
-                    6
-                ).with_data_channel(data_tx);
-
-                // Submit download task
-                if let Err(e) = submit_download_task(task) {
-                    return Err(e);
-                }
-
-                let _ = &DOWNLOAD_MANAGER.start_processing()?;
-
-                log::debug!("process_data for {:?}", revise);
-                // Process data blocks as they arrive
-                process_data(data_rx, &repo_dir, &revise)
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for all threads to complete
-        for handle in handles {
-            let _ = handle.join().unwrap();
-        }
-
-        let mut packages_metafiles = Vec::new();
-        for revise in info_clone2 {
-            if revise.path.ends_with("/Packages.xz") {
-                packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
-            }
-        }
-        if let Err(e) = repo::save_repo_index_json(packages_metafiles) {
-            log::error!("Failed to save repo index json: {}", e);
-            let _ = result_tx.send(false);
-        } else {
-            let _ = result_tx.send(true);
-        }
-    });
-}
-
-fn process_revises_sequential(
-    revises: Vec<DebianReleaseItem>,
-    repo_dir: &PathBuf,
-    info: Vec<DebianReleaseItem>,
-) -> Result<()> {
-    // Process files sequentially
-    for revise in revises {
-        let (data_tx, data_rx) = channel();
-
-        // Create and submit download task
-        let task = DownloadTask::new(
-            revise.url.clone(),
-            dirs().epkg_downloads_cache.clone(),
-            6
-        ).with_data_channel(data_tx);
-
-        // Submit download task
-        if let Err(e) = submit_download_task(task) {
-            return Err(e);
-        }
-
-        let _ = &DOWNLOAD_MANAGER.start_processing()?;
-
-        log::debug!("process_data for {:?}", revise);
-        // Process data blocks as they arrive
-        process_data(data_rx, repo_dir, &revise)?;
-    }
-
-    let mut packages_metafiles = Vec::new();
-    for revise in info {
-        if revise.path.ends_with("/Packages.xz") {
-            packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
-        }
-    }
-    repo::save_repo_index_json(packages_metafiles)?;
-    Ok(())
-}
-
 pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
     let repo_dir = dirs::get_repo_dir(&repo).unwrap();
     let release_path = url_to_cache_path(&repo.index_url)?;
@@ -211,17 +114,17 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Res
     let release_content = fs::read_to_string(&release_path)
         .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
     let release_dir = release_path.parent().unwrap();
-    let info = parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?;
+    let release_items = parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?;
 
-    if info.is_empty() {
+    if release_items.is_empty() {
         return Ok(false);
     }
 
     let repo_dir = Arc::new(repo_dir.clone());
 
     // Filter out items that don't need revision
-    let info_clone = info.clone();
-    let revises: Vec<_> = info_clone.iter()
+    let release_items_clone = release_items.clone();
+    let revises: Vec<_> = release_items_clone.iter()
         .filter(|revise| revise.need_download || revise.need_convert)
         .cloned()
         .collect();
@@ -234,16 +137,97 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Res
     log::debug!("revises: {:#?}", revises);
 
     if config().common.parallel_processing {
-        let info_clone2 = info.clone();
-        process_revises_parallel(revises, repo_dir, info_clone2, result_tx.clone());
+        let release_items_clone2 = release_items.clone();
+        process_revises_parallel(revises, repo_dir, release_items_clone2, result_tx.clone());
     } else {
-        process_revises_sequential(revises, &repo_dir, info)?;
+        process_revises_sequential(revises, &repo_dir, release_items)?;
     }
     Ok(true)
 }
 
+fn process_revises_sequential(
+    revises: Vec<DebianReleaseItem>,
+    repo_dir: &PathBuf,
+    release_items: Vec<DebianReleaseItem>,
+) -> Result<()> {
+    // Process files sequentially
+    for revise in revises {
+        download_and_process_item(&revise, repo_dir)?;
+    }
+
+    collect_save_repoindex(repo_dir, &release_items)?;
+    Ok(())
+}
+
+fn process_revises_parallel(
+    revises: Vec<DebianReleaseItem>,
+    repo_dir: Arc<PathBuf>,
+    release_items_clone2: Vec<DebianReleaseItem>,
+    result_tx: mpsc::Sender<bool>
+) {
+    std::thread::spawn(move || {
+        let mut handles = Vec::new();
+
+        // Process files in parallel std::thread
+        for revise in revises {
+            let repo_dir = Arc::clone(&repo_dir);
+            let revise = revise.clone();
+
+            let handle = std::thread::spawn(move || {
+                download_and_process_item(&revise, &repo_dir)
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            let _ = handle.join().unwrap();
+        }
+
+        if let Err(e) = collect_save_repoindex(&repo_dir, &release_items_clone2) {
+            log::error!("Failed to save repo index json: {}", e);
+            let _ = result_tx.send(false);
+        } else {
+            let _ = result_tx.send(true);
+        }
+    });
+}
+
+/// Download and process a single Debian release item
+fn download_and_process_item(revise: &DebianReleaseItem, repo_dir: &PathBuf) -> Result<FileInfo> {
+    let (data_tx, data_rx) = channel();
+
+    // Create and submit download task
+    let task = DownloadTask::new(
+        revise.url.clone(),
+        dirs().epkg_downloads_cache.clone(),
+        6
+    ).with_data_channel(data_tx);
+
+    // Submit download task
+    submit_download_task(task)?;
+
+    let _ = &DOWNLOAD_MANAGER.start_processing()?;
+
+    log::debug!("process_data for {:?}", revise);
+    // Process data blocks as they arrive
+    process_data(data_rx, repo_dir, revise)
+}
+
+/// Collect packages metafiles and save repo index
+fn collect_save_repoindex(repo_dir: &PathBuf, release_items: &[DebianReleaseItem]) -> Result<()> {
+    let mut packages_metafiles = Vec::new();
+    for info in release_items {
+        if info.path.ends_with("/Packages.xz") {
+            packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", info.arch)));
+        }
+    }
+    repo::save_repo_index_json(packages_metafiles)
+}
+
 fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<DebianReleaseItem>> {
-    let mut info = Vec::new();
+    let mut release_items = Vec::new();
     let mut acquire_by_hash = false;
     let mut current_hash_type = String::new();
 
@@ -370,7 +354,7 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                     };
                     let url = format!("{}/{}", baseurl, location);
 
-                    // Example output for info vector:
+                    // Example output for release_items vector:
                     // DebianReleaseItem {
                     //     repo_name: "main",
                     //     need_download: true,
@@ -383,7 +367,7 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                     //     download_path: "$HOME/.cache/epkg/downloads/debian/dists/trixie/main/binary-amd64/by-hash/SHA256/aaa"
                     // }
 
-                    info.push(DebianReleaseItem {
+                    release_items.push(DebianReleaseItem {
                         repo_name,
                         need_download,
                         need_convert,
@@ -402,7 +386,7 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
     }
 
     // Remove entries with lower priority hash types
-    info.retain(|revise| {
+    release_items.retain(|revise| {
         let priority = match revise.hash_type.as_str() {
             "SHA256" => 3,
             "MD5" => 2,
@@ -412,7 +396,7 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
         priority == 3 // Keep only SHA256 entries
     });
 
-    Ok(info)
+    Ok(release_items)
 }
 
 // Add this struct before using XzDecoder
