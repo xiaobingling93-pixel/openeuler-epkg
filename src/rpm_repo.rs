@@ -333,13 +333,20 @@ fn save_repo_index_json(
     filelist_info: Option<FileInfo>,
     repo_dir: &PathBuf
 ) -> Result<()> {
-    let repo_index = RepoIndex {
-        repo_shards: vec![RepoShard {
-            essential_pkgnames: std::collections::HashSet::new(),
-            provide2pkgnames: std::collections::HashMap::new(),
+    let mut repo_shards = HashMap::new();
+    repo_shards.insert(
+        "main".to_string(),
+        RepoShard {
             packages: packages_info.expect("packages_info should not be None"),
             filelist: filelist_info,
-        }],
+            essential_pkgnames: std::collections::HashSet::new(),
+            provide2pkgnames:   std::collections::HashMap::new(),
+            pkgname2ranges:     std::collections::HashMap::new(),
+            packages_mmap:      None,
+        }
+    );
+    let repo_index = RepoIndex {
+        repo_shards
     };
 
     let index_path = repo_dir.join("RepoIndex.json");

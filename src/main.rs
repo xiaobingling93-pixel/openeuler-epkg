@@ -19,6 +19,7 @@ mod path;
 mod repo;
 mod deb_repo;
 mod rpm_repo;
+mod mmio;
 
 use std::env;
 use std::path::Path;

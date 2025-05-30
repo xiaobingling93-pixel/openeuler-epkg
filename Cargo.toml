@@ -46,6 +46,7 @@ color-eyre = { version = "0.6" }
 # color-eyre = { version = "0.6", features = ["capture-spantrace"], default-features = false }
 filetime = "0.2"
 ctrlc = "3.4"      # For handling Ctrl-C cleanly
+memmap2 = "0.9"
 
 # Optional but recommended for better progress bars
 [dependencies.console]

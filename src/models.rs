@@ -275,8 +275,6 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
     #[serde(default)]
-    pub repodata_indice: HashMap<String, RepoIndex>, // local repo data, key: repodata_name
-    #[serde(default)]
     pub mirrors: Vec<Mirror>,
     pub index_url: String,
     #[serde(default)]
@@ -305,12 +303,12 @@ pub struct RepoConfig {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RepoIndex {
-    pub repo_shards: Vec<RepoShard>,
+    pub repo_shards: HashMap<String, RepoShard>, // key: shard name or id
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 #[allow(dead_code)]
 pub struct RepoShard {
     #[serde(default)]
@@ -322,6 +320,10 @@ pub struct RepoShard {
     pub provide2pkgnames: HashMap<String, Vec<String>>,
     #[serde(skip)]
     pub essential_pkgnames: HashSet<String>,
+    #[serde(skip)]
+    pub pkgname2ranges: HashMap<String, Vec<PackageRange>>,
+    #[serde(skip)]
+    pub packages_mmap: Option<crate::mmio::FileMapper>,
 }
 
 #[allow(dead_code)]
@@ -464,18 +466,23 @@ pub struct EPKGDirs {
 pub struct PackageManager {
     pub envs_config: HashMap<String, EnvConfig>,            // key: env_name
     pub channels_config: HashMap<String, ChannelConfig>,    // key: env_name
+    pub repodata_indice: HashMap<String, RepoIndex>,        // key: repodata_name, val: local repo data for current env/channel
 
+    // legacy epkg data structure
     pub repos_data: Vec<Repodata>,
-    pub appbin_source: HashSet<String>,
     // loaded from repodata.store_paths files
     // pkghash2spec[hash] = PackageSpec
     // pkgname2lines[pkgname] = [pkgline]
     pub pkghash2spec: HashMap<String, PackageSpec>,
     pub pkgname2lines: HashMap<String, Vec<String>>,
+
+    // legacy
     pub provide2pkgnames: HashMap<String, Vec<String>>,
     pub essential_pkgnames: HashSet<String>,
+
     // cache need to installing packages info
     pub pkghash2pkg: HashMap<String, Package>,
+    pub appbin_source: HashSet<String>,
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>,

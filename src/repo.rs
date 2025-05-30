@@ -249,12 +249,10 @@ pub fn save_repo_index_json(packages_metafiles: Vec<PathBuf>) -> Result<()> {
     let repo_dir = cloned[0].parent()
         .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?;
 
-    let mut repo_index = RepoIndex {
-        repo_shards: Vec::new(),
-    };
+    let mut repo_shards = HashMap::new();
 
     // Process each packages metafile
-    for packages_metafile in packages_metafiles {
+    for (i, packages_metafile) in packages_metafiles.iter().enumerate() {
         // Load packages info
         let packages_info_str = fs::read_to_string(&packages_metafile)
             .with_context(|| format!("Failed to read packages metafile: {}", packages_metafile.display()))?;
@@ -274,16 +272,23 @@ pub fn save_repo_index_json(packages_metafiles: Vec<PathBuf>) -> Result<()> {
             filelist_info = Some(filelist);
         }
 
-        // Add shard to repo index
-        repo_index.repo_shards.push(RepoShard {
+        // Use file stem or index as the key
+        let key = packages_metafile.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&format!("shard_{}", i))
+            .to_string();
+        repo_shards.insert(key, RepoShard {
             packages: packages_info,
             filelist: filelist_info,
             essential_pkgnames: std::collections::HashSet::new(),
-            provide2pkgnames: std::collections::HashMap::new(),
+            provide2pkgnames:   std::collections::HashMap::new(),
+            pkgname2ranges:     std::collections::HashMap::new(),
+            packages_mmap:      None,
         });
     }
 
     // Save the index for the repo
+    let repo_index = RepoIndex { repo_shards };
     let index_path = repo_dir.join("RepoIndex.json");
     fs::write(&index_path, serde_json::to_string_pretty(&repo_index)?)
         .with_context(|| format!("Failed to write repo index to: {}", index_path.display()))?;
@@ -364,7 +369,7 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     }
 
     if should_skip_duplicate_downloads(path) {
-	return Ok(());
+        return Ok(());
     }
 
     // Download Release file

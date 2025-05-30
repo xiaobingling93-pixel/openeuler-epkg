@@ -67,7 +67,7 @@ lazy_static! {
         m.insert("Built-Using",                 "builtUsing");
         m.insert("Static-Built-Using",          "staticBuiltUsing");
         m.insert("Javascript-Built-Using",      "javascriptBuiltUsing");
-        m.insert("X-Cargo-Built-Using", 	"xCargoBuiltUsing");
+        m.insert("X-Cargo-Built-Using",         "xCargoBuiltUsing");
         m.insert("Built-Using-Newlib-Source",   "builtUsingNewlibSource");
         m.insert("Go-Import-Path",              "goImportPath");
         m.insert("Ghc-Package",                 "ghcPackage");
