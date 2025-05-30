@@ -225,12 +225,17 @@ fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()>
     }
 
     // Reader thread (or main thread) waits for all writers to finish
-    if !revised.is_empty() {
-        drop(tx);
-        log::debug!("revise repo index for {:#?}", revised);
+    if config().common.parallel_processing {
+        log::debug!("Waiting for revise_repodata() threads");
 
-        while let Ok(packages_metafiles) = rx.recv() {
-            save_repo_index_json(packages_metafiles)?;
+        drop(tx);
+        let mut all_succeed = true;
+        while let Ok(succeed) = rx.recv() {
+            // wait for all threads dropped its tx channel
+            all_succeed = all_succeed && succeed;
+        }
+        if !all_succeed {
+            return Err(eyre::eyre!("Failed to revise repodata"));
         }
     }
 

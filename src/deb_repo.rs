@@ -108,7 +108,7 @@ fn process_revises_parallel(
     revises: Vec<DebianReleaseItem>,
     repo_dir: Arc<PathBuf>,
     info_clone2: Vec<DebianReleaseItem>,
-    result_tx: mpsc::Sender<Vec<PathBuf>>
+    result_tx: mpsc::Sender<bool>
 ) {
     std::thread::spawn(move || {
         let mut handles = Vec::new();
@@ -154,16 +154,19 @@ fn process_revises_parallel(
                 packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
             }
         }
-        log::debug!("sending packages_metafiles {:?}", packages_metafiles);
-        let _ = result_tx.send(packages_metafiles);
+        if let Err(e) = repo::save_repo_index_json(packages_metafiles) {
+            log::error!("Failed to save repo index json: {}", e);
+            let _ = result_tx.send(false);
+        } else {
+            let _ = result_tx.send(true);
+        }
     });
 }
 
 fn process_revises_sequential(
     revises: Vec<DebianReleaseItem>,
     repo_dir: &PathBuf,
-    info_clone2: Vec<DebianReleaseItem>,
-    result_tx: mpsc::Sender<Vec<PathBuf>>
+    info: Vec<DebianReleaseItem>,
 ) -> Result<()> {
     // Process files sequentially
     for revise in revises {
@@ -189,17 +192,16 @@ fn process_revises_sequential(
     }
 
     let mut packages_metafiles = Vec::new();
-    for revise in info_clone2 {
+    for revise in info {
         if revise.path.ends_with("/Packages.xz") {
             packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", revise.arch)));
         }
     }
-    log::debug!("sending packages_metafiles {:?}", packages_metafiles);
-    let _ = result_tx.send(packages_metafiles);
+    repo::save_repo_index_json(packages_metafiles)?;
     Ok(())
 }
 
-pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>) -> Result<bool> {
+pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
     let repo_dir = dirs::get_repo_dir(&repo).unwrap();
     let release_path = url_to_cache_path(&repo.index_url)?;
 
@@ -231,13 +233,11 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
     log::debug!("repo: {:?}", repo);
     log::debug!("revises: {:#?}", revises);
 
-    let info_clone2 = info.clone();
-    let result_tx = result_tx.clone();
-
     if config().common.parallel_processing {
-        process_revises_parallel(revises, repo_dir, info_clone2, result_tx);
+        let info_clone2 = info.clone();
+        process_revises_parallel(revises, repo_dir, info_clone2, result_tx.clone());
     } else {
-        process_revises_sequential(revises, &repo_dir, info_clone2, result_tx)?;
+        process_revises_sequential(revises, &repo_dir, info)?;
     }
     Ok(true)
 }
