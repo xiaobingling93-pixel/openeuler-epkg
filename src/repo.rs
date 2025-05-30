@@ -305,44 +305,67 @@ pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
     }
 }
 
-pub fn refresh_download(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
-    use std::sync::LazyLock;
+fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let metadata = fs::metadata(path)?;
+    let modified = metadata.modified()?;
+    let now = SystemTime::now();
+    if let Ok(duration) = now.duration_since(modified) {
+        Ok(duration < max_age)
+    } else {
+        Ok(false)
+    }
+}
+
+fn touch_file_mtime(path: &PathBuf) -> Result<()> {
+    let now = SystemTime::now();
+    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now))?;
+    Ok(())
+}
+
+fn check_repo_index_age(repo: &RepoRevise) -> Result<bool> {
+    let repo_dir = get_repo_dir(&repo).unwrap();
+    let index_path = repo_dir.join("RepoIndex.json");
+    if !index_path.exists() {
+        return Ok(false);
+    }
+    let is_recent = is_file_recent(&index_path, Duration::from_secs(24 * 60 * 60))?;
+    if !is_recent {
+        touch_file_mtime(&index_path)?;
+    }
+    Ok(is_recent)
+}
+
+fn should_skip_duplicate_downloads(path: &PathBuf) -> bool {
     // Prevent duplicate downloads
+    use std::sync::LazyLock;
     static DOWNLOADING_RELEASES: LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
         LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
-
-    // Check if already updated in last 1 day
-    if path.exists() {
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata.modified()?;
-        let now = SystemTime::now();
-        if let Ok(duration) = now.duration_since(modified) {
-            if duration < Duration::from_secs(24 * 60 * 60) {
-                let repo_dir = get_repo_dir(&repo).unwrap();
-                let index_path = repo_dir.join("RepoIndex.json");
-                if index_path.exists() {
-                    let metadata = fs::metadata(&index_path)?;
-                    let modified = metadata.modified()?;
-                    let now = SystemTime::now();
-                    if let Ok(duration) = now.duration_since(modified) {
-                        if duration < Duration::from_secs(24 * 60 * 60) {
-                            return Ok(());
-                        } else {
-                            let now = SystemTime::now();
-                            filetime::set_file_mtime(&index_path, filetime::FileTime::from_system_time(now))?; // prevent downloads for 1 day
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     // Thread-safe access to static HashSet
     let mut downloading = DOWNLOADING_RELEASES.lock().unwrap();
     if downloading.contains(path) {
-        return Ok(());
+        return true;
     }
+
     downloading.insert(path.clone());
+    return false;
+}
+
+pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+    // Check if release file is recent
+    if is_file_recent(path, Duration::from_secs(24 * 60 * 60))? {
+        // If release file is recent, check repo index age
+        if check_repo_index_age(repo)? {
+            return Ok(());
+        }
+    }
+
+    if should_skip_duplicate_downloads(path) {
+	return Ok(());
+    }
 
     // Download Release file
     download_urls(vec![repo.index_url.clone()], dirs().epkg_downloads_cache.to_str().unwrap(), 6, false)?;

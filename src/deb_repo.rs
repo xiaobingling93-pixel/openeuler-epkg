@@ -203,7 +203,7 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<Vec<PathBuf>>
     let repo_dir = dirs::get_repo_dir(&repo).unwrap();
     let release_path = url_to_cache_path(&repo.index_url)?;
 
-    repo::refresh_download(&release_path, &repo)?;
+    repo::refresh_release_file(&release_path, &repo)?;
 
     // Parse Release file
     let release_content = fs::read_to_string(&release_path)
