@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::fs::File;
+// use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead};
 use std::time::{SystemTime, Duration};
 use filetime;
 use color_eyre::Result;
@@ -16,6 +16,7 @@ use crate::io::load_package_json;
 use crate::dirs::find_env_root;
 use crate::dirs::get_repo_dir;
 use crate::download::download_urls;
+use crate::mmio::*;
 
 #[derive(Clone)]
 #[derive(Debug)]
@@ -242,11 +243,9 @@ fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()>
     Ok(())
 }
 
-pub fn save_repo_index_json(packages_metafiles: Vec<PathBuf>) -> Result<()> {
-    if packages_metafiles.is_empty() {
-        return Ok(());
-    }
-
+// When to call: RepoIndex.json not exist, or at least one packages metafile changed
+// What to pass: ALL packages metafiles, including the revised AND not changed ones
+pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> Result<RepoIndex> {
     log::debug!("save_repo_index_json for {:#?}", packages_metafiles);
 
     // Get the repo directory from the first metafile
@@ -293,12 +292,12 @@ pub fn save_repo_index_json(packages_metafiles: Vec<PathBuf>) -> Result<()> {
     }
 
     // Save the index for the repo
-    let repo_index = RepoIndex { repo_shards };
+    let repo_index = RepoIndex { repodata_name: repo.repodata_name.clone(), repo_shards };
     let index_path = repo_dir.join("RepoIndex.json");
     fs::write(&index_path, serde_json::to_string_pretty(&repo_index)?)
         .with_context(|| format!("Failed to write repo index to: {}", index_path.display()))?;
 
-    Ok(())
+    Ok(repo_index)
 }
 
 pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
@@ -485,119 +484,3 @@ pub fn list_repos() -> Result<()> {
     println!("{}", "-".repeat(100));
     Ok(())
 }
-
-/// Serializes essential package names to a file
-pub fn serialize_essential_pkgnames(path: &PathBuf, pkgnames: &HashSet<String>) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-
-    let mut sorted_names: Vec<_> = pkgnames.iter().collect();
-    sorted_names.sort();
-
-    for item in sorted_names {
-        writeln!(writer, "{}", item)?;
-    }
-
-    Ok(())
-}
-
-/// Deserializes essential package names from a file
-pub fn deserialize_essential_pkgnames(file_path: &PathBuf) -> Result<HashSet<String>> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut hashset: HashSet<String> = HashSet::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        hashset.insert(line);
-    }
-
-    Ok(hashset)
-}
-
-/// Serializes package provides mapping to a file
-pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<String, Vec<String>>) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-
-    let mut sorted_names: Vec<_> = provide2pkgnames.iter().collect();
-    sorted_names.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (key, values) in sorted_names {
-        let line = format!("{}: {}", key, values.join(" "));
-        writeln!(writer, "{}", line)?;
-    }
-
-    Ok(())
-}
-
-/// Deserializes package provides mapping from a file
-pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<String, Vec<String>>> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-
-    for (line_num, line_result) in reader.lines().enumerate() {
-        let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path.display()))?;
-        if let Some((key, values)) = line.split_once(": ") {
-            let values: Vec<String> = values.split(" ").map(|s| s.to_string()).collect();
-            map.insert(key.to_string(), values);
-        }
-    }
-
-    Ok(map)
-}
-
-// Function to serialize pkgname2ranges to a file
-pub fn serialize_pkgname2offsets(path: &PathBuf, pkgname2ranges: &HashMap<String, Vec<PackageRange>>) -> Result<()> {
-    let mut file = fs::File::create(path)
-        .with_context(|| format!("Failed to create index file: {}", path.display()))?;
-
-    // Sort package names before writing
-    let mut sorted_packages: Vec<_> = pkgname2ranges.iter().collect();
-    sorted_packages.sort_by(|a, b| a.0.cmp(b.0));
-
-    for (pkgname, offsets) in sorted_packages {
-        let offset_str = offsets.iter()
-            .map(|o| format!("{:x} {:x}", o.begin, o.len))
-            .collect::<Vec<_>>()
-            .join(" ");
-        writeln!(file, "{}: {}", pkgname, offset_str)
-            .with_context(|| format!("Failed to write to index file: {}", path.display()))?;
-    }
-    Ok(())
-}
-
-// Function to deserialize pkgname2ranges from a file
-pub fn deserialize_pkgname2offsets(path: &PathBuf) -> Result<HashMap<String, Vec<PackageRange>>> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read index file: {}", path.display()))?;
-
-    let mut pkgname2ranges = HashMap::new();
-    for line in content.lines() {
-        if let Some((pkgname, offsets_str)) = line.split_once(": ") {
-            let offsets: Vec<PackageRange> = offsets_str
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .chunks(2)
-                .filter_map(|chunk| {
-                    if chunk.len() == 2 {
-                        let begin = usize::from_str_radix(chunk[0], 16).ok()?;
-                        let len = usize::from_str_radix(chunk[1], 16).ok()?;
-                        Some(PackageRange {
-                            begin,
-                            len,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !offsets.is_empty() {
-                pkgname2ranges.insert(pkgname.to_string(), offsets);
-            }
-        }
-    }
-    Ok(pkgname2ranges)
-}
-

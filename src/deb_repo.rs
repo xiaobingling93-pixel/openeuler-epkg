@@ -20,6 +20,7 @@ use crate::download::DownloadTask;
 use crate::download::submit_download_task;
 use crate::download::DOWNLOAD_MANAGER;
 use crate::repo;
+use crate::mmio;
 use crate::config;
 
 use lazy_static::lazy_static;
@@ -116,10 +117,6 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Res
     let release_dir = release_path.parent().unwrap();
     let release_items = parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?;
 
-    if release_items.is_empty() {
-        return Ok(false);
-    }
-
     let repo_dir = Arc::new(repo_dir.clone());
 
     // Filter out items that don't need revision
@@ -130,7 +127,11 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Res
         .collect();
 
     if revises.is_empty() {
-        return Ok(false);
+        if config().subcommand == "update" {
+            return Ok(false);
+        } else {
+            // `epkg install/upgrade/remove` need continue to load RepoIndex below
+        }
     }
 
     log::debug!("repo: {:?}", repo);
@@ -138,35 +139,43 @@ pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Res
 
     if config().common.parallel_processing {
         let release_items_clone2 = release_items.clone();
-        process_revises_parallel(revises, repo_dir, release_items_clone2, result_tx.clone());
+        process_revises_parallel(repo, revises, repo_dir, release_items_clone2, result_tx.clone());
     } else {
-        process_revises_sequential(revises, &repo_dir, release_items)?;
+        process_revises_sequential(repo, revises, &repo_dir, release_items)?;
     }
     Ok(true)
 }
 
 fn process_revises_sequential(
+    repo: &RepoRevise,
     revises: Vec<DebianReleaseItem>,
     repo_dir: &PathBuf,
     release_items: Vec<DebianReleaseItem>,
 ) -> Result<()> {
+    let no_revises = revises.is_empty();
+
     // Process files sequentially
-    for revise in revises {
+    for revise in &revises {
         download_and_process_item(&revise, repo_dir)?;
     }
 
-    collect_save_repoindex(repo_dir, &release_items)?;
+    create_load_repoindex(&repo, no_revises, &repo_dir, release_items)?;
+
     Ok(())
 }
 
 fn process_revises_parallel(
+    repo: &RepoRevise,
     revises: Vec<DebianReleaseItem>,
     repo_dir: Arc<PathBuf>,
     release_items_clone2: Vec<DebianReleaseItem>,
     result_tx: mpsc::Sender<bool>
 ) {
+    // Clone the repo to avoid lifetime issues
+    let repo_clone = repo.clone();
     std::thread::spawn(move || {
         let mut handles = Vec::new();
+        let no_revises = revises.is_empty();
 
         // Process files in parallel std::thread
         for revise in revises {
@@ -185,7 +194,7 @@ fn process_revises_parallel(
             let _ = handle.join().unwrap();
         }
 
-        if let Err(e) = collect_save_repoindex(&repo_dir, &release_items_clone2) {
+        if let Err(e) = create_load_repoindex(&repo_clone, no_revises, &repo_dir, release_items_clone2) {
             log::error!("Failed to save repo index json: {}", e);
             let _ = result_tx.send(false);
         } else {
@@ -215,15 +224,33 @@ fn download_and_process_item(revise: &DebianReleaseItem, repo_dir: &PathBuf) -> 
     process_data(data_rx, repo_dir, revise)
 }
 
+fn create_load_repoindex(
+    repo: &RepoRevise,
+    no_revises: bool,
+    repo_dir: &PathBuf,
+    release_items: Vec<DebianReleaseItem>,
+) -> Result<()> {
+    let repo_index: RepoIndex =
+        if no_revises {
+            mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))?
+        } else {
+            collect_save_repoindex(&repo, repo_dir, &release_items)?
+        };
+
+    mmio::populate_repoindex_data(&repo, repo_index)?;
+
+    Ok(())
+}
+
 /// Collect packages metafiles and save repo index
-fn collect_save_repoindex(repo_dir: &PathBuf, release_items: &[DebianReleaseItem]) -> Result<()> {
+fn collect_save_repoindex(repo: &RepoRevise, repo_dir: &PathBuf, release_items: &[DebianReleaseItem]) -> Result<RepoIndex> {
     let mut packages_metafiles = Vec::new();
     for info in release_items {
         if info.path.ends_with("/Packages.xz") {
             packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", info.arch)));
         }
     }
-    repo::save_repo_index_json(packages_metafiles)
+    repo::save_repo_index_json(&repo, packages_metafiles)
 }
 
 fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<DebianReleaseItem>> {
@@ -575,7 +602,7 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     }
 
     // Save package offsets to index file
-    repo::serialize_pkgname2offsets(&index_path, &pkgname2ranges)?;
+    mmio::serialize_pkgname2ranges(&index_path, &pkgname2ranges)?;
 
     // Compute final hash and save metadata
     let new_hash = new_hasher.finalize();
@@ -591,8 +618,8 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
         .context("Failed to serialize file info to JSON")?;
     fs::write(&json_path, json_content)
         .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
-    repo::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)?;
-    repo::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)?;
+    mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)?;
+    mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)?;
     log::debug!("Successfully processed packages content");
     Ok(file_info)
 }

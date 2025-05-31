@@ -346,6 +346,7 @@ fn save_repo_index_json(
         }
     );
     let repo_index = RepoIndex {
+        repodata_name: "main".to_string(),
         repo_shards
     };
 

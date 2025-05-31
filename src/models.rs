@@ -302,9 +302,17 @@ pub struct RepoConfig {
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
 }
 
+static REPODATA_INDICE: LazyLock<std::sync::Mutex<HashMap<String, RepoIndex>>> =
+        LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+pub fn repodata_indice() -> std::sync::MutexGuard<'static, HashMap<String, RepoIndex>> {
+    REPODATA_INDICE.lock().expect("Failed to lock repodata index")
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RepoIndex {
+    pub repodata_name: String,
     pub repo_shards: HashMap<String, RepoShard>, // key: shard name or id
 }
 
@@ -471,7 +479,6 @@ pub struct EPKGDirs {
 pub struct PackageManager {
     pub envs_config: HashMap<String, EnvConfig>,            // key: env_name
     pub channels_config: HashMap<String, ChannelConfig>,    // key: env_name
-    pub repodata_indice: HashMap<String, RepoIndex>,        // key: repodata_name, val: local repo data for current env/channel
 
     // legacy epkg data structure
     pub repos_data: Vec<Repodata>,
