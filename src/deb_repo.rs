@@ -1,20 +1,12 @@
-use std::fs;
 use std::path::PathBuf;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::time::SystemTime;
 use std::sync::mpsc::Receiver;
 use std::io::Read;
-use std::io::Write;
-use color_eyre::eyre;
 use color_eyre::eyre::Result;
-use color_eyre::eyre::WrapErr;
-use sha2::{Sha256, Digest};
-use hex;
+use sha2::Digest;
 use crate::models::*;
 use crate::dirs;
 use crate::repo::*;
-use crate::mmio;
+use crate::packages_stream;
 
 use lazy_static::lazy_static;
 lazy_static! {
@@ -260,196 +252,58 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     log::debug!("Starting to process packages content for {}", revise.location);
-    let output_path = repo_dir.join(format!("packages-{}.txt", revise.arch));
-    let json_path = repo_dir.join(format!(".packages-{}.json", revise.arch));
-    let provide2pkgnames_path = repo_dir.join(format!("provide2pkgnames-{}.yaml", revise.arch));
-    let essential_pkgnames_path = repo_dir.join(format!("essential_pkgnames-{}.txt", revise.arch));
-    let index_path = repo_dir.join(format!("packages-{}.idx", revise.arch));
-    log::debug!("Output paths - txt: {:?}, json: {:?}, idx: {:?}", output_path, json_path, index_path);
 
-    let mut origin_hasher = Sha256::new();
-    let mut new_hasher = Sha256::new();
-    let reader = ReceiverReader::new(data_rx).with_hasher(&mut origin_hasher);
+    let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)?;
+
+    let reader = packages_stream::ReceiverHasher::new(data_rx);
     let mut decoder = xz2::read::XzDecoder::new(reader);
-    let mut decompressed = vec![0u8; 65536];
-
-    let mut current_pkgname: String = String::new();
-    let mut provide2pkgnames = HashMap::new();
-    let mut essential_pkgnames: HashSet<String> = HashSet::new();
-    let mut pkgname2ranges: HashMap<String, Vec<PackageRange>> = HashMap::new();
-    let mut total_bytes = 0;
-    let mut output = String::new();
-    let mut partial_line = String::new();
-    let mut output_offset = 0;
-    let mut package_begin_offset = 0;
-
-    // Open output file for appending before the loop
-    use std::fs::OpenOptions;
-    use std::io::BufWriter;
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&output_path)
-        .context(format!("Failed to open output file: {:?}", output_path))?;
-    let mut writer = BufWriter::new(file);
+    let mut unpack_buf = vec![0u8; 65536];
 
     // Collect data and calculate hash incrementally
     loop {
-        match decoder.read(&mut decompressed) {
-            Ok(0) => {
-                log::debug!("Reached EOF after processing {} bytes", total_bytes);
-                // Process any remaining partial line
-                process_line(&partial_line,
-                    &mut current_pkgname,
-                    &mut provide2pkgnames,
-                    &mut essential_pkgnames,
-                    &mut output,
-                    &mut pkgname2ranges,
-                    &mut output_offset,
-                    &mut package_begin_offset);
-                break;
-            }
-            Ok(n) => {
-                total_bytes += n;
-                let content = &decompressed[..n];
-                let mut pos = 0;
-
-                while pos < content.len() {
-                    // Find the next newline
-                    if let Some(newline_pos) = content[pos..].iter().position(|&b| b == b'\n') {
-                        let newline_pos = pos + newline_pos;
-
-                        // If we have a partial line, combine it with the content up to the newline
-                        if partial_line.is_empty() {
-                            // No partial line, just process the line up to the newline
-                            let line = String::from_utf8_lossy(&content[pos..newline_pos]);
-                            process_line(&line,
-                                &mut current_pkgname,
-                                &mut provide2pkgnames,
-                                &mut essential_pkgnames,
-                                &mut output,
-                                &mut pkgname2ranges,
-                                &mut output_offset,
-                                &mut package_begin_offset);
-                        } else {
-                            let line = String::from_utf8_lossy(&content[pos..newline_pos]);
-                            let full_line = partial_line.clone() + &line;
-                            process_line(&full_line,
-                                &mut current_pkgname,
-                                &mut provide2pkgnames,
-                                &mut essential_pkgnames,
-                                &mut output,
-                                &mut pkgname2ranges,
-                                &mut output_offset,
-                                &mut package_begin_offset);
-                            partial_line.clear();
-                        }
-
-                        pos = newline_pos + 1;
-                    } else {
-                        // No more newlines, save the rest as partial
-                        partial_line.push_str(&String::from_utf8_lossy(&content[pos..]));
-                        break;
-                    }
-                }
-
-                new_hasher.update(output.as_bytes());
-                writer.write_all(output.as_bytes())
-                    .context(format!("Failed to append to output file: {:?}", output_path))?;
-                output_offset += output.len();
-                output.clear();
-            }
-            Err(e) => {
-                log::error!("Decompression error: {}", e);
-                return Err(eyre::eyre!("Failed to decompress file {}: {}", revise.location, e));
-            }
+        let read_result = decoder.read(&mut unpack_buf);
+        match derived_files.handle_chunk(read_result, &unpack_buf)? {
+            true => continue,
+            false => break,
         }
     }
 
-    // Get the final hash from the ReceiverReader
-    writer.flush().context(format!("Failed to flush output file: {:?}", output_path))?;
-    let calculated_hash = hex::encode(origin_hasher.finalize());
-    let expected_hash = &revise.hash;
-    if calculated_hash != *expected_hash {
-        log::error!("Hash verification failed for {} - calculated: {}, expected: {}", revise.location, calculated_hash, expected_hash);
-        return Err(eyre::eyre!("Hash verification failed for {}: calculated {}, expected {}",
-            revise.location, calculated_hash, expected_hash));
-    }
-
-    // Save package offsets to index file
-    mmio::serialize_pkgname2ranges(&index_path, &pkgname2ranges)?;
-    mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)?;
-    mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)?;
-
-    save_file_metadata(&output_path, &json_path, new_hasher)
-}
-
-fn save_file_metadata(output_path: &PathBuf, json_path: &PathBuf, new_hasher: Sha256) -> Result<FileInfo> {
-    // Compute final hash and save metadata
-    let new_hash = new_hasher.finalize();
-
-    let metadata = fs::metadata(output_path)
-        .context(format!("Failed to get metadata for file: {:?}", output_path))?;
-    let file_info = FileInfo {
-        filename: output_path.file_name().unwrap().to_string_lossy().into_owned(),
-        sha256sum: hex::encode(new_hash),
-        datetime: metadata.modified()?.duration_since(SystemTime::UNIX_EPOCH)?.as_secs().to_string(),
-        size: metadata.len(),
-    };
-    let json_content = serde_json::to_string_pretty(&file_info)
-        .context("Failed to serialize file info to JSON")?;
-    fs::write(json_path, json_content)
-        .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
-
-    log::debug!("Successfully processed packages content");
-    Ok(file_info)
+    // Extract the reader from the decoder to access sha256sum
+    let reader = decoder.into_inner();
+    derived_files.on_finish(revise, reader.sha256sum)
 }
 
 // Helper function to process a single line
 fn process_line(line: &str,
-                current_pkgname: &mut String,
-                provide2pkgnames: &mut HashMap<String, Vec<String>>,
-                essential_pkgnames: &mut HashSet<String>,
-                output: &mut String,
-                pkgname2ranges: &mut HashMap<String, Vec<PackageRange>>,
-                output_offset: &mut usize,
-                package_begin_offset: &mut usize) {
+                derived_files: &mut packages_stream::PackagesStreamline) -> Result<()> {
     if line.is_empty() {
-        output.push_str("\n");
-        // If we hit an empty line and have a current package, record its end offset
-        if !current_pkgname.is_empty() {
-            let current_offset = *output_offset + output.len();
-            pkgname2ranges.entry(current_pkgname.clone()).or_insert(Vec::new()).push(PackageRange {
-                begin: *package_begin_offset,
-                len: current_offset - *package_begin_offset,
-            });
-            *package_begin_offset = current_offset;
+        // Only trigger new block if we have a current package
+        if !derived_files.current_pkgname.is_empty() {
+            derived_files.output.push_str("\n");
+            derived_files.on_new_paragraph();
         }
-        current_pkgname.clear();
     } else if line.starts_with(" ") {
         // This is a continuation line, append it to the previous line
-        output.push_str(line);
+        derived_files.output.push_str(line);
     } else if let Some((key, value)) = line.split_once(": ") {
         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
-            output.push_str(&format!("\n{}: {}", mapped_key, value));
+            derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+
             if key == "Package" {
                 // Start tracking the new package
-                current_pkgname.clear();
-                current_pkgname.push_str(value);
-            } else if key == "Essential" {
-                output.push_str(&format!("\n{}: {}", "priority", "essential"));
-                essential_pkgnames.insert(current_pkgname.clone());
-            } else if key == "Important" {
-                output.push_str(&format!("\n{}: {}", "priority", "important"));
+                derived_files.on_new_pkgname(value);
+            } else if key == "Essential" && value.trim().eq_ignore_ascii_case("yes") {
+                derived_files.on_essential();
+                derived_files.output.push_str("\npriority: essential");
+            } else if key == "Important" && value.trim().eq_ignore_ascii_case("yes") {
+                derived_files.output.push_str("\npriority: important");
             } else if key == "Provides" {
                 // Example value: "nvidia-open-kernel-535.247.01, nvidia-open-kernel-dkms-any (= 535.247.01)"
                 let provides: Vec<&str> = value.split(", ")
                     .map(|s| s.split_whitespace().next().unwrap_or(""))
                     .filter(|s| !s.is_empty())
                     .collect();
-                for provide in provides {
-                    provide2pkgnames.entry(provide.to_string()).or_insert(Vec::new()).push(current_pkgname.clone());
-                }
+                derived_files.on_provides(provides);
             }
         } else {
             log::warn!("Unexpected key in line -- {}: {}", key, value);
@@ -457,4 +311,5 @@ fn process_line(line: &str,
     } else {
         log::warn!("Unexpected line format: {}", line);
     }
+    Ok(())
 }

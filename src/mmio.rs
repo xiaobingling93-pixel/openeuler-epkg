@@ -79,13 +79,13 @@ pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> 
     for (_, shard) in &mut repo_index.repo_shards {
         let filename = shard.packages.filename.clone();
         let packages_path = repo_dir.join(&filename);
-        let provide2pkgnames_path = repo_dir.join(filename.replace("packages", "provide2pkgnames"));
+        let provide2pkgnames_path = repo_dir.join(filename.replace("packages", "provide2pkgnames")).with_extension("yaml");
         let essential_pkgnames_path = repo_dir.join(filename.replace("packages", "essential_pkgnames"));
-        let pkgname2ranges_path = repo_dir.join(filename.replace("packages", "pkgname2ranges"));
+        let pkgname2ranges_path = packages_path.with_extension("idx");
         shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
+        shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
         shard.provide2pkgnames = deserialize_provide2pkgnames(&provide2pkgnames_path)?;
         shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
-        shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
     }
     {
         let mut repodata_indice = repodata_indice();

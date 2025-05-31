@@ -17,9 +17,10 @@ mod environment;
 mod init;
 mod path;
 mod repo;
+mod mmio;
+mod packages_stream;
 mod deb_repo;
 mod rpm_repo;
-mod mmio;
 
 use std::env;
 use std::path::Path;

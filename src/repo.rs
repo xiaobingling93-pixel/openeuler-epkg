@@ -599,53 +599,6 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
     Ok(repo_index)
 }
 
-// Add this struct before using XzDecoder
-pub struct ReceiverReader<'a> {
-    receiver: Receiver<Vec<u8>>,
-    current_chunk: Vec<u8>,
-    position: usize,
-    hasher: Option<&'a mut Sha256>,
-}
-
-impl<'a> ReceiverReader<'a> {
-    pub fn new(receiver: Receiver<Vec<u8>>) -> Self {
-        Self {
-            receiver,
-            current_chunk: Vec::new(),
-            position: 0,
-            hasher: None,
-        }
-    }
-
-    pub fn with_hasher(mut self, hasher: &'a mut Sha256) -> Self {
-        self.hasher = Some(hasher);
-        self
-    }
-}
-
-impl<'a> std::io::Read for ReceiverReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.position >= self.current_chunk.len() {
-            match self.receiver.recv() {
-                Ok(chunk) => {
-                    if let Some(hasher) = &mut self.hasher {
-                        hasher.update(&chunk);
-                    }
-                    self.current_chunk = chunk;
-                    self.position = 0;
-                }
-                Err(_) => return Ok(0), // End of stream
-            }
-        }
-
-        let remaining = self.current_chunk.len() - self.position;
-        let to_copy = std::cmp::min(remaining, buf.len());
-        buf[..to_copy].copy_from_slice(&self.current_chunk[self.position..self.position + to_copy]);
-        self.position += to_copy;
-        Ok(to_copy)
-    }
-}
-
 pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     if revise.is_packages {
         match revise.format {
