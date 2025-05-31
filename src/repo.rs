@@ -308,9 +308,6 @@ pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
 }
 
 fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
     let metadata = fs::metadata(path)?;
     let modified = metadata.modified()?;
     let now = SystemTime::now();
@@ -327,12 +324,7 @@ fn touch_file_mtime(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn check_repo_index_age(repo: &RepoRevise, duration: std::time::Duration) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
-    let index_path = repo_dir.join("RepoIndex.json");
-    if !index_path.exists() {
-        return Ok(false);
-    }
+fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> Result<bool> {
     let is_recent = is_file_recent(&index_path, duration)?;
     if !is_recent {
         touch_file_mtime(&index_path)?;
@@ -356,26 +348,42 @@ fn should_skip_duplicate_downloads(path: &PathBuf) -> bool {
     return false;
 }
 
-pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool> {
     let expire_secs = config().common.metadata_expire;
 
+    if !path.exists() {
+        return Ok(true);
+    }
+
+    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+    let index_path = repo_dir.join("RepoIndex.json");
+    if !index_path.exists() {
+        return Ok(true);
+    }
+
     // if never auto update
-    if expire_secs == 0 &&
-        config().subcommand != "update" {
-        return Ok(());
+    if expire_secs == 0 && config().subcommand != "update" {
+        return Ok(false);
     }
 
     // if not always update
-    if !(expire_secs < 0 ||
-        config().subcommand == "update") {
+    if !(expire_secs < 0 || config().subcommand == "update") {
         let duration = std::time::Duration::from_secs(expire_secs.try_into().unwrap());
         // Check if release file is recent
         if is_file_recent(path, duration)? {
             // If release file is recent, check repo index age
-            if check_repo_index_age(repo, duration)? {
-                return Ok(());
+            if check_repo_index_age(&index_path, duration)? {
+                return Ok(false);
             }
         }
+    }
+
+    Ok(true)
+}
+
+pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+    if !should_refresh_release_file(path, repo)? {
+        return Ok(());
     }
 
     if should_skip_duplicate_downloads(path) {
