@@ -3,25 +3,18 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::SystemTime;
-use std::sync::mpsc;
-use std::sync::mpsc::{channel, Receiver};
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::io::Read;
 use std::io::Write;
-use crate::models::*;
-use crate::repo::{url_to_cache_path, RepoRevise};
-use crate::dirs;
 use color_eyre::eyre;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use sha2::{Sha256, Digest};
 use hex;
-use crate::download::DownloadTask;
-use crate::download::submit_download_task;
-use crate::download::DOWNLOAD_MANAGER;
-use crate::repo;
+use crate::models::*;
+use crate::dirs;
+use crate::repo::*;
 use crate::mmio;
-use crate::config;
 
 use lazy_static::lazy_static;
 lazy_static! {
@@ -89,171 +82,7 @@ lazy_static! {
     };
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct DebianReleaseItem {
-    pub repo_name: String,
-    pub need_download: bool,
-    pub need_convert: bool,
-    pub arch: String,
-    pub url: String,
-    pub hash_type: String,
-    pub hash: String,
-    pub size: u64,
-    pub path: String,
-    pub download_path: PathBuf,
-    pub output_path: PathBuf,
-}
-
-pub fn revise_repodata(repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
-    let release_path = url_to_cache_path(&repo.index_url)?;
-
-    repo::refresh_release_file(&release_path, &repo)?;
-
-    // Parse Release file
-    let release_content = fs::read_to_string(&release_path)
-        .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
-    let release_dir = release_path.parent().unwrap();
-    let release_items = parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?;
-
-    let repo_dir = Arc::new(repo_dir.clone());
-
-    // Filter out items that don't need revision
-    let release_items_clone = release_items.clone();
-    let revises: Vec<_> = release_items_clone.iter()
-        .filter(|revise| revise.need_download || revise.need_convert)
-        .cloned()
-        .collect();
-
-    if revises.is_empty() {
-        if config().subcommand == "update" {
-            return Ok(false);
-        } else {
-            // `epkg install/upgrade/remove` need continue to load RepoIndex below
-        }
-    }
-
-    log::debug!("repo: {:?}", repo);
-    log::debug!("revises: {:#?}", revises);
-
-    if config().common.parallel_processing {
-        let release_items_clone2 = release_items.clone();
-        process_revises_parallel(repo, revises, repo_dir, release_items_clone2, result_tx.clone());
-    } else {
-        process_revises_sequential(repo, revises, &repo_dir, release_items)?;
-    }
-    Ok(true)
-}
-
-fn process_revises_sequential(
-    repo: &RepoRevise,
-    revises: Vec<DebianReleaseItem>,
-    repo_dir: &PathBuf,
-    release_items: Vec<DebianReleaseItem>,
-) -> Result<()> {
-    let no_revises = revises.is_empty();
-
-    // Process files sequentially
-    for revise in &revises {
-        download_and_process_item(&revise, repo_dir)?;
-    }
-
-    create_load_repoindex(&repo, no_revises, &repo_dir, release_items)?;
-
-    Ok(())
-}
-
-fn process_revises_parallel(
-    repo: &RepoRevise,
-    revises: Vec<DebianReleaseItem>,
-    repo_dir: Arc<PathBuf>,
-    release_items_clone2: Vec<DebianReleaseItem>,
-    result_tx: mpsc::Sender<bool>
-) {
-    // Clone the repo to avoid lifetime issues
-    let repo_clone = repo.clone();
-    std::thread::spawn(move || {
-        let mut handles = Vec::new();
-        let no_revises = revises.is_empty();
-
-        // Process files in parallel std::thread
-        for revise in revises {
-            let repo_dir = Arc::clone(&repo_dir);
-            let revise = revise.clone();
-
-            let handle = std::thread::spawn(move || {
-                download_and_process_item(&revise, &repo_dir)
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for all threads to complete
-        for handle in handles {
-            let _ = handle.join().unwrap();
-        }
-
-        if let Err(e) = create_load_repoindex(&repo_clone, no_revises, &repo_dir, release_items_clone2) {
-            log::error!("Failed to save repo index json: {}", e);
-            let _ = result_tx.send(false);
-        } else {
-            let _ = result_tx.send(true);
-        }
-    });
-}
-
-/// Download and process a single Debian release item
-fn download_and_process_item(revise: &DebianReleaseItem, repo_dir: &PathBuf) -> Result<FileInfo> {
-    let (data_tx, data_rx) = channel();
-
-    // Create and submit download task
-    let task = DownloadTask::new(
-        revise.url.clone(),
-        dirs().epkg_downloads_cache.clone(),
-        6
-    ).with_data_channel(data_tx);
-
-    // Submit download task
-    submit_download_task(task)?;
-
-    let _ = &DOWNLOAD_MANAGER.start_processing()?;
-
-    log::debug!("process_data for {:?}", revise);
-    // Process data blocks as they arrive
-    process_data(data_rx, repo_dir, revise)
-}
-
-fn create_load_repoindex(
-    repo: &RepoRevise,
-    no_revises: bool,
-    repo_dir: &PathBuf,
-    release_items: Vec<DebianReleaseItem>,
-) -> Result<()> {
-    let repo_index: RepoIndex =
-        if no_revises {
-            mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))?
-        } else {
-            collect_save_repoindex(&repo, repo_dir, &release_items)?
-        };
-
-    mmio::populate_repoindex_data(&repo, repo_index)?;
-
-    Ok(())
-}
-
-/// Collect packages metafiles and save repo index
-fn collect_save_repoindex(repo: &RepoRevise, repo_dir: &PathBuf, release_items: &[DebianReleaseItem]) -> Result<RepoIndex> {
-    let mut packages_metafiles = Vec::new();
-    for info in release_items {
-        if info.path.ends_with("/Packages.xz") {
-            packages_metafiles.push(repo_dir.join(format!(".packages-{}.json", info.arch)));
-        }
-    }
-    repo::save_repo_index_json(&repo, packages_metafiles)
-}
-
-fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<DebianReleaseItem>> {
+pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
     let mut acquire_by_hash = false;
     let mut current_hash_type = String::new();
@@ -290,30 +119,30 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
             if parts.len() >= 3 {
                 let hash = parts[0].to_string();
                 let size = parts[1].parse::<u64>().unwrap_or(0);
-                let path = parts[2].to_string();
+                let location = parts[2].to_string();
 
-                if path.contains("/debian-installer/") {
+                if location.contains("/debian-installer/") {
                     continue;
                 }
 
                 // Check if this is a file we're interested in
-                let is_packages = path.contains("/binary-") && path.ends_with("/Packages.xz");
-                let is_contents = path.contains("/Contents-") && path.ends_with(".gz");
+                let is_packages = location.contains("/binary-") && location.ends_with("/Packages.xz");
+                let is_contents = location.contains("/Contents-") && location.ends_with(".gz");
 
                 // Only process entries that match the Debian repo metadata files of interest
                 if is_packages || is_contents {
                     // repo_name: e.g. "main" from "main/binary-amd64/Packages.xz"
-                    let repo_name = path.split('/').next().unwrap_or("").to_string();
+                    let repo_name = location.split('/').next().unwrap_or("").to_string();
                     if repo_name != repo.repo_name {
                         continue;
                     }
 
                     // arch: e.g. "amd64" from "main/binary-amd64/Packages.xz" or "main/Contents-amd64.gz"
                     let arch = if is_packages {
-                        let deb_arch = path.split("binary-").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string();
+                        let deb_arch = location.split("binary-").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string();
                         map_architecture(&deb_arch)
                     } else {
-                        let deb_arch = path.split("Contents-").nth(1).unwrap_or("").split('.').next().unwrap_or("").to_string();
+                        let deb_arch = location.split("Contents-").nth(1).unwrap_or("").split('.').next().unwrap_or("").to_string();
                         map_architecture(&deb_arch)
                     };
 
@@ -334,40 +163,40 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                     //   repo.index_url = "$mirror/debian/dists/$version/Release"
                     //   current_hash_type = "SHA256"
                     //   hash = "aaa"
-                    //   path = "main/binary-amd64/Packages.xz"
-                    //   path = "main/Contents-amd64.gz"
+                    //   location = "main/binary-amd64/Packages.xz"
+                    //   location = "main/Contents-amd64.gz"
                     //
                     // For Packages.xz:
-                    //   path = "main/binary-amd64/Packages.xz"
-                    //   path.rsplitn(2, '/').nth(1).unwrap() == "main/binary-amd64"
+                    //   location = "main/binary-amd64/Packages.xz"
+                    //   location.rsplitn(2, '/').nth(1).unwrap() == "main/binary-amd64"
                     //   URL: http://mirrors.163.com/debian/dists/trixie///main/binary-amd64/by-hash/SHA256/aaa
                     //
                     // For Contents-amd64.gz:
-                    //   path = "main/Contents-amd64.gz"
-                    //   path.rsplitn(2, '/').nth(1).unwrap() == "main"
+                    //   location = "main/Contents-amd64.gz"
+                    //   location.rsplitn(2, '/').nth(1).unwrap() == "main"
                     //   URL: http://mirrors.163.com/debian/dists/trixie///main/by-hash/SHA256/ccc
                     // ------------------------------------------------
 
                     // Construct the location path based on acquire_by_hash setting
-                    // If acquire_by_hash is true, use the by-hash path
+                    // If acquire_by_hash is true, use the by-hash location
                     //   e.g. main/binary-amd64/by-hash/SHA256/aaa  # for Packages file
                     //   or   main/by-hash/SHA256/ccc               # for Contents file
-                    // If acquire_by_hash is false, use the original path
+                    // If acquire_by_hash is false, use the original location
                     //   e.g. main/binary-amd64/Packages.xz
                     //   or   main/Contents-amd64.gz
-                    let location = if acquire_by_hash {
+                    let download_location = if acquire_by_hash {
                         format!(
                             "{}/by-hash/{}/{}",
-                            path.rsplitn(2, '/').nth(1).unwrap(), // = path.parent()
+                            location.rsplitn(2, '/').nth(1).unwrap(), // = location.parent()
                             current_hash_type, // e.g. "SHA256"
                             hash // e.g. "aaa"
                         )
                     } else {
-                        path.clone() // Use original path
+                        location.clone() // Use original location
                     };
 
                     // Check if we need to revise by checking if the file exists
-                    let download_path = &release_dir.join(&location);
+                    let download_path = &release_dir.join(&download_location);
                     let need_download = !download_path.exists();
                     let need_convert = !output_path.exists();
 
@@ -379,10 +208,10 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                     } else {
                         &repo.index_url
                     };
-                    let url = format!("{}/{}", baseurl, location);
+                    let url = format!("{}/{}", baseurl, download_location);
 
                     // Example output for release_items vector:
-                    // DebianReleaseItem {
+                    // RepoReleaseItem {
                     //     repo_name: "main",
                     //     need_download: true,
                     //     arch: "x86_64",
@@ -390,12 +219,14 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                     //     hash_type: "SHA256",
                     //     hash: "aaa",
                     //     size: 9680256,
-                    //     path: "main/binary-amd64/Packages.xz",
+                    //     location: "main/binary-amd64/Packages.xz",
                     //     download_path: "$HOME/.cache/epkg/downloads/debian/dists/trixie/main/binary-amd64/by-hash/SHA256/aaa"
                     // }
 
-                    release_items.push(DebianReleaseItem {
+                    release_items.push(RepoReleaseItem {
+                        format: PackageFormat::Deb,
                         repo_name,
+                        repodata_name: repo.repodata_name.to_string(),
                         need_download,
                         need_convert,
                         arch,
@@ -403,7 +234,8 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
                         hash_type: current_hash_type.clone(),
                         hash,
                         size,
-                        path,
+                        location,
+                        is_packages,
                         output_path,
                         download_path: download_path.to_path_buf(),
                     });
@@ -426,65 +258,8 @@ fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -
     Ok(release_items)
 }
 
-// Add this struct before using XzDecoder
-struct ReceiverReader<'a> {
-    receiver: Receiver<Vec<u8>>,
-    current_chunk: Vec<u8>,
-    position: usize,
-    hasher: Option<&'a mut Sha256>,
-}
-
-impl<'a> ReceiverReader<'a> {
-    fn new(receiver: Receiver<Vec<u8>>) -> Self {
-        Self {
-            receiver,
-            current_chunk: Vec::new(),
-            position: 0,
-            hasher: None,
-        }
-    }
-
-    fn with_hasher(mut self, hasher: &'a mut Sha256) -> Self {
-        self.hasher = Some(hasher);
-        self
-    }
-}
-
-impl<'a> std::io::Read for ReceiverReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.position >= self.current_chunk.len() {
-            match self.receiver.recv() {
-                Ok(chunk) => {
-                    if let Some(hasher) = &mut self.hasher {
-                        hasher.update(&chunk);
-                    }
-                    self.current_chunk = chunk;
-                    self.position = 0;
-                }
-                Err(_) => return Ok(0), // End of stream
-            }
-        }
-
-        let remaining = self.current_chunk.len() - self.position;
-        let to_copy = std::cmp::min(remaining, buf.len());
-        buf[..to_copy].copy_from_slice(&self.current_chunk[self.position..self.position + to_copy]);
-        self.position += to_copy;
-        Ok(to_copy)
-    }
-}
-
-fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianReleaseItem) -> Result<FileInfo> {
-    if revise.path.ends_with("Packages.xz") {
-        process_packages_content(data_rx, repo_dir, revise)
-    } else if revise.path.contains("/Contents-") {
-        process_filelist_content(data_rx, repo_dir, revise)
-    } else {
-        Err(eyre::eyre!("Unknown file type: {}", revise.path))
-    }
-}
-
-fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianReleaseItem) -> Result<FileInfo> {
-    log::debug!("Starting to process packages content for {}", revise.path);
+pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+    log::debug!("Starting to process packages content for {}", revise.location);
     let output_path = repo_dir.join(format!("packages-{}.txt", revise.arch));
     let json_path = repo_dir.join(format!(".packages-{}.json", revise.arch));
     let provide2pkgnames_path = repo_dir.join(format!("provide2pkgnames-{}.yaml", revise.arch));
@@ -586,7 +361,7 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
             }
             Err(e) => {
                 log::error!("Decompression error: {}", e);
-                return Err(eyre::eyre!("Failed to decompress file {}: {}", revise.path, e));
+                return Err(eyre::eyre!("Failed to decompress file {}: {}", revise.location, e));
             }
         }
     }
@@ -596,9 +371,9 @@ fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revi
     let calculated_hash = hex::encode(origin_hasher.finalize());
     let expected_hash = &revise.hash;
     if calculated_hash != *expected_hash {
-        log::error!("Hash verification failed for {} - calculated: {}, expected: {}", revise.path, calculated_hash, expected_hash);
+        log::error!("Hash verification failed for {} - calculated: {}, expected: {}", revise.location, calculated_hash, expected_hash);
         return Err(eyre::eyre!("Hash verification failed for {}: calculated {}, expected {}",
-            revise.path, calculated_hash, expected_hash));
+            revise.location, calculated_hash, expected_hash));
     }
 
     // Save package offsets to index file
@@ -677,68 +452,3 @@ fn process_line(line: &str,
         log::warn!("Unexpected line format: {}", line);
     }
 }
-
-fn process_filelist_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &DebianReleaseItem) -> Result<FileInfo> {
-    log::debug!("Processing filelist content for arch: {:?}", revise);
-    let mut hasher = Sha256::new();
-
-    // Process data and calculate hash incrementally
-    while let Ok(data) = data_rx.recv() {
-        hasher.update(&data);
-    }
-
-    // Verify hash
-    let calculated_hash = hex::encode(hasher.finalize());
-    if calculated_hash != revise.hash {
-        log::error!("Hash verification failed for {}: expected {}, got {}",
-            revise.path, revise.hash, calculated_hash);
-        return Err(eyre::eyre!("Hash verification failed for {}: expected {}, got {}",
-            revise.path, revise.hash, calculated_hash));
-    }
-    log::debug!("Hash verification successful for {}", revise.path);
-
-    // Create symbolic link from contents_path to repo_dir
-    // "Contents-all.gz"
-    let output_path = repo_dir.join(format!("filelist-{}.gz", revise.arch));
-    let json_path = repo_dir.join(format!(".filelist-{}.json", revise.arch));
-    if output_path.exists() {
-        log::debug!("Removing existing filelist at {}", output_path.display());
-        fs::remove_file(&output_path)
-            .with_context(|| format!("Failed to remove existing filelist at {}", output_path.display()))?;
-    }
-
-    log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(revise.download_path.clone(), &output_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            revise.download_path.display(), output_path.display()))?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_file(revise.download_path, &output_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            revise.download_path.display(), output_path.display()))?;
-
-    let metadata = fs::metadata(&output_path)
-        .with_context(|| format!("Failed to get metadata for {}", output_path.display()))?;
-    let file_info = FileInfo {
-        filename: output_path.file_name()
-            .ok_or_else(|| eyre::eyre!("Failed to get filename from path: {}", output_path.display()))?
-            .to_string_lossy()
-            .into_owned(),
-        sha256sum: calculated_hash,
-        datetime: metadata.modified()?
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs()
-            .to_string(),
-        size: metadata.len(),
-    };
-
-    log::debug!("Writing filelist metadata to {}", json_path.display());
-    let json_content = serde_json::to_string_pretty(&file_info)
-        .with_context(|| format!("Failed to serialize file info to JSON for {}", output_path.display()))?;
-    fs::write(&json_path, json_content)
-        .with_context(|| format!("Failed to write JSON metadata to {}", json_path.display()))?;
-
-    log::debug!("Successfully processed filelist content for arch: {}", revise.arch);
-    Ok(file_info)
-}
-

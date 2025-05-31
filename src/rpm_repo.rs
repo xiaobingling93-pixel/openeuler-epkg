@@ -1,20 +1,20 @@
 use std::fs;
 use std::path::PathBuf;
-use crate::models::{FileInfo, RepoIndex, RepoShard};
-use crate::repo::{RepoRevise, url_to_cache_path};
 use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
 use sha2::{Sha256, Digest};
 use time::OffsetDateTime;
 use time::macros::format_description;
 use hex;
-use crate::download::download_urls;
-use crate::dirs;
 use color_eyre::eyre;
 use color_eyre::eyre::{Result, eyre};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::io::BufReader;
+use crate::models::*;
+use crate::repo::*;
+use crate::dirs;
+use crate::download::download_urls;
 
 const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
     ("name", "pkgname"),
@@ -27,19 +27,6 @@ const PACKAGE_KEY_MAPPING: &[(&str, &str)] = &[
     ("size", "size"),
     ("checksum", "sha256"),
 ];
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct RpmReleaseItem {
-    pub repo_name: String,
-    pub need_revise: bool,
-    pub url: String,
-    pub hash_type: String,
-    pub hash: String,
-    pub size: u64,
-    pub path: PathBuf,
-    pub arch: String,
-}
 
 pub fn revise_repodata(repo: &RepoRevise) -> Result<()> {
     let repo_dir = dirs::get_repo_dir(&repo).unwrap();
@@ -63,7 +50,7 @@ pub fn revise_repodata(repo: &RepoRevise) -> Result<()> {
 
     // Parse repomd.xml file
     let release_content = fs::read_to_string(&repomd_path)?;
-    let info = parse_repomd_file(&repo.repo_name, &release_content, &release_dir.to_path_buf(), &repo.index_url)?;
+    let info = parse_repomd_file(&repo, &release_content, &release_dir.to_path_buf(), &repo.index_url)?;
 
     if info.is_empty() {
         return Ok(());
@@ -76,7 +63,7 @@ pub fn revise_repodata(repo: &RepoRevise) -> Result<()> {
     Ok(())
 }
 
-fn parse_repomd_file(repo_name: &str, content: &str, release_dir: &PathBuf, index_url: &str) -> Result<Vec<RpmReleaseItem>> {
+fn parse_repomd_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf, index_url: &str) -> Result<Vec<RepoReleaseItem>> {
     let mut info = Vec::new();
     let mut reader = Reader::from_str(content);
 
@@ -133,7 +120,7 @@ fn parse_repomd_file(repo_name: &str, content: &str, release_dir: &PathBuf, inde
             Ok(Event::End(ref e)) => {
                 if e.name().as_ref() == b"data" {
                     if current_data_type == "primary" || current_data_type == "filelists" {
-                        let need_revise = !release_dir.file_name()
+                        let need_download = !release_dir.file_name()
                             .map(|name| if name == "repodata" { release_dir.parent() } else { Some(release_dir.as_path()) })
                             .flatten()
                             .unwrap_or(release_dir)
@@ -150,15 +137,30 @@ fn parse_repomd_file(repo_name: &str, content: &str, release_dir: &PathBuf, inde
                         let url = format!("{}{}", baseurl, current_location);
                         let local_path = url_to_cache_path(&url)?;
 
-                        info.push(RpmReleaseItem {
-                            repo_name: repo_name.to_string(),
-                            need_revise,
+                        let is_packages = current_data_type == "primary";
+                        let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+                        let output_path = if is_packages {
+                            repo_dir.join(format!("packages.txt"))
+                        } else {
+                            repo_dir.join(format!("filelist.xml.gz"))
+                        };
+                        let need_convert = !output_path.exists();
+
+                        info.push(RepoReleaseItem {
+                            format: PackageFormat::Deb,
+                            repo_name: repo.repo_name.to_string(),
+                            repodata_name: repo.repodata_name.to_string(),
+                            need_download,
+                            need_convert,
+                            arch: current_arch.clone(),
                             url: url.clone(),
                             hash_type: "SHA256".to_string(),
                             hash: current_checksum.clone(),
                             size: current_size,
-                            path: local_path,
-                            arch: current_arch.clone(),
+                            location: current_location.clone(),
+                            is_packages,
+                            output_path: output_path,
+                            download_path: local_path,
                         });
                     }
                     in_data = false;
@@ -179,7 +181,7 @@ fn parse_repomd_file(repo_name: &str, content: &str, release_dir: &PathBuf, inde
     Ok(info)
 }
 
-fn download_revises(info: &[RpmReleaseItem]) -> Result<()> {
+fn download_revises(info: &[RepoReleaseItem]) -> Result<()> {
     // Download all files
     let urls: Vec<String> = info.iter().map(|r| r.url.clone()).collect();
     download_urls(urls, &dirs().epkg_downloads_cache, 1, false)?;
@@ -189,25 +191,25 @@ fn download_revises(info: &[RpmReleaseItem]) -> Result<()> {
     Ok(())
 }
 
-fn unpack_compressed_files(info: &[RpmReleaseItem]) -> Result<()> {
+fn unpack_compressed_files(info: &[RepoReleaseItem]) -> Result<()> {
     for revise in info {
-        let input_path = PathBuf::from(&revise.path);
+        let input_path = PathBuf::from(&revise.download_path);
         let output_path = input_path.with_extension("");
         let extension = input_path.extension()
             .and_then(|ext| ext.to_str())
-            .ok_or_else(|| eyre::eyre!("Failed to get extension from path: {}", revise.path.display()))?;
+            .ok_or_else(|| eyre::eyre!("Failed to get extension from path: {}", revise.download_path.display()))?;
         crate::utils::decompress_file(&input_path, &output_path, extension)?;
     }
     Ok(())
 }
 
-fn convert_revises(info: &[RpmReleaseItem], repo_dir: &PathBuf) -> Result<()> {
+fn convert_revises(info: &[RepoReleaseItem], repo_dir: &PathBuf) -> Result<()> {
     let mut packages_info = None;
     let mut filelist_info = None;
 
     for revise in info {
-        let unpacked_path = PathBuf::from(&revise.path).with_extension("");
-        let path_str = revise.path.to_string_lossy();
+        let unpacked_path = PathBuf::from(&revise.download_path).with_extension("");
+        let path_str = revise.download_path.to_string_lossy();
         if path_str.contains("primary.xml") {
             packages_info = Some(convert_packages(&unpacked_path, repo_dir)?);
         } else if path_str.contains("filelists.xml") {
@@ -286,7 +288,7 @@ fn convert_packages(packages_path: &PathBuf, repo_dir: &PathBuf) -> Result<FileI
     }
 
     // Use provided local time for YYMMDD
-    let date_str = match OffsetDateTime::now_local() {
+    let _date_str = match OffsetDateTime::now_local() {
         Ok(dt) => dt.format(&format_description!("[year][month][day]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
         Err(_) => "<local_time_err>".to_string(),
     };
@@ -295,8 +297,8 @@ fn convert_packages(packages_path: &PathBuf, repo_dir: &PathBuf) -> Result<FileI
     let mut hasher = Sha256::new();
     hasher.update(&output);
     let hash = hasher.finalize();
-    let short_hash = hex::encode(&hash)[..6].to_string();
-    let output_path = repo_dir.join(format!("packages-{}-{}.txt", date_str, short_hash));
+    let _short_hash = hex::encode(&hash)[..6].to_string();
+    let output_path = repo_dir.join(format!("packages.txt"));
     fs::write(&output_path, output)?;
 
     let metadata = fs::metadata(&output_path)?;
@@ -308,7 +310,7 @@ fn convert_packages(packages_path: &PathBuf, repo_dir: &PathBuf) -> Result<FileI
     })
 }
 
-fn convert_filelist(contents_path: &PathBuf, repo_dir: &PathBuf, revise: &RpmReleaseItem) -> Result<FileInfo> {
+fn convert_filelist(contents_path: &PathBuf, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     // Create symbolic link from contents_path to repo_dir
     let output_path = repo_dir.join(contents_path.file_name().unwrap());
     if output_path.exists() {
