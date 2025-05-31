@@ -378,10 +378,17 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     // Save package offsets to index file
     mmio::serialize_pkgname2ranges(&index_path, &pkgname2ranges)?;
+    mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)?;
+    mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)?;
 
+    save_file_metadata(&output_path, &json_path, new_hasher)
+}
+
+fn save_file_metadata(output_path: &PathBuf, json_path: &PathBuf, new_hasher: Sha256) -> Result<FileInfo> {
     // Compute final hash and save metadata
     let new_hash = new_hasher.finalize();
-    let metadata = fs::metadata(&output_path)
+
+    let metadata = fs::metadata(output_path)
         .context(format!("Failed to get metadata for file: {:?}", output_path))?;
     let file_info = FileInfo {
         filename: output_path.file_name().unwrap().to_string_lossy().into_owned(),
@@ -391,10 +398,9 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     };
     let json_content = serde_json::to_string_pretty(&file_info)
         .context("Failed to serialize file info to JSON")?;
-    fs::write(&json_path, json_content)
+    fs::write(json_path, json_content)
         .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
-    mmio::serialize_provide2pkgnames(&provide2pkgnames_path, &provide2pkgnames)?;
-    mmio::serialize_essential_pkgnames(&essential_pkgnames_path, &essential_pkgnames)?;
+
     log::debug!("Successfully processed packages content");
     Ok(file_info)
 }
