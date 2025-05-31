@@ -1,6 +1,5 @@
 use std::fs;
 use std::fs::File;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -30,14 +29,14 @@ impl FileMapper {
 
     /// Get a specific range of the mapped data
     /// Panics if range is out of bounds
-    pub fn range(&self, range: Range<usize>) -> &[u8] {
-        &self.mmap[range]
+    pub fn range(&self, range: PackageRange) -> &[u8] {
+        &self.mmap[range.begin..(range.begin + range.len)]
     }
 
     /// Safe range access with bounds checking
-    pub fn checked_range(&self, range: Range<usize>) -> Option<&[u8]> {
-        if range.end <= self.mmap.len() {
-            Some(&self.mmap[range])
+    pub fn checked_range(&self, range: PackageRange) -> Option<&[u8]> {
+        if range.begin + range.len <= self.mmap.len() {
+            Some(&self.range(range))
         } else {
             None
         }
@@ -208,4 +207,3 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<
     }
     Ok(pkgname2ranges)
 }
-
