@@ -123,6 +123,8 @@ pub struct Package {
     #[serde(default)]
     #[serde(rename = "originUrl")]
     pub origin_url: Option<String>,
+    #[serde(default)]
+    pub pkgkey: String,
 }
 
 // $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/repodata/index.json

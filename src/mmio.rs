@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use memmap2::Mmap;
 use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre;
 use crate::models::*;
 use crate::repo::RepoRevise;
 
@@ -208,6 +209,17 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<
     Ok(pkgname2ranges)
 }
 
+pub fn format_pkgkey(pkgname: &str, hash: &str) -> String {
+    format!("{}@{:8}", pkgname, hash)
+}
+
+pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {
+    match pkgkey.split_once('@') {
+        Some((pkgname, _)) if !pkgname.is_empty() => Ok(pkgname.to_string()),
+        _ => Err(eyre::eyre!("Invalid pkgkey format: {}", pkgkey)),
+    }
+}
+
 pub fn deserialize_package(paragraph: &str) -> Result<Package> {
     let mut package = Package {
         pkgname: String::new(),
@@ -236,6 +248,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         maintainer: String::new(),
         tag: None,
         origin_url: None,
+        pkgkey: String::new(),
     };
 
     for line in paragraph.lines() {
@@ -257,8 +270,14 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
                 "size"              => if let Ok(size)      = value.parse() { package.size = size; },
                 "installedSize"     => if let Ok(size)      = value.parse() { package.installed_size = size; },
                 "buildTime"         => if let Ok(time)      = value.parse() { package.build_time = Some(time); },
-                "sha256"            => package.sha256sum    = Some(value.to_string()),
-                "sha1"              => package.sha1sum      = Some(value.to_string()),
+                "sha256"            => {
+                    package.sha256sum = Some(value.to_string());
+                    package.pkgkey = format_pkgkey(&package.pkgname, value);
+                },
+                "sha1"              => {
+                    package.sha1sum = Some(value.to_string());
+                    package.pkgkey = format_pkgkey(&package.pkgname, value);
+                },
                 "tag"               => package.tag          = Some(value.to_string()),
                 "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),
                 "requires"          => package.requires     = value.split(", ").map(|s| s.to_string()).collect(),
