@@ -8,7 +8,7 @@ versions:
 - "38"
 repos:
   Everything:
-index_url: $mirror/releases/$version/$repo/$arch/repodata/repomd.xml
+index_url:         $mirror/releases/$version/$repo/$arch/os/repodata/repomd.xml
 index_url_updates: $mirror/updates/$version/$repo/$arch/repodata/repomd.xml
 
 # Example URLs:
