@@ -1,4 +1,3 @@
-
 use serde_json;
 use serde_yaml;
 use std::fs;
@@ -82,31 +81,60 @@ impl PackageManager {
     }
 
     fn set_channel_config_defaults(&mut self, cc: &mut ChannelConfig) -> Result<()> {
+        // Set default architecture if missing
         if cc.arch.is_empty() {
             cc.arch = config().common.arch.clone();
         }
 
-        if cc.channel.is_empty() {
-            cc.channel = format!("{}:{}", cc.distro, cc.version);
-        } else if cc.distro.is_empty() || cc.version.is_empty() {
+        // Handle the data dependencies between channel, distro, and version
+        self.resolve_channel_distro_version(cc)?;
+
+        Ok(())
+    }
+
+    fn resolve_channel_distro_version(&mut self, cc: &mut ChannelConfig) -> Result<()> {
+        // Step 1: If channel is provided, try to extract distro and version from it
+        if !cc.channel.is_empty() {
             let parts: Vec<&str> = cc.channel.split(':').collect();
             if parts.len() == 2 {
-                cc.distro = parts[0].to_string();
-                cc.version = parts[1].to_string();
+                if cc.distro.is_empty() {
+                    cc.distro = parts[0].to_string();
+                }
+                if cc.version.is_empty() {
+                    cc.version = parts[1].to_string();
+                }
             }
+        }
+
+        // Step 2: If version is still empty, fall back to versions list
+        if cc.version.is_empty() {
+            let version_from_list = cc.versions.first()
+                .ok_or_else(|| eyre::eyre!("channel has no versions"))?;
+
+            let version = version_from_list.split_whitespace().next()
+                .ok_or_else(|| eyre::eyre!("malformed version string: {}", version_from_list))?;
+
+            cc.version = version.to_string();
+        }
+
+        // Step 3: If channel is empty, construct it from distro:version
+        if cc.channel.is_empty() {
+            if !cc.distro.is_empty() && !cc.version.is_empty() {
+                cc.channel = format!("{}:{}", cc.distro, cc.version);
+            }
+        }
+
+        // Step 4: Validate that all required fields are now set
+        if cc.channel.is_empty() {
+            return Err(eyre::eyre!("channel name could not be determined"));
+        }
+        if cc.distro.is_empty() {
+            return Err(eyre::eyre!("distro name could not be determined"));
         }
         if cc.version.is_empty() {
-            if let Some(v0) = cc.versions.first() {
-                let mut parts = v0.split_whitespace();
-                if let Some(version) = parts.next() {
-                    cc.version = version.to_string();
-                } else {
-                    bail!("malformed version string: {}", v0);
-                }
-            } else {
-                bail!("channel has no versions");
-            }
+            return Err(eyre::eyre!("version could not be determined"));
         }
+
         Ok(())
     }
 
