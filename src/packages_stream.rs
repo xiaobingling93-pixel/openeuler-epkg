@@ -106,11 +106,15 @@ impl PackagesStreamline {
     pub fn new(revise: &RepoReleaseItem,
                 repo_dir: &PathBuf,
                 process_line_fn: fn(&str, &mut PackagesStreamline) -> Result<()>) -> Result<Self> {
-        let output_path = repo_dir.join(format!("packages-{}.txt", revise.arch));
-        let json_path = repo_dir.join(format!(".packages-{}.json", revise.arch));
-        let provide2pkgnames_path = repo_dir.join(format!("provide2pkgnames-{}.yaml", revise.arch));
-        let essential_pkgnames_path = repo_dir.join(format!("essential_pkgnames-{}.txt", revise.arch));
-        let pkgname2ranges_path = repo_dir.join(format!("packages-{}.idx", revise.arch));
+        let output_path = &revise.output_path;
+        let filename = output_path.file_name().unwrap_or_default().to_string_lossy();
+
+        // Get standard package paths
+        let (_, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
+            crate::mmio::get_package_paths(repo_dir, &filename);
+
+        // Special case for json_path which has a different pattern
+        let json_path = repo_dir.join(filename.replace("packages", ".packages")).with_extension("json");
 
         log::debug!("Output paths - txt: {:?}, json: {:?}, idx: {:?}", output_path, json_path, pkgname2ranges_path);
 
@@ -125,7 +129,7 @@ impl PackagesStreamline {
             provide2pkgnames: HashMap::new(),
             essential_pkgnames: HashSet::new(),
             pkgname2ranges: HashMap::new(),
-            output_path,
+            output_path: output_path.to_path_buf(),
             json_path,
             provide2pkgnames_path,
             essential_pkgnames_path,

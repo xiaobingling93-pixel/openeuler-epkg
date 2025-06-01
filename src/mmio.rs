@@ -74,14 +74,22 @@ pub fn deserialize_repoindex(file_path: &PathBuf) -> Result<RepoIndex> {
     Ok(repoindex)
 }
 
+/// Get standard package-related paths based on a base packages path
+pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let packages_path = repo_dir.join(packages_filename);
+    let provide2pkgnames_path = repo_dir.join(packages_filename.replace("packages", "provide2pkgnames")).with_extension("yaml");
+    let essential_pkgnames_path = repo_dir.join(packages_filename.replace("packages", "essential_pkgnames"));
+    let pkgname2ranges_path = packages_path.with_extension("idx");
+
+    (packages_path, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path)
+}
+
 pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> Result<()> {
     let repo_dir = crate::dirs::get_repo_dir(&repo)?;
     for (_, shard) in &mut repo_index.repo_shards {
         let filename = shard.packages.filename.clone();
-        let packages_path = repo_dir.join(&filename);
-        let provide2pkgnames_path = repo_dir.join(filename.replace("packages", "provide2pkgnames")).with_extension("yaml");
-        let essential_pkgnames_path = repo_dir.join(filename.replace("packages", "essential_pkgnames"));
-        let pkgname2ranges_path = packages_path.with_extension("idx");
+        let (packages_path, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
+            get_package_paths(&repo_dir, &filename);
         shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
         shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
         shard.provide2pkgnames = deserialize_provide2pkgnames(&provide2pkgnames_path)?;
