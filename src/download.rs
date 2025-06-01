@@ -416,12 +416,95 @@ pub fn send_file_to_channel(
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
     // "Decompression error: stream/file format not recognized"
-    let mut existing_file = std::fs::File::open(part_path)?;
-    let mut existing_file_buffer = Vec::new();
-    existing_file.read_to_end(&mut existing_file_buffer)?;
-    if let Err(_) = data_channel.send(existing_file_buffer) {
-        // Ignore send error for existing file data
+    log::debug!("Sending file to channel: {}", part_path.display());
+
+    // Check if file exists and get its size
+    let file_metadata = match std::fs::metadata(part_path) {
+        Ok(metadata) => {
+            let size = metadata.len();
+            log::debug!("File size: {} bytes", size);
+            if size == 0 {
+                log::warn!("File is empty: {}", part_path.display());
+            }
+            metadata
+        },
+        Err(e) => {
+            let err_msg = format!("Failed to get metadata for file {}: {}", part_path.display(), e);
+            log::error!("{}", err_msg);
+            return Err(eyre::eyre!(err_msg));
+        }
+    };
+
+    // Open the file
+    let mut file = match std::fs::File::open(part_path) {
+        Ok(file) => file,
+        Err(e) => {
+            let err_msg = format!("Failed to open file {}: {}", part_path.display(), e);
+            log::error!("{}", err_msg);
+            return Err(eyre::eyre!(err_msg));
+        }
+    };
+
+    // Use a reasonably sized buffer for reading chunks
+    // 1MB is a good balance between memory usage and number of channel sends
+    const CHUNK_SIZE: usize = 64 * 1024; // 64KB chunks
+    let mut buffer = vec![0; CHUNK_SIZE];
+    let mut total_bytes_read = 0;
+    let mut chunks_sent = 0;
+
+    loop {
+        // Read a chunk from the file
+        match file.read(&mut buffer) {
+            Ok(0) => {
+                // End of file
+                log::debug!("Reached end of file after reading {} bytes in {} chunks",
+                          total_bytes_read, chunks_sent);
+                break;
+            },
+            Ok(bytes_read) => {
+                total_bytes_read += bytes_read;
+                chunks_sent += 1;
+
+                // Create a new buffer with just the bytes we read
+                let chunk = buffer[..bytes_read].to_vec();
+
+                // Send the chunk through the channel
+                match data_channel.send(chunk) {
+                    Ok(_) => {
+                        if chunks_sent % 10 == 0 || bytes_read < CHUNK_SIZE {
+                            log::debug!("Sent chunk {} ({} bytes, total {} bytes) for {}",
+                                      chunks_sent, bytes_read, total_bytes_read, part_path.display());
+                        }
+                    },
+                    Err(e) => {
+                        let err_msg = format!("Failed to send chunk {} to channel: {}", chunks_sent, e);
+                        log::error!("{}", err_msg);
+                        return Err(eyre::eyre!(err_msg));
+                    }
+                }
+
+                // If we read less than the buffer size, we've reached the end
+                if bytes_read < CHUNK_SIZE {
+                    log::debug!("Reached end of file (last chunk was smaller than buffer)");
+                    break;
+                }
+            },
+            Err(e) => {
+                let err_msg = format!("Error reading chunk from file {}: {}", part_path.display(), e);
+                log::error!("{}", err_msg);
+                return Err(eyre::eyre!(err_msg));
+            }
+        }
     }
+
+    // Verify we read the expected number of bytes
+    if total_bytes_read != file_metadata.len() as usize {
+        log::warn!("Read {} bytes but file size is {} bytes",
+                 total_bytes_read, file_metadata.len());
+    }
+
+    log::debug!("Successfully sent file data to channel in {} chunks: {}",
+              chunks_sent, part_path.display());
     Ok(())
 }
 
