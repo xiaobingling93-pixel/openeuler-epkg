@@ -40,7 +40,6 @@ impl PackageManager {
     }
 
     pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
-        self.load_store_paths()?;
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
         log::debug!("Input package specs: {:?}", package_specs);

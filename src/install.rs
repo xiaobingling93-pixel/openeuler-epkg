@@ -408,7 +408,6 @@ impl PackageManager {
     }
 
     pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
-        self.load_store_paths()?;
         self.load_installed_packages()?;
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());

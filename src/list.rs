@@ -96,7 +96,6 @@ macro_rules! LIST_OUTPUT_FORMAT {
 
 impl PackageManager {
     pub fn list_packages(&mut self, glob_pattern: &str) -> Result<()> {
-        self.load_store_paths()?;
 
         // Determine the search pattern based on the glob syntax
         let (prefix, suffix) = match glob_pattern {
@@ -108,6 +107,7 @@ impl PackageManager {
         let mut header_printed = false;
 
         let channel = self.get_channel_config(config().common.env.clone())?.channel.clone();
+
         for repodata in &self.repos_data {
             for entry in &repodata.store_paths {
                 // Construct the file path
