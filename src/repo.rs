@@ -333,6 +333,7 @@ pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mps
     let release_items =
         match format {
             PackageFormat::Deb => crate::deb_repo::parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?,
+            PackageFormat::Rpm => crate::rpm_repo::parse_repomd_file(&repo, &release_content, &release_dir.to_path_buf())?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format))
         };
 
@@ -540,6 +541,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
     if revise.is_packages {
         match revise.format {
             PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise),
+            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise),
             _ => Err(eyre::eyre!("Unsupported package format: {:?}", revise.format))
         }
     } else {
