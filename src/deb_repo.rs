@@ -267,7 +267,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)?;
 
-    let reader = packages_stream::ReceiverHasher::new(data_rx);
+    // Always use automatic hash validation by passing the expected hash
+    let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
     let mut decoder = xz2::read::XzDecoder::new(reader);
     let mut unpack_buf = vec![0u8; 65536];
 
@@ -280,9 +281,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         }
     }
 
-    // Extract the reader from the decoder to access sha256sum
-    let reader = decoder.into_inner();
-    derived_files.on_finish(revise, reader.sha256sum)
+    derived_files.on_finish(revise)
 }
 
 // Helper function to process a single line

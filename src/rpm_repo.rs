@@ -159,7 +159,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)?;
 
-    let reader = packages_stream::ReceiverHasher::new(data_rx);
+    // Always use automatic hash validation by passing the expected hash
+    let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
 
     // Detect compression type from file extension and use appropriate decoder
     let mut unpack_buf = vec![0u8; 65536];
@@ -183,10 +184,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
             }
         }
 
-        // For zstd decoder, we can't access the inner reader, so we'll compute hash differently
-        // The receiver hasher will still calculate the hash of the compressed data
-        let sha256sum = format!("zstd-decoded-{}", revise.hash); // Use the expected hash from repomd
-        derived_files.on_finish(revise, sha256sum)
+        derived_files.on_finish(revise)
     } else {
         // Default to gzip decoder for .gz files or other formats
         let mut xml_decoder = GzDecoder::new(reader);
@@ -206,9 +204,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
             }
         }
 
-        // Extract the reader from the decoder to access sha256sum
-        let reader = xml_decoder.into_inner();
-        derived_files.on_finish(revise, reader.sha256sum)
+        derived_files.on_finish(revise)
     }
 }
 

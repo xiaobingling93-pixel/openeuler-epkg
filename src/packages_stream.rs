@@ -22,17 +22,25 @@ pub struct ReceiverHasher {
     position: usize,
     pub hasher: Sha256,
     pub sha256sum: String,
+    expected_hash: Option<String>,
+    hash_validated: bool,
 }
 
 impl ReceiverHasher {
-    pub fn new(receiver: Receiver<Vec<u8>>) -> Self {
+    pub fn new(receiver: Receiver<Vec<u8>>, expected_hash: String) -> Self {
         Self {
             receiver,
             current_chunk: Vec::new(),
             position: 0,
             hasher: Sha256::new(),
             sha256sum: String::new(),
+            expected_hash: Some(expected_hash),
+            hash_validated: false,
         }
+    }
+
+    pub fn is_hash_valid(&self) -> bool {
+        self.hash_validated
     }
 }
 
@@ -46,7 +54,21 @@ impl std::io::Read for ReceiverHasher {
                     self.position = 0;
                 }
                 Err(_) => {
-                    self.sha256sum = hex::encode(self.hasher.finalize_reset());
+                    // Auto-validate hash if expected hash was provided
+                    if let Some(ref expected) = self.expected_hash {
+                        self.sha256sum = hex::encode(self.hasher.finalize_reset());
+                        self.hash_validated = self.sha256sum == *expected;
+                        if !self.hash_validated {
+                            log::error!("Hash verification failed - calculated: {}, expected: {}",
+                                       self.sha256sum, expected);
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("Hash verification failed: calculated {}, expected {}",
+                                       self.sha256sum, expected)
+                            ));
+                        }
+                    }
+
                     return Ok(0); // End of stream
                 }
             }
@@ -162,16 +184,7 @@ impl PackagesStreamline {
         Ok(())
     }
 
-    pub fn on_finish(&mut self, revise: &RepoReleaseItem, calculated_hash: String) -> Result<FileInfo> {
-        // Get the final hash from origin_hasher
-        let expected_hash = &revise.hash;
-        if calculated_hash != *expected_hash {
-            log::error!("Hash verification failed for {} - calculated: {}, expected: {}",
-                revise.location, calculated_hash, expected_hash);
-            return Err(eyre::eyre!("Hash verification failed for {}: calculated {}, expected {}",
-                    revise.location, calculated_hash, expected_hash));
-        }
-
+    pub fn on_finish(&mut self, _revise: &RepoReleaseItem) -> Result<FileInfo> {
         self.writer.flush()
             .context(format!("Failed to flush output file: {:?}", self.output_path))?;
 
