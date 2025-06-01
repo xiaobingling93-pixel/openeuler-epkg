@@ -67,6 +67,11 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                 match e.name().as_ref() {
                     b"data" => {
                         in_data = true;
+                        // Reset values for new data element
+                        current_location.clear();
+                        current_checksum.clear();
+                        current_size = 0;
+
                         if let Some(data_type) = e.attributes()
                             .find(|attr| attr.as_ref().unwrap().key.as_ref() == b"type")
                             .and_then(|attr| attr.ok())
@@ -74,22 +79,23 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             current_data_type = data_type;
                         }
                     }
-                    b"location" => {
-                        if in_data {
-                            if let Some(href) = e.attributes()
-                                .find(|attr| attr.as_ref().unwrap().key.as_ref() == b"href")
-                                .and_then(|attr| attr.ok())
-                                .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok()) {
-                                current_location = href;
-                            }
-                        }
-                    }
                     _ => {}
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                // Handle self-closing elements like <location href="..."/>
+                if in_data && e.name().as_ref() == b"location" {
+                    if let Some(href) = e.attributes()
+                        .find(|attr| attr.as_ref().unwrap().key.as_ref() == b"href")
+                        .and_then(|attr| attr.ok())
+                        .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok()) {
+                        current_location = href;
+                    }
                 }
             }
             Ok(Event::Text(e)) => {
                 if in_data {
-                    let text = e.unescape().unwrap_or_default().to_string();
+                    let text = e.unescape().unwrap_or_default().to_string().trim().to_string();
 
                     match current_element.as_str() {
                         "checksum" => current_checksum = text,
@@ -99,49 +105,52 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                 }
             }
             Ok(Event::End(ref e)) => {
-                if e.name().as_ref() == b"data" {
-                    if current_data_type == "primary" || current_data_type == "filelists" {
-                        let baseurl = if index_url.ends_with("/repomd.xml") {
-                            index_url.trim_end_matches("/repomd.xml").trim_end_matches("/repodata")
-                        } else {
-                            index_url.trim_end_matches('/')
-                        };
-                        let url = format!("{}/{}", baseurl, current_location);
-                        let local_path = url_to_cache_path(&url)?;
-                        let need_download = !local_path.exists();
+                match e.name().as_ref() {
+                    b"data" => {
+                        if current_data_type == "primary" || current_data_type == "filelists" {
+                            let baseurl = if index_url.ends_with("/repomd.xml") {
+                                index_url.trim_end_matches("/repomd.xml").trim_end_matches("/repodata")
+                            } else {
+                                index_url.trim_end_matches('/')
+                            };
+                            let url = format!("{}/{}", baseurl, current_location);
+                            let local_path = url_to_cache_path(&url)?;
+                            let need_download = !local_path.exists();
 
-                        let is_packages = current_data_type == "primary";
-                        let repo_dir = dirs::get_repo_dir(&repo).unwrap();
-                        let output_path = if is_packages {
-                            repo_dir.join(format!("packages.txt"))
-                        } else {
-                            repo_dir.join(format!("filelist.xml.zst"))
-                        };
-                        let need_convert = !output_path.exists();
+                            let is_packages = current_data_type == "primary";
+                            let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+                            let output_path = if is_packages {
+                                repo_dir.join(format!("packages.txt"))
+                            } else {
+                                repo_dir.join(format!("filelist.xml.zst"))
+                            };
+                            let need_convert = !output_path.exists();
 
-                        info.push(RepoReleaseItem {
-                            format: PackageFormat::Rpm,
-                            repo_name: repo.repo_name.to_string(),
-                            repodata_name: repo.repodata_name.to_string(),
-                            need_download,
-                            need_convert,
-                            arch: repo.arch.clone(),
-                            url: url.clone(),
-                            package_baseurl: baseurl.to_string(),
-                            hash_type: "SHA256".to_string(),
-                            hash: current_checksum.clone(),
-                            size: current_size,
-                            location: current_location.clone(),
-                            is_packages,
-                            output_path: output_path,
-                            download_path: local_path,
-                        });
+                            info.push(RepoReleaseItem {
+                                format: PackageFormat::Rpm,
+                                repo_name: repo.repo_name.to_string(),
+                                repodata_name: repo.repodata_name.to_string(),
+                                need_download,
+                                need_convert,
+                                arch: repo.arch.clone(),
+                                url: url.clone(),
+                                package_baseurl: baseurl.to_string(),
+                                hash_type: "SHA256".to_string(),
+                                hash: current_checksum.clone(),
+                                size: current_size,
+                                location: current_location.clone(),
+                                is_packages,
+                                output_path: output_path,
+                                download_path: local_path,
+                            });
+                        }
+                        in_data = false;
+                        current_data_type.clear();
                     }
-                    in_data = false;
-                    current_data_type.clear();
-                    current_location.clear();
-                    current_checksum.clear();
-                    current_size = 0;
+                    _ => {
+                        // Clear current_element when we finish an element
+                        current_element.clear();
+                    }
                 }
             }
             Ok(Event::Eof) => break,
