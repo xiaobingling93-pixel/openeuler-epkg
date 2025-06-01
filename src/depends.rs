@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use color_eyre::Result;
 use color_eyre::eyre;
 use crate::models::*;
-use crate::io::load_package_json;
+
 use crate::parse_requires::*;
 
 impl InstalledPackageInfo {
@@ -22,8 +22,8 @@ impl InstalledPackageInfo {
 
 impl PackageManager {
     pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        for pkgline in packages.keys() {
-            let pkg_json = self.load_package_info(pkgline)?;
+        for pkgkey in packages.keys() {
+            let pkg_json = self.load_package_info(pkgkey)?;
             if pkg_json.source.is_some() {
                 self.appbin_source.insert(pkg_json.source.as_ref().unwrap().clone());
             }
@@ -32,8 +32,8 @@ impl PackageManager {
     }
 
     pub fn change_appbin_flag_same_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        for (pkgline, package_info) in packages.iter_mut() {
-            let pkg_json = self.load_package_info(pkgline.as_str())?;
+        for (pkgkey, package_info) in packages.iter_mut() {
+            let pkg_json = self.load_package_info(pkgkey.as_str())?;
             if package_info.appbin_flag == false && pkg_json.source.is_some() {
                 let Some(source) = &pkg_json.source else { continue };
                 if self.appbin_source.contains(source) {
@@ -44,33 +44,39 @@ impl PackageManager {
         Ok(())
     }
 
-    fn add_one_package_installing(&self, pkg_name: &str, depth: u8, ebin_flag: bool,
+    fn add_one_package_installing(&mut self, pkg_name: &str, depth: u8, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) {
-        if let Some(pkglines) = self.pkgname2lines.get(pkg_name) {
-            for pkgline in pkglines {
-                packages.insert(
-                    pkgline.clone(),
-                    InstalledPackageInfo::new(depth, ebin_flag),
-                );
+        match self.map_pkgname2packages(pkg_name) {
+            Ok(packages_list) => {
+                for package in packages_list {
+                    packages.insert(
+                        package.pkgkey.clone(),
+                        InstalledPackageInfo::new(depth, ebin_flag),
+                    );
+                }
+            },
+            Err(_) => {
+                missing_names.push(pkg_name.to_string());
             }
-        } else {
-            missing_names.push(pkg_name.to_string());
         }
     }
 
     /// convert user provided @capabilities to exact packages hash
-    pub fn resolve_package_info(&self, capabilities: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
+    pub fn resolve_package_info(&mut self, capabilities: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
         let mut packages = HashMap::new();
         let mut missing_names = Vec::new();
         let mut pnames = Vec::new();
 
         for capability  in capabilities {
-            if let Some(pkgname) = self.provide2pkgnames.get(capability .as_str()) {
-                pnames.push(pkgname[0].clone());
-            } else {
-                // 输入是真正的pkgname
-                pnames.push(capability .clone());
+            match crate::mmio::map_provide2pkgnames(capability.as_str()) {
+                Ok(pkgnames) if !pkgnames.is_empty() => {
+                    pnames.push(pkgnames[0].clone());
+                },
+                _ => {
+                    // 输入是真正的pkgname
+                    pnames.push(capability.clone());
+                }
             }
         }
 
@@ -90,7 +96,8 @@ impl PackageManager {
 
     pub fn collect_essential_packages(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
         let mut missing_names = Vec::new();
-        for essential_pkgname in &self.essential_pkgnames {
+        let essential_pkgnames = crate::mmio::get_essential_pkgnames()?;
+        for essential_pkgname in &essential_pkgnames {
             self.add_one_package_installing(essential_pkgname.as_str(), 0, false, packages, &mut missing_names);
         }
         if !missing_names.is_empty() {
@@ -123,30 +130,6 @@ impl PackageManager {
         Ok(())
     }
 
-    fn load_package_info(&mut self, pkgline: &str) -> Result<Package> {
-        if let Some(package) = self.pkghash2pkg.get(&pkgline[0..32]) {
-            return Ok(package.clone());
-        }
-
-        let spec = self.pkghash2spec.get(&pkgline[0..32])
-            .cloned()
-            .ok_or_else(|| eyre::eyre!("Package spec not found"))?;
-
-        let channel_config = self.get_channel_config(config().common.env.clone())?;
-        let path = format!(
-            "{}/channel/{}/{}/{}/pkg-info/{}/{}.json",
-            dirs().epkg_cache.display(),
-            channel_config.channel,
-            spec.repo,
-            config().common.arch,
-            &pkgline[0..2],
-            pkgline
-        );
-        let package = load_package_json(&path)?;
-        self.pkghash2pkg.insert(pkgline.to_string(), package.clone());
-        Ok(package)
-    }
-
     fn process_dependencies(
         &mut self,
         dependencies: &Vec<Dependency>,
@@ -156,21 +139,21 @@ impl PackageManager {
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
         for dep in dependencies {
-            let Some(spec) = self.pkghash2spec.get(&dep.hash) else {
-                missing_deps.push(format!("{}-{}", dep.pkgname, dep.hash));
-                continue;
-            };
+            let pkgkey = crate::mmio::format_pkgkey(&dep.pkgname, &dep.hash);
 
-            let dep_id = format!(
-                "{}__{}__{}__{}",
-                spec.hash, spec.name, spec.version, spec.release
-            );
-
-            if !packages.contains_key(&dep_id) && !depend_packages.contains_key(&dep_id) {
-                depend_packages.insert(
-                    dep_id.clone(),
-                    InstalledPackageInfo::new(depth, false),
-                );
+            if !packages.contains_key(&pkgkey) &&
+                !depend_packages.contains_key(&pkgkey) {
+                match self.load_package_info(&pkgkey) {
+                    Ok(_package) => {
+                        depend_packages.insert(
+                            pkgkey,
+                            InstalledPackageInfo::new(depth, false),
+                        );
+                    }
+                    Err(_) => {
+                        missing_deps.push(pkgkey);
+                    }
+                }
             }
         }
 
@@ -219,30 +202,35 @@ impl PackageManager {
         depth: u8,
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
-        let pkg_hashes = match self.pkgname2lines.get(capability) {
-            Some(hash) => hash,
-            None => {
-                let pkg_mapping_name = match self.provide2pkgnames.get(capability) {
-                    Some(pkg_name) => pkg_name,
-                    None => {
+        // First try to find packages by capability name directly
+        let pkg_packages = match self.map_pkgname2packages(capability) {
+            Ok(packages_list) if !packages_list.is_empty() => packages_list,
+            _ => {
+                // If not found, try to resolve through provides mapping
+                let pkg_mapping_names = match crate::mmio::map_provide2pkgnames(capability) {
+                    Ok(pkgnames) if !pkgnames.is_empty() => pkgnames,
+                    _ => {
                         if !capability.starts_with("rpmlib(") {
                             missing_deps.push(format!("{}-{:?}", capability, pkg_format));
                         }
                         return Ok(());
                     }
                 };
-                let Some(hashes) = self.pkgname2lines.get(pkg_mapping_name[0].as_str()) else {
-                    missing_deps.push(format!("{}-{:?}", capability, pkg_format));
-                    return Ok(());
-                };
-                hashes
+                match self.map_pkgname2packages(&pkg_mapping_names[0]) {
+                    Ok(packages_list) if !packages_list.is_empty() => packages_list,
+                    _ => {
+                        missing_deps.push(format!("{}-{:?}", capability, pkg_format));
+                        return Ok(());
+                    }
+                }
             }
         };
 
-        for hash in pkg_hashes {
-            if !packages.contains_key(hash) && !depend_packages.contains_key(hash) {
+        for package in pkg_packages {
+            let pkgkey = &package.pkgkey;
+            if !packages.contains_key(pkgkey) && !depend_packages.contains_key(pkgkey) {
                 depend_packages.insert(
-                    hash.clone(),
+                    pkgkey.clone(),
                     InstalledPackageInfo::new(depth, false),
                 );
             }
@@ -274,8 +262,8 @@ impl PackageManager {
         repo_format: PackageFormat,
     ) -> Result<()> {
         let mut missing_deps = Vec::new();
-        for pkgline in packages.keys() {
-            let pkg_info = self.load_package_info(pkgline)?;
+        for pkgkey in packages.keys() {
+            let pkg_info = self.load_package_info(pkgkey)?;
 
             if !pkg_info.requires_pre.is_empty() {
                 self.process_requirements(
@@ -309,6 +297,38 @@ impl PackageManager {
 
         self.handle_missing_dependencies(missing_deps)?;
         Ok(())
+    }
+
+
+    pub fn map_pkgname2packages(&mut self, pkgname: &str) -> Result<Vec<Package>> {
+        match crate::mmio::map_pkgname2packages(pkgname) {
+            Ok(packages_list) => {
+                for package in &packages_list {
+                    // cache for later references
+                    self.pkgkey2package.insert(package.pkgkey.clone(), package.clone());
+                }
+                return Ok(packages_list);
+            },
+            Err(e) => Err(e)
+        }
+    }
+
+    pub fn load_package_info(&mut self, pkgkey: &str) -> Result<Package> {
+        // Try to find by pkgkey first
+        if let Some(package) = self.pkgkey2package.get(pkgkey) {
+            return Ok(package.clone());
+        }
+
+        // Extract package name from pkgkey and try to load all packages with that name
+        let pkgname = crate::mmio::pkgkey2pkgname(pkgkey)?;
+        self.map_pkgname2packages(&pkgname)?;
+
+        // Try to find the package again after loading
+        if let Some(package) = self.pkgkey2package.get(pkgkey) {
+            return Ok(package.clone());
+        }
+
+        Err(eyre::eyre!("Package not found: {}", pkgkey))
     }
 
 }

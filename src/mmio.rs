@@ -249,6 +249,8 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         tag: None,
         origin_url: None,
         pkgkey: String::new(),
+        repodata_name: String::new(),
+        package_baseurl: String::new(),
     };
 
     for line in paragraph.lines() {
@@ -299,6 +301,8 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
 
 pub fn lookup_in_packages(
     pkgname: &str,
+    repodata_name: &str,
+    package_baseurl: &str,
     pkgname2ranges: &HashMap<String, Vec<PackageRange>>,
     packages_mmap: &Option<FileMapper>
 ) -> Result<Vec<Package>> {
@@ -309,7 +313,9 @@ pub fn lookup_in_packages(
             for range in ranges {
                 if let Some(data) = mmap.checked_range(&range) {
                     if let Ok(paragraph) = std::str::from_utf8(data) {
-                        if let Ok(package) = deserialize_package(paragraph) {
+                        if let Ok(mut package) = deserialize_package(paragraph) {
+                            package.repodata_name = repodata_name.to_string();
+                            package.package_baseurl = package_baseurl.to_string();
                             packages.push(package);
                         }
                     }
@@ -327,7 +333,11 @@ pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
     let repodata_indice = repodata_indice();
     for repo_index in repodata_indice.values() {
         for shard in repo_index.repo_shards.values() {
-            if let Ok(mut shard_packages) = lookup_in_packages(pkgname, &shard.pkgname2ranges, &shard.packages_mmap) {
+            if let Ok(mut shard_packages) = lookup_in_packages(pkgname,
+                        &repo_index.repodata_name,
+                        &repo_index.package_baseurl,
+                        &shard.pkgname2ranges,
+                        &shard.packages_mmap) {
                 packages.append(&mut shard_packages);
             }
         }

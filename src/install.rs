@@ -438,29 +438,30 @@ impl PackageManager {
         let store_root = dirs().epkg_store.clone();
 
         // First phase: Link all packages
-        for (pkgline, _package_info) in &packages_to_install {
-            let store_fs_dir = store_root.join(pkgline).join("fs");
+        for (pkgkey, _package_info) in &packages_to_install {
+            let store_fs_dir = store_root.join(pkgkey).join("fs");
             self.link_package(&store_fs_dir, &env_root)
-                .with_context(|| format!("Failed to link package {}", pkgline))?;
+                .with_context(|| format!("Failed to link package {}", pkgkey))?;
         }
 
         // Second phase: Expose packages and handle appbin flags
-        for (pkgline, _package_info) in &packages_to_install {
+        for (pkgkey, _package_info) in &packages_to_install {
             let mut appbin_flag = false;
             #[allow(unused_assignments)]
             let mut pkg_name = String::new();
             // appbin_source check
-            if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
+            // Now pkgkey is the actual key, so we can look it up directly
+            if let Some(package) = self.pkgkey2package.get(pkgkey) {
                 appbin_flag = _package_info.appbin_flag;
-                pkg_name = spec.name.clone();
+                pkg_name = package.pkgname.clone();
                 if appbin_flag {
                     appbin_count += 1;
                     appbin_packages.push(pkg_name.clone());
                 }
             }
-            let store_fs_dir = store_root.join(pkgline).join("fs");
+            let store_fs_dir = store_root.join(pkgkey).join("fs");
             self.expose_package(&store_fs_dir, &env_root, appbin_flag)
-                .with_context(|| format!("Failed to expose package {}", pkgline))?;
+                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
         }
 
         // Save installed packages

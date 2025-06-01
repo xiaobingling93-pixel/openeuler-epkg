@@ -63,7 +63,7 @@ pub fn revise_repodata(repo: &RepoRevise) -> Result<()> {
     Ok(())
 }
 
-fn parse_repomd_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf, index_url: &str) -> Result<Vec<RepoReleaseItem>> {
+fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBuf, index_url: &str) -> Result<Vec<RepoReleaseItem>> {
     let mut info = Vec::new();
     let mut reader = Reader::from_str(content);
 
@@ -120,22 +120,14 @@ fn parse_repomd_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf, in
             Ok(Event::End(ref e)) => {
                 if e.name().as_ref() == b"data" {
                     if current_data_type == "primary" || current_data_type == "filelists" {
-                        let need_download = !release_dir.file_name()
-                            .map(|name| if name == "repodata" { release_dir.parent() } else { Some(release_dir.as_path()) })
-                            .flatten()
-                            .unwrap_or(release_dir)
-                            .join(&current_location)
-                            .exists();
-
-                        let baseurl = if index_url.ends_with("repomd.xml") {
-                            index_url.trim_end_matches("repomd.xml")
-                        } else if index_url.ends_with('/') {
-                            index_url.trim_end_matches('/')
+                        let baseurl = if index_url.ends_with("/repomd.xml") {
+                            index_url.trim_end_matches("/repomd.xml").trim_end_matches("/repodata")
                         } else {
-                            &index_url
+                            index_url.trim_end_matches('/')
                         };
-                        let url = format!("{}{}", baseurl, current_location);
+                        let url = format!("{}/{}", baseurl, current_location);
                         let local_path = url_to_cache_path(&url)?;
+                        let need_download = local_path.exists();
 
                         let is_packages = current_data_type == "primary";
                         let repo_dir = dirs::get_repo_dir(&repo).unwrap();
@@ -154,6 +146,7 @@ fn parse_repomd_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf, in
                             need_convert,
                             arch: current_arch.clone(),
                             url: url.clone(),
+                            package_baseurl: baseurl.to_string(),
                             hash_type: "SHA256".to_string(),
                             hash: current_checksum.clone(),
                             size: current_size,
@@ -348,6 +341,7 @@ fn save_repo_index_json(
         }
     );
     let repo_index = RepoIndex {
+        package_baseurl: String::new(),
         repodata_name: "main".to_string(),
         repo_shards
     };

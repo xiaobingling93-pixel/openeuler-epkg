@@ -604,35 +604,23 @@ impl PackageManager {
         Ok(())
     }
 
-    // Download packages specified by their pkgline strings.
+    // Download packages specified by their pkgkey strings.
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>, async_mode: bool) -> Result<Vec<String>> {
         let output_dir = dirs().epkg_pkg_cache.clone();
 
-        // Step 1: Compose URLs for each pkgline
+        // Step 1: Compose URLs for each pkgkey
         let mut urls = Vec::new();
         let mut local_files = Vec::new();
-        for pkgline in packages.keys() {
-            let pkghash = &pkgline[..32]; // Extract the first 32 characters as the hash
-            if let Some(spec) = self.pkghash2spec.get(pkghash) {
-                let spec = spec.clone();
-                let repo = &spec.repo;
-                // XXX: this only works for single-repo channel. The actual mapping is
-                // - 1 channel could have N repos
-                // - 1 repo (each may have its own url) could have M packages
-                let channel_config = self.get_channel_config(config().common.env.clone())?;
-                let url = format!(
-                    "{}/{}/{}/store/{}/{}.epkg",
-                    channel_config.index_url.clone(),
-                    repo,
-                    config().common.arch,
-                    &pkgline[..2], // First 2 characters of the hash
-                    pkgline
-                );
-                urls.push(url);
-                local_files.push(format!("{}/{}.epkg", output_dir.display(), pkgline));
-            } else {
-                return Err(eyre::eyre!("Package spec not found for {}", pkgline));
-            }
+        for pkgkey in packages.keys() {
+            let package = self.load_package_info(pkgkey)?;
+            let url = format!(
+                "{}/{}",
+                package.package_baseurl,
+                package.location
+            );
+            urls.push(url.clone());
+            let cache_path = crate::repo::url_to_cache_path(&url)?.to_string_lossy().to_string();
+            local_files.push(cache_path);
         }
 
         // Step 2: Call the predefined download_urls function

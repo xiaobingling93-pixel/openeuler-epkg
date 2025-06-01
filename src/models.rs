@@ -123,8 +123,13 @@ pub struct Package {
     #[serde(default)]
     #[serde(rename = "originUrl")]
     pub origin_url: Option<String>,
-    #[serde(default)]
+
+    #[serde(skip)]
     pub pkgkey: String,
+    #[serde(skip)]
+    pub repodata_name: String,
+    #[serde(skip)]
+    pub package_baseurl: String,
 }
 
 // $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/repodata/index.json
@@ -337,6 +342,8 @@ pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, HashMap<Str
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RepoIndex {
     pub repodata_name: String,
+    #[serde(skip)]
+    pub package_baseurl: String,
     pub repo_shards: HashMap<String, RepoShard>, // key: shard name or id
 }
 
@@ -506,18 +513,14 @@ pub struct PackageManager {
 
     // legacy epkg data structure
     pub repos_data: Vec<Repodata>,
-    // loaded from repodata.store_paths files
-    // pkghash2spec[hash] = PackageSpec
-    // pkgname2lines[pkgname] = [pkgline]
-    pub pkghash2spec: HashMap<String, PackageSpec>,
-    pub pkgname2lines: HashMap<String, Vec<String>>,
-
-    // legacy
-    pub provide2pkgnames: HashMap<String, Vec<String>>,
-    pub essential_pkgnames: HashSet<String>,
+    // These legacy fields have been obsoleted:
+    // pkghash2spec replaced by pkgkey2package
+    // pkgname2lines replaced by map_pkgname2packages() + Package.pkgkey
+    // provide2pkgnames replaced by map_provide2pkgnames()
+    // essential_pkgnames replaced by get_essential_pkgnames()
 
     // cache need to installing packages info
-    pub pkghash2pkg: HashMap<String, Package>,
+    pub pkgkey2package: HashMap<String, Package>,
     pub appbin_source: HashSet<String>,
 
     // loaded from env installed-packages.json

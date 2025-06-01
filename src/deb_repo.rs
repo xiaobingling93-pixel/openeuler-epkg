@@ -74,6 +74,12 @@ lazy_static! {
     };
 }
 
+fn parent_parent_parent(path: &str) -> Option<String> {
+    path.rsplitn(4, '/')  // Split from the right, max 4 parts (last 3 + rest)
+        .last()           // Take the remaining part (before the last 3)
+        .map(|s| s.to_string())
+}
+
 pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
     let mut acquire_by_hash = false;
@@ -192,8 +198,13 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     let need_download = !download_path.exists();
                     let need_convert = !output_path.exists();
 
+                    let mut package_baseurl = repo.index_url.clone();
+
                     // Construct the download URL
                     let baseurl = if repo.index_url.ends_with("/Release") {
+                        if let Some(parent_url) = parent_parent_parent(&repo.index_url) {
+                            package_baseurl = parent_url;
+                        }
                         repo.index_url.trim_end_matches("/Release")
                     } else if repo.index_url.ends_with('/') {
                         repo.index_url.trim_end_matches('/')
@@ -223,6 +234,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         need_convert,
                         arch,
                         url,
+                        package_baseurl: package_baseurl,
                         hash_type: current_hash_type.clone(),
                         hash,
                         size,

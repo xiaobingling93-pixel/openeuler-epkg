@@ -12,7 +12,7 @@ use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
 use crate::models::*;
-use crate::parse_requires::*;
+
 use crate::dirs;
 use crate::download::download_urls;
 use crate::download::DownloadTask;
@@ -41,6 +41,7 @@ pub struct RepoReleaseItem {
     pub need_convert: bool,
     pub arch: String,
     pub url: String,
+    pub package_baseurl: String,
     pub hash_type: String,
     pub hash: String,
     pub size: u64,
@@ -448,12 +449,16 @@ fn create_load_repoindex(
     repo_dir: &PathBuf,
     release_items: Vec<RepoReleaseItem>,
 ) -> Result<()> {
-    let repo_index: RepoIndex =
+    let mut repo_index: RepoIndex =
         if no_revises {
             mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))?
         } else {
             collect_save_repoindex(&repo, repo_dir, &release_items)?
         };
+
+    if let Some(baseurl) = release_items.get(0).map(|item| item.package_baseurl.clone()) {
+        repo_index.package_baseurl = baseurl;
+    }
 
     mmio::populate_repoindex_data(&repo, repo_index)?;
 
@@ -507,11 +512,11 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
             filelist_info = Some(filelist);
         }
 
-        // Use file stem or index as the key
+        // Use file stem as key, fallback to shard_i
         let key = packages_metafile.file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or(&format!("shard_{}", i))
-            .to_string();
+            .map(|s| s.trim_start_matches('.').to_owned())
+            .unwrap_or_else(|| format!("shard_{}", i));
         repo_shards.insert(key, RepoShard {
             packages: packages_info,
             filelist: filelist_info,
@@ -523,7 +528,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
     }
 
     // Save the index for the repo
-    let repo_index = RepoIndex { repodata_name: repo.repodata_name.clone(), repo_shards };
+    let repo_index = RepoIndex { repodata_name: repo.repodata_name.clone(), package_baseurl: String::new(), repo_shards };
     let index_path = repo_dir.join("RepoIndex.json");
     fs::write(&index_path, serde_json::to_string_pretty(&repo_index)?)
         .with_context(|| format!("Failed to write repo index to: {}", index_path.display()))?;

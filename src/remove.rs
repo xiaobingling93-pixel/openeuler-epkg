@@ -95,15 +95,16 @@ impl PackageManager {
         let mut packages_to_keep: HashMap<String, InstalledPackageInfo> = self
             .installed_packages
             .iter()
-            .filter(|(pkgline, info)| {
-                if info.depend_depth == 0 && !input_package_info.contains_key(*pkgline) {
-                    log::debug!("Keeping independent package: {}", pkgline);
+            .filter(|(pkgkey, info)| {
+                if info.depend_depth == 0 && !input_package_info.contains_key(*pkgkey) {
+                    log::debug!("Keeping independent package: {}", pkgkey);
                     return true;
                 }
-                if let Some(spec) = self.pkghash2spec.get(&pkgline[0..32]) {
-                    let is_essential = self.essential_pkgnames.contains(spec.name.as_str());
+                // Now pkgkey is the actual key, so we can look it up directly
+                if let Some(package) = self.pkgkey2package.get(*pkgkey) {
+                    let is_essential = crate::mmio::is_essential_pkgname(&package.pkgname);
                     if is_essential {
-                        log::debug!("Keeping essential package: {} ({})", pkgline, spec.name);
+                        log::debug!("Keeping essential package: {} ({})", pkgkey, package.pkgname);
                     }
                     is_essential
                 } else {
@@ -145,15 +146,15 @@ impl PackageManager {
         let new_generation = self.create_new_generation()?;
         let env_root = self.get_default_env_root()?;
         let store_root = dirs().epkg_store.clone();
-        for pkgline in &installed_to_remove {
+        for pkgkey in &installed_to_remove {
             // remove link files
-            log::debug!("Removing files for package {} from {:?}", pkgline, store_root.join(pkgline).join("fs"));
-            self.unlink_package(&store_root.join(pkgline).join("fs"), &env_root)?;
+            log::debug!("Removing files for package {} from {:?}", pkgkey, store_root.join(pkgkey).join("fs"));
+            self.unlink_package(&store_root.join(pkgkey).join("fs"), &env_root)?;
         }
 
         // Step 7: Save installed packages
-        for package_name in &installed_to_remove {
-            self.installed_packages.remove(package_name);
+        for pkgkey in &installed_to_remove {
+            self.installed_packages.remove(pkgkey);
         }
         self.save_installed_packages(&new_generation)?;
         self.record_history("remove", vec![], installed_to_remove.clone())?;

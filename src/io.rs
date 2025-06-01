@@ -1,12 +1,12 @@
-use glob;
+
 use serde_json;
 use serde_yaml;
 use std::fs;
 use std::env;
-use std::path::Path;
+
 use std::path::PathBuf;
 use std::collections::HashMap;
-use color_eyre::eyre::{self, bail, Result, ContextCompat, WrapErr};
+use color_eyre::eyre::{self, bail, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::*;
 use log;
