@@ -47,26 +47,41 @@ impl ReceiverHasher {
 impl std::io::Read for ReceiverHasher {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.position >= self.current_chunk.len() {
+            log::debug!("ReceiverHasher: Current chunk consumed, waiting for next chunk");
             match self.receiver.recv() {
                 Ok(chunk) => {
+                    if chunk.is_empty() {
+                        log::warn!("ReceiverHasher: Received empty chunk, this might indicate a problem");
+                    } else {
+                        log::debug!("ReceiverHasher: Received chunk of size {}", chunk.len());
+                    }
                     self.hasher.update(&chunk);
                     self.current_chunk = chunk;
                     self.position = 0;
                 }
-                Err(_) => {
+                Err(e) => {
+                    log::debug!("ReceiverHasher: Channel closed: {}", e);
+
                     // Auto-validate hash if expected hash was provided
                     if let Some(ref expected) = self.expected_hash {
                         self.sha256sum = hex::encode(self.hasher.finalize_reset());
                         self.hash_validated = self.sha256sum == *expected;
+
                         if !self.hash_validated {
-                            log::error!("Hash verification failed - calculated: {}, expected: {}",
-                                       self.sha256sum, expected);
+                            // This is critical - if hash verification fails, it could be because
+                            // we didn't receive all the data or the data was corrupted
+                            let err_msg = format!("Hash verification failed: calculated {}, expected {}",
+                                self.sha256sum, expected);
+                            log::error!("{}", err_msg);
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
-                                format!("Hash verification failed: calculated {}, expected {}",
-                                       self.sha256sum, expected)
+                                err_msg
                             ));
+                        } else {
+                            log::debug!("ReceiverHasher: Hash verification succeeded: {}", self.sha256sum);
                         }
+                    } else {
+                        log::warn!("ReceiverHasher: No expected hash provided for verification");
                     }
 
                     return Ok(0); // End of stream
@@ -74,10 +89,27 @@ impl std::io::Read for ReceiverHasher {
             }
         }
 
+        // Safety check for empty chunks
+        if self.current_chunk.is_empty() {
+            log::warn!("ReceiverHasher: Attempting to read from empty chunk");
+            return Ok(0); // Return EOF for empty chunks
+        }
+
         let remaining = self.current_chunk.len() - self.position;
         let to_copy = std::cmp::min(remaining, buf.len());
+
+        if to_copy == 0 {
+            log::warn!("ReceiverHasher: Zero bytes to copy, this might indicate a problem");
+            return Ok(0);
+        }
+
         buf[..to_copy].copy_from_slice(&self.current_chunk[self.position..self.position + to_copy]);
         self.position += to_copy;
+
+        if to_copy > 0 && to_copy % 1024 == 0 {
+            log::trace!("ReceiverHasher: Copied {} bytes", to_copy);
+        }
+
         Ok(to_copy)
     }
 }
@@ -204,20 +236,33 @@ impl PackagesStreamline {
     pub fn handle_chunk(&mut self, result: std::io::Result<usize>, unpack_buf: &[u8]) -> Result<bool> {
         match result {
             Ok(0) => {
-                log::debug!("Reached EOF after processing {} bytes", self.output_offset);
+                log::debug!("Reached EOF after processing {} bytes for {}",
+                          self.output_offset, self.output_path.display());
+
+                // Process any remaining partial line
+                log::debug!("Processing final partial line of length {}", self.partial_line.len());
                 let line = self.partial_line.clone();
                 let process_line = self.process_line;
-                process_line(&line, self)?;
+                process_line(&line, self)
+                    .map_err(|e| eyre::eyre!("Failed to process final line for {}: {}",
+                            self.output_path.display(), e))?;
+
                 // Ensure we properly close the last package
                 if !self.current_pkgname.is_empty() {
+                    log::debug!("Closing final package: {}", self.current_pkgname);
                     self.on_new_paragraph();
                 }
-                self.on_output()?;
+
+                self.on_output()
+                    .map_err(|e| eyre::eyre!("Failed to write final output for {}: {}",
+                                          self.output_path.display(), e))?;
+
                 Ok(false) // Signal to stop processing
             }
             Ok(n) => {
                 let content = &unpack_buf[..n];
                 let mut pos = 0;
+                let mut lines_processed = 0;
 
                 while pos < content.len() {
                     // Find the next newline
@@ -236,22 +281,36 @@ impl PackagesStreamline {
 
                         // Process the complete line
                         let process_line = self.process_line;
-                        process_line(&line, self)?;
+                        process_line(&line, self)
+                            .map_err(|e| eyre::eyre!("Failed to process line for {}: {}",
+                                                  self.output_path.display(), e))?;
+
                         pos = newline_pos + 1;
+                        lines_processed += 1;
                     } else {
                         // No more newlines, save the rest as partial
-                        self.partial_line.push_str(&String::from_utf8_lossy(&content[pos..]));
+                        let partial = String::from_utf8_lossy(&content[pos..]);
+                        log::trace!("Saving partial line of length {}", partial.len());
+                        self.partial_line.push_str(&partial);
                         break;
                     }
                 }
 
+                if lines_processed > 0 {
+                    log::trace!("Processed {} lines in chunk for {}",
+                              lines_processed, self.output_path.display());
+                }
+
                 // Write accumulated output to file
-                self.on_output()?;
+                self.on_output()
+                    .map_err(|e| eyre::eyre!("Failed to write output for {}: {}",
+                                          self.output_path.display(), e))?;
+
                 Ok(true) // Continue processing
             }
             Err(e) => {
-                log::error!("Decompression error: {}", e);
-                Err(eyre::eyre!("Failed to decompress file: {}", e))
+                log::error!("Decompression error for {}: {}", self.output_path.display(), e);
+                Err(eyre::eyre!("Failed to decompress file {}: {}", self.output_path.display(), e))
             }
         }
     }

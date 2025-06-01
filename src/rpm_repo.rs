@@ -164,9 +164,10 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
-    log::debug!("Starting to process packages content for {}", revise.location);
+    log::debug!("Starting to process packages content for {} (hash: {})", revise.location, revise.hash);
 
-    let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)?;
+    let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)
+        .map_err(|e| eyre::eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
 
     // Always use automatic hash validation by passing the expected hash
     let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
@@ -175,58 +176,151 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     let mut unpack_buf = vec![0u8; 65536];
 
     if revise.location.ends_with(".zst") {
+        log::debug!("Using zstd decoder for {} (expected hash: {})", revise.location, revise.hash);
+
         // Use zstd decoder for .zst files
-        let mut zst_decoder = zstd::stream::read::Decoder::new(reader)?;
+        let zst_decoder_result = zstd::stream::read::Decoder::new(reader);
+
+        // Handle decoder initialization error explicitly
+        let mut zst_decoder = match zst_decoder_result {
+            Ok(decoder) => {
+                log::debug!("Successfully created zstd decoder for {}", revise.location);
+                decoder
+            },
+            Err(e) => {
+                let err_msg = format!("Failed to create zstd decoder for {}: {}", revise.location, e);
+                log::error!("{}", err_msg);
+                return Err(eyre::eyre!(err_msg));
+            }
+        };
 
         // Process the XML stream directly
+        let mut chunk_count = 0;
+        let mut total_bytes = 0;
+
         loop {
+            // Clear buffer before each read to avoid potential data corruption
+            unpack_buf.fill(0);
+
             let read_result = zst_decoder.read(&mut unpack_buf);
             match read_result {
-                Ok(0) => break, // EOF
+                Ok(0) => {
+                    log::debug!("Reached EOF after processing {} chunks ({} bytes) for {}",
+                              chunk_count, total_bytes, revise.location);
+                    break; // EOF
+                }
                 Ok(n) => {
-                    process_xml_chunk(&unpack_buf[..n], &mut derived_files)?;
+                    chunk_count += 1;
+                    total_bytes += n;
+
+                    if n == 0 {
+                        log::warn!("Read 0 bytes in chunk {} for {}, this might indicate a problem",
+                                 chunk_count, revise.location);
+                        continue;
+                    }
+
+                    if chunk_count == 1 {
+                        // Log first few bytes of first chunk to help with debugging
+                        let preview_size = std::cmp::min(n, 32);
+                        let preview = hex::encode(&unpack_buf[..preview_size]);
+                        log::debug!("First {} bytes of first chunk: {}", preview_size, preview);
+                    }
+
+                    if chunk_count % 100 == 0 {
+                        log::debug!("Processed {} chunks ({} bytes) for {}",
+                                  chunk_count, total_bytes, revise.location);
+                    }
+
+                    // Try to process the XML chunk and provide detailed error context if it fails
+                    match process_xml_chunk(&unpack_buf[..n], &mut derived_files) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            let err_msg = format!("Failed to process XML chunk {} ({} bytes) for {}: {}",
+                                              chunk_count, n, revise.location, e);
+                            log::error!("{}", err_msg);
+
+                            // If this is the first chunk, log more details to help diagnose
+                            if chunk_count == 1 {
+                                let preview = String::from_utf8_lossy(&unpack_buf[..std::cmp::min(n, 200)]);
+                                log::error!("First chunk content preview: {}", preview);
+                            }
+
+                            return Err(eyre::eyre!(err_msg));
+                        }
+                    };
                 }
                 Err(e) => {
-                    log::error!("Decompression error: {}", e);
-                    return Err(eyre::eyre!("Failed to decompress zst file: {}", e));
+                    let err_msg = format!("Decompression error for {} at chunk {}: {}",
+                                      revise.location, chunk_count, e);
+                    log::error!("{}", err_msg);
+                    return Err(eyre::eyre!(err_msg));
                 }
             }
         }
 
         derived_files.on_finish(revise)
+            .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
     } else {
+        log::debug!("Using gzip decoder for {}", revise.location);
         // Default to gzip decoder for .gz files or other formats
         let mut xml_decoder = GzDecoder::new(reader);
 
         // Process the XML stream directly without using handle_chunk (since it's for line-based processing)
+        let mut chunk_count = 0;
         loop {
             let read_result = xml_decoder.read(&mut unpack_buf);
             match read_result {
-                Ok(0) => break, // EOF
+                Ok(0) => {
+                    log::debug!("Reached EOF after processing {} chunks for {}", chunk_count, revise.location);
+                    break; // EOF
+                }
                 Ok(n) => {
-                    process_xml_chunk(&unpack_buf[..n], &mut derived_files)?;
+                    chunk_count += 1;
+                    if chunk_count % 100 == 0 {
+                        log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
+                    }
+                    process_xml_chunk(&unpack_buf[..n], &mut derived_files)
+                        .map_err(|e| eyre::eyre!("Failed to process XML chunk {} for {}: {}", chunk_count, revise.location, e))?;
                 }
                 Err(e) => {
-                    log::error!("Decompression error: {}", e);
-                    return Err(eyre::eyre!("Failed to decompress file: {}", e));
+                    log::error!("Decompression error for {}: {}", revise.location, e);
+                    return Err(eyre::eyre!("Failed to decompress file {}: {}", revise.location, e));
                 }
             }
         }
 
         derived_files.on_finish(revise)
+            .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
     }
 }
 
 // Helper function to process XML chunks for RPM packages
 fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::PackagesStreamline) -> Result<()> {
+    if chunk.is_empty() {
+        log::warn!("Received empty XML chunk to process");
+        return Ok(());
+    }
+
+    // Check if the chunk looks like XML (starts with <?xml or <)
+    let is_xml_like = chunk.starts_with(b"<?xml") || chunk.starts_with(b"<");
+    if !is_xml_like {
+        let preview = String::from_utf8_lossy(&chunk[..std::cmp::min(chunk.len(), 50)]);
+        log::warn!("Chunk doesn't appear to be XML. First bytes: {}", preview);
+        // Continue anyway to get more specific errors
+    }
+
     let mut xml_reader = Reader::from_reader(chunk);
+    // Note: trim_text is not available in this version of quick_xml
+
     let mut buf = Vec::new();
     let mut package_info = HashMap::new();
     let mut in_package = false;
     let mut current_tag = String::new();
+    let mut packages_processed = 0;
 
     loop {
-        match xml_reader.read_event_into(&mut buf) {
+        let event_result = xml_reader.read_event_into(&mut buf);
+        match event_result {
             Ok(Event::Start(ref e)) => {
                 match e.name().as_ref() {
                     b"package" => {
@@ -242,22 +336,42 @@ fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::Packages
             }
             Ok(Event::Text(e)) => {
                 if in_package {
-                    let text = e.unescape().unwrap_or_default().to_string();
-                    package_info.insert(current_tag.clone(), text);
+                    match e.unescape() {
+                        Ok(text) => {
+                            let text_str = text.to_string();
+                            if !text_str.trim().is_empty() {
+                                package_info.insert(current_tag.clone(), text_str);
+                            }
+                        },
+                        Err(err) => {
+                            log::warn!("Failed to unescape XML text for tag {}: {}", current_tag, err);
+                        }
+                    }
                 }
             }
             Ok(Event::Empty(ref e)) => {
                 if in_package {
                     for attr in e.attributes() {
-                        if let Ok(attr) = attr {
-                            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                            let value = String::from_utf8_lossy(&attr.value).to_string();
-                            match key.as_str() {
-                                "ver" => package_info.insert("version".to_string(), value),
-                                "rel" => package_info.insert("release".to_string(), value),
-                                "href" => package_info.insert("location".to_string(), value),
-                                _ => None,
-                            };
+                        match attr {
+                            Ok(attr) => {
+                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                match String::from_utf8(attr.value.to_vec()) {
+                                    Ok(value) => {
+                                        match key.as_str() {
+                                            "ver" => package_info.insert("version".to_string(), value),
+                                            "rel" => package_info.insert("release".to_string(), value),
+                                            "href" => package_info.insert("location".to_string(), value),
+                                            _ => None,
+                                        };
+                                    },
+                                    Err(e) => {
+                                        log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                log::warn!("Failed to process XML attribute: {}", e);
+                            }
                         }
                     }
                 }
@@ -265,16 +379,43 @@ fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::Packages
             Ok(Event::End(ref e)) => {
                 if e.name().as_ref() == b"package" {
                     // Process the complete package
-                    process_package_info(&package_info, derived_files)?;
+                    match process_package_info(&package_info, derived_files) {
+                        Ok(_) => {
+                            packages_processed += 1;
+                            if packages_processed % 1000 == 0 {
+                                log::debug!("Processed {} packages", packages_processed);
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("Failed to process package info: {}", e);
+                            return Err(eyre!("Failed to process package info: {}", e));
+                        }
+                    };
                     in_package = false;
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(eyre!("Error parsing XML at position {}: {:?}", xml_reader.buffer_position(), e)),
+            Ok(Event::Eof) => {
+                log::debug!("Reached end of XML chunk, processed {} packages", packages_processed);
+                break;
+            },
+            Err(e) => {
+                let position = xml_reader.buffer_position() as usize;
+                let context = if position < chunk.len() {
+                    let start = position.saturating_sub(20);
+                    let end = std::cmp::min(position + 20, chunk.len());
+                    format!("Context: {}", String::from_utf8_lossy(&chunk[start..end]))
+                } else {
+                    "Position beyond chunk length".to_string()
+                };
+
+                log::error!("Error parsing XML at position {}: {:?}. {}", position, e, context);
+                return Err(eyre!("Error parsing XML at position {}: {:?}", position, e));
+            },
             _ => {}
         }
         buf.clear();
     }
+
     Ok(())
 }
 

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::io::Read;
 use color_eyre::eyre::Result;
+use color_eyre::eyre;
 
 use crate::models::*;
 use crate::dirs;
@@ -263,25 +264,42 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
-    log::debug!("Starting to process packages content for {}", revise.location);
+    log::debug!("Starting to process packages content for {} (hash: {})", revise.location, revise.hash);
 
-    let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)?;
+    let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)
+        .map_err(|e| eyre::eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
 
     // Always use automatic hash validation by passing the expected hash
     let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
+
+    log::debug!("Using XZ decoder for {}", revise.location);
     let mut decoder = xz2::read::XzDecoder::new(reader);
     let mut unpack_buf = vec![0u8; 65536];
+    let mut chunk_count = 0;
 
     // Collect data and calculate hash incrementally
     loop {
         let read_result = decoder.read(&mut unpack_buf);
-        match derived_files.handle_chunk(read_result, &unpack_buf)? {
+        chunk_count += 1;
+
+        if chunk_count % 100 == 0 {
+            log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
+        }
+
+        match derived_files.handle_chunk(read_result, &unpack_buf)
+            .map_err(|e| eyre::eyre!("Failed to handle chunk {} for {}: {}", chunk_count, revise.location, e))?
+        {
             true => continue,
-            false => break,
+            false => {
+                log::debug!("Finished processing after {} chunks for {}", chunk_count, revise.location);
+                break;
+            }
         }
     }
 
+    log::debug!("Finalizing processing for {}", revise.location);
     derived_files.on_finish(revise)
+        .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
 }
 
 // Helper function to process a single line
