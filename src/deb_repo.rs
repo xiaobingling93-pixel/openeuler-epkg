@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::io::Read;
 use color_eyre::eyre::Result;
-use sha2::Digest;
+
 use crate::models::*;
 use crate::dirs;
 use crate::repo::*;

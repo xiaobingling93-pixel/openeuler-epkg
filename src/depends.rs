@@ -22,24 +22,12 @@ impl InstalledPackageInfo {
 
 impl PackageManager {
     pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        let mut tmp_format: Option<String> = None;
         for pkgline in packages.keys() {
             let pkg_json = self.load_package_info(pkgline)?;
             if pkg_json.source.is_some() {
                 self.appbin_source.insert(pkg_json.source.as_ref().unwrap().clone());
             }
-            if tmp_format.is_none() {
-                tmp_format = match pkg_json.origin_url {
-                    Some(ref url) => {
-                        get_package_format(url)
-                    },
-                    None => {
-                        Some("rpm".to_string())
-                    }
-                };
-            }
         }
-        self.repos_data[0].format = tmp_format;
         Ok(())
     }
 
@@ -120,15 +108,16 @@ impl PackageManager {
     ) -> Result<()> {
         let mut depend_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut depth = 1;
-        let repo_format: Option<String> = self.repos_data[0].format.clone();
+        let channel_config = self.get_channel_config(config().common.env.clone())?;
+        let repo_format = channel_config.format;
 
-        self.collect_depends(&packages, &mut depend_packages, depth, &repo_format)?;
+        self.collect_depends(&packages, &mut depend_packages, depth, repo_format)?;
 
         while !depend_packages.is_empty() {
             packages.extend(depend_packages);
             depend_packages = HashMap::new();
             depth += 1;
-            self.collect_depends(&packages, &mut depend_packages, depth, &repo_format)?;
+            self.collect_depends(&packages, &mut depend_packages, depth, repo_format)?;
         }
 
         Ok(())
@@ -194,19 +183,11 @@ impl PackageManager {
         packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
         depth: u8,
-        repo_format: &Option<String>,
+        repo_format: PackageFormat,
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
-        let pkg_format = match repo_format {
-            Some(format) => format,
-            None => {
-                // [TODO] 稳定后这里应该return Err
-                return Ok(());
-            }
-        };
-
         for req in requirements {
-            let and_deps = match parse_requires(&pkg_format, req) {
+            let and_deps = match parse_requires(repo_format, req) {
                 std::result::Result::Ok(deps) => deps,
                 Err(e) => {
                     missing_deps.push(format!("Failed to parse requirement '{}': {}", req, e));
@@ -217,7 +198,7 @@ impl PackageManager {
                 for pkg_depend in or_depends {
                     self.process_requirement_impl(
                         &pkg_depend.capability,
-                        pkg_format.as_str(),
+                        repo_format,
                         packages,
                         depend_packages,
                         depth,
@@ -232,7 +213,7 @@ impl PackageManager {
     fn process_requirement_impl(
         &mut self,
         capability: &str,
-        pkg_format: &str,
+        pkg_format: PackageFormat,
         packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
         depth: u8,
@@ -245,13 +226,13 @@ impl PackageManager {
                     Some(pkg_name) => pkg_name,
                     None => {
                         if !capability.starts_with("rpmlib(") {
-                            missing_deps.push(format!("{}-{}", capability, pkg_format));
+                            missing_deps.push(format!("{}-{:?}", capability, pkg_format));
                         }
                         return Ok(());
                     }
                 };
                 let Some(hashes) = self.pkgname2lines.get(pkg_mapping_name[0].as_str()) else {
-                    missing_deps.push(format!("{}-{}", capability, pkg_format));
+                    missing_deps.push(format!("{}-{:?}", capability, pkg_format));
                     return Ok(());
                 };
                 hashes
@@ -290,7 +271,7 @@ impl PackageManager {
         packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
         depth: u8,
-        repo_format: &Option<String>,
+        repo_format: PackageFormat,
     ) -> Result<()> {
         let mut missing_deps = Vec::new();
         for pkgline in packages.keys() {

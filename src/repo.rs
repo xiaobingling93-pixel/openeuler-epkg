@@ -99,11 +99,11 @@ impl Repodata {
                         get_package_format(url)
                     },
                     None => {
-                        Some("rpm".to_string())
+                        Some(PackageFormat::Rpm)
                     }
                 };
                 for provide in &pkg_json.provides {
-                    let and_deps = match parse_requires(&format.clone().unwrap().as_str(), provide) {
+                    let and_deps = match parse_requires(format.unwrap_or(PackageFormat::Rpm), provide) {
                         std::result::Result::Ok(deps) => deps,
                         Err(e) => {
                             println!("Failed to parse requirement '{}': {}", provide, e);

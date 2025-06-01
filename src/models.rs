@@ -14,7 +14,7 @@ pub const DEFAULT_CHANNEL: &str = &"openeuler:24.03-lts";
 pub const DEFAULT_VERSION: &str = &"master"; // epkg init will download this version from gitee
 
 // Package format types
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub enum PackageFormat {
     #[serde(rename = "epkg")]
     Epkg,
@@ -28,6 +28,8 @@ pub enum PackageFormat {
     Pacman,
     #[serde(rename = "conda")]
     Conda,
+    #[serde(rename = "python")]
+    Python,
 }
 
 // Mirror configuration

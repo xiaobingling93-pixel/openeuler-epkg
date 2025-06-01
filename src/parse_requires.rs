@@ -3,6 +3,7 @@ use regex::Regex;
 use std::fmt;
 use std::path::Path;
 use std::error::Error;
+use crate::models::PackageFormat;
 
 /*
  * Design and Rules for Parsing Package Requirements
@@ -195,15 +196,18 @@ impl fmt::Display for ParseError {
 
 impl Error for ParseError {}
 
+
+
 /// Parses the `requires` field into a normalized `AndDepends` structure.
-pub fn parse_requires(package_type: &str, requires: &str) -> Result<AndDepends, ParseError> {
-    match package_type {
-        "rpm" => parse_rpm_requires(requires),
-        "deb" => parse_deb_requires(requires),
-        "archlinux" => parse_archlinux_requires(requires),
-        "python" => parse_python_requires(requires),
-        "conda" => parse_conda_requires(requires),
-        _ => Err(ParseError::UnsupportedPackageType),
+pub fn parse_requires(package_format: PackageFormat, requires: &str) -> Result<AndDepends, ParseError> {
+    match package_format {
+        PackageFormat::Rpm => parse_rpm_requires(requires),
+        PackageFormat::Deb => parse_deb_requires(requires),
+        PackageFormat::Pacman => parse_archlinux_requires(requires),
+        PackageFormat::Python => parse_python_requires(requires),
+        PackageFormat::Conda => parse_conda_requires(requires),
+        PackageFormat::Apk => Err(ParseError::UnsupportedPackageType), // Not implemented yet
+        PackageFormat::Epkg => Err(ParseError::UnsupportedPackageType), // Default case
     }
 }
 
@@ -692,10 +696,19 @@ pub fn parse_conda_requires(requires: &str) -> Result<AndDepends, ParseError> {
     Ok(and_depends)
 }
 
-pub fn get_package_format(origin_url: &str) -> Option<String> {
+pub fn get_package_format(origin_url: &str) -> Option<PackageFormat> {
     let path = Path::new(origin_url);
     let ext = path.extension().and_then(|s| s.to_str())?;
-    Some(ext.to_string())
+    
+    match ext {
+        "rpm" => Some(PackageFormat::Rpm),
+        "deb" => Some(PackageFormat::Deb),
+        "apk" => Some(PackageFormat::Apk),
+        "pkg.tar.zst" | "pkg.tar.xz" => Some(PackageFormat::Pacman),
+        "conda" => Some(PackageFormat::Conda),
+        "whl" | "tar.gz" => Some(PackageFormat::Python),
+        _ => Some(PackageFormat::Epkg),
+    }
 }
 
 #[cfg(test)]
@@ -732,25 +745,25 @@ mod tests {
     fn test_rpm() {
         // Simple package
         assert_eq!(
-            parse_requires("rpm", "pixman").unwrap(),
+            parse_requires(PackageFormat::Rpm, "pixman").unwrap(),
             vec![vec![pkg("pixman", &[])]]
         );
 
         // Version constraint
         assert_eq!(
-            parse_requires("rpm", "pixman >= 0.30.0").unwrap(),
+            parse_requires(PackageFormat::Rpm, "pixman >= 0.30.0").unwrap(),
             vec![vec![pkg("pixman", &[(">=", "0.30.0")])]]
         );
 
         // File dependency
         assert_eq!(
-            parse_requires("rpm", "/etc/pam.d/system-auth").unwrap(),
+            parse_requires(PackageFormat::Rpm, "/etc/pam.d/system-auth").unwrap(),
             vec![vec![pkg("/etc/pam.d/system-auth", &[])]]
         );
 
         // Logical OR
         assert_eq!(
-            parse_requires("rpm", "(mysql or mariadb)").unwrap(),
+            parse_requires(PackageFormat::Rpm, "(mysql or mariadb)").unwrap(),
             vec![vec![
                 pkg("mysql", &[]),
                 pkg("mariadb", &[])
@@ -759,13 +772,13 @@ mod tests {
 
         // Conditional (if)
         assert_eq!(
-            parse_requires("rpm", "feh if Xserver").unwrap(),
+            parse_requires(PackageFormat::Rpm, "feh if Xserver").unwrap(),
             vec![vec![pkg("feh", &[("if", "Xserver")])]]
         );
 
         // Nested conditionals
         assert_eq!(
-            parse_requires("rpm", "((feh and xrandr) if Xserver)").unwrap(),
+            parse_requires(PackageFormat::Rpm, "((feh and xrandr) if Xserver)").unwrap(),
             vec![
                 vec![pkg("feh", &[("if", "Xserver")])],
                 vec![pkg("xrandr", &[("if", "Xserver")])]
@@ -774,12 +787,12 @@ mod tests {
 
         // Multiple constraints
         assert_eq!(
-            parse_requires("rpm", "perl(Net::Server) >= 2.0 < 3.0").unwrap(),
+            parse_requires(PackageFormat::Rpm, "perl(Net::Server) >= 2.0 < 3.0").unwrap(),
             vec![vec![pkg("perl(Net::Server)", &[(">=", "2.0"), ("<", "3.0")])]]
         );
 
         let input = "(containerd or cri-o or docker or docker-ce or moby-engine)";
-        let result = parse_requires("rpm", input).unwrap();
+        let result = parse_requires(PackageFormat::Rpm, input).unwrap();
 
         // There should be only 1 AND clause
         assert_eq!(result.len(), 1);
@@ -798,7 +811,7 @@ mod tests {
     #[test]
     fn test_if_or_conditions() {
         let input = "(A if (B or C))";
-        let result = parse_requires("rpm", input).unwrap();
+        let result = parse_requires(PackageFormat::Rpm, input).unwrap();
 
         // Expected structure:
         // [
@@ -814,7 +827,7 @@ mod tests {
     #[test]
     fn test_rpm_if_condition() {
         let input = "((A and B and C) if (X or Y))";
-        let result = parse_requires("rpm", input).unwrap();
+        let result = parse_requires(PackageFormat::Rpm, input).unwrap();
 
         // Expected structure:
         // [
@@ -849,13 +862,13 @@ mod tests {
     fn test_deb() {
         // Simple package with version
         assert_eq!(
-            parse_requires("deb", "libc6 (>= 2.34)").unwrap(),
+            parse_requires(PackageFormat::Deb, "libc6 (>= 2.34)").unwrap(),
             vec![vec![pkg("libc6", &[(">=", "2.34")])]]
         );
 
         // Alternative dependencies
         assert_eq!(
-            parse_requires("deb", "libgcc-s1 (>= 3.0) | gcc").unwrap(),
+            parse_requires(PackageFormat::Deb, "libgcc-s1 (>= 3.0) | gcc").unwrap(),
             vec![vec![
                 pkg("libgcc-s1", &[(">=", "3.0")]),
                 pkg("gcc", &[]),
@@ -864,7 +877,7 @@ mod tests {
 
         // Multiple alternatives
         assert_eq!(
-            parse_requires("deb", "emacs | emacs-gtk | emacs-lucid").unwrap(),
+            parse_requires(PackageFormat::Deb, "emacs | emacs-gtk | emacs-lucid").unwrap(),
             vec![vec![
                 pkg("emacs", &[]),
                 pkg("emacs-gtk", &[]),
@@ -874,7 +887,7 @@ mod tests {
 
         // Complex example from original question
         let input = "libao4 (>= 1.1.0), libc6 (>= 2.34), debconf (>= 0.5) | debconf-2.0";
-        let result = parse_requires("deb", input).unwrap();
+        let result = parse_requires(PackageFormat::Deb, input).unwrap();
         assert_eq!(result.len(), 3);
         assert!(result.contains(&vec![pkg("libao4", &[(">=", "1.1.0")])]));
         assert!(result.contains(&vec![pkg("libc6", &[(">=", "2.34")])]));
@@ -889,19 +902,19 @@ mod tests {
     fn test_archlinux() {
         // Simple package
         assert_eq!(
-            parse_requires("archlinux", "bash: GNU Bourne Again SHell").unwrap(),
+            parse_requires(PackageFormat::Pacman, "bash: GNU Bourne Again SHell").unwrap(),
             vec![vec![pkg("bash", &[])]]
         );
 
         // Version constraint
         assert_eq!(
-            parse_requires("archlinux", "zsh>=4.3.9").unwrap(),
+            parse_requires(PackageFormat::Pacman, "zsh>=4.3.9").unwrap(),
             vec![vec![pkg("zsh", &[(">=", "4.3.9")])]]
         );
 
         // Multiple packages
         assert_eq!(
-            parse_requires("archlinux", "git python").unwrap(),
+            parse_requires(PackageFormat::Pacman, "git python").unwrap(),
             vec![
                 vec![pkg("git", &[])],
                 vec![pkg("python", &[])]
@@ -910,7 +923,7 @@ mod tests {
 
         // Complex example from original question
         let input = "python python-gobject ttf-font gtk3 python-xdg";
-        let result = parse_requires("archlinux", input).unwrap();
+        let result = parse_requires(PackageFormat::Pacman, input).unwrap();
         assert_eq!(result.len(), 5);
         assert!(result.contains(&vec![pkg("python", &[])]));
         assert!(result.contains(&vec![pkg("python-gobject", &[])]));
@@ -924,31 +937,31 @@ mod tests {
     fn test_python() {
         // Simple requirement
         assert_eq!(
-            parse_requires("python", "networkx>=2.3.0").unwrap(),
+            parse_requires(PackageFormat::Python, "networkx>=2.3.0").unwrap(),
             vec![vec![pkg("networkx", &[(">=", "2.3.0")])]]
         );
 
         // Multiple constraints
         assert_eq!(
-            parse_requires("python", "pbr!=2.1.0,>=2.0.0").unwrap(),
+            parse_requires(PackageFormat::Python, "pbr!=2.1.0,>=2.0.0").unwrap(),
             vec![vec![pkg("pbr", &[("!=", "2.1.0"), (">=", "2.0.0")])]]
         );
 
         // Comment line
         assert_eq!(
-            parse_requires("python", "pkg # comment").unwrap(),
+            parse_requires(PackageFormat::Python, "pkg # comment").unwrap(),
             vec![vec![pkg("pkg", &[])]]
         );
 
         // File path
         assert_eq!(
-            parse_requires("python", "./granulate-utils/").unwrap(),
+            parse_requires(PackageFormat::Python, "./granulate-utils/").unwrap(),
             vec![vec![pkg("./granulate-utils/", &[])]]
         );
 
         // compatibility operator (~=)
         assert_eq!(
-            parse_requires("python", "package~=1.0").unwrap(),
+            parse_requires(PackageFormat::Python, "package~=1.0").unwrap(),
             vec![vec![pkg("package", &[("~=", "1.0")])]]
         );
     }
@@ -958,13 +971,13 @@ mod tests {
     fn test_conda() {
         // Simple package
         assert_eq!(
-            parse_requires("conda", "bwidget").unwrap(),
+            parse_requires(PackageFormat::Conda, "bwidget").unwrap(),
             vec![vec![pkg("bwidget", &[])]]
         );
 
         // Version constraint
         assert_eq!(
-            parse_requires("conda", "cairo >=1.14.12,<2.0a0").unwrap(),
+            parse_requires(PackageFormat::Conda, "cairo >=1.14.12,<2.0a0").unwrap(),
             vec![vec![pkg("cairo", &[(">=", "1.14.12"), ("<", "2.0a0")])]]
         );
 
@@ -993,19 +1006,19 @@ mod tests {
     fn test_errors() {
         // Unbalanced parentheses
         assert!(matches!(
-            parse_requires("rpm", "(feh and xrandr").unwrap_err(),
+            parse_requires(PackageFormat::Rpm, "(feh and xrandr").unwrap_err(),
             ParseError::UnbalancedParentheses
         ));
 
         // Unsupported package type
         assert!(matches!(
-            parse_requires("npm", "express").unwrap_err(),
+            parse_requires(PackageFormat::Epkg, "express").unwrap_err(),
             ParseError::UnsupportedPackageType
         ));
 
         // Empty input
         assert_eq!(
-            parse_requires("rpm", "").unwrap(),
+            parse_requires(PackageFormat::Rpm, "").unwrap(),
             Vec::<OrDepends>::new()
         );
     }
@@ -1015,7 +1028,7 @@ mod tests {
     fn test_edge_cases() {
         // Multiple spaces
         assert_eq!(
-            parse_requires("rpm", "  pkg   >=   2.0  ").unwrap(),
+            parse_requires(PackageFormat::Rpm, "  pkg   >=   2.0  ").unwrap(),
             vec![vec![pkg("pkg", &[(">=", "2.0")])]]
         );
 
@@ -1026,13 +1039,13 @@ mod tests {
     fn test_whitespace_variations() {
         // Multiple spaces between package and version
         assert_eq!(
-            parse_requires("rpm", "package  >=  1.0").unwrap(),
+            parse_requires(PackageFormat::Rpm, "package  >=  1.0").unwrap(),
             vec![vec![pkg("package", &[(">=", "1.0")])]]
         );
 
         // No spaces between package and version
         assert_eq!(
-            parse_requires("rpm", "package>=1.0").unwrap(),
+            parse_requires(PackageFormat::Rpm, "package>=1.0").unwrap(),
             vec![vec![pkg("package", &[(">=", "1.0")])]]
         );
     }
@@ -1042,19 +1055,19 @@ mod tests {
     fn test_package_naming_conventions() {
         // RPM with namespace
         assert_eq!(
-            parse_requires("rpm", "perl(Net::LibIDN)").unwrap(),
+            parse_requires(PackageFormat::Rpm, "perl(Net::LibIDN)").unwrap(),
             vec![vec![pkg("perl(Net::LibIDN)", &[])]]
         );
 
         // DEB with colon in name
         assert_eq!(
-            parse_requires("deb", "lib:package").unwrap(),
+            parse_requires(PackageFormat::Deb, "lib:package").unwrap(),
             vec![vec![pkg("lib:package", &[])]]
         );
 
         // Python with hyphen in name
         assert_eq!(
-            parse_requires("python", "package-name").unwrap(),
+            parse_requires(PackageFormat::Python, "package-name").unwrap(),
             vec![vec![pkg("package-name", &[])]]
         );
     }
@@ -1132,11 +1145,11 @@ mod tests {
     fn test_get_package_format() {
         let test_url = "https://mirrors.huaweicloud.com/ubuntu//pool/main/u/ubuntu-themes/ubuntu-mono_24.04-0ubuntu1_all.deb";
         match get_package_format(test_url) {
-            Some(format) => println!("包格式: {}", format),
+            Some(format) => println!("包格式: {:?}", format),
             None => println!("无法确定包格式"),
         }
-        assert_eq!(get_package_format(test_url), Some("deb".to_string()));
+        assert_eq!(get_package_format(test_url), Some(PackageFormat::Deb));
         let rpm_url = "https://repo.openeuler.org/openEuler-24.09/everything/aarch64/Packages/http_load-09Mar2016-1.oe2409.aarch64.rpm";
-        assert_eq!(get_package_format(rpm_url), Some("rpm".to_string()));
+        assert_eq!(get_package_format(rpm_url), Some(PackageFormat::Rpm));
     }
 }
