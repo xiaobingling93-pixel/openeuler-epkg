@@ -87,7 +87,7 @@ pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> 
         shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
     }
     {
-        let mut repodata_indice = repodata_indice();
+        let mut repodata_indice = repodata_indice_mut();
         repodata_indice.insert(repo.repodata_name.clone(), repo_index);
     }
     Ok(())

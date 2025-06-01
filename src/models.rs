@@ -316,11 +316,17 @@ pub struct RepoConfig {
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
 }
 
-static REPODATA_INDICE: LazyLock<std::sync::Mutex<HashMap<String, RepoIndex>>> =
-        LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
+        LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
-pub fn repodata_indice() -> std::sync::MutexGuard<'static, HashMap<String, RepoIndex>> {
-    REPODATA_INDICE.lock().expect("Failed to lock repodata index")
+// use at package install time
+pub fn repodata_indice() -> std::sync::RwLockReadGuard<'static, HashMap<String, RepoIndex>> {
+    REPODATA_INDICE.read().expect("Failed to read repodata index")
+}
+
+// use at repo update time
+pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, HashMap<String, RepoIndex>> {
+    REPODATA_INDICE.write().expect("Failed to write repodata index")
 }
 
 #[allow(dead_code)]
