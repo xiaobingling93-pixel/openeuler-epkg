@@ -60,31 +60,38 @@ pub struct PackageRange {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Package {
-    pub name: String,
+    pub pkgname: String,
     pub version: String,
-    pub release: String,
-    // pub epoch: Option<u32>, XXX fix x2epkg output type first, then use this
     #[serde(default)]
-    pub dist: Option<String>,
+    pub arch: String,
+
     #[serde(default)]
-    pub hash: Option<String>,
+    pub size: u32,
     #[serde(default)]
-    pub pkgid: Option<String>, // RPM repodata xml: has pkgid, but no hash
+    #[serde(rename = "installedSize")]
+    pub installed_size: u32,
     #[serde(default)]
-    pub arch: Option<String>,
+    #[serde(rename = "buildTime")]
+    pub build_time: Option<u32>,
+
     #[serde(default)]
     #[serde(rename = "sourcePkg")]
     pub source: Option<String>,
     #[serde(default)]
-    pub location: Option<String>,
+    pub location: String,
 
     #[serde(default)]
-    pub summary: Option<String>,
+    pub hash: Option<String>,
     #[serde(default)]
-    pub description: Option<String>,
+    pub sha256sum: Option<String>,
+    #[serde(default)]
+    pub sha1sum: Option<String>,
 
     #[serde(default)]
     pub depends: Vec<Dependency>,
+    #[serde(default)]
+    #[serde(rename = "requiresPre")]
+    pub requires_pre: Vec<String>,
     #[serde(default)]
     pub requires: Vec<String>,
     #[serde(default)]
@@ -94,19 +101,26 @@ pub struct Package {
     #[serde(default)]
     pub suggests: Vec<String>,
     #[serde(default)]
-    #[serde(rename = "originUrl")]
-    pub origin_url: Option<String>,
+    pub conflicts: Vec<String>,
+
     #[serde(default)]
-    #[serde(rename = "requiresPre")]
-    pub requires_pre: Vec<String>,
+    pub summary: String,
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub homepage: String,
+    #[serde(default)]
+    pub section: Option<String>,
     #[serde(default)]
     pub priority: Option<String>,
-    #[serde(skip)]
-    pub require_caps: Vec<String>,
-    #[serde(skip)]
-    pub recommend_caps: Vec<String>,
-    #[serde(skip)]
-    pub suggest_caps: Vec<String>,
+    #[serde(default)]
+    pub maintainer: String,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "originUrl")]
+    pub origin_url: Option<String>,
 }
 
 // $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/repodata/index.json

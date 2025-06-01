@@ -29,12 +29,12 @@ impl FileMapper {
 
     /// Get a specific range of the mapped data
     /// Panics if range is out of bounds
-    pub fn range(&self, range: PackageRange) -> &[u8] {
+    pub fn range(&self, range: &PackageRange) -> &[u8] {
         &self.mmap[range.begin..(range.begin + range.len)]
     }
 
     /// Safe range access with bounds checking
-    pub fn checked_range(&self, range: PackageRange) -> Option<&[u8]> {
+    pub fn checked_range(&self, range: &PackageRange) -> Option<&[u8]> {
         if range.begin + range.len <= self.mmap.len() {
             Some(&self.range(range))
         } else {
@@ -206,4 +206,153 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<
         }
     }
     Ok(pkgname2ranges)
+}
+
+pub fn deserialize_package(paragraph: &str) -> Result<Package> {
+    let mut package = Package {
+        pkgname: String::new(),
+        version: String::new(),
+        arch: String::new(),
+        size: 0,
+        installed_size: 0,
+        build_time: None,
+        source: None,
+        location: String::new(),
+        hash: None,
+        sha256sum: None,
+        sha1sum: None,
+        depends: Vec::new(),
+        requires_pre: Vec::new(),
+        requires: Vec::new(),
+        provides: Vec::new(),
+        recommends: Vec::new(),
+        suggests: Vec::new(),
+        conflicts: Vec::new(),
+        summary: String::new(),
+        description: None,
+        homepage: String::new(),
+        section: None,
+        priority: None,
+        maintainer: String::new(),
+        tag: None,
+        origin_url: None,
+    };
+
+    for line in paragraph.lines() {
+        if let Some((key, value)) = line.split_once(": ") {
+            let key = key.trim();
+            let value = value.trim();
+
+            match key {
+                "pkgname"           => package.pkgname      = value.to_string(),
+                "version"           => package.version      = value.to_string(),
+                "arch"              => package.arch         = value.to_string(),
+                "summary"           => package.summary      = value.to_string(),
+                "description"       => package.description  = Some(value.to_string()),
+                "location"          => package.location     = value.to_string(),
+                "homepage"          => package.homepage     = value.to_string(),
+                "maintainer"        => package.maintainer   = value.to_string(),
+                "section"           => package.section      = Some(value.to_string()),
+                "priority"          => package.priority     = Some(value.to_string()),
+                "size"              => if let Ok(size)      = value.parse() { package.size = size; },
+                "installedSize"     => if let Ok(size)      = value.parse() { package.installed_size = size; },
+                "buildTime"         => if let Ok(time)      = value.parse() { package.build_time = Some(time); },
+                "sha256"            => package.sha256sum    = Some(value.to_string()),
+                "sha1"              => package.sha1sum      = Some(value.to_string()),
+                "tag"               => package.tag          = Some(value.to_string()),
+                "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),
+                "requires"          => package.requires     = value.split(", ").map(|s| s.to_string()).collect(),
+                "provides"          => package.provides     = value.split(", ").map(|s| s.to_string()).collect(),
+                "recommends"        => package.recommends   = value.split(", ").map(|s| s.to_string()).collect(),
+                "suggests"          => package.suggests     = value.split(", ").map(|s| s.to_string()).collect(),
+                "conflicts"         => package.conflicts    = value.split(", ").map(|s| s.to_string()).collect(),
+                "source"            => package.source       = Some(value.to_string()),
+                "originUrl"         => package.origin_url   = Some(value.to_string()),
+                _                   => {
+                    // Unknown field, ignore or log
+                }
+            }
+        }
+    }
+
+    Ok(package)
+}
+
+pub fn lookup_in_packages(
+    pkgname: &str,
+    pkgname2ranges: &HashMap<String, Vec<PackageRange>>,
+    packages_mmap: &Option<FileMapper>
+) -> Result<Vec<Package>> {
+    let mut packages = Vec::new();
+
+    if let Some(ranges) = pkgname2ranges.get(pkgname) {
+        if let Some(mmap) = packages_mmap {
+            for range in ranges {
+                if let Some(data) = mmap.checked_range(&range) {
+                    if let Ok(paragraph) = std::str::from_utf8(data) {
+                        if let Ok(package) = deserialize_package(paragraph) {
+                            packages.push(package);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(packages)
+}
+
+pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
+    let mut packages = Vec::new();
+
+    let repodata_indice = repodata_indice();
+    for repo_index in repodata_indice.values() {
+        for shard in repo_index.repo_shards.values() {
+            if let Ok(mut shard_packages) = lookup_in_packages(pkgname, &shard.pkgname2ranges, &shard.packages_mmap) {
+                packages.append(&mut shard_packages);
+            }
+        }
+    }
+
+    Ok(packages)
+}
+
+pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
+    let mut pkgnames = Vec::new();
+
+    let repodata_indice = repodata_indice();
+    for repo_index in repodata_indice.values() {
+        for shard in repo_index.repo_shards.values() {
+            if let Some(shard_pkgnames) = shard.provide2pkgnames.get(capability) {
+                pkgnames.extend(shard_pkgnames.clone());
+            }
+        }
+    }
+
+    Ok(pkgnames)
+}
+
+pub fn get_essential_pkgnames() -> Result<HashSet<String>> {
+    let mut pkgnames = HashSet::new();
+
+    let repodata_indice = repodata_indice();
+    for repo_index in repodata_indice.values() {
+        for shard in repo_index.repo_shards.values() {
+            pkgnames.extend(shard.essential_pkgnames.clone());
+        }
+    }
+
+    Ok(pkgnames)
+}
+
+pub fn is_essential_pkgname(pkgname: &str) -> bool {
+    let repodata_indice = repodata_indice();
+    for repo_index in repodata_indice.values() {
+        for shard in repo_index.repo_shards.values() {
+            if shard.essential_pkgnames.contains(pkgname) {
+                return true;
+            }
+        }
+    }
+    false
 }

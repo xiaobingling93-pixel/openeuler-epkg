@@ -111,13 +111,13 @@ impl Repodata {
                         }
                     };
                     if let Some(pkgnames) = self.provide2pkgnames.get_mut(and_deps[0][0].capability.as_str()) {
-                        pkgnames.push(pkg_json.name.clone());
+                        pkgnames.push(pkg_json.pkgname.clone());
                     } else {
-                        self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.name.clone()]);
+                        self.provide2pkgnames.insert(and_deps[0][0].capability.clone(), vec![pkg_json.pkgname.clone()]);
                     }
                 }
                 if matches!(pkg_json.priority.as_deref(), Some("essential")) {
-                    self.essential_pkgnames.insert(pkg_json.name.clone());
+                    self.essential_pkgnames.insert(pkg_json.pkgname.clone());
                 }
             }
         }
