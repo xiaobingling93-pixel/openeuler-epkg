@@ -17,27 +17,27 @@ lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
 
-        m.insert("name", "pkgname");
-        m.insert("version", "version");
-        m.insert("arch", "arch");
-        m.insert("summary", "summary");
-        m.insert("description", "description");
-        m.insert("url", "homepage");
-        m.insert("license", "license");
-        m.insert("vendor", "vendor");
-        m.insert("group", "group");
-        m.insert("buildhost", "buildHost");
-        m.insert("sourcerpm", "source");
-        m.insert("packager", "maintainer");
-        m.insert("size", "size");
+        m.insert("name",           "pkgname");
+        m.insert("version",        "version");
+        m.insert("arch",           "arch");
+        m.insert("summary",        "summary");
+        m.insert("description",    "description");
+        m.insert("url",            "homepage");
+        m.insert("license",        "license");
+        m.insert("vendor",         "vendor");
+        m.insert("group",          "section");
+        m.insert("buildhost",      "buildHost");
+        m.insert("sourcerpm",      "source");
+        m.insert("packager",       "maintainer");
+        m.insert("size",           "size");
         m.insert("installed-size", "installedSize");
-        m.insert("location", "location");
-        m.insert("checksum", "sha256");
-        m.insert("time", "buildTime");
-        m.insert("requires", "requires");
-        m.insert("recommends", "recommends");
-        m.insert("provides", "provides");
-        m.insert("files", "files");
+        m.insert("location",       "location");
+        m.insert("checksum",       "sha256");
+        m.insert("time",           "buildTime");
+        m.insert("requires",       "requires");
+        m.insert("recommends",     "recommends");
+        m.insert("provides",       "provides");
+        m.insert("files",          "files");
 
         m
     };
@@ -485,7 +485,9 @@ impl<'a> StreamingXmlProcessor<'a> {
                                     self.derived_files.output.push_str(&format!("vendor: {}\n", text_str));
                                 }
                                 "rpm:group" => {
-                                    self.derived_files.output.push_str(&format!("group: {}\n", text_str));
+                                    if text_str != "Unspecified" {
+                                        self.derived_files.output.push_str(&format!("section: {}\n", text_str));
+                                    }
                                 }
                                 "rpm:buildhost" => {
                                     self.derived_files.output.push_str(&format!("buildHost: {}\n", text_str));
