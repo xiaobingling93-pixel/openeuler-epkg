@@ -287,7 +287,6 @@ struct StreamingXmlProcessor<'a> {
     derived_files: &'a mut packages_stream::PackagesStreamline,
 
     // Parser state
-    in_package: bool,
     current_tag: String,
     packages_processed: usize,
     in_dependency_section: String,
@@ -312,7 +311,6 @@ impl<'a> StreamingXmlProcessor<'a> {
         Self {
             xml_buffer: String::new(),
             derived_files,
-            in_package: false,
             current_tag: String::new(),
             packages_processed: 0,
             in_dependency_section: String::new(),
@@ -385,7 +383,6 @@ impl<'a> StreamingXmlProcessor<'a> {
         let mut buf = Vec::new();
 
         // Reset package-level state
-        self.in_package = false;
         self.current_tag.clear();
         self.in_dependency_section.clear();
 
@@ -435,7 +432,6 @@ impl<'a> StreamingXmlProcessor<'a> {
     fn handle_start_event(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
         match e.name().as_ref() {
             b"package" => {
-                self.in_package = true;
                 self.derived_files.on_new_paragraph();
             }
             b"rpm:requires"     => self.in_dependency_section = "requires".to_string(),
@@ -447,26 +443,20 @@ impl<'a> StreamingXmlProcessor<'a> {
             b"rpm:conflicts"    => self.in_dependency_section = "conflicts".to_string(),
             b"rpm:obsoletes"    => self.in_dependency_section = "obsoletes".to_string(),
             b"checksum" => {
-                if self.in_package {
-                    self.current_tag = "checksum".to_string();
-                }
+                self.current_tag = "checksum".to_string();
             }
             b"file" => {
-                if self.in_package {
-                    self.current_tag = "file".to_string();
-                }
+                self.current_tag = "file".to_string();
             }
             _ => {
-                if self.in_package {
-                    self.current_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                }
+                self.current_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
             }
         }
         Ok(())
     }
 
     fn handle_text_event(&mut self, e: &quick_xml::events::BytesText) -> Result<()> {
-        if self.in_package && !self.current_tag.is_empty() {
+        if !self.current_tag.is_empty() {
             match e.unescape().map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e)) {
                 Ok(text) => {
                     let text_str = text.to_string().trim().to_string();
@@ -520,16 +510,92 @@ impl<'a> StreamingXmlProcessor<'a> {
     }
 
     fn handle_empty_event(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
-        if self.in_package {
-            match e.name().as_ref() {
-                b"version" => {
-                    // Handle version formatting: epoch:ver-rel
+        match e.name().as_ref() {
+            b"version" => {
+                // Handle version formatting: epoch:ver-rel
+                let mut epoch = String::new();
+                let mut ver = String::new();
+                let mut rel = String::new();
+
+                for attr in e.attributes() {
+                    if let Ok(attr) = attr {
+                        let key = String::from_utf8_lossy(attr.key.as_ref());
+                        if let Ok(value) = String::from_utf8(attr.value.to_vec())
+                            .map_err(|e| {
+                                log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                e
+                            }) {
+                            match key.as_ref() {
+                                "epoch" => epoch = value,
+                                "ver" => ver = value,
+                                "rel" => rel = value,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                // Format version string
+                let version_str = if epoch == "0" {
+                    format!("{}-{}", ver, rel)
+                } else {
+                    format!("{}:{}-{}", epoch, ver, rel)
+                };
+                self.derived_files.output.push_str(&format!("version: {}\n", version_str));
+            }
+            b"location" => {
+                for attr in e.attributes() {
+                    if let Ok(attr) = attr {
+                        let key = String::from_utf8_lossy(attr.key.as_ref());
+                        if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                            if key == "href" {
+                                self.derived_files.output.push_str(&format!("location: {}\n", value));
+                            }
+                        }
+                    }
+                }
+            }
+            b"size" => {
+                for attr in e.attributes() {
+                    if let Ok(attr) = attr {
+                        let key = String::from_utf8_lossy(attr.key.as_ref());
+                        if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                            match key.as_ref() {
+                                "package" => {
+                                    self.derived_files.output.push_str(&format!("size: {}\n", value));
+                                }
+                                "installed" => {
+                                    self.derived_files.output.push_str(&format!("installedSize: {}\n", value));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            b"time" => {
+                for attr in e.attributes() {
+                    if let Ok(attr) = attr {
+                        let key = String::from_utf8_lossy(attr.key.as_ref());
+                        if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                            if key == "build" {
+                                self.derived_files.output.push_str(&format!("buildTime: {}\n", value));
+                            }
+                        }
+                    }
+                }
+            }
+            b"rpm:entry" => {
+                if !self.in_dependency_section.is_empty() {
+                    let mut name = String::new();
+                    let mut is_pre = false;
+                    let mut _flags = String::new();
                     let mut epoch = String::new();
                     let mut ver = String::new();
                     let mut rel = String::new();
 
-                    for attr in e.attributes() {
-                        if let Ok(attr) = attr {
+                    for attr_result in e.attributes() {
+                        if let Ok(attr) = attr_result.map_err(|e| eyre!("XML attribute error: Failed to process XML attribute: {}", e)) {
                             let key = String::from_utf8_lossy(attr.key.as_ref());
                             if let Ok(value) = String::from_utf8(attr.value.to_vec())
                                 .map_err(|e| {
@@ -537,122 +603,44 @@ impl<'a> StreamingXmlProcessor<'a> {
                                     e
                                 }) {
                                 match key.as_ref() {
+                                    "name"  => name = value,
+                                    "pre"   => is_pre = value == "1",
+                                    "flags" => _flags = value,
                                     "epoch" => epoch = value,
-                                    "ver" => ver = value,
-                                    "rel" => rel = value,
+                                    "ver"   => ver = value,
+                                    "rel"   => rel = value,
                                     _ => {}
                                 }
                             }
                         }
                     }
 
-                    // Format version string
-                    let version_str = if epoch == "0" {
-                        format!("{}-{}", ver, rel)
+                    // Format entry with version if available
+                    let formatted_entry = if !ver.is_empty() && !rel.is_empty() {
+                        if epoch.is_empty() || epoch == "0" {
+                            format!("{}={}-{}", name, ver, rel)
+                        } else {
+                            format!("{}={}:{}-{}", name, epoch, ver, rel)
+                        }
                     } else {
-                        format!("{}:{}-{}", epoch, ver, rel)
+                        name
                     };
-                    self.derived_files.output.push_str(&format!("version: {}\n", version_str));
-                }
-                b"location" => {
-                    for attr in e.attributes() {
-                        if let Ok(attr) = attr {
-                            let key = String::from_utf8_lossy(attr.key.as_ref());
-                            if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                if key == "href" {
-                                    self.derived_files.output.push_str(&format!("location: {}\n", value));
-                                }
-                            }
-                        }
-                    }
-                }
-                b"size" => {
-                    for attr in e.attributes() {
-                        if let Ok(attr) = attr {
-                            let key = String::from_utf8_lossy(attr.key.as_ref());
-                            if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                match key.as_ref() {
-                                    "package" => {
-                                        self.derived_files.output.push_str(&format!("size: {}\n", value));
-                                    }
-                                    "installed" => {
-                                        self.derived_files.output.push_str(&format!("installedSize: {}\n", value));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-                b"time" => {
-                    for attr in e.attributes() {
-                        if let Ok(attr) = attr {
-                            let key = String::from_utf8_lossy(attr.key.as_ref());
-                            if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                if key == "build" {
-                                    self.derived_files.output.push_str(&format!("buildTime: {}\n", value));
-                                }
-                            }
-                        }
-                    }
-                }
-                b"rpm:entry" => {
-                    if !self.in_dependency_section.is_empty() {
-                        let mut name = String::new();
-                        let mut is_pre = false;
-                        let mut _flags = String::new();
-                        let mut epoch = String::new();
-                        let mut ver = String::new();
-                        let mut rel = String::new();
 
-                        for attr_result in e.attributes() {
-                            if let Ok(attr) = attr_result.map_err(|e| eyre!("XML attribute error: Failed to process XML attribute: {}", e)) {
-                                let key = String::from_utf8_lossy(attr.key.as_ref());
-                                if let Ok(value) = String::from_utf8(attr.value.to_vec())
-                                    .map_err(|e| {
-                                        log::warn!("Failed to convert attribute value to UTF-8: {}", e);
-                                        e
-                                    }) {
-                                    match key.as_ref() {
-                                        "name"  => name = value,
-                                        "pre"   => is_pre = value == "1",
-                                        "flags" => _flags = value,
-                                        "epoch" => epoch = value,
-                                        "ver"   => ver = value,
-                                        "rel"   => rel = value,
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-
-                        // Format entry with version if available
-                        let formatted_entry = if !ver.is_empty() && !rel.is_empty() {
-                            if epoch.is_empty() || epoch == "0" {
-                                format!("{}={}-{}", name, ver, rel)
-                            } else {
-                                format!("{}={}:{}-{}", name, epoch, ver, rel)
-                            }
+                    // Add to appropriate list
+                    if let Some((regular, pre)) = self.dependency_lists.get_mut(&self.in_dependency_section) {
+                        if is_pre {
+                            pre.push(formatted_entry);
                         } else {
-                            name
-                        };
-
-                        // Add to appropriate list
-                        if let Some((regular, pre)) = self.dependency_lists.get_mut(&self.in_dependency_section) {
-                            if is_pre {
-                                pre.push(formatted_entry);
-                            } else {
-                                regular.push(formatted_entry);
-                            }
-                        } else {
-                            log::warn!("Unknown dependency section: {}", self.in_dependency_section);
+                            regular.push(formatted_entry);
                         }
                     } else {
-                        log::warn!("Found rpm:entry outside of known dependency section");
+                        log::warn!("Unknown dependency section: {}", self.in_dependency_section);
                     }
+                } else {
+                    log::warn!("Found rpm:entry outside of known dependency section");
                 }
-                _ => {}
             }
+            _ => {}
         }
         Ok(())
     }
@@ -689,7 +677,6 @@ impl<'a> StreamingXmlProcessor<'a> {
                 self.derived_files.output.push_str("\n");
                 self.derived_files.on_output()
                     .with_context(|| "Failed to process packages content")?;
-                self.in_package = false;
                 self.packages_processed += 1;
                 if self.packages_processed % 1000 == 0 {
                     log::debug!("Processed {} packages", self.packages_processed);
