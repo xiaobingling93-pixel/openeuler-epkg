@@ -656,23 +656,36 @@ impl<'a> StreamingXmlProcessor<'a> {
                     "enhances", "supplements", "conflicts", "obsoletes"
                 ];
 
+                // Helper function to transform HTML entities in dependency entries
+                let transform_entities = |entry: &str| -> String {
+                    entry.replace("&lt;", "<")
+                         .replace("&gt;", ">")
+                         .replace("&amp;", "&")
+                         .replace("&quot;", "\"")
+                         .replace("&apos;", "'")
+                };
+
+                // Helper function to transform and output a list of entries
+                let output_transformed_list = |entries: &[String], key: &str, output: &mut String| {
+                    if !entries.is_empty() {
+                        let transformed: Vec<String> = entries.iter()
+                            .map(|entry| transform_entities(entry))
+                            .collect();
+                        output.push_str(&format!("{}: {}\n", key, transformed.join(", ")));
+                    }
+                };
+
                 for section_name in &dependency_order {
                     if let Some((regular, pre)) = self.dependency_lists.get(*section_name) {
                         if *section_name == "requires" {
                             // Special handling for requires - emit requiresPre separately
-                            if !pre.is_empty() {
-                                self.derived_files.output.push_str(&format!("requiresPre: {}\n", pre.join(", ")));
-                            }
-                            if !regular.is_empty() {
-                                self.derived_files.output.push_str(&format!("requires: {}\n", regular.join(", ")));
-                            }
+                            output_transformed_list(pre, "requiresPre", &mut self.derived_files.output);
+                            output_transformed_list(regular, "requires", &mut self.derived_files.output);
                         } else {
                             // For other dependency types, combine pre and regular
                             let mut all_entries = pre.clone();
                             all_entries.extend(regular.iter().cloned());
-                            if !all_entries.is_empty() {
-                                self.derived_files.output.push_str(&format!("{}: {}\n", section_name, all_entries.join(", ")));
-                            }
+                            output_transformed_list(&all_entries, section_name, &mut self.derived_files.output);
                         }
                     }
                 }
