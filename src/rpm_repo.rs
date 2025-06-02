@@ -222,7 +222,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
             }
         };
 
-        // Process the XML stream directly
+        // Create a streaming XML processor that handles chunks properly
+        let mut xml_processor = StreamingXmlProcessor::new(&mut derived_files);
         let mut chunk_count = 0;
         let mut total_bytes = 0;
 
@@ -235,6 +236,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                 Ok(0) => {
                     log::debug!("Reached EOF after processing {} chunks ({} bytes) for {}",
                               chunk_count, total_bytes, revise.location);
+                    // Finalize any remaining buffered data
+                    xml_processor.finalize()?;
                     break; // EOF
                 }
                 Ok(n) => {
@@ -259,8 +262,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                                   chunk_count, total_bytes, revise.location);
                     }
 
-                    // Try to process the XML chunk and provide detailed error context if it fails
-                    match process_xml_chunk(&unpack_buf[..n], &mut derived_files) {
+                    // Process the chunk with the streaming XML processor
+                    match xml_processor.process_chunk(&unpack_buf[..n]) {
                         Ok(_) => (),
                         Err(e) => {
                             let err_msg = format!("Failed to process XML chunk {} ({} bytes) for {}: {}", chunk_count, n, revise.location, e);
@@ -291,13 +294,17 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         // Default to gzip decoder for .gz files or other formats
         let mut xml_decoder = GzDecoder::new(reader);
 
-        // Process the XML stream directly without using handle_chunk (since it's for line-based processing)
+        // Create a streaming XML processor that handles chunks properly
+        let mut xml_processor = StreamingXmlProcessor::new(&mut derived_files);
         let mut chunk_count = 0;
+
         loop {
             let read_result = xml_decoder.read(&mut unpack_buf);
             match read_result {
                 Ok(0) => {
                     log::debug!("Reached EOF after processing {} chunks for {}", chunk_count, revise.location);
+                    // Finalize any remaining buffered data
+                    xml_processor.finalize()?;
                     break; // EOF
                 }
                 Ok(n) => {
@@ -305,7 +312,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                     if chunk_count % 100 == 0 {
                         log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
                     }
-                    process_xml_chunk(&unpack_buf[..n], &mut derived_files)
+                    xml_processor.process_chunk(&unpack_buf[..n])
                         .map_err(|e| eyre!("Failed to process XML chunk {} ({} bytes) for {}: {}", chunk_count, n, revise.location, e))?;
                 }
                 Err(e) => {
@@ -320,363 +327,433 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     }
 }
 
-// Helper function to process XML chunks for RPM packages
-fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::PackagesStreamline) -> Result<()> {
-    if chunk.is_empty() {
-        log::warn!("Received empty XML chunk to process");
-        return Ok(());
-    }
+// Streaming XML processor that maintains state across chunks
+struct StreamingXmlProcessor<'a> {
+    xml_buffer: String,
+    derived_files: &'a mut packages_stream::PackagesStreamline,
 
-    // Check if the chunk looks like XML (starts with <?xml or <)
-    let is_xml_like = chunk.starts_with(b"<?xml") || chunk.starts_with(b"<");
-    if !is_xml_like {
-        let preview = String::from_utf8_lossy(&chunk[..std::cmp::min(chunk.len(), 50)]);
-        log::warn!("Chunk doesn't appear to be XML. First bytes: {}", preview);
-        // Continue anyway to get more specific errors
-    }
+    // Parser state
+    in_package: bool,
+    current_tag: String,
+    packages_processed: usize,
+    in_dependency_section: String,
+    dependency_lists: HashMap<String, (Vec<String>, Vec<String>)>,
+    files: Vec<String>,
+}
 
-    let mut xml_reader = Reader::from_reader(chunk);
-    let mut buf = Vec::new();
-    let mut in_package = false;
-    let mut current_tag = String::new();
-    let mut packages_processed = 0;
+impl<'a> StreamingXmlProcessor<'a> {
+    fn new(derived_files: &'a mut packages_stream::PackagesStreamline) -> Self {
+        let mut dependency_lists = HashMap::new();
 
-    // Current package state for streaming output
-    let mut in_dependency_section = String::new(); // Track which dependency section we're in
-    let mut dependency_lists: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
-    let mut files: Vec<String> = Vec::new();
+        // Initialize dependency lists
+        dependency_lists.insert("requires".to_string(),     (Vec::new(), Vec::new())); // (regular, pre)
+        dependency_lists.insert("provides".to_string(),     (Vec::new(), Vec::new()));
+        dependency_lists.insert("recommends".to_string(),   (Vec::new(), Vec::new()));
+        dependency_lists.insert("supplements".to_string(),  (Vec::new(), Vec::new()));
+        dependency_lists.insert("enhances".to_string(),     (Vec::new(), Vec::new()));
+        dependency_lists.insert("suggests".to_string(),     (Vec::new(), Vec::new()));
+        dependency_lists.insert("conflicts".to_string(),    (Vec::new(), Vec::new()));
+        dependency_lists.insert("obsoletes".to_string(),    (Vec::new(), Vec::new()));
 
-    // Initialize dependency lists
-    dependency_lists.insert("requires".to_string(),     (Vec::new(), Vec::new())); // (regular, pre)
-    dependency_lists.insert("provides".to_string(),     (Vec::new(), Vec::new()));
-    dependency_lists.insert("recommends".to_string(),   (Vec::new(), Vec::new()));
-    dependency_lists.insert("supplements".to_string(),  (Vec::new(), Vec::new()));
-    dependency_lists.insert("enhances".to_string(),     (Vec::new(), Vec::new()));
-    dependency_lists.insert("suggests".to_string(),     (Vec::new(), Vec::new()));
-    dependency_lists.insert("conflicts".to_string(),    (Vec::new(), Vec::new()));
-    dependency_lists.insert("obsoletes".to_string(),    (Vec::new(), Vec::new()));
-
-    loop {
-        let event_result = xml_reader.read_event_into(&mut buf);
-        match event_result {
-            Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"package" => {
-                        in_package = true;
-                        derived_files.on_new_paragraph();
-                        // Clear all dependency lists for new package
-                        for (_, (regular, pre)) in dependency_lists.iter_mut() {
-                            regular.clear();
-                            pre.clear();
-                        }
-                        files.clear();
-                    }
-                    b"rpm:requires"     => in_dependency_section = "requires".to_string(),
-                    b"rpm:provides"     => in_dependency_section = "provides".to_string(),
-                    b"rpm:recommends"   => in_dependency_section = "recommends".to_string(),
-                    b"rpm:supplements"  => in_dependency_section = "supplements".to_string(),
-                    b"rpm:enhances"     => in_dependency_section = "enhances".to_string(),
-                    b"rpm:suggests"     => in_dependency_section = "suggests".to_string(),
-                    b"rpm:conflicts"    => in_dependency_section = "conflicts".to_string(),
-                    b"rpm:obsoletes"    => in_dependency_section = "obsoletes".to_string(),
-                    b"checksum" => {
-                        if in_package {
-                            current_tag = "checksum".to_string();
-                        }
-                    }
-                    b"file" => {
-                        if in_package {
-                            current_tag = "file".to_string();
-                        }
-                    }
-                    _ => {
-                        if in_package {
-                            current_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                        }
-                    }
-                }
-            }
-            Ok(Event::Text(e)) => {
-                if in_package && !current_tag.is_empty() {
-                    match e.unescape().map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e)) {
-                        Ok(text) => {
-                            let text_str = text.to_string().trim().to_string();
-                            if !text_str.is_empty() {
-                                // Use PACKAGE_KEY_MAPPING for common fields
-                                if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(current_tag.as_str()) {
-                                    if current_tag == "name" {
-                                        derived_files.on_new_pkgname(&text_str);
-                                        derived_files.output.push_str(&format!("{}: {}\n", mapped_key, text_str));
-                                    } else {
-                                        derived_files.output.push_str(&format!("{}: {}\n", mapped_key, text_str));
-                                    }
-                                } else {
-                                    // Handle special cases not in the mapping
-                                    match current_tag.as_str() {
-                                        "checksum" => {
-                                            derived_files.output.push_str(&format!("sha256: {}\n", text_str));
-                                        }
-                                        "file" => {
-                                            files.push(text_str);
-                                        }
-                                        "rpm:license" => {
-                                            derived_files.output.push_str(&format!("license: {}\n", text_str));
-                                        }
-                                        "rpm:vendor" => {
-                                            derived_files.output.push_str(&format!("vendor: {}\n", text_str));
-                                        }
-                                        "rpm:group" => {
-                                            derived_files.output.push_str(&format!("group: {}\n", text_str));
-                                        }
-                                        "rpm:buildhost" => {
-                                            derived_files.output.push_str(&format!("buildHost: {}\n", text_str));
-                                        }
-                                        "rpm:sourcerpm" => {
-                                            derived_files.output.push_str(&format!("source: {}\n", text_str));
-                                        }
-                                        _ => {
-                                            // Log unknown fields for debugging
-                                            log::debug!("Unknown text field in package: {} = {}", current_tag, text_str);
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        Err(err) => {
-                            log::warn!("Failed to unescape XML text for tag {}: {}", current_tag, err);
-                        }
-                    }
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                if in_package {
-                    match e.name().as_ref() {
-                        b"version" => {
-                            // Handle version formatting: epoch:ver-rel
-                            let mut epoch = String::new();
-                            let mut ver = String::new();
-                            let mut rel = String::new();
-
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let key = String::from_utf8_lossy(attr.key.as_ref());
-                                    if let Ok(value) = String::from_utf8(attr.value.to_vec())
-                                        .map_err(|e| {
-                                            log::warn!("Failed to convert attribute value to UTF-8: {}", e);
-                                            e
-                                        }) {
-                                        match key.as_ref() {
-                                            "epoch" => epoch = value,
-                                            "ver" => ver = value,
-                                            "rel" => rel = value,
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Format version string
-                            let version_str = if epoch == "0" {
-                                format!("{}-{}", ver, rel)
-                            } else {
-                                format!("{}:{}-{}", epoch, ver, rel)
-                            };
-                            derived_files.output.push_str(&format!("version: {}\n", version_str));
-                        }
-                        b"location" => {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let key = String::from_utf8_lossy(attr.key.as_ref());
-                                    if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                        if key == "href" {
-                                            derived_files.output.push_str(&format!("location: {}\n", value));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        b"size" => {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let key = String::from_utf8_lossy(attr.key.as_ref());
-                                    if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                        match key.as_ref() {
-                                            "package" => {
-                                                derived_files.output.push_str(&format!("size: {}\n", value));
-                                            }
-                                            "installed" => {
-                                                derived_files.output.push_str(&format!("installedSize: {}\n", value));
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        b"time" => {
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let key = String::from_utf8_lossy(attr.key.as_ref());
-                                    if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                        if key == "build" {
-                                            derived_files.output.push_str(&format!("buildTime: {}\n", value));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        b"file" => {
-                            // Handle file elements with attributes
-                            let _file_path = String::new();
-                            let mut _file_type = String::new();
-
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    let key = String::from_utf8_lossy(attr.key.as_ref());
-                                    if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
-                                        match key.as_ref() {
-                                            "type" => _file_type = value,
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-
-                            // File path will come in text content or this might be self-closing
-                            // If it's self-closing, we'll need to get path from content
-                        }
-                        b"rpm:entry" => {
-                            if !in_dependency_section.is_empty() {
-                                let mut name = String::new();
-                                let mut is_pre = false;
-                                let mut _flags = String::new();
-                                let mut epoch = String::new();
-                                let mut ver = String::new();
-                                let mut rel = String::new();
-
-                                for attr_result in e.attributes() {
-                                    if let Ok(attr) = attr_result.map_err(|e| eyre!("XML attribute error: Failed to process XML attribute: {}", e)) {
-                                        let key = String::from_utf8_lossy(attr.key.as_ref());
-                                        if let Ok(value) = String::from_utf8(attr.value.to_vec())
-                                            .map_err(|e| {
-                                                log::warn!("Failed to convert attribute value to UTF-8: {}", e);
-                                                e
-                                            }) {
-                                            match key.as_ref() {
-                                                "name"  => name = value,
-                                                "pre"   => is_pre = value == "1",
-                                                "flags" => _flags = value,
-                                                "epoch" => epoch = value,
-                                                "ver"   => ver = value,
-                                                "rel"   => rel = value,
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Format entry with version if available
-                                let formatted_entry = if !ver.is_empty() && !rel.is_empty() {
-                                    if epoch.is_empty() || epoch == "0" {
-                                        format!("{}={}-{}", name, ver, rel)
-                                    } else {
-                                        format!("{}={}:{}-{}", name, epoch, ver, rel)
-                                    }
-                                } else {
-                                    name
-                                };
-
-                                // Add to appropriate list
-                                if let Some((regular, pre)) = dependency_lists.get_mut(&in_dependency_section) {
-                                    if is_pre {
-                                        pre.push(formatted_entry);
-                                    } else {
-                                        regular.push(formatted_entry);
-                                    }
-                                } else {
-                                    log::warn!("Unknown dependency section: {}", in_dependency_section);
-                                }
-                            } else {
-                                log::warn!("Found rpm:entry outside of known dependency section");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                match e.name().as_ref() {
-                    b"package" => {
-                        // Emit all dependency lists
-                        for (section_name, (regular, pre)) in &dependency_lists {
-                            if section_name == "requires" {
-                                // Special handling for requires - emit requiresPre separately
-                                if !pre.is_empty() {
-                                    derived_files.output.push_str(&format!("requiresPre: {}\n", pre.join(", ")));
-                                }
-                                if !regular.is_empty() {
-                                    derived_files.output.push_str(&format!("requires: {}\n", regular.join(", ")));
-                                }
-                            } else {
-                                // For other dependency types, combine pre and regular
-                                let mut all_entries = pre.clone();
-                                all_entries.extend(regular.iter().cloned());
-                                if !all_entries.is_empty() {
-                                    derived_files.output.push_str(&format!("{}: {}\n", section_name, all_entries.join(", ")));
-                                }
-                            }
-                        }
-
-                        // Emit files if any
-                        if !files.is_empty() {
-                            derived_files.output.push_str(&format!("files: {}\n", files.join(", ")));
-                        }
-
-                        // End package processing
-                        derived_files.output.push_str("\n");
-                        derived_files.on_output()
-                            .with_context(|| "Failed to process packages content")?;
-                        in_package = false;
-                        packages_processed += 1;
-                        if packages_processed % 1000 == 0 {
-                            log::debug!("Processed {} packages", packages_processed);
-                        }
-                    }
-                    b"rpm:requires"     | b"rpm:provides" | b"rpm:recommends" |
-                    b"rpm:supplements"  | b"rpm:enhances" | b"rpm:suggests" |
-                    b"rpm:conflicts"    | b"rpm:obsoletes" => {
-                        // Clear dependency section when we exit it
-                        in_dependency_section.clear();
-                    }
-                    _ => {
-                        // Clear current_tag when we finish an element
-                        current_tag.clear();
-                    }
-                }
-            }
-            Ok(Event::Eof) => {
-                log::debug!("Reached end of XML chunk, processed {} packages", packages_processed);
-                break;
-            },
-            Err(e) => {
-                let position = xml_reader.buffer_position() as usize;
-                let context = if position < chunk.len() {
-                    let start = position.saturating_sub(20);
-                    let end = std::cmp::min(position + 20, chunk.len());
-                    format!("Context: {}", String::from_utf8_lossy(&chunk[start..end]))
-                } else {
-                    "Position beyond chunk length".to_string()
-                };
-
-                log::error!("Error parsing XML at position {}: {:?}. {}", position, e, context);
-                return Err(eyre!("Error parsing XML at position {}: {:?}", position, e));
-            },
-            _ => {}
+        Self {
+            xml_buffer: String::new(),
+            derived_files,
+            in_package: false,
+            current_tag: String::new(),
+            packages_processed: 0,
+            in_dependency_section: String::new(),
+            dependency_lists,
+            files: Vec::new(),
         }
-        buf.clear();
     }
 
-    Ok(())
+    fn process_chunk(&mut self, chunk: &[u8]) -> Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+
+        // Convert chunk to string and append to buffer
+        let chunk_str = String::from_utf8_lossy(chunk);
+        self.xml_buffer.push_str(&chunk_str);
+
+        // Process complete packages
+        self.process_complete_packages()
+    }
+
+    fn finalize(&mut self) -> Result<()> {
+        // Process any remaining complete packages in the buffer
+        self.process_complete_packages().context("Failed to process remaining complete packages during finalization")?;
+
+        // Log final statistics
+        log::info!("StreamingXmlProcessor finished: processed {} packages total", self.packages_processed);
+        Ok(())
+    }
+
+    fn process_complete_packages(&mut self) -> Result<()> {
+        // Keep looking for complete packages until we can't find any more
+        loop {
+            // Find the next complete package
+            if let Some(package_start) = self.xml_buffer.find("<package type=\"rpm\">") {
+                if let Some(package_end_offset) = self.xml_buffer[package_start..].find("</package>") {
+                    let package_end = package_start + package_end_offset + "</package>".len();
+
+                    // Extract the complete package XML (clone to avoid borrowing issues)
+                    let package_xml = self.xml_buffer[package_start..package_end].to_string();
+
+                    // Process this package
+                    self.process_single_package(&package_xml).with_context(|| format!("Failed to process package XML of size {}", package_xml.len()))?;
+
+                    // Remove processed package from buffer
+                    self.xml_buffer = self.xml_buffer[package_end..].to_string();
+                } else {
+                    // No complete package found, keep current buffer for next chunk
+                    break;
+                }
+            } else {
+                // No package start found, clear buffer up to a reasonable point
+                // but keep some data in case a package tag spans across chunks
+                if self.xml_buffer.len() > 100000 {
+                    // Keep only the last 1000 characters to avoid memory issues
+                    let keep_from = self.xml_buffer.len().saturating_sub(1000);
+                    self.xml_buffer = self.xml_buffer[keep_from..].to_string();
+                }
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn process_single_package(&mut self, package_xml: &str) -> Result<()> {
+        use quick_xml::Reader;
+        use quick_xml::events::Event;
+
+        let mut reader = Reader::from_str(package_xml);
+        let mut buf = Vec::new();
+
+        // Reset package-level state
+        self.in_package = false;
+        self.current_tag.clear();
+        self.in_dependency_section.clear();
+
+        // Clear all dependency lists for new package
+        for (_, (regular, pre)) in self.dependency_lists.iter_mut() {
+            regular.clear();
+            pre.clear();
+        }
+        self.files.clear();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => {
+                    let event_clone = e.clone();
+                    self.handle_start_event(&event_clone).with_context(|| format!("Failed to handle start event for tag: {}", String::from_utf8_lossy(event_clone.name().as_ref())))?;
+                }
+                Ok(Event::Text(e)) => {
+                    self.handle_text_event(&e).context("Failed to handle text event")?;
+                }
+                Ok(Event::Empty(ref e)) => {
+                    let event_clone = e.clone();
+                    self.handle_empty_event(&event_clone).with_context(|| format!("Failed to handle empty event for tag: {}", String::from_utf8_lossy(event_clone.name().as_ref())))?;
+                }
+                Ok(Event::End(ref e)) => {
+                    let event_clone = e.clone();
+                    self.handle_end_event(&event_clone).with_context(|| format!("Failed to handle end event for tag: {}", String::from_utf8_lossy(event_clone.name().as_ref())))?;
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    log::error!("Error parsing package XML: {:?}", e);
+                    log::error!("Package XML was: {}", package_xml);
+                    return Err(eyre!("Error parsing package XML: {:?}", e));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        self.packages_processed += 1;
+        if self.packages_processed % 1000 == 0 {
+            log::trace!("Processed {} packages", self.packages_processed);
+        }
+
+        Ok(())
+    }
+
+    fn handle_start_event(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        match e.name().as_ref() {
+            b"package" => {
+                self.in_package = true;
+                self.derived_files.on_new_paragraph();
+            }
+            b"rpm:requires"     => self.in_dependency_section = "requires".to_string(),
+            b"rpm:provides"     => self.in_dependency_section = "provides".to_string(),
+            b"rpm:recommends"   => self.in_dependency_section = "recommends".to_string(),
+            b"rpm:supplements"  => self.in_dependency_section = "supplements".to_string(),
+            b"rpm:enhances"     => self.in_dependency_section = "enhances".to_string(),
+            b"rpm:suggests"     => self.in_dependency_section = "suggests".to_string(),
+            b"rpm:conflicts"    => self.in_dependency_section = "conflicts".to_string(),
+            b"rpm:obsoletes"    => self.in_dependency_section = "obsoletes".to_string(),
+            b"checksum" => {
+                if self.in_package {
+                    self.current_tag = "checksum".to_string();
+                }
+            }
+            b"file" => {
+                if self.in_package {
+                    self.current_tag = "file".to_string();
+                }
+            }
+            _ => {
+                if self.in_package {
+                    self.current_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_text_event(&mut self, e: &quick_xml::events::BytesText) -> Result<()> {
+        if self.in_package && !self.current_tag.is_empty() {
+            match e.unescape().map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e)) {
+                Ok(text) => {
+                    let text_str = text.to_string().trim().to_string();
+                    if !text_str.is_empty() {
+                        // Use PACKAGE_KEY_MAPPING for common fields
+                        if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(self.current_tag.as_str()) {
+                            if self.current_tag == "name" {
+                                self.derived_files.on_new_pkgname(&text_str);
+                                self.derived_files.output.push_str(&format!("{}: {}\n", mapped_key, text_str));
+                            } else {
+                                self.derived_files.output.push_str(&format!("{}: {}\n", mapped_key, text_str));
+                            }
+                        } else {
+                            // Handle special cases not in the mapping
+                            match self.current_tag.as_str() {
+                                "checksum" => {
+                                    self.derived_files.output.push_str(&format!("sha256: {}\n", text_str));
+                                }
+                                "file" => {
+                                    self.files.push(text_str);
+                                }
+                                "rpm:license" => {
+                                    self.derived_files.output.push_str(&format!("license: {}\n", text_str));
+                                }
+                                "rpm:vendor" => {
+                                    self.derived_files.output.push_str(&format!("vendor: {}\n", text_str));
+                                }
+                                "rpm:group" => {
+                                    self.derived_files.output.push_str(&format!("group: {}\n", text_str));
+                                }
+                                "rpm:buildhost" => {
+                                    self.derived_files.output.push_str(&format!("buildHost: {}\n", text_str));
+                                }
+                                "rpm:sourcerpm" => {
+                                    self.derived_files.output.push_str(&format!("source: {}\n", text_str));
+                                }
+                                _ => {
+                                    // Log unknown fields for debugging
+                                    log::debug!("Unknown text field in package: {} = {}", self.current_tag, text_str);
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(err) => {
+                    log::warn!("Failed to unescape XML text for tag {}: {}", self.current_tag, err);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_empty_event(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        if self.in_package {
+            match e.name().as_ref() {
+                b"version" => {
+                    // Handle version formatting: epoch:ver-rel
+                    let mut epoch = String::new();
+                    let mut ver = String::new();
+                    let mut rel = String::new();
+
+                    for attr in e.attributes() {
+                        if let Ok(attr) = attr {
+                            let key = String::from_utf8_lossy(attr.key.as_ref());
+                            if let Ok(value) = String::from_utf8(attr.value.to_vec())
+                                .map_err(|e| {
+                                    log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                    e
+                                }) {
+                                match key.as_ref() {
+                                    "epoch" => epoch = value,
+                                    "ver" => ver = value,
+                                    "rel" => rel = value,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+
+                    // Format version string
+                    let version_str = if epoch == "0" {
+                        format!("{}-{}", ver, rel)
+                    } else {
+                        format!("{}:{}-{}", epoch, ver, rel)
+                    };
+                    self.derived_files.output.push_str(&format!("version: {}\n", version_str));
+                }
+                b"location" => {
+                    for attr in e.attributes() {
+                        if let Ok(attr) = attr {
+                            let key = String::from_utf8_lossy(attr.key.as_ref());
+                            if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                                if key == "href" {
+                                    self.derived_files.output.push_str(&format!("location: {}\n", value));
+                                }
+                            }
+                        }
+                    }
+                }
+                b"size" => {
+                    for attr in e.attributes() {
+                        if let Ok(attr) = attr {
+                            let key = String::from_utf8_lossy(attr.key.as_ref());
+                            if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                                match key.as_ref() {
+                                    "package" => {
+                                        self.derived_files.output.push_str(&format!("size: {}\n", value));
+                                    }
+                                    "installed" => {
+                                        self.derived_files.output.push_str(&format!("installedSize: {}\n", value));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                b"time" => {
+                    for attr in e.attributes() {
+                        if let Ok(attr) = attr {
+                            let key = String::from_utf8_lossy(attr.key.as_ref());
+                            if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                                if key == "build" {
+                                    self.derived_files.output.push_str(&format!("buildTime: {}\n", value));
+                                }
+                            }
+                        }
+                    }
+                }
+                b"rpm:entry" => {
+                    if !self.in_dependency_section.is_empty() {
+                        let mut name = String::new();
+                        let mut is_pre = false;
+                        let mut _flags = String::new();
+                        let mut epoch = String::new();
+                        let mut ver = String::new();
+                        let mut rel = String::new();
+
+                        for attr_result in e.attributes() {
+                            if let Ok(attr) = attr_result.map_err(|e| eyre!("XML attribute error: Failed to process XML attribute: {}", e)) {
+                                let key = String::from_utf8_lossy(attr.key.as_ref());
+                                if let Ok(value) = String::from_utf8(attr.value.to_vec())
+                                    .map_err(|e| {
+                                        log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                        e
+                                    }) {
+                                    match key.as_ref() {
+                                        "name"  => name = value,
+                                        "pre"   => is_pre = value == "1",
+                                        "flags" => _flags = value,
+                                        "epoch" => epoch = value,
+                                        "ver"   => ver = value,
+                                        "rel"   => rel = value,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+
+                        // Format entry with version if available
+                        let formatted_entry = if !ver.is_empty() && !rel.is_empty() {
+                            if epoch.is_empty() || epoch == "0" {
+                                format!("{}={}-{}", name, ver, rel)
+                            } else {
+                                format!("{}={}:{}-{}", name, epoch, ver, rel)
+                            }
+                        } else {
+                            name
+                        };
+
+                        // Add to appropriate list
+                        if let Some((regular, pre)) = self.dependency_lists.get_mut(&self.in_dependency_section) {
+                            if is_pre {
+                                pre.push(formatted_entry);
+                            } else {
+                                regular.push(formatted_entry);
+                            }
+                        } else {
+                            log::warn!("Unknown dependency section: {}", self.in_dependency_section);
+                        }
+                    } else {
+                        log::warn!("Found rpm:entry outside of known dependency section");
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_end_event(&mut self, e: &quick_xml::events::BytesEnd) -> Result<()> {
+        match e.name().as_ref() {
+            b"package" => {
+                // Emit all dependency lists
+                for (section_name, (regular, pre)) in &self.dependency_lists {
+                    if section_name == "requires" {
+                        // Special handling for requires - emit requiresPre separately
+                        if !pre.is_empty() {
+                            self.derived_files.output.push_str(&format!("requiresPre: {}\n", pre.join(", ")));
+                        }
+                        if !regular.is_empty() {
+                            self.derived_files.output.push_str(&format!("requires: {}\n", regular.join(", ")));
+                        }
+                    } else {
+                        // For other dependency types, combine pre and regular
+                        let mut all_entries = pre.clone();
+                        all_entries.extend(regular.iter().cloned());
+                        if !all_entries.is_empty() {
+                            self.derived_files.output.push_str(&format!("{}: {}\n", section_name, all_entries.join(", ")));
+                        }
+                    }
+                }
+
+                // Emit files if any
+                if !self.files.is_empty() {
+                    self.derived_files.output.push_str(&format!("files: {}\n", self.files.join(", ")));
+                }
+
+                // End package processing
+                self.derived_files.output.push_str("\n");
+                self.derived_files.on_output()
+                    .with_context(|| "Failed to process packages content")?;
+                self.in_package = false;
+                self.packages_processed += 1;
+                if self.packages_processed % 1000 == 0 {
+                    log::debug!("Processed {} packages", self.packages_processed);
+                }
+            }
+            b"rpm:requires"     | b"rpm:provides" | b"rpm:recommends" |
+            b"rpm:supplements"  | b"rpm:enhances" | b"rpm:suggests" |
+            b"rpm:conflicts"    | b"rpm:obsoletes" => {
+                // Clear dependency section when we exit it
+                self.in_dependency_section.clear();
+            }
+            _ => {
+                // Clear current_tag when we finish an element
+                self.current_tag.clear();
+            }
+        }
+        Ok(())
+    }
 }
 
 // Dummy process line function since we're processing XML directly
