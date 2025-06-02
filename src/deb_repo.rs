@@ -154,7 +154,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     let output_path = if is_packages {
                         repo_dir.join(format!("packages-{}.txt", arch))
                     } else {
-                        repo_dir.join(format!("filelist-{}.gz", arch))
+                        repo_dir.join(format!("filelists-{}.gz", arch))
                     };
 
                     // --- EXAMPLES FOR PATH AND URL CONSTRUCTION ---

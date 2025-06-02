@@ -545,17 +545,17 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
         let packages_info: FileInfo = serde_json::from_str(&packages_info_str)
             .with_context(|| format!("Failed to parse packages info from: {}", packages_metafile.display()))?;
 
-        // Try to load corresponding filelist if it exists
-        let mut filelist_info = None;
-        let filelist_metafile = packages_metafile.to_str()
+        // Try to load corresponding filelists if it exists
+        let mut filelists_info = None;
+        let filelists_metafile = packages_metafile.to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
-            .replace(".packages", ".filelist");
-        if Path::new(&filelist_metafile).exists() {
-            let filelist_content = fs::read_to_string(&filelist_metafile)
-                .with_context(|| format!("Failed to read filelist: {}", filelist_metafile))?;
-            let filelist: FileInfo = serde_json::from_str(&filelist_content)
-                .with_context(|| format!("Failed to parse filelist info from: {}", filelist_metafile))?;
-            filelist_info = Some(filelist);
+            .replace(".packages", ".filelists");
+        if Path::new(&filelists_metafile).exists() {
+            let filelists_content = fs::read_to_string(&filelists_metafile)
+                .with_context(|| format!("Failed to read filelists: {}", filelists_metafile))?;
+            let filelists: FileInfo = serde_json::from_str(&filelists_content)
+                .with_context(|| format!("Failed to parse filelists info from: {}", filelists_metafile))?;
+            filelists_info = Some(filelists);
         }
 
         // Use file stem as key, fallback to shard_i
@@ -565,7 +565,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
             .unwrap_or_else(|| format!("shard_{}", i));
         repo_shards.insert(key, RepoShard {
             packages: packages_info,
-            filelist: filelist_info,
+            filelists: filelists_info,
             essential_pkgnames: std::collections::HashSet::new(),
             provide2pkgnames:   std::collections::HashMap::new(),
             pkgname2ranges:     std::collections::HashMap::new(),
@@ -590,12 +590,12 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
             _ => Err(eyre::eyre!("Unsupported package format: {:?}", revise.format))
         }
     } else {
-        process_filelist_content(data_rx, repo_dir, revise)
+        process_filelists_content(data_rx, repo_dir, revise)
     }
 }
 
-pub fn process_filelist_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
-    log::debug!("Processing filelist content for arch: {:?}", revise);
+pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+    log::debug!("Processing filelists content for arch: {:?}", revise);
     let mut hasher = Sha256::new();
 
     // Process data and calculate hash incrementally
@@ -618,11 +618,11 @@ pub fn process_filelist_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf,
     let output_path = revise.output_path.clone();
     let json_path = output_path.with_extension("").with_extension("json").to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
-            .replace("filelist", ".filelist");
+            .replace("filelists", ".filelists");
     if output_path.exists() {
-        log::debug!("Removing existing filelist at {}", output_path.display());
+        log::debug!("Removing existing filelists at {}", output_path.display());
         fs::remove_file(&output_path)
-            .with_context(|| format!("Failed to remove existing filelist at {}", output_path.display()))?;
+            .with_context(|| format!("Failed to remove existing filelists at {}", output_path.display()))?;
     }
 
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
@@ -650,13 +650,13 @@ pub fn process_filelist_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf,
         size: metadata.len(),
     };
 
-    log::debug!("Writing filelist metadata to {}", json_path);
+    log::debug!("Writing filelists metadata to {}", json_path);
     let json_content = serde_json::to_string_pretty(&file_info)
         .with_context(|| format!("Failed to serialize file info to JSON for {}", output_path.display()))?;
     fs::write(&json_path, json_content)
         .with_context(|| format!("Failed to write JSON metadata to {}", json_path))?;
 
-    log::debug!("Successfully processed filelist content for arch: {}", revise.arch);
+    log::debug!("Successfully processed filelists content for arch: {}", revise.arch);
     Ok(file_info)
 }
 

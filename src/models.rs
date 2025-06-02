@@ -353,7 +353,7 @@ pub struct RepoShard {
     #[serde(default)]
     pub packages: FileInfo,
     #[serde(default)]
-    pub filelist: Option<FileInfo>,
+    pub filelists: Option<FileInfo>,
 
     #[serde(skip)]
     pub provide2pkgnames: HashMap<String, Vec<String>>,

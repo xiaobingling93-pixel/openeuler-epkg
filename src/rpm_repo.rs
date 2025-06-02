@@ -150,7 +150,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             let output_path = if is_packages {
                                 repo_dir.join(format!("packages.txt"))
                             } else {
-                                repo_dir.join(format!("filelist.xml.zst"))
+                                repo_dir.join(format!("filelists.xml.zst"))
                             };
                             let need_convert = !output_path.exists();
 
