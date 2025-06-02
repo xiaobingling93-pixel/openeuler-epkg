@@ -191,6 +191,48 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
     Ok(info)
 }
 
+// Process chunks of data from a reader with proper error handling and logging
+fn process_chunks<R: Read>(
+    mut reader: R,
+    xml_processor: &mut StreamingXmlProcessor,
+    unpack_buf: &mut Vec<u8>,
+    revise: &RepoReleaseItem,
+    decoder_type: &str,
+) -> Result<()> {
+    loop {
+        let read_result = reader.read(unpack_buf);
+        match read_result {
+            Ok(0) => {
+                // Reached EOF
+                log::debug!("Reached EOF after processing chunks for {}", revise.location);
+
+                // Finalize any remaining buffered data
+                xml_processor.finalize()
+                    .with_context(|| format!("Failed to finalize XML processor for {}", revise.location))?;
+                break; // EOF
+            }
+            Ok(n) => {
+                // Process the chunk with the streaming XML processor
+                if let Err(e) = xml_processor.process_chunk(&unpack_buf[..n]) {
+                    let err_msg = format!("Failed to process XML chunk ({} bytes) for {}: {}",
+                                       n, revise.location, e);
+                    log::error!("{}", err_msg);
+
+                    return Err(eyre!("XML processing error: {}", err_msg));
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("Decompression error for {} using {} decoder: {}",
+                                   revise.location, decoder_type, e);
+                log::error!("{}", err_msg);
+                return Err(eyre!("Decompression error: {}", err_msg));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     log::debug!("Starting to process packages content for {} (hash: {})", revise.location, revise.hash);
 
@@ -202,6 +244,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     // Detect compression type from file extension and use appropriate decoder
     let mut unpack_buf = vec![0u8; 65536];
+    let mut xml_processor = StreamingXmlProcessor::new(&mut derived_files);
 
     if revise.location.ends_with(".zst") {
         log::debug!("Using zstd decoder for {} (expected hash: {})", revise.location, revise.hash);
@@ -210,7 +253,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         let zst_decoder_result = zstd::stream::read::Decoder::new(reader);
 
         // Handle decoder initialization error explicitly
-        let mut zst_decoder = match zst_decoder_result {
+        let zst_decoder = match zst_decoder_result {
             Ok(decoder) => {
                 log::debug!("Successfully created zstd decoder for {}", revise.location);
                 decoder
@@ -222,109 +265,20 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
             }
         };
 
-        // Create a streaming XML processor that handles chunks properly
-        let mut xml_processor = StreamingXmlProcessor::new(&mut derived_files);
-        let mut chunk_count = 0;
-        let mut total_bytes = 0;
-
-        loop {
-            // Clear buffer before each read to avoid potential data corruption
-            unpack_buf.fill(0);
-
-            let read_result = zst_decoder.read(&mut unpack_buf);
-            match read_result {
-                Ok(0) => {
-                    log::debug!("Reached EOF after processing {} chunks ({} bytes) for {}",
-                              chunk_count, total_bytes, revise.location);
-                    // Finalize any remaining buffered data
-                    xml_processor.finalize()?;
-                    break; // EOF
-                }
-                Ok(n) => {
-                    chunk_count += 1;
-                    total_bytes += n;
-
-                    if n == 0 {
-                        log::warn!("Read 0 bytes in chunk {} for {}, this might indicate a problem",
-                                 chunk_count, revise.location);
-                        continue;
-                    }
-
-                    if chunk_count == 1 {
-                        // Log first few bytes of first chunk to help with debugging
-                        let preview_size = std::cmp::min(n, 32);
-                        let preview = hex::encode(&unpack_buf[..preview_size]);
-                        log::debug!("First {} bytes of first chunk: {}", preview_size, preview);
-                    }
-
-                    if chunk_count % 100 == 0 {
-                        log::debug!("Processed {} chunks ({} bytes) for {}",
-                                  chunk_count, total_bytes, revise.location);
-                    }
-
-                    // Process the chunk with the streaming XML processor
-                    match xml_processor.process_chunk(&unpack_buf[..n]) {
-                        Ok(_) => (),
-                        Err(e) => {
-                            let err_msg = format!("Failed to process XML chunk {} ({} bytes) for {}: {}", chunk_count, n, revise.location, e);
-                            log::error!("{}", err_msg);
-
-                            // If this is the first chunk, log more details to help diagnose
-                            if chunk_count == 1 {
-                                let preview = String::from_utf8_lossy(&unpack_buf[..std::cmp::min(n, 200)]);
-                                log::error!("First chunk content preview: {}", preview);
-                            }
-
-                            return Err(eyre!("XML processing error: {}", err_msg));
-                        }
-                    };
-                }
-                Err(e) => {
-                    let err_msg = format!("Decompression error for {} at chunk {}: {}", revise.location, chunk_count, e);
-                    log::error!("{}", err_msg);
-                    return Err(eyre!("Decompression error: {}", err_msg));
-                }
-            }
-        }
-
-        derived_files.on_finish(revise)
-            .map_err(|e| eyre!("Failed to finalize processing for {}: {}", revise.location, e))
+        // Process chunks using the zstd decoder
+        process_chunks(zst_decoder, &mut xml_processor, &mut unpack_buf, revise, "zst")?;
     } else {
         log::debug!("Using gzip decoder for {}", revise.location);
         // Default to gzip decoder for .gz files or other formats
-        let mut xml_decoder = GzDecoder::new(reader);
+        let xml_decoder = GzDecoder::new(reader);
 
-        // Create a streaming XML processor that handles chunks properly
-        let mut xml_processor = StreamingXmlProcessor::new(&mut derived_files);
-        let mut chunk_count = 0;
-
-        loop {
-            let read_result = xml_decoder.read(&mut unpack_buf);
-            match read_result {
-                Ok(0) => {
-                    log::debug!("Reached EOF after processing {} chunks for {}", chunk_count, revise.location);
-                    // Finalize any remaining buffered data
-                    xml_processor.finalize()?;
-                    break; // EOF
-                }
-                Ok(n) => {
-                    chunk_count += 1;
-                    if chunk_count % 100 == 0 {
-                        log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
-                    }
-                    xml_processor.process_chunk(&unpack_buf[..n])
-                        .map_err(|e| eyre!("Failed to process XML chunk {} ({} bytes) for {}: {}", chunk_count, n, revise.location, e))?;
-                }
-                Err(e) => {
-                    log::error!("Decompression error for {}: {}", revise.location, e);
-                    return Err(eyre!("Decompression error: Failed to decompress file {}: {}", revise.location, e));
-                }
-            }
-        }
-
-        derived_files.on_finish(revise)
-            .map_err(|e| eyre!("Failed to finalize processing for {}: {}", revise.location, e))
+        // Process chunks using the gzip decoder
+        process_chunks(xml_decoder, &mut xml_processor, &mut unpack_buf, revise, "gz")?;
     }
+
+    // Finalize processing for both decoders
+    derived_files.on_finish(revise)
+        .map_err(|e| eyre!("Failed to finalize processing for {}: {}", revise.location, e))
 }
 
 // Streaming XML processor that maintains state across chunks
