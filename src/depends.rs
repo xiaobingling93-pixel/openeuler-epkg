@@ -1,6 +1,7 @@
 use std::process::exit;
 use std::collections::{HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre;
 use crate::models::*;
@@ -305,7 +306,7 @@ impl PackageManager {
             Ok(packages_list) => {
                 for package in &packages_list {
                     // cache for later references
-                    self.pkgkey2package.insert(package.pkgkey.clone(), package.clone());
+                    self.pkgkey2package.insert(package.pkgkey.clone(), Arc::new(package.clone()));
                 }
                 return Ok(packages_list);
             },
@@ -313,10 +314,10 @@ impl PackageManager {
         }
     }
 
-    pub fn load_package_info(&mut self, pkgkey: &str) -> Result<Package> {
+    pub fn load_package_info(&mut self, pkgkey: &str) -> Result<Arc<Package>> {
         // Try to find by pkgkey first
         if let Some(package) = self.pkgkey2package.get(pkgkey) {
-            return Ok(package.clone());
+            return Ok(Arc::clone(package));
         }
 
         // Extract package name from pkgkey and try to load all packages with that name
@@ -325,7 +326,7 @@ impl PackageManager {
 
         // Try to find the package again after loading
         if let Some(package) = self.pkgkey2package.get(pkgkey) {
-            return Ok(package.clone());
+            return Ok(Arc::clone(package));
         }
 
         Err(eyre::eyre!("Package not found: {}", pkgkey))

@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use crate::parse_cmdline;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
+use std::sync::Arc;
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
@@ -520,7 +521,7 @@ pub struct PackageManager {
     // essential_pkgnames replaced by get_essential_pkgnames()
 
     // cache need to installing packages info
-    pub pkgkey2package: HashMap<String, Package>,
+    pub pkgkey2package: HashMap<String, Arc<Package>>,
     pub appbin_source: HashSet<String>,
 
     // loaded from env installed-packages.json
