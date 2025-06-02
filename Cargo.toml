@@ -52,6 +52,11 @@ memmap2 = "0.9"
 [dependencies.console]
 version = "0.15"
 
+# AR archive support for Debian packages
+[dependencies.ar]
+version = "0.9"
+default-features = false
+
 # https://docs.rs/color-eyre/latest/color_eyre/#improving-perf-on-debug-builds
 [profile.dev.package.backtrace]
 opt-level = 3

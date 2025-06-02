@@ -1,0 +1,227 @@
+use std::fs;
+use std::io::{self, Read};
+use std::path::Path;
+use std::collections::HashMap;
+use tar::Archive;
+use log;
+use flate2::read::GzDecoder;
+use xz2::read::XzDecoder;
+use color_eyre::Result;
+use color_eyre::eyre::{self, WrapErr};
+use crate::deb_repo::PACKAGE_KEY_MAPPING;
+
+/// Unpacks a Debian package to the specified directory
+pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<()> {
+    let deb_file = deb_file.as_ref();
+    let store_tmp_dir = store_tmp_dir.as_ref();
+
+    // Create the required directory structure
+    fs::create_dir_all(store_tmp_dir.join("fs"))?;
+    fs::create_dir_all(store_tmp_dir.join("info/deb"))?;
+    fs::create_dir_all(store_tmp_dir.join("info/install"))?;
+
+    // Extract the AR archive and process tar files
+    extract_ar_archive(deb_file, store_tmp_dir)?;
+
+    // Generate filelist.txt
+    crate::store::create_filelist_txt(store_tmp_dir)?;
+
+    // Create scriptlets
+    create_scriptlets(store_tmp_dir)?;
+
+    // Create package.txt
+    create_package_txt(store_tmp_dir)?;
+
+    Ok(())
+}
+
+/// Extracts an AR archive from a Debian package file and processes the tar files
+fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<()> {
+    let deb_file = deb_file.as_ref();
+    let store_tmp_dir = store_tmp_dir.as_ref();
+
+    // Open the AR archive
+    let file = fs::File::open(deb_file)
+        .wrap_err_with(|| format!("Failed to open deb file: {}", deb_file.display()))?;
+
+    let mut archive = ar::Archive::new(file);
+    let mut data_tar_path = None;
+    let mut control_tar_path = None;
+
+    // Extract AR archive entries
+    while let Some(entry_result) = archive.next_entry() {
+        let mut entry = entry_result
+            .wrap_err("Failed to read AR archive entry")?;
+
+        let header = entry.header().clone();
+        let identifier = std::str::from_utf8(header.identifier())
+            .wrap_err("Invalid UTF-8 in AR entry identifier")?;
+
+        match identifier {
+            "data.tar.gz" | "data.tar.xz" | "data.tar.zst" | "data.tar" => {
+                let temp_path = store_tmp_dir.join(identifier);
+                let mut temp_file = fs::File::create(&temp_path)?;
+                io::copy(&mut entry, &mut temp_file)?;
+                data_tar_path = Some(temp_path);
+            }
+            "control.tar.gz" | "control.tar.xz" | "control.tar.zst" | "control.tar" => {
+                let temp_path = store_tmp_dir.join(identifier);
+                let mut temp_file = fs::File::create(&temp_path)?;
+                io::copy(&mut entry, &mut temp_file)?;
+                control_tar_path = Some(temp_path);
+            }
+            _ => {
+                // Skip other entries like debian-binary
+                continue;
+            }
+        }
+    }
+
+    // Extract data.tar to fs/
+    if let Some(data_tar) = data_tar_path {
+        extract_tar(&data_tar, &store_tmp_dir.join("fs"))?;
+        fs::remove_file(&data_tar)?;
+    } else {
+        return Err(eyre::eyre!("No data.tar found in deb archive"));
+    }
+
+    // Extract control.tar to info/deb/
+    if let Some(control_tar) = control_tar_path {
+        extract_tar(&control_tar, &store_tmp_dir.join("info/deb"))?;
+        fs::remove_file(&control_tar)?;
+    } else {
+        return Err(eyre::eyre!("No control.tar found in deb archive"));
+    }
+
+    Ok(())
+}
+
+/// Extracts a tar archive (with automatic compression detection) to the target directory
+fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
+    let tar_path = tar_path.as_ref();
+    let target_dir = target_dir.as_ref();
+
+    fs::create_dir_all(target_dir)?;
+
+    let file = fs::File::open(tar_path)?;
+    let filename = tar_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    let reader: Box<dyn Read> = if filename.ends_with(".gz") {
+        Box::new(GzDecoder::new(file))
+    } else if filename.ends_with(".xz") {
+        Box::new(XzDecoder::new(file))
+    } else if filename.ends_with(".zst") {
+        Box::new(zstd::stream::Decoder::new(file)?)
+    } else {
+        Box::new(file)
+    };
+
+    let mut archive = Archive::new(reader);
+    archive.unpack(target_dir)
+        .wrap_err_with(|| format!("Failed to extract tar archive: {}", tar_path.display()))?;
+
+    Ok(())
+}
+
+/// Maps Debian scriptlet names to common scriptlet names and moves them to info/install/
+fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let deb_dir = store_tmp_dir.join("info/deb");
+    let install_dir = store_tmp_dir.join("info/install");
+
+    // Mapping from Debian scriptlet names to common names
+    // Debian upgrade uses the same scripts as install
+    let scriptlet_mapping: HashMap<&str, Vec<&str>> = [
+        ("preinst", vec!["pre_install.sh", "pre_upgrade.sh"]),
+        ("postinst", vec!["post_install.sh", "post_upgrade.sh"]),
+        ("prerm", vec!["pre_uninstall.sh"]),
+        ("postrm", vec!["post_uninstall.sh"]),
+    ].into_iter().collect();
+
+    for (deb_script, common_scripts) in &scriptlet_mapping {
+        let deb_script_path = deb_dir.join(deb_script);
+        if deb_script_path.exists() {
+            for common_script in common_scripts {
+                let target_path = install_dir.join(common_script);
+
+                // Copy the script content
+                let content = fs::read(&deb_script_path)?;
+                fs::write(&target_path, &content)?;
+
+                // Make it executable
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&target_path)?.permissions();
+                    perms.set_mode(0o755);
+                    fs::set_permissions(&target_path, perms)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Parses the control file and creates package.txt with mapped field names
+fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let control_path = store_tmp_dir.join("info/deb/control");
+
+    if !control_path.exists() {
+        return Err(eyre::eyre!("Control file not found: {}", control_path.display()));
+    }
+
+    let control_content = fs::read_to_string(&control_path)?;
+    let mut raw_fields: Vec<(String, String)> = Vec::new();
+    let mut current_field = None;
+    let mut current_value = String::new();
+
+    // Parse the control file
+    for line in control_content.lines() {
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // Continuation line
+            if !current_value.is_empty() {
+                current_value.push('\n');
+            }
+            current_value.push_str(line.trim());
+        } else if let Some((key, value)) = line.split_once(": ") {
+            // Save previous field if exists
+            if let Some(field_name) = current_field.take() {
+                raw_fields.push((field_name, current_value.clone()));
+            }
+
+            current_field = Some(key.to_string());
+            current_value = value.to_string();
+        }
+    }
+
+    // Save the last field
+    if let Some(field_name) = current_field {
+        raw_fields.push((field_name, current_value));
+    }
+
+    // Map field names using PACKAGE_KEY_MAPPING
+    let mut package_fields: Vec<(String, String)> = Vec::new();
+
+    for (original_field, value) in raw_fields {
+        if let Some(mapped_field) = PACKAGE_KEY_MAPPING.get(original_field.as_str()) {
+            package_fields.push((mapped_field.to_string(), value));
+        } else {
+            log::warn!("Field name '{}' not found in predefined mapping list", original_field);
+            // Include unmapped fields with their original names
+            package_fields.push((original_field, value));
+        }
+    }
+
+    // Use the general store function to save the package.txt file
+    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+
+    Ok(())
+}

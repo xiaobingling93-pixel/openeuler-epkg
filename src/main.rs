@@ -21,6 +21,9 @@ mod mmio;
 mod packages_stream;
 mod deb_repo;
 mod rpm_repo;
+mod deb_pkg;
+mod rpm_pkg;
+mod epkg;
 
 use std::env;
 use std::path::Path;
