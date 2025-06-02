@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::io::Read;
-use color_eyre::eyre;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, WrapErr, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use crate::models::*;
@@ -72,10 +71,21 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                         current_size = 0;
 
                         if let Some(data_type) = e.attributes()
-                            .find(|attr| attr.as_ref().unwrap().key.as_ref() == b"type")
-                            .and_then(|attr| attr.ok())
-                            .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok()) {
+                            .find(|attr_result| {
+                                match attr_result {
+                                    Ok(attr) => attr.key.as_ref() == b"type",
+                                    Err(_) => false
+                                }
+                            })
+                            .and_then(|attr_result| attr_result.ok())
+                            .and_then(|attr| String::from_utf8(attr.value.into_owned())
+                                .map_err(|e| {
+                                    log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                    e
+                                }).ok()) {
                             current_data_type = data_type;
+                        } else {
+                            log::warn!("Failed to find 'type' attribute in 'data' element");
                         }
                     }
                     _ => {}
@@ -85,20 +95,37 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                 // Handle self-closing elements like <location href="..."/>
                 if in_data && e.name().as_ref() == b"location" {
                     if let Some(href) = e.attributes()
-                        .find(|attr| attr.as_ref().unwrap().key.as_ref() == b"href")
-                        .and_then(|attr| attr.ok())
-                        .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok()) {
+                        .find(|attr_result| {
+                            match attr_result {
+                                Ok(attr) => attr.key.as_ref() == b"href",
+                                Err(_) => false
+                            }
+                        })
+                        .and_then(|attr_result| attr_result.ok())
+                        .and_then(|attr| String::from_utf8(attr.value.into_owned())
+                            .map_err(|e| {
+                                log::warn!("Failed to convert href attribute value to UTF-8: {}", e);
+                                e
+                            }).ok()) {
                         current_location = href;
                     }
                 }
             }
             Ok(Event::Text(e)) => {
                 if in_data {
-                    let text = e.unescape().unwrap_or_default().to_string().trim().to_string();
+                    let text = e.unescape()
+                        .map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e))
+                        .unwrap_or_default()
+                        .to_string()
+                        .trim()
+                        .to_string();
 
                     match current_element.as_str() {
                         "checksum" => current_checksum = text,
-                        "size" => current_size = text.parse().unwrap_or(0),
+                        "size" => current_size = text.parse().unwrap_or_else(|e| {
+                            log::warn!("Failed to parse size value '{}': {}", text, e);
+                            0
+                        }),
                         _ => {}
                     }
                 }
@@ -113,11 +140,13 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 index_url.trim_end_matches('/')
                             };
                             let url = format!("{}/{}", baseurl, current_location);
-                            let local_path = url_to_cache_path(&url)?;
+                            let local_path = url_to_cache_path(&url)
+                                .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
                             let need_download = !local_path.exists();
 
                             let is_packages = current_data_type == "primary";
-                            let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+                            let repo_dir = dirs::get_repo_dir(&repo)
+                                .map_err(|e| eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
                             let output_path = if is_packages {
                                 repo_dir.join(format!("packages.txt"))
                             } else {
@@ -153,7 +182,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(eyre!("Error at position {}: {:?}", reader.buffer_position(), e)),
+            Err(e) => return Err(eyre!("XML parsing error: Error at position {}: {:?}", reader.buffer_position(), e)),
             _ => {}
         }
         buf.clear();
@@ -166,7 +195,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     log::debug!("Starting to process packages content for {} (hash: {})", revise.location, revise.hash);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)
-        .map_err(|e| eyre::eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
+        .map_err(|e| eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
 
     // Always use automatic hash validation by passing the expected hash
     let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
@@ -189,7 +218,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
             Err(e) => {
                 let err_msg = format!("Failed to create zstd decoder for {}: {}", revise.location, e);
                 log::error!("{}", err_msg);
-                return Err(eyre::eyre!(err_msg));
+                return Err(eyre!(err_msg));
             }
         };
 
@@ -234,8 +263,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                     match process_xml_chunk(&unpack_buf[..n], &mut derived_files) {
                         Ok(_) => (),
                         Err(e) => {
-                            let err_msg = format!("Failed to process XML chunk {} ({} bytes) for {}: {}",
-                                              chunk_count, n, revise.location, e);
+                            let err_msg = format!("Failed to process XML chunk {} ({} bytes) for {}: {}", chunk_count, n, revise.location, e);
                             log::error!("{}", err_msg);
 
                             // If this is the first chunk, log more details to help diagnose
@@ -244,21 +272,20 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                                 log::error!("First chunk content preview: {}", preview);
                             }
 
-                            return Err(eyre::eyre!(err_msg));
+                            return Err(eyre!("XML processing error: {}", err_msg));
                         }
                     };
                 }
                 Err(e) => {
-                    let err_msg = format!("Decompression error for {} at chunk {}: {}",
-                                      revise.location, chunk_count, e);
+                    let err_msg = format!("Decompression error for {} at chunk {}: {}", revise.location, chunk_count, e);
                     log::error!("{}", err_msg);
-                    return Err(eyre::eyre!(err_msg));
+                    return Err(eyre!("Decompression error: {}", err_msg));
                 }
             }
         }
 
         derived_files.on_finish(revise)
-            .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
+            .map_err(|e| eyre!("Failed to finalize processing for {}: {}", revise.location, e))
     } else {
         log::debug!("Using gzip decoder for {}", revise.location);
         // Default to gzip decoder for .gz files or other formats
@@ -279,17 +306,17 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                         log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
                     }
                     process_xml_chunk(&unpack_buf[..n], &mut derived_files)
-                        .map_err(|e| eyre::eyre!("Failed to process XML chunk {} for {}: {}", chunk_count, revise.location, e))?;
+                        .map_err(|e| eyre!("Failed to process XML chunk {} ({} bytes) for {}: {}", chunk_count, n, revise.location, e))?;
                 }
                 Err(e) => {
                     log::error!("Decompression error for {}: {}", revise.location, e);
-                    return Err(eyre::eyre!("Failed to decompress file {}: {}", revise.location, e));
+                    return Err(eyre!("Decompression error: Failed to decompress file {}: {}", revise.location, e));
                 }
             }
         }
 
         derived_files.on_finish(revise)
-            .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
+            .map_err(|e| eyre!("Failed to finalize processing for {}: {}", revise.location, e))
     }
 }
 
@@ -371,7 +398,7 @@ fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::Packages
             }
             Ok(Event::Text(e)) => {
                 if in_package && !current_tag.is_empty() {
-                    match e.unescape() {
+                    match e.unescape().map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e)) {
                         Ok(text) => {
                             let text_str = text.to_string().trim().to_string();
                             if !text_str.is_empty() {
@@ -433,7 +460,11 @@ fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::Packages
                             for attr in e.attributes() {
                                 if let Ok(attr) = attr {
                                     let key = String::from_utf8_lossy(attr.key.as_ref());
-                                    if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                                    if let Ok(value) = String::from_utf8(attr.value.to_vec())
+                                        .map_err(|e| {
+                                            log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                            e
+                                        }) {
                                         match key.as_ref() {
                                             "epoch" => epoch = value,
                                             "ver" => ver = value,
@@ -523,10 +554,14 @@ fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::Packages
                                 let mut ver = String::new();
                                 let mut rel = String::new();
 
-                                for attr in e.attributes() {
-                                    if let Ok(attr) = attr {
+                                for attr_result in e.attributes() {
+                                    if let Ok(attr) = attr_result.map_err(|e| eyre!("XML attribute error: Failed to process XML attribute: {}", e)) {
                                         let key = String::from_utf8_lossy(attr.key.as_ref());
-                                        if let Ok(value) = String::from_utf8(attr.value.to_vec()) {
+                                        if let Ok(value) = String::from_utf8(attr.value.to_vec())
+                                            .map_err(|e| {
+                                                log::warn!("Failed to convert attribute value to UTF-8: {}", e);
+                                                e
+                                            }) {
                                             match key.as_ref() {
                                                 "name"  => name = value,
                                                 "pre"   => is_pre = value == "1",
@@ -599,7 +634,8 @@ fn process_xml_chunk(chunk: &[u8], derived_files: &mut packages_stream::Packages
 
                         // End package processing
                         derived_files.output.push_str("\n");
-                        derived_files.on_output()?;
+                        derived_files.on_output()
+                            .with_context(|| "Failed to process packages content")?;
                         in_package = false;
                         packages_processed += 1;
                         if packages_processed % 1000 == 0 {

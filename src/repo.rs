@@ -67,7 +67,8 @@ impl PackageManager {
     // - $arch: the architecture name
     #[allow(dead_code)]
     pub fn interpolate_index_url(&mut self, config: &ChannelConfig, repo_name: &str, index_url: &str) -> Result<String> {
-        let mirrors = self.get_mirrors()?;
+        let mirrors = self.get_mirrors()
+            .with_context(|| "Failed to get mirrors for index URL interpolation")?;
         // Get mirrors for the distribution and filter by support
         let filtered_mirrors: Vec<&Mirror> = mirrors
             .values()
@@ -105,10 +106,13 @@ impl PackageManager {
     }
 
     pub fn revise_channel_metadata(&mut self) -> Result<()> {
-        let channel_config = self.get_channel_config(config().common.env.clone())?;
+        let channel_config = self.get_channel_config(config().common.env.clone())
+            .with_context(|| "Failed to get channel configuration")?;
 
-        let all_repos = get_revise_repos(channel_config.clone())?;
-        revise_repos(channel_config.format.clone(), all_repos)?;
+        let all_repos = get_revise_repos(channel_config.clone())
+            .with_context(|| "Failed to get repository revision information")?;
+        revise_repos(channel_config.format.clone(), all_repos)
+            .with_context(|| "Failed to process repository revisions")?;
 
         Ok(())
     }
@@ -139,7 +143,8 @@ fn select_mirror(mirrors: &Vec<&Mirror>, distro: &str, format: PackageFormat) ->
     sorted_mirrors.sort_by(|a, b| b.priority.cmp(&a.priority));
 
     // Select highest priority mirror and format URL appropriately
-    let mirror = sorted_mirrors.first().unwrap();
+    let mirror = sorted_mirrors.first()
+        .ok_or_else(|| eyre::eyre!("No mirrors available after sorting"))?;
     let url = if mirror.top_level || format == PackageFormat::Deb {
         format!("{}//", mirror.url.trim_end_matches('/'))
     } else {
@@ -233,8 +238,10 @@ pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
 }
 
 fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
-    let metadata = fs::metadata(path)?;
-    let modified = metadata.modified()?;
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("Failed to get metadata for file: {}", path.display()))?;
+    let modified = metadata.modified()
+        .with_context(|| format!("Failed to get modification time for file: {}", path.display()))?;
     let now = SystemTime::now();
     if let Ok(duration) = now.duration_since(modified) {
         Ok(duration < max_age)
@@ -245,14 +252,17 @@ fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
 
 fn touch_file_mtime(path: &PathBuf) -> Result<()> {
     let now = SystemTime::now();
-    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now))?;
+    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now))
+        .with_context(|| format!("Failed to update modification time for file: {}", path.display()))?;
     Ok(())
 }
 
 fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> Result<bool> {
-    let is_recent = is_file_recent(&index_path, duration)?;
+    let is_recent = is_file_recent(&index_path, duration)
+        .with_context(|| format!("Failed to check if file is recent: {}", index_path.display()))?;
     if !is_recent {
-        touch_file_mtime(&index_path)?;
+        touch_file_mtime(&index_path)
+            .with_context(|| format!("Failed to update modification time for index file: {}", index_path.display()))?;
     }
     Ok(is_recent)
 }
@@ -264,7 +274,14 @@ fn should_skip_duplicate_downloads(path: &PathBuf) -> bool {
         LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
 
     // Thread-safe access to static HashSet
-    let mut downloading = DOWNLOADING_RELEASES.lock().unwrap();
+    let mut downloading = match DOWNLOADING_RELEASES.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("Failed to acquire lock for download tracking: {}", e);
+            return false; // Return false to allow download attempt if we can't check the set
+        }
+    };
+
     if downloading.contains(path) {
         return true;
     }
@@ -280,7 +297,8 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
         return Ok(true);
     }
 
-    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+    let repo_dir = dirs::get_repo_dir(&repo)
+        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
     let index_path = repo_dir.join("RepoIndex.json");
     if !index_path.exists() {
         return Ok(true);
@@ -293,7 +311,8 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
 
     // if not always update
     if !(expire_secs < 0 || config().subcommand == "update") {
-        let duration = std::time::Duration::from_secs(expire_secs.try_into().unwrap());
+        let duration = std::time::Duration::from_secs(expire_secs.try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
         // Check if release file is recent
         if is_file_recent(path, duration)? {
             // If release file is recent, check repo index age
@@ -307,7 +326,8 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
 }
 
 pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
-    if !should_refresh_release_file(path, repo)? {
+    if !should_refresh_release_file(path, repo)
+        .with_context(|| format!("Failed to check if release file needs refreshing: {}", path.display()))? {
         return Ok(());
     }
 
@@ -316,20 +336,25 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     }
 
     // Download Release file
-    download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)?;
+    download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)
+        .with_context(|| format!("Failed to download release file from {}", repo.index_url))?;
     Ok(())
 }
 
 pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
-    let release_path = url_to_cache_path(&repo.index_url)?;
+    let repo_dir = dirs::get_repo_dir(&repo)
+        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let release_path = url_to_cache_path(&repo.index_url)
+        .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
 
-    refresh_release_file(&release_path, &repo)?;
+    refresh_release_file(&release_path, &repo)
+        .with_context(|| format!("Failed to refresh release file for repository: {}", repo.repo_name))?;
 
     // Parse Release file
     let release_content = fs::read_to_string(&release_path)
         .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
-    let release_dir = release_path.parent().unwrap();
+    let release_dir = release_path.parent()
+        .ok_or_else(|| eyre::eyre!("Failed to get parent directory of release path: {}", release_path.display()))?;
     let release_items =
         match format {
             PackageFormat::Deb => crate::deb_repo::parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?,
@@ -361,7 +386,8 @@ pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mps
         let release_items_clone2 = release_items.clone();
         process_revises_parallel(repo, revises, repo_dir, release_items_clone2, result_tx.clone());
     } else {
-        process_revises_sequential(repo, revises, &repo_dir, release_items)?;
+        process_revises_sequential(repo, revises, &repo_dir, release_items)
+            .with_context(|| format!("Failed to process repository revisions sequentially for: {}", repo.repo_name))?;
     }
     Ok(true)
 }
@@ -376,10 +402,12 @@ fn process_revises_sequential(
 
     // Process files sequentially
     for revise in &revises {
-        download_and_process_item(&revise, repo_dir)?;
+        download_and_process_item(&revise, repo_dir)
+            .with_context(|| format!("Failed to download and process item: {}", revise.location))?;
     }
 
-    create_load_repoindex(&repo, no_revises, &repo_dir, release_items)?;
+    create_load_repoindex(&repo, no_revises, &repo_dir, release_items)
+        .with_context(|| format!("Failed to create and load repository index for: {}", repo.repo_name))?;
 
     Ok(())
 }
@@ -403,7 +431,13 @@ fn process_revises_parallel(
             let revise = revise.clone();
 
             let handle = std::thread::spawn(move || {
-                download_and_process_item(&revise, &repo_dir)
+                match download_and_process_item(&revise, &repo_dir) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::error!("Failed to download and process item {}: {}", revise.location, e);
+                        false
+                    }
+                }
             });
 
             handles.push(handle);
@@ -411,7 +445,12 @@ fn process_revises_parallel(
 
         // Wait for all threads to complete
         for handle in handles {
-            let _ = handle.join().unwrap();
+            if let Err(e) = handle.join() {
+                // Log the error but continue processing
+                log::error!("Failed to join thread: {:?}", e);
+            } else {
+                // Thread completed successfully
+            }
         }
 
         if let Err(e) = create_load_repoindex(&repo_clone, no_revises, &repo_dir, release_items_clone2) {
@@ -435,13 +474,16 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     ).with_data_channel(data_tx);
 
     // Submit download task
-    submit_download_task(task)?;
+    submit_download_task(task)
+        .with_context(|| format!("Failed to submit download task for URL: {}", revise.url))?;
 
-    let _ = &DOWNLOAD_MANAGER.start_processing()?;
+    let _ = &DOWNLOAD_MANAGER.start_processing()
+        .with_context(|| "Failed to start download manager processing")?;
 
     log::debug!("process_data for {:?}", revise);
     // Process data blocks as they arrive
     process_data(data_rx, repo_dir, revise)
+        .with_context(|| format!("Failed to process data for item: {}", revise.location))
 }
 
 fn create_load_repoindex(
@@ -452,16 +494,19 @@ fn create_load_repoindex(
 ) -> Result<()> {
     let mut repo_index: RepoIndex =
         if no_revises {
-            mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))?
+            mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))
+                .with_context(|| format!("Failed to deserialize RepoIndex.json for repository: {}", repo.repo_name))?
         } else {
-            collect_save_repoindex(&repo, repo_dir, &release_items)?
+            collect_save_repoindex(&repo, repo_dir, &release_items)
+                .with_context(|| format!("Failed to collect and save repository index for: {}", repo.repo_name))?
         };
 
     if let Some(baseurl) = release_items.get(0).map(|item| item.package_baseurl.clone()) {
         repo_index.package_baseurl = baseurl;
     }
 
-    mmio::populate_repoindex_data(&repo, repo_index)?;
+    mmio::populate_repoindex_data(&repo, repo_index)
+        .with_context(|| format!("Failed to populate repository index data for: {}", repo.repo_name))?;
 
     Ok(())
 }

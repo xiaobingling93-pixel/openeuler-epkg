@@ -7,9 +7,7 @@ use std::fs;
 use std::fs::{OpenOptions, File};
 use std::io::BufWriter;
 use std::io::Write;
-use color_eyre::eyre;
-use color_eyre::eyre::Result;
-use color_eyre::eyre::WrapErr;
+use color_eyre::eyre::{eyre, Result};
 use sha2::{Sha256, Digest};
 use hex;
 use crate::models::*;
@@ -47,20 +45,20 @@ impl ReceiverHasher {
 impl std::io::Read for ReceiverHasher {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.position >= self.current_chunk.len() {
-            log::debug!("ReceiverHasher: Current chunk consumed, waiting for next chunk");
+            log::trace!("ReceiverHasher: Current chunk consumed, waiting for next chunk");
             match self.receiver.recv() {
                 Ok(chunk) => {
                     if chunk.is_empty() {
                         log::warn!("ReceiverHasher: Received empty chunk, this might indicate a problem");
                     } else {
-                        log::debug!("ReceiverHasher: Received chunk of size {}", chunk.len());
+                        log::trace!("ReceiverHasher: Received chunk of size {}", chunk.len());
                     }
                     self.hasher.update(&chunk);
                     self.current_chunk = chunk;
                     self.position = 0;
                 }
                 Err(e) => {
-                    log::debug!("ReceiverHasher: Channel closed: {}", e);
+                    log::debug!("ReceiverHasher: Channel closed: {}, starting hash validation", e);
 
                     // Auto-validate hash if expected hash was provided
                     if let Some(ref expected) = self.expected_hash {
@@ -139,7 +137,10 @@ impl PackagesStreamline {
                 repo_dir: &PathBuf,
                 process_line_fn: fn(&str, &mut PackagesStreamline) -> Result<()>) -> Result<Self> {
         let output_path = &revise.output_path;
-        let filename = output_path.file_name().unwrap_or_default().to_string_lossy();
+        let filename = output_path.file_name()
+            .ok_or_else(|| eyre!("Invalid output path: no filename component"))
+            .unwrap_or_default()
+            .to_string_lossy();
 
         // Get standard package paths
         let (_, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
@@ -154,7 +155,7 @@ impl PackagesStreamline {
             .create(true)
             .append(true)
             .open(&output_path)
-            .context(format!("Failed to open output file: {:?}", output_path))?;
+            .map_err(|e| eyre!("Failed to open output file: {:?}: {}", output_path, e))?;
         let writer = BufWriter::new(file);
 
         Ok(Self {
@@ -213,7 +214,7 @@ impl PackagesStreamline {
         if !self.output.is_empty() {
             self.new_hasher.update(self.output.as_bytes());
             self.writer.write_all(self.output.as_bytes())
-                .context(format!("Failed to append to output file: {:?}", self.output_path))?;
+                .map_err(|e| eyre!("Failed to append to output file: {:?}: {}", self.output_path, e))?;
             self.output_offset += self.output.len();
             self.output.clear();
         }
@@ -222,12 +223,15 @@ impl PackagesStreamline {
 
     pub fn on_finish(&mut self, _revise: &RepoReleaseItem) -> Result<FileInfo> {
         self.writer.flush()
-            .context(format!("Failed to flush output file: {:?}", self.output_path))?;
+            .map_err(|e| eyre!("Failed to flush output file: {:?}: {}", self.output_path, e))?;
 
         // Save package offsets to index file
-        mmio::serialize_pkgname2ranges(&self.pkgname2ranges_path, &self.pkgname2ranges)?;
-        mmio::serialize_provide2pkgnames(&self.provide2pkgnames_path, &self.provide2pkgnames)?;
-        mmio::serialize_essential_pkgnames(&self.essential_pkgnames_path, &self.essential_pkgnames)?;
+        mmio::serialize_pkgname2ranges(&self.pkgname2ranges_path, &self.pkgname2ranges)
+            .map_err(|e| eyre!("Failed to serialize package ranges to {}: {}", self.pkgname2ranges_path.display(), e))?;
+        mmio::serialize_provide2pkgnames(&self.provide2pkgnames_path, &self.provide2pkgnames)
+            .map_err(|e| eyre!("Failed to serialize provide-to-package mappings to {}: {}", self.provide2pkgnames_path.display(), e))?;
+        mmio::serialize_essential_pkgnames(&self.essential_pkgnames_path, &self.essential_pkgnames)
+            .map_err(|e| eyre!("Failed to serialize essential package names to {}: {}", self.essential_pkgnames_path.display(), e))?;
 
         let sha256sum = hex::encode(self.new_hasher.finalize_reset());
         save_file_metadata(&self.output_path, &self.json_path, sha256sum)
@@ -244,7 +248,7 @@ impl PackagesStreamline {
                 let line = self.partial_line.clone();
                 let process_line = self.process_line;
                 process_line(&line, self)
-                    .map_err(|e| eyre::eyre!("Failed to process final line for {}: {}",
+                    .map_err(|e| eyre!("Failed to process final line for {}: {}",
                             self.output_path.display(), e))?;
 
                 // Ensure we properly close the last package
@@ -254,7 +258,7 @@ impl PackagesStreamline {
                 }
 
                 self.on_output()
-                    .map_err(|e| eyre::eyre!("Failed to write final output for {}: {}",
+                    .map_err(|e| eyre!("Failed to write final output for {}: {}",
                                           self.output_path.display(), e))?;
 
                 Ok(false) // Signal to stop processing
@@ -282,7 +286,7 @@ impl PackagesStreamline {
                         // Process the complete line
                         let process_line = self.process_line;
                         process_line(&line, self)
-                            .map_err(|e| eyre::eyre!("Failed to process line for {}: {}",
+                            .map_err(|e| eyre!("Failed to process line for {}: {}",
                                                   self.output_path.display(), e))?;
 
                         pos = newline_pos + 1;
@@ -303,14 +307,14 @@ impl PackagesStreamline {
 
                 // Write accumulated output to file
                 self.on_output()
-                    .map_err(|e| eyre::eyre!("Failed to write output for {}: {}",
+                    .map_err(|e| eyre!("Failed to write output for {}: {}",
                                           self.output_path.display(), e))?;
 
                 Ok(true) // Continue processing
             }
             Err(e) => {
                 log::error!("Decompression error for {}: {}", self.output_path.display(), e);
-                Err(eyre::eyre!("Failed to decompress file {}: {}", self.output_path.display(), e))
+                Err(eyre!("Failed to decompress file {}: {}", self.output_path.display(), e))
             }
         }
     }
@@ -318,17 +322,23 @@ impl PackagesStreamline {
 
 fn save_file_metadata(output_path: &PathBuf, json_path: &PathBuf, sha256sum: String) -> Result<FileInfo> {
     let metadata = fs::metadata(output_path)
-        .context(format!("Failed to get metadata for file: {:?}", output_path))?;
+        .map_err(|e| eyre!("Failed to get metadata for file: {}: {}", output_path.display(), e))?;
     let file_info = FileInfo {
-        filename: output_path.file_name().unwrap().to_string_lossy().into_owned(),
+        filename: output_path.file_name()
+            .ok_or_else(|| eyre!("Invalid output path: {}", output_path.display()))?
+            .to_string_lossy().into_owned(),
         sha256sum: sha256sum,
-        datetime: metadata.modified()?.duration_since(SystemTime::UNIX_EPOCH)?.as_secs().to_string(),
+        datetime: metadata.modified()
+            .map_err(|e| eyre!("Failed to get modification time for {}: {}", output_path.display(), e))?
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| eyre!("Failed to calculate duration since epoch for {}: {}", output_path.display(), e))?
+            .as_secs().to_string(),
         size: metadata.len(),
     };
     let json_content = serde_json::to_string_pretty(&file_info)
-        .context("Failed to serialize file info to JSON")?;
+        .map_err(|e| eyre!("Failed to serialize file info to JSON: {}", e))?;
     fs::write(json_path, json_content)
-        .context(format!("Failed to write JSON metadata to file: {:?}", json_path))?;
+        .map_err(|e| eyre!("Failed to write JSON metadata to file: {:?}: {}", json_path, e))?;
 
     log::debug!("Successfully processed packages content");
     Ok(file_info)
