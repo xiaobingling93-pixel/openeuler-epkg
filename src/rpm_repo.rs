@@ -648,22 +648,29 @@ impl<'a> StreamingXmlProcessor<'a> {
     fn handle_end_event(&mut self, e: &quick_xml::events::BytesEnd) -> Result<()> {
         match e.name().as_ref() {
             b"package" => {
-                // Emit all dependency lists
-                for (section_name, (regular, pre)) in &self.dependency_lists {
-                    if section_name == "requires" {
-                        // Special handling for requires - emit requiresPre separately
-                        if !pre.is_empty() {
-                            self.derived_files.output.push_str(&format!("requiresPre: {}\n", pre.join(", ")));
-                        }
-                        if !regular.is_empty() {
-                            self.derived_files.output.push_str(&format!("requires: {}\n", regular.join(", ")));
-                        }
-                    } else {
-                        // For other dependency types, combine pre and regular
-                        let mut all_entries = pre.clone();
-                        all_entries.extend(regular.iter().cloned());
-                        if !all_entries.is_empty() {
-                            self.derived_files.output.push_str(&format!("{}: {}\n", section_name, all_entries.join(", ")));
+                // Emit all dependency lists in a specific, predictable order
+                let dependency_order = [
+                    "provides", "requires", "recommends", "suggests",
+                    "enhances", "supplements", "conflicts", "obsoletes"
+                ];
+
+                for section_name in &dependency_order {
+                    if let Some((regular, pre)) = self.dependency_lists.get(*section_name) {
+                        if *section_name == "requires" {
+                            // Special handling for requires - emit requiresPre separately
+                            if !pre.is_empty() {
+                                self.derived_files.output.push_str(&format!("requiresPre: {}\n", pre.join(", ")));
+                            }
+                            if !regular.is_empty() {
+                                self.derived_files.output.push_str(&format!("requires: {}\n", regular.join(", ")));
+                            }
+                        } else {
+                            // For other dependency types, combine pre and regular
+                            let mut all_entries = pre.clone();
+                            all_entries.extend(regular.iter().cloned());
+                            if !all_entries.is_empty() {
+                                self.derived_files.output.push_str(&format!("{}: {}\n", section_name, all_entries.join(", ")));
+                            }
                         }
                     }
                 }
