@@ -467,7 +467,13 @@ impl<'a> StreamingXmlProcessor<'a> {
                                 self.derived_files.on_new_pkgname(&text_str);
                                 self.derived_files.output.push_str(&format!("{}: {}\n", mapped_key, text_str));
                             } else {
-                                self.derived_files.output.push_str(&format!("{}: {}\n", mapped_key, text_str));
+                                // Format multi-line text with indentation for follow-up lines
+                                let formatted_text = if text_str.contains('\n') {
+                                    text_str.replace("\n", "\n ")
+                                } else {
+                                    text_str
+                                };
+                                self.derived_files.output.push_str(&format!("{}: {}\n", mapped_key, formatted_text));
                             }
                         } else {
                             // Handle special cases not in the mapping

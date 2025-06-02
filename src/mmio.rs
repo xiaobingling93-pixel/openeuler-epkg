@@ -261,50 +261,74 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         package_baseurl: String::new(),
     };
 
+    // Track the current key and value for multi-line handling
+    let mut current_key = String::new();
+    let mut current_value = String::new();
+
     for line in paragraph.lines() {
         if let Some((key, value)) = line.split_once(": ") {
-            let key = key.trim();
-            let value = value.trim();
-
-            match key {
-                "pkgname"           => package.pkgname      = value.to_string(),
-                "version"           => package.version      = value.to_string(),
-                "arch"              => package.arch         = value.to_string(),
-                "summary"           => package.summary      = value.to_string(),
-                "description"       => package.description  = Some(value.to_string()),
-                "location"          => package.location     = value.to_string(),
-                "homepage"          => package.homepage     = value.to_string(),
-                "maintainer"        => package.maintainer   = value.to_string(),
-                "section"           => package.section      = Some(value.to_string()),
-                "priority"          => package.priority     = Some(value.to_string()),
-                "size"              => if let Ok(size)      = value.parse() { package.size = size; },
-                "installedSize"     => if let Ok(size)      = value.parse() { package.installed_size = size; },
-                "buildTime"         => if let Ok(time)      = value.parse() { package.build_time = Some(time); },
-                "sha256"            => {
-                    package.sha256sum = Some(value.to_string());
-                    package.pkgkey = format_pkgkey(&package.pkgname, value);
-                },
-                "sha1"              => {
-                    package.sha1sum = Some(value.to_string());
-                    package.pkgkey = format_pkgkey(&package.pkgname, value);
-                },
-                "tag"               => package.tag          = Some(value.to_string()),
-                "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),
-                "requires"          => package.requires     = value.split(", ").map(|s| s.to_string()).collect(),
-                "provides"          => package.provides     = value.split(", ").map(|s| s.to_string()).collect(),
-                "recommends"        => package.recommends   = value.split(", ").map(|s| s.to_string()).collect(),
-                "suggests"          => package.suggests     = value.split(", ").map(|s| s.to_string()).collect(),
-                "conflicts"         => package.conflicts    = value.split(", ").map(|s| s.to_string()).collect(),
-                "source"            => package.source       = Some(value.to_string()),
-                "originUrl"         => package.origin_url   = Some(value.to_string()),
-                _                   => {
-                    // Unknown field, ignore or log
-                }
+            // If we have a previous key/value pair, process it before starting a new one
+            if !current_key.is_empty() {
+                process_key_value(&mut package, &current_key, &current_value);
+                current_key.clear();
+                current_value.clear();
             }
+
+            current_key = key.trim().to_string();
+            current_value = value.trim().to_string();
+        } else if line.starts_with(" ") && !current_key.is_empty() {
+            // This is a continuation line (indented follow-up line)
+            // Add it to the current value with a newline
+            current_value.push('\n');
+            current_value.push_str(line.trim());
         }
     }
 
+    // Process the last key/value pair if any
+    if !current_key.is_empty() {
+        process_key_value(&mut package, &current_key, &current_value);
+    }
+
     Ok(package)
+}
+
+// Helper function to process a key/value pair
+fn process_key_value(package: &mut Package, key: &str, value: &str) {
+    match key {
+        "pkgname"           => package.pkgname      = value.to_string(),
+        "version"           => package.version      = value.to_string(),
+        "arch"              => package.arch         = value.to_string(),
+        "summary"           => package.summary      = value.to_string(),
+        "description"       => package.description  = Some(value.to_string()),
+        "location"          => package.location     = value.to_string(),
+        "homepage"          => package.homepage     = value.to_string(),
+        "maintainer"        => package.maintainer   = value.to_string(),
+        "section"           => package.section      = Some(value.to_string()),
+        "priority"          => package.priority     = Some(value.to_string()),
+        "size"              => if let Ok(size)      = value.parse() { package.size = size; },
+        "installedSize"     => if let Ok(size)      = value.parse() { package.installed_size = size; },
+        "buildTime"         => if let Ok(time)      = value.parse() { package.build_time = Some(time); },
+        "sha256"            => {
+            package.sha256sum = Some(value.to_string());
+            package.pkgkey = format_pkgkey(&package.pkgname, value);
+        },
+        "sha1"              => {
+            package.sha1sum = Some(value.to_string());
+            package.pkgkey = format_pkgkey(&package.pkgname, value);
+        },
+        "tag"               => package.tag          = Some(value.to_string()),
+        "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),
+        "requires"          => package.requires     = value.split(", ").map(|s| s.to_string()).collect(),
+        "provides"          => package.provides     = value.split(", ").map(|s| s.to_string()).collect(),
+        "recommends"        => package.recommends   = value.split(", ").map(|s| s.to_string()).collect(),
+        "suggests"          => package.suggests     = value.split(", ").map(|s| s.to_string()).collect(),
+        "conflicts"         => package.conflicts    = value.split(", ").map(|s| s.to_string()).collect(),
+        "source"            => package.source       = Some(value.to_string()),
+        "originUrl"         => package.origin_url   = Some(value.to_string()),
+        _                   => {
+            // Unknown field, ignore or log
+        }
+    }
 }
 
 pub fn lookup_in_packages(
