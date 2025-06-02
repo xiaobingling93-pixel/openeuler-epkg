@@ -624,12 +624,41 @@ impl<'a> StreamingXmlProcessor<'a> {
                     }
 
                     // Format entry with version if available
-                    let formatted_entry = if !ver.is_empty() && !rel.is_empty() {
-                        if epoch.is_empty() || epoch == "0" {
-                            format!("{}={}-{}", name, ver, rel)
+                    let formatted_entry = if !ver.is_empty() {
+                        // Convert flags to appropriate symbol
+                        let flag_symbol = match _flags.as_str() {
+                            "EQ" => "=",
+                            "GE" => ">=",
+                            "GT" => ">",
+                            "LE" => "<=",
+                            "LT" => "<",
+                            unknown => {
+                                log::warn!(
+                                    "Encountered unknown rpm dependency flag '{}' in <rpm:entry> (name: '{}', section: '{}'). Defaulting to '='.",
+                                    unknown,
+                                    name,
+                                    self.in_dependency_section
+                                );
+                                "="
+                            }
+                        };
+
+                        // Format version part
+                        let version_part = if !rel.is_empty() {
+                            if epoch.is_empty() || epoch == "0" {
+                                format!("{}-{}", ver, rel)
+                            } else {
+                                format!("{}:{}-{}", epoch, ver, rel)
+                            }
                         } else {
-                            format!("{}={}:{}-{}", name, epoch, ver, rel)
-                        }
+                            if epoch.is_empty() || epoch == "0" {
+                                ver.clone()
+                            } else {
+                                format!("{}:{}", epoch, ver)
+                            }
+                        };
+
+                        format!("{}{}{}", name, flag_symbol, version_part)
                     } else {
                         name
                     };
