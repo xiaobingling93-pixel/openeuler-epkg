@@ -151,11 +151,21 @@ impl PackagesStreamline {
 
         log::debug!("Output paths - txt: {:?}, json: {:?}, idx: {:?}", output_path, json_path, pkgname2ranges_path);
 
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                log::error!("Failed to create parent directory {}: {}", parent.display(), e);
+                eyre!("Failed to create parent directory {}: {}", parent.display(), e)
+            })?;
+        }
         let file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open(&output_path)
-            .map_err(|e| eyre!("Failed to open output file: {:?}: {}", output_path, e))?;
+            .map_err(|e| {
+                log::error!("Failed to open output file for writing ({}): {}", output_path.display(), e);
+                eyre!("Failed to open output file for writing ({}): {}", output_path.display(), e)
+            })?;
         let writer = BufWriter::new(file);
 
         Ok(Self {
