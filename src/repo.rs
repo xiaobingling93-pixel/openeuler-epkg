@@ -616,7 +616,7 @@ pub fn process_filelist_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf,
     // Create symbolic link from contents_path to repo_dir
     // "Contents-all.gz"
     let output_path = revise.output_path.clone();
-    let json_path = output_path.with_extension("json").to_str()
+    let json_path = output_path.with_extension("").with_extension("json").to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
             .replace("filelist", ".filelist");
     if output_path.exists() {
