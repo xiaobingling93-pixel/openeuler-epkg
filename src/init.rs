@@ -48,10 +48,10 @@ impl PackageManager {
         // Set up installation paths
         fs::create_dir_all(&dirs().epkg_cache)
             .context("Failed to create cache directory")?;
-        fs::create_dir_all(&dirs().epkg_pkg_cache)
-            .context("Failed to create package cache directory")?;
+        fs::create_dir_all(&dirs().epkg_downloads_cache)
+            .context("Failed to create downloads directory")?;
         fs::create_dir_all(&dirs().epkg_channel_cache)
-            .context("Failed to create channel cache directory")?;
+            .context("Failed to create channel directory")?;
 
         // Set up common environment
         self.setup_common_environment()?;

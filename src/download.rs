@@ -803,7 +803,7 @@ impl PackageManager {
 
     // Download packages specified by their pkgkey strings.
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>, async_mode: bool) -> Result<Vec<String>> {
-        let output_dir = dirs().epkg_pkg_cache.clone();
+        let output_dir = dirs().epkg_downloads_cache.clone();
 
         // Step 1: Compose URLs for each pkgkey
         let mut urls = Vec::new();

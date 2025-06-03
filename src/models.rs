@@ -499,7 +499,6 @@ pub struct EPKGDirs {
     // Subdirectories depend on EPKGOptions
     pub epkg_store: PathBuf,
     pub epkg_cache: PathBuf,
-    pub epkg_pkg_cache: PathBuf,
     pub epkg_channel_cache: PathBuf,
     pub epkg_downloads_cache: PathBuf,
 }
