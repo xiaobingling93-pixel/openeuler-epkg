@@ -641,6 +641,7 @@ impl PackageManager {
     fn command_upgrade(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
+            self.revise_channel_metadata()?;
             self.upgrade_packages(package_specs)?;
         }
         Ok(())
@@ -649,6 +650,7 @@ impl PackageManager {
     fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
+            self.revise_channel_metadata()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.remove_packages(packages_vec)?;
         }
