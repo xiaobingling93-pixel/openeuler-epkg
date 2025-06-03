@@ -77,9 +77,17 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
         ))?;
 
     // Replace placeholder strings with actual paths
-    replace_string(target_path, SOURCE_ENV_DIR_PLACEHOLDER, &env_root.to_string_lossy())?;
-    replace_string(target_path, TARGET_ELF_PATH_PLACEHOLDER, &fs_file.to_string_lossy())?;
+    replace_string(target_path, SOURCE_ENV_DIR_PLACEHOLDER, &env_root.to_string_lossy())
+        .with_context(|| format!("Failed to replace SOURCE_ENV_DIR_PLACEHOLDER in {}", target_path.display()))?;
+    replace_string(target_path, TARGET_ELF_PATH_PLACEHOLDER, &fs_file.to_string_lossy())
+        .with_context(|| format!("Failed to replace TARGET_ELF_PATH_PLACEHOLDER in {}", target_path.display()))?;
 
+    log::debug!(
+        "handle_elf target_path={}, env_root={}, fs_file={}",
+        target_path.display(),
+        env_root.display(),
+        fs_file.display()
+    );
     Ok(())
 }
 
@@ -91,7 +99,8 @@ fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Resul
     if let Some(pos) = data.windows(pattern.len()).position(|window| window == pattern) {
         let mut file = fs::OpenOptions::new().write(true).open(binary_file)
             .with_context(|| format!("Failed to open {} for replace_string", binary_file.display()))?;
-        file.seek(SeekFrom::Start(pos as u64))?;
+        file.seek(SeekFrom::Start(pos as u64))
+            .with_context(|| format!("Failed to seek to position {} in {}", pos, binary_file.display()))?;
         // Write the replacement followed by a null terminator.
         file.write_all(format!("{}\0", replacement).as_bytes())?;
     }
@@ -101,16 +110,19 @@ fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Resul
 
 fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Result<()> {
     for fs_file in fs_files {
-        let fhs_file = fs_file.strip_prefix(store_fs_dir)?;
+        let fhs_file = fs_file.strip_prefix(store_fs_dir)
+            .with_context(|| format!("Failed to strip prefix {} from {}", store_fs_dir.display(), fs_file.display()))?;
         let target_path = env_root.join(fhs_file);
 
         // Create parent directory if it doesn't exist
         if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
         }
 
         if fs_file.is_dir() {
-            fs::create_dir_all(&target_path)?;
+            fs::create_dir_all(&target_path)
+                .with_context(|| format!("Failed to create directory {}", target_path.display()))?;
             continue;
         }
 
@@ -214,11 +226,19 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
 }
 
 fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
-    let (file_type, first_line) = get_file_type(fs_file)?;
+    let (file_type, first_line) = get_file_type(fs_file)
+        .with_context(|| format!("Failed to determine file type for {}", fs_file.display()))?;
     let basename = fs_file.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file.display()))?;
     let ebin_path = env_root.join("usr/ebin").join(basename);
 
+    log::debug!(
+        "Creating ebin wrapper: ebin_path={}, fs_file={}, file_type={:?}, first_line={:?}",
+        ebin_path.display(),
+        fs_file.display(),
+        file_type,
+        first_line
+    );
     match file_type {
         FileType::Elf => {
             handle_elf(&ebin_path, env_root, fs_file)
@@ -230,7 +250,8 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
         | FileType::RubyScript
         | FileType::NodeScript
         | FileType::LuaScript => {
-            create_script_wrapper(env_root, fs_file, &ebin_path, file_type, &first_line)?;
+            create_script_wrapper(env_root, fs_file, &ebin_path, file_type, &first_line)
+                .with_context(|| format!("Failed to create script wrapper for {}", fs_file.display()))?;
         }
         _ => {}
     }
@@ -245,7 +266,7 @@ fn create_script_wrapper(
     first_line: &str,
 ) -> Result<()> {
     let env_shell_bang_line = create_shebang_line(env_root, first_line)?;
-    let exec_cmd = get_exec_command(file_type, fs_file);
+    let exec_cmd = get_exec_command(&file_type, fs_file);
 
     let mut wrapper = fs::OpenOptions::new()
         .write(true)
@@ -255,13 +276,22 @@ fn create_script_wrapper(
         .with_context(|| format!("Failed to open {} for create_script_wrapper", ebin_path.display()))?;
 
     if !env_shell_bang_line.is_empty() {
-        wrapper.write_all(env_shell_bang_line.as_bytes())?;
+        wrapper.write_all(env_shell_bang_line.as_bytes())
+            .with_context(|| format!("Failed to write shebang line to {}", ebin_path.display()))?;
     }
 
     wrapper.write_all(exec_cmd.as_bytes())
         .with_context(|| format!("Failed to write exec command to {}", ebin_path.display()))?;
 
     set_wrapper_permissions(ebin_path)?;
+
+    log::debug!(
+        "Created script wrapper: ebin_path={}, fs_file={}, file_type={:?}, first_line={:?}",
+        ebin_path.display(),
+        fs_file.display(),
+        file_type,
+        first_line
+    );
     Ok(())
 }
 
@@ -358,19 +388,21 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
 }
 
 fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
-    let (interpreter_path, params) = parse_shebang_line(first_line)?;
+    let (interpreter_path, params) = parse_shebang_line(first_line)
+        .with_context(|| format!("Failed to parse shebang line: '{}'", first_line))?;
 
     let interpreter_basename = Path::new(&interpreter_path).file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get interpreter basename"))?
         .to_string_lossy();
 
-    let env_interpreter_path = create_interpreter_wrapper(env_root, &interpreter_path, &interpreter_basename)?;
+    let env_interpreter_path = create_interpreter_wrapper(env_root, &interpreter_path, &interpreter_basename)
+        .with_context(|| format!("Failed to create interpreter wrapper for {} with basename {}", interpreter_path, interpreter_basename))?;
 
     // Example output: "#!/home/wfg/.epkg/envs/main/ebin/sh "
     Ok(format!("#!{} {}\n", env_interpreter_path, params))
 }
 
-fn get_exec_command(file_type: FileType, fs_file: &Path) -> String {
+fn get_exec_command(file_type: &FileType, fs_file: &Path) -> String {
     match file_type {
         FileType::ShellScript => format!("exec {:?} \"$@\"\n", fs_file),
         FileType::PythonScript => format!("exec(open({:?}).read())\n", fs_file),
@@ -381,10 +413,8 @@ fn get_exec_command(file_type: FileType, fs_file: &Path) -> String {
 }
 
 fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
-    let mut perms = fs::metadata(ebin_path)
-        .with_context(|| format!("Failed to get metadata for {} for set_wrapper_permissions", ebin_path.display()))?
-        .permissions();
-    perms.set_mode(0o755);
+    use std::os::unix::fs::PermissionsExt;
+    let perms = fs::Permissions::from_mode(0o755);
     fs::set_permissions(ebin_path, perms)
         .with_context(|| format!("Failed to set permissions for {}", ebin_path.display()))?;
     Ok(())
@@ -394,8 +424,10 @@ impl PackageManager {
 
     // link files from env_root to store_fs_dir
     pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
-        let fs_files = list_package_files(store_fs_dir.to_str().unwrap())?;
-        mirror_dir(env_root, store_fs_dir, &fs_files)?;
+        let fs_files = list_package_files(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
+            .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
+        mirror_dir(env_root, store_fs_dir, &fs_files)
+            .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), env_root.display()))?;
         Ok(())
     }
 
