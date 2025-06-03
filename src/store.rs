@@ -17,7 +17,8 @@ use log::warn;
 pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<String>> {
     let mut pkgidlines = Vec::new();
     for package_file in package_files {
-        let pkgidline = unpack_mv_package(&package_file)?;
+        let pkgidline = unpack_mv_package(&package_file)
+            .wrap_err_with(|| format!("Failed to unpack package: {}", package_file))?;
         pkgidlines.push(pkgidline);
     }
     Ok(pkgidlines)
@@ -28,17 +29,22 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = dirs().epkg_cache.join("unpack").join(&temp_name);
-    fs::create_dir_all(&store_tmp_dir)?;
+    fs::create_dir_all(&store_tmp_dir)
+        .wrap_err_with(|| format!("Failed to create temporary directory: {}", store_tmp_dir.display()))?;
 
     // Unpack the package
-    general_unpack_package(Path::new(package_file), &store_tmp_dir)?;
+    general_unpack_package(Path::new(package_file), &store_tmp_dir)
+        .wrap_err_with(|| format!("Failed to unpack package {} to {}", package_file, store_tmp_dir.display()))?;
 
     // Calculate content-addressable hash
-    let ca_hash_real = crate::hash::epkg_store_hash(store_tmp_dir.to_str().unwrap())?;
+    let store_tmp_dir_str = store_tmp_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid UTF-8 in temporary directory path: {}", store_tmp_dir.display()))?;
+    let ca_hash_real = crate::hash::epkg_store_hash(store_tmp_dir_str)
+        .wrap_err_with(|| format!("Failed to calculate content-addressable hash for directory: {}", store_tmp_dir.display()))?;
 
     // Read package.txt to get package name and version
     let package_txt_path = store_tmp_dir.join("info/package.txt");
-    let package_content = fs::read_to_string(&package_txt_path)?;
+    let package_content = fs::read_to_string(&package_txt_path)
+        .wrap_err_with(|| format!("Failed to read package.txt file: {}", package_txt_path.display()))?;
 
     let mut pkgname = String::new();
     let mut version = String::new();
@@ -66,7 +72,8 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     if ca_hash.is_empty() {
         let mut updated_content = package_content;
         updated_content.push_str(&format!("caHash: {}\n", ca_hash_real));
-        fs::write(&package_txt_path, updated_content)?;
+        fs::write(&package_txt_path, updated_content)
+            .wrap_err_with(|| format!("Failed to update package.txt file: {}", package_txt_path.display()))?;
     } else if ca_hash != ca_hash_real {
         return Err(eyre::eyre!("caHash in package.txt does not match calculated hash"));
     }
@@ -77,11 +84,15 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
 
     // Move to final location
     if final_dir.exists() {
-        fs::remove_dir_all(&store_tmp_dir)?;
+        fs::remove_dir_all(&store_tmp_dir)
+            .wrap_err_with(|| format!("Failed to remove temporary directory: {}", store_tmp_dir.display()))?;
     }
 
-    fs::rename(&store_tmp_dir, &final_dir)?;
-    set_perm_and_owner(final_dir.to_str().unwrap())?;
+    fs::rename(&store_tmp_dir, &final_dir)
+        .wrap_err_with(|| format!("Failed to move package from {} to {}", store_tmp_dir.display(), final_dir.display()))?;
+    let final_dir_str = final_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid UTF-8 in final directory path: {}", final_dir.display()))?;
+    set_perm_and_owner(final_dir_str)
+        .wrap_err_with(|| format!("Failed to set permissions and ownership for directory: {}", final_dir.display()))?;
 
     let pkgidline = format!("{}__{}", pkgid, pkgline);
     Ok(pkgidline)
@@ -93,21 +104,26 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P)
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Detect package format from file extension
-    let format = detect_package_format(package_file)?;
+    let format = detect_package_format(package_file)
+        .wrap_err_with(|| format!("Failed to detect package format for: {}", package_file.display()))?;
 
     match format {
         PackageFormat::Deb => {
-            crate::deb_pkg::unpack_package(package_file, store_tmp_dir)?;
+            crate::deb_pkg::unpack_package(package_file, store_tmp_dir)
+                .wrap_err_with(|| format!("Failed to unpack DEB package {} to {}", package_file.display(), store_tmp_dir.display()))?;
         }
         PackageFormat::Rpm => {
-            crate::rpm_pkg::unpack_package(package_file, store_tmp_dir)?;
+            crate::rpm_pkg::unpack_package(package_file, store_tmp_dir)
+                .wrap_err_with(|| format!("Failed to unpack RPM package {} to {}", package_file.display(), store_tmp_dir.display()))?;
         }
         PackageFormat::Apk => {
-            crate::apk_pkg::unpack_package(package_file, store_tmp_dir)?;
+            crate::apk_pkg::unpack_package(package_file, store_tmp_dir)
+                .wrap_err_with(|| format!("Failed to unpack APK package {} to {}", package_file.display(), store_tmp_dir.display()))?;
         }
         PackageFormat::Epkg => {
             // Handle existing .epkg format
-            crate::epkg::unpack_package(package_file, store_tmp_dir)?;
+            crate::epkg::unpack_package(package_file, store_tmp_dir)
+                .wrap_err_with(|| format!("Failed to unpack EPKG package {} to {}", package_file.display(), store_tmp_dir.display()))?;
         }
         _ => {
             return Err(eyre::eyre!("Unsupported package format: {:?}", format));
@@ -153,17 +169,19 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let mut output = String::new();
 
     // Walk through all files in the fs directory
-    for entry in WalkDir::new(&fs_dir).sort_by_file_name() {
-        let entry = entry?;
+    for entry_result in WalkDir::new(&fs_dir).sort_by_file_name() {
+        let entry = entry_result?;
         let path = entry.path();
 
         // Get relative path from fs directory
-        let relative_path = path.strip_prefix(&fs_dir)?;
+        let relative_path = path.strip_prefix(&fs_dir)
+            .wrap_err_with(|| format!("Failed to get relative path from {} to {}", fs_dir.display(), path.display()))?;
         if relative_path.as_os_str().is_empty() {
             continue; // Skip the fs directory itself
         }
 
-        let metadata = fs::symlink_metadata(path)?;
+        let metadata = fs::symlink_metadata(path)
+            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
         let file_type = metadata.file_type();
 
         // Build attributes string
@@ -181,7 +199,8 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
             // Add SHA256 hash for regular files
             if metadata.len() > 0 {
-                let hash = calculate_file_sha256(path)?;
+                let hash = calculate_file_sha256(path)
+                    .wrap_err_with(|| format!("Failed to calculate SHA256 hash for: {}", path.display()))?;
                 attrs.push(format!("sha256={}", hash));
             }
         } else if file_type.is_dir() {
@@ -234,7 +253,8 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         output.push_str(&format!("{} {}\n", relative_path_str, attrs_str));
     }
 
-    fs::write(filelist_path, output)?;
+    fs::write(&filelist_path, output)
+        .wrap_err_with(|| format!("Failed to write filelist.txt: {}", filelist_path.display()))?;
     Ok(())
 }
 
@@ -242,12 +262,14 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 fn calculate_file_sha256(path: &Path) -> Result<String> {
     use sha2::{Sha256, Digest};
 
-    let mut file = fs::File::open(path)?;
+    let mut file = fs::File::open(path)
+        .wrap_err_with(|| format!("Failed to open file for hash calculation: {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
 
     loop {
-        let bytes_read = file.read(&mut buffer)?;
+        let bytes_read = file.read(&mut buffer)
+            .wrap_err_with(|| format!("Failed to read from file: {}", path.display()))?;
         if bytes_read == 0 {
             break;
         }
@@ -301,8 +323,8 @@ pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, s
         }
     }
 
-    fs::write(package_txt_path, output)?;
-
+    fs::write(&package_txt_path, output)
+        .wrap_err_with(|| format!("Failed to write package.txt file: {}", package_txt_path.display()))?;
     Ok(())
 }
 
