@@ -66,21 +66,23 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(nr_parallel: usize, proxy: Option<&str>) -> Result<Self> {
+    pub fn new(nr_parallel: usize, proxy: &str) -> Result<Self> {
         let config = Config::builder()
             .tls_config(
                 TlsConfig::builder()
                     .build()
             )
-            .proxy(proxy.map(|p| {
-                match Proxy::new(p) {
+            .proxy(if proxy.is_empty() {
+                None
+            } else {
+                Some(match Proxy::new(proxy) {
                     Ok(proxy) => proxy,
                     Err(e) => {
-                        log::error!("Failed to create proxy from {}: {}", p, e);
+                        log::error!("Failed to create proxy from {}: {}", proxy, e);
                         panic!("Failed to create proxy: {}", e);
                     }
-                }
-            }))
+                })
+            })
             .user_agent("curl/8.13.0")
             .build();
 
@@ -319,7 +321,7 @@ impl std::error::Error for FatalError {}
 
 pub static DOWNLOAD_MANAGER: LazyLock<DownloadManager> = LazyLock::new(|| {
     let config = config();
-    DownloadManager::new(config.common.nr_parallel, config.common.proxy.as_deref())
+    DownloadManager::new(config.common.nr_parallel, &config.common.proxy)
         .expect("Failed to initialize download manager")
 });
 

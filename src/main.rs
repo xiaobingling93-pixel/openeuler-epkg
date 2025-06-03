@@ -127,6 +127,10 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .arg(arg!(-v --verbose "Verbose operation, show debug messages"))
         .arg(arg!(-y --"assume-yes" "Automatically answer yes to all prompts"))
         .arg(arg!(-m --"ignore-missing" "Ignore missing packages"))
+        .arg(arg!(--"metadata-expire" <SECONDS> "Metadata expiration time in seconds (0=never, -1=always)").value_parser(clap::value_parser!(i32)))
+        .arg(arg!(--proxy <URL> "HTTP proxy URL (e.g., http://proxy.example.com:8080)"))
+        .arg(arg!(--"nr-parallel" <NUMBER> "Number of parallel download threads").value_parser(clap::value_parser!(usize)))
+        .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)))
         .subcommand(
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
@@ -292,7 +296,9 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
             if default_config.exists() {
                 parse_yaml_config(default_config.to_str().unwrap())
             } else {
-                Default::default()
+                // Comparing to Default::default(), this ensures the serde defaults take effect consistently
+                serde_yaml::from_str("")
+                    .unwrap_or_else(|_| panic!("Failed to load defconfig"))
             }
         },
         |s| parse_yaml_config(s)
@@ -327,9 +333,38 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
         config.common.ignore_missing    = matches.get_flag("ignore-missing");
     }
 
+    // Parse new common options
+    if let Some(metadata_expire) = matches.get_one::<i32>("metadata-expire") {
+        config.common.metadata_expire = *metadata_expire;
+    }
+    if let Some(proxy) = matches.get_one::<String>("proxy") {
+        config.common.proxy = proxy.to_string();
+    }
+    // Setup parallel processing parameters
+    setup_parallel_params(&mut config, matches);
+
     config.command_line             = std::env::args().collect::<Vec<String>>().join(" ");
 
     config
+}
+
+/// Setup parallel processing parameters based on command line arguments and system capabilities
+fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
+    // Handle nr_parallel parameter
+    if let Some(nr_parallel) = matches.get_one::<usize>("nr-parallel") {
+        // Ensure nr_parallel is at least 1
+        config.common.nr_parallel = if *nr_parallel == 0 { 1 } else { *nr_parallel };
+    }
+
+    // Handle parallel_processing parameter
+    if let Some(parallel_processing) = matches.get_one::<bool>("parallel-processing") {
+        // User explicitly set parallel_processing
+        config.common.parallel_processing = *parallel_processing;
+    } else if config.common.nr_parallel <= 1 {
+        // Auto-disable if nr_parallel <= 1, overriding the default
+        config.common.parallel_processing = false;
+    }
+    // Otherwise, use the default value set by default_parallel_processing()
 }
 
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> EPKGConfig {

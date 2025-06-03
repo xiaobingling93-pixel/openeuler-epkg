@@ -413,19 +413,42 @@ pub struct CommonOptions {
     // -1: always expire
     pub metadata_expire: i32,
     #[serde(default)]
-    pub proxy: Option<String>,
+    pub proxy: String,
     #[serde(default = "default_nr_parallel")]
+    // Default: 6 parallel download threads
+    // If user sets <= 0, it gets adjusted to at least 1 in the implementation
     pub nr_parallel: usize,
     #[serde(default = "default_parallel_processing")]
+    // Default: auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
+    // If user specifies nr_parallel <= 1, this gets auto-disabled
+    // Parallel processing speeds up `epkg update` at cost of more memory
     pub parallel_processing: bool,
+}
+
+// Default function for parallel_processing
+// Auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
+fn default_parallel_processing() -> bool {
+    // Default nr_parallel is 6, so we don't need to check it here
+    // as it will be checked at runtime in setup_parallel_params
+
+    // Check CPU count
+    let num_cpus = num_cpus::get();
+    let has_enough_cpus = num_cpus >= 4;
+
+    // Check memory
+    let has_enough_memory = match sys_info::mem_info() {
+        Ok(mem) => {
+            // mem.total is in KB, so 1GB = 1024 * 1024 KB
+            mem.total >= 1024 * 1024
+        },
+        Err(_) => false, // If we can't determine memory, assume not enough
+    };
+
+    has_enough_cpus && has_enough_memory
 }
 
 fn default_nr_parallel() -> usize {
     6
-}
-
-fn default_parallel_processing() -> bool {
-    false
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
