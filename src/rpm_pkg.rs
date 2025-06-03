@@ -16,8 +16,6 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
     // Ensure the directory is created with desired permissions
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o022));
     // Create the required directory structure
-    fs::create_dir_all(store_tmp_dir.join("fs"))
-        .wrap_err_with(|| format!("Failed to create fs directory at {}", store_tmp_dir.join("fs").display()))?;
     fs::create_dir_all(store_tmp_dir.join("info/rpm"))
         .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
     fs::create_dir_all(store_tmp_dir.join("info/install"))
@@ -46,70 +44,9 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
 fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result<()> {
     let target_dir = target_dir.as_ref();
 
-    fs::create_dir_all(target_dir)
-        .wrap_err_with(|| format!("Failed to create target directory at {}", target_dir.display()))?;
-
-    // Extract files from the RPM package
-    let file_entries = package.metadata.get_file_entries()
-        .wrap_err_with(|| "Failed to get file entries from RPM package metadata")?;
-
-    for file in file_entries {
-        let file_path = target_dir.join(file.path.to_string_lossy().trim_start_matches('/'));
-
-        // Create parent directories if they don't exist
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent)
-                .wrap_err_with(|| format!("Failed to create parent directory at {}", parent.display()))?;
-        }
-
-        match file.mode {
-            FileMode::Regular { permissions } => {
-                // For regular files, we would need the actual file content from the payload
-                // Since package.content is the compressed payload bytes, we cannot easily extract individual files
-                // For now, create empty files with correct permissions
-                let file = File::create(&file_path)
-                    .wrap_err_with(|| format!("Failed to create empty file at {}", file_path.display()))?;
-
-                // Set file permissions with owner rw and group r always enabled
-                #[cfg(unix)]
-                {
-                    let mode = permissions | 0o640; // Always enable rw for owner, r for group
-                    file.set_permissions(fs::Permissions::from_mode(mode.into()))
-                        .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
-                }
-            }
-            FileMode::Dir { permissions } => {
-                // Create directory
-                fs::create_dir_all(&file_path)
-                    .wrap_err_with(|| format!("Failed to create directory at {}", file_path.display()))?;
-
-                #[cfg(unix)]
-                {
-                    let mode = permissions | 0o750; // Always enable rwx for owner, rx for group
-                    fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
-                        .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
-                }
-            }
-            FileMode::SymbolicLink { permissions: _ } => {
-                // Create symbolic link
-                if !file.linkto.is_empty() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs;
-                        if let Err(e) = fs::symlink(&file.linkto, &file_path) {
-                            log::warn!("Failed to create symlink {:?} -> {:?}: {}", file_path, file.linkto, e);
-                        }
-                    }
-                }
-            }
-            FileMode::Invalid { raw_mode: _, reason } => {
-                log::warn!("Invalid file mode for {:?}: {}", file_path, reason);
-            }
-            _ => {
-                log::warn!("Unsupported file mode for {:?}", file_path);
-            }
-        }
-    }
+    // Use the built-in extract() method from the rpm crate which properly extracts file contents
+    package.extract(target_dir)
+        .wrap_err_with(|| format!("Failed to extract RPM package to {}", target_dir.display()))?;
 
     Ok(())
 }
