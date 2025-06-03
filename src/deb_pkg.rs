@@ -30,7 +30,7 @@ pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
     create_scriptlets(store_tmp_dir)?;
 
     // Create package.txt
-    create_package_txt(store_tmp_dir)?;
+    create_package_txt(deb_file, store_tmp_dir)?;
 
     Ok(())
 }
@@ -166,7 +166,8 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 }
 
 /// Parses the control file and creates package.txt with mapped field names
-fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<()> {
+    let deb_file = deb_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
     let control_path = store_tmp_dir.join("info/deb/control");
 
@@ -235,6 +236,11 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             package_fields.push((original_field, value));
         }
     }
+
+    // Calculate SHA256 hash of the deb file and add it to raw_fields
+    let sha256 = crate::store::calculate_file_sha256(deb_file)
+        .wrap_err_with(|| format!("Failed to calculate SHA256 hash for deb file: {}", deb_file.display()))?;
+    package_fields.push(("sha256".to_string(), sha256));
 
     // Use the general store function to save the package.txt file
     crate::store::save_package_txt(package_fields, store_tmp_dir)?;

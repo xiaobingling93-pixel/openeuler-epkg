@@ -265,7 +265,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 }
 
 /// Calculates SHA256 hash of a file
-fn calculate_file_sha256(path: &Path) -> Result<String> {
+pub fn calculate_file_sha256(path: &Path) -> Result<String> {
     use sha2::{Sha256, Digest};
 
     let mut file = fs::File::open(path)
