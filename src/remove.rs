@@ -161,7 +161,7 @@ impl PackageManager {
             self.installed_packages.remove(pkgkey);
         }
         self.save_installed_packages(&new_generation)?;
-        self.record_history("remove", vec![], installed_to_remove.clone())?;
+        self.record_history(&new_generation, "remove", vec![], installed_to_remove.clone())?;
 
         // Last step: update current symlink to point to the new generation
         self.update_current_generation_symlink(new_generation)?;

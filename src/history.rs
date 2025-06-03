@@ -71,10 +71,8 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn record_history(&mut self, action: &str, new_packages: Vec<String>, del_packages: Vec<String>) -> Result<()> {
-        let current_gen_id = self.get_current_generation_id()?;
-        let generations_root = self.get_default_generations_root()?;
-        let command_json = generations_root.join(current_gen_id.to_string()).join("command.json");
+    pub fn record_history(&mut self, new_generation_path: &PathBuf, action: &str, new_packages: Vec<String>, del_packages: Vec<String>) -> Result<()> {
+        let command_json = new_generation_path.join("command.json");
 
         let command = GenerationCommand {
             timestamp: OffsetDateTime::now_local()?.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
@@ -237,7 +235,7 @@ impl PackageManager {
         fs::copy(&rollback_json, new_generation.join("installed-packages.json"))?;
 
         // Record history
-        self.record_history("rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages)?;
+        self.record_history(&new_generation, "rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages)?;
 
         // Last step: update current symlink to point to the new generation
         self.update_current_generation_symlink(new_generation)?;

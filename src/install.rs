@@ -470,7 +470,7 @@ impl PackageManager {
         // Save installed packages
         self.installed_packages.extend(packages_to_install.clone());
         self.save_installed_packages(&new_generation)?;
-        self.record_history("install", packages_to_install.keys().cloned().collect(), vec![])?;
+        self.record_history(&new_generation, "install", packages_to_install.keys().cloned().collect(), vec![])?;
 
         // Last step: update current symlink to point to the new generation
         self.update_current_generation_symlink(new_generation)?;

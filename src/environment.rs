@@ -316,7 +316,7 @@ impl PackageManager {
             fs::write(installed_packages, "{\n}")?;
 
             // Record the environment creation in command history
-            self.record_history("create", Vec::new(), Vec::new())?;
+            self.record_history(&gen_1_dir, "create", Vec::new(), Vec::new())?;
         }
 
         println!("Environment '{}' has been created in {}", name, env_root.display());
