@@ -49,7 +49,7 @@ pub struct Mirror {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Dependency {
     pub pkgname: String,
-    pub hash: String,
+    pub ca_hash: String,
 }
 
 // Structure to hold begin offset and length for a package
@@ -59,7 +59,7 @@ pub struct PackageRange {
     pub len: usize,
 }
 
-// $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
+// $HOME/.cache/epkg/channel/debian:trixie/main/x86_64/packages-all.txt
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Package {
@@ -84,7 +84,8 @@ pub struct Package {
     pub location: String,
 
     #[serde(default)]
-    pub hash: Option<String>,
+    #[serde(rename = "caHash")]
+    pub ca_hash: Option<String>,
     #[serde(default)]
     pub sha256sum: Option<String>,
     #[serde(default)]
@@ -192,15 +193,22 @@ pub struct PackageLine {
 }
 
 /*
-    # ${env_root}/generations/current/installed-packages.json
+    # ${HOME}/.epkg/envs/main/generations/current/installed-packages.json
     {
-      "${pkghash1}__${pkgname}__${pkgver}__${pkgrel}": {
-        "install_time": xxx,
-        "depend_depth": true
+      "${pkgname}__${pkgid:8}": {
       },
-      "${pkghash2}__${pkgname}__${pkgver}__${pkgrel}": {
-        "install_time": xxx,
-      }
+	  "bash__086cea43": {
+		  "pkgline": "so2plsnn5harhb5qhvf52yzzl4zif7ap__bash__5.2.37-2+b2",
+		  "depend_depth": 0,
+		  "install_time": 1748927632,
+		  "appbin_flag": false
+	  },
+	  "jq__3d7550e4": {
+		  "pkgline": "hm4mpf2pxqlv466xhbneqjwil5wh2yjq__jq__1.7.1-6",
+		  "depend_depth": 0,
+		  "install_time": 1748961276,
+		  "appbin_flag": true
+	  },
     }
 */
 #[allow(dead_code)]
@@ -407,21 +415,25 @@ pub struct CommonOptions {
     pub assume_yes: bool,
     #[serde(default)]
     pub ignore_missing: bool,
-    #[serde(default)]
+
     // N: expire after N seconds
     // 0: never expire (the default)
     // -1: always expire
+    #[serde(default)]
     pub metadata_expire: i32,
+
     #[serde(default)]
     pub proxy: String,
-    #[serde(default = "default_nr_parallel")]
+
     // Default: 6 parallel download threads
     // If user sets <= 0, it gets adjusted to at least 1 in the implementation
+    #[serde(default = "default_nr_parallel")]
     pub nr_parallel: usize,
-    #[serde(default = "default_parallel_processing")]
+
     // Default: auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
     // If user specifies nr_parallel <= 1, this gets auto-disabled
     // Parallel processing speeds up `epkg update` at cost of more memory
+    #[serde(default = "default_parallel_processing")]
     pub parallel_processing: bool,
 }
 
@@ -572,7 +584,6 @@ static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
         .expect("Failed to initialize EPKGDirs")
 });
 
-// 获取全局配置的公共接口
 pub fn config() -> &'static EPKGConfig {
     &CONFIG
 }

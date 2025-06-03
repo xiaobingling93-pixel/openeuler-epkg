@@ -151,7 +151,7 @@ impl PackageManager {
     ) -> Result<()> {
         log::trace!("Dependencies: {:?}", dependencies);
         for dep in dependencies {
-            let pkgkey = crate::mmio::format_pkgkey(&dep.pkgname, &dep.hash);
+            let pkgkey = crate::mmio::format_pkgkey(&dep.pkgname, &dep.ca_hash);
 
             if !packages.contains_key(&pkgkey) &&
                 !depend_packages.contains_key(&pkgkey) {

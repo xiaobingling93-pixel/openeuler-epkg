@@ -217,12 +217,14 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<
     Ok(pkgname2ranges)
 }
 
+// Note: pkgkey cannot include the user friendly "version" due to Dependency
+// only contains package "pkgname" and "ca_hash"
 pub fn format_pkgkey(pkgname: &str, pkgid: &str) -> String {
-    format!("{}@{}", pkgname, pkgid)
+    format!("{}__{:8}", pkgname, pkgid)
 }
 
 pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {
-    match pkgkey.split_once('@') {
+    match pkgkey.split_once("__") {
         Some((pkgname, _)) if !pkgname.is_empty() => Ok(pkgname.to_string()),
         _ => Err(eyre::eyre!("Invalid pkgkey format: {}", pkgkey)),
     }
@@ -238,7 +240,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         build_time: None,
         source: None,
         location: String::new(),
-        hash: None,
+        ca_hash: None,
         sha256sum: None,
         sha1sum: None,
         depends: Vec::new(),
