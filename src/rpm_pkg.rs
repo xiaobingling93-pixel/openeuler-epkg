@@ -4,13 +4,17 @@ use std::fs;
 use std::collections::HashMap;
 use rpm::{Package, FileMode};
 use crate::rpm_repo::PACKAGE_KEY_MAPPING;
-use color_eyre::eyre::{WrapErr, Context};
+use color_eyre::eyre::WrapErr;
+use std::fs::File;
+use std::os::unix::fs::PermissionsExt;
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
     let rpm_file = rpm_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
+    // Ensure the directory is created with desired permissions
+    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o022));
     // Create the required directory structure
     fs::create_dir_all(store_tmp_dir.join("fs"))
         .wrap_err_with(|| format!("Failed to create fs directory at {}", store_tmp_dir.join("fs").display()))?;
@@ -63,18 +67,15 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                 // For regular files, we would need the actual file content from the payload
                 // Since package.content is the compressed payload bytes, we cannot easily extract individual files
                 // For now, create empty files with correct permissions
-                fs::write(&file_path, "")
+                let file = File::create(&file_path)
                     .wrap_err_with(|| format!("Failed to create empty file at {}", file_path.display()))?;
 
-                // Set file permissions
+                // Set file permissions with owner rw and group r always enabled
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&file_path)
-                        .wrap_err_with(|| format!("Failed to get metadata for file at {}", file_path.display()))?.permissions();
-                    perms.set_mode(permissions.into());
-                    fs::set_permissions(&file_path, perms)
-                        .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
+                    let mode = permissions | 0o640; // Always enable rw for owner, r for group
+                    file.set_permissions(fs::Permissions::from_mode(mode.into()))
+                        .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
                 }
             }
             FileMode::Dir { permissions } => {
@@ -84,11 +85,8 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
 
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&file_path)
-                        .wrap_err_with(|| format!("Failed to get metadata for file at {}", file_path.display()))?.permissions();
-                    perms.set_mode(permissions.into());
-                    fs::set_permissions(&file_path, perms)
+                    let mode = permissions | 0o750; // Always enable rwx for owner, rx for group
+                    fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
                         .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                 }
             }
