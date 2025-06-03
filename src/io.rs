@@ -20,19 +20,17 @@ pub fn load_package_json(file_path: &str) -> Result<Package> {
     Ok(package)
 }
 
-// Function to parse a pkgline into a PackageSpec
-fn parse_package_line(pkgline: &str, reponame: &str) -> Result<PackageSpec> {
+// Function to parse a pkgline into a PackageLine
+pub fn parse_package_line(pkgline: &str) -> Result<PackageLine> {
     let parts: Vec<&str> = pkgline.split("__").collect();
-    if parts.len() != 4 {
+    if parts.len() != 3 {
         bail!("Invalid package line format: {}", pkgline);
     }
 
-    let spec = PackageSpec {
-        repo: reponame.to_string(),
-        hash: parts[0].to_string(),
-        name: parts[1].to_string(),
+    let spec = PackageLine {
+        ca_hash: parts[0].to_string(),
+        pkgname: parts[1].to_string(),
         version: parts[2].to_string(),
-        release: parts[3].to_string(),
     };
     Ok(spec)
 }

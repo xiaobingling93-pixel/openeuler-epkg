@@ -11,6 +11,7 @@ use crate::parse_requires::*;
 impl InstalledPackageInfo {
     fn new(depth: u8, appbin_flag: bool) -> Self {
         Self {
+            pkgline: String::new(),
             install_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

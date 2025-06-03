@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use color_eyre::eyre::{self, Result, WrapErr};
+use color_eyre::eyre::eyre;
 use crate::utils::*;
 use crate::models::*;
 
@@ -125,8 +126,8 @@ impl PackageManager {
         // Step 5: Show packages to remove
         if !installed_to_remove.is_empty() {
             println!("Packages to remove:");
-            for package_name in &installed_to_remove {
-                println!("- {}", package_name);
+            for pkgkey in &installed_to_remove {
+                println!("- {}", pkgkey);
             }
             if !config().common.assume_yes {
                 println!("Do you want to continue with uninstallation? (y/n):");
@@ -148,8 +149,11 @@ impl PackageManager {
         let store_root = dirs().epkg_store.clone();
         for pkgkey in &installed_to_remove {
             // remove link files
-            log::debug!("Removing files for package {} from {:?}", pkgkey, store_root.join(pkgkey).join("fs"));
-            self.unlink_package(&store_root.join(pkgkey).join("fs"), &env_root)?;
+            let pkgline = self.installed_packages.get(pkgkey)
+                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
+                .pkgline.clone();
+            log::debug!("Removing files for package {} from {:?}", pkgkey, store_root.join(&pkgline).join("fs"));
+            self.unlink_package(&store_root.join(pkgline).join("fs"), &env_root)?;
         }
 
         // Step 7: Save installed packages

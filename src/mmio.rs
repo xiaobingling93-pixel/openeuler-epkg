@@ -217,8 +217,8 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<
     Ok(pkgname2ranges)
 }
 
-pub fn format_pkgkey(pkgname: &str, hash: &str) -> String {
-    format!("{}@{:8}", pkgname, hash)
+pub fn format_pkgkey(pkgname: &str, pkgid: &str) -> String {
+    format!("{}@{}", pkgname, pkgid)
 }
 
 pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {

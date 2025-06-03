@@ -14,15 +14,17 @@ use crate::models::{dirs, PackageFormat};
 use log::warn;
 
 /// Unpacks multiple packages and moves them to the store
-pub fn unpack_packages(package_files: Vec<String>) -> Result<()> {
+pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<String>> {
+    let mut pkgidlines = Vec::new();
     for package_file in package_files {
-        unpack_mv_package(&package_file)?;
+        let pkgidline = unpack_mv_package(&package_file)?;
+        pkgidlines.push(pkgidline);
     }
-    Ok(())
+    Ok(pkgidlines)
 }
 
 /// Unpacks a single package and moves it to the final store location
-pub fn unpack_mv_package(package_file: &str) -> Result<()> {
+pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = dirs().epkg_cache.join("unpack").join(&temp_name);
@@ -41,6 +43,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<()> {
     let mut pkgname = String::new();
     let mut version = String::new();
     let mut ca_hash = String::new();
+    let mut pkgid = String::new();
 
     for line in package_content.lines() {
         if let Some((key, value)) = line.split_once(": ") {
@@ -48,6 +51,8 @@ pub fn unpack_mv_package(package_file: &str) -> Result<()> {
                 "pkgname" => pkgname = value.to_string(),
                 "version" => version = value.to_string(),
                 "caHash"  => ca_hash = value.to_string(),
+                "sha256"  => pkgid = value.to_string(),
+                "sha1"    => pkgid = value.to_string(),
                 _ => {}
             }
         }
@@ -78,7 +83,8 @@ pub fn unpack_mv_package(package_file: &str) -> Result<()> {
     fs::rename(&store_tmp_dir, &final_dir)?;
     set_perm_and_owner(final_dir.to_str().unwrap())?;
 
-    Ok(())
+    let pkgidline = format!("{}__{}", pkgid, pkgline);
+    Ok(pkgidline)
 }
 
 /// Generic package unpacking function that detects format and delegates to appropriate handler

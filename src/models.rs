@@ -160,9 +160,8 @@ pub struct Repodata {
     pub essential_pkgnames: HashSet<String>,
 }
 
-// $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
-// pkgline format: {pkghash}__{pkgname}__{pkgver}__{pkgrel}
-// 09c88c8eb9820a3570d9a856b91f419c__libselinux__3.3__5.oe2203sp3
+// pkgline format: {ca_hash}__{pkgname}__{version}
+// 09c88c8eb9820a3570d9a856b91f419c__libselinux__3.3-5.oe2203sp3
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct StorePathsIndex {
@@ -186,12 +185,10 @@ pub struct FileInfo {
 // parsed from pkgline
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct PackageSpec {
-    pub repo: String,
-    pub hash: String,
-    pub name: String,
+pub struct PackageLine {
+    pub ca_hash: String,
+    pub pkgname: String,
     pub version: String,
-    pub release: String,
 }
 
 /*
@@ -209,6 +206,7 @@ pub struct PackageSpec {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackageInfo {
+    pub pkgline: String,
     pub depend_depth: u8,
     #[serde(default)]
     pub install_time: u64,

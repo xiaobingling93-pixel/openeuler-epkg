@@ -3,6 +3,7 @@ use std::io::Seek;
 use std::io::Write;
 use std::io::SeekFrom;
 use std::path::Path;
+use color_eyre::eyre::eyre;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
@@ -13,7 +14,7 @@ use crate::utils::*;
 use crate::dirs::find_env_root;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
-    // Convert HashMap to a Vec of tuples (pkgline, info)
+    // Convert HashMap to a Vec of tuples (pkgkey, info)
     let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().collect();
 
     // Sort by depend_depth
@@ -23,8 +24,8 @@ fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInf
     println!("{:<12} {:<10}", "depend_depth", "package");
 
     // Print each package
-    for (pkgline, info) in packages_vec {
-        println!("{:<12} {:<10}", info.depend_depth, pkgline);
+    for (pkgkey, info) in packages_vec {
+        println!("{:<12} {:<10}", info.depend_depth, pkgkey);
     }
 }
 
@@ -418,17 +419,27 @@ impl PackageManager {
         if packages_to_install.is_empty() {
             return Err(eyre::eyre!("No packages to install"));
         }
-        self.install_pkglines(packages_to_install)
+        self.install_pkgkeys(packages_to_install)
     }
 
-    pub fn install_pkglines(&mut self, mut packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
+    pub fn install_pkgkeys(&mut self, mut packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
         if config().common.verbose {
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
         }
-
         let files = self.download_packages(&packages_to_install, false)?;
-        self.unpack_packages(files)?;
+        let pkgidlines = crate::store::unpack_packages(files)?;
+        for pkgidline in pkgidlines {
+            let (id, line) = pkgidline.split_once("__")
+                .ok_or_else(|| eyre!("Invalid package line format: {}", pkgidline))?;
+            let pkgline = crate::io::parse_package_line(line)
+                .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
+            let pkgkey = crate::mmio::format_pkgkey(&pkgline.pkgname, id);
+            packages_to_install.get_mut(&pkgkey)
+                .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?
+                .pkgline = line.to_string();
+        }
+
         self.change_appbin_flag_same_source(&mut packages_to_install)?;
         let new_generation = self.create_new_generation()?;
 
@@ -438,28 +449,20 @@ impl PackageManager {
         let store_root = dirs().epkg_store.clone();
 
         // First phase: Link all packages
-        for (pkgkey, _package_info) in &packages_to_install {
-            let store_fs_dir = store_root.join(pkgkey).join("fs");
+        for (pkgkey, package_info) in &packages_to_install {
+            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
             self.link_package(&store_fs_dir, &env_root)
                 .with_context(|| format!("Failed to link package {}", pkgkey))?;
         }
 
         // Second phase: Expose packages and handle appbin flags
-        for (pkgkey, _package_info) in &packages_to_install {
-            let mut appbin_flag = false;
-            #[allow(unused_assignments)]
-            let mut pkg_name = String::new();
-            // appbin_source check
-            // Now pkgkey is the actual key, so we can look it up directly
-            if let Some(package) = self.pkgkey2package.get(pkgkey) {
-                appbin_flag = _package_info.appbin_flag;
-                pkg_name = package.pkgname.clone();
-                if appbin_flag {
-                    appbin_count += 1;
-                    appbin_packages.push(pkg_name.clone());
-                }
+        for (pkgkey, package_info) in &packages_to_install {
+            let appbin_flag = package_info.appbin_flag;
+            if appbin_flag {
+                appbin_count += 1;
+                appbin_packages.push(pkgkey.clone());
             }
-            let store_fs_dir = store_root.join(pkgkey).join("fs");
+            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
             self.expose_package(&store_fs_dir, &env_root, appbin_flag)
                 .with_context(|| format!("Failed to expose package {}", pkgkey))?;
         }

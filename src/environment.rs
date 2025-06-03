@@ -307,7 +307,7 @@ impl PackageManager {
 
         // Install packages if any
         if !env_config.packages.is_empty() {
-            self.install_pkglines(env_config.packages)?;
+            self.install_pkgkeys(env_config.packages)?;
         } else {
             // Create metadata files
             let generations_root = env_root.join("generations");
