@@ -46,6 +46,7 @@ use env_logger;
 use log;
 
 fn main() -> Result<()> {
+    color_eyre::install()?;
     setup_logging();
     setup_ctrlc();
 
