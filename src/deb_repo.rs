@@ -3,6 +3,7 @@ use std::sync::mpsc::Receiver;
 use std::io::Read;
 use color_eyre::eyre::Result;
 use color_eyre::eyre;
+use liblzma;
 
 use crate::models::*;
 use crate::dirs;
@@ -273,7 +274,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
 
     log::debug!("Using XZ decoder for {}", revise.location);
-    let mut decoder = xz2::read::XzDecoder::new(reader);
+    let mut decoder = liblzma::read::XzDecoder::new(reader);
     let mut unpack_buf = vec![0u8; 65536];
     let mut chunk_count = 0;
 

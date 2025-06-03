@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use tar::Archive;
 use log;
 use flate2::read::GzDecoder;
-use xz2::read::XzDecoder;
+use liblzma::read::XzDecoder;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::deb_repo::PACKAGE_KEY_MAPPING;

@@ -9,7 +9,7 @@ use sha2::{Sha256, Digest};
 use std::fs::File;
 use tar::Archive;
 use flate2::read::GzDecoder;
-use xz2;
+use liblzma;
 use zstd;
 
 #[derive(Debug, PartialEq)]
@@ -324,7 +324,7 @@ pub fn decompress_file(input_path: &Path, output_path: &Path, extension: &str) -
                 .with_context(|| format!("Failed to decompress gz file from {} to {}", input_path.display(), output_path.display()))?;
         }
         "xz" => {
-            let mut decoder = xz2::read::XzDecoder::new(input_file);
+            let mut decoder = liblzma::read::XzDecoder::new(input_file);
             std::io::copy(&mut decoder, &mut output)
                 .with_context(|| format!("Failed to decompress xz file from {} to {}", input_path.display(), output_path.display()))?;
         }
