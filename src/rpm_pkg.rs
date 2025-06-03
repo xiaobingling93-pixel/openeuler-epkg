@@ -7,6 +7,7 @@ use crate::rpm_repo::PACKAGE_KEY_MAPPING;
 use color_eyre::eyre::WrapErr;
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
@@ -16,6 +17,8 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
     // Ensure the directory is created with desired permissions
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o022));
     // Create the required directory structure
+    fs::create_dir_all(store_tmp_dir.join("fs"))
+        .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
     fs::create_dir_all(store_tmp_dir.join("info/rpm"))
         .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
     fs::create_dir_all(store_tmp_dir.join("info/install"))
@@ -41,12 +44,85 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
 }
 
 /// Extracts RPM package files to the target directory
+/// Based on the rpm crate's extract method but improved to handle edge cases
 fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result<()> {
     let target_dir = target_dir.as_ref();
 
-    // Use the built-in extract() method from the rpm crate which properly extracts file contents
-    package.extract(target_dir)
-        .wrap_err_with(|| format!("Failed to extract RPM package to {}", target_dir.display()))?;
+    // Check if the package has any files before attempting extraction
+    match package.metadata.get_file_entries() {
+        Ok(file_entries) if file_entries.is_empty() => {
+            // Package contains no files, nothing to extract
+            log::debug!("RPM package contains no files, skipping extraction");
+            return Ok(());
+        }
+        Ok(_) => {
+            // Package has files, proceed with extraction using the built-in files() method
+            for file_result in package.files()
+                .wrap_err_with(|| "Failed to get file iterator from RPM package")? {
+                
+                let file = file_result
+                    .wrap_err_with(|| "Failed to read file from RPM package")?;
+                
+                let file_path = target_dir.join(file.metadata.path.to_string_lossy().trim_start_matches('/'));
+
+                // Create parent directories if they don't exist
+                if let Some(parent) = file_path.parent() {
+                    fs::create_dir_all(parent)
+                        .wrap_err_with(|| format!("Failed to create parent directory at {}", parent.display()))?;
+                }
+
+                match file.metadata.mode {
+                    FileMode::Regular { permissions } => {
+                        // Write the actual file content
+                        fs::write(&file_path, &file.content)
+                            .wrap_err_with(|| format!("Failed to write file content to {}", file_path.display()))?;
+
+                        // Set file permissions with owner rw and group r always enabled
+                        #[cfg(unix)]
+                        {
+                            let mode = permissions | 0o640; // Always enable rw for owner, r for group
+                            fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
+                                .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
+                        }
+                    }
+                    FileMode::Dir { permissions } => {
+                        // Create directory
+                        fs::create_dir_all(&file_path)
+                            .wrap_err_with(|| format!("Failed to create directory at {}", file_path.display()))?;
+
+                        #[cfg(unix)]
+                        {
+                            let mode = permissions | 0o750; // Always enable rwx for owner, rx for group
+                            fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
+                                .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
+                        }
+                    }
+                    FileMode::SymbolicLink { permissions: _ } => {
+                        // Create symbolic link
+                        if !file.metadata.linkto.is_empty() {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs;
+                                if let Err(e) = fs::symlink(&file.metadata.linkto, &file_path) {
+                                    log::warn!("Failed to create symlink {:?} -> {:?}: {}", file_path, file.metadata.linkto, e);
+                                }
+                            }
+                        }
+                    }
+                    FileMode::Invalid { raw_mode: _, reason } => {
+                        log::warn!("Invalid file mode for {:?}: {}", file_path, reason);
+                    }
+                    _ => {
+                        log::warn!("Unsupported file mode for {:?}", file_path);
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            // If we can't get file entries, assume it's an empty package
+            log::debug!("Failed to get file entries, assuming empty package");
+        }
+    }
 
     Ok(())
 }
