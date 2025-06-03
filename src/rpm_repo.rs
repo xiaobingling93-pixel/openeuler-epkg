@@ -52,7 +52,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
     let mut current_data_type = String::new();
     let mut current_location = String::new();
     let mut current_checksum = String::new();
-    let mut current_size = 0u64;
+    let mut current_size = 0;
     let mut in_data = false;
     let mut current_element = String::new();
 

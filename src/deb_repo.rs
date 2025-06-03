@@ -117,7 +117,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
                 let hash = parts[0].to_string();
-                let size = parts[1].parse::<u64>().unwrap_or(0);
+                let size = parts[1].parse::<usize>().unwrap_or(0);
                 let location = parts[2].to_string();
 
                 if location.contains("/debian-installer/") {

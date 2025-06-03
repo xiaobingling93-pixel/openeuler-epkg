@@ -44,7 +44,7 @@ pub struct RepoReleaseItem {
     pub package_baseurl: String,
     pub hash_type: String,
     pub hash: String,
-    pub size: u64,
+    pub size: usize,
     pub location: String,
     pub is_packages: bool,
     pub download_path: PathBuf,
@@ -335,6 +335,13 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
         return Ok(());
     }
 
+    // Force download by removing release file
+    let expire_secs = config().common.metadata_expire;
+    if expire_secs < 0 || config().subcommand == "update" {
+        fs::rename(path, path.with_extension("old"))
+            .with_context(|| format!("Failed to rename release file: {}", path.display()))?;
+    }
+
     // Download Release file
     download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)
         .with_context(|| format!("Failed to download release file from {}", repo.index_url))?;
@@ -597,17 +604,21 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
 pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     log::debug!("Processing filelists content for arch: {:?}", revise);
     let mut hasher = Sha256::new();
+    let mut total_bytes = 0;
 
     // Process data and calculate hash incrementally
     while let Ok(data) = data_rx.recv() {
         hasher.update(&data);
+        total_bytes += data.len();
     }
 
     // Verify hash
     let calculated_hash = hex::encode(hasher.finalize());
     if calculated_hash != revise.hash {
-        log::error!("Hash verification failed for {}: expected {}, got {}",
-            revise.location, revise.hash, calculated_hash);
+        if total_bytes == revise.size {
+            log::error!("Hash verification failed for {}: expected {}, got {}",
+                revise.download_path.display(), revise.hash, calculated_hash);
+        }
         return Err(eyre::eyre!("Hash verification failed for {}: expected {}, got {}",
             revise.location, revise.hash, calculated_hash));
     }
