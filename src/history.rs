@@ -222,7 +222,9 @@ impl PackageManager {
         // Second phase: Expose packages and handle appbin flags
         for (pkgline, appbin_flag) in &new_packages {
             let fs_dir = store_root.join(pkgline).join("fs");
-            self.expose_package(&fs_dir, &env_root, *appbin_flag)?;
+            if *appbin_flag {
+                self.expose_package(&fs_dir, &env_root)?;
+            }
         }
 
         for pkgline in &del_packages {

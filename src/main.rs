@@ -625,7 +625,9 @@ impl PackageManager {
                 // First phase: Link the package
                 self.link_package(&fs_dir, &symlink_dir)?;
                 // Second phase: Expose the package if ebin flag is set
-                self.expose_package(&fs_dir, &symlink_dir, ebin)?;
+                if ebin {
+                    self.expose_package(&fs_dir, &symlink_dir)?;
+                }
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;

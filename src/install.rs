@@ -186,6 +186,7 @@ fn normalize_join(base: &Path, subpath: &Path) -> PathBuf {
 }
 
 fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
+    log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
     for fs_file in fs_files {
         let path_str = fs_file.to_string_lossy();
 
@@ -400,11 +401,10 @@ impl PackageManager {
 
     // - run post-install scriptlets
     // - create ebin wrappers
-    pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, appbin_flag: bool) -> Result<()> {
-        if appbin_flag {
-            let fs_files = list_package_files(store_fs_dir.to_str().unwrap())?;
-            create_ebin_wrappers(env_root, &fs_files)?;
-        }
+    pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
+        log::debug!("expose_package {}", store_fs_dir.display());
+        let fs_files = list_package_files(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
+        create_ebin_wrappers(env_root, &fs_files)?;
         Ok(())
     }
 
@@ -461,10 +461,10 @@ impl PackageManager {
             if appbin_flag {
                 appbin_count += 1;
                 appbin_packages.push(pkgkey.clone());
+                let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
+                self.expose_package(&store_fs_dir, &env_root)
+                    .with_context(|| format!("Failed to expose package {}", pkgkey))?;
             }
-            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-            self.expose_package(&store_fs_dir, &env_root, appbin_flag)
-                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
         }
 
         // Save installed packages

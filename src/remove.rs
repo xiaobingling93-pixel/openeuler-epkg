@@ -10,11 +10,11 @@ impl PackageManager {
 
     pub fn unlink_package(&self, fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
         let fs_files = list_package_files(fs_dir.to_str().unwrap())?;
+        log::debug!("Unlinking package from {} to {} ({} files)", fs_dir.display(), env_root.display(), fs_files.len());
         for fs_file in fs_files {
             let fhs_file = fs_file.strip_prefix(&fs_dir)
                 .map_err(|e| eyre::eyre!("Failed to strip prefix from path: {}", e))?;
             let target_path = env_root.join(fhs_file);
-            // println!("fs_file: {:?}\nrfs_file: {:?}\ntarget_path: {:?}", fs_file, fhs_file, target_path);
 
             // Skip dir
             if target_path.is_dir() {
@@ -32,6 +32,7 @@ impl PackageManager {
                     .replace("/sbin", "/ebin");
                 let appbin_target_path = env_root.join(&ebin_file);
                 if fs::symlink_metadata(&appbin_target_path).is_ok() {
+                    log::debug!("Removing appbin file: {}", appbin_target_path.display());
                     fs::remove_file(&appbin_target_path)?;
                 }
             }
@@ -43,7 +44,12 @@ impl PackageManager {
     pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_installed_packages()?;
         let mut input_package_info = self.resolve_package_info(package_specs.clone());
-        log::debug!("Input package specs: {:?}", package_specs);
+        log::debug!(
+            "Loaded {} installed packages; Input specs: {:?}, resolved to {} packages",
+            self.installed_packages.len(),
+            package_specs,
+            input_package_info.len()
+        );
 
         // Step 1: Find duplicates between installed_packages and input_package_info
         let duplicates: Vec<String> = input_package_info
