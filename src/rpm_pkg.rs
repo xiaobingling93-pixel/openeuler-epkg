@@ -37,7 +37,7 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
     create_scriptlets(&package, store_tmp_dir)?;
 
     // Create package.txt
-    create_package_txt(&package, store_tmp_dir)?;
+    create_package_txt(&package, rpm_file, store_tmp_dir)?;
 
     Ok(())
 }
@@ -181,7 +181,7 @@ fn get_scriptlet_content(metadata: &rpm::PackageMetadata, scriptlet_name: &str) 
 }
 
 /// Extracts package metadata and creates package.txt with mapped field names
-pub fn create_package_txt<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> Result<()> {
+pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let metadata = &package.metadata;
 
@@ -281,6 +281,11 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -
             package_fields.push((original_field, value));
         }
     }
+
+    // Calculate SHA256 hash of the rpm file and add it to package_fields
+    let sha256 = crate::store::calculate_file_sha256(rpm_file.as_ref())
+        .wrap_err_with(|| format!("Failed to calculate SHA256 hash for rpm file: {}", rpm_file.as_ref().display()))?;
+    package_fields.push(("sha256".to_string(), sha256));
 
     // Use the general store function to save the package.txt file
     crate::store::save_package_txt(package_fields, store_tmp_dir)?;
