@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre;
+use log;
 use crate::models::*;
 
 use crate::parse_requires::*;
@@ -24,6 +25,7 @@ impl InstalledPackageInfo {
 
 impl PackageManager {
     pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        log::debug!("Recording appbin source for {} packages", packages.len());
         for pkgkey in packages.keys() {
             let pkg_json = self.load_package_info(pkgkey)?;
             if pkg_json.source.is_some() {
@@ -34,6 +36,7 @@ impl PackageManager {
     }
 
     pub fn change_appbin_flag_same_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        log::debug!("Checking appbin flag for {} packages with same source", packages.len());
         for (pkgkey, package_info) in packages.iter_mut() {
             let pkg_json = self.load_package_info(pkgkey.as_str())?;
             if package_info.appbin_flag == false && pkg_json.source.is_some() {
@@ -49,6 +52,7 @@ impl PackageManager {
     fn add_one_package_installing(&mut self, pkg_name: &str, depth: u8, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) {
+        log::debug!("Adding package '{}' with depth {} and ebin_flag {}", pkg_name, depth, ebin_flag);
         match self.map_pkgname2packages(pkg_name) {
             Ok(packages_list) => {
                 for package in packages_list {
@@ -66,6 +70,8 @@ impl PackageManager {
 
     /// convert user provided @capabilities to exact packages hash
     pub fn resolve_package_info(&mut self, capabilities: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
+        log::debug!("Resolving package info for {} capabilities", capabilities.len());
+        log::trace!("Capabilities: {:?}", capabilities);
         let mut packages = HashMap::new();
         let mut missing_names = Vec::new();
         let mut pnames = Vec::new();
@@ -97,6 +103,7 @@ impl PackageManager {
     }
 
     pub fn collect_essential_packages(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
+        log::debug!("Collecting essential packages");
         let mut missing_names = Vec::new();
         let essential_pkgnames = crate::mmio::get_essential_pkgnames()?;
         for essential_pkgname in &essential_pkgnames {
@@ -115,6 +122,7 @@ impl PackageManager {
     pub fn collect_recursive_depends(&mut self,
         packages: &mut HashMap<String, InstalledPackageInfo>
     ) -> Result<()> {
+        log::debug!("Starting recursive dependency collection for {} packages", packages.len());
         let mut depend_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut depth = 1;
         let channel_config = self.get_channel_config(config().common.env.clone())?;
@@ -123,6 +131,7 @@ impl PackageManager {
         self.collect_depends(&packages, &mut depend_packages, depth, repo_format)?;
 
         while !depend_packages.is_empty() {
+            log::debug!("Found {} new dependencies at depth {}", depend_packages.len(), depth);
             packages.extend(depend_packages);
             depend_packages = HashMap::new();
             depth += 1;
@@ -140,6 +149,7 @@ impl PackageManager {
         depth: u8,
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
+        log::trace!("Dependencies: {:?}", dependencies);
         for dep in dependencies {
             let pkgkey = crate::mmio::format_pkgkey(&dep.pkgname, &dep.hash);
 
@@ -171,6 +181,7 @@ impl PackageManager {
         repo_format: PackageFormat,
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
+        log::trace!("Depth: {} Requirements: {:?}", depth, requirements);
         for req in requirements {
             let and_deps = match parse_requires(repo_format, req) {
                 std::result::Result::Ok(deps) => deps,
@@ -183,7 +194,6 @@ impl PackageManager {
                 for pkg_depend in or_depends {
                     self.process_requirement_impl(
                         &pkg_depend.capability,
-                        repo_format,
                         packages,
                         depend_packages,
                         depth,
@@ -198,7 +208,6 @@ impl PackageManager {
     fn process_requirement_impl(
         &mut self,
         capability: &str,
-        pkg_format: PackageFormat,
         packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
         depth: u8,
@@ -213,7 +222,10 @@ impl PackageManager {
                     Ok(pkgnames) if !pkgnames.is_empty() => pkgnames,
                     _ => {
                         if !capability.starts_with("rpmlib(") {
-                            missing_deps.push(format!("{}-{:?}", capability, pkg_format));
+                            log::warn!("Missing capability: {}", capability);
+                            missing_deps.push(capability.to_string());
+                        } else {
+                            log::trace!("Ignoring rpmlib capability: {}", capability);
                         }
                         return Ok(());
                     }
@@ -221,7 +233,8 @@ impl PackageManager {
                 match self.map_pkgname2packages(&pkg_mapping_names[0]) {
                     Ok(packages_list) if !packages_list.is_empty() => packages_list,
                     _ => {
-                        missing_deps.push(format!("{}-{:?}", capability, pkg_format));
+                        log::warn!("Missing mapped capability: {}", capability);
+                        missing_deps.push(format!("{}", capability));
                         return Ok(());
                     }
                 }
@@ -263,6 +276,7 @@ impl PackageManager {
         depth: u8,
         repo_format: PackageFormat,
     ) -> Result<()> {
+        log::debug!("Collecting dependencies for {} packages at depth {}", packages.len(), depth);
         let mut missing_deps = Vec::new();
         for pkgkey in packages.keys() {
             let pkg_info = self.load_package_info(pkgkey)?;
@@ -307,6 +321,7 @@ impl PackageManager {
             Ok(packages_list) => {
                 for package in &packages_list {
                     // cache for later references
+                    log::trace!("Caching package: {}", package.pkgkey);
                     self.pkgkey2package.insert(package.pkgkey.clone(), Arc::new(package.clone()));
                 }
                 return Ok(packages_list);
@@ -316,20 +331,25 @@ impl PackageManager {
     }
 
     pub fn load_package_info(&mut self, pkgkey: &str) -> Result<Arc<Package>> {
+        log::trace!("Loading package info for '{}'", pkgkey);
         // Try to find by pkgkey first
         if let Some(package) = self.pkgkey2package.get(pkgkey) {
+            log::trace!("Found cached package info for '{}'", pkgkey);
             return Ok(Arc::clone(package));
         }
 
         // Extract package name from pkgkey and try to load all packages with that name
+        log::debug!("Package '{}' not in cache, extracting package name", pkgkey);
         let pkgname = crate::mmio::pkgkey2pkgname(pkgkey)?;
         self.map_pkgname2packages(&pkgname)?;
 
         // Try to find the package again after loading
         if let Some(package) = self.pkgkey2package.get(pkgkey) {
+            log::debug!("Found package '{}' after loading", pkgkey);
             return Ok(Arc::clone(package));
         }
 
+        log::warn!("Package not found: {}", pkgkey);
         Err(eyre::eyre!("Package not found: {}", pkgkey))
     }
 
