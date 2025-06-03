@@ -358,9 +358,8 @@ impl PackageManager {
         // Unregister if registered
         self.unregister_environment(name)?;
 
-        // Rename to hide environment
-        let hidden_path = dirs().private_envs.join(format!(".{}", name));
-        fs::rename(env_path, hidden_path)?;
+        fs::remove_dir_all(&env_path)
+            .with_context(|| format!("Failed to remove environment directory '{}'", env_path.display()))?;
 
         println!("# Environment '{}' has been removed.", name);
         Ok(())
