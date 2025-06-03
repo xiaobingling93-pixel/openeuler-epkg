@@ -66,3 +66,6 @@ features = ["zstd-compression", "xz-compression"]
 # https://docs.rs/color-eyre/latest/color_eyre/#improving-perf-on-debug-builds
 [profile.dev.package.backtrace]
 opt-level = 3
+
+[dev-dependencies]
+tempfile = "3.0"

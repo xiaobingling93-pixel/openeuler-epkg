@@ -186,7 +186,7 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -
     }
 
     if let Ok(description) = metadata.get_description() {
-        raw_fields.push(("description".to_string(), description.to_string()));
+        raw_fields.push(("description".to_string(), description.to_string().replace("\n", "\n ")));
     }
 
     if let Ok(url) = metadata.get_url() {

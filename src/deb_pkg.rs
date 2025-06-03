@@ -211,7 +211,23 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let mut package_fields: Vec<(String, String)> = Vec::new();
 
     for (original_field, value) in raw_fields {
-        if let Some(mapped_field) = PACKAGE_KEY_MAPPING.get(original_field.as_str()) {
+        if original_field == "Description" {
+            // Special handling for Description field - split into summary and description
+            let lines: Vec<&str> = value.lines().collect();
+            if !lines.is_empty() {
+                // First line becomes summary
+                package_fields.push(("summary".to_string(), lines[0].to_string()));
+
+                // Remaining lines become description (if any)
+                if lines.len() > 1 {
+                    let description_lines = &lines[1..];
+                    let description_content = description_lines.join("\n");
+                    // Apply proper indentation for multi-line descriptions
+                    let indented_description = description_content.replace("\n", "\n ");
+                    package_fields.push(("description".to_string(), indented_description));
+                }
+            }
+        } else if let Some(mapped_field) = PACKAGE_KEY_MAPPING.get(original_field.as_str()) {
             package_fields.push((mapped_field.to_string(), value));
         } else {
             log::warn!("Field name '{}' not found in predefined mapping list", original_field);
@@ -224,4 +240,56 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     crate::store::save_package_txt(package_fields, store_tmp_dir)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_description_field_splitting() {
+        // Create a temporary directory for testing
+        let temp_dir = TempDir::new().unwrap();
+        let store_tmp_dir = temp_dir.path();
+
+        // Create required directory structure
+        let deb_dir = store_tmp_dir.join("info/deb");
+        fs::create_dir_all(&deb_dir).unwrap();
+
+        // Create a mock control file with multi-line Description
+        let control_content = r#"Package: base-passwd
+Version: 3.6.3
+Priority: required
+Section: admin
+Maintainer: Colin Watson <cjwatson@debian.org>
+Description: Debian base system master password and group files
+ These are the canonical master copies of the user database files
+ (/etc/passwd and /etc/group), containing the Debian-allocated user and
+ group IDs. The update-passwd tool is provided to keep the system databases
+ synchronized with these master files.
+Architecture: all
+"#;
+
+        let control_path = deb_dir.join("control");
+        fs::write(&control_path, control_content).unwrap();
+
+        // Run the function
+        create_package_txt(&store_tmp_dir).unwrap();
+
+        // Read the generated package.txt file
+        let package_txt_path = store_tmp_dir.join("info/package.txt");
+        assert!(package_txt_path.exists());
+
+        let package_txt_content = fs::read_to_string(&package_txt_path).unwrap();
+        println!("Generated package.txt content:\n{}", package_txt_content);
+
+        // Verify the content contains both summary and description fields
+        assert!(package_txt_content.contains("summary: Debian base system master password and group files"));
+        assert!(package_txt_content.contains("description: These are the canonical master copies of the user database files"));
+        assert!(package_txt_content.contains(" (/etc/passwd and /etc/group), containing the Debian-allocated user and"));
+        assert!(package_txt_content.contains(" group IDs. The update-passwd tool is provided to keep the system databases"));
+        assert!(package_txt_content.contains(" synchronized with these master files."));
+    }
 }
