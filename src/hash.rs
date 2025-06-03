@@ -7,7 +7,7 @@ use base32;
 use walkdir::WalkDir;
 use sha2;
 use sha2::Digest;
-use color_eyre::Result;
+use color_eyre::{Result, eyre::eyre, eyre::WrapErr};
 
 // Step 1: Compute SHA256 hash  Output: 32-byte bytes object.
 // Step 2: Compress(XOR) hash   Output: 20-byte bytearray.
@@ -66,8 +66,11 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
 
     for path in &paths {
         // if path == dir { continue; } // this is where rust WalkDir differs from python os.walk
-        let (ftype, fdata) = get_path_info(&path)?;
-        info.push(path.strip_prefix(dir)?.to_string_lossy().into_owned());
+        let (ftype, fdata) = get_path_info(&path)
+            .wrap_err_with(|| format!("Failed to get path info for: {}", path.display()))?;
+        info.push(path.strip_prefix(dir)
+            .wrap_err_with(|| format!("Failed to strip prefix '{}' from path '{}'", dir.display(), path.display()))?
+            .to_string_lossy().into_owned());
         info.push(ftype.to_string());
         info.push(fdata);
     }
@@ -79,17 +82,20 @@ pub fn epkg_store_hash(epkg_path: &str) -> Result<String> {
 }
 
 fn get_path_info(path: &Path) -> Result<(&str, String)> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path)
+        .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
 
     let (ftype, fdata) = match metadata.file_type() {
-        ft if ft.is_symlink()       => ("S_IFLNK", fs::read_link(path)?.to_string_lossy().into_owned()),
+        ft if ft.is_symlink()       => ("S_IFLNK", fs::read_link(path)
+                                        .wrap_err_with(|| format!("Failed to read symlink: {}", path.display()))?
+                                        .to_string_lossy().into_owned()),
         ft if ft.is_file()          => ("S_IFREG", file_sha256_chunks(path, &metadata)?.join(" ")),
         ft if ft.is_block_device()  => ("S_IFBLK", metadata.dev().to_string()),  // u64
         ft if ft.is_char_device()   => ("S_IFCHR", metadata.dev().to_string()),  // high32-major  low32-minor
         ft if ft.is_dir()           => ("S_IFDIR", "".to_string()),
         ft if ft.is_fifo()          => ("S_IFIFO", "".to_string()),
         ft if ft.is_socket()        => ("S_IFSOCK", "".to_string()),
-        _ => panic!("Encountered an unknown file type at: {}", path.display()),
+        _ => return Err(eyre!("Encountered an unknown file type at: {}", path.display())),
     };
 
     Ok((ftype, fdata))
@@ -100,14 +106,16 @@ fn get_path_info(path: &Path) -> Result<(&str, String)> {
 fn file_sha256_chunks(file_path: &Path, metadata: &fs::Metadata) -> Result<Vec<String>> {
     const CHUNK_SIZE: usize = 16<<10; // 16 KB
 
-    let mut file = fs::File::open(file_path)?;
+    let mut file = fs::File::open(file_path)
+        .wrap_err_with(|| format!("Failed to open file: {}", file_path.display()))?;
     let mut buffer = vec![0; CHUNK_SIZE];
     let mut hashes = Vec::new();
 
     hashes.push(metadata.len().to_string());
 
     loop {
-        let bytes_read = file.read(&mut buffer)?;
+        let bytes_read = file.read(&mut buffer)
+            .wrap_err_with(|| format!("Failed to read from file: {}", file_path.display()))?;
         if bytes_read == 0 {
             break; // End of file
         }
