@@ -443,7 +443,7 @@ fn download_file_with_retries(
     loop {
         log::debug!("download_file_with_retries calling download_file for {}, attempt {}", url, retries + 1);
         log::debug!("About to call download_file with data_channel.is_some() = {}", data_channel.is_some());
-        match download_file(client, url, part_path, pb, &data_channel) {
+        match download_file(client, url, part_path, pb, retries, &data_channel) {
             Ok(()) => {
                 log::debug!("download_file_with_retries completed successfully for {}, dropping channel", url);
                 return Ok(());
@@ -571,6 +571,7 @@ fn download_file(
     url: &str,
     part_path: &Path,
     pb: &ProgressBar,
+    retries: usize,
     data_channel: &Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
     log::debug!("download_file starting for {}, part_path: {}", url, part_path.display());
@@ -711,7 +712,7 @@ fn download_file(
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
     // "Decompression error: stream/file format not recognized"
-    if downloaded > 0 {
+    if downloaded > 0 && retries == 0 {
         if let Some(channel) = &data_channel {
             send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e))?;
         }
