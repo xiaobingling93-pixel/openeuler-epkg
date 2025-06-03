@@ -11,7 +11,7 @@ use color_eyre::eyre::{self, WrapErr};
 use walkdir::WalkDir;
 use uuid::Uuid;
 use crate::models::{dirs, PackageFormat};
-use log::warn;
+use log;
 
 /// Unpacks multiple packages and moves them to the store
 pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<String>> {
@@ -84,8 +84,14 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
 
     // Move to final location
     if final_dir.exists() {
-        fs::remove_dir_all(&store_tmp_dir)
-            .wrap_err_with(|| format!("Failed to remove temporary directory: {}", store_tmp_dir.display()))?;
+        log::warn!("Target store directory already exists: {}", final_dir.display());
+        fs::remove_dir_all(&final_dir)
+            .wrap_err_with(|| format!("Failed to remove old store directory: {}", final_dir.display()))?;
+    } else {
+        let parent_dir = final_dir.parent()
+            .ok_or_else(|| eyre::eyre!("Failed to get parent directory for: {}", final_dir.display()))?;
+        fs::create_dir_all(parent_dir)
+            .wrap_err_with(|| format!("Failed to create directory: {}", parent_dir.display()))?;
     }
 
     fs::rename(&store_tmp_dir, &final_dir)
@@ -318,7 +324,7 @@ pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, s
     // Then write any remaining fields that weren't in the preferred order
     for (original_field, value) in &package_fields {
         if !field_order.contains(&original_field.as_str()) {
-            warn!("Field name '{}' not found in predefined field order list", original_field);
+            log::warn!("Field name '{}' not found in predefined field order list", original_field);
             output.push_str(&format!("{}: {}\n", original_field, value));
         }
     }
