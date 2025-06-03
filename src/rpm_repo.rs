@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::io::Read;
-use color_eyre::eyre::{eyre, WrapErr, Result};
+use color_eyre::eyre::{self, eyre, WrapErr, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use crate::models::*;
@@ -140,9 +140,9 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 index_url.trim_end_matches('/')
                             };
                             let url = format!("{}/{}", baseurl, current_location);
-                            let local_path = url_to_cache_path(&url)
+                            let download_path = url_to_cache_path(&url)
                                 .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
-                            let need_download = !local_path.exists();
+                            let need_download = !download_path.exists();
 
                             let is_packages = current_data_type == "primary";
                             let repo_dir = dirs::get_repo_dir(&repo)
@@ -150,7 +150,11 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             let output_path = if is_packages {
                                 repo_dir.join(format!("packages.txt"))
                             } else {
-                                repo_dir.join(format!("filelists.xml.zst"))
+                                if let Some(ext) = current_location.split('.').last() {
+                                    repo_dir.join(format!("filelists.xml.{}", ext))
+                                } else {
+                                    eyre::bail!("File has no extension: {} check {}", current_location, download_path.display())
+                                }
                             };
                             let need_convert = !output_path.exists();
 
@@ -168,8 +172,8 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 size: current_size,
                                 location: current_location.clone(),
                                 is_packages,
-                                output_path: output_path,
-                                download_path: local_path,
+                                output_path,
+                                download_path,
                             });
                         }
                         in_data = false;

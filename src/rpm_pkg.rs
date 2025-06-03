@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use rpm::{Package, FileMode};
 use crate::rpm_repo::PACKAGE_KEY_MAPPING;
 use color_eyre::eyre::WrapErr;
-use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
-use std::io::Write;
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
