@@ -115,21 +115,17 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P)
 
     match format {
         PackageFormat::Deb => {
-            crate::deb_pkg::unpack_package(package_file, store_tmp_dir)
-                .wrap_err_with(|| format!("Failed to unpack DEB package {} to {}", package_file.display(), store_tmp_dir.display()))?;
+            crate::deb_pkg::unpack_package(package_file, store_tmp_dir)?
         }
         PackageFormat::Rpm => {
-            crate::rpm_pkg::unpack_package(package_file, store_tmp_dir)
-                .wrap_err_with(|| format!("Failed to unpack RPM package {} to {}", package_file.display(), store_tmp_dir.display()))?;
+            crate::rpm_pkg::unpack_package(package_file, store_tmp_dir)?
         }
         PackageFormat::Apk => {
-            crate::apk_pkg::unpack_package(package_file, store_tmp_dir)
-                .wrap_err_with(|| format!("Failed to unpack APK package {} to {}", package_file.display(), store_tmp_dir.display()))?;
+            crate::apk_pkg::unpack_package(package_file, store_tmp_dir)?
         }
         PackageFormat::Epkg => {
             // Handle existing .epkg format
-            crate::epkg::unpack_package(package_file, store_tmp_dir)
-                .wrap_err_with(|| format!("Failed to unpack EPKG package {} to {}", package_file.display(), store_tmp_dir.display()))?;
+            crate::epkg::unpack_package(package_file, store_tmp_dir)?
         }
         _ => {
             return Err(eyre::eyre!("Unsupported package format: {:?}", format));
