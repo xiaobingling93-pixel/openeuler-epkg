@@ -4,7 +4,7 @@ use std::fs;
 use std::collections::HashMap;
 use rpm::{Package, FileMode};
 use crate::rpm_repo::PACKAGE_KEY_MAPPING;
-use color_eyre::eyre::WrapErr;
+use color_eyre::eyre::{WrapErr, Context};
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
@@ -12,9 +12,12 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/rpm"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    fs::create_dir_all(store_tmp_dir.join("fs"))
+        .wrap_err_with(|| format!("Failed to create fs directory at {}", store_tmp_dir.join("fs").display()))?;
+    fs::create_dir_all(store_tmp_dir.join("info/rpm"))
+        .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
+    fs::create_dir_all(store_tmp_dir.join("info/install"))
+        .wrap_err_with(|| format!("Failed to create info/install directory at {}", store_tmp_dir.join("info/install").display()))?;
 
     // Open and parse the RPM package
     let package = Package::open(rpm_file)
@@ -39,17 +42,20 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
 fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result<()> {
     let target_dir = target_dir.as_ref();
 
-    fs::create_dir_all(target_dir)?;
+    fs::create_dir_all(target_dir)
+        .wrap_err_with(|| format!("Failed to create target directory at {}", target_dir.display()))?;
 
     // Extract files from the RPM package
-    let file_entries = package.metadata.get_file_entries()?;
+    let file_entries = package.metadata.get_file_entries()
+        .wrap_err_with(|| "Failed to get file entries from RPM package metadata")?;
 
     for file in file_entries {
         let file_path = target_dir.join(file.path.to_string_lossy().trim_start_matches('/'));
 
         // Create parent directories if they don't exist
         if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .wrap_err_with(|| format!("Failed to create parent directory at {}", parent.display()))?;
         }
 
         match file.mode {
@@ -57,27 +63,33 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                 // For regular files, we would need the actual file content from the payload
                 // Since package.content is the compressed payload bytes, we cannot easily extract individual files
                 // For now, create empty files with correct permissions
-                fs::write(&file_path, "")?;
+                fs::write(&file_path, "")
+                    .wrap_err_with(|| format!("Failed to create empty file at {}", file_path.display()))?;
 
                 // Set file permissions
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&file_path)?.permissions();
+                    let mut perms = fs::metadata(&file_path)
+                        .wrap_err_with(|| format!("Failed to get metadata for file at {}", file_path.display()))?.permissions();
                     perms.set_mode(permissions.into());
-                    fs::set_permissions(&file_path, perms)?;
+                    fs::set_permissions(&file_path, perms)
+                        .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                 }
             }
             FileMode::Dir { permissions } => {
                 // Create directory
-                fs::create_dir_all(&file_path)?;
+                fs::create_dir_all(&file_path)
+                    .wrap_err_with(|| format!("Failed to create directory at {}", file_path.display()))?;
 
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&file_path)?.permissions();
+                    let mut perms = fs::metadata(&file_path)
+                        .wrap_err_with(|| format!("Failed to get metadata for file at {}", file_path.display()))?.permissions();
                     perms.set_mode(permissions.into());
-                    fs::set_permissions(&file_path, perms)?;
+                    fs::set_permissions(&file_path, perms)
+                        .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                 }
             }
             FileMode::SymbolicLink { permissions: _ } => {
@@ -137,15 +149,18 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
                 let target_path = install_dir.join(&script_name);
 
                 // Write the script content
-                fs::write(&target_path, &script_content)?;
+                fs::write(&target_path, &script_content)
+                    .wrap_err_with(|| format!("Failed to write script content to {}", target_path.display()))?;
 
                 // Make it executable
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&target_path)?.permissions();
+                    let mut perms = fs::metadata(&target_path)
+                        .wrap_err_with(|| format!("Failed to get metadata for script at {}", target_path.display()))?.permissions();
                     perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)?;
+                    fs::set_permissions(&target_path, perms)
+                        .wrap_err_with(|| format!("Failed to set executable permissions for script at {}", target_path.display()))?;
                 }
             }
         }
