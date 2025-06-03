@@ -623,6 +623,9 @@ impl<'a> StreamingXmlProcessor<'a> {
                         }
                     }
 
+                    // Store a copy of name for later use
+                    let name_copy = name.clone();
+
                     // Format entry with version if available
                     let formatted_entry = if !ver.is_empty() {
                         // Convert flags to appropriate symbol
@@ -669,6 +672,9 @@ impl<'a> StreamingXmlProcessor<'a> {
                             pre.push(formatted_entry);
                         } else {
                             regular.push(formatted_entry);
+                        }
+                        if self.in_dependency_section == "provides" {
+                            self.derived_files.on_provides(vec![&name_copy]);
                         }
                     } else {
                         log::warn!("Unknown dependency section: {}", self.in_dependency_section);
@@ -728,6 +734,9 @@ impl<'a> StreamingXmlProcessor<'a> {
                 // Emit files if any
                 if !self.files.is_empty() {
                     self.derived_files.output.push_str(&format!("files: {}\n", self.files.join(", ")));
+                    // Convert Vec<String> to Vec<&str> for on_provides
+                    let file_slices: Vec<&str> = self.files.iter().map(|s| s.as_str()).collect();
+                    self.derived_files.on_provides(file_slices);
                 }
 
                 // End package processing
