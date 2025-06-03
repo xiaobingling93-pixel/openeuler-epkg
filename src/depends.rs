@@ -205,6 +205,30 @@ impl PackageManager {
         Ok(())
     }
 
+    // Filter packages based on architecture that matches config().common.arch
+    fn filter_packages_by_arch(&self, packages: Vec<Package>) -> Vec<Package> {
+        let target_arch = crate::models::config().common.arch.as_str();
+
+        // If there are no packages with matching architecture, return all packages
+        let arch_packages: Vec<Package> = packages.iter()
+            .filter(|pkg| !pkg.arch.is_empty() && pkg.arch == target_arch)
+            .cloned()
+            .collect();
+
+        log::trace!(
+            "Filtered packages by architecture '{}': {} out of {} packages matched",
+            target_arch,
+            arch_packages.len(),
+            packages.len()
+        );
+
+        if !arch_packages.is_empty() {
+            arch_packages
+        } else {
+            packages
+        }
+    }
+
     fn process_requirement_impl(
         &mut self,
         capability: &str,
@@ -214,7 +238,7 @@ impl PackageManager {
         missing_deps: &mut Vec<String>,
     ) -> Result<()> {
         // First try to find packages by capability name directly
-        let pkg_packages = match self.map_pkgname2packages(capability) {
+        let unfiltered_packages = match self.map_pkgname2packages(capability) {
             Ok(packages_list) if !packages_list.is_empty() => packages_list,
             _ => {
                 // If not found, try to resolve through provides mapping
@@ -240,6 +264,9 @@ impl PackageManager {
                 }
             }
         };
+
+        // Filter packages by architecture
+        let pkg_packages = self.filter_packages_by_arch(unfiltered_packages);
 
         for package in pkg_packages {
             let pkgkey = &package.pkgkey;
