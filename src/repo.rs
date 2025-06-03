@@ -375,6 +375,7 @@ pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mps
     let release_items_clone = release_items.clone();
     let revises: Vec<_> = release_items_clone.iter()
         .filter(|revise| revise.need_download || revise.need_convert)
+        .filter(|revise| revise.is_packages || config().subcommand == "update")
         .cloned()
         .collect();
 
