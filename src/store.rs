@@ -304,7 +304,7 @@ pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, s
         "javascriptBuiltUsing", "xCargoBuiltUsing", "builtUsingNewlibSource", "goImportPath",
         "ghcPackage", "efiVendor", "cnfIgnoreCommands", "cnfVisiblePkgname", "cnfExtraCommands",
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
-        "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion"
+        "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
     ];
 
     // First, write fields in the preferred order
