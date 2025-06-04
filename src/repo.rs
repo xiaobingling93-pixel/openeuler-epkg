@@ -203,7 +203,7 @@ fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()>
 
     for repo in all_repos {
         let repo = repo.clone();
-        let _ = revise_repodata(format.clone(), &repo, &tx);
+        revise_repodata(format.clone(), &repo, &tx)?;
     }
 
     // Reader thread (or main thread) waits for all writers to finish
@@ -321,6 +321,10 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
                 return Ok(false);
             }
         }
+    } else {
+        // Force download by removing release file
+        fs::rename(path, path.with_extension("old"))
+            .with_context(|| format!("Failed to rename release file: {}", path.display()))?;
     }
 
     Ok(true)
@@ -337,13 +341,6 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
         return Ok(());
     }
 
-    // Force download by removing release file
-    let expire_secs = config().common.metadata_expire;
-    if expire_secs < 0 || config().subcommand == "update" {
-        fs::rename(path, path.with_extension("old"))
-            .with_context(|| format!("Failed to rename release file: {}", path.display()))?;
-    }
-
     // Download Release file
     download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)
         .with_context(|| format!("Failed to download release file from {}", repo.index_url))?;
@@ -355,15 +352,16 @@ pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mps
         .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
     let release_path = url_to_cache_path(&repo.index_url)
         .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
+    let release_dir = release_path.parent()
+        .ok_or_else(|| eyre::eyre!("Failed to get parent directory of release path: {}", release_path.display()))?;
 
+    fs::create_dir_all(release_dir).with_context(|| format!("Failed to create parent directory for: {}", release_path.display()))?;
     refresh_release_file(&release_path, &repo)
         .with_context(|| format!("Failed to refresh release file for repository: {}", repo.repo_name))?;
 
     // Parse Release file
     let release_content = fs::read_to_string(&release_path)
         .with_context(|| format!("Failed to read Release file: {}", release_path.display()))?;
-    let release_dir = release_path.parent()
-        .ok_or_else(|| eyre::eyre!("Failed to get parent directory of release path: {}", release_path.display()))?;
     let release_items =
         match format {
             PackageFormat::Deb => crate::deb_repo::parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?,
@@ -465,9 +463,13 @@ fn process_revises_parallel(
 
         if let Err(e) = create_load_repoindex(&repo_clone, no_revises, &repo_dir, release_items_clone2) {
             log::error!("Failed to save repo index json: {}", e);
-            let _ = result_tx.send(false);
+            if let Err(send_err) = result_tx.send(false) {
+                log::error!("Failed to send error status on channel: {}", send_err);
+            }
         } else {
-            let _ = result_tx.send(true);
+            if let Err(send_err) = result_tx.send(true) {
+                log::error!("Failed to send success status on channel: {}", send_err);
+            }
         }
     });
 }
@@ -487,7 +489,7 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     submit_download_task(task)
         .with_context(|| format!("Failed to submit download task for URL: {}", revise.url))?;
 
-    let _ = &DOWNLOAD_MANAGER.start_processing()
+    &DOWNLOAD_MANAGER.start_processing()
         .with_context(|| "Failed to start download manager processing")?;
 
     log::debug!("process_data for {:?}", revise);
