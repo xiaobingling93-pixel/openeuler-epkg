@@ -654,33 +654,57 @@ fn download_file(
                     .unwrap_or(0);
                 log::debug!("download_file remote_size: {}, local_size: {}", remote_size, downloaded);
 
-                let _remote_last_modified = remote_metadata.headers().get("Last-Modified").and_then(|s| {
-                    s.to_str().ok().and_then(|s| {
-                        OffsetDateTime::parse(s, &Rfc2822).ok()
-                    })
-                }).unwrap_or_else(|| {
-                    log::debug!("No Last-Modified header found, using current time");
-                    OffsetDateTime::now_utc()
-                });
+                let remote_timestamp_opt = remote_metadata.headers().get("Last-Modified")
+                    .or_else(|| remote_metadata.headers().get("Date")) // Try "Date" if "Last-Modified" is None
+                    .and_then(|s| {
+                        s.to_str().ok().and_then(|s_val| {
+                            match OffsetDateTime::parse(s_val, &Rfc2822) {
+                                Ok(dt) => Some(dt),
+                                Err(e) => {
+                                    log::warn!("Failed to parse timestamp header value '{}': {}", s_val, e);
+                                    None
+                                }
+                            }
+                        })
+                    });
+
                 let local_metadata = fs::metadata(part_path).map_err(|e| eyre!("Failed to get local file metadata: {}", e))?;
                 let local_size = local_metadata.len();
-                let _local_last_modified = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
-                let _local_last_modified: OffsetDateTime = _local_last_modified.into();
+                let local_last_modified_sys_time = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
+                let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
 
-                if remote_size == local_size {
-                    log::debug!("download_file sizes match, skipping download and sending file to channel");
-                    let message = format!("Remote file unchanged, skipping download");
-                    pb.finish_with_message(message.clone());
-                    if let Some(channel) = &data_channel {
-                        send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+                if let Some(remote_ts) = remote_timestamp_opt {
+                    // A remote timestamp was successfully parsed from headers
+                    if remote_size == local_size && remote_ts == local_last_modified {
+                        log::debug!("download_file sizes and timestamps match (remote_ts: {}, local_ts: {}), skipping download.", remote_ts, local_last_modified);
+                        let message = format!("Remote file unchanged (size and timestamp match), skipping download");
+                        pb.finish_with_message(message.clone());
+                        if let Some(channel) = &data_channel {
+                            send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+                        }
+                        log::debug!("download_file returning Ok after skipping download due to matching size and timestamp.");
+                        return Ok(());
+                    } else {
+                        let mut reason = String::from("Remote file differs");
+                        if remote_size != local_size {
+                            reason.push_str(&format!(" (size mismatch: remote {}, local {})", remote_size, local_size));
+                        }
+                        if remote_ts != local_last_modified {
+                            reason.push_str(&format!(" (timestamp mismatch: remote {}, local {})", remote_ts, local_last_modified));
+                        }
+                        log::info!("{}, restarting download from 0.", reason);
+                        let error_msg = format!("{}, restarting download from 0.", reason);
+                        pb.finish_with_message(error_msg.clone());
+                        fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
+                        return Err(eyre!(error_msg));
                     }
-                    log::debug!("download_file returning Ok after skipping download");
-                    return Ok(());
                 } else {
-                    let error_msg = format!("Remote file changed, restarting from 0");
+                    // No valid remote timestamp header found, or parsing failed. Download for safety.
+                    log::info!("No valid remote timestamp found or failed to parse. Re-downloading for safety (remote size: {}, local size: {}).", remote_size, local_size);
+                    let error_msg = format!("No remote timestamp, re-downloading for safety (current local size: {}, path: {})", local_size, part_path.display());
                     pb.finish_with_message(error_msg.clone());
-                    fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file: {}", e))?;
-                    return Err(eyre!(error_msg))
+                    fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
+                    return Err(eyre!(error_msg));
                 }
             }
             let error_msg = format!("HTTP {} error: {} - {}", code,
@@ -789,13 +813,23 @@ fn download_file(
         return Err(eyre!("Download size mismatch: Downloaded size ({}) does not match Content-Length ({}) for {}", downloaded, total_size, part_path.display()));
     }
 
-    if let Some(last_modified) = response.headers().get("Last-Modified")
+    if let Some(timestamp_str) = response.headers().get("Last-Modified")
+        .or_else(|| response.headers().get("Date")) // Try "Date" if "Last-Modified" is None
         .and_then(|s| s.to_str().ok())
-        .and_then(|s| OffsetDateTime::parse(s, &Rfc2822).ok())
     {
-        let system_time = filetime::FileTime::from_system_time(last_modified.into());
-        set_file_mtime(part_path, system_time)
-            .map_err(|e| eyre!("Failed to set file modification time for {}: {}", part_path.display(), e))?;
+        match OffsetDateTime::parse(timestamp_str, &Rfc2822) {
+            Ok(timestamp) => {
+                let system_time = filetime::FileTime::from_system_time(timestamp.into());
+                if let Err(e) = set_file_mtime(part_path, system_time) {
+                     log::warn!("Failed to set mtime for {}: {}", part_path.display(), e);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to parse timestamp header value '{}' for mtime: {}", timestamp_str, e);
+            }
+        }
+    } else {
+        log::debug!("No Last-Modified or Date header found for mtime for {}", part_path.display());
     }
 
     let filename = part_path.file_name()
