@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 
 use color_eyre::{eyre::eyre, eyre::WrapErr, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ureq::{Agent, config::Config, tls::TlsConfig, Proxy};
+use ureq::{Agent, Proxy};
 use crate::dirs;
 use crate::models::*;
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
@@ -67,27 +67,25 @@ pub struct DownloadManager {
 
 impl DownloadManager {
     pub fn new(nr_parallel: usize, proxy: &str) -> Result<Self> {
-        let config = Config::builder()
-            .tls_config(
-                TlsConfig::builder()
-                    .build()
-            )
-            .proxy(if proxy.is_empty() {
-                None
-            } else {
-                Some(match Proxy::new(proxy) {
-                    Ok(proxy) => proxy,
-                    Err(e) => {
-                        log::error!("Failed to create proxy from {}: {}", proxy, e);
-                        panic!("Failed to create proxy: {}", e);
-                    }
-                })
-            })
-            .user_agent("curl/8.13.0")
-            .timeout_connect(Some(Duration::from_secs(5)))
-            .build();
+        let mut config_builder = Agent::config_builder()
+            .user_agent("curl/8.13.0") // necessary to avoid download error for some URLs
+            .timeout_connect(Some(Duration::from_secs(5)));
 
-        let client = Agent::new_with_config(config);
+        if !proxy.is_empty() {
+            match Proxy::new(proxy) {
+                Ok(p) => {
+                    config_builder = config_builder.proxy(Some(p));
+                }
+                Err(e) => {
+                    log::error!("Failed to create proxy from {}: {}", proxy, e);
+                    panic!("Failed to create proxy: {}", e);
+                }
+            }
+        }
+        // If proxy.is_empty(), .proxy() is not called on config_builder.
+        // This allows ureq::Agent to use its default proxy detection (e.g., from environment variables).
+
+        let client = config_builder.build().into();
         let multi_progress = MultiProgress::new();
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(nr_parallel)
