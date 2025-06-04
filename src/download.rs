@@ -479,17 +479,20 @@ fn download_file_with_retries(
             },
             Err(e) => {
                 log::debug!("download_file_with_retries got error for {}: {:?}", url, e);
+
+                // Check if this is a fatal error (like 404) that shouldn't be retried
                 if e.downcast_ref::<FatalError>().is_some() {
+                    log::info!("Skipping retries for fatal error (client error 4xx) for {}", url);
                     return Err(e);
                 }
 
                 if retries >= max_retries {
-                    return Err(eyre!("Max retries ({}) exceeded: {}", max_retries, e));
+                    return Err(eyre!("Max retries ({}) exceeded for {}: {}", max_retries, url, e));
                 }
 
                 retries += 1;
                 let delay = Duration::from_secs(2u64.pow(retries as u32));
-                pb.println(format!("Retrying {} (attempt {}/{})...", url, retries, max_retries));
+                pb.println(format!("Retrying {} (attempt {}/{}) after {}s delay...", url, retries + 1, max_retries + 1, delay.as_secs()));
                 thread::sleep(delay);
             }
         }
@@ -696,7 +699,7 @@ fn download_file(
                         let error_msg = format!("{}, restarting download from 0.", reason);
                         pb.finish_with_message(error_msg.clone());
                         fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
-                        return Err(eyre!(error_msg));
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg).into());
                     }
                 } else {
                     // No valid remote timestamp header found, or parsing failed. Download for safety.
@@ -704,14 +707,18 @@ fn download_file(
                     let error_msg = format!("No remote timestamp, re-downloading for safety (current local size: {}, path: {})", local_size, part_path.display());
                     pb.finish_with_message(error_msg.clone());
                     fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
-                    return Err(eyre!(error_msg));
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg).into());
                 }
             }
-            let error_msg = format!("HTTP {} error: {} - {}", code,
-                if code >= 400 && code < 500 { "Client Error" }
-                else { "Server Error" }, url);
+            let error_msg = if code >= 400 && code < 500 {
+                format!("HTTP {} error: {} - {}", code, "Client Error", url)
+            } else {
+                format!("HTTP {} error: {} - {}", code, "Server Error", url)
+            };
             pb.finish_with_message(error_msg.clone());
             return if code >= 400 && code < 500 {
+                // For client errors (like 404), create a simple FatalError without verbose backtrace
+                log::info!("Client error {} for {}, will not retry", code, url);
                 Err(eyre!(FatalError(error_msg)))
             } else {
                 Err(eyre!("HTTP error: {}", error_msg.clone()))

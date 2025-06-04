@@ -14,6 +14,23 @@ use crate::models::*;
 use crate::repo::*;
 use crate::mmio;
 
+#[derive(Debug, Clone)]
+pub enum IncompleteDownloadError {
+    SizeMismatch { expected: u64, actual: u64 },
+}
+
+impl std::fmt::Display for IncompleteDownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IncompleteDownloadError::SizeMismatch { expected, actual } => {
+                write!(f, "Incomplete download: expected {} bytes, got {} bytes", expected, actual)
+            }
+        }
+    }
+}
+
+impl std::error::Error for IncompleteDownloadError {}
+
 pub struct ReceiverHasher {
     receiver: Receiver<Vec<u8>>,
     current_chunk: Vec<u8>,
@@ -21,6 +38,8 @@ pub struct ReceiverHasher {
     pub hasher: Sha256,
     pub sha256sum: String,
     expected_hash: Option<String>,
+    expected_size: Option<u64>,
+    total_bytes_received: u64,
     hash_validated: bool,
 }
 
@@ -33,12 +52,36 @@ impl ReceiverHasher {
             hasher: Sha256::new(),
             sha256sum: String::new(),
             expected_hash: Some(expected_hash),
+            expected_size: None,
+            total_bytes_received: 0,
+            hash_validated: false,
+        }
+    }
+
+    pub fn new_with_size(receiver: Receiver<Vec<u8>>, expected_hash: String, expected_size: u64) -> Self {
+        Self {
+            receiver,
+            current_chunk: Vec::new(),
+            position: 0,
+            hasher: Sha256::new(),
+            sha256sum: String::new(),
+            expected_hash: Some(expected_hash),
+            expected_size: Some(expected_size),
+            total_bytes_received: 0,
             hash_validated: false,
         }
     }
 
     pub fn is_hash_valid(&self) -> bool {
         self.hash_validated
+    }
+
+    pub fn is_complete(&self) -> bool {
+        if let Some(expected_size) = self.expected_size {
+            self.total_bytes_received == expected_size
+        } else {
+            true // Can't determine completeness without expected size
+        }
     }
 }
 
@@ -52,6 +95,7 @@ impl std::io::Read for ReceiverHasher {
                         log::warn!("ReceiverHasher: Received empty chunk, this might indicate a problem");
                     } else {
                         log::trace!("ReceiverHasher: Received chunk of size {}", chunk.len());
+                        self.total_bytes_received += chunk.len() as u64;
                     }
                     self.hasher.update(&chunk);
                     self.current_chunk = chunk;
@@ -59,6 +103,21 @@ impl std::io::Read for ReceiverHasher {
                 }
                 Err(e) => {
                     log::debug!("ReceiverHasher: Channel closed: {}, starting hash validation", e);
+
+                    // Check if download was incomplete first
+                    if let Some(expected_size) = self.expected_size {
+                        if self.total_bytes_received != expected_size {
+                            let err = IncompleteDownloadError::SizeMismatch {
+                                expected: expected_size,
+                                actual: self.total_bytes_received
+                            };
+                            log::debug!("ReceiverHasher: {}", err);
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                err
+                            ));
+                        }
+                    }
 
                     // Auto-validate hash if expected hash was provided
                     if let Some(ref expected) = self.expected_hash {

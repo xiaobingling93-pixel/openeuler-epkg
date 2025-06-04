@@ -12,6 +12,7 @@ use crate::packages_stream;
 use lazy_static::lazy_static;
 use flate2::read::GzDecoder;
 use zstd;
+use std::error::Error;
 
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
@@ -203,20 +204,16 @@ fn process_chunks<R: Read>(
     revise: &RepoReleaseItem,
     decoder_type: &str,
 ) -> Result<()> {
-    loop {
-        let read_result = reader.read(unpack_buf);
-        match read_result {
-            Ok(0) => {
-                // Reached EOF
-                log::debug!("Reached EOF after processing chunks for {}", revise.location);
+    log::debug!("process_chunks starting for {} using {} decoder", revise.location, decoder_type);
 
-                // Finalize any remaining buffered data
-                xml_processor.finalize()
-                    .with_context(|| format!("Failed to finalize XML processor for {}", revise.location))?;
-                break; // EOF
+    loop {
+        match reader.read(unpack_buf) {
+            Ok(0) => {
+                log::debug!("process_chunks EOF reached for {}", revise.location);
+                break;
             }
             Ok(n) => {
-                // Process the chunk with the streaming XML processor
+                log::trace!("process_chunks read {} bytes for {}", n, revise.location);
                 if let Err(e) = xml_processor.process_chunk(&unpack_buf[..n]) {
                     let err_msg = format!("Failed to process XML chunk ({} bytes) for {}: {}",
                                        n, revise.location, e);
@@ -226,6 +223,17 @@ fn process_chunks<R: Read>(
                 }
             }
             Err(e) => {
+                // Check if this is due to incomplete download first
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    if let Some(incomplete_err) = e.source().and_then(|s| s.downcast_ref::<crate::packages_stream::IncompleteDownloadError>()) {
+                        log::info!("Decompression stopped for {} due to incomplete download: {}", revise.location, incomplete_err);
+                        return Err(eyre!("Incomplete download: {}", incomplete_err));
+                    } else {
+                        log::debug!("Decompression stopped for {} due to EOF (expected for incomplete downloads)", revise.location);
+                        return Err(eyre!("Decompression error: EOF during decompression for {} (likely due to incomplete download)", revise.location));
+                    }
+                }
+
                 let err_msg = format!("Decompression error for {} using {} decoder: {}",
                                    revise.location, decoder_type, e);
                 log::error!("{}", err_msg);
@@ -234,24 +242,29 @@ fn process_chunks<R: Read>(
         }
     }
 
+    log::debug!("process_chunks completed successfully for {}", revise.location);
+    // Finalize the XML processor
+    xml_processor.finalize()
+        .map_err(|e| eyre!("Failed to finalize XML processor for {}: {}", revise.location, e))?;
+
     Ok(())
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
-    log::debug!("Starting to process packages content for {} (hash: {})", revise.location, revise.hash);
+    log::debug!("Starting to process packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)
         .map_err(|e| eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
 
-    // Always use automatic hash validation by passing the expected hash
-    let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
+    // Always use automatic hash validation by passing the expected hash and size
+    let reader = packages_stream::ReceiverHasher::new_with_size(data_rx, revise.hash.clone(), revise.size.try_into().unwrap());
 
     // Detect compression type from file extension and use appropriate decoder
     let mut unpack_buf = vec![0u8; 65536];
     let mut xml_processor = StreamingXmlProcessor::new(&mut derived_files);
 
     if revise.location.ends_with(".zst") {
-        log::debug!("Using zstd decoder for {} (expected hash: {})", revise.location, revise.hash);
+        log::debug!("Using zstd decoder for {} (expected hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
         // Use zstd decoder for .zst files
         let zst_decoder_result = zstd::stream::read::Decoder::new(reader);
@@ -263,6 +276,15 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                 decoder
             },
             Err(e) => {
+                // Check if this is due to incomplete download
+                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
+                    if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
+                        if let Some(incomplete_err) = io_err.source().and_then(|s| s.downcast_ref::<crate::packages_stream::IncompleteDownloadError>()) {
+                            log::info!("Skipping decompression for {} due to incomplete download: {}", revise.location, incomplete_err);
+                            return Err(eyre!("Incomplete download: {}", incomplete_err));
+                        }
+                    }
+                }
                 let err_msg = format!("Failed to create zstd decoder for {}: {}", revise.location, e);
                 log::error!("{}", err_msg);
                 return Err(eyre!(err_msg));
@@ -272,7 +294,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         // Process chunks using the zstd decoder
         process_chunks(zst_decoder, &mut xml_processor, &mut unpack_buf, revise, "zst")?;
     } else {
-        log::debug!("Using gzip decoder for {}", revise.location);
+        log::debug!("Using gzip decoder for {} (expected size: {})", revise.location, revise.size);
         // Default to gzip decoder for .gz files or other formats
         let xml_decoder = GzDecoder::new(reader);
 
