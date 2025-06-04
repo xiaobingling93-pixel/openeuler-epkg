@@ -1,10 +1,9 @@
 use std::env;
 use std::path::PathBuf;
-use std::io::{self, ErrorKind};
 use crate::models::*;
 use crate::repo::RepoRevise;
 use color_eyre::Result;
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
 
 #[derive(Default)]
 pub struct EPKGDirsBuilder {
@@ -19,7 +18,7 @@ impl EPKGDirs {
     }
 
     // Helper method to create dirs using proper path joining
-    fn build_dirs(options: &EPKGConfig, home_epkg: &PathBuf, opt_epkg: &PathBuf) -> io::Result<Self> {
+    fn build_dirs(options: &EPKGConfig, home_epkg: &PathBuf, opt_epkg: &PathBuf) -> Result<Self> {
         let (store_root, cache_root) = if options.init.shared_store {
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
@@ -56,12 +55,12 @@ impl EPKGDirsBuilder {
         self
     }
 
-    pub fn build(self) -> io::Result<EPKGDirs> {
+    pub fn build(self) -> Result<EPKGDirs> {
         let options = self.options.unwrap_or_default();
 
         let home_epkg = match self.custom_home {
             Some(path) => path,
-            None => get_home_epkg_path()
+            None => get_home_epkg_path()?
         };
 
         let opt_epkg = self.custom_opt.unwrap_or_else(|| PathBuf::from("/opt/epkg"));
@@ -185,29 +184,22 @@ pub fn get_env_config_path(env_name: &str) -> PathBuf {
 }
 
 /// $HOME/.epkg
-pub fn get_home_epkg_path() -> PathBuf {
-    let home = get_home().expect("HOME environment variable not set");
-    PathBuf::from(home).join(".epkg")
+pub fn get_home_epkg_path() -> Result<PathBuf> {
+    let home = get_home().wrap_err("Failed to get HOME directory for .epkg path")?;
+    Ok(PathBuf::from(home).join(".epkg"))
 }
 
-fn get_xdg_cache() -> io::Result<PathBuf> {
-    // Try XDG_CACHE_HOME first
+fn get_xdg_cache() -> Result<PathBuf> {
     match env::var("XDG_CACHE_HOME") {
-        Ok(xdg_cache_str) => Ok(PathBuf::from(xdg_cache_str)),
-        Err(_) => { // XDG_CACHE_HOME not set or other VarError
-            // Try HOME/.cache
-            match get_home() { // This returns color_eyre::Result<String>
-                Ok(home_str) => Ok(PathBuf::from(home_str).join(".cache")),
-                Err(eyre_report) => {
-                    // Convert eyre::Report to io::Error
-                    Err(io::Error::new(ErrorKind::NotFound, format!("Could not determine cache directory: XDG_CACHE_HOME not set and failed to get HOME: {}", eyre_report)))
-                }
-            }
+        Ok(path_str) if !path_str.is_empty() => Ok(PathBuf::from(path_str)),
+        _ => { // Covers Err cases and empty Ok string
+            let home_str = get_home().wrap_err("XDG_CACHE_HOME not found or invalid, and failed to get HOME directory for fallback cache")?;
+            Ok(PathBuf::from(home_str).join(".cache"))
         }
     }
 }
 
-fn get_username() -> io::Result<String> {
+fn get_username() -> Result<String> {
     // Try USER environment variable first (common on Unix/Linux)
     if let Ok(username) = env::var("USER") {
         if !username.is_empty() {
@@ -223,19 +215,14 @@ fn get_username() -> io::Result<String> {
     }
 
     // Try to get username from HOME path
-    if let Ok(home) = get_home() {
+    let home = get_home()?;
         let path = PathBuf::from(home);
         if let Some(username) = path.file_name().and_then(|n| n.to_str()) {
             if !username.is_empty() {
                 return Ok(username.to_string());
             }
         }
-    }
 
     // If all else fails, return a descriptive error
-    Err(io::Error::new(
-        ErrorKind::NotFound,
-        "Could not determine username. Please ensure either USER or USERNAME environment variables are set. \
-         This is required to set up the public environments directory."
-    ))
+    Err(eyre::eyre!("Could not determine username. Please ensure either USER or USERNAME environment variables are set. This is required to set up the public environments directory."))
 }

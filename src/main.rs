@@ -278,14 +278,19 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .get_matches()
 }
 
-fn parse_yaml_config<T: Default + serde::de::DeserializeOwned>(path: &str) -> T {
-    let contents = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("Failed to read config file: {}", path));
-    serde_yaml::from_str(&contents)
-        .unwrap_or_else(|_| panic!("Failed to parse config file: {}", path))
+fn parse_yaml_config<T>(path: &str) -> Result<T>
+where
+    T: for<'de> serde::Deserialize<'de> + Default,
+{
+    std::fs::read_to_string(path)
+        .map_err(|e| eyre::eyre!("Failed to read config file {}: {}", path, e))
+        .and_then(|s| {
+            serde_yaml::from_str(&s)
+                .map_err(|e| eyre::eyre!("Failed to parse YAML from config file {}: {}", path, e))
+        })
 }
 
-pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
+pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     if matches.contains_id("version") {
         println!("epkg version {}", env!("CARGO_PKG_VERSION"));
         exit(0);
@@ -293,17 +298,17 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
     let mut config: EPKGConfig = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
-            let default_config = dirs::get_home_epkg_path().join("config").join("options.yaml");
-            if default_config.exists() {
-                parse_yaml_config(default_config.to_str().unwrap())
+            let default_config_path = dirs::get_home_epkg_path()?.join("config").join("options.yaml");
+            if default_config_path.exists() {
+                parse_yaml_config(default_config_path.to_str().expect("Default config path is not valid UTF-8"))
             } else {
                 // Comparing to Default::default(), this ensures the serde defaults take effect consistently
-                serde_yaml::from_str("")
-                    .unwrap_or_else(|_| panic!("Failed to load defconfig"))
+                Ok(serde_yaml::from_str("")
+                    .unwrap_or_else(|_| panic!("Failed to load defconfig")))
             }
         },
         |s| parse_yaml_config(s)
-    );
+    )?;
 
     config.common.env = matches.get_one::<String>("env").map_or_else(
         || env::var("EPKG_ACTIVE_ENV").map(|s| s.trim_end_matches(':').to_string()).unwrap_or_else(|_| "main".to_string()),
@@ -315,7 +320,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
     );
 
     if !SUPPORT_ARCH_LIST.contains(&config.common.arch.as_str()) {
-        panic!("Unsupported system architecture: {}", config.common.arch);
+        return Err(eyre::eyre!("Unsupported system architecture: {}", config.common.arch));
     }
 
     config.common.simulate          = matches.get_flag("simulate");
@@ -346,7 +351,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> EPKGConfig {
 
     config.command_line             = std::env::args().collect::<Vec<String>>().join(" ");
 
-    config
+    Ok(config)
 }
 
 /// Setup parallel processing parameters based on command line arguments and system capabilities
@@ -368,7 +373,7 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
     // Otherwise, use the default value set by default_parallel_processing()
 }
 
-pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> EPKGConfig {
+pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
     config.subcommand = matches.subcommand().map(|(name, _)| name.to_string()).unwrap_or_default();
     if config.subcommand != "init" {
         config.init.shared_store = nix::unistd::geteuid().is_root() && Path::new("/opt/epkg/store").exists();
@@ -389,7 +394,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         _ => {} // No subcommand or unknown subcommand
     }
-    config
+    Ok(config)
 }
 
 fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {

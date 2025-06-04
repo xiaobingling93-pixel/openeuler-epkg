@@ -573,8 +573,10 @@ pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
 
 static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
     let matches = &CLAP_MATCHES;
-    let config = parse_options_common(&matches);
+    let config = parse_options_common(&matches)
+        .expect("Failed to parse common options for CONFIG");
     parse_options_subcommand(&matches, config)
+        .expect("Failed to parse subcommand options for CONFIG")
 });
 
 static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {

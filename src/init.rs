@@ -248,10 +248,8 @@ impl PackageManager {
             .ok_or_else(|| eyre::eyre!("Invalid shell path"))?;
 
         let rc_path = match shell {
-            "bash" => get_home()
-                .context("Failed to get HOME environment variable for bash rc")? + "/.bashrc",
-            "zsh" => get_home()
-                .context("Failed to get HOME environment variable for zsh rc")? + "/.zshrc",
+            "bash" => get_home()? + "/.bashrc",
+            "zsh" => get_home()? + "/.zshrc",
             _ => return Err(eyre::eyre!("Unsupported shell: {}", shell)),
         };
 
