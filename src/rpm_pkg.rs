@@ -44,6 +44,7 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
 
 /// Extracts RPM package files to the target directory
 /// Based on the rpm crate's extract method but improved to handle edge cases
+/// TODO: normal files all have x permission for now
 fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result<()> {
     let target_dir = target_dir.as_ref();
 
@@ -126,15 +127,15 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
     Ok(())
 }
 
-/// Maps RPM scriptlet names to common scriptlet names and creates them in info/install/
+/// Creates scriptlets with appropriate file extensions based on interpreter information
 pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let install_dir = store_tmp_dir.join("info/install");
 
     // Mapping from RPM scriptlet names to common names
     let scriptlet_mapping: HashMap<&str, Vec<&str>> = [
-        ("prein", vec!["pre_install.sh"]),
-        ("postin", vec!["post_install.sh"]),
+        ("prein", vec!["pre_install.sh", "pre_upgrade.sh"]),
+        ("postin", vec!["post_install.sh", "post_upgrade.sh"]),
         ("preun", vec!["pre_uninstall.sh"]),
         ("postun", vec!["post_uninstall.sh"]),
         ("pretrans", vec!["pre_upgrade.sh"]),
@@ -143,15 +144,13 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
 
     let metadata = &package.metadata;
 
-    // Extract scriptlets using the correct methods
+    // Extract scriptlets using the correct methods with interpreter detection
     for (rpm_script, common_scripts) in &scriptlet_mapping {
-        if let Some(script_content) = get_scriptlet_content(metadata, rpm_script) {
+        if let Some((script_content, file_extension)) = get_scriptlet_with_extension(metadata, rpm_script) {
             for common_script in common_scripts {
-                let script_name = if script_content.trim_start().starts_with("--")
-                    || script_content.contains("lua")
-                    || script_content.contains("Lua") {
-                    // If it's a Lua script, use .lua extension
-                    format!("{}.lua", common_script.trim_end_matches(".sh"))
+                // Use the detected file extension instead of always .sh
+                let script_name = if file_extension != "sh" {
+                    format!("{}.{}", common_script.trim_end_matches(".sh"), file_extension)
                 } else {
                     common_script.to_string()
                 };
@@ -179,23 +178,94 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
     Ok(())
 }
 
-/// Helper function to get scriptlet content from package metadata
-fn get_scriptlet_content(metadata: &rpm::PackageMetadata, scriptlet_name: &str) -> Option<String> {
-    match scriptlet_name {
-        "prein" => metadata.get_pre_install_script().ok().map(|s| s.script.clone()),
-        "postin" => metadata.get_post_install_script().ok().map(|s| s.script.clone()),
-        "preun" => metadata.get_pre_uninstall_script().ok().map(|s| s.script.clone()),
-        "postun" => metadata.get_post_uninstall_script().ok().map(|s| s.script.clone()),
-        "pretrans" => metadata.get_pre_trans_script().ok().map(|s| s.script.clone()),
-        "posttrans" => metadata.get_post_trans_script().ok().map(|s| s.script.clone()),
+/// Helper function to get scriptlet content and determine appropriate file extension
+/// based on interpreter information from the RPM metadata
+fn get_scriptlet_with_extension(metadata: &rpm::PackageMetadata, scriptlet_name: &str) -> Option<(String, String)> {
+    let scriptlet = match scriptlet_name {
+        "prein" => metadata.get_pre_install_script().ok(),
+        "postin" => metadata.get_post_install_script().ok(),
+        "preun" => metadata.get_pre_uninstall_script().ok(),
+        "postun" => metadata.get_post_uninstall_script().ok(),
+        "pretrans" => metadata.get_pre_trans_script().ok(),
+        "posttrans" => metadata.get_post_trans_script().ok(),
         _ => None,
+    }?;
+
+    let script_content = scriptlet.script.clone();
+    let file_extension = determine_script_extension(&scriptlet, &script_content);
+
+    Some((script_content, file_extension))
+}
+
+/// Determines the appropriate file extension based on scriptlet interpreter information
+fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) -> String {
+    // First, check if the scriptlet has explicit interpreter information in the program field
+    if let Some(ref program) = scriptlet.program {
+        if let Some(interpreter) = program.first() {
+            return interpreter_to_extension(interpreter);
+        }
     }
+
+    // Fall back to heuristics based on script content if no explicit interpreter
+    // Check for shebang line
+    if let Some(first_line) = script_content.lines().next() {
+        if first_line.starts_with("#!") {
+            return shebang_to_extension(first_line);
+        }
+    }
+
+    // Default to shell script
+    "sh".to_string()
+}
+
+/// Maps interpreter paths/names to appropriate file extensions
+fn interpreter_to_extension(interpreter: &str) -> String {
+    // Handle full paths by extracting basename
+    let interpreter_name = std::path::Path::new(interpreter)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(interpreter);
+
+    match interpreter_name {
+        "lua" | "lua5.1" | "lua5.2" | "lua5.3" | "lua5.4" => "lua".to_string(),
+        name if name.starts_with("python") => "py".to_string(),
+        "perl" | "perl5" => "pl".to_string(),
+        "ruby" => "rb".to_string(),
+        "node" | "nodejs" => "js".to_string(),
+        "bash" | "sh" | "dash" | "zsh" | "fish" => "sh".to_string(),
+        "tcl" | "tclsh" => "tcl".to_string(),
+        "awk" | "gawk" | "mawk" => "awk".to_string(),
+        _ => {
+            // If we can't identify the interpreter, log it for debugging
+            log::debug!("Unknown interpreter '{}', defaulting to .sh extension", interpreter_name);
+            "sh".to_string()
+        }
+    }
+}
+
+/// Maps shebang lines to appropriate file extensions
+fn shebang_to_extension(shebang: &str) -> String {
+    // Extract interpreter from shebang line
+    let interpreter_part = &shebang[2..].trim(); // Remove #! and trim
+
+    // Handle "/usr/bin/env interpreter" format
+    if interpreter_part.starts_with("/usr/bin/env ") || interpreter_part.starts_with("env ") {
+        if let Some(interpreter) = interpreter_part.split_whitespace().nth(1) {
+            return interpreter_to_extension(interpreter);
+        }
+    }
+
+    // Handle direct interpreter path
+    if let Some(interpreter) = interpreter_part.split_whitespace().next() {
+        return interpreter_to_extension(interpreter);
+    }
+
+    // Default fallback
+    "sh".to_string()
 }
 
 /// Helper function to format a single RPM dependency
 fn format_rpm_dependency(dep: &rpm::Dependency) -> String {
-    use rpm::DependencyFlags;
-
     let name = &dep.name;
     let version = &dep.version;
     let flags = dep.flags;
@@ -268,7 +338,9 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_
     }
 
     if let Ok(group) = metadata.get_group() {
-        raw_fields.push(("group".to_string(), group.to_string()));
+        if group != "Unspecified" {
+            raw_fields.push(("group".to_string(), group.to_string()));
+        }
     }
 
     if let Ok(buildhost) = metadata.get_build_host() {
