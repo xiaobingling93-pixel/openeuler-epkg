@@ -6,6 +6,7 @@ use rpm::{Package, FileMode};
 use crate::rpm_repo::PACKAGE_KEY_MAPPING;
 use color_eyre::eyre::WrapErr;
 use std::os::unix::fs::PermissionsExt;
+use rpm::DependencyFlags;
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
@@ -57,10 +58,10 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
             // Package has files, proceed with extraction using the built-in files() method
             for file_result in package.files()
                 .wrap_err_with(|| "Failed to get file iterator from RPM package")? {
-                
+
                 let file = file_result
                     .wrap_err_with(|| "Failed to read file from RPM package")?;
-                
+
                 let file_path = target_dir.join(file.metadata.path.to_string_lossy().trim_start_matches('/'));
 
                 // Create parent directories if they don't exist
@@ -191,6 +192,47 @@ fn get_scriptlet_content(metadata: &rpm::PackageMetadata, scriptlet_name: &str) 
     }
 }
 
+/// Helper function to format a single RPM dependency
+fn format_rpm_dependency(dep: &rpm::Dependency) -> String {
+    use rpm::DependencyFlags;
+
+    let name = &dep.name;
+    let version = &dep.version;
+    let flags = dep.flags;
+
+    // If no version, just return the name regardless of flags
+    if version.is_empty() {
+        return name.to_string();
+    }
+
+    // Handle different comparison operators based on flags
+    if flags.contains(DependencyFlags::LE) {
+        // LESS | EQUAL
+        format!("{}<={}", name, version)
+    } else if flags.contains(DependencyFlags::GE) {
+        format!("{}>{}", name, version)
+    } else if flags.contains(DependencyFlags::LESS) {
+        // LESS only
+        format!("{}<{}", name, version)
+    } else if flags.contains(DependencyFlags::GREATER) {
+        format!("{}>{}", name, version)
+    } else if flags.contains(DependencyFlags::EQUAL) || flags == DependencyFlags::ANY {
+        // EQUAL or ANY - use = format
+        format!("{}={}", name, version)
+    } else {
+        // For any other flags (like SCRIPT_PRE, RPMLIB, etc.), default to = format
+        format!("{}={}", name, version)
+    }
+}
+
+/// Helper function to format a vector of RPM dependencies
+fn format_rpm_dependencies(deps: &[rpm::Dependency]) -> String {
+    deps.iter()
+        .map(format_rpm_dependency)
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
 /// Extracts package metadata and creates package.txt with mapped field names
 pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
@@ -251,22 +293,18 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_
         raw_fields.push(("time".to_string(), build_time.to_string()));
     }
 
-    // Add dependency information - using Debug format since Display is not implemented
+    // Add dependency information - using custom formatting
     if let Ok(provides) = metadata.get_provides() {
-        let provides_strs: Vec<String> = provides.iter()
-            .map(|dep| format!("{:?}", dep))
-            .collect();
-        if !provides_strs.is_empty() {
-            raw_fields.push(("provides".to_string(), provides_strs.join(", ")));
+        let formatted_provides = format_rpm_dependencies(&provides);
+        if !formatted_provides.is_empty() {
+            raw_fields.push(("provides".to_string(), formatted_provides));
         }
     }
 
     if let Ok(requires) = metadata.get_requires() {
-        let requires_strs: Vec<String> = requires.iter()
-            .map(|dep| format!("{:?}", dep))
-            .collect();
-        if !requires_strs.is_empty() {
-            raw_fields.push(("requires".to_string(), requires_strs.join(", ")));
+        let formatted_requires = format_rpm_dependencies(&requires);
+        if !formatted_requires.is_empty() {
+            raw_fields.push(("requires".to_string(), formatted_requires));
         }
     }
 
