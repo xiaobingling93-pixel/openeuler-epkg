@@ -194,6 +194,7 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
         }
     }
 
+    log::debug!("get_revise_repos: {:#?}", all_repos);
     Ok(all_repos)
 }
 
@@ -331,7 +332,8 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
         return Ok(());
     }
 
-    if should_skip_duplicate_downloads(path) {
+    if config().common.parallel_processing &&
+        should_skip_duplicate_downloads(path) {
         return Ok(());
     }
 
