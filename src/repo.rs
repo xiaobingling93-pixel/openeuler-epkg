@@ -489,8 +489,7 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     submit_download_task(task)
         .with_context(|| format!("Failed to submit download task for URL: {}", revise.url))?;
 
-    &DOWNLOAD_MANAGER.start_processing()
-        .with_context(|| "Failed to start download manager processing")?;
+    DOWNLOAD_MANAGER.start_processing();
 
     log::debug!("process_data for {:?}", revise);
     // Process data blocks as they arrive

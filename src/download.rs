@@ -128,9 +128,9 @@ impl DownloadManager {
         }
     }
 
-    pub fn start_processing(&self) -> Result<()> {
+    pub fn start_processing(&self) {
         if self.is_processing.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(());
+            return;
         }
 
         self.is_processing.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -185,7 +185,11 @@ impl DownloadManager {
                         };
 
                         // Signal that download is starting
-                        let _ = start_tx.send(());
+                        if let Err(e) = start_tx.send(()) {
+                            log::error!("Failed to send download start signal: {}", e);
+                            // The download will proceed, but synchronization might be affected.
+                            // Consider if more robust error handling is needed here.
+                        }
 
                         if let Err(e) = download_task(
                             &client,
@@ -208,12 +212,13 @@ impl DownloadManager {
                     });
 
                     // Wait for download to start before continuing
-                    let _ = start_rx.recv();
+                    if let Err(e) = start_rx.recv() {
+                        log::error!("Failed to receive download start signal: {}. The download task might have failed to start properly.", e);
+                        // Consider if the loop should continue or if this is a critical failure.
+                    }
                 }
             }
         });
-
-        Ok(())
     }
 
     pub fn wait_for_all_tasks(&self) -> Result<()> {
@@ -345,8 +350,7 @@ pub fn download_urls(
     }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
-    DOWNLOAD_MANAGER.start_processing()
-        .with_context(|| "Failed to start download manager processing")?;
+    DOWNLOAD_MANAGER.start_processing();
 
     if !async_mode {
         // Wait for each task one by one (in submitted order)
@@ -423,7 +427,7 @@ fn download_task(
         Ok(()) => fs::rename(&part_path, &final_path)
             .with_context(|| format!("Failed to rename file: {} to {}", part_path.display(), final_path.display()))?,
         Err(e) => {
-            let _ = fs::remove_file(&part_path);
+            fs::remove_file(&part_path)?;
             return Err(e);
         }
     }

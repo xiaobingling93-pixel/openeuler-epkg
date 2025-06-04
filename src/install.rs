@@ -444,7 +444,7 @@ impl PackageManager {
         self.load_installed_packages()?;
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
-        let _ = self.record_appbin_source(&mut packages_to_install);
+        self.record_appbin_source(&mut packages_to_install)?;
         self.collect_essential_packages(&mut packages_to_install)?;
         self.collect_recursive_depends(&mut packages_to_install)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: Some packages are already installed and will be skipped:");

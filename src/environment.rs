@@ -785,7 +785,7 @@ impl PackageManager {
     /// Set environment configuration value
     pub fn set_environment_config(&mut self, name: &str, value: &str) -> Result<()> {
         let env_name = config().common.env.clone();
-        let _config = self.get_env_config(env_name.clone())?; // load from file
+        self.get_env_config(env_name.clone())?; // load from file
 
         // Split name by dots to handle nested fields
         let parts: Vec<&str> = name.split('.').collect();

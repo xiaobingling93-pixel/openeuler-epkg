@@ -229,11 +229,15 @@ impl Drop for PackageManager {
     fn drop(&mut self) {
         // kill work process
         if let Some(pid) = self.child_pid {
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+            if let Err(e) = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
+                log::warn!("Failed to kill child process {}: {}", pid, e);
+            }
         }
         // remove socket file
         if !self.ipc_socket.is_empty() {
-            let _ = std::fs::remove_file(&self.ipc_socket);
+            if let Err(e) = std::fs::remove_file(&self.ipc_socket) {
+                log::warn!("Failed to remove IPC socket file {}: {}", self.ipc_socket, e);
+            }
         }
     }
 }
