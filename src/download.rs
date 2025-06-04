@@ -60,7 +60,7 @@ impl DownloadTask {
 pub struct DownloadManager {
     client: Agent,
     multi_progress: MultiProgress,
-    tasks: Arc<std::sync::Mutex<Vec<DownloadTask>>>,
+    tasks: Arc<std::sync::Mutex<HashMap<String, DownloadTask>>>,
     pool: rayon::ThreadPool,
     is_processing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -84,6 +84,7 @@ impl DownloadManager {
                 })
             })
             .user_agent("curl/8.13.0")
+            .timeout_connect(Some(Duration::from_secs(5)))
             .build();
 
         let client = Agent::new_with_config(config);
@@ -96,7 +97,7 @@ impl DownloadManager {
         Ok(Self {
             client,
             multi_progress,
-            tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tasks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pool,
             is_processing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -105,15 +106,15 @@ impl DownloadManager {
     pub fn submit_task(&self, task: DownloadTask) -> Result<()> {
         let mut tasks = self.tasks.lock()
             .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
-        tasks.push(task);
+        tasks.insert(task.url.clone(), task);
         Ok(())
     }
 
-    pub fn wait_for_task(&self, task_id: usize) -> Result<DownloadStatus> {
+    pub fn wait_for_task(&self, task_url: String) -> Result<DownloadStatus> {
         loop {
             let tasks = self.tasks.lock()
                 .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
-            if let Some(task) = tasks.get(task_id) {
+            if let Some(task) = tasks.get(&task_url) {
                 let status = task.get_status();
                 match status {
                     DownloadStatus::Completed | DownloadStatus::Failed(_) => return Ok(status),
@@ -121,7 +122,7 @@ impl DownloadManager {
                 }
             } else {
                 drop(tasks);
-                return Err(eyre!("Task with ID {} not found", task_id));
+                return Err(eyre!("Task with URL {} not found", task_url));
             }
             drop(tasks);
             thread::sleep(Duration::from_millis(100));
@@ -150,13 +151,13 @@ impl DownloadManager {
                     }
                 };
                 let pending_tasks: Vec<_> = tasks_guard.iter_mut()
-                    .filter(|t| matches!(t.get_status(), DownloadStatus::Pending))
+                    .filter(|(_, t)| matches!(t.get_status(), DownloadStatus::Pending))
                     .collect();
 
                 if pending_tasks.is_empty() {
                     // Check if all tasks are completed or failed
                     let all_done = tasks_guard.iter()
-                        .all(|t| matches!(t.get_status(), DownloadStatus::Completed | DownloadStatus::Failed(_)));
+                        .all(|(_, t)| matches!(t.get_status(), DownloadStatus::Completed | DownloadStatus::Failed(_)));
                     if all_done {
                         is_processing.store(false, std::sync::atomic::Ordering::Relaxed);
                         break;
@@ -166,10 +167,30 @@ impl DownloadManager {
                     continue;
                 }
 
-                for task0 in pending_tasks {
+                for (_task_url, task0) in pending_tasks {
                     let client = client.clone();
                     let multi_progress = multi_progress.clone();
                     let task = task0.clone();
+
+                    /*
+                     * CRITICAL: We must take() the data_channel here to prevent recv() side from blocking forever.
+                     *
+                     * Problem: The data_channel sender is stored in the DownloadTask which lives in self.tasks HashMap.
+                     * Since tasks are stored permanently (for deduplication), the sender side of the channel
+                     * remains alive even after download completes. This means any recv() calls on the receiver
+                     * side will block indefinitely waiting for more data, because the channel is never closed.
+                     *
+                     * Solution: By calling take() here, we move the sender out of the task and into the download
+                     * thread. When the download thread exits (successfully or with error), the sender is
+                     * automatically dropped, which closes the channel and unblocks any recv() calls.
+                     *
+                     * This is especially important for async submission patterns where the caller submits a
+                     * download task and immediately starts reading from the receiver without waiting for
+                     * task completion. Without take(), the receiver would hang forever even after the
+                     * download finishes.
+                     *
+                     * Note: We need iter_mut() above to get &mut DownloadTask so we can call take().
+                     */
                     task0.data_channel.take();  // unblock recv()
 
                     // Create a channel to signal when download starts
@@ -235,7 +256,7 @@ impl DownloadManager {
             }
         };
         let errors: Vec<String> = tasks.iter()
-            .filter_map(|t| {
+            .filter_map(|(_, t)| {
                 if let DownloadStatus::Failed(e) = t.get_status() {
                     Some(format!("Failed to download {}: {}", t.url, e))
                 } else {
@@ -341,22 +362,26 @@ pub fn download_urls(
     async_mode: bool,
 ) -> Result<Vec<DownloadTask>> {
     let mut submitted_tasks = Vec::new();
+    let mut task_urls = Vec::new();
     for url in urls {
         let url_for_context = url.clone();
-        let task = DownloadTask::new(url, output_dir.to_path_buf(), max_retries);
+        let task = DownloadTask::new(url.clone(), output_dir.to_path_buf(), max_retries);
+
+        // Submit the task - if URL already exists, it will just replace/reuse
         submit_download_task(task.clone())
             .with_context(|| format!("Failed to submit download task for {}", url_for_context))?;
         submitted_tasks.push(task);
+        task_urls.push(url);
     }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
     DOWNLOAD_MANAGER.start_processing();
 
     if !async_mode {
-        // Wait for each task one by one (in submitted order)
-        for (i, _task) in submitted_tasks.iter().enumerate() {
-            DOWNLOAD_MANAGER.wait_for_task(i)
-                .with_context(|| format!("Failed to wait for download task {}", i))?;
+        // Wait for each task using the URLs
+        for (i, task_url) in task_urls.iter().enumerate() {
+            DOWNLOAD_MANAGER.wait_for_task(task_url.clone())
+                .with_context(|| format!("Failed to wait for download task {} (URL: {})", i, task_url))?;
         }
         Ok(Vec::new())
     } else {
