@@ -1,9 +1,17 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
 use crate::models::*;
 use crate::repo::RepoRevise;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
+
+#[derive(Debug, Clone, PartialEq)] // Reverted derives
+pub struct ShellRcInfo {
+    pub rc_file_path: String,
+    pub _shell_name: String,
+    pub source_script_name: String,
+}
 
 #[derive(Default)]
 pub struct EPKGDirsBuilder {
@@ -197,6 +205,81 @@ fn get_xdg_cache() -> Result<PathBuf> {
             Ok(PathBuf::from(home_str).join(".cache"))
         }
     }
+}
+
+fn determine_rc_and_script_for_shell(shell_name: &str, home_dir: &Path) -> Option<ShellRcInfo> {
+    let (rc_file_sub_path, script_name_str) = match shell_name {
+        "bash" => (".bashrc", "epkg-rc.sh"),
+        "zsh" => (".zshrc", "epkg-rc.sh"),
+        "ksh" => (".kshrc", "epkg-rc.sh"),
+        "fish" => (".config/fish/config.fish", "epkg-rc.sh"), // Assuming epkg-rc.sh is fish-compatible
+        "csh" => (".cshrc", "epkg-rc.csh"),
+        "tcsh" => (".tcshrc", "epkg-rc.csh"),
+        _ => return None, // Shell name not supported
+    };
+
+    let full_rc_path = home_dir.join(rc_file_sub_path.trim_start_matches('/'));
+
+    if full_rc_path.exists() {
+        Some(ShellRcInfo {
+            rc_file_path: full_rc_path.to_string_lossy().into_owned(),
+            _shell_name: shell_name.to_string(), // Use the input shell_name
+            source_script_name: script_name_str.to_string(),
+        })
+    } else {
+        None // RC file does not exist for this supported shell
+    }
+}
+
+pub fn get_shell_rc() -> Result<Vec<ShellRcInfo>> {
+    let home_path_str = get_home().wrap_err("Failed to get home directory.")?;
+    let home_dir = PathBuf::from(home_path_str);
+    let mut infos: Vec<ShellRcInfo> = Vec::new(); // Use Vec
+
+    match env::var("SHELL") {
+        Ok(shell_env_var) => {
+            if let Some(detected_shell_name_str) = Path::new(&shell_env_var).file_name().and_then(|s| s.to_str()) {
+                if let Some(shell_rc_info) = determine_rc_and_script_for_shell(detected_shell_name_str, &home_dir) {
+                    // SHELL var is valid, points to a supported shell, and its rc file exists.
+                    // Use it exclusively and return early.
+                    infos.push(shell_rc_info);
+                    return Ok(infos); // Early return with Vec
+                } else {
+                    // SHELL var specified a shell, but it was unsupported or its rc file didn't exist.
+                    // Print warning and proceed to fallback scan.
+                    eprintln!(
+                        "Warning: SHELL variable is '{}'. Could not derive a valid, existing rc file from it (either unsupported shell type or its specific rc file was not found). Falling back to scanning for common rc files.",
+                        shell_env_var
+                    );
+                }
+            } else {
+                // SHELL var path was invalid. Print warning and proceed to fallback scan.
+                eprintln!(
+                    "Warning: SHELL variable ('{}') has an invalid path. Could not extract filename. Falling back to scanning for common rc files.",
+                    shell_env_var
+                );
+            }
+        }
+        Err(_) => {
+            // SHELL var not set. Print warning and proceed to fallback scan.
+            eprintln!("Warning: SHELL environment variable not set. Attempting to detect common shell configuration files.");
+        }
+    }
+
+    // If we reach here, it means either SHELL var was not set, was invalid,
+    // or didn't lead to a usable rc file. So, perform fallback scan.
+    let common_shell_names = ["bash", "zsh", "fish", "ksh", "csh", "tcsh"];
+    for shell_name_str in common_shell_names.iter() {
+        if let Some(shell_rc_info) = determine_rc_and_script_for_shell(shell_name_str, &home_dir) {
+            infos.push(shell_rc_info);
+        }
+    }
+
+    if infos.is_empty() {
+        eprintln!("Warning: Could not identify any usable shell configuration files to update.");
+    }
+
+    Ok(infos)
 }
 
 fn get_username() -> Result<String> {

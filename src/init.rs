@@ -9,7 +9,9 @@ use color_eyre::eyre;
 use crate::models::*;
 use crate::download::download_urls;
 use crate::utils;
-use crate::dirs::{find_env_root, get_home};
+use crate::dirs::find_env_root;
+use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
 
 impl PackageManager {
 
@@ -153,18 +155,6 @@ impl PackageManager {
         Ok(())
     }
 
-    // input tar file:
-    // wfg /tmp% wget http://gitee.com/openeuler/epkg/repository/archive/master.tar.gz
-    // wfg /tmp% less master.tar.gz|head
-    // drwxrwxr-x root/root         0 2025-04-29 10:56 epkg-master/
-    // -rw-rw-r-- root/root        22 2025-04-29 10:56 epkg-master/.gitignore
-    // -rw-rw-r-- root/root     45157 2025-04-29 10:56 epkg-master/Cargo.lock
-    // -rw-rw-r-- root/root      1184 2025-04-29 10:56 epkg-master/Cargo.toml
-    // -rw-rw-r-- root/root      4163 2025-04-29 10:56 epkg-master/Makefile
-    // drwxrwxr-x root/root         0 2025-04-29 10:56 epkg-master/bin/
-    // -rw-rw-r-- root/root      7609 2025-04-29 10:56 epkg-master/bin/epkg-installer.sh
-    // -rw-rw-r-- root/root      2196 2025-04-29 10:56 epkg-master/bin/epkg-uninstaller.sh
-    // drwxrwxr-x root/root         0 2025-04-29 10:56 epkg-master/build/
     fn setup_epkg_manager(&self, env_root: &Path) -> Result<()> {
         let epkg_version = &config().init.version;
 
@@ -240,34 +230,56 @@ impl PackageManager {
     }
 
     fn update_shell_rc(&mut self) -> Result<()> {
-        let shell = env::var("SHELL")
-            .context("Failed to get SHELL environment variable")?;
-        let shell = Path::new(&shell)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| eyre::eyre!("Invalid shell path"))?;
+        let shell_rc_infos = crate::dirs::get_shell_rc()?;
 
-        let rc_path = match shell {
-            "bash" => get_home()? + "/.bashrc",
-            "zsh" => get_home()? + "/.zshrc",
-            _ => return Err(eyre::eyre!("Unsupported shell: {}", shell)),
-        };
+        if shell_rc_infos.is_empty() {
+            // No specific shell found via SHELL var, and no common rc files detected.
+            // A warning would have been printed by get_shell_rc in this case.
+            return Ok(());
+        }
 
         let common_env_root = self.get_env_root("common".to_string())?;
-        let rc_content = format!(
-            "\n# epkg begin\nsource {}/opt/epkg-manager/lib/epkg-rc.sh\n# epkg end\n",
-            common_env_root.display()
-        );
 
-        // Read existing content
-        let existing_content = fs::read_to_string(&rc_path)
-            .unwrap_or_default();
+        for shell_rc_info in shell_rc_infos {
+            let rc_content = format!(
+                "\n# epkg begin\nsource {}/opt/epkg-manager/lib/{}\n# epkg end\n",
+                common_env_root.display(),
+                shell_rc_info.source_script_name
+            );
 
-        // Only append if epkg begin line doesn't exist
-        if !existing_content.contains("# epkg begin") {
-            let full_content = existing_content + &rc_content;
-            fs::write(&rc_path, full_content)
-                .context("Failed to update shell rc file")?;
+            // Read existing content
+            let existing_content = match fs::read_to_string(&shell_rc_info.rc_file_path) {
+                Ok(content) => content,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // If the rc file doesn't exist, it will be created by OpenOptions
+                    String::new()
+                }
+                Err(e) => {
+                    return Err(eyre::eyre!("Failed to read shell rc file {}: {}", shell_rc_info.rc_file_path, e));
+                }
+            };
+
+            // Only append if epkg begin line doesn't exist
+            if !existing_content.contains("# epkg begin") {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true) // Create if it doesn't exist
+                    .open(&shell_rc_info.rc_file_path)
+                    .with_context(|| format!("Failed to open or create shell rc file: {}", shell_rc_info.rc_file_path))?;
+
+                // If the file was empty or didn't end with a newline, add one before our content for neatness.
+                if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+                    file.write_all(b"\n")
+                        .with_context(|| format!("Failed to write newline to shell rc file: {}", shell_rc_info.rc_file_path))?;
+                }
+
+                file.write_all(rc_content.as_bytes())
+                    .with_context(|| format!("Failed to write to shell rc file: {}", shell_rc_info.rc_file_path))?;
+
+                println!("Updated shell configuration file: {}", shell_rc_info.rc_file_path);
+            } else {
+                println!("epkg configuration already present in {}. Skipping.", shell_rc_info.rc_file_path);
+            }
         }
 
         Ok(())
