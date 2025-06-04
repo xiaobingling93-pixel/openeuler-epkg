@@ -9,7 +9,7 @@ use color_eyre::eyre;
 use crate::models::*;
 use crate::download::download_urls;
 use crate::utils;
-use crate::dirs::find_env_root;
+use crate::dirs::{find_env_root, get_home};
 
 impl PackageManager {
 
@@ -248,9 +248,9 @@ impl PackageManager {
             .ok_or_else(|| eyre::eyre!("Invalid shell path"))?;
 
         let rc_path = match shell {
-            "bash" => env::var("HOME")
+            "bash" => get_home()
                 .context("Failed to get HOME environment variable for bash rc")? + "/.bashrc",
-            "zsh" => env::var("HOME")
+            "zsh" => get_home()
                 .context("Failed to get HOME environment variable for zsh rc")? + "/.zshrc",
             _ => return Err(eyre::eyre!("Unsupported shell: {}", shell)),
         };

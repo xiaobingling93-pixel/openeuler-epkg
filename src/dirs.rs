@@ -111,6 +111,58 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Retrieves the home directory path, trying multiple methods.
+pub fn get_home() -> Result<String> {
+    // Try HOME environment variable first
+    if let Ok(home) = env::var("HOME") {
+        return Ok(home);
+    }
+
+    // Try using getpwuid on Unix systems
+    #[cfg(unix)]
+    {
+        use std::ffi::CStr;
+        use std::os::raw::{c_char, c_int};
+
+        extern "C" {
+            fn getuid() -> c_int;
+            fn getpwuid(uid: c_int) -> *mut libc::passwd;
+        }
+
+        unsafe {
+            let uid = getuid();
+            let passwd = getpwuid(uid);
+            if !passwd.is_null() {
+                let home_dir = (*passwd).pw_dir as *const c_char;
+                if !home_dir.is_null() {
+                    if let Ok(home) = CStr::from_ptr(home_dir).to_str() {
+                        return Ok(home.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Try matching path patterns to find home directory
+    if let Ok(current_dir) = std::env::current_dir() {
+        let path_str = current_dir.to_string_lossy();
+
+        // Check if path starts with /home/username
+        if let Some(captures) = regex::Regex::new(r"^(/home/[^/]+)").ok().and_then(|re| re.captures(&path_str)) {
+            if let Some(home_match) = captures.get(1) {
+                return Ok(home_match.as_str().to_string());
+            }
+        }
+
+        // Check if path is in /root
+        if path_str.starts_with("/root") {
+            return Ok("/root".to_string());
+        }
+    }
+
+    Err(eyre::eyre!("Could not determine home directory"))
+}
+
 pub fn get_repo_dir(repo: &RepoRevise) -> Result<PathBuf> {
     let channel_dir = dirs().epkg_cache.join("channel");
     let repo_dir = channel_dir.join(&repo.channel).join(repo.repodata_name.clone()).join(repo.arch.clone());
@@ -134,16 +186,25 @@ pub fn get_env_config_path(env_name: &str) -> PathBuf {
 
 /// $HOME/.epkg
 pub fn get_home_epkg_path() -> PathBuf {
-    let home = env::var("HOME").expect("HOME environment variable not set");
+    let home = get_home().expect("HOME environment variable not set");
     PathBuf::from(home).join(".epkg")
 }
 
 fn get_xdg_cache() -> io::Result<PathBuf> {
-    env::var("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| env::var("HOME")
-            .map(|home| PathBuf::from(home).join(".cache")))
-        .map_err(|_| io::Error::new(ErrorKind::NotFound, "Could not determine cache directory"))
+    // Try XDG_CACHE_HOME first
+    match env::var("XDG_CACHE_HOME") {
+        Ok(xdg_cache_str) => Ok(PathBuf::from(xdg_cache_str)),
+        Err(_) => { // XDG_CACHE_HOME not set or other VarError
+            // Try HOME/.cache
+            match get_home() { // This returns color_eyre::Result<String>
+                Ok(home_str) => Ok(PathBuf::from(home_str).join(".cache")),
+                Err(eyre_report) => {
+                    // Convert eyre::Report to io::Error
+                    Err(io::Error::new(ErrorKind::NotFound, format!("Could not determine cache directory: XDG_CACHE_HOME not set and failed to get HOME: {}", eyre_report)))
+                }
+            }
+        }
+    }
 }
 
 fn get_username() -> io::Result<String> {
@@ -162,7 +223,7 @@ fn get_username() -> io::Result<String> {
     }
 
     // Try to get username from HOME path
-    if let Ok(home) = env::var("HOME") {
+    if let Ok(home) = get_home() {
         let path = PathBuf::from(home);
         if let Some(username) = path.file_name().and_then(|n| n.to_str()) {
             if !username.is_empty() {
