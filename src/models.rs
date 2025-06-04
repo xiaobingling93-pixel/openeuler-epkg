@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
-pub const DEFAULT_CHANNEL: &str = &"openeuler";
+pub const DEFAULT_CHANNEL: &str = &"debian";
 pub const DEFAULT_VERSION: &str = &"master"; // epkg init will download this version from gitee
 
 // Package format types
