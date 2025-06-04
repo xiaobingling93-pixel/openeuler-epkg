@@ -628,18 +628,27 @@ pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf
     }
     log::debug!("Hash verification successful for {}", revise.location);
 
-    // Create symbolic link from contents_path to repo_dir
-    // "Contents-all.gz"
     let output_path = revise.output_path.clone();
-    let json_path = output_path.with_extension("").with_extension("json").to_str()
-            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
-            .replace("filelists", ".filelists");
     if output_path.exists() {
         log::debug!("Removing existing filelists at {}", output_path.display());
         fs::remove_file(&output_path)
             .with_context(|| format!("Failed to remove existing filelists at {}", output_path.display()))?;
+    } else {
+        if let Some(parent_dir) = output_path.parent() {
+            if !parent_dir.as_os_str().is_empty() {
+                fs::create_dir_all(parent_dir).with_context(|| {
+                    format!(
+                        "Failed to create parent directory for: {}",
+                        output_path.display()
+                    )
+                })?;
+            }
+        }
     }
 
+    // Create symbolic link
+    // /home/wfg/.cache/epkg/channel/debian:trixie/contrib/x86_64/filelists-all.gz =>
+    // /home/wfg/.cache/epkg/downloads/debian/dists/trixie/contrib/by-hash/SHA256/9cc88157988a1ccc1240aa749a311bd6c445ecc890d16c431816a409303f3f51
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
     #[cfg(unix)]
     std::os::unix::fs::symlink(revise.download_path.clone(), &output_path)
@@ -664,6 +673,9 @@ pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf
             .to_string(),
         size: metadata.len(),
     };
+    let json_path = output_path.with_extension("").with_extension("json").to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
+            .replace("filelists", ".filelists");
 
     log::debug!("Writing filelists metadata to {}", json_path);
     let json_content = serde_json::to_string_pretty(&file_info)

@@ -394,6 +394,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         _ => {} // No subcommand or unknown subcommand
     }
+    log::debug!("Configuration: {:#?}", config);
     Ok(config)
 }
 
