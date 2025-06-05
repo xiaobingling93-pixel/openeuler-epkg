@@ -282,6 +282,25 @@ fn handle_directory_mismatch(
     epkg_extracted_fs_dir: &Path,
     official_outdir_path: &Path,
 ) -> Result<bool> {
+    // Find files that aren't readable and make them readable for verification
+    let output = Command::new("find")
+        .arg(official_outdir_path)
+        .arg("-type")
+        .arg("f")
+        .arg("!")
+        .arg("-readable")
+        .arg("-exec")
+        .arg("chmod")
+        .arg("u+rw")
+        .arg("{}")
+        .arg(";")
+        .output()
+        .wrap_err_with(|| format!("Failed to run find command on {}", official_outdir_path.display()))?;
+
+    if !output.status.success() {
+        log::warn!("Failed to set permissions on some files: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
     // 1. Rename epkg_extracted_fs_dir for debug investigations
     let debug_dir = epkg_extracted_fs_dir.with_extension("debug_epkg_extracted");
     if let Err(e) = fs::rename(epkg_extracted_fs_dir, &debug_dir) {
