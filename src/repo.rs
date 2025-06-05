@@ -573,6 +573,24 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
     }
 }
 
+/**
+ * Processes the content of filelists files.
+ *
+ * Vision for filelists handling:
+ * Currently, `deb_repo.rs` and `rpm_repo.rs` primarily handle two main types of files:
+ * 1. Entry index files: `Release` (for Debian repositories) or `repomd.xml` (for RPM repositories).
+ * 2. Package database files: `Packages.xz` (for Debian) or `primary.xml.zst` (for RPM).
+ *
+ * The `filelists` file, which contains a list of all files in all packages, is also downloaded
+ * (unified download logic is in `repo.rs`). However, due to its potentially very large size after
+ * decompression (often exceeding 10GB), converting it to a unified format would incur significant
+ * time and disk space costs.
+ *
+ * Therefore, the decision has been made to *not* perform format conversion on `filelists`.
+ * Instead, when users need to search for files within packages, the search functionality
+ * will be implemented separately for each package format (Debian and RPM) directly on their
+ * respective `filelists` formats.
+ */
 pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     log::debug!("Processing filelists content for arch: {:?}", revise);
     let mut hasher = Sha256::new();
