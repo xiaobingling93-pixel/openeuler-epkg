@@ -444,6 +444,19 @@ impl PackageManager {
         self.load_installed_packages()?;
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
+        let current_installed: Vec<String> = packages_to_install
+            .keys()
+            .filter(|name| self.installed_packages.contains_key(*name))
+            .cloned()
+            .collect();
+        if packages_to_install.len() == current_installed.len() &&
+           packages_to_install.keys().all(|k| current_installed.contains(k)) {
+           return Err(eyre::eyre!("All packages input have already installed"));
+        }
+        if current_installed.len() > 0 {
+            println!("These packages have already been installed: {}", current_installed.join(","));
+        }
+
         self.record_appbin_source(&mut packages_to_install)?;
         self.collect_essential_packages(&mut packages_to_install)?;
         self.collect_recursive_depends(&mut packages_to_install)?;
