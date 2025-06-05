@@ -104,7 +104,9 @@ impl DownloadManager {
     pub fn submit_task(&self, task: DownloadTask) -> Result<()> {
         let mut tasks = self.tasks.lock()
             .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
-        tasks.insert(task.url.clone(), task);
+        if !tasks.contains_key(&task.url) {
+            tasks.insert(task.url.clone(), task);
+        }
         Ok(())
     }
 

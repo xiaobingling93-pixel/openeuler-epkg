@@ -268,29 +268,6 @@ fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> 
     Ok(is_recent)
 }
 
-fn should_skip_duplicate_downloads(path: &PathBuf) -> bool {
-    // Prevent duplicate downloads
-    use std::sync::LazyLock;
-    static DOWNLOADING_RELEASES: LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
-        LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
-
-    // Thread-safe access to static HashSet
-    let mut downloading = match DOWNLOADING_RELEASES.lock() {
-        Ok(guard) => guard,
-        Err(e) => {
-            eprintln!("Failed to acquire lock for download tracking: {}", e);
-            return false; // Return false to allow download attempt if we can't check the set
-        }
-    };
-
-    if downloading.contains(path) {
-        return true;
-    }
-
-    downloading.insert(path.clone());
-    return false;
-}
-
 fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool> {
     let expire_secs = config().common.metadata_expire;
 
@@ -321,10 +298,6 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
                 return Ok(false);
             }
         }
-    } else {
-        // Force download by removing release file
-        fs::rename(path, path.with_extension("old"))
-            .with_context(|| format!("Failed to rename release file: {}", path.display()))?;
     }
 
     Ok(true)
@@ -333,11 +306,6 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
 pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     if !should_refresh_release_file(path, repo)
         .with_context(|| format!("Failed to check if release file needs refreshing: {}", path.display()))? {
-        return Ok(());
-    }
-
-    if config().common.parallel_processing &&
-        should_skip_duplicate_downloads(path) {
         return Ok(());
     }
 
