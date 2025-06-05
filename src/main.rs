@@ -40,6 +40,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::*;
+use crate::ipc::privdrop_on_suid;
 use crate::dirs::get_epkg_manager_path;
 use color_eyre::Result;
 use color_eyre::eyre;
@@ -71,6 +72,7 @@ fn main() -> Result<()> {
         Some(("repo",       sub_matches))  =>  package_manager.command_repo(sub_matches)?,
         Some(("hash",       sub_matches))  =>  package_manager.command_hash(sub_matches)?,
         Some(("build",      sub_matches))  =>  package_manager.command_build(sub_matches)?,
+        Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(&sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
 
@@ -278,6 +280,11 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .about("Build package from source")
                 .arg(arg!(<PACKAGE_YAML> "Package YAML file to build"))
         )
+        .subcommand(
+            Command::new("unpack")
+                .about("Unpack package file(s) into a temporary directory")
+                .arg(arg!(<PACKAGE_FILE> ... "Package files to unpack").required(true))
+        )
         .get_matches()
 }
 
@@ -400,6 +407,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("repo",       sub_matches))  =>  parse_options_repo(&mut config, sub_matches).expect("Failed to parse repo options"),
         Some(("hash",       sub_matches))  =>  parse_options_hash(&mut config, sub_matches).expect("Failed to parse hash options"),
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
+        Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
         _ => {} // No subcommand or unknown subcommand
     }
     log::debug!("Configuration: {:#?}", config);
@@ -541,6 +549,11 @@ fn parse_options_hash(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches
 }
 
 fn parse_options_build(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    Ok(())
+}
+
+fn parse_options_unpack(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Placeholder for unpack specific options
     Ok(())
 }
 
@@ -723,6 +736,45 @@ impl PackageManager {
             command.arg(package_yaml);
             command.status()?;
         }
+        Ok(())
+    }
+
+    fn command_unpack(&self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
+            let files: Vec<String> = package_files_iter.cloned().collect();
+
+            // PACKAGE_FILE is required by clap, so files should not be empty if this block is reached.
+            privdrop_on_suid(); // Drop privileges if running as SUID
+
+            match crate::store::unpack_packages(files) {
+                Ok(pkgidlines) => {
+                    if pkgidlines.is_empty() {
+                        println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
+                    } else {
+                        for pkgidline in pkgidlines {
+                            // pkgidline is "pkgid__ca_hash__pkgname__version"
+                            // The actual store directory name is "ca_hash__pkgname__version"
+                            let parts: Vec<&str> = pkgidline.splitn(2, "__").collect();
+                            if parts.len() == 2 {
+                                let store_dir_name = parts[1];
+                                let final_path = dirs().epkg_store.join(store_dir_name);
+                                println!("{}", final_path.display());
+                            } else {
+                                eprintln!("Warning: Could not parse pkgidline '{}' to determine store path.", pkgidline);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error during store unpacking process: {}", e);
+                    // Consider returning the error to propagate it, e.g.:
+                    // return Err(e).wrap_err("Failed in unpack command");
+                }
+            }
+        }
+        // If execution reaches here, it implies sub_matches.get_many was None,
+        // but clap should have handled the 'required' argument before calling this command.
+        // If not, an explicit error or log for "No package files specified" could be added.
         Ok(())
     }
 
