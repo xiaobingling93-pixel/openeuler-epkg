@@ -14,8 +14,6 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
     let rpm_file = rpm_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
-    // Ensure the directory is created with desired permissions
-    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o022));
     // Create the required directory structure
     fs::create_dir_all(store_tmp_dir.join("fs"))
         .wrap_err_with(|| format!("Failed to create info/rpm directory at {}", store_tmp_dir.join("info/rpm").display()))?;
@@ -57,7 +55,6 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
 
 /// Extracts RPM package files to the target directory
 /// Based on the rpm crate's extract method but improved to handle edge cases
-/// TODO: normal files all have x permission for now
 fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result<()> {
     let target_dir = target_dir.as_ref();
 
@@ -90,10 +87,15 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                         fs::write(&file_path, &file.content)
                             .wrap_err_with(|| format!("Failed to write file content to {}", file_path.display()))?;
 
-                        // Set file permissions with owner rw and group r always enabled
+                        // Set file permissions - preserve original permissions from RPM
                         #[cfg(unix)]
                         {
-                            let mode = permissions | 0o640; // Always enable rw for owner, r for group
+                            // Use original permissions from RPM, only ensure minimum read for owner if needed
+                            let mode = if permissions & 0o600 != 0o600 {
+                                permissions | 0o600  // Add owner rw if not present
+                            } else {
+                                permissions  // Use original permissions as-is
+                            };
                             fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
                                 .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
                         }
@@ -105,7 +107,12 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
 
                         #[cfg(unix)]
                         {
-                            let mode = permissions | 0o750; // Always enable rwx for owner, rx for group
+                            // Use original permissions from RPM, only ensure minimum access for owner if needed
+                            let mode = if permissions & 0o700 != 0o700 {
+                                permissions | 0o700  // Add owner rwx if not fully present
+                            } else {
+                                permissions  // Use original permissions as-is
+                            };
                             fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
                                 .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                         }

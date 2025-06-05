@@ -2,7 +2,7 @@ use std::path::Path;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::dirs;
-use crate::store::{untar_zst, set_perm_and_owner};
+use crate::store::untar_zst;
 
 /// Legacy function for unpacking .epkg files (original implementation)
 /// This function is kept for backward compatibility with existing .epkg packages
@@ -32,8 +32,6 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
 
         untar_zst(&file, &dir_str, true)
             .wrap_err_with(|| format!("Failed to unpack package: {}", file))?;
-        set_perm_and_owner(&dir_str)
-            .wrap_err_with(|| format!("Failed to set permissions for package: {}", file))?;
         // let hash = crate::hash::epkg_store_hash(&dir_str)?;
         // if hash != pkgline[..32] {
         //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);

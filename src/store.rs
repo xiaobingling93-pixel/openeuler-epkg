@@ -96,9 +96,6 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
 
     fs::rename(&store_tmp_dir, &final_dir)
         .wrap_err_with(|| format!("Failed to move package from {} to {}", store_tmp_dir.display(), final_dir.display()))?;
-    let final_dir_str = final_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid UTF-8 in final directory path: {}", final_dir.display()))?;
-    set_perm_and_owner(final_dir_str)
-        .wrap_err_with(|| format!("Failed to set permissions and ownership for directory: {}", final_dir.display()))?;
 
     let pkgidline = format!("{}__{}", pkgid, pkgline);
     Ok(pkgidline)
@@ -376,34 +373,5 @@ pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
     io::copy(&mut decoder, &mut writer)
         .wrap_err_with(|| format!("Failed to decompress {} to {}", input_path, output_path))?;
 
-    Ok(())
-}
-
-pub fn set_perm_and_owner(dir_str: &str) -> Result<()> {
-    // get uid | gid
-    let current_uid = get_effective_uid();
-    let user_account = User::from_uid(current_uid.into())
-        .wrap_err("Failed to get user information from UID")?;
-    let user_account = user_account
-        .ok_or_else(|| eyre::eyre!("Current user not found"))?;
-    let uid = Some(user_account.uid);
-    let gid = Some(user_account.gid);
-
-    // chmod 755, chown USER:USER
-    for entry_result in WalkDir::new(dir_str) {
-        let entry = entry_result
-            .wrap_err_with(|| format!("Failed to access entry in directory: {}", dir_str))?;
-        let path = entry.path();
-
-        if !path.exists() || path.is_symlink() {
-            continue;
-        }
-
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-            .wrap_err_with(|| format!("Failed to set permissions on: {}", path.display()))?;
-
-        chown(path, uid, gid)
-            .wrap_err_with(|| format!("Failed to change ownership of: {}", path.display()))?;
-    }
     Ok(())
 }
