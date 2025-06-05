@@ -187,12 +187,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpio"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "938e716cb1ade5d6c8f959c13a7248b889c07491fc7e41167c3afe20f8f0de1e"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1052,11 +1046,9 @@ dependencies = [
 [[package]]
 name = "rpm"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d28683075d0cab8a7c350124b0267ef53baae4e3d2e30683d7ced15d4cf99624"
 dependencies = [
+ "base64",
  "bitflags",
- "cpio",
  "digest",
  "enum-display-derive",
  "enum-primitive-derive",

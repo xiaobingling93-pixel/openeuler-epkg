@@ -63,7 +63,7 @@ default-features = false
 
 # RPM package support
 [dependencies.rpm]
-version = "0.17"
+path = "rpm-rs" # Replaced version = "0.17"
 default-features = false
 features = ["zstd-compression", "xz-compression"]
 
