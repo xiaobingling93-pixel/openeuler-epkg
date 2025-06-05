@@ -280,7 +280,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
 
 fn parse_yaml_config<T>(path: &str) -> Result<T>
 where
-    T: for<'de> serde::Deserialize<'de> + Default,
+    T: for<'de> serde::Deserialize<'de>,
 {
     std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("Failed to read config file {}: {}", path, e))
@@ -302,9 +302,11 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
             if default_config_path.exists() {
                 parse_yaml_config(default_config_path.to_str().expect("Default config path is not valid UTF-8"))
             } else {
-                // Comparing to Default::default(), this ensures the serde defaults take effect consistently
-                Ok(serde_yaml::from_str("")
-                    .unwrap_or_else(|_| panic!("Failed to load defconfig")))
+                // Using "{}" ensures that serde processes an empty map, allowing field-level
+                // #[serde(default = "...")] attributes to be applied.
+                // An empty string "" typically parses to Yaml::Null, which doesn't trigger these defaults for struct fields.
+                Ok(serde_yaml::from_str("{}")
+                    .unwrap_or_else(|e| panic!("Failed to load default config from empty map: {:?}", e)))
             }
         },
         |s| parse_yaml_config(s)
@@ -314,10 +316,13 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
         || env::var("EPKG_ACTIVE_ENV").map(|s| s.trim_end_matches(':').to_string()).unwrap_or_else(|_| "main".to_string()),
         |s| s.to_string()
     );
-    config.common.arch = matches.get_one::<String>("arch").map_or_else(
-        || std::env::consts::ARCH.to_string(),
-        |s| s.to_string()
-    );
+    if let Some(arch) = matches.get_one::<String>("arch") {
+        config.common.arch = arch.to_string();
+    }
+    if config.common.arch.is_empty() {
+        config.common.arch = models::default_arch();
+        eprintln!("arch was configured to empty, using default architecture: {}", config.common.arch);
+    }
 
     if !SUPPORT_ARCH_LIST.contains(&config.common.arch.as_str()) {
         return Err(eyre::eyre!("Unsupported system architecture: {}", config.common.arch));
@@ -411,7 +416,8 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
     if let Some(version) = sub_matches.get_one::<String>("version") {
         config.init.version = version.to_string();
     } else if config.init.version.is_empty() {
-        config.init.version = DEFAULT_VERSION.to_string();
+        config.init.version = models::default_version();
+        eprintln!("version was configured to empty, using default version: {}", config.init.version);
     }
 
     // compose options for creating "common" env, must be done here since

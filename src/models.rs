@@ -372,10 +372,10 @@ pub struct RepoShard {
     pub packages_mmap: Option<crate::mmio::FileMapper>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-#[derive(Default, Debug, Clone, Deserialize)]
 pub struct EPKGConfig {
-    #[serde(default)]
+    #[serde(default = "default_common_options")]
     pub common: CommonOptions,
     #[serde(default)]
     pub install: InstallOptions,
@@ -385,7 +385,7 @@ pub struct EPKGConfig {
     pub env: EnvOptions,
     #[serde(default)]
     pub history: HistoryOptions,
-    #[serde(default)]
+    #[serde(default = "default_init_options")]
     pub init: InitOptions,
 
     #[serde(skip)]
@@ -396,17 +396,29 @@ pub struct EPKGConfig {
     pub subcommand: String,
 }
 
+// Custom default function that ensures serde field-level defaults are applied
+fn default_common_options() -> CommonOptions {
+    // Use serde to deserialize an empty object, which will trigger field-level defaults
+    serde_yaml::from_str("{}").unwrap_or_else(|_| CommonOptions::default())
+}
+
+// Custom default function that ensures serde field-level defaults are applied
+fn default_init_options() -> InitOptions {
+    // Use serde to deserialize an empty object, which will trigger field-level defaults
+    serde_yaml::from_str("{}").unwrap_or_else(|_| InitOptions::default())
+}
+
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct CommonOptions {
     #[serde(skip)]
     pub env: String,
     #[serde(skip)]
-    pub arch: String,
-    #[serde(skip)]
     pub download_only: bool,
     #[serde(skip)]
     pub simulate: bool,
 
+    #[serde(default = "default_arch")]
+    pub arch: String,
     #[serde(default)]
     pub quiet: bool,
     #[serde(default)]
@@ -435,6 +447,11 @@ pub struct CommonOptions {
     // Parallel processing speeds up `epkg update` at cost of more memory
     #[serde(default = "default_parallel_processing")]
     pub parallel_processing: bool,
+}
+
+// Default function for arch
+pub fn default_arch() -> String {
+    std::env::consts::ARCH.to_string()
 }
 
 // Default function for parallel_processing
@@ -514,7 +531,7 @@ pub struct InitOptions {
     pub version: String,
 }
 
-fn default_version() -> String {
+pub fn default_version() -> String {
     DEFAULT_VERSION.to_string()
 }
 

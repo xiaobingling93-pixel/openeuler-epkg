@@ -64,7 +64,7 @@ impl EPKGDirsBuilder {
     }
 
     pub fn build(self) -> Result<EPKGDirs> {
-        let options = self.options.unwrap_or_default();
+        let options = self.options.unwrap();
 
         let home_epkg = match self.custom_home {
             Some(path) => path,
