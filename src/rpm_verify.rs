@@ -12,7 +12,6 @@ use std::process::{Command, Stdio};
 use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
 use log;
-use tempfile::TempDir;
 use walkdir::{DirEntry, WalkDir};
 
 // Assuming utils::find_command_in_paths exists and is accessible
@@ -277,6 +276,33 @@ pub(crate) fn compare_directories(official_dir: &Path, epkg_dir: &Path) -> Resul
     })
 }
 
+/// Handles directory mismatch by renaming directories for debug investigation
+/// Returns true if the temp directory should be kept, false otherwise
+fn handle_directory_mismatch(
+    epkg_extracted_fs_dir: &Path,
+    official_outdir_path: &Path,
+) -> Result<bool> {
+    // 1. Rename epkg_extracted_fs_dir for debug investigations
+    let debug_dir = epkg_extracted_fs_dir.with_extension("debug_epkg_extracted");
+    if let Err(e) = fs::rename(epkg_extracted_fs_dir, &debug_dir) {
+        log::error!("Failed to rename epkg_extracted_fs_dir to debug directory {}: {}", debug_dir.display(), e);
+    } else {
+        log::info!("Renamed epkg_extracted_fs_dir to {} for debug investigations", debug_dir.display());
+    }
+
+    // 2. Rename official_outdir_path to epkg_extracted_fs_dir to use the good rpm2cpio output
+    if let Err(e) = fs::rename(official_outdir_path, epkg_extracted_fs_dir) {
+        log::error!("Failed to rename official extraction directory {} to {}: {}",
+                   official_outdir_path.display(), epkg_extracted_fs_dir.display(), e);
+        log::warn!("The official extraction directory {} has been preserved for manual inspection.", official_outdir_path.display());
+        Ok(true) // Keep the temp directory since rename failed
+    } else {
+        log::info!("Renamed official extraction directory {} to {} to use the good rpm2cpio output",
+                  official_outdir_path.display(), epkg_extracted_fs_dir.display());
+        Ok(false) // Don't keep the temp directory since we've moved it successfully
+    }
+}
+
 pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir: &Path) -> Result<()> {
     log::debug!("Starting RPM extraction verification for: {}", rpm_file_path.display());
 
@@ -306,9 +332,11 @@ pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir:
     }
     log::debug!("rpm2cpio and cpio found.");
 
-    let official_outdir_temp = TempDir::new_in(epkg_extracted_fs_dir.parent().unwrap_or_else(|| Path::new("/tmp")))
-        .wrap_err("Failed to create temporary directory for official RPM extraction")?;
-    let official_outdir_path = official_outdir_temp.path().to_path_buf();
+    let official_outdir_path = epkg_extracted_fs_dir.parent()
+        .ok_or_else(|| eyre!("Failed to get parent directory for epkg_extracted_fs_dir: {}", epkg_extracted_fs_dir.display()))?
+        .join("rpm2cpio");
+    std::fs::create_dir_all(&official_outdir_path)
+        .wrap_err_with(|| format!("Failed to create directory for official RPM extraction: {}", official_outdir_path.display()))?;
 
     log::debug!("Official extraction directory: {}", official_outdir_path.display());
 
@@ -340,7 +368,6 @@ pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir:
             log::error!("rpm2cpio also failed with status: {}. Stderr:\n{}", rpm2cpio_output.status, rpm2cpio_stderr_str);
         }
         // Preserve directory on failure
-        let _persisted_dir = official_outdir_temp.keep();
         return Err(eyre!(
             "rpm2cpio | cpio pipeline failed. cpio exit: {}, rpm2cpio exit: {}. Official dir: {}",
             cpio_cmd_output.status, rpm2cpio_output.status, official_outdir_path.display()
@@ -363,20 +390,29 @@ pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir:
         Ok(comp_result) => {
             if comp_result.are_identical {
                 log::info!("Verification successful: epkg extraction matches official extraction for {}.", rpm_file_path.display());
-                // Temp dir will be cleaned up automatically on drop
+                log::debug!("Removing successfully verified official extraction directory: {}", official_outdir_path.display());
+                if let Err(e) = fs::remove_dir_all(&official_outdir_path) {
+                    log::warn!("Failed to remove official extraction directory {}: {}. Manual cleanup may be required.", official_outdir_path.display(), e);
+                }
             } else {
                 log::warn!("Verification FAILED for {}: Mismatches found between epkg and official extraction.", rpm_file_path.display());
                 for mismatch in comp_result.mismatches {
                     log::warn!("  Mismatch: {:?}", mismatch);
                 }
-                log::warn!("The official extraction directory {} has been preserved for manual inspection.", official_outdir_path.display());
-                let _persisted_dir = official_outdir_temp.keep(); // Persist the directory
+
+                // Handle directory mismatch as requested
+                match handle_directory_mismatch(epkg_extracted_fs_dir, &official_outdir_path) {
+                    Ok(_should_keep_temp) => {
+                    }
+                    Err(e) => {
+                        log::error!("Error handling directory mismatch: {}", e);
+                    }
+                }
             }
         }
         Err(e) => {
             log::error!("Error during directory comparison for {}: {}", rpm_file_path.display(), e);
             log::warn!("The official extraction directory {} might be incomplete or problematic. Preserving for inspection.", official_outdir_path.display());
-            let _ = official_outdir_temp.keep(); // Persist the directory
             return Err(e.wrap_err("Directory comparison failed"));
         }
     }
