@@ -11,6 +11,8 @@ use tar::Archive;
 use flate2::read::GzDecoder;
 use liblzma;
 use zstd;
+use std::os::unix::fs::PermissionsExt; // For checking execute permissions
+use nix::unistd;
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -296,6 +298,42 @@ pub fn copy_all<P: AsRef<Path>>(src: P, dst: P) -> Result<()> {
         fs::copy(src, dst)?;
     }
     Ok(())
+}
+
+pub fn is_running_as_root() -> bool {
+    unistd::geteuid().is_root()
+}
+
+pub fn command_exists(command_name: &str) -> bool {
+    find_command_in_paths(command_name).is_some()
+}
+
+
+/// Searches for an executable command in a predefined list of common paths.
+/// Returns the full path to the command if found and executable, otherwise None.
+pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
+    let common_paths = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+        // Add other paths if necessary, e.g., from $HOME/.local/bin
+    ];
+
+    for path_dir in common_paths.iter() {
+        let mut full_path = PathBuf::from(path_dir);
+        full_path.push(command_name);
+        if full_path.exists() {
+            if let Ok(metadata) = fs::metadata(&full_path) {
+                if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
+                    return Some(full_path);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Decompress a file based on its extension

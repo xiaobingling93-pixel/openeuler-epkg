@@ -50,6 +50,7 @@ ctrlc = "3.4"      # For handling Ctrl-C cleanly
 memmap2 = "0.9"
 num_cpus = "1.16"
 sys-info = "0.9"
+tempfile = "3.0"
 
 # Optional but recommended for better progress bars
 [dependencies.console]

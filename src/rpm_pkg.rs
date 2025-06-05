@@ -1,12 +1,13 @@
-use std::path::Path;
-use color_eyre::Result;
-use std::fs;
-use std::collections::HashMap;
-use rpm::{Package, FileMode};
 use crate::rpm_repo::PACKAGE_KEY_MAPPING;
+#[cfg(debug_assertions)]
+use crate::rpm_verify;
 use color_eyre::eyre::WrapErr;
+use color_eyre::Result;
+use rpm::{DependencyFlags, FileMode, Package};
+use std::collections::HashMap;
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use rpm::DependencyFlags;
+use std::path::Path;
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
@@ -28,7 +29,19 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
         .wrap_err_with(|| format!("Failed to open RPM file: {}", rpm_file.display()))?;
 
     // Extract files to fs/
-    extract_rpm_files(&package, &store_tmp_dir.join("fs"))?;
+    let target_fs_dir = store_tmp_dir.join("fs");
+    extract_rpm_files(&package, &target_fs_dir)?;
+
+    // ---- Verification Step ----
+    // Only run verification in debug builds when rpm_verify module is compiled
+    #[cfg(debug_assertions)]
+    {
+        if let Err(e) = rpm_verify::verify_rpm_extraction(rpm_file, &target_fs_dir) {
+            log::warn!("RPM extraction verification check failed for {}: {}. Continuing with epkg's version.", rpm_file.display(), e);
+            // Do not propagate this error, as it's a debug/verification feature.
+        }
+    }
+    // ---- End Verification Step ----
 
     // Generate filelist.txt
     crate::store::create_filelist_txt(store_tmp_dir)?;
@@ -164,7 +177,6 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
                 // Make it executable
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
                     let mut perms = fs::metadata(&target_path)
                         .wrap_err_with(|| format!("Failed to get metadata for script at {}", target_path.display()))?.permissions();
                     perms.set_mode(0o755);

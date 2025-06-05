@@ -27,6 +27,9 @@ mod apk_repo;
 mod apk_pkg;
 mod epkg;
 
+#[cfg(debug_assertions)]
+mod rpm_verify;
+
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -381,7 +384,7 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
     config.subcommand = matches.subcommand().map(|(name, _)| name.to_string()).unwrap_or_default();
     if config.subcommand != "init" {
-        config.init.shared_store = nix::unistd::geteuid().is_root() && Path::new("/opt/epkg/store").exists();
+        config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/store").exists();
     }
 
     match matches.subcommand() {
@@ -408,10 +411,10 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         .map(|s| match s.as_str() {
             "shared" => true,
             "private" => false,
-            "auto" => nix::unistd::geteuid().is_root(),
+            "auto" => utils::is_running_as_root(),
             _ => false
         })
-        .unwrap_or_else(|| nix::unistd::geteuid().is_root());
+        .unwrap_or_else(|| utils::is_running_as_root());
 
     if let Some(version) = sub_matches.get_one::<String>("version") {
         config.init.version = version.to_string();
