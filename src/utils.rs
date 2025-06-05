@@ -94,11 +94,16 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::new(file);
     let mut first_line = String::new();
-    let bytes_read = reader.read_line(&mut first_line)?;
-    if bytes_read == 0 {
+    let _bytes_read = match reader.read_line(&mut first_line) {
+        Ok(n) => n,
+        Err(_e) => {
+            0
+        }
+    };
+    if _bytes_read == 0 {
         return Ok((FileType::Others, String::new()));
     }
-
+ 
     // Check if file starts with shebang
     if first_line.starts_with("#!") {
         let script_line0 = first_line.trim_end().to_string();
