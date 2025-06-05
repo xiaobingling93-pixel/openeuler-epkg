@@ -318,6 +318,19 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
         return Ok(());
     }
 
+    // if the soft link is broken, delete it
+    if let Ok(metadata) = fs::symlink_metadata(interpreter_in_env) {
+        if metadata.file_type().is_symlink() {
+            if fs::read_link(interpreter_in_env).map(|t| !t.exists()).unwrap_or(false) {
+                fs::remove_file(interpreter_in_env)?
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    }
+
     // Get the parent directory to search in
     let parent = interpreter_in_env.parent()
         .ok_or_else(|| eyre::eyre!("Failed to get parent directory of {}", interpreter_in_env.display()))?;
