@@ -6,7 +6,9 @@ use color_eyre::eyre::{self, eyre, WrapErr, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use crate::models::*;
-use crate::repo::*;
+use crate::models::Repodata;
+use crate::repo::{RepoRevise, RepoReleaseItem, url_to_cache_path};
+use regex::Regex;
 use crate::dirs;
 use crate::packages_stream;
 use lazy_static::lazy_static;
@@ -308,7 +310,8 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 }
 
 // Streaming XML processor that maintains state across chunks
-struct StreamingXmlProcessor<'a> {
+pub struct StreamingXmlProcessor<'a> {
+    numeric_char_ref_regex: Regex,
     xml_buffer: String,
     derived_files: &'a mut packages_stream::PackagesStreamline,
 
@@ -323,6 +326,7 @@ struct StreamingXmlProcessor<'a> {
 impl<'a> StreamingXmlProcessor<'a> {
     fn new(derived_files: &'a mut packages_stream::PackagesStreamline) -> Self {
         let mut dependency_lists = HashMap::new();
+        let numeric_char_ref_regex = Regex::new(r"&#x([0-9a-fA-F]+);|&#([0-9]+);").unwrap();
 
         // Initialize dependency lists
         dependency_lists.insert("requires".to_string(),     (Vec::new(), Vec::new())); // (regular, pre)
@@ -338,6 +342,7 @@ impl<'a> StreamingXmlProcessor<'a> {
             xml_buffer: String::new(),
             derived_files,
             current_tag: String::new(),
+            numeric_char_ref_regex,
             packages_processed: 0,
             in_dependency_section: String::new(),
             dependency_lists,
@@ -724,13 +729,31 @@ impl<'a> StreamingXmlProcessor<'a> {
                 ];
 
                 // Helper function to transform HTML entities in dependency entries
+                let re_numeric_char_ref_borrow = &self.numeric_char_ref_regex;
                 let transform_entities = |entry: &str| -> String {
-                    entry.replace("&lt;", "<")
-                         .replace("&gt;", ">")
-                         .replace("&amp;", "&")
-                         .replace("&quot;", "\"")
-                         .replace("&apos;", "'")
-                };
+                // First, handle standard named entities
+                let named_entities_transformed = entry.replace("&lt;", "<")
+                     .replace("&gt;", ">")
+                     .replace("&amp;", "&")
+                     .replace("&quot;", "\"")
+                     .replace("&apos;", "'");
+
+                // Then, handle numeric character references (decimal and hex)
+                re_numeric_char_ref_borrow.replace_all(&named_entities_transformed, |caps: &regex::Captures| {
+                    let val_hex = caps.get(1).map(|m| u32::from_str_radix(m.as_str(), 16));
+                    let val_dec = caps.get(2).map(|m| m.as_str().parse::<u32>());
+
+                    match (val_hex, val_dec) {
+                        (Some(Ok(code_point)), _) | (_, Some(Ok(code_point))) => {
+                            std::char::from_u32(code_point).map_or_else(
+                                || caps.get(0).unwrap().as_str().to_string(), // If invalid char, return original sequence
+                                |c| c.to_string()
+                            )
+                        }
+                        _ => caps.get(0).unwrap().as_str().to_string(), // If parsing fails, return original sequence
+                    }
+                }).into_owned()
+            };
 
                 // Helper function to transform and output a list of entries
                 let output_transformed_list = |entries: &[String], key: &str, output: &mut String| {
