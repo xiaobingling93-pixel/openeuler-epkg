@@ -314,10 +314,10 @@ fn format_rpm_dependency(dep: &rpm::Dependency) -> String {
         format!("{}>{}", name, version)
     } else if flags.contains(DependencyFlags::EQUAL) || flags == DependencyFlags::ANY {
         // EQUAL or ANY - use = format
-        format!("{}={}", name, version)
+        format!("{} = {}", name, version) // Added spaces to distinguish from "font(:lang=yap)"
     } else {
         // For any other flags (like SCRIPT_PRE, RPMLIB, etc.), default to = format
-        format!("{}={}", name, version)
+        format!("{} = {}", name, version)
     }
 }
 

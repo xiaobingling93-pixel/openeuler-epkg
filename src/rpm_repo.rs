@@ -661,7 +661,9 @@ impl<'a> StreamingXmlProcessor<'a> {
                     let formatted_entry = if !ver.is_empty() {
                         // Convert flags to appropriate symbol
                         let flag_symbol = match _flags.as_str() {
-                            "EQ" => "=",
+                            "EQ" => " = ", // Added spaces to distinguish from "font(:lang=yap)",
+                                           // "gstreamer1(decoder-video/x-dv)(systemstream=true)()(64bit)",
+                                           // etc. values at split time
                             "GE" => ">=",
                             "GT" => ">",
                             "LE" => "<=",

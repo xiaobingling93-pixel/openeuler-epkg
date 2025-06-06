@@ -212,7 +212,10 @@ pub fn parse_requires(package_format: PackageFormat, requires: &str) -> Result<A
 }
 
 lazy_static! {
-    static ref OPERATOR_REGEX: Regex = Regex::new(r"(>=|<=|==|!=|>|<|=|~=)").unwrap();
+    // No '=', since rpm_repo.rs and rpm_pkg.rs will expand EQ or EQUAL to ' = '.
+    static ref RPM_OPERATOR_REGEX:       Regex = Regex::new(r"(>=|<=|==|!=|>|<|~=)").unwrap();
+
+    static ref ARCHLINUX_OPERATOR_REGEX: Regex = Regex::new(r"(>=|<=|==|!=|>|<|=|~=)").unwrap();
     static ref ARCHLINUX_COMMENT_REGEX: Regex = Regex::new(r"\s*: .*").unwrap();
     static ref PYTHON_COMMENT_REGEX: Regex = Regex::new(r"\s*# .*").unwrap();
 }
@@ -311,7 +314,9 @@ pub fn parse_rpm_requires(requires: &str) -> Result<AndDepends, ParseError> {
 
         let mut or_depends = Vec::new();
         for or_clause in or_clauses {
-            let (name, constraints) = parse_package(&or_clause)?;
+            // Normalize the clause by adding whitespace around operators
+            let normalized_clause = RPM_OPERATOR_REGEX.replace_all(or_clause, " $1 ").to_string();
+            let (name, constraints) = parse_package(&normalized_clause)?;
             or_depends.push(PkgDepend {
                 capability: name,
                 constraints,
@@ -375,11 +380,9 @@ fn has_outer_parentheses(s: &str) -> Result<bool, ParseError> {
     Ok(true)
 }
 
-/// Parses a package clause into a name and version constraints.
+/// Parses a RPM/Archlinux package clause into a name and version constraints.
 fn parse_package(clause: &str) -> Result<(String, Vec<VersionConstraint>), ParseError> {
-    // Normalize the clause by adding whitespace around operators
-    let normalized_clause = OPERATOR_REGEX.replace_all(clause, " $1 ").to_string();
-    let mut parts = normalized_clause.split_whitespace();
+    let mut parts = clause.split_whitespace();
 
     let name = parts.next().ok_or(ParseError::InvalidFormat("Missing package name".to_string()))?.to_string();
     let mut constraints = Vec::new();
@@ -394,7 +397,7 @@ fn parse_package(clause: &str) -> Result<(String, Vec<VersionConstraint>), Parse
                 operand: part.to_string(),
             });
         } else {
-            println!("parse_package error, invalid operator '{}' in clause {}", part, normalized_clause);
+            println!("parse_package error, invalid operator '{}' in clause {}", part, clause);
             return Err(ParseError::UnsupportedOperator);
         }
     }
@@ -468,7 +471,7 @@ fn parse_debian_package(clause: &str) -> Result<(String, Vec<VersionConstraint>)
     }
 }
 
-/// Parses version constraints from a string
+/// Parses Debian/Python/Conda version constraints from a string
 /// Example inputs:
 /// - ">= 2.34" or ">= 2.34, << 3.0"
 /// - ">=1.14.12,<2.0a0"
@@ -570,8 +573,9 @@ pub fn parse_archlinux_requires(requires: &str) -> Result<AndDepends, ParseError
     let mut and_depends = Vec::new();
 
     for clause in requires.split_whitespace() {
-        let clause = clause.trim();
-        let (name, constraints) = parse_package(clause)?;
+        // Normalize the clause by adding whitespace around operators
+        let normalized_clause = ARCHLINUX_OPERATOR_REGEX.replace_all(clause, " $1 ").to_string();
+        let (name, constraints) = parse_package(&normalized_clause)?;
         and_depends.push(vec![PkgDepend {
             capability: name,
             constraints,
