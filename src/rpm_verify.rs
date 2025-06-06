@@ -299,11 +299,7 @@ fn filter_known_false_positives(mismatches: Vec<ComparisonMismatchDetail>, epkg_
                 !(is_dir_perm_fix || is_file_perm_fix)
             },
 
-            // Ignore "MissingInOfficial" for special RPM ghost files
-            ComparisonMismatchDetail::MissingInOfficial(path) => {
-                !is_likely_ghost_entry_from_disk(epkg_dir, path)
-            },
-
+            // Ghost files are now properly skipped during extraction, so this workaround is no longer needed
             _ => true, // Keep all other mismatches
         }
     }).collect()
@@ -315,63 +311,6 @@ fn is_directory_from_disk(base_dir: &Path, relative_path: &Path) -> bool {
     match fs::metadata(&full_path) {
         Ok(metadata) => metadata.is_dir(),
         Err(_) => false, // If we can't read metadata, assume it's not a directory
-    }
-}
-
-/// Check if an entry is likely a "ghost" file or directory by examining its characteristics on disk
-/// Ghost entries typically have size 0 and are placeholders that RPM creates but doesn't include in CPIO
-fn is_likely_ghost_entry_from_disk(base_dir: &Path, relative_path: &Path) -> bool {
-    let full_path = base_dir.join(relative_path);
-
-    match fs::metadata(&full_path) {
-        Ok(metadata) => {
-            // Ghost entries are typically size 0 (both files and directories)
-            if metadata.len() != 0 {
-                return false;
-            }
-
-            if metadata.is_file() {
-                // Ghost files: check if content is empty or all zeros
-                match fs::read(&full_path) {
-                    Ok(content) => {
-                        // Ghost files are either completely empty or contain all zeros
-                        content.is_empty() || content.iter().all(|&b| b == 0)
-                    },
-                    Err(_) => {
-                        // If we can't read it, check if it's a common ghost file pattern
-                        let path_str = relative_path.to_string_lossy();
-                        matches!(path_str.as_ref(),
-                            "etc/gai.conf" | "etc/ld.so.cache" | "var/cache/ldconfig/aux-cache"
-                        ) || path_str.contains("/cache/") || path_str.ends_with(".cache")
-                    }
-                }
-            } else if metadata.is_dir() {
-                // Ghost directories: check if directory is actually empty
-                match fs::read_dir(&full_path) {
-                    Ok(mut entries) => {
-                        // If directory is empty (no entries), it's likely a ghost directory
-                        let is_empty = entries.next().is_none();
-                        if is_empty {
-                            return true;
-                        }
-
-                        // Even if not empty, check for man page ghost directories
-                        // These form ghost directory trees under usr/share/man
-                        let path_str = relative_path.to_string_lossy();
-                        path_str.starts_with("usr/share/man/") &&
-                        (path_str.contains("/man") || path_str.matches('/').count() == 3) // usr/share/man/LOCALE
-                    },
-                    Err(_) => {
-                        // If we can't read the directory, check if it's a man page pattern
-                        let path_str = relative_path.to_string_lossy();
-                        path_str.starts_with("usr/share/man/")
-                    }
-                }
-            } else {
-                false // Other file types are not typically ghost entries
-            }
-        },
-        Err(_) => false, // If we can't read metadata, it's probably not a ghost entry
     }
 }
 

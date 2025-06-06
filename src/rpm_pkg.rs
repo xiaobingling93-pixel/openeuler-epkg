@@ -73,6 +73,13 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                 let file = file_result
                     .wrap_err_with(|| "Failed to read file from RPM package")?;
 
+                // Skip ghost files - these are not included in the CPIO payload
+                // This matches the behavior of official RPM tools like rpm2cpio
+                if file.metadata.flags.contains(rpm::FileFlags::GHOST) {
+                    log::debug!("Skipping ghost file: {}", file.metadata.path.display());
+                    continue;
+                }
+
                 let file_path = target_dir.join(file.metadata.path.to_string_lossy().trim_start_matches('/'));
 
                 // Create parent directories if they don't exist
