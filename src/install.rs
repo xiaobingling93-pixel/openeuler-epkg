@@ -457,6 +457,24 @@ impl PackageManager {
         self.load_installed_packages()?;
 
         let mut packages_to_install = self.resolve_package_info(package_specs.clone());
+        let mut packages_to_install_clone = packages_to_install.clone();
+        let mut depends_pkg : HashMap<String, InstalledPackageInfo> = HashMap::new();
+        let channel_config = self.get_channel_config(config().common.env.clone())?;
+        let repo_format = channel_config.format;
+        for (pkgline, pkginfo) in packages_to_install_clone.drain() {
+            let mut tmp_pkg = HashMap::new();
+            tmp_pkg.insert(pkgline, pkginfo);
+            let mut tmp_depends : HashMap<String, InstalledPackageInfo> = HashMap::new();
+            self.collect_depends(&mut tmp_pkg, &mut tmp_depends, 1,  repo_format)?;
+            depends_pkg.extend(tmp_depends);
+        }
+
+        for pkg in depends_pkg.keys() {
+            if let Some(info) = packages_to_install.get_mut(pkg) {
+                info.depend_depth = 1;
+            }
+        }
+
         let current_installed: Vec<String> = packages_to_install
             .keys()
             .filter(|name| self.installed_packages.contains_key(*name))
