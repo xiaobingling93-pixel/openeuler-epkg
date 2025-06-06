@@ -379,7 +379,17 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         let interpreter_in_env = Path::new(&interpreter_in_env);
 
         // Find and link the interpreter if needed
-        find_link_interpreter(interpreter_in_env, interpreter_basename)?;
+        match find_link_interpreter(interpreter_in_env, interpreter_basename) {
+            Ok(()) => {},
+            Err(e) => {
+                if interpreter_basename.ends_with("sh") {
+                    println!("Shell interpreter {} is not found in environment. you can install it later.", interpreter_basename);
+                    return Ok("".to_string());
+                } else {
+                    return Err(e);
+                }
+            }
+        }
 
         // Example: store_interpreter = "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
         // Create the wrapper
@@ -408,8 +418,17 @@ fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
         .ok_or_else(|| eyre::eyre!("Failed to get interpreter basename"))?
         .to_string_lossy();
 
-    let env_interpreter_path = create_interpreter_wrapper(env_root, &interpreter_path, &interpreter_basename)
-        .with_context(|| format!("Failed to create interpreter wrapper for {} with basename {}", interpreter_path, interpreter_basename))?;
+    let env_interpreter_path = match create_interpreter_wrapper(env_root, &interpreter_path, &interpreter_basename)
+        .with_context(|| format!("Failed to create interpreter wrapper for {} with basename {}", interpreter_path, interpreter_basename))
+    {
+        Ok(path) => {
+            if path == "" {
+                return Ok(first_line.to_string());
+            }
+            path
+        },
+        Err(e) => return Err(e),
+    };
 
     // Example output: "#!/home/wfg/.epkg/envs/main/ebin/sh "
     Ok(format!("#!{} {}\n", env_interpreter_path, params))
