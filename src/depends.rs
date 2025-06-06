@@ -357,6 +357,25 @@ impl PackageManager {
         }
     }
 
+    pub fn map_pkgline2package(&mut self, pkgline: &str) -> Result<Arc<Package>> {
+        // Check cache first
+        if let Some(package) = self.pkgline2package.get(pkgline) {
+            log::trace!("Found cached package info for pkgline '{}'", pkgline);
+            return Ok(Arc::clone(package));
+        }
+
+        // Load from mmio function
+        match crate::mmio::map_pkgline2package(pkgline) {
+            Ok(package) => {
+                log::trace!("Caching package from pkgline: {}", pkgline);
+                let arc_package = Arc::new(package);
+                self.pkgline2package.insert(pkgline.to_string(), Arc::clone(&arc_package));
+                Ok(arc_package)
+            },
+            Err(e) => Err(e)
+        }
+    }
+
     pub fn load_package_info(&mut self, pkgkey: &str) -> Result<Arc<Package>> {
         log::trace!("Loading package info for '{}'", pkgkey);
         // Try to find by pkgkey first

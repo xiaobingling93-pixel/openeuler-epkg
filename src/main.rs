@@ -26,6 +26,7 @@ mod rpm_pkg;
 mod apk_repo;
 mod apk_pkg;
 mod epkg;
+mod version;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;
@@ -48,6 +49,7 @@ use ctrlc;
 use clap::{arg, Command};
 use env_logger;
 use log;
+use list::ListScope;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -228,7 +230,8 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .arg(arg!(--all "List all packages"))
                 .arg(arg!(--installed "List installed packages"))
                 .arg(arg!(--available "List available packages"))
-                .arg(arg!(<GLOB_PATTERN> "Package glob pattern to list"))
+                .arg(arg!(--upgradable "List upgradable packages"))
+                .arg(arg!([GLOB_PATTERN] "Package name filtering"))
         )
         .subcommand(
             Command::new("install")
@@ -493,15 +496,16 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
 }
 
 fn parse_options_list(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    if sub_matches.contains_id("list-all") {
-        config.list.list_all = sub_matches.get_flag("all");
+    if sub_matches.get_flag("all") {
+        config.list.list_all = true;
     }
-    if sub_matches.contains_id("list-installed") {
-        config.list.list_installed = sub_matches.get_flag("installed");
+    if sub_matches.get_flag("installed") {
+        config.list.list_installed = true;
     }
-    if sub_matches.contains_id("list-available") {
-        config.list.list_available = sub_matches.get_flag("available");
+    if sub_matches.get_flag("available") {
+        config.list.list_available = true;
     }
+    // Note: upgradable option will be handled directly in the list command
     Ok(())
 }
 
@@ -637,10 +641,25 @@ impl PackageManager {
     }
 
     fn command_list(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(glob_pattern) = sub_matches.get_one::<String>("GLOB_PATTERN") {
-            privdrop_on_suid();
-            self.list_packages(glob_pattern)?;
-        }
+        privdrop_on_suid();
+
+        // Determine scope - only one should be true, with installed as default
+        let scope = if sub_matches.get_flag("all") {
+            ListScope::All
+        } else if sub_matches.get_flag("available") {
+            ListScope::Available
+        } else if sub_matches.get_flag("upgradable") {
+            ListScope::Upgradable
+        } else {
+            ListScope::Installed // default
+        };
+
+        let pattern = sub_matches.get_one::<String>("GLOB_PATTERN")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+
+        self.revise_channel_metadata()?;
+        self.list_packages_with_scope(scope, pattern)?;
         Ok(())
     }
 

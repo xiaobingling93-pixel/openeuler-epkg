@@ -86,13 +86,26 @@ pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBu
 
 pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> Result<()> {
     let repo_dir = crate::dirs::get_repo_dir(&repo)?;
+
+    // Check if we need to load provide2pkgnames (expensive dependency resolution data)
+    // Skip for list command since it doesn't need dependency resolution
+    let load_provides = crate::models::config().subcommand != "list";
+
     for (_, shard) in &mut repo_index.repo_shards {
         let filename = shard.packages.filename.clone();
         let (packages_path, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
             get_package_paths(&repo_dir, &filename);
         shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
         shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
-        shard.provide2pkgnames = deserialize_provide2pkgnames(&provide2pkgnames_path)?;
+
+        // Conditionally load provide2pkgnames only when needed
+        if load_provides {
+            shard.provide2pkgnames = deserialize_provide2pkgnames(&provide2pkgnames_path)?;
+        } else {
+            // Keep empty for list command
+            shard.provide2pkgnames = std::collections::HashMap::new();
+        }
+
         shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
     }
     {
@@ -409,13 +422,33 @@ pub fn get_essential_pkgnames() -> Result<HashSet<String>> {
 }
 
 pub fn is_essential_pkgname(pkgname: &str) -> bool {
-    let repodata_indice = repodata_indice();
-    for repo_index in repodata_indice.values() {
-        for shard in repo_index.repo_shards.values() {
-            if shard.essential_pkgnames.contains(pkgname) {
-                return true;
-            }
+    match get_essential_pkgnames() {
+        Ok(essential_pkgnames) => essential_pkgnames.contains(pkgname),
+        Err(e) => {
+            log::warn!("Failed to get essential package names: {}", e);
+            false
         }
     }
-    false
+}
+
+/// Maps a pkgline (from installed packages) to a Package by deserializing from local store
+pub fn map_pkgline2package(pkgline: &str) -> Result<Package> {
+    // The pkgline should be the path/identifier for the package in the store
+    // Read the package.txt file from the store directory
+    let store_path = crate::models::dirs().epkg_store.join(pkgline).join("info/package.txt");
+
+    if !store_path.exists() {
+        return Err(eyre::eyre!("Package info not found in store: {}", store_path.display()));
+    }
+
+    let content = fs::read_to_string(&store_path)
+        .wrap_err_with(|| format!("Failed to read package info: {}", store_path.display()))?;
+
+    // Reuse the existing deserialize_package function
+    let mut package = deserialize_package(&content)?;
+
+    // Set a default repodata_name for locally installed packages
+    package.repodata_name = "local".to_string();
+
+    Ok(package)
 }

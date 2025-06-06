@@ -571,6 +571,7 @@ pub struct PackageManager {
 
     // cache need to installing packages info
     pub pkgkey2package: HashMap<String, Arc<Package>>,
+    pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages
     pub appbin_source: HashSet<String>,
 
     // loaded from env installed-packages.json

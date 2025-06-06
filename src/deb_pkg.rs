@@ -282,7 +282,7 @@ Architecture: all
         fs::write(&control_path, control_content).unwrap();
 
         // Run the function
-        create_package_txt(&store_tmp_dir).unwrap();
+        create_package_txt(&store_tmp_dir, &store_tmp_dir).unwrap();
 
         // Read the generated package.txt file
         let package_txt_path = store_tmp_dir.join("info/package.txt");
