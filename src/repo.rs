@@ -688,7 +688,8 @@ pub fn list_repos() -> Result<()> {
 
     for entry in fs::read_dir(&manager_channel_dir)? {
         let path = entry?.path();
-        if !path.is_file() || path.extension().unwrap_or_default() != "yaml" {
+        if !path.is_file() || path.extension().unwrap_or_default() != "yaml" 
+           || path.file_name().unwrap_or_default() == "mirrors.yaml" {
             continue;
         }
 
@@ -714,7 +715,7 @@ pub fn list_repos() -> Result<()> {
             };
 
             println!("{:<30} | {:<15} | {}",
-                channel_config.channel,
+                channel_config.distro,
                 repo_name,
                 repo_url
             );
