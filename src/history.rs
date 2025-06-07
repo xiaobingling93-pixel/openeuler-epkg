@@ -6,7 +6,7 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 use time::OffsetDateTime;
 use time::macros::format_description;
-
+use crate::eyre::eyre;
 use crate::models::*;
 
 impl PackageManager {
@@ -214,20 +214,29 @@ impl PackageManager {
 
         // Apply package changes directly to FHS directories at root level
         // First phase: Link all packages
-        for (pkgline, _) in &new_packages {
+        for (pkgkey, _) in &new_packages {
+            let pkgline = rollback_packages.get(pkgkey)
+                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
+                .pkgline.clone();
             let fs_dir = store_root.join(pkgline).join("fs");
             self.link_package(&fs_dir, &env_root)?;
         }
 
         // Second phase: Expose packages and handle appbin flags
-        for (pkgline, appbin_flag) in &new_packages {
+        for (pkgkey, appbin_flag) in &new_packages {
+            let pkgline = rollback_packages.get(pkgkey)
+                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
+                .pkgline.clone();
             let fs_dir = store_root.join(pkgline).join("fs");
             if *appbin_flag {
                 self.expose_package(&fs_dir, &env_root)?;
             }
         }
 
-        for pkgline in &del_packages {
+        for pkgkey in &del_packages {
+            let pkgline = current_packages.get(pkgkey)
+                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
+                .pkgline.clone();
             let fs_dir = store_root.join(pkgline).join("fs");
             self.unlink_package(&fs_dir, &env_root)?;
         }
