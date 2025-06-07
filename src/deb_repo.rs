@@ -99,7 +99,6 @@ fn parent_parent_parent(path: &str) -> Option<String> {
 
 pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
-    let mut acquire_by_hash = false;
     let mut current_hash_type = String::new();
 
     // Map Debian architecture to standard architecture
@@ -111,13 +110,11 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
         }
     };
 
+    // This could be in last line, so must whole-file-match in the beginning
+    let mut acquire_by_hash = content.contains("Acquire-By-Hash: yes");
+
     // Single pass: collect files with their best hash type
     for line in content.lines() {
-        if line.starts_with("Acquire-By-Hash:") {
-            acquire_by_hash = line.contains("yes");
-            continue;
-        }
-
         if line.starts_with("SHA256:") {
             current_hash_type = "SHA256".to_string();
             continue;
