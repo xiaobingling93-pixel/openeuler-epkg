@@ -31,12 +31,14 @@ lazy_static! {
         m.insert("Multi-Arch",      "multiArch");
         m.insert("Homepage",        "homepage");
         m.insert("Tag",             "tag");
+        m.insert("Task",            "task");
         m.insert("Section",         "section");
         m.insert("Priority",        "priority");
         m.insert("Filename",        "location");
         m.insert("Size",            "size");
         m.insert("MD5sum",          "md5sum");
         m.insert("SHA256",          "sha256");
+        m.insert("SHA512",          "sha512");
         m.insert("Suggests",        "suggests");
         m.insert("Breaks",          "breaks");
         m.insert("Replaces",        "replaces");
@@ -47,6 +49,19 @@ lazy_static! {
         m.insert("Build-Essential", "buildEssential");
         m.insert("Build-Ids",       "buildIds");
         m.insert("Comment",         "comment");
+        m.insert("Modaliases",      "modaliases");
+        m.insert("Pmaliases",       "pmaliases");
+
+        m.insert("Origin",          "");    // trivial repeating info
+        m.insert("Bugs",            "");    // trivial repeating info
+        m.insert("SHA1",            "");    // skip, so pkgid will pick up sha256
+        m.insert("Support",         "");
+
+        m.insert("Phased-Update-Percentage",    "phasedUpdatePercentage");
+        m.insert("Original-Vcs-Git",            "originalVcsGit");
+        m.insert("Original-Vcs-Browser",        "originalVcsBrowser");
+        m.insert("Auto-Built-Package",          "autoBuiltPackage");
+        m.insert("Ubuntu-Oem-Kernel-Flavour",   "ubuntuOemKernelFlavour");
 
         m.insert("Ruby-Versions",               "rubyVersions");
         m.insert("Lua-Versions",                "luaVersions");
@@ -317,7 +332,9 @@ fn process_line(line: &str,
         derived_files.output.push_str(line);
     } else if let Some((key, value)) = line.split_once(": ") {
         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
-            derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+            if !mapped_key.is_empty() {
+                derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+            }
 
             if key == "Package" {
                 // Start tracking the new package
@@ -338,6 +355,8 @@ fn process_line(line: &str,
         } else {
             log::warn!("Unexpected key in line -- {}: {}", key, value);
         }
+    } else if line.ends_with(":") {
+        // "X-Cargo-Built-Using:" no space and value part, so the above split_once failed
     } else {
         log::warn!("Unexpected line format: {}", line);
     }
