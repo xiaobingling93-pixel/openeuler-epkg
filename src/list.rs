@@ -62,50 +62,44 @@ impl PackageManager {
         // Load installed packages first
         self.load_installed_packages()?;
 
-        // Collect package items using streaming approach
-        let mut package_items = self.collect_package_items_streaming(&scope, pattern)?;
+        let mut packages_found_overall = 0;
 
-        if package_items.is_empty() {
-            println!("No packages found matching pattern '{}' in scope {:?}", pattern, scope);
-            return Ok(());
+        match scope {
+            ListScope::Installed => {
+                packages_found_overall += self.process_installed_packages(pattern, false, "Installed Packages")?;
+            },
+            ListScope::Upgradable => {
+                packages_found_overall += self.process_installed_packages(pattern, true, "Upgradable Packages")?;
+            },
+            ListScope::Available => {
+                packages_found_overall += self.process_available_packages(pattern, "Available Packages (not installed)")?;
+            },
+            ListScope::All => {
+                // Display installed packages first
+                let installed_count = self.process_installed_packages(pattern, false, "Installed Packages")?;
+                packages_found_overall += installed_count;
+
+                // Then display available packages
+                let available_count = self.process_available_packages(pattern, "Available Packages (not installed)")?;
+                packages_found_overall += available_count;
+            }
         }
 
-        // Sort by package name for consistent output
-        package_items.sort_by(|a, b| a.pkgname.cmp(&b.pkgname));
-
-        // Display results
-        self.display_package_list(&package_items)?;
+        if packages_found_overall > 0 {
+            println!("\nTotal: {} packages", packages_found_overall);
+        } else {
+            println!("No packages found matching pattern '{}' in scope {:?}.", pattern, scope);
+        }
 
         Ok(())
     }
 
-    /// Collect package items using efficient streaming approach
-    /// Processes installed and available packages separately to avoid memory bloat
-    fn collect_package_items_streaming(&mut self, scope: &ListScope, pattern: &str) -> Result<Vec<PackageListItem>> {
-        let mut items = Vec::new();
 
-        match scope {
-            ListScope::Installed => {
-                self.process_installed_packages(&mut items, pattern, false)?;
-            },
-            ListScope::Upgradable => {
-                self.process_installed_packages(&mut items, pattern, true)?;
-            },
-            ListScope::Available => {
-                self.process_available_packages(&mut items, pattern)?;
-            },
-            ListScope::All => {
-                // Process both installed and available packages
-                self.process_installed_packages(&mut items, pattern, false)?;
-                self.process_available_packages(&mut items, pattern)?;
-            }
-        }
+    /// Stream through installed packages, applying filtering and upgrade checking, then sorts and displays them.
+    /// Returns the number of packages found and processed.
+    fn process_installed_packages(&mut self, pattern: &str, upgradable_only: bool, list_title: &str) -> Result<usize> {
+        let mut local_items = Vec::new();
 
-        Ok(items)
-    }
-
-    /// Stream through installed packages, applying filtering and upgrade checking
-    fn process_installed_packages(&mut self, items: &mut Vec<PackageListItem>, pattern: &str, upgradable_only: bool) -> Result<()> {
         // Collect keys and info to avoid borrowing conflicts
         let installed_data: Vec<(String, InstalledPackageInfo)> = self.installed_packages
             .iter()
@@ -116,7 +110,10 @@ impl PackageManager {
             // Extract package name from pkgkey
             let pkgname = match crate::mmio::pkgkey2pkgname(&pkgkey) {
                 Ok(name) => name,
-                Err(_) => continue, // Skip invalid pkgkeys
+                Err(_) => {
+                    log::debug!("Skipping invalid pkgkey: {}", pkgkey);
+                    continue;
+                }
             };
 
             // Apply pattern filtering early
@@ -134,16 +131,20 @@ impl PackageManager {
 
             // Create package item for this installed package
             match self.create_installed_package_item(&pkgname, &pkgkey, &installed_info) {
-                Ok(item) => items.push(item),
+                Ok(item) => local_items.push(item),
                 Err(e) => log::warn!("Failed to create item for installed package {}: {}", pkgname, e),
             }
         }
 
-        Ok(())
+        let count = local_items.len();
+        self.sort_and_display_packages(&mut local_items, list_title)?;
+        Ok(count)
     }
 
-    /// Stream through available packages, applying filtering and excluding installed ones
-    fn process_available_packages(&mut self, items: &mut Vec<PackageListItem>, pattern: &str) -> Result<()> {
+    /// Stream through available packages, applying filtering, excluding installed ones, then sorts and displays them.
+    /// Returns the number of packages found and processed.
+    fn process_available_packages(&mut self, pattern: &str, list_title: &str) -> Result<usize> {
+        let mut local_items = Vec::new();
         let repodata_indice = crate::models::repodata_indice();
 
         for repo_index in repodata_indice.values() {
@@ -165,7 +166,7 @@ impl PackageManager {
 
                                 // Create package item for this available package
                                 match self.create_available_package_item(&pkg) {
-                                    Ok(item) => items.push(item),
+                                    Ok(item) => local_items.push(item),
                                     Err(e) => log::warn!("Failed to create item for available package {}: {}", pkgname, e),
                                 }
                             }
@@ -176,34 +177,51 @@ impl PackageManager {
             }
         }
 
+        let count = local_items.len();
+        self.sort_and_display_packages(&mut local_items, list_title)?;
+        Ok(count)
+    }
+
+    /// Helper to sort and display a list of package items.
+    /// Takes a mutable reference to `package_items` to sort them in place.
+    /// `list_title` is used to print a header before displaying the list.
+    fn sort_and_display_packages(&self, package_items: &mut Vec<PackageListItem>, _list_title: &str) -> Result<()> {
+        // _list_title is intentionally unused for now
+
+        if package_items.is_empty() {
+            return Ok(());
+        }
+
+        package_items.sort_by(|a, b| a.pkgname.cmp(&b.pkgname));
+        self.display_package_list(package_items)?;
         Ok(())
     }
 
     /// Create a PackageListItem for an installed package
     fn create_installed_package_item(&mut self, pkgname: &str, pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<PackageListItem> {
-        // Try to get package details from local store first
-        let (version, arch, summary, repodata_name) = match self.map_pkgline2package(&installed_info.pkgline) {
-            Ok(local_pkg) => (
-                local_pkg.version.clone(),
-                local_pkg.arch.clone(),
-                local_pkg.summary.clone(),
-                "local".to_string(),
+        // Try to get package details from repository using pkgkey first
+        let (version, arch, summary, repodata_name) = match self.map_pkgkey2package(pkgkey) {
+            Ok(Some(pkg)) => (
+                pkg.version.clone(),
+                pkg.arch.clone(),
+                pkg.summary.clone(),
+                pkg.repodata_name.clone(),
             ),
-            Err(_) => {
-                // Fallback: try to get specific package from repository using pkgkey
-                match self.map_pkgkey2package(pkgkey) {
-                    Ok(Some(pkg)) => (
-                        pkg.version.clone(),
-                        pkg.arch.clone(),
-                        pkg.summary.clone(),
-                        pkg.repodata_name.clone(),
+            Ok(None) | Err(_) => {
+                // Fallback: try to get package details from local store using pkgline
+                match self.map_pkgline2package(&installed_info.pkgline) {
+                    Ok(local_pkg) => (
+                        local_pkg.version.clone(),
+                        local_pkg.arch.clone(),
+                        local_pkg.summary.clone(),
+                        "local".to_string(), // If found via pkgline, assume it's 'local' or specific to installed context
                     ),
-                    Ok(None) | Err(_) => {
+                    Err(_) => {
                         // Last resort: basic info
                         (
                             "unknown".to_string(),
                             config().common.arch.clone(),
-                            "Package not found in repositories".to_string(),
+                            "Package not found in repositories or local store".to_string(),
                             "orphaned".to_string(),
                         )
                     }
@@ -323,8 +341,8 @@ impl PackageManager {
         }
 
         if !pattern.contains('*') {
-            // No wildcards, substring match (like original behavior)
-            return name.contains(pattern);
+            // No wildcards, exact match
+            return name == pattern;
         }
 
         // Split pattern by '*' to get parts that must be matched in order
@@ -366,16 +384,23 @@ impl PackageManager {
 
     /// Display the package list in a formatted table
     fn display_package_list(&self, items: &[PackageListItem]) -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LEGEND_PRINTED_THIS_INVOCATION: AtomicBool = AtomicBool::new(false);
+
         if items.is_empty() {
             return Ok(());
         }
 
-        // Print status legend (similar to dpkg-query)
-        println!("Installation=Exposed/Installed/Available");
-        println!("| Depth=0-9/Essential/_(not-installed)");
-        println!("|/ Upgrade=Upgradable/ (no-upgrade-available)");
-        println!("||/ Name                            Version                        Arch         Repo                 Description");
-        println!("+++-===============================-==============================-============-====================-========================================");
+        // If LEGEND_PRINTED_THIS_INVOCATION was false, swap sets it to true and returns false.
+        // So, if it returns false, it means this is the first time, and we should print.
+        if !LEGEND_PRINTED_THIS_INVOCATION.swap(true, Ordering::SeqCst) {
+            // Print status legend (similar to dpkg-query)
+            println!("Installation=Exposed/Installed/Available");
+            println!("| Depth=0-9/Essential/_(not-installed)");
+            println!("|/ Upgrade=Upgradable/ (no-upgrade-available)");
+            println!("||/ Name                           Version                        Arch         Repo               Description");
+            println!("+++-==============================-==============================-============-==================-========================================");
+        }
 
         // Print package items
         for item in items {
@@ -385,16 +410,16 @@ impl PackageManager {
                 item.summary.clone()
             };
 
-            println!("{:<3} {:<31} {:<30} {:<12} {:<20} {}",
-                    item.status,
-                    item.pkgname,
-                    item.version,
-                    item.arch,
-                    item.repodata_name,
-                    summary);
+            println!("{:<3} {:<30} {:<30} {:<12} {:<18} {}",
+                     item.status,
+                     item.pkgname,
+                     item.version,
+                     item.arch,
+                     item.repodata_name,
+                     summary);
         }
 
-        println!("\nTotal: {} packages", items.len());
+        // println!("\nTotal: {} packages", items.len());
 
         // println!("\nStatus Codes:");
         // println!("  Position 1 - Installation: E=Exposed (in ebin/), I=Installed, A=Available");
@@ -451,11 +476,11 @@ mod tests {
     fn test_matches_glob_pattern_no_wildcards() {
         let pm = create_test_package_manager();
 
-        // Substring matching when no wildcards
+        // Exact matching when no wildcards
         assert!(pm.matches_glob_pattern("bash", "bash"));
-        assert!(pm.matches_glob_pattern("bash-completion", "bash"));
-        assert!(pm.matches_glob_pattern("mybash", "bash"));
-        assert!(pm.matches_glob_pattern("bash123", "bash"));
+        assert!(!pm.matches_glob_pattern("bash-completion", "bash"));
+        assert!(!pm.matches_glob_pattern("mybash", "bash"));
+        assert!(!pm.matches_glob_pattern("bash123", "bash"));
         assert!(!pm.matches_glob_pattern("bsh", "bash"));
         assert!(!pm.matches_glob_pattern("base", "bash"));
     }

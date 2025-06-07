@@ -25,7 +25,7 @@ Only one scope option can be used at a time. The default scope is `--installed` 
 
 #### Pattern Types
 
-1. **No wildcards**: `bash` - Substring matching (matches "bash", "bash-completion", "mybash")
+1. **No wildcards**: `bash` - Exact match
 2. **Prefix matching**: `bash*` - Matches packages starting with "bash"
 3. **Suffix matching**: `*bash` - Matches packages ending with "bash"
 4. **Contains matching**: `*bash*` - Matches packages containing "bash" anywhere
@@ -37,8 +37,8 @@ Only one scope option can be used at a time. The default scope is `--installed` 
 #### Pattern Examples
 
 ```bash
-# Substring matching (no wildcards)
-epkg list bash          # Matches: bash, bash-completion, mybash
+# Exact matching (no wildcards)
+epkg list bash          # Matches: bash
 
 # Prefix matching
 epkg list bash*         # Matches: bash, bash-completion, bashrc
@@ -206,19 +206,10 @@ A__ python3-dev                     3.11.2-1+b1                   amd64        d
 
 ### Core Components
 
-#### Main Entry Point
-```rust
-pub fn list_packages_with_scope(&mut self, scope: ListScope, pattern: &str) -> Result<()>
-```
-- Coordinates entire listing process using **streaming architecture**
-- Loads installed packages once
-- Delegates to streaming data collection methods
-- Sorts and displays results
-
 #### Streaming Data Collection Pipeline
 The new architecture uses a **two-step streaming approach** for optimal performance:
 
-1. **Streaming Collection**: `collect_package_items_streaming(scope, pattern)`
+1. **Streaming Collection**: `list_packages_with_scope(scope, pattern)`
    - Processes each data source independently
    - Applies pattern filtering **early** during iteration
    - Avoids large intermediate collections
@@ -322,7 +313,7 @@ pub fn map_pkgline2package(&mut self, pkgline: &str) -> Result<Arc<Package>>
 ## Test Coverage
 
 ### Pattern Matching Tests (7 functions)
-- `test_matches_glob_pattern_no_wildcards` - Substring matching
+- `test_matches_glob_pattern_no_wildcards` - Exact matching
 - `test_matches_glob_pattern_prefix` - Prefix patterns (`bash*`)
 - `test_matches_glob_pattern_suffix` - Suffix patterns (`*dev`)
 - `test_matches_glob_pattern_contains` - Contains patterns (`*bash*`)
