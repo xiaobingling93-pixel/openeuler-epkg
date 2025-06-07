@@ -215,6 +215,7 @@ pub struct PackageLine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackageInfo {
     pub pkgline: String,
+    pub arch: String,
     pub depend_depth: u8,
     #[serde(default)]
     pub install_time: u64,

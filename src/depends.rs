@@ -10,9 +10,10 @@ use crate::models::*;
 use crate::parse_requires::*;
 
 impl InstalledPackageInfo {
-    fn new(depth: u8, appbin_flag: bool) -> Self {
+    fn new(depth: u8, appbin_flag: bool, arch: String) -> Self {
         Self {
             pkgline: String::new(),
+            arch,
             install_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -58,7 +59,7 @@ impl PackageManager {
                 for package in packages_list {
                     packages.insert(
                         package.pkgkey.clone(),
-                        InstalledPackageInfo::new(depth, ebin_flag),
+                        InstalledPackageInfo::new(depth, ebin_flag, package.arch),
                     );
                 }
             },
@@ -156,10 +157,10 @@ impl PackageManager {
             if !packages.contains_key(&pkgkey) &&
                 !depend_packages.contains_key(&pkgkey) {
                 match self.load_package_info(&pkgkey) {
-                    Ok(_package) => {
+                    Ok(package) => {
                         depend_packages.insert(
                             pkgkey,
-                            InstalledPackageInfo::new(depth, false),
+                            InstalledPackageInfo::new(depth, false, package.arch.clone()),
                         );
                     }
                     Err(_) => {
@@ -273,7 +274,7 @@ impl PackageManager {
             if !packages.contains_key(pkgkey) && !depend_packages.contains_key(pkgkey) {
                 depend_packages.insert(
                     pkgkey.clone(),
-                    InstalledPackageInfo::new(depth, false),
+                    InstalledPackageInfo::new(depth, false, package.arch),
                 );
             }
         }

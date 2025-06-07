@@ -1,6 +1,6 @@
-use std::collections::HashSet;
 use color_eyre::Result;
 use crate::models::*;
+use std::sync::Arc;
 
 // ======================================================================================
 // `epkg list` - Enhanced Package Listing Command
@@ -62,19 +62,13 @@ impl PackageManager {
         // Load installed packages first
         self.load_installed_packages()?;
 
-        // Collect package names based on scope
-        let package_names = self.collect_package_names_by_scope(&scope)?;
+        // Collect package items using streaming approach
+        let mut package_items = self.collect_package_items_streaming(&scope, pattern)?;
 
-        // Apply pattern filtering
-        let filtered_names = self.apply_pattern_filter(package_names, pattern);
-
-        if filtered_names.is_empty() {
+        if package_items.is_empty() {
             println!("No packages found matching pattern '{}' in scope {:?}", pattern, scope);
             return Ok(());
         }
-
-        // Collect detailed package information
-        let mut package_items = self.collect_package_details(filtered_names, &scope)?;
 
         // Sort by package name for consistent output
         package_items.sort_by(|a, b| a.pkgname.cmp(&b.pkgname));
@@ -85,71 +79,202 @@ impl PackageManager {
         Ok(())
     }
 
-    /// Collect package names based on the specified scope
-    fn collect_package_names_by_scope(&mut self, scope: &ListScope) -> Result<HashSet<String>> {
-        let mut names = HashSet::new();
+    /// Collect package items using efficient streaming approach
+    /// Processes installed and available packages separately to avoid memory bloat
+    fn collect_package_items_streaming(&mut self, scope: &ListScope, pattern: &str) -> Result<Vec<PackageListItem>> {
+        let mut items = Vec::new();
 
         match scope {
             ListScope::Installed => {
-                // Get installed package names by extracting pkgname from pkgkey
-                for pkgkey in self.installed_packages.keys() {
-                    if let Ok(pkgname) = crate::mmio::pkgkey2pkgname(pkgkey) {
-                        names.insert(pkgname);
-                    }
-                }
-            },
-            ListScope::Available => {
-                // Get all available package names, then exclude installed ones
-                let all_available = self.filter_available_pkgnames()?;
-                let installed_names: HashSet<String> = self.installed_packages.keys()
-                    .filter_map(|pkgkey| crate::mmio::pkgkey2pkgname(pkgkey).ok())
-                    .collect();
-
-                names = all_available.difference(&installed_names).cloned().collect();
+                self.process_installed_packages(&mut items, pattern, false)?;
             },
             ListScope::Upgradable => {
-                // Check installed packages for available upgrades
-                // Collect keys first to avoid borrowing conflicts
-                let pkgkeys: Vec<String> = self.installed_packages.keys().cloned().collect();
-                for pkgkey in pkgkeys {
-                    if let Ok(pkgname) = crate::mmio::pkgkey2pkgname(&pkgkey) {
-                        if let Some(installed_info) = self.installed_packages.get(&pkgkey).cloned() {
-                            if self.is_package_upgradable(&pkgname, &installed_info)? {
-                                names.insert(pkgname);
-                            }
-                        }
-                    }
-                }
+                self.process_installed_packages(&mut items, pattern, true)?;
+            },
+            ListScope::Available => {
+                self.process_available_packages(&mut items, pattern)?;
             },
             ListScope::All => {
-                // Combine installed and available
-                let all_available = self.filter_available_pkgnames()?;
-                names.extend(all_available);
+                // Process both installed and available packages
+                self.process_installed_packages(&mut items, pattern, false)?;
+                self.process_available_packages(&mut items, pattern)?;
+            }
+        }
 
-                // Also include installed packages (in case some are not in repos)
-                for pkgkey in self.installed_packages.keys() {
-                    if let Ok(pkgname) = crate::mmio::pkgkey2pkgname(pkgkey) {
-                        names.insert(pkgname);
+        Ok(items)
+    }
+
+    /// Stream through installed packages, applying filtering and upgrade checking
+    fn process_installed_packages(&mut self, items: &mut Vec<PackageListItem>, pattern: &str, upgradable_only: bool) -> Result<()> {
+        // Collect keys and info to avoid borrowing conflicts
+        let installed_data: Vec<(String, InstalledPackageInfo)> = self.installed_packages
+            .iter()
+            .map(|(key, info)| (key.clone(), info.clone()))
+            .collect();
+
+        for (pkgkey, installed_info) in installed_data {
+            // Extract package name from pkgkey
+            let pkgname = match crate::mmio::pkgkey2pkgname(&pkgkey) {
+                Ok(name) => name,
+                Err(_) => continue, // Skip invalid pkgkeys
+            };
+
+            // Apply pattern filtering early
+            if !self.matches_glob_pattern(&pkgname, pattern) {
+                continue;
+            }
+
+            // Check upgrade requirement if needed
+            if upgradable_only {
+                let is_upgradable = self.is_package_upgradable(&pkgname, &installed_info).unwrap_or(false);
+                if !is_upgradable {
+                    continue;
+                }
+            }
+
+            // Create package item for this installed package
+            match self.create_installed_package_item(&pkgname, &pkgkey, &installed_info) {
+                Ok(item) => items.push(item),
+                Err(e) => log::warn!("Failed to create item for installed package {}: {}", pkgname, e),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Stream through available packages, applying filtering and excluding installed ones
+    fn process_available_packages(&mut self, items: &mut Vec<PackageListItem>, pattern: &str) -> Result<()> {
+        let repodata_indice = crate::models::repodata_indice();
+
+        for repo_index in repodata_indice.values() {
+            for shard in repo_index.repo_shards.values() {
+                for pkgname in shard.pkgname2ranges.keys() {
+                    // Apply pattern filtering early
+                    if !self.matches_glob_pattern(pkgname, pattern) {
+                        continue;
+                    }
+
+                    // Get package details from repository
+                    match self.map_pkgname2packages(pkgname) {
+                        Ok(packages) => {
+                            for pkg in packages {
+                                // Skip if package is already installed (for Available scope)
+                                if self.installed_packages.contains_key(&pkg.pkgkey) {
+                                    continue;
+                                }
+
+                                // Create package item for this available package
+                                match self.create_available_package_item(&pkg) {
+                                    Ok(item) => items.push(item),
+                                    Err(e) => log::warn!("Failed to create item for available package {}: {}", pkgname, e),
+                                }
+                            }
+                        },
+                        Err(e) => log::warn!("Failed to get package details for {}: {}", pkgname, e),
                     }
                 }
             }
         }
 
-        Ok(names)
+        Ok(())
     }
 
-    /// Get all available package names from repository indices
-    fn filter_available_pkgnames(&self) -> Result<HashSet<String>> {
-        let mut pkgnames = HashSet::new();
-
-        let repodata_indice = crate::models::repodata_indice();
-        for repo_index in repodata_indice.values() {
-            for shard in repo_index.repo_shards.values() {
-                pkgnames.extend(shard.pkgname2ranges.keys().cloned());
+    /// Create a PackageListItem for an installed package
+    fn create_installed_package_item(&mut self, pkgname: &str, pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<PackageListItem> {
+        // Try to get package details from local store first
+        let (version, arch, summary, repodata_name) = match self.map_pkgline2package(&installed_info.pkgline) {
+            Ok(local_pkg) => (
+                local_pkg.version.clone(),
+                local_pkg.arch.clone(),
+                local_pkg.summary.clone(),
+                "local".to_string(),
+            ),
+            Err(_) => {
+                // Fallback: try to get specific package from repository using pkgkey
+                match self.map_pkgkey2package(pkgkey) {
+                    Ok(Some(pkg)) => (
+                        pkg.version.clone(),
+                        pkg.arch.clone(),
+                        pkg.summary.clone(),
+                        pkg.repodata_name.clone(),
+                    ),
+                    Ok(None) | Err(_) => {
+                        // Last resort: basic info
+                        (
+                            "unknown".to_string(),
+                            config().common.arch.clone(),
+                            "Package not found in repositories".to_string(),
+                            "orphaned".to_string(),
+                        )
+                    }
+                }
             }
-        }
+        };
 
-        Ok(pkgnames)
+        let status = self.determine_status_for_installed(pkgname, installed_info)?;
+
+        Ok(PackageListItem {
+            pkgname: pkgname.to_string(),
+            version,
+            arch,
+            repodata_name,
+            summary,
+            status,
+            pkgkey: installed_info.pkgline.clone(),
+            installed_info: Some(installed_info.clone()),
+        })
+    }
+
+    /// Create a PackageListItem for an available package
+    fn create_available_package_item(&self, pkg: &Package) -> Result<PackageListItem> {
+        let status = self.determine_status_for_available(&pkg.pkgname)?;
+
+        Ok(PackageListItem {
+            pkgname: pkg.pkgname.clone(),
+            version: pkg.version.clone(),
+            arch: pkg.arch.clone(),
+            repodata_name: pkg.repodata_name.clone(),
+            summary: pkg.summary.clone(),
+            status,
+            pkgkey: pkg.pkgkey.clone(),
+            installed_info: None,
+        })
+    }
+
+    /// Determine the status string for an installed package
+    fn determine_status_for_installed(&mut self, pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<String> {
+        // Position 1: Installation/Exposure status
+        let pos1 = if installed_info.appbin_flag { 'E' } else { 'I' };
+
+        // Position 2: Depth/Essential status
+        let pos2 = if crate::mmio::is_essential_pkgname(pkgname) {
+            'E'
+        } else {
+            char::from_digit(installed_info.depend_depth as u32, 10).unwrap_or('9')
+        };
+
+        // Position 3: Upgradable status
+        let pos3 = if self.is_package_upgradable(pkgname, installed_info).unwrap_or(false) {
+            'U'
+        } else {
+            ' '
+        };
+
+        Ok(format!("{}{}{}", pos1, pos2, pos3))
+    }
+
+    /// Determine the status string for an available package
+    fn determine_status_for_available(&self, _pkgname: &str) -> Result<String> {
+        // Position 1: Available
+        let pos1 = 'A';
+
+        // Position 2: Not installed
+        let pos2 = '_';
+
+        // Position 3: No upgrade status for non-installed packages
+        let pos3 = ' ';
+
+        Ok(format!("{}{}{}", pos1, pos2, pos3))
     }
 
     /// Check if a package has available upgrades
@@ -162,7 +287,7 @@ impl PackageManager {
 
         for pkg in available_packages {
             // Check if same architecture or compatible
-            if pkg.arch == config().common.arch || pkg.arch.is_empty() {
+            if pkg.arch == installed_info.arch {
                 if self.is_version_newer(&pkg.version, &installed_version) {
                     return Ok(true);
                 }
@@ -188,17 +313,6 @@ impl PackageManager {
     /// Simple version comparison (can be enhanced with proper semver)
     fn is_version_newer(&self, new_version: &str, current_version: &str) -> bool {
         crate::version::is_version_newer(new_version, current_version)
-    }
-
-    /// Apply glob pattern filtering to package names
-    fn apply_pattern_filter(&self, names: HashSet<String>, pattern: &str) -> Vec<String> {
-        if pattern.is_empty() {
-            return names.into_iter().collect();
-        }
-
-        names.into_iter()
-            .filter(|name| self.matches_glob_pattern(name, pattern))
-            .collect()
     }
 
     /// Check if a name matches a glob pattern
@@ -250,210 +364,6 @@ impl PackageManager {
         true
     }
 
-    /// Collect detailed package information for display
-    fn collect_package_details(&mut self, package_names: Vec<String>, scope: &ListScope) -> Result<Vec<PackageListItem>> {
-        let mut items = Vec::new();
-
-        for pkgname in package_names {
-            // Get all available packages with this name
-            let packages = self.map_pkgname2packages(&pkgname)?;
-
-            // Check if this package is installed - clone the info to avoid borrowing conflicts
-            let installed_info = self.find_installed_package_info(&pkgname).cloned();
-
-            if packages.is_empty() {
-                // Package might be installed but not in repos (orphaned)
-                if let Some(info) = &installed_info {
-                    // Try to get package info from local store
-                    match self.map_pkgline2package(&info.pkgline) {
-                        Ok(local_pkg) => {
-                            let status = self.determine_status_for_installed(&pkgname, info)?;
-                            let item = PackageListItem {
-                                pkgname: local_pkg.pkgname.clone(),
-                                version: local_pkg.version.clone(),
-                                arch: local_pkg.arch.clone(),
-                                repodata_name: "local".to_string(),
-                                summary: local_pkg.summary.clone(),
-                                status,
-                                pkgkey: info.pkgline.clone(),
-                                installed_info: Some(info.clone()),
-                            };
-                            items.push(item);
-                        },
-                        Err(e) => {
-                            log::warn!("Failed to load local package info for {}: {}", info.pkgline, e);
-                            // Fallback to basic info
-                            let status = self.determine_status_for_installed(&pkgname, info)?;
-                            let item = PackageListItem {
-                                pkgname: pkgname.clone(),
-                                version: "unknown".to_string(),
-                                arch: config().common.arch.clone(),
-                                repodata_name: "orphaned".to_string(),
-                                summary: "Package not found in repositories".to_string(),
-                                status,
-                                pkgkey: info.pkgline.clone(),
-                                installed_info: Some(info.clone()),
-                            };
-                            items.push(item);
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Track if we found the exact installed package variant in repos
-            let mut found_installed_variant = false;
-
-            // Process each available package variant
-            for pkg in packages {
-                // Filter by architecture
-                if !pkg.arch.is_empty() && pkg.arch != config().common.arch {
-                    continue;
-                }
-
-                // Check if this specific package variant is installed
-                let specific_installed_info = self.installed_packages.get(&pkg.pkgkey).cloned();
-                let effective_installed_info = specific_installed_info.or_else(|| {
-                    // Check if this package matches the installed one (same pkgname but different version/pkgkey)
-                    if let Some(ref info) = installed_info {
-                        if pkg.pkgname == pkgname {
-                            Some(info.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                });
-
-                if effective_installed_info.is_some() {
-                    found_installed_variant = true;
-                }
-
-                // Apply scope filtering at the item level
-                let should_include = match scope {
-                    ListScope::Installed => effective_installed_info.is_some(),
-                    ListScope::Available => effective_installed_info.is_none(),
-                    ListScope::Upgradable => {
-                        if let Some(ref info) = effective_installed_info {
-                            self.is_package_upgradable(&pkgname, info).unwrap_or(false)
-                        } else {
-                            false
-                        }
-                    },
-                    ListScope::All => true,
-                };
-
-                if should_include {
-                    let status = if let Some(ref info) = effective_installed_info {
-                        self.determine_status_for_installed(&pkg.pkgname, info)?
-                    } else {
-                        self.determine_status_for_available(&pkg.pkgname)?
-                    };
-
-                    let item = PackageListItem {
-                        pkgname: pkg.pkgname.clone(),
-                        version: pkg.version.clone(),
-                        arch: pkg.arch.clone(),
-                        repodata_name: pkg.repodata_name.clone(),
-                        summary: pkg.summary.clone(),
-                        status,
-                        pkgkey: pkg.pkgkey.clone(),
-                        installed_info: effective_installed_info,
-                    };
-                    items.push(item);
-                }
-            }
-
-            // If we have an installed package but didn't find its exact variant in repos,
-            // add the locally installed version as a separate entry
-            if let Some(info) = &installed_info {
-                if !found_installed_variant && matches!(scope, ListScope::Installed | ListScope::All) {
-                    match self.map_pkgline2package(&info.pkgline) {
-                        Ok(local_pkg) => {
-                            let status = self.determine_status_for_installed(&pkgname, info)?;
-                            let item = PackageListItem {
-                                pkgname: local_pkg.pkgname.clone(),
-                                version: local_pkg.version.clone(),
-                                arch: local_pkg.arch.clone(),
-                                repodata_name: "local".to_string(),
-                                summary: local_pkg.summary.clone(),
-                                status,
-                                pkgkey: info.pkgline.clone(),
-                                installed_info: Some(info.clone()),
-                            };
-                            items.push(item);
-                        },
-                        Err(e) => {
-                            log::warn!("Failed to load local package info for {}: {}", info.pkgline, e);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(items)
-    }
-
-    /// Find installed package info by package name
-    /// TODO: this is loop-in-loop, so not effiecient
-    /// TODO: this assumes no duplicate pkgnames in an env
-    fn find_installed_package_info(&self, pkgname: &str) -> Option<&InstalledPackageInfo> {
-        for (pkgkey, info) in &self.installed_packages {
-            if let Ok(installed_pkgname) = crate::mmio::pkgkey2pkgname(pkgkey) {
-                if installed_pkgname == pkgname {
-                    return Some(info);
-                }
-            }
-        }
-        None
-    }
-
-    /// Determine the status string for an installed package
-    fn determine_status_for_installed(&mut self, pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<String> {
-        // Position 1: Installation/Exposure status
-        let pos1 = if installed_info.appbin_flag { 'E' } else { 'I' };
-
-        // Position 2: Depth/Essential status
-        let pos2 = if crate::mmio::is_essential_pkgname(pkgname) {
-            'E'
-        } else {
-            char::from_digit(installed_info.depend_depth as u32, 10).unwrap_or('9')
-        };
-
-        // Position 3: Upgradable status
-        let pos3 = if self.is_package_upgradable(pkgname, installed_info).unwrap_or(false) {
-            'U'
-        } else {
-            ' '
-        };
-
-        Ok(format!("{}{}{}", pos1, pos2, pos3))
-    }
-
-    /// Determine the status string for an available package
-    fn determine_status_for_available(&self, _pkgname: &str) -> Result<String> {
-        // Position 1: Available
-        let pos1 = 'A';
-
-        // Position 2: Not installed
-        let pos2 = '_';
-
-        // Position 3: No upgrade status for non-installed packages
-        let pos3 = ' ';
-
-        Ok(format!("{}{}{}", pos1, pos2, pos3))
-    }
-
-    /// Legacy determine_status method for backward compatibility
-    fn determine_status(&mut self, pkgname: &str, installed_info: Option<&InstalledPackageInfo>) -> Result<String> {
-        if let Some(info) = installed_info {
-            self.determine_status_for_installed(pkgname, info)
-        } else {
-            self.determine_status_for_available(pkgname)
-        }
-    }
-
     /// Display the package list in a formatted table
     fn display_package_list(&self, items: &[PackageListItem]) -> Result<()> {
         if items.is_empty() {
@@ -494,16 +404,30 @@ impl PackageManager {
         Ok(())
     }
 
-    /// Legacy function for backward compatibility
-    pub fn list_packages(&mut self, glob_pattern: &str) -> Result<()> {
-        self.list_packages_with_scope(ListScope::Installed, glob_pattern)
+    /// Get a specific package by pkgkey from repositories
+    /// First calls map_pkgname2packages() then selects the package matching pkgkey
+    fn map_pkgkey2package(&mut self, pkgkey: &str) -> Result<Option<Arc<Package>>> {
+        // Extract package name from pkgkey
+        let pkgname = crate::mmio::pkgkey2pkgname(pkgkey)?;
+
+        // Get all packages with this name
+        let packages = self.map_pkgname2packages(&pkgname)?;
+
+        // Find the specific package matching the pkgkey
+        for pkg in packages {
+            if pkg.pkgkey == pkgkey {
+                return Ok(Some(Arc::new(pkg)));
+            }
+        }
+
+        Ok(None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     // Helper function to create a dummy PackageManager for testing
     fn create_test_package_manager() -> PackageManager {
@@ -690,36 +614,5 @@ mod tests {
             &"java-11-openjdk-headless",
             &"java-17-openjdk-headless"
         ]);
-    }
-
-    #[test]
-    fn test_apply_pattern_filter() {
-        let pm = create_test_package_manager();
-        let mut packages = HashSet::new();
-        packages.insert("bash".to_string());
-        packages.insert("bash-completion".to_string());
-        packages.insert("java-openjdk".to_string());
-        packages.insert("python".to_string());
-        packages.insert("zsh".to_string());
-
-        // Test empty pattern
-        let result = pm.apply_pattern_filter(packages.clone(), "");
-        assert_eq!(result.len(), 5);
-
-        // Test substring pattern
-        let result = pm.apply_pattern_filter(packages.clone(), "bash");
-        let mut result = result;
-        result.sort();
-        assert_eq!(result, vec!["bash", "bash-completion"]);
-
-        // Test wildcard pattern
-        let result = pm.apply_pattern_filter(packages.clone(), "*java*");
-        assert_eq!(result, vec!["java-openjdk"]);
-
-        // Test prefix pattern
-        let result = pm.apply_pattern_filter(packages.clone(), "bash*");
-        let mut result = result;
-        result.sort();
-        assert_eq!(result, vec!["bash", "bash-completion"]);
     }
 }

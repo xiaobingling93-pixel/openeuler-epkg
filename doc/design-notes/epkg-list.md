@@ -66,8 +66,8 @@ epkg list java*jdk*     # Matches: java-8-openjdk, java-11-openjdk-headless
 
 ### Available Packages
 - **Source**: Repository indices packages.idx (`pkgname2ranges.keys()` from all RepoShard instances)
-- **Access**: `filter_available_pkgnames()` method
-- **Format**: `HashSet<String>` of package names from repository metadata
+- **Access**: Streaming iteration through repository shards
+- **Format**: Direct iteration over package names from repository metadata
 - **Performance**: Only essential metadata loaded for list command
 
 ### Package Details
@@ -77,6 +77,39 @@ epkg list java*jdk*     # Matches: java-8-openjdk, java-11-openjdk-headless
 - **Caching**: Both pkgname2package and pkgline2package caches implemented
 
 ## Performance Optimizations
+
+### Streaming Architecture
+The implementation uses a **two-step streaming approach** that eliminates memory bloat:
+
+#### OLD: Inefficient Batch Processing
+```rust
+// Collect ALL package names first (memory intensive)
+let package_names = self.collect_package_names_by_scope(&scope)?;
+// Filter ALL names (large intermediate collections)
+let filtered_names = self.apply_pattern_filter(package_names, pattern);
+// Complex mixed logic for details
+let package_items = self.collect_package_details(filtered_names, &scope)?;
+```
+
+#### NEW: Efficient Streaming Processing
+```rust
+match scope {
+    ListScope::Installed => self.process_installed_packages(&mut items, pattern, false)?,
+    ListScope::Available => self.process_available_packages(&mut items, pattern)?,
+    ListScope::Upgradable => self.process_installed_packages(&mut items, pattern, true)?,
+    ListScope::All => {
+        self.process_installed_packages(&mut items, pattern, false)?;
+        self.process_available_packages(&mut items, pattern)?;
+    }
+}
+```
+
+### Memory Efficiency Benefits
+- **No Large Collections**: Eliminated intermediate `HashSet<String>` collections
+- **Early Filtering**: Pattern matching applied during iteration, not after
+- **Streaming Output**: Package items created and added immediately
+- **Separated Concerns**: Clean separation between installed and available logic
+- **Reduced Complexity**: No mixed-mode processing logic
 
 ### Conditional Data Loading
 The list command implements performance optimizations by skipping expensive data structures:
@@ -177,33 +210,46 @@ A__ python3-dev                     3.11.2-1+b1                   amd64        d
 ```rust
 pub fn list_packages_with_scope(&mut self, scope: ListScope, pattern: &str) -> Result<()>
 ```
-- Coordinates entire listing process
-- Handles scope filtering and pattern matching
-- Manages data collection and display formatting
+- Coordinates entire listing process using **streaming architecture**
+- Loads installed packages once
+- Delegates to streaming data collection methods
+- Sorts and displays results
 
-#### Data Collection Pipeline
-1. **Load installed packages**: `self.load_installed_packages()`
-2. **Collect package names by scope**: `collect_package_names_by_scope()`
-3. **Apply pattern filtering**: `apply_pattern_filter()`
-4. **Collect detailed information**: `collect_package_details()`
-5. **Format and display**: `display_package_list()`
+#### Streaming Data Collection Pipeline
+The new architecture uses a **two-step streaming approach** for optimal performance:
 
-#### Pattern Matching Engine
+1. **Streaming Collection**: `collect_package_items_streaming(scope, pattern)`
+   - Processes each data source independently
+   - Applies pattern filtering **early** during iteration
+   - Avoids large intermediate collections
+   - Reduces memory usage significantly
+
+2. **Scope-Specific Processing**:
+   - **Installed/Upgradable**: `process_installed_packages()` - streams through installed packages
+   - **Available**: `process_available_packages()` - streams through repository indices
+   - **All**: Combines both streaming processes
+
+#### Streaming Processing Methods
+
+**For Installed Packages**:
 ```rust
-fn matches_glob_pattern(&self, name: &str, pattern: &str) -> bool
+fn process_installed_packages(&mut self, items: &mut Vec<PackageListItem>, pattern: &str, upgradable_only: bool) -> Result<()>
 ```
-- **Algorithm**: Split pattern by '*', match segments in order
-- **Edge cases**: Handles empty patterns, consecutive '*', leading/trailing '*'
-- **Performance**: Early termination on non-matches
+- **Data Source**: `self.installed_packages` (single load per command)
+- **Streaming**: Iterates directly over installed packages
+- **Early Filtering**: Pattern matching applied during iteration
+- **Upgrade Detection**: Optional filtering for upgradable packages only
+- **Memory Efficient**: No intermediate collections
 
-#### Scope Collection Logic
+**For Available Packages**:
 ```rust
-fn collect_package_names_by_scope(&mut self, scope: &ListScope) -> Result<HashSet<String>>
+fn process_available_packages(&mut self, items: &mut Vec<PackageListItem>, pattern: &str) -> Result<()>
 ```
-- **Installed**: Extract pkgnames from installed_packages.keys()
-- **Available**: All repository packages minus installed ones
-- **Upgradable**: Check installed packages for newer versions
-- **All**: Union of installed and available packages
+- **Data Source**: Repository shard indices (`pkgname2ranges.keys()`)
+- **Streaming**: Iterates through all repository shards
+- **Early Filtering**: Pattern matching + installation status checks during iteration
+- **Architecture Filtering**: Skip incompatible architectures
+- **Exclusion**: Automatically excludes already installed packages
 
 ### Upgrade Detection System
 
