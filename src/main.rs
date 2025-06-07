@@ -18,6 +18,7 @@ mod init;
 mod path;
 mod repo;
 mod mmio;
+mod package;
 mod packages_stream;
 mod deb_repo;
 mod rpm_repo;

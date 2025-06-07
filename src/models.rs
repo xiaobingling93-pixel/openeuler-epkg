@@ -83,9 +83,14 @@ pub struct Package {
     #[serde(default)]
     pub location: String,
 
+    // caHash is only available in installed epkg_store/fs/package.txt,
+    // when the struct is loaded by map_pkgline2package()
     #[serde(default)]
     #[serde(rename = "caHash")]
     pub ca_hash: Option<String>,
+
+    // Apk only has sha1sum; other formats only have sha256sum
+    // Whatever available will be used as pkgid to compose pkgkey
     #[serde(default)]
     pub sha256sum: Option<String>,
     #[serde(default)]
@@ -183,15 +188,6 @@ pub struct FileInfo {
     pub size: u64,
 }
 
-// parsed from pkgline
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct PackageLine {
-    pub ca_hash: String,
-    pub pkgname: String,
-    pub version: String,
-}
-
 /*
     # ${HOME}/.epkg/envs/main/generations/current/installed-packages.json
     {
@@ -216,11 +212,26 @@ pub struct PackageLine {
 pub struct InstalledPackageInfo {
     pub pkgline: String,
     pub arch: String,
-    pub depend_depth: u8,
+    pub depend_depth: u16,
     #[serde(default)]
     pub install_time: u64,
     #[serde(default)]
     pub appbin_flag: bool,
+    #[serde(default)] // Default to empty Vec if missing during deserialization
+    pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
+}
+
+impl InstalledPackageInfo {
+    pub fn new(pkgline: String, arch: String, depend_depth: u16, appbin_flag: bool) -> Self {
+        Self {
+            pkgline,
+            arch,
+            depend_depth,
+            install_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            appbin_flag,
+            rdepends: Vec::new(), // Initialize rdepends as empty
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -259,10 +270,10 @@ pub struct EnvConfig {
     // Only for importing from exported config file
     #[serde(skip_serializing)]
     #[serde(default)]
-    pub packages: HashMap<String, InstalledPackageInfo>,
+    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey
     #[serde(skip_serializing)]
     #[serde(default)]
-    pub pypi_packages: HashMap<String, InstalledPackageInfo>,
+    pub pypi_packages: HashMap<String, InstalledPackageInfo>,   // key is pkgkey
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
@@ -576,7 +587,7 @@ pub struct PackageManager {
     pub appbin_source: HashSet<String>,
 
     // loaded from env installed-packages.json
-    pub installed_packages: HashMap<String, InstalledPackageInfo>,
+    pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey
 
     pub mirrors: HashMap<String, Mirror>,   // key: mirror id
 

@@ -5,7 +5,7 @@ use std::env;
 
 use std::path::PathBuf;
 use std::collections::HashMap;
-use color_eyre::eyre::{self, bail, Result, WrapErr};
+use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::*;
 use log;
@@ -18,21 +18,6 @@ pub fn load_package_json(file_path: &str) -> Result<Package> {
         .with_context(|| format!("Failed to parse JSON from file: {}", file_path))?;
 
     Ok(package)
-}
-
-// Function to parse a pkgline into a PackageLine
-pub fn parse_package_line(pkgline: &str) -> Result<PackageLine> {
-    let parts: Vec<&str> = pkgline.split("__").collect();
-    if parts.len() != 3 {
-        bail!("Invalid package line format: {}", pkgline);
-    }
-
-    let spec = PackageLine {
-        ca_hash: parts[0].to_string(),
-        pkgname: parts[1].to_string(),
-        version: parts[2].to_string(),
-    };
-    Ok(spec)
 }
 
 /// Load channel/mirrors.yaml

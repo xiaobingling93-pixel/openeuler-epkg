@@ -8,6 +8,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use color_eyre::eyre;
 use crate::models::*;
 use crate::repo::RepoRevise;
+use crate::package;
 
 #[derive(Debug)]
 pub struct FileMapper {
@@ -230,19 +231,6 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<
     Ok(pkgname2ranges)
 }
 
-// Note: pkgkey cannot include the user friendly "version" due to Dependency
-// only contains package "pkgname" and "ca_hash"
-pub fn format_pkgkey(pkgname: &str, pkgid: &str) -> String {
-    format!("{}__{:8}", pkgname, pkgid)
-}
-
-pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {
-    match pkgkey.split_once("__") {
-        Some((pkgname, _)) if !pkgname.is_empty() => Ok(pkgname.to_string()),
-        _ => Err(eyre::eyre!("Invalid pkgkey format: {}", pkgkey)),
-    }
-}
-
 pub fn deserialize_package(paragraph: &str) -> Result<Package> {
     let mut package = Package {
         pkgname: String::new(),
@@ -253,9 +241,16 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         build_time: None,
         source: None,
         location: String::new(),
+
+        // caHash is only available in installed epkg_store/fs/package.txt,
+        // when the struct is loaded by map_pkgline2package()
         ca_hash: None,
+
+        // Apk only has sha1sum; other formats only have sha256sum
+        // Whatever available will be used as pkgid to compose pkgkey
         sha256sum: None,
         sha1sum: None,
+
         depends: Vec::new(),
         requires_pre: Vec::new(),
         requires: Vec::new(),
@@ -325,11 +320,11 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
         "buildTime"         => if let Ok(time)      = value.parse() { package.build_time = Some(time); },
         "sha256"            => {
             package.sha256sum = Some(value.to_string());
-            package.pkgkey = format_pkgkey(&package.pkgname, value);
+            package.pkgkey = package::format_pkgkey(&package.pkgname, value);
         },
         "sha1"              => {
             package.sha1sum = Some(value.to_string());
-            package.pkgkey = format_pkgkey(&package.pkgname, value);
+            package.pkgkey = package::format_pkgkey(&package.pkgname, value);
         },
         "tag"               => package.tag          = Some(value.to_string()),
         "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),

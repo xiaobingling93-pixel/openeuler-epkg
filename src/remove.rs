@@ -58,11 +58,11 @@ impl PackageManager {
             .cloned()
             .collect();
         if duplicates.is_empty() {
-            eprintln!("Warning: No match for installed packages:");
+            println!("Packages are not installed:");
             for package_name in package_specs.clone() {
-                eprintln!("- {}", package_name);
+                println!("- {}", package_name);
             }
-            return Err(eyre::eyre!("Error: Unable to find packages"));
+            return Ok(());
         }
         log::debug!("Found duplicate packages: {:?}", duplicates);
 
@@ -120,7 +120,12 @@ impl PackageManager {
             })
             .map(|(key, value)| (key.clone(), (*value).clone()))
             .collect();
-        self.collect_recursive_depends(&mut packages_to_keep)?;
+        let channel_config = self.channels_config.get(&config().common.env)
+            .ok_or_else(|| eyre!(
+                "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
+                config().common.env
+            ))?;
+        self.collect_recursive_depends(&mut packages_to_keep, channel_config.format)?;
         log::debug!("Packages to keep: {:?}", packages_to_keep.keys());
 
         let installed_to_remove: Vec<String> = self.installed_packages
@@ -147,6 +152,11 @@ impl PackageManager {
             }
         } else {
             println!("No packages to remove.");
+        }
+
+        // Exit early if in simulate mode, but only after all computations are done
+        if config().common.simulate {
+            return Ok(());
         }
 
         // Step 6: Remove package files

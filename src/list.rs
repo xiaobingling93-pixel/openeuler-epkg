@@ -108,7 +108,7 @@ impl PackageManager {
 
         for (pkgkey, installed_info) in installed_data {
             // Extract package name from pkgkey
-            let pkgname = match crate::mmio::pkgkey2pkgname(&pkgkey) {
+            let pkgname = match crate::package::pkgkey2pkgname(&pkgkey) {
                 Ok(name) => name,
                 Err(_) => {
                     log::debug!("Skipping invalid pkgkey: {}", pkgkey);
@@ -297,7 +297,7 @@ impl PackageManager {
 
     /// Check if a package has available upgrades
     fn is_package_upgradable(&mut self, pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<bool> {
-        // Get installed version from pkgline using parse_package_line
+        // Get installed version from pkgline using parse_pkgline
         let installed_version = self.extract_version_from_installed_info(installed_info)?;
 
         // Get available packages with the same name
@@ -315,10 +315,10 @@ impl PackageManager {
         Ok(false)
     }
 
-    /// Extract version from installed package info using parse_package_line
+    /// Extract version from installed package info using parse_pkgline
     fn extract_version_from_installed_info(&self, installed_info: &InstalledPackageInfo) -> Result<String> {
         // Parse the pkgline to get the actual version
-        match crate::io::parse_package_line(&installed_info.pkgline) {
+        match crate::package::parse_pkgline(&installed_info.pkgline) {
             Ok(package_line) => Ok(package_line.version),
             Err(e) => {
                 log::warn!("Failed to parse package line '{}': {}", installed_info.pkgline, e);
@@ -433,7 +433,7 @@ impl PackageManager {
     /// First calls map_pkgname2packages() then selects the package matching pkgkey
     fn map_pkgkey2package(&mut self, pkgkey: &str) -> Result<Option<Arc<Package>>> {
         // Extract package name from pkgkey
-        let pkgname = crate::mmio::pkgkey2pkgname(pkgkey)?;
+        let pkgname = crate::package::pkgkey2pkgname(pkgkey)?;
 
         // Get all packages with this name
         let packages = self.map_pkgname2packages(&pkgname)?;

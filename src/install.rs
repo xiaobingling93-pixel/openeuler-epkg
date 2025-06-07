@@ -12,6 +12,7 @@ use color_eyre::eyre::{self, Result, Context};
 use crate::models::*;
 use crate::utils::*;
 use crate::dirs::find_env_root;
+use crate::package;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgkey, info)
@@ -501,7 +502,8 @@ impl PackageManager {
             .collect();
         if packages_to_install.len() == current_installed.len() &&
            packages_to_install.keys().all(|k| current_installed.contains(k)) {
-           return Err(eyre::eyre!("All packages input have already installed"));
+           println!("All packages input have already installed");
+           return Ok(());
         }
         if current_installed.len() > 0 {
             println!("These packages have already been installed: {}", current_installed.join(","));
@@ -509,10 +511,18 @@ impl PackageManager {
 
         self.record_appbin_source(&mut packages_to_install)?;
         self.collect_essential_packages(&mut packages_to_install)?;
-        self.collect_recursive_depends(&mut packages_to_install)?;
+        let current_env_name_ref = &config().common.env;
+        let channel_config = self.channels_config.get(current_env_name_ref)
+            .ok_or_else(|| eyre::eyre!(
+                "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
+                current_env_name_ref
+            ))?;
+        let repo_format = channel_config.format;
+        self.collect_recursive_depends(&mut packages_to_install, repo_format)?;
         remove_duplicates(&self.installed_packages, &mut packages_to_install, "Warning: Some packages are already installed and will be skipped:");
         if packages_to_install.is_empty() {
-            return Err(eyre::eyre!("No packages to install"));
+            println!("No packages to install");
+            return Ok(());
         }
         self.install_pkgkeys(packages_to_install)
     }
@@ -522,14 +532,17 @@ impl PackageManager {
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
         }
+        if config().common.simulate {
+            return Ok(());
+        }
         let files = self.download_packages(&packages_to_install, false)?;
         let pkgidlines = crate::store::unpack_packages(files)?;
         for pkgidline in pkgidlines {
             let (id, line) = pkgidline.split_once("__")
                 .ok_or_else(|| eyre!("Invalid package line format: {}", pkgidline))?;
-            let pkgline = crate::io::parse_package_line(line)
+            let pkgline = package::parse_pkgline(line)
                 .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
-            let pkgkey = crate::mmio::format_pkgkey(&pkgline.pkgname, id);
+            let pkgkey = package::format_pkgkey(&pkgline.pkgname, id);
             packages_to_install.get_mut(&pkgkey)
                 .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?
                 .pkgline = line.to_string();

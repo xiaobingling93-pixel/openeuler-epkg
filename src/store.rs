@@ -78,7 +78,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     }
 
     // Create final package directory name
-    let pkgline = format!("{}__{}__{}", ca_hash_real, pkgname, version);
+    let pkgline = crate::package::format_pkgline(&ca_hash_real, &pkgname, &version);
     let final_dir = dirs().epkg_store.join(&pkgline);
 
     // Move to final location

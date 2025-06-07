@@ -249,7 +249,7 @@ fn process_available_packages(&mut self, items: &mut Vec<PackageListItem>, patte
 fn is_package_upgradable(&mut self, pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<bool>
 ```
 - **Process**:
-  1. Extract installed version from pkgline using `parse_package_line()`
+  1. Extract installed version from pkgline using `parse_pkgline()`
   2. Get available packages with `map_pkgname2packages()`
   3. Compare versions using `crate::version::is_version_newer()`
   4. Check architecture compatibility
