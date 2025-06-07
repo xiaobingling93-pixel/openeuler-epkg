@@ -6,7 +6,6 @@ use color_eyre::eyre::{self, eyre, WrapErr, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use crate::models::*;
-use crate::models::Repodata;
 use crate::repo::{RepoRevise, RepoReleaseItem, url_to_cache_path};
 use regex::Regex;
 use crate::dirs;

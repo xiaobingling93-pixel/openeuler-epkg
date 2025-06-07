@@ -40,7 +40,6 @@ use std::backtrace::Backtrace;
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
-use crate::ipc::*;
 use crate::ipc::privdrop_on_suid;
 use crate::dirs::get_epkg_manager_path;
 use color_eyre::Result;

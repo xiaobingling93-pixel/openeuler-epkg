@@ -1,6 +1,8 @@
 use color_eyre::Result;
 use std::cmp::Ordering;
 use versions::Versioning;
+use crate::models::Package;
+use log;
 
 /// Package version comparison module
 ///
@@ -268,6 +270,42 @@ impl PackageVersion {
 }
 
 /// Check if version `new_version` is newer than `current_version`
+pub fn select_highest_version(packages: Vec<Package>) -> Option<Package> {
+    if packages.is_empty() {
+        return None;
+    }
+
+    let mut highest_package: Option<Package> = None;
+    let mut highest_version_parsed: Option<PackageVersion> = None;
+
+    for package in packages {
+        match PackageVersion::parse(&package.version) {
+            Ok(current_pkg_version) => {
+                if highest_package.is_none() {
+                    highest_package = Some(package);
+                    highest_version_parsed = Some(current_pkg_version);
+                } else {
+                    if let Some(ref highest_pv) = highest_version_parsed {
+                        if current_pkg_version.compare(highest_pv) == Ordering::Greater {
+                            highest_package = Some(package);
+                            highest_version_parsed = Some(current_pkg_version);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to parse version '{}' for package '{}': {}",
+                    package.version,
+                    package.pkgname,
+                    e
+                );
+            }
+        }
+    }
+    highest_package
+}
+
 pub fn is_version_newer(new_version: &str, current_version: &str) -> bool {
     match (PackageVersion::parse(new_version), PackageVersion::parse(current_version)) {
         (Ok(new_ver), Ok(current_ver)) => {
@@ -281,6 +319,7 @@ pub fn is_version_newer(new_version: &str, current_version: &str) -> bool {
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
