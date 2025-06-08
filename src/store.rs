@@ -119,6 +119,9 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P)
         PackageFormat::Apk => {
             crate::apk_pkg::unpack_package(package_file, store_tmp_dir)?
         }
+        PackageFormat::Pacman => {
+            crate::arch_pkg::unpack_package(package_file, store_tmp_dir)?
+        }
         PackageFormat::Epkg => {
             // Handle existing .epkg format
             crate::epkg::unpack_package(package_file, store_tmp_dir)?

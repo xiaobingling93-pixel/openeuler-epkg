@@ -713,6 +713,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
             PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise),
             PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise),
             PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise),
+            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise),
             _ => Err(eyre::eyre!("Unsupported package format: {:?}", revise.format))
         }
     } else {

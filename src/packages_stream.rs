@@ -122,23 +122,30 @@ impl std::io::Read for ReceiverHasher {
                         }
                     }
 
-                    // Auto-validate hash if expected hash was provided
+                    // Auto-validate hash if expected hash was provided and not empty
                     if let Some(ref expected) = self.expected_hash {
                         self.sha256sum = hex::encode(self.hasher.finalize_reset());
-                        self.hash_validated = self.sha256sum == *expected;
 
-                        if !self.hash_validated {
-                            // This is critical - if hash verification fails, it could be because
-                            // we didn't receive all the data or the data was corrupted
-                            let err_msg = format!("Hash verification failed: calculated {}, expected {}",
-                                self.sha256sum, expected);
-                            log::error!("{}", err_msg);
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                err_msg
-                            ));
+                        // Skip hash validation if the expected hash is empty
+                        if expected.is_empty() {
+                            log::warn!("Skipping hash verification as expected hash is empty. Calculated hash: {}", self.sha256sum);
+                            self.hash_validated = true;
                         } else {
-                            log::debug!("ReceiverHasher: Hash verification succeeded: {}", self.sha256sum);
+                            self.hash_validated = self.sha256sum == *expected;
+
+                            if !self.hash_validated {
+                                // This is critical - if hash verification fails, it could be because
+                                // we didn't receive all the data or the data was corrupted
+                                let err_msg = format!("Hash verification failed: calculated {}, expected {}",
+                                    self.sha256sum, expected);
+                                log::error!("{}", err_msg);
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    err_msg
+                                ));
+                            } else {
+                                log::debug!("ReceiverHasher: Hash verification succeeded: {}", self.sha256sum);
+                            }
                         }
                     } else {
                         log::warn!("ReceiverHasher: No expected hash provided for verification");

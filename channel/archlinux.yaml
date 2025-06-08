@@ -5,7 +5,7 @@ versions: # Rolling release
 repos:
   core:
   extra:
-  community:
+  multilib:
 index_url: $mirror/$repo/os/$arch/$repo.files.tar.gz
 
 # Example URLs:
