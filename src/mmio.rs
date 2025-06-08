@@ -298,6 +298,10 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
     if !current_key.is_empty() {
         process_key_value(&mut package, &current_key, &current_value);
     }
+    if package.location.is_empty() { // APKINDEX misses location field
+        package.location = format!("{}-{}.apk", package.pkgname, package.version);
+    }
+    package.pkgkey = package::format_pkgkey(&package.pkgname, &package.version, &package.arch);
 
     Ok(package)
 }
@@ -318,14 +322,8 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
         "size"              => if let Ok(size)      = value.parse() { package.size = size; },
         "installedSize"     => if let Ok(size)      = value.parse() { package.installed_size = size; },
         "buildTime"         => if let Ok(time)      = value.parse() { package.build_time = Some(time); },
-        "sha256"            => {
-            package.sha256sum = Some(value.to_string());
-            package.pkgkey = package::format_pkgkey(&package.pkgname, value);
-        },
-        "sha1"              => {
-            package.sha1sum = Some(value.to_string());
-            package.pkgkey = package::format_pkgkey(&package.pkgname, value);
-        },
+        "sha256"            => package.sha256sum    = Some(value.to_string()),
+        "sha1"              => package.sha1sum      = Some(value.to_string()),
         "tag"               => package.tag          = Some(value.to_string()),
         "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),
         "requires"          => package.requires     = value.split(", ").map(|s| s.to_string()).collect(),

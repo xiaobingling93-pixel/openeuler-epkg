@@ -347,7 +347,14 @@ impl PackageManager {
     ) -> Result<()> {
         log::trace!("Dependencies: {:?}", dependencies);
         for dep in dependencies {
-            let pkgkey = package::format_pkgkey(&dep.pkgname, &dep.ca_hash);
+            // Try to get version and arch from dependency, fallback to defaults if empty
+            let version = if dep.version.is_empty() { "unknown" } else { &dep.version };
+            let arch = if dep.arch.is_empty() {
+                &crate::models::config().common.arch
+            } else {
+                &dep.arch
+            };
+            let pkgkey = package::format_pkgkey(&dep.pkgname, version, arch);
 
             if !packages.contains_key(&pkgkey) &&
                 !depend_packages.contains_key(&pkgkey) {

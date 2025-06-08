@@ -30,10 +30,9 @@ pub fn parse_pkgline(pkgline: &str) -> Result<PackageLine> {
     Ok(spec)
 }
 
-// Note: pkgkey cannot include the user friendly "version" due to Dependency
-// only contains package "pkgname" and "ca_hash"
-pub fn format_pkgkey(pkgname: &str, pkgid: &str) -> String {
-    format!("{}__{:.8}", pkgname, pkgid)
+// pkgkey format: {pkgname}__{version}__{arch}
+pub fn format_pkgkey(pkgname: &str, version: &str, arch: &str) -> String {
+    format!("{}__{}__{}", pkgname, version, arch)
 }
 
 pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {
@@ -41,5 +40,29 @@ pub fn pkgkey2pkgname(pkgkey: &str) -> Result<String> {
         Some((pkgname, _)) if !pkgname.is_empty() => Ok(pkgname.to_string()),
         _ => Err(eyre!("Invalid pkgkey format: {}", pkgkey)),
     }
+}
+
+pub fn pkgkey2version(pkgkey: &str) -> Result<String> {
+    let parts: Vec<&str> = pkgkey.split("__").collect();
+    if parts.len() != 3 {
+        return Err(eyre!("Invalid pkgkey format, expected 3 parts: {}", pkgkey));
+    }
+    Ok(parts[1].to_string())
+}
+
+pub fn pkgkey2arch(pkgkey: &str) -> Result<String> {
+    let parts: Vec<&str> = pkgkey.split("__").collect();
+    if parts.len() != 3 {
+        return Err(eyre!("Invalid pkgkey format, expected 3 parts: {}", pkgkey));
+    }
+    Ok(parts[2].to_string())
+}
+
+pub fn parse_pkgkey(pkgkey: &str) -> Result<(String, String, String)> {
+    let parts: Vec<&str> = pkgkey.split("__").collect();
+    if parts.len() != 3 {
+        return Err(eyre!("Invalid pkgkey format, expected 3 parts: {}", pkgkey));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))
 }
 

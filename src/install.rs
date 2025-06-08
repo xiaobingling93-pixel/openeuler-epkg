@@ -538,11 +538,13 @@ impl PackageManager {
         let files = self.download_packages(&packages_to_install, false)?;
         let pkgidlines = crate::store::unpack_packages(files)?;
         for pkgidline in pkgidlines {
-            let (id, line) = pkgidline.split_once("__")
+            let (_id, line) = pkgidline.split_once("__")
                 .ok_or_else(|| eyre!("Invalid package line format: {}", pkgidline))?;
             let pkgline = package::parse_pkgline(line)
                 .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
-            let pkgkey = package::format_pkgkey(&pkgline.pkgname, id);
+            // Use the arch from config since this is during installation and should match the target arch
+            let arch = &crate::models::config().common.arch;
+            let pkgkey = package::format_pkgkey(&pkgline.pkgname, &pkgline.version, arch);
             packages_to_install.get_mut(&pkgkey)
                 .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?
                 .pkgline = line.to_string();

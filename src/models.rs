@@ -50,6 +50,10 @@ pub struct Mirror {
 pub struct Dependency {
     pub pkgname: String,
     pub ca_hash: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub arch: String,
 }
 
 // Structure to hold begin offset and length for a package
