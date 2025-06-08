@@ -111,7 +111,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
     };
 
     // This could be in last line, so must whole-file-match in the beginning
-    let mut acquire_by_hash = content.contains("Acquire-By-Hash: yes");
+    let acquire_by_hash = content.contains("Acquire-By-Hash: yes");
 
     // Single pass: collect files with their best hash type
     for line in content.lines() {
@@ -283,7 +283,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         .map_err(|e| eyre::eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
 
     // Always use automatic hash validation by passing the expected hash
-    let reader = packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone());
+    let reader = packages_stream::ReceiverHasher::new_with_size(data_rx, revise.hash.clone(), revise.size.try_into().unwrap());
 
     log::debug!("Using XZ decoder for {}", revise.location);
     let mut decoder = liblzma::read::XzDecoder::new(reader);

@@ -40,6 +40,7 @@ pub struct ReceiverHasher {
     expected_hash: Option<String>,
     expected_size: Option<u64>,
     total_bytes_received: u64,
+    total_bytes_sent: usize,
     hash_validated: bool,
 }
 
@@ -54,6 +55,7 @@ impl ReceiverHasher {
             expected_hash: Some(expected_hash),
             expected_size: None,
             total_bytes_received: 0,
+            total_bytes_sent: 0,
             hash_validated: false,
         }
     }
@@ -68,6 +70,7 @@ impl ReceiverHasher {
             expected_hash: Some(expected_hash),
             expected_size: Some(expected_size),
             total_bytes_received: 0,
+            total_bytes_sent: 0,
             hash_validated: false,
         }
     }
@@ -163,8 +166,14 @@ impl std::io::Read for ReceiverHasher {
         buf[..to_copy].copy_from_slice(&self.current_chunk[self.position..self.position + to_copy]);
         self.position += to_copy;
 
-        if to_copy > 0 && to_copy % 1024 == 0 {
-            log::trace!("ReceiverHasher: Copied {} bytes", to_copy);
+        self.total_bytes_sent += to_copy;
+        if to_copy % 1024 == 0 {
+            log::trace!("ReceiverHasher: Copied {} bytes, total recv {} send {}", to_copy, self.total_bytes_received, self.total_bytes_sent);
+        }
+        if let Some(expected_size) = self.expected_size {
+            if self.total_bytes_sent == expected_size as usize {
+                log::debug!("ReceiverHasher: Copied {} bytes, total recv {} send {}", to_copy, self.total_bytes_received, self.total_bytes_sent);
+            }
         }
 
         Ok(to_copy)
@@ -382,8 +391,17 @@ impl PackagesStreamline {
                 Ok(true) // Continue processing
             }
             Err(e) => {
-                log::error!("Decompression error for {}: {}", self.output_path.display(), e);
-                Err(eyre!("Failed to decompress file {}: {}", self.output_path.display(), e))
+                // Check if this is a corrupt xz stream error that we can handle
+                let error_string = e.to_string();
+                if error_string.contains("corrupt xz stream") && self.output_offset > 0 && self.partial_line.is_empty() {
+                    // Ubuntu Packages.xz will trigger this corrupt xz stream on EOF, in which case
+                    // we already have complete packages.txt output, in this case the error can be ignored
+                    log::warn!("Detected corrupt xz stream and we likely have complete output, stopping processing");
+                    return Ok(false);
+                }
+
+                log::error!("Decompression error for {}: {}", self.output_path.display(), error_string);
+                Err(eyre!("Failed to decompress file {}: {}", self.output_path.display(), error_string))
             }
         }
     }
