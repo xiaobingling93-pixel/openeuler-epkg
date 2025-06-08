@@ -20,6 +20,15 @@ use crate::download::submit_download_task;
 use crate::download::DOWNLOAD_MANAGER;
 use crate::mmio;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseStatus {
+    NeedDownload,
+    NeedConvert,
+    NeedUpdate,
+    FineExist,
+    FineRecent,
+}
+
 #[derive(Clone)]
 #[derive(Debug)]
 pub struct RepoRevise {
@@ -105,7 +114,7 @@ impl PackageManager {
         Ok(url)
     }
 
-    pub fn revise_channel_metadata(&mut self) -> Result<()> {
+    pub fn sync_channel_metadata(&mut self) -> Result<()> {
         let channel_config = self.get_channel_config(config().common.env.clone())
             .with_context(|| "Failed to get channel configuration")?;
 
@@ -203,12 +212,12 @@ fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()>
 
     for repo in all_repos {
         let repo = repo.clone();
-        revise_repodata(format.clone(), &repo, &tx)?;
+        sync_repo_metadata(format.clone(), &repo, &tx)?;
     }
 
     // Reader thread (or main thread) waits for all writers to finish
     if config().common.parallel_processing {
-        log::debug!("Waiting for revise_repodata() threads");
+        log::debug!("Waiting for sync_repo_metadata() threads");
 
         drop(tx);
         let mut all_succeed = true;
@@ -268,23 +277,23 @@ fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> 
     Ok(is_recent)
 }
 
-fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool> {
+pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<ReleaseStatus> {
     let expire_secs = config().common.metadata_expire;
 
     if !path.exists() {
-        return Ok(true);
+        return Ok(ReleaseStatus::NeedDownload);
     }
 
     let repo_dir = dirs::get_repo_dir(&repo)
         .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
     let index_path = repo_dir.join("RepoIndex.json");
     if !index_path.exists() {
-        return Ok(true);
+        return Ok(ReleaseStatus::NeedConvert);
     }
 
     // if never auto update
     if expire_secs == 0 && config().subcommand != "update" {
-        return Ok(false);
+        return Ok(ReleaseStatus::FineExist);
     }
 
     // if not always update
@@ -295,17 +304,19 @@ fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<bool
         if is_file_recent(path, duration)? {
             // If release file is recent, check repo index age
             if check_repo_index_age(&index_path, duration)? {
-                return Ok(false);
+                return Ok(ReleaseStatus::FineRecent);
             }
         }
     }
 
-    Ok(true)
+    Ok(ReleaseStatus::NeedUpdate)
 }
 
 pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
-    if !should_refresh_release_file(path, repo)
-        .with_context(|| format!("Failed to check if release file needs refreshing: {}", path.display()))? {
+    let status = should_refresh_release_file(path, repo)
+        .with_context(|| format!("Failed to check if release file needs refreshing: {}", path.display()))?;
+
+    if status == ReleaseStatus::FineExist || status == ReleaseStatus::FineRecent {
         return Ok(());
     }
 
@@ -315,11 +326,8 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     Ok(())
 }
 
-pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
-    let release_path = url_to_cache_path(&repo.index_url)
-        .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
+/// Download/Parse the Release/repomd.xml file for a repository and return the release items
+fn sync_from_release_metadata(format: PackageFormat, repo: &RepoRevise, release_path: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let release_dir = release_path.parent()
         .ok_or_else(|| eyre::eyre!("Failed to get parent directory of release path: {}", release_path.display()))?;
 
@@ -336,6 +344,144 @@ pub fn revise_repodata(format: PackageFormat, repo: &RepoRevise, result_tx: &mps
             PackageFormat::Rpm => crate::rpm_repo::parse_repomd_file(&repo, &release_content, &release_dir.to_path_buf())?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format))
         };
+
+    Ok(release_items)
+}
+
+// index_url: $mirror/v$version/$repo/$arch/APKINDEX.tar.gz
+fn sync_from_package_database(format: PackageFormat, repo: &RepoRevise, packages_path: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
+
+    let should_update = should_refresh_release_file(packages_path, repo)?;
+    let mut release_items = Vec::new();
+
+    let repo_dir = dirs::get_repo_dir(&repo)
+        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+
+    // Extract package base URL by removing last filename part
+    let package_baseurl = if let Some(parent_url) = repo.index_url.rsplitn(2, '/').nth(1) {
+        parent_url.to_string()
+    } else {
+        repo.index_url.clone()
+    };
+
+    // Get the filename from the packages_path
+    let location = packages_path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let need_download = should_update == ReleaseStatus::NeedDownload ||
+                       should_update == ReleaseStatus::NeedUpdate ||
+                       should_update == ReleaseStatus::FineRecent;
+    let need_convert = should_update == ReleaseStatus::NeedConvert;
+
+    release_items.push(RepoReleaseItem {
+        format: format,
+        repo_name: repo.repo_name.clone(),
+        repodata_name: repo.repodata_name.to_string(),
+        need_download: need_download,
+        need_convert: need_convert,
+        arch: repo.arch.clone(),
+        url: repo.index_url.clone(),
+        package_baseurl: package_baseurl,
+        hash_type: "".to_string(),
+        hash: "".to_string(),
+        size: 0,
+        location: location,
+        is_packages: true,
+        output_path: repo_dir.join("packages.txt"),
+        download_path: packages_path.clone(),
+    });
+
+    Ok(release_items)
+}
+
+/*
+ * REPOSITORY ARCHITECTURE DISPATCHER - Three-Tier Repository Support
+ *
+ * This function routes repository processing based on URL patterns, supporting
+ * three distinct repository architectures with different trade-offs:
+ *
+ * TYPE 1: Release/repomd.xml Repositories (Enterprise/Distribution Standard)
+ * ========================================================================
+ * Detection: URLs ending with "Release" or "repomd.xml"
+ * Examples:
+ *   - Debian: https://deb.debian.org/debian/dists/bookworm/Release
+ *   - Ubuntu: http://archive.ubuntu.com/ubuntu/dists/jammy/Release
+ *   - CentOS: https://mirror.stream.centos.org/9-stream/BaseOS/x86_64/os/repodata/repomd.xml
+ *
+ * Architecture:
+ *   Release/repomd.xml (metadata index)
+ *   ├── Contains SHA256/MD5 hashes for all package database files
+ *   ├── Cryptographic signatures for tamper detection
+ *   ├── Size verification for download integrity
+ *   └── Points to → Packages.xz/primary.xml.gz (rich package databases)
+ *       ├── Full dependency information
+ *       ├── Package descriptions and metadata
+ *       ├── File lists and provides/requires data
+ *       └── Hash-verified content addressing
+ *
+ * Benefits: Maximum reliability, integrity verification, rich metadata
+ * Handler: sync_from_release_metadata() → deb_repo.rs / rpm_repo.rs
+ *
+ * TYPE 2: Direct Package Database Files (Simplified Architecture)
+ * ==============================================================
+ * Detection: URLs NOT ending with "/" or known metadata files
+ * Examples:
+ *   - Alpine: https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/APKINDEX.tar.gz
+ *   - Custom: https://repo.example.com/packages/database.tar.xz
+ *
+ * Architecture:
+ *   APKINDEX.tar.gz (direct package database)
+ *   ├── Contains rich package information directly
+ *   ├── No separate metadata layer
+ *   ├── Single-file simplicity
+ *   └── Repository-specific format (APK, etc.)
+ *
+ * Benefits: Simpler structure, still rich package info
+ * Limitations: No hash verification, potential consistency issues
+ * Handler: sync_from_package_database() → format-specific processing
+ *
+ * TYPE 3: Plain HTML Directory Listings (Maximum Compatibility)
+ * ============================================================
+ * Detection: URLs ending with "/"
+ * Examples:
+ *   - Simple mirrors: https://mirror.example.com/packages/
+ *   - Basic HTTP: http://internal.company.com/rpms/
+ *   - File servers: https://releases.project.org/binaries/
+ *
+ * Architecture:
+ *   index.html (HTTP directory listing)
+ *   ├── Simple file listing with minimal metadata
+ *   ├── Package info extracted from filenames via regex
+ *   ├── No integrity verification available
+ *   └── Works with any HTTP server
+ *
+ * Benefits: Universal compatibility, works anywhere
+ * Limitations: Minimal info, no verification, parsing fragility
+ * Handler: sync_from_directory_index() → index_html.rs
+ *
+ * ROUTING LOGIC:
+ * The function examines repo.index_url patterns to determine repository type
+ * and dispatch to the appropriate handler, enabling unified package management
+ * across diverse repository infrastructures.
+ */
+
+pub fn sync_repo_metadata(format: PackageFormat, repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
+    let repo_dir = dirs::get_repo_dir(&repo)
+        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let release_path = url_to_cache_path(&repo.index_url)
+        .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
+
+    let release_items = if repo.index_url.ends_with("Release") || repo.index_url.ends_with("repomd.xml") {
+        sync_from_release_metadata(format, repo, &release_path)
+            .with_context(|| format!("Failed to parse release file for repository: {}", repo.repo_name))?
+    } else if repo.index_url.ends_with("/") {
+        return crate::index_html::sync_from_directory_index(format, repo, &release_path);
+    } else {
+        sync_from_package_database(format, repo, &release_path)
+            .with_context(|| format!("Failed to check packages file for repository: {}", repo.repo_name))?
+    };
 
     let repo_dir = Arc::new(repo_dir.clone());
 
@@ -465,7 +611,7 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
         .with_context(|| format!("Failed to process data for item: {}", revise.location))
 }
 
-fn create_load_repoindex(
+pub fn create_load_repoindex(
     repo: &RepoRevise,
     no_revises: bool,
     repo_dir: &PathBuf,
@@ -688,7 +834,7 @@ pub fn list_repos() -> Result<()> {
 
     for entry in fs::read_dir(&manager_channel_dir)? {
         let path = entry?.path();
-        if !path.is_file() || path.extension().unwrap_or_default() != "yaml" 
+        if !path.is_file() || path.extension().unwrap_or_default() != "yaml"
            || path.file_name().unwrap_or_default() == "mirrors.yaml" {
             continue;
         }

@@ -26,6 +26,7 @@ mod deb_pkg;
 mod rpm_pkg;
 mod apk_repo;
 mod apk_pkg;
+mod index_html;
 mod epkg;
 mod version;
 
@@ -658,7 +659,7 @@ impl PackageManager {
             .map(|s| s.as_str())
             .unwrap_or("");
 
-        self.revise_channel_metadata()?;
+        self.sync_channel_metadata()?;
         self.list_packages_with_scope(scope, pattern)?;
         Ok(())
     }
@@ -678,7 +679,7 @@ impl PackageManager {
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
-            self.revise_channel_metadata()?;
+            self.sync_channel_metadata()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.install_packages(packages_vec)?;
         }
@@ -688,7 +689,7 @@ impl PackageManager {
     fn command_upgrade(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
-            self.revise_channel_metadata()?;
+            self.sync_channel_metadata()?;
             self.upgrade_packages(package_specs)?;
         }
         Ok(())
@@ -697,7 +698,7 @@ impl PackageManager {
     fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             self.fork_on_suid()?;
-            self.revise_channel_metadata()?;
+            self.sync_channel_metadata()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.remove_packages(packages_vec)?;
         }
@@ -717,7 +718,7 @@ impl PackageManager {
 
     fn command_update(&mut self) -> Result<()> {
         self.fork_on_suid()?;
-        self.revise_channel_metadata()
+        self.sync_channel_metadata()
     }
 
     fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
