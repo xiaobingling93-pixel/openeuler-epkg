@@ -738,8 +738,28 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
  * will be implemented separately for each package format (Debian and RPM) directly on their
  * respective `filelists` formats.
  */
+/// Process filelists content by verifying hash, creating symlinks, and generating metadata
 pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     log::debug!("Processing filelists content for arch: {:?}", revise);
+
+    // Step 1: Verify the hash of the received data
+    let calculated_hash = verify_filelists_hash(data_rx, revise)?;
+
+    // Step 2: Prepare the output path (remove existing file, create directories)
+    let output_path = prepare_filelists_output_path(revise)?;
+
+    // Step 3: Create symbolic link from download path to output path
+    create_filelists_symlink(revise, &output_path)?;
+
+    // Step 4: Generate and write file metadata
+    let file_info = generate_and_write_filelists_metadata(&output_path, calculated_hash)?;
+
+    log::debug!("Successfully processed filelists content for arch: {}", revise.arch);
+    Ok(file_info)
+}
+
+/// Verify the hash of the received filelists data
+fn verify_filelists_hash(data_rx: Receiver<Vec<u8>>, revise: &RepoReleaseItem) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut total_bytes = 0;
 
@@ -761,7 +781,13 @@ pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf
     }
     log::debug!("Hash verification successful for {}", revise.location);
 
+    Ok(calculated_hash)
+}
+
+/// Prepare the output path for filelists by removing existing files and creating directories
+fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
     let output_path = revise.output_path.clone();
+
     if output_path.exists() {
         log::debug!("Removing existing filelists at {}", output_path.display());
         fs::remove_file(&output_path)
@@ -779,21 +805,34 @@ pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf
         }
     }
 
+    Ok(output_path)
+}
+
+/// Create symbolic link from download path to output path
+fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> Result<()> {
     // Create symbolic link
     // /home/wfg/.cache/epkg/channel/debian:trixie/contrib/x86_64/filelists-all.gz =>
     // /home/wfg/.cache/epkg/downloads/debian/dists/trixie/contrib/by-hash/SHA256/9cc88157988a1ccc1240aa749a311bd6c445ecc890d16c431816a409303f3f51
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
+
     #[cfg(unix)]
-    std::os::unix::fs::symlink(revise.download_path.clone(), &output_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            revise.download_path.display(), output_path.display()))?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_file(revise.download_path, &output_path)
+    std::os::unix::fs::symlink(revise.download_path.clone(), output_path)
         .with_context(|| format!("Failed to create symlink from {} to {}",
             revise.download_path.display(), output_path.display()))?;
 
-    let metadata = fs::metadata(&output_path)
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(revise.download_path.clone(), output_path)
+        .with_context(|| format!("Failed to create symlink from {} to {}",
+            revise.download_path.display(), output_path.display()))?;
+
+    Ok(())
+}
+
+/// Generate file metadata and write it to a JSON file
+pub fn generate_and_write_filelists_metadata(output_path: &PathBuf, calculated_hash: String) -> Result<FileInfo> {
+    let metadata = fs::metadata(output_path)
         .with_context(|| format!("Failed to get metadata for {}", output_path.display()))?;
+
     let file_info = FileInfo {
         filename: output_path.file_name()
             .ok_or_else(|| eyre::eyre!("Failed to get filename from path: {}", output_path.display()))?
@@ -806,18 +845,26 @@ pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf
             .to_string(),
         size: metadata.len(),
     };
+
+    // Write metadata to JSON file
+    write_filelists_metadata_json(output_path, &file_info)?;
+
+    Ok(file_info)
+}
+
+/// Write filelists metadata to a JSON file
+fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FileInfo) -> Result<()> {
     let json_path = output_path.with_extension("").with_extension("json").to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
             .replace("filelists", ".filelists");
 
     log::debug!("Writing filelists metadata to {}", json_path);
-    let json_content = serde_json::to_string_pretty(&file_info)
+    let json_content = serde_json::to_string_pretty(file_info)
         .with_context(|| format!("Failed to serialize file info to JSON for {}", output_path.display()))?;
     fs::write(&json_path, json_content)
         .with_context(|| format!("Failed to write JSON metadata to {}", json_path))?;
 
-    log::debug!("Successfully processed filelists content for arch: {}", revise.arch);
-    Ok(file_info)
+    Ok(())
 }
 
 
