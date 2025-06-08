@@ -206,7 +206,7 @@ pub fn parse_requires(package_format: PackageFormat, requires: &str) -> Result<A
         PackageFormat::Pacman => parse_archlinux_requires(requires),
         PackageFormat::Python => parse_python_requires(requires),
         PackageFormat::Conda => parse_conda_requires(requires),
-        PackageFormat::Apk => Err(ParseError::UnsupportedPackageType), // Not implemented yet
+        PackageFormat::Apk => parse_archlinux_requires(requires),
         PackageFormat::Epkg => Err(ParseError::UnsupportedPackageType), // Default case
     }
 }
