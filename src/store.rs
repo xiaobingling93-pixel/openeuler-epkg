@@ -14,13 +14,13 @@ use log;
 
 /// Unpacks multiple packages and moves them to the store
 pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<String>> {
-    let mut pkgidlines = Vec::new();
+    let mut pkglines = Vec::new();
     for package_file in package_files {
-        let pkgidline = unpack_mv_package(&package_file)
+        let pkgline = unpack_mv_package(&package_file)
             .wrap_err_with(|| format!("Failed to unpack package: {}", package_file))?;
-        pkgidlines.push(pkgidline);
+        pkglines.push(pkgline);
     }
-    Ok(pkgidlines)
+    Ok(pkglines)
 }
 
 /// Unpacks a single package and moves it to the final store location
@@ -48,7 +48,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     let mut pkgname = String::new();
     let mut version = String::new();
     let mut ca_hash = String::new();
-    let mut pkgid = String::new();
+    let mut arch = String::new();
 
     for line in package_content.lines() {
         if let Some((key, value)) = line.split_once(": ") {
@@ -56,8 +56,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
                 "pkgname" => pkgname = value.to_string(),
                 "version" => version = value.to_string(),
                 "caHash"  => ca_hash = value.to_string(),
-                "sha256"  => pkgid = value.to_string(),
-                "sha1"    => pkgid = value.to_string(),
+                "arch"    => arch    = value.to_string(),
                 _ => {}
             }
         }
@@ -77,8 +76,13 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
         return Err(eyre::eyre!("caHash in package.txt does not match calculated hash"));
     }
 
-    // Create final package directory name
-    let pkgline = crate::package::format_pkgline(&ca_hash_real, &pkgname, &version);
+    // Use default arch if not found in package.txt
+    if arch.is_empty() {
+        arch = crate::models::config().common.arch.clone();
+    }
+
+    // Create final package directory name with architecture
+    let pkgline = crate::package::format_pkgline(&ca_hash_real, &pkgname, &version, &arch);
     let final_dir = dirs().epkg_store.join(&pkgline);
 
     // Move to final location
@@ -96,8 +100,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     fs::rename(&store_tmp_dir, &final_dir)
         .wrap_err_with(|| format!("Failed to move package from {} to {}", store_tmp_dir.display(), final_dir.display()))?;
 
-    let pkgidline = format!("{}__{}", pkgid, pkgline);
-    Ok(pkgidline)
+    Ok(pkgline)
 }
 
 /// Generic package unpacking function that detects format and delegates to appropriate handler

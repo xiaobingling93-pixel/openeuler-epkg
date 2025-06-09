@@ -54,7 +54,7 @@ lazy_static! {
 
         m.insert("Origin",          "");    // trivial repeating info
         m.insert("Bugs",            "");    // trivial repeating info
-        m.insert("SHA1",            "");    // skip, so pkgid will pick up sha256
+        m.insert("SHA1",            "");    // skip: already has sha256
         m.insert("Support",         "");
 
         m.insert("Phased-Update-Percentage",    "phasedUpdatePercentage");

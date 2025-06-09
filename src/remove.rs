@@ -125,12 +125,17 @@ impl PackageManager {
                 "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
                 config().common.env
             ))?;
-        self.collect_recursive_depends(&mut packages_to_keep, channel_config.format)?;
-        log::debug!("Packages to keep: {:?}", packages_to_keep.keys());
+        // Collect dependencies
+        let dependencies = self.collect_recursive_depends(&packages_to_keep, channel_config.format)?;
+
+        // Create a complete map of packages to keep including dependencies
+        let mut all_packages_to_keep = packages_to_keep.clone();
+        all_packages_to_keep.extend(dependencies);
+        log::debug!("Packages to keep: {:?}", all_packages_to_keep.keys());
 
         let installed_to_remove: Vec<String> = self.installed_packages
             .keys()
-            .filter(|name| !packages_to_keep.contains_key(*name))
+            .filter(|name| !all_packages_to_keep.contains_key(*name))
             .cloned()
             .collect();
 

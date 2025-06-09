@@ -769,21 +769,12 @@ impl PackageManager {
             privdrop_on_suid(); // Drop privileges if running as SUID
 
             match crate::store::unpack_packages(files) {
-                Ok(pkgidlines) => {
-                    if pkgidlines.is_empty() {
+                Ok(pkglines) => {
+                    if pkglines.is_empty() {
                         println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                     } else {
-                        for pkgidline in pkgidlines {
-                            // pkgidline is "pkgid__ca_hash__pkgname__version"
-                            // The actual store directory name is "ca_hash__pkgname__version"
-                            let parts: Vec<&str> = pkgidline.splitn(2, "__").collect();
-                            if parts.len() == 2 {
-                                let store_dir_name = parts[1];
-                                let final_path = dirs().epkg_store.join(store_dir_name);
-                                println!("{}", final_path.display());
-                            } else {
-                                eprintln!("Warning: Could not parse pkgidline '{}' to determine store path.", pkgidline);
-                            }
+                        for pkgline in pkglines {
+							println!("{}", pkgline);
                         }
                     }
                 }

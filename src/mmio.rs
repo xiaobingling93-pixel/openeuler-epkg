@@ -247,7 +247,6 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         ca_hash: None,
 
         // Apk only has sha1sum; other formats only have sha256sum
-        // Whatever available will be used as pkgid to compose pkgkey
         sha256sum: None,
         sha1sum: None,
 

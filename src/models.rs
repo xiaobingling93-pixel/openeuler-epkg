@@ -94,7 +94,6 @@ pub struct Package {
     pub ca_hash: Option<String>,
 
     // Apk only has sha1sum; other formats only have sha256sum
-    // Whatever available will be used as pkgid to compose pkgkey
     #[serde(default)]
     pub sha256sum: Option<String>,
     #[serde(default)]
@@ -195,19 +194,25 @@ pub struct FileInfo {
 /*
     # ${HOME}/.epkg/envs/main/generations/current/installed-packages.json
     {
-      "${pkgname}__${pkgid:8}": {
+      "${pkgkey}": {
       },
-	  "bash__086cea43": {
-		  "pkgline": "so2plsnn5harhb5qhvf52yzzl4zif7ap__bash__5.2.37-2+b2",
-		  "depend_depth": 0,
-		  "install_time": 1748927632,
-		  "appbin_flag": false
+	  "jq__1.8.0-1__x86_64": {
+		"pkgline": "g5zo2bniyoyf3jwx4vo25qrf46al7ric__jq__1.8.0-1",
+		"arch": "x86_64",
+		"depend_depth": 0,
+		"install_time": 1749433093,
+		"appbin_flag": true,
+		"rdepends": []
 	  },
-	  "jq__3d7550e4": {
-		  "pkgline": "hm4mpf2pxqlv466xhbneqjwil5wh2yjq__jq__1.7.1-6",
-		  "depend_depth": 0,
-		  "install_time": 1748961276,
-		  "appbin_flag": true
+	  "filesystem__2025.05.03-1__any": {
+		"pkgline": "7noavnmhiezcdzrjiv3tyhupsi2w4etw__filesystem__2025.05.03-1__any",
+		"arch": "any",
+		"depend_depth": 2,
+		"install_time": 1749437271,
+		"appbin_flag": false,
+		"rdepends": [
+		  "glibc__2.41+r48+g5cb575ca9a3d-1__x86_64"
+		]
 	  },
     }
 */
