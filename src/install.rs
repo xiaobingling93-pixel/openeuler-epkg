@@ -267,7 +267,42 @@ fn create_script_wrapper(
     file_type: FileType,
     first_line: &str,
 ) -> Result<()> {
-    let env_shell_bang_line = create_shebang_line(env_root, first_line)?;
+    // Try to create shebang line, but handle errors gracefully
+    let env_shell_bang_line = match create_shebang_line(env_root, first_line) {
+        Ok(line) => line,
+        Err(e) => {
+            let root_cause = e.root_cause().to_string();
+            let path_str = fs_file.to_string_lossy();
+            let error_msg = format!(
+                "Cannot create script wrapper for {} at {}: failed to create shebang line for '{}': {}",
+                fs_file.display(),
+                ebin_path.display(),
+                first_line,
+                root_cause
+            );
+
+            if path_str.contains("/usr/bin") {
+                return Err(eyre::eyre!("{}", error_msg));
+            } else {
+                /* Handle missing interpreters as warnings rather than errors for
+                 * fs_file = ".../fs/usr/share/rustc-1.74/bin/wasi-node" case.
+                 *
+                 * Some packages (like rustc) may include scripts that require interpreters
+                 * not listed in their dependencies (e.g., node for wasi-node). Since these
+                 * interpreters aren't in the package's dependency list, we shouldn't fail
+                 * the entire package installation just because we can't create wrappers
+                 * for these optional scripts.
+                 *
+                 * By logging a warning and continuing, we ensure the package installation
+                 * completes successfully while still informing the user about the missing
+                 * interpreter.
+                 */
+                log::warn!("{}", error_msg);
+                return Ok(());
+            }
+        }
+    };
+
     let exec_cmd = get_exec_command(&file_type, fs_file);
 
     let mut wrapper = fs::OpenOptions::new()
