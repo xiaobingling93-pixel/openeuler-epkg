@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 use color_eyre::{eyre::eyre, eyre::WrapErr, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::{Agent, Proxy};
+use ureq::http;
 use crate::dirs;
 use crate::models::*;
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
@@ -691,24 +692,74 @@ fn download_file(
 ) -> Result<()> {
     log::debug!("download_file starting for {}, part_path: {}", url, part_path.display());
 
-    let mut downloaded = if part_path.exists() {
+    let downloaded = get_existing_file_size(part_path)?;
+    let mut response = match make_download_request_with_416_handling(client, url, downloaded, pb, part_path, data_channel) {
+        Ok(response) => response,
+        Err(e) => {
+            // Check if this is the special case where download was skipped due to file being unchanged
+            if e.to_string().contains("Download skipped - file unchanged") {
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
+    let status = response.status();
+
+    validate_response_content_type(&response, url, pb)?;
+    let downloaded = handle_resume_logic(part_path, pb, url, downloaded, status.as_u16())?;
+
+    let total_size = setup_progress_tracking(&response, pb, downloaded);
+
+    // Send existing file content to channel if resuming
+    if downloaded > 0 && retries == 0 {
+        if let Some(channel) = &data_channel {
+            send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e))?;
+        }
+    }
+
+    let final_downloaded = download_content(&mut response, part_path, pb, downloaded, data_channel)?;
+
+    validate_download_size(final_downloaded, total_size, part_path)?;
+    set_file_timestamp(&response, part_path);
+
+    let filename = part_path.file_name()
+        .ok_or_else(|| eyre!("Invalid filename in path: {}", part_path.display()))?;
+    pb.finish_with_message(format!("Downloaded {}", filename.to_string_lossy()));
+
+    Ok(())
+}
+
+/// Get the size of an existing partial file, or 0 if it doesn't exist
+fn get_existing_file_size(part_path: &Path) -> Result<u64> {
+    if part_path.exists() {
         log::debug!("download_file part file exists, getting metadata");
         match fs::metadata(part_path) {
             Ok(metadata) => {
                 let size = metadata.len();
                 log::debug!("download_file found existing part file with {} bytes", size);
-                size
+                Ok(size)
             },
             Err(e) => {
                 log::error!("download_file failed to get metadata for part file {}: {}", part_path.display(), e);
-                return Err(eyre!("Failed to get metadata for part file {}: {}", part_path.display(), e));
+                Err(eyre!("Failed to get metadata for part file {}: {}", part_path.display(), e))
             }
         }
     } else {
         log::debug!("download_file no existing part file found");
-        0
-    };
+        Ok(0)
+    }
+}
 
+/// Make the HTTP download request with special handling for 416 errors
+/// The 416 logic is kept inline as it needs access to part_path and data_channel
+fn make_download_request_with_416_handling(
+    client: &Agent,
+    url: &str,
+    downloaded: u64,
+    pb: &ProgressBar,
+    part_path: &Path,
+    data_channel: &Option<Sender<Vec<u8>>>,
+) -> Result<http::Response<ureq::Body>> {
     let mut request = client.get(url.replace("///", "/"));
 
     if downloaded > 0 {
@@ -716,112 +767,113 @@ fn download_file(
         request = request.header("Range", &format!("bytes={}-", downloaded));
     }
 
-    let mut response = match request.call() {
-        Ok(response) => {
-            response
-        },
+    match request.call() {
+        Ok(response) => Ok(response),
         Err(ureq::Error::StatusCode(code)) => {
             log::debug!("download_file got HTTP error code: {}", code);
-            if code == 416 && downloaded > 0 { // The requested byte range is outside the size of the file
+            if code == 416 && downloaded > 0 {
+                // The requested byte range is outside the size of the file
                 log::debug!("download_file handling HTTP 416 with downloaded={}", downloaded);
-                // Send a request to check remote size and time, then compare with local
-                let remote_metadata = client.get(url.replace("///", "/")).call()
-                    .with_context(|| format!("Failed to make HTTP request for {}", url))?;
-                let remote_size = remote_metadata.headers().get("Content-Length")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| {
-                        if let Err(e) = s.parse::<u64>() {
-                            log::warn!("Failed to parse Content-Length header value '{}': {}", s, e);
-                            None
-                        } else {
-                            s.parse::<u64>().ok()
-                        }
-                    })
-                    .unwrap_or(0);
-                log::debug!("download_file remote_size: {}, local_size: {}", remote_size, downloaded);
-
-                let remote_timestamp_opt = remote_metadata.headers().get("Last-Modified")
-                    .or_else(|| remote_metadata.headers().get("Date")) // Try "Date" if "Last-Modified" is None
-                    .and_then(|s| {
-                        s.to_str().ok().and_then(|s_val| {
-                            match OffsetDateTime::parse(s_val, &Rfc2822) {
-                                Ok(dt) => Some(dt),
-                                Err(e) => {
-                                    log::warn!("Failed to parse timestamp header value '{}': {}", s_val, e);
-                                    None
-                                }
-                            }
-                        })
-                    });
-
-                let local_metadata = fs::metadata(part_path).map_err(|e| eyre!("Failed to get local file metadata: {}", e))?;
-                let local_size = local_metadata.len();
-                let local_last_modified_sys_time = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
-                let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
-
-                if let Some(remote_ts) = remote_timestamp_opt {
-                    // A remote timestamp was successfully parsed from headers
-                    if remote_size == local_size && remote_ts == local_last_modified {
-                        log::debug!("download_file sizes and timestamps match (remote_ts: {}, local_ts: {}), skipping download.", remote_ts, local_last_modified);
-                        let message = format!("Remote file unchanged (size and timestamp match), skipping download");
-                        pb.finish_with_message(message.clone());
-                        if let Some(channel) = &data_channel {
-                            send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
-                        }
-                        log::debug!("download_file returning Ok after skipping download due to matching size and timestamp.");
-                        return Ok(());
-                    } else {
-                        let mut reason = String::from("Remote file differs");
-                        if remote_size != local_size {
-                            reason.push_str(&format!(" (size mismatch: remote {}, local {})", remote_size, local_size));
-                        }
-                        if remote_ts != local_last_modified {
-                            reason.push_str(&format!(" (timestamp mismatch: remote {}, local {})", remote_ts, local_last_modified));
-                        }
-                        log::info!("{}, restarting download from 0.", reason);
-                        let error_msg = format!("{}, restarting download from 0.", reason);
-                        pb.finish_with_message(error_msg.clone());
-                        fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg).into());
-                    }
-                } else {
-                    // No valid remote timestamp header found, or parsing failed. Download for safety.
-                    log::info!("No valid remote timestamp found or failed to parse. Re-downloading for safety (remote size: {}, local size: {}).", remote_size, local_size);
-                    let error_msg = format!("No remote timestamp, re-downloading for safety (current local size: {}, path: {})", local_size, part_path.display());
-                    pb.finish_with_message(error_msg.clone());
-                    fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg).into());
-                }
+                return handle_416_range_error(client, url, downloaded, pb, part_path, data_channel);
             }
-            let error_msg = if code >= 400 && code < 500 {
-                format!("HTTP {} error: {} - {}", code, "Client Error", url)
-            } else {
-                format!("HTTP {} error: {} - {}", code, "Server Error", url)
-            };
-            pb.finish_with_message(error_msg.clone());
-            return if code >= 400 && code < 500 {
-                // For client errors (like 404), create a simple FatalError without verbose backtrace
-                log::info!("Client error {} for {}, will not retry", code, url);
-                Err(eyre!(FatalError(error_msg)))
-            } else {
-                Err(eyre!("HTTP error: {}", error_msg.clone()))
-            };
+            handle_non_416_http_error(code, url, pb)
         }
         Err(ureq::Error::Io(e)) => {
             let error_msg = format!("Network error: {} - {}", e, url);
             pb.finish_with_message(error_msg.clone());
-            return Err(eyre!("Download error: {}", error_msg.clone()));
+            Err(eyre!("Download error: {}", error_msg))
         }
         Err(e) => {
             let error_msg = format!("Error downloading: {} - {}", e, url);
             pb.finish_with_message(error_msg.clone());
-            return Err(eyre!("Download error: {}", error_msg.clone()));
+            Err(eyre!("Download error: {}", error_msg))
         }
+    }
+}
+
+/// Handle 416 Range Not Satisfiable error with full access to required context
+fn handle_416_range_error(
+    client: &Agent,
+    url: &str,
+    downloaded: u64,
+    pb: &ProgressBar,
+    part_path: &Path,
+    data_channel: &Option<Sender<Vec<u8>>>,
+) -> Result<http::Response<ureq::Body>> {
+    // Send a request to check remote size and time, then compare with local
+    let remote_metadata = client.get(url.replace("///", "/")).call()
+        .with_context(|| format!("Failed to make HTTP request for {}", url))?;
+
+    let remote_size = parse_content_length(&remote_metadata);
+    log::debug!("download_file remote_size: {}, local_size: {}", remote_size, downloaded);
+
+    let remote_timestamp_opt = parse_remote_timestamp(&remote_metadata);
+
+    let local_metadata = fs::metadata(part_path).map_err(|e| eyre!("Failed to get local file metadata: {}", e))?;
+    let local_size = local_metadata.len();
+    let local_last_modified_sys_time = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
+    let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
+
+    if let Some(remote_ts) = remote_timestamp_opt {
+        // A remote timestamp was successfully parsed from headers
+        if remote_size == local_size && remote_ts == local_last_modified {
+            log::debug!("download_file sizes and timestamps match (remote_ts: {}, local_ts: {}), skipping download.", remote_ts, local_last_modified);
+            let message = format!("Remote file unchanged (size and timestamp match), skipping download");
+            pb.finish_with_message(message.clone());
+            if let Some(channel) = data_channel {
+                send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+            }
+            log::debug!("download_file returning Ok after skipping download due to matching size and timestamp.");
+            // Return a dummy response since we're skipping the download
+            return Err(eyre!("Download skipped - file unchanged"));
+        } else {
+            let mut reason = String::from("Remote file differs");
+            if remote_size != local_size {
+                reason.push_str(&format!(" (size mismatch: remote {}, local {})", remote_size, local_size));
+            }
+            if remote_ts != local_last_modified {
+                reason.push_str(&format!(" (timestamp mismatch: remote {}, local {})", remote_ts, local_last_modified));
+            }
+            log::info!("{}, restarting download from 0.", reason);
+            let error_msg = format!("{}, restarting download from 0.", reason);
+            pb.finish_with_message(error_msg.clone());
+            fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg).into());
+        }
+    } else {
+        // No valid remote timestamp header found, or parsing failed. Download for safety.
+        log::info!("No valid remote timestamp found or failed to parse. Re-downloading for safety (remote size: {}, local size: {}).", remote_size, local_size);
+        let error_msg = format!("No remote timestamp, re-downloading for safety (current local size: {}, path: {})", local_size, part_path.display());
+        pb.finish_with_message(error_msg.clone());
+        fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg).into());
+    }
+}
+
+/// Handle non-416 HTTP errors
+fn handle_non_416_http_error(code: u16, url: &str, pb: &ProgressBar) -> Result<http::Response<ureq::Body>> {
+    let error_msg = if code >= 400 && code < 500 {
+        format!("HTTP {} error: {} - {}", code, "Client Error", url)
+    } else {
+        format!("HTTP {} error: {} - {}", code, "Server Error", url)
     };
+    pb.finish_with_message(error_msg.clone());
 
-    let status = response.status();
+    if code >= 400 && code < 500 {
+        // For client errors (like 404), create a simple FatalError without verbose backtrace
+        log::info!("Client error {} for {}, will not retry", code, url);
+        Err(eyre!(FatalError(error_msg)))
+    } else {
+        Err(eyre!("HTTP error: {}", error_msg))
+    }
+}
 
-    // Check content type to detect HTML login pages
+/// Validate response content type to detect HTML login pages
+fn validate_response_content_type(
+    response: &http::Response<ureq::Body>,
+    url: &str,
+    pb: &ProgressBar,
+) -> Result<()> {
     if let Some(content_type) = response.headers().get("Content-Type").and_then(|v| v.to_str().ok()) {
         if content_type.contains("text/html") {
             let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
@@ -829,38 +881,42 @@ fn download_file(
             return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg.to_string()));
         }
     }
+    Ok(())
+}
 
+/// Handle resume logic - check if server supports resuming and adjust downloaded bytes accordingly
+fn handle_resume_logic(
+    part_path: &Path,
+    pb: &ProgressBar,
+    url: &str,
+    downloaded: u64,
+    status: u16,
+) -> Result<u64> {
     if downloaded > 0 && status != 206 {
         fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
-        downloaded = 0;
         pb.println(format!("Server doesn't support resume, restarting: {}", url));
+        Ok(0)
+    } else {
+        Ok(downloaded)
     }
+}
 
-    let total_size = response.headers().get("Content-Length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            match s.parse::<u64>() {
-                Ok(size) => Some(size),
-                Err(e) => {
-                    log::warn!("Failed to parse Content-Length header value '{}': {}", s, e);
-                    None
-                }
-            }
-        })
-        .unwrap_or(0)
-        + downloaded;
+/// Set up progress tracking with total size and current position
+fn setup_progress_tracking(response: &http::Response<ureq::Body>, pb: &ProgressBar, downloaded: u64) -> u64 {
+    let total_size = parse_content_length(response) + downloaded;
     pb.set_length(total_size);
     pb.set_position(downloaded);
+    total_size
+}
 
-    // The channel receivers process_packages_content()/process_filelist_content() expect full file
-    // to decompress and compute hash, so send the existing file content first. This fixes bug
-    // "Decompression error: stream/file format not recognized"
-    if downloaded > 0 && retries == 0 {
-        if let Some(channel) = &data_channel {
-            send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e))?;
-        }
-    }
-
+/// Download the actual content from the response to the file
+fn download_content(
+    response: &mut http::Response<ureq::Body>,
+    part_path: &Path,
+    pb: &ProgressBar,
+    mut downloaded: u64,
+    data_channel: &Option<Sender<Vec<u8>>>,
+) -> Result<u64> {
     // Open the file in append mode to resume partial downloads
     let mut file = OpenOptions::new()
         .create(true)
@@ -896,15 +952,22 @@ fn download_file(
 
     // Final progress update
     pb.set_position(downloaded);
+    Ok(downloaded)
+}
 
+/// Validate that the downloaded size matches the expected Content-Length
+fn validate_download_size(downloaded: u64, total_size: u64, part_path: &Path) -> Result<()> {
     if total_size > 0 && downloaded != total_size {
         let error_msg = format!("Downloaded size ({}) does not match Content-Length ({})", downloaded, total_size);
-        pb.finish_with_message(error_msg.clone());
         return Err(eyre!("Download size mismatch: Downloaded size ({}) does not match Content-Length ({}) for {}", downloaded, total_size, part_path.display()));
     }
+    Ok(())
+}
 
+/// Set file timestamp from response headers (Last-Modified or Date)
+fn set_file_timestamp(response: &http::Response<ureq::Body>, part_path: &Path) {
     if let Some(timestamp_str) = response.headers().get("Last-Modified")
-        .or_else(|| response.headers().get("Date")) // Try "Date" if "Last-Modified" is None
+        .or_else(|| response.headers().get("Date"))
         .and_then(|s| s.to_str().ok())
     {
         match OffsetDateTime::parse(timestamp_str, &Rfc2822) {
@@ -921,12 +984,38 @@ fn download_file(
     } else {
         log::debug!("No Last-Modified or Date header found for mtime for {}", part_path.display());
     }
+}
 
-    let filename = part_path.file_name()
-        .ok_or_else(|| eyre!("Invalid filename in path: {}", part_path.display()))?;
-    pb.finish_with_message(format!("Downloaded {}", filename.to_string_lossy()));
+/// Parse Content-Length header from response
+fn parse_content_length(response: &http::Response<ureq::Body>) -> u64 {
+    response.headers().get("Content-Length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            if let Err(e) = s.parse::<u64>() {
+                log::warn!("Failed to parse Content-Length header value '{}': {}", s, e);
+                None
+            } else {
+                s.parse::<u64>().ok()
+            }
+        })
+        .unwrap_or(0)
+}
 
-    Ok(())
+/// Parse remote timestamp from Last-Modified or Date headers
+fn parse_remote_timestamp(response: &http::Response<ureq::Body>) -> Option<OffsetDateTime> {
+    response.headers().get("Last-Modified")
+        .or_else(|| response.headers().get("Date"))
+        .and_then(|s| {
+            s.to_str().ok().and_then(|s_val| {
+                match OffsetDateTime::parse(s_val, &Rfc2822) {
+                    Ok(dt) => Some(dt),
+                    Err(e) => {
+                        log::warn!("Failed to parse timestamp header value '{}': {}", s_val, e);
+                        None
+                    }
+                }
+            })
+        })
 }
 
 impl PackageManager {
