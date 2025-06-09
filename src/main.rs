@@ -146,6 +146,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
                 .arg(arg!(--version <VERSION>).help(format!("Version of epkg to install [default: {}]", DEFAULT_VERSION)))
+                .arg(arg!(-c --channel <CHANNEL> "Set the channel for the main environment"))
                 .arg(
                     arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
                         .default_value("auto")
@@ -441,7 +442,9 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
     // config() content will freeze after first call, and some routines rely on it.
     config.common.env = "common".to_string();
     config.env.public = config.init.shared_store;
-    config.env.channel = Some(DEFAULT_CHANNEL.to_string());
+    if let Some(channel) = sub_matches.get_one::<String>("channel") {
+        config.env.channel = Some(channel.to_string());
+    }
 
     Ok(())
 }

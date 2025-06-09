@@ -197,7 +197,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn create_environment_directories(&mut self, env_root: &Path) -> Result<()> {
+    fn create_environment_directories(&self, env_root: &Path, format: &PackageFormat) -> Result<()> {
         let generations_root = env_root.join("generations");
         let gen_1_dir = generations_root.join("1");
 
@@ -209,15 +209,29 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("usr/sbin"))?;
         fs::create_dir_all(env_root.join("usr/bin"))?;
         fs::create_dir_all(env_root.join("usr/lib"))?;
-        fs::create_dir_all(env_root.join("usr/lib64"))?;
-        fs::create_dir_all(env_root.join("etc/epkg"))?;
         fs::create_dir_all(env_root.join("var"))?;
 
         // Create symlinks in generation 1
         symlink("usr/sbin", env_root.join("sbin"))?;
         symlink("usr/bin", env_root.join("bin"))?;
         symlink("usr/lib", env_root.join("lib"))?;
-        symlink("usr/lib64", env_root.join("lib64"))?;
+
+        // Create different lib64 symlinks based on package format
+        match format {
+            PackageFormat::Pacman => {
+                // For Pacman format:
+                // /usr/lib64 -> lib
+                // /lib64 -> usr/lib
+                fs::create_dir_all(env_root.join("usr"))?;
+                symlink("lib", env_root.join("usr/lib64"))?;
+                symlink("usr/lib", env_root.join("lib64"))?;
+            },
+            _ => {
+                // Default behavior for other formats
+                fs::create_dir_all(env_root.join("usr/lib64"))?;
+                symlink("usr/lib64", env_root.join("lib64"))?;
+            }
+        }
 
         // Create "current" symlink in generations directory pointing to generation 1
         symlink("1", generations_root.join("current"))?;
@@ -248,8 +262,7 @@ impl PackageManager {
         if env_channel_yaml.exists() {
             return Err(eyre::eyre!("Environment already exists at path: '{}'", env_base.display()));
         }
-
-        self.create_environment_directories(&env_root)?;
+        fs::create_dir_all(env_root.join("etc/epkg"))?;
 
         // Initialize channel and environment config
         let mut env_config = if let Some(config_path) = &config().env.import_file {
@@ -304,6 +317,10 @@ impl PackageManager {
         fs::create_dir_all(env_config_path.parent().unwrap())?;
         let yaml = serde_yaml::to_string(&env_config)?;
         fs::write(env_config_path, yaml)?;
+
+        // Get channel config from the above env_channel_yaml
+        let format = self.get_channel_config(name.to_string())?.format.clone();
+        self.create_environment_directories(&env_root, &format)?;
 
         // Install packages if any
         if !env_config.packages.is_empty() {
