@@ -261,59 +261,58 @@ fn extract_package_contents<R: Read>(
 }
 
 /// Extract install scriptlets from .INSTALL file
+///
+/// This implementation creates wrapper scripts that source the original .INSTALL file
+/// and then call the specific function. This approach ensures that when functions in
+/// .INSTALL call each other (e.g., post_upgrade calling post_install), those calls
+/// work correctly because all functions are available in the script's context.
+///
+/// Previously, we extracted each function's body separately, which broke dependencies
+/// between functions in the .INSTALL file.
+///
+/// Another more simple option is to include whole content of .INSTALL into each scriptlet.
 fn extract_install_scriptlets(install_content: &[u8], store_tmp_dir: &Path) -> Result<()> {
-    // Convert binary data to string, ignoring invalid UTF-8 sequences
-    let install_content_str = String::from_utf8_lossy(install_content).to_string();
     log::debug!("Extracting install scriptlets");
 
     // Get all scriptlet names from SCRIPT_MAPPING
     let scriptlet_names: Vec<&str> = SCRIPT_MAPPING.keys().copied().collect();
 
-    // Extract each scriptlet
-    for (i, &scriptlet_name) in scriptlet_names.iter().enumerate() {
-        // Determine the end pattern (next scriptlet or end of file)
-        let end_pattern = if i < scriptlet_names.len() - 1 {
-            scriptlet_names[i + 1]
-        } else {
-            ""
-        };
+    // Copy the .INSTALL file to info/arch/ directory (should already be there, but ensure it's there)
+    let install_path = store_tmp_dir.join("info/arch/.INSTALL");
 
-        let start_pattern = scriptlet_name;
-        let start_marker = format!("{}() {{", start_pattern);
+    // Create wrapper scripts for each scriptlet function
+    for &scriptlet_name in scriptlet_names.iter() {
+        // Check if the function exists in the .INSTALL file
+        let function_pattern = format!("{scriptlet_name}() {{");
+        let install_content_str = String::from_utf8_lossy(install_content);
 
-        if let Some(start_pos) = install_content_str.find(&start_marker) {
-            // Find the end of the scriptlet
-            let end_pos = if end_pattern.is_empty() {
-                // Last scriptlet, goes to the end of the file
-                install_content_str.len()
-            } else {
-                // Find the next scriptlet or end of file
-                let end_marker = format!("{}() {{", end_pattern);
-                install_content_str[start_pos + start_marker.len()..]
-                    .find(&end_marker)
-                    .map_or(install_content_str.len(), |pos| start_pos + start_marker.len() + pos)
-            };
+        if install_content_str.contains(&function_pattern) {
+            // Map the scriptlet name to the standard name
+            if let Some(standard_name) = SCRIPT_MAPPING.get(scriptlet_name) {
+                // Create a wrapper script that sources the .INSTALL file and calls the function
+                let wrapper_content = format!(
+                    "#!/bin/sh
+# Wrapper script for {scriptlet_name} function
+THIS_SCRIPT_DIR=$(dirname \"$0\")
+source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
+{scriptlet_name}
+"
+                );
 
-            // Extract the scriptlet content
-            let mut scriptlet_content = install_content_str[start_pos..end_pos].to_string();
+                let script_path = store_tmp_dir.join(format!("info/install/{}", standard_name));
+                fs::write(&script_path, wrapper_content)
+                    .wrap_err_with(|| format!("Failed to write scriptlet wrapper to {}", script_path.display()))?;
 
-            // Remove the function declaration line and closing brace
-            if let Some(first_newline) = scriptlet_content.find('\n') {
-                scriptlet_content = scriptlet_content[first_newline + 1..].to_string();
-
-                // Remove the last closing brace if it exists
-                if scriptlet_content.trim_end().ends_with('}') {
-                    let last_brace = scriptlet_content.trim_end().rfind('}').unwrap();
-                    scriptlet_content = scriptlet_content[..last_brace].trim_end().to_string();
+                // Make the script executable
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&script_path)?.permissions();
+                    perms.set_mode(0o755); // rwxr-xr-x
+                    fs::set_permissions(&script_path, perms)?;
                 }
 
-                // Map the scriptlet name to the standard name
-                if let Some(standard_name) = SCRIPT_MAPPING.get(start_pattern) {
-                    let script_path = store_tmp_dir.join(format!("info/install/{}", standard_name));
-                    fs::write(&script_path, scriptlet_content)
-                        .wrap_err_with(|| format!("Failed to write scriptlet to {}", script_path.display()))?;
-                    log::debug!("Created scriptlet: {}", standard_name);
-                }
+                log::debug!("Created scriptlet wrapper: {}", standard_name);
             }
         }
     }
