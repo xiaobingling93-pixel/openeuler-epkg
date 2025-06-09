@@ -4,35 +4,169 @@ use std::path::Path;
 use std::collections::HashMap;
 use tar::{Archive, Entry};
 use log;
-use flate2::read::GzDecoder;
+use flate2::read::{GzDecoder, MultiGzDecoder};
+use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use crate::apk_repo::{PACKAGE_KEY_MAPPING, PKGINFO_FIELDS};
 
-/// APK v2 package structure containing 3 gzip streams
-#[derive(Debug)]
-pub struct ApkV2Package {
-    pub signature_stream: Vec<u8>,
-    pub control_stream: Vec<u8>,
-    pub data_stream: Vec<u8>,
+lazy_static! {
+    pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
+        let mut m = std::collections::HashMap::new();
+
+		// Map APK field names to common field names based on gen-package.py
+		// Core package metadata
+		m.insert("pkgname",     "pkgname");
+		m.insert("pkgver",      "version");
+		m.insert("pkgdesc",     "summary");
+		m.insert("url",         "homepage");
+		m.insert("builddate",   "buildTime");
+		m.insert("packager",    "maintainer");
+		m.insert("size",        "installedSize");
+		m.insert("arch",        "arch");
+		m.insert("origin",      "source");
+		m.insert("commit",      "commit");
+		m.insert("maintainer",  "maintainer");
+		m.insert("license",     "license");
+
+        // Dependencies and relationships
+        m.insert("depend",      "requires");
+        m.insert("conflict",    "conflicts");
+        m.insert("provides",    "provides");
+        m.insert("replaces",    "replaces");
+        m.insert("install_if",  "suggests");
+        m.insert("triggers",    "triggers");
+
+        // Priority and versioning
+        m.insert("replaces_priority", "replaces_priority");
+        m.insert("provider_priority", "provider_priority");
+
+        // Checksums and hashes
+        m.insert("datahash",    "sha256");
+        m.insert("checksum",    "md5sum");
+
+        m
+    };
 }
 
-/// APK signature information
-#[derive(Debug)]
-pub struct ApkSignature {
-    pub filename: String,
-    pub key_name: String,
-    pub signature_data: Vec<u8>,
+/// PKGINFO field definitions based on APK v2 specification
+pub struct PkgInfoField {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub repeatable: bool,
 }
 
-/// File checksum information from PAX headers
-#[derive(Debug)]
-pub struct FileChecksum {
-    pub path: String,
-    pub sha1: Option<String>,
+lazy_static! {
+    pub static ref PKGINFO_FIELDS: std::collections::HashMap<&'static str, PkgInfoField> = {
+        let mut m = std::collections::HashMap::new();
+
+        m.insert("pkgname", PkgInfoField {
+            name: "pkgname",
+            description: "package name",
+            repeatable: false,
+        });
+        m.insert("pkgver", PkgInfoField {
+            name: "pkgver",
+            description: "package version",
+            repeatable: false,
+        });
+        m.insert("pkgdesc", PkgInfoField {
+            name: "pkgdesc",
+            description: "package description",
+            repeatable: false,
+        });
+        m.insert("url", PkgInfoField {
+            name: "url",
+            description: "package url",
+            repeatable: false,
+        });
+        m.insert("builddate", PkgInfoField {
+            name: "builddate",
+            description: "unix timestamp of the package build date/time",
+            repeatable: false,
+        });
+        m.insert("packager", PkgInfoField {
+            name: "packager",
+            description: "name (and typically email) of person who built the package",
+            repeatable: false,
+        });
+        m.insert("size", PkgInfoField {
+            name: "size",
+            description: "the installed-size of the package",
+            repeatable: false,
+        });
+        m.insert("arch", PkgInfoField {
+            name: "arch",
+            description: "the architecture of the package (ex: x86_64)",
+            repeatable: false,
+        });
+        m.insert("origin", PkgInfoField {
+            name: "origin",
+            description: "the origin name of the package",
+            repeatable: false,
+        });
+        m.insert("commit", PkgInfoField {
+            name: "commit",
+            description: "the commit hash from which the package was built",
+            repeatable: false,
+        });
+        m.insert("maintainer", PkgInfoField {
+            name: "maintainer",
+            description: "name (and typically email) of the package maintainer",
+            repeatable: false,
+        });
+        m.insert("replaces_priority", PkgInfoField {
+            name: "replaces_priority",
+            description: "replaces priority field for package (integer)",
+            repeatable: false,
+        });
+        m.insert("provider_priority", PkgInfoField {
+            name: "provider_priority",
+            description: "provider priority for the package (integer)",
+            repeatable: false,
+        });
+        m.insert("license", PkgInfoField {
+            name: "license",
+            description: "license string for the package",
+            repeatable: false,
+        });
+        m.insert("datahash", PkgInfoField {
+            name: "datahash",
+            description: "hex-encoded sha256 checksum of the data tarball",
+            repeatable: false,
+        });
+
+        // Repeatable fields
+        m.insert("depend", PkgInfoField {
+            name: "depend",
+            description: "dependencies for the package",
+            repeatable: true,
+        });
+        m.insert("replaces", PkgInfoField {
+            name: "replaces",
+            description: "packages this package replaces",
+            repeatable: true,
+        });
+        m.insert("provides", PkgInfoField {
+            name: "provides",
+            description: "what this package provides",
+            repeatable: true,
+        });
+        m.insert("triggers", PkgInfoField {
+            name: "triggers",
+            description: "what packages this package triggers on",
+            repeatable: true,
+        });
+        m.insert("install_if", PkgInfoField {
+            name: "install_if",
+            description: "install this package if these packages are present",
+            repeatable: true,
+        });
+
+        m
+    };
 }
 
-/// Unpacks an APK v2 package to the specified directory
+/// Unpacks an APK package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P) -> Result<()> {
     let apk_file = apk_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
@@ -42,257 +176,106 @@ pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P) -> Result<(
     fs::create_dir_all(store_tmp_dir.join("info/apk"))?;
     fs::create_dir_all(store_tmp_dir.join("info/install"))?;
 
-    // Parse APK v2 format (3 gzip streams)
-    let apk_package = parse_apk_v2_streams(apk_file)?;
-
-    // Extract signature information
-    let signature_info = extract_signature_info(&apk_package.signature_stream)?;
-    if let Some(sig) = signature_info {
-        log::info!("Found signature: {} (key: {})", sig.filename, sig.key_name);
-        // Save signature file
-        let sig_path = store_tmp_dir.join("info/apk").join(&sig.filename);
-        fs::write(&sig_path, &sig.signature_data)?;
-    }
-
-    // Extract control segment (.PKGINFO and scriptlets)
-    let (pkginfo_content, control_files) = extract_control_segment(&apk_package.control_stream)?;
-
-    // Save .PKGINFO
-    let pkginfo_path = store_tmp_dir.join("info/apk/.PKGINFO");
-    fs::write(&pkginfo_path, &pkginfo_content)?;
-
-    // Extract control files (scriptlets)
-    for (filename, content) in control_files {
-        if filename.starts_with(".pre-") || filename.starts_with(".post-") {
-            let script_path = store_tmp_dir.join("fs").join(&filename);
-            fs::write(&script_path, &content)?;
-
-            // Make scriptlet executable
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = fs::metadata(&script_path)?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&script_path, perms)?;
-            }
-        }
-    }
-
-    // Extract data tarball with checksum verification
-    let file_checksums = extract_data_segment(&apk_package.data_stream, store_tmp_dir)?;
-
-    // Log checksum information
-    for checksum in &file_checksums {
-        if let Some(sha1) = &checksum.sha1 {
-            log::debug!("File {}: SHA1 {}", checksum.path, sha1);
-        }
-    }
+    // Unpack the APK package
+    log::debug!("Unpacking APK package: {}", apk_file.display());
+    unpack_apk(apk_file, store_tmp_dir)
+        .wrap_err_with(|| format!("Failed to unpack APK package: {}", apk_file.display()))?;
 
     // Generate filelist.txt
-    crate::store::create_filelist_txt(store_tmp_dir)?;
+    log::debug!("Creating filelist.txt");
+    crate::store::create_filelist_txt(store_tmp_dir)
+        .wrap_err_with(|| format!("Failed to create filelist.txt for {}", store_tmp_dir.display()))?;
 
     // Create scriptlets with proper mapping
-    create_scriptlets(store_tmp_dir)?;
+    log::debug!("Creating scriptlets");
+    create_scriptlets(store_tmp_dir)
+        .wrap_err_with(|| format!("Failed to create scriptlets for {}", store_tmp_dir.display()))?;
 
     // Create package.txt with improved parsing
-    create_package_txt(store_tmp_dir)?;
+    log::debug!("Creating package.txt");
+    create_package_txt(store_tmp_dir)
+        .wrap_err_with(|| format!("Failed to create package.txt for {}", store_tmp_dir.display()))?;
 
+    log::debug!("APK unpacking completed successfully");
     Ok(())
 }
 
-/// Parses APK v2 format which contains 3 separate gzip streams
-fn parse_apk_v2_streams<P: AsRef<Path>>(apk_file: P) -> Result<ApkV2Package> {
-    let file_data = fs::read(apk_file.as_ref())
-        .wrap_err_with(|| format!("Failed to read APK file: {}", apk_file.as_ref().display()))?;
+/// Unpacks an APK package (concatenated gzip streams containing tar archives)
+fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
+    let apk_file = apk_file.as_ref();
+    log::debug!("Unpacking APK package: {}", apk_file.display());
 
-    let mut streams = Vec::new();
-    let mut offset = 0;
+    // Create required directories
+    fs::create_dir_all(store_tmp_dir.join("fs"))?;
+    fs::create_dir_all(store_tmp_dir.join("info/apk"))?;
 
-    // Parse multiple gzip streams
-    while offset < file_data.len() {
-        // Check for gzip magic number (0x1f, 0x8b)
-        if offset + 2 >= file_data.len() || file_data[offset] != 0x1f || file_data[offset + 1] != 0x8b {
-            break;
-        }
+    // Open the APK file
+    let file = fs::File::open(apk_file)
+        .wrap_err_with(|| format!("Failed to open APK file: {}", apk_file.display()))?;
 
-        // Find the end of this gzip stream
-        let stream_start = offset;
-
-        // Read the gzip stream to find its natural end
-        let stream_data = &file_data[stream_start..];
-        let mut decoder = GzDecoder::new(stream_data);
-        let mut decompressed = Vec::new();
-
-        match decoder.read_to_end(&mut decompressed) {
-            Ok(_) => {
-                // Calculate how much data was consumed
-                let stream_end = stream_start + (stream_data.len() - decoder.into_inner().len());
-                streams.push(file_data[stream_start..stream_end].to_vec());
-                offset = stream_end;
-            }
-            Err(_) => {
-                // If we can't decode, try to find the next gzip header manually
-                offset += 1;
-                while offset < file_data.len() - 1 {
-                    if file_data[offset] == 0x1f && file_data[offset + 1] == 0x8b {
-                        break;
-                    }
-                    offset += 1;
-                }
-                if offset >= file_data.len() - 1 {
-                    break;
-                }
-            }
-        }
-    }
-
-    if streams.len() < 3 {
-        return Err(eyre::eyre!("Invalid APK v2 format: expected 3 gzip streams, found {}", streams.len()));
-    }
-
-    Ok(ApkV2Package {
-        signature_stream: streams[0].clone(),
-        control_stream: streams[1].clone(),
-        data_stream: streams[2].clone(),
-    })
-}
-
-/// Extracts signature information from the signature stream
-fn extract_signature_info(signature_stream: &[u8]) -> Result<Option<ApkSignature>> {
-    let decoder = GzDecoder::new(signature_stream);
+    // Use MultiGzDecoder to handle concatenated gzip streams
+    let decoder = MultiGzDecoder::new(file);
     let mut archive = Archive::new(decoder);
 
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_string_lossy().to_string();
+    let mut entries_processed = 0;
 
-        if path.starts_with(".SIGN.RSA.") && path.ends_with(".rsa.pub") {
-            // Extract key name from filename
-            // Format: .SIGN.RSA.<key_name>.rsa.pub
-            let key_name = path
-                .strip_prefix(".SIGN.RSA.")
-                .and_then(|s| s.strip_suffix(".rsa.pub"))
-                .unwrap_or("unknown")
-                .to_string();
+    // Process tar entries
+    for entry_result in archive.entries()? {
+        let mut entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("Error reading tar entry: {}", e);
+                continue; // Skip problematic entries
+            }
+        };
 
-            let mut signature_data = Vec::new();
-            entry.read_to_end(&mut signature_data)?;
+        let path = match entry.path() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(e) => {
+                log::warn!("Error getting path from tar entry: {}", e);
+                continue; // Skip entries with invalid paths
+            }
+        };
 
-            return Ok(Some(ApkSignature {
-                filename: path,
-                key_name,
-                signature_data,
-            }));
-        }
-    }
+        entries_processed += 1;
+        log::debug!("Processing tar entry #{}: {}", entries_processed, path);
 
-    Ok(None)
-}
-
-/// Extracts control segment containing .PKGINFO and scriptlets
-fn extract_control_segment(control_stream: &[u8]) -> Result<(String, HashMap<String, Vec<u8>>)> {
-    let decoder = GzDecoder::new(control_stream);
-    let mut archive = Archive::new(decoder);
-
-    let mut pkginfo_content = String::new();
-    let mut control_files = HashMap::new();
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_string_lossy().to_string();
-
-        let mut content = Vec::new();
-        entry.read_to_end(&mut content)?;
-
-        if path == ".PKGINFO" {
-            pkginfo_content = String::from_utf8(content)
-                .wrap_err("Failed to parse .PKGINFO as UTF-8")?;
+        // Create the target path - for dot files use just the filename, for others preserve path
+        let target_path = if path.starts_with(".") {
+            // For dot files, just use the filename part
+            let file_name = Path::new(&path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            store_tmp_dir.join("info/apk").join(file_name)
         } else {
-            control_files.insert(path, content);
-        }
-    }
-
-    if pkginfo_content.is_empty() {
-        return Err(eyre::eyre!("No .PKGINFO file found in control segment"));
-    }
-
-    Ok((pkginfo_content, control_files))
-}
-
-/// Extracts data segment and returns file checksums from PAX headers
-fn extract_data_segment<P: AsRef<Path>>(data_stream: &[u8], store_tmp_dir: P) -> Result<Vec<FileChecksum>> {
-    let store_tmp_dir = store_tmp_dir.as_ref();
-    let decoder = GzDecoder::new(data_stream);
-    let mut archive = Archive::new(decoder);
-    let mut file_checksums = Vec::new();
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_string_lossy().to_string();
-
-        // Extract SHA1 checksum from PAX headers
-        let sha1_checksum = extract_sha1_from_pax_header(&mut entry)?;
-
-        file_checksums.push(FileChecksum {
-            path: path.clone(),
-            sha1: sha1_checksum,
-        });
-
-        // Extract the file to fs/
-        let target_path = store_tmp_dir.join("fs").join(&path);
+            // For regular files, preserve the full path
+            store_tmp_dir.join("fs").join(&path)
+        };
 
         // Ensure parent directory exists
         if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
+            if let Err(e) = fs::create_dir_all(parent) {
+                log::warn!("Failed to create directory {}: {}", parent.display(), e);
+                continue;
+            }
         }
 
         // Extract the file
-        entry.unpack(&target_path)
-            .wrap_err_with(|| format!("Failed to extract file: {}", path))?;
+        if let Err(e) = entry.unpack(&target_path) {
+            log::warn!("Failed to extract file {}: {}", path, e);
+            continue;
+        }
     }
 
-    Ok(file_checksums)
-}
-
-/// Extracts SHA1 checksum from PAX header if present
-fn extract_sha1_from_pax_header<R: Read>(_entry: &mut Entry<R>) -> Result<Option<String>> {
-    // Try to get PAX extensions (this is a simplified approach)
-    // In a full implementation, we would need to properly parse PAX headers
-    // For now, we'll return None as this requires more complex tar parsing
-
-    // TODO: Implement proper PAX header parsing to extract APK-TOOLS.checksum.SHA1
-    Ok(None)
-}
-
-/// Validates signature against public key (stub implementation)
-#[allow(dead_code)]
-pub fn validate_signature<P: AsRef<Path>>(
-    signature: &ApkSignature,
-    _control_stream_hash: &[u8],
-    keys_dir: P,
-) -> Result<bool> {
-    let keys_dir = keys_dir.as_ref();
-    let key_file = keys_dir.join(format!("{}.rsa.pub", signature.key_name));
-
-    if !key_file.exists() {
-        log::warn!("Public key not found: {}", key_file.display());
-        return Ok(false);
-    }
-
-    // TODO: Implement proper PKCS1v15 RSA signature verification
-    // This would require:
-    // 1. Reading the public key from the .rsa.pub file
-    // 2. Verifying the DER-encoded PKCS1v15 RSA signature
-    // 3. Computing SHA1 hash of control stream and comparing
-
-    log::info!("Signature validation not yet implemented");
-    Ok(true) // Placeholder
+    log::debug!("Successfully unpacked APK package with {} tar entries", entries_processed);
+    Ok(())
 }
 
 /// Maps APK scriptlet names to common scriptlet names and moves them to info/install/
 pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let fs_dir = store_tmp_dir.join("fs");
+    let apk_dir = store_tmp_dir.join("info/apk");
     let install_dir = store_tmp_dir.join("info/install");
 
     // Mapping from APK scriptlet names to common names
@@ -306,7 +289,7 @@ pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     ].into_iter().collect();
 
     for (apk_script, common_scripts) in &scriptlet_mapping {
-        let apk_script_path = fs_dir.join(apk_script);
+        let apk_script_path = apk_dir.join(apk_script);
         if apk_script_path.exists() {
             for common_script in common_scripts {
                 let target_path = install_dir.join(common_script);
@@ -324,9 +307,6 @@ pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
                     fs::set_permissions(&target_path, perms)?;
                 }
             }
-
-            // Remove the original scriptlet from fs/
-            fs::remove_file(&apk_script_path)?;
         }
     }
 
@@ -376,27 +356,6 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         } else {
             log::warn!("Invalid PKGINFO line format at line {}: {}", line_num + 1, line);
         }
-    }
-
-    // Handle version-release split for APK packages
-    // Clone the version value to avoid borrow checker issues
-    let version_value_opt = raw_fields.get("pkgver")
-        .and_then(|values| values.first())
-        .cloned();
-
-    if let Some(version_value) = version_value_opt {
-        if let Some((ver, rel)) = version_value.rsplit_once('-') {
-            // Check if the last part looks like a release number
-            if rel.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                raw_fields.insert("pkgver".to_string(), vec![ver.to_string()]);
-                raw_fields.insert("release".to_string(), vec![rel.to_string()]);
-            }
-        }
-    }
-
-    // Add epoch if not present
-    if !raw_fields.contains_key("epoch") {
-        raw_fields.insert("epoch".to_string(), vec!["0".to_string()]);
     }
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
