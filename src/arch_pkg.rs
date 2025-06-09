@@ -9,15 +9,6 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use zstd::stream::read::Decoder as ZstdDecoder;
 
-/// Arch Linux package structure definition
-#[derive(Debug)]
-pub struct ArchPackage {
-    pub pkginfo_content: String,
-    pub install_script: Option<String>,
-    pub mtree_content: Option<String>,
-    pub buildinfo_content: Option<String>,
-}
-
 /// PKGINFO field definitions based on Arch Linux specification
 pub struct PkgInfoField {
     pub name: &'static str,
@@ -160,7 +151,6 @@ lazy_static! {
 }
 
 /// Unpacks an Arch Linux package to the specified directory
-/// Supports both .pkg.tar.zst and .pkg.tar.xz formats
 pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<()> {
     let pkg_file = pkg_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
@@ -188,14 +178,7 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<(
     let archive = Archive::new(decoder);
 
     // Extract package contents
-    let mut arch_package = ArchPackage {
-        pkginfo_content: String::new(),
-        install_script: None,
-        mtree_content: None,
-        buildinfo_content: None,
-    };
-
-    extract_package_contents(archive, store_tmp_dir, &mut arch_package)
+    extract_package_contents(archive, store_tmp_dir)
         .wrap_err("Failed to extract package contents")?;
 
     // Generate filelist.txt
@@ -203,16 +186,19 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<(
     crate::store::create_filelist_txt(store_tmp_dir)
         .wrap_err_with(|| format!("Failed to create filelist.txt for {}", store_tmp_dir.display()))?;
 
-    // Process install script if present
-    if let Some(install_content) = arch_package.install_script {
+    // Check if .INSTALL file exists and process it
+    let install_path = store_tmp_dir.join("info/arch/.INSTALL");
+    if install_path.exists() {
         log::debug!("Processing install script");
+        let install_content = fs::read(&install_path)
+            .wrap_err_with(|| format!("Failed to read .INSTALL file: {}", install_path.display()))?;
         extract_install_scriptlets(&install_content, store_tmp_dir)
             .wrap_err("Failed to extract install scriptlets")?;
     }
 
     // Create package.txt with metadata from .PKGINFO
     log::debug!("Creating package.txt");
-    create_package_txt(&arch_package.pkginfo_content, store_tmp_dir)
+    create_package_txt(store_tmp_dir)
         .wrap_err("Failed to create package.txt")?;
 
     log::debug!("Arch Linux package unpacking completed successfully");
@@ -223,106 +209,61 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<(
 fn extract_package_contents<R: Read>(
     mut archive: Archive<R>,
     store_tmp_dir: &Path,
-    arch_package: &mut ArchPackage,
 ) -> Result<()> {
     let entries = archive.entries()
         .wrap_err("Failed to read entries from package archive")?;
+
+    let mut found_pkginfo = false;
+    let mut entries_processed = 0;
 
     for entry_result in entries {
         let mut entry = entry_result
             .wrap_err("Failed to read entry from package archive")?;
 
         let path = entry.path()?.to_string_lossy().to_string();
+        entries_processed += 1;
+        log::debug!("Processing tar entry #{}: {}", entries_processed, path);
 
-        // Handle special files
-        match path.as_str() {
-            ".PKGINFO" => {
-                log::debug!("Found .PKGINFO");
-                let mut content = String::new();
-                entry.read_to_string(&mut content)
-                    .wrap_err("Failed to read .PKGINFO content")?;
-                arch_package.pkginfo_content = content;
-
-                // Save .PKGINFO to info/arch/
-                let pkginfo_path = store_tmp_dir.join("info/arch/.PKGINFO");
-                fs::write(&pkginfo_path, &arch_package.pkginfo_content)
-                    .wrap_err_with(|| format!("Failed to write .PKGINFO to {}", pkginfo_path.display()))?;
-            },
-            ".INSTALL" => {
-                log::debug!("Found .INSTALL");
-                let mut content = String::new();
-                entry.read_to_string(&mut content)
-                    .wrap_err("Failed to read .INSTALL content")?;
-                arch_package.install_script = Some(content.clone());
-
-                // Save .INSTALL to fs/
-                let install_path = store_tmp_dir.join("fs/.INSTALL");
-                fs::write(&install_path, &content)
-                    .wrap_err_with(|| format!("Failed to write .INSTALL to {}", install_path.display()))?;
-            },
-            ".MTREE" => {
-                log::debug!("Found .MTREE");
-                let mut content = String::new();
-                entry.read_to_string(&mut content)
-                    .wrap_err("Failed to read .MTREE content")?;
-                arch_package.mtree_content = Some(content.clone());
-
-                // Save .MTREE to info/arch/
-                let mtree_path = store_tmp_dir.join("info/arch/.MTREE");
-                fs::write(&mtree_path, &content)
-                    .wrap_err_with(|| format!("Failed to write .MTREE to {}", mtree_path.display()))?;
-            },
-            ".BUILDINFO" => {
-                log::debug!("Found .BUILDINFO");
-                let mut content = String::new();
-                entry.read_to_string(&mut content)
-                    .wrap_err("Failed to read .BUILDINFO content")?;
-                arch_package.buildinfo_content = Some(content.clone());
-
-                // Save .BUILDINFO to info/arch/
-                let buildinfo_path = store_tmp_dir.join("info/arch/.BUILDINFO");
-                fs::write(&buildinfo_path, &content)
-                    .wrap_err_with(|| format!("Failed to write .BUILDINFO to {}", buildinfo_path.display()))?;
-            },
-            ".Changelog" => {
-                log::debug!("Found .Changelog");
-                let mut content = String::new();
-                entry.read_to_string(&mut content)
-                    .wrap_err("Failed to read .Changelog content")?;
-
-                // Save .Changelog to info/arch/
-                let changelog_path = store_tmp_dir.join("info/arch/.Changelog");
-                fs::write(&changelog_path, &content)
-                    .wrap_err_with(|| format!("Failed to write .Changelog to {}", changelog_path.display()))?;
-            },
-            _ => {
-                // Regular file, extract to fs directory
-                if !path.starts_with('.') {
-                    let target_path = store_tmp_dir.join("fs").join(&path);
-
-                    // Ensure parent directory exists
-                    if let Some(parent) = target_path.parent() {
-                        fs::create_dir_all(parent)
-                            .wrap_err_with(|| format!("Failed to create directory: {}", parent.display()))?;
-                    }
-
-                    // Extract the file
-                    entry.unpack(&target_path)
-                        .wrap_err_with(|| format!("Failed to extract file: {}", path))?;
-                }
+        // Create the target path - for dot files use info/arch/, for others use fs/
+        let target_path = if path.starts_with(".") {
+            // Special file, store in info/arch/
+            if path == ".PKGINFO" {
+                found_pkginfo = true;
             }
+            log::debug!("Found special file: {}", path);
+            store_tmp_dir.join("info/arch").join(&path)
+        } else {
+            // Regular file, preserve the full path in fs/
+            store_tmp_dir.join("fs").join(&path)
+        };
+
+        // Ensure parent directory exists
+        if let Some(parent) = target_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                log::warn!("Failed to create directory {}: {}", parent.display(), e);
+                continue;
+            }
+        }
+
+        // Extract the file
+        if let Err(e) = entry.unpack(&target_path) {
+            log::warn!("Failed to extract file {}: {}", path, e);
+            continue;
         }
     }
 
-    if arch_package.pkginfo_content.is_empty() {
+    if !found_pkginfo {
         return Err(eyre::eyre!("No .PKGINFO file found in package"));
     }
 
+    log::debug!("Successfully unpacked Arch Linux package with {} tar entries", entries_processed);
     Ok(())
 }
 
 /// Extract install scriptlets from .INSTALL file
-fn extract_install_scriptlets(install_content: &str, store_tmp_dir: &Path) -> Result<()> {
+fn extract_install_scriptlets(install_content: &[u8], store_tmp_dir: &Path) -> Result<()> {
+    // Convert binary data to string, ignoring invalid UTF-8 sequences
+    let install_content_str = String::from_utf8_lossy(install_content).to_string();
     log::debug!("Extracting install scriptlets");
 
     // Get all scriptlet names from SCRIPT_MAPPING
@@ -340,21 +281,21 @@ fn extract_install_scriptlets(install_content: &str, store_tmp_dir: &Path) -> Re
         let start_pattern = scriptlet_name;
         let start_marker = format!("{}() {{", start_pattern);
 
-        if let Some(start_pos) = install_content.find(&start_marker) {
+        if let Some(start_pos) = install_content_str.find(&start_marker) {
             // Find the end of the scriptlet
             let end_pos = if end_pattern.is_empty() {
                 // Last scriptlet, goes to the end of the file
-                install_content.len()
+                install_content_str.len()
             } else {
                 // Find the next scriptlet or end of file
                 let end_marker = format!("{}() {{", end_pattern);
-                install_content[start_pos + start_marker.len()..]
+                install_content_str[start_pos + start_marker.len()..]
                     .find(&end_marker)
-                    .map_or(install_content.len(), |pos| start_pos + start_marker.len() + pos)
+                    .map_or(install_content_str.len(), |pos| start_pos + start_marker.len() + pos)
             };
 
             // Extract the scriptlet content
-            let mut scriptlet_content = install_content[start_pos..end_pos].to_string();
+            let mut scriptlet_content = install_content_str[start_pos..end_pos].to_string();
 
             // Remove the function declaration line and closing brace
             if let Some(first_newline) = scriptlet_content.find('\n') {
@@ -380,11 +321,16 @@ fn extract_install_scriptlets(install_content: &str, store_tmp_dir: &Path) -> Re
     Ok(())
 }
 
-/// Create package.txt from .PKGINFO content
-fn create_package_txt(pkginfo_content: &str, store_tmp_dir: &Path) -> Result<()> {
+/// Create package.txt from .PKGINFO file in info/arch/
+fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
     log::debug!("Creating package.txt from .PKGINFO");
 
-    let mut package_data = HashMap::new();
+    // Read the .PKGINFO file
+    let pkginfo_path = store_tmp_dir.join("info/arch/.PKGINFO");
+    let pkginfo_content = fs::read_to_string(&pkginfo_path)
+        .wrap_err_with(|| format!("Failed to read .PKGINFO file: {}", pkginfo_path.display()))?;
+
+    let mut raw_fields: HashMap<String, Vec<String>> = HashMap::new();
 
     // Parse .PKGINFO content
     for line in pkginfo_content.lines() {
@@ -397,38 +343,39 @@ fn create_package_txt(pkginfo_content: &str, store_tmp_dir: &Path) -> Result<()>
             let key = line[..pos].trim();
             let value = line[pos + 3..].trim();
 
-            // Map the key to the standard key if possible
-            let standard_key = PACKAGE_KEY_MAPPING.get(key).copied().unwrap_or(key);
-
             // Check if this is a repeatable field
             if let Some(field_info) = PKGINFO_FIELDS.get(key) {
                 if field_info.repeatable {
                     // Append to existing values
-                    let entry = package_data.entry(standard_key.to_string()).or_insert_with(Vec::new);
-                    entry.push(value.to_string());
+                    raw_fields.entry(key.to_string()).or_insert_with(Vec::new).push(value.to_string());
                 } else {
                     // Single value field
-                    package_data.insert(standard_key.to_string(), vec![value.to_string()]);
+                    raw_fields.insert(key.to_string(), vec![value.to_string()]);
                 }
             } else {
                 // Unknown field, treat as single value
-                package_data.insert(standard_key.to_string(), vec![value.to_string()]);
+                raw_fields.insert(key.to_string(), vec![value.to_string()]);
             }
         }
     }
 
-    // Write package.txt
-    let package_path = store_tmp_dir.join("info/package.txt");
-    let mut package_content = String::new();
+    // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
+    let mut package_fields: Vec<(String, String)> = Vec::new();
 
-    for (key, values) in package_data {
+    for (original_field, values) in raw_fields {
+        let mapped_field = PACKAGE_KEY_MAPPING
+            .get(original_field.as_str())
+            .unwrap_or(&original_field.as_str())
+            .to_string();
+
+        // For repeatable fields, add each value separately
         for value in values {
-            package_content.push_str(&format!("{}={}\n", key, value));
+            package_fields.push((mapped_field.clone(), value));
         }
     }
 
-    fs::write(&package_path, package_content)
-        .wrap_err_with(|| format!("Failed to write package.txt to {}", package_path.display()))?;
+    // Use the general store function to save the package.txt file
+    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
 
     log::debug!("Successfully created package.txt");
     Ok(())
