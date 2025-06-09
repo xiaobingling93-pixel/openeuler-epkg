@@ -24,6 +24,7 @@ pub struct DownloadTask {
     pub max_retries: usize,
     pub data_channel: Option<Sender<Vec<u8>>>,
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
+    pub final_path: PathBuf, // Store the final download path
 }
 
 #[derive(Debug, Clone)]
@@ -36,12 +37,25 @@ pub enum DownloadStatus {
 
 impl DownloadTask {
     pub fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
+        // Calculate final_path during task creation
+        // - For normal URLs: output_dir/last_url_segment
+        // - For URLs with triple slashes: output_dir/everything_after_triple_slash
+        //   Example: "https://example.com///foo/bar.txt" -> output_dir/foo/bar.txt
+        let final_path = if let Some((_, str_b)) = url.split_once("///") {
+            output_dir.join(str_b)
+        } else {
+            let file_name = url.split('/').last()
+                .unwrap_or("unknown_file");
+            output_dir.join(file_name)
+        };
+
         Self {
             url,
             output_dir,
             max_retries,
             data_channel: None,
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Pending)),
+            final_path,
         }
     }
 
@@ -124,6 +138,36 @@ impl DownloadManager {
                 drop(tasks);
                 return Err(eyre!("Task with URL {} not found", task_url));
             }
+            drop(tasks);
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Wait for any download task to complete and return the completed task's URL
+    pub fn wait_for_any_task(&self, task_urls: &[String]) -> Result<Option<String>> {
+        if task_urls.is_empty() {
+            return Ok(None);
+        }
+
+        loop {
+            let tasks = self.tasks.lock()
+                .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
+
+            // Check if any of the specified tasks have completed
+            for task_url in task_urls {
+                if let Some(task) = tasks.get(task_url) {
+                    match task.get_status() {
+                        DownloadStatus::Completed => {
+                            return Ok(Some(task_url.clone()));
+                        }
+                        DownloadStatus::Failed(err) => {
+                            return Err(eyre!("Download failed for {}: {}", task_url, err));
+                        }
+                        _ => {} // Still downloading or pending
+                    }
+                }
+            }
+
             drop(tasks);
             thread::sleep(Duration::from_millis(100));
         }
@@ -214,22 +258,13 @@ impl DownloadManager {
 
                         if let Err(e) = download_task(
                             &client,
-                            &task.url,
-                            &task.output_dir,
+                            &task,
                             &multi_progress,
-                            task.max_retries,
-                            task.data_channel,
                         ) {
-                            match task.status.lock() {
-                                Ok(mut status) => *status = DownloadStatus::Failed(e.to_string()),
-                                Err(e) => log::error!("Failed to lock task status mutex: {}", e)
-                            };
-                        } else {
-                            match task.status.lock() {
-                                Ok(mut status) => *status = DownloadStatus::Completed,
-                                Err(e) => log::error!("Failed to lock task status mutex: {}", e)
-                            };
+                            // Status is already updated in the download_task function
+                            log::error!("Download task failed for {}: {}", task.url, e);
                         }
+                        // Status is already updated in the download_task function for success case too
                     });
 
                     // Wait for download to start before continuing
@@ -355,6 +390,11 @@ pub fn submit_download_task(task: DownloadTask) -> Result<()> {
     DOWNLOAD_MANAGER.submit_task(task)
 }
 
+/// Wait for any of the specified download tasks to complete
+pub fn wait_for_any_download_task(task_urls: &[String]) -> Result<Option<String>> {
+    DOWNLOAD_MANAGER.wait_for_any_task(task_urls)
+}
+
 pub fn download_urls(
     urls: Vec<String>,
     output_dir: &Path,
@@ -390,30 +430,28 @@ pub fn download_urls(
 }
 
 /// Downloads a file from a URL to the output directory.
-/// - For normal URLs: output_dir/last_url_segment
-/// - For URLs with triple slashes: output_dir/everything_after_triple_slash
-///   Example: "https://example.com///foo/bar.txt" -> output_dir/foo/bar.txt
+/// Uses the final_path that was calculated when the task was created.
 fn download_task(
     client: &Agent,
-    url: &str,
-    output_dir: &Path,
+    task: &DownloadTask,
     multi_progress: &MultiProgress,
-    max_retries: usize,
-    data_channel: Option<Sender<Vec<u8>>>,
 ) -> Result<()> {
+    let url = &task.url;
+    let final_path = &task.final_path;
+    let data_channel = &task.data_channel;
+    let max_retries = task.max_retries;
+
     log::debug!("download_task starting for {}, has_channel: {}", url, data_channel.is_some());
 
-    let final_path = if let Some((_, str_b)) = url.split_once("///") {
-        output_dir.join(str_b)
-    } else {
-        let file_name = url.split('/').last()
-            .ok_or_else(|| eyre!("Invalid URL: {}", url))?;
-        output_dir.join(file_name)
-    };
+    // Handle local file URLs (file:// or starting with /)
+    if url.starts_with("file://") || url.starts_with("/") {
+        return handle_local_file(url, final_path, task);
+    }
+
     let part_path = final_path.with_extension("part");
 
     if final_path.exists() {
-        fs::rename(&final_path, &part_path)
+        fs::rename(final_path, &part_path)
             .with_context(|| format!("Failed to rename file: {} to {}", final_path.display(), part_path.display()))?;
     }
     if let Some(parent) = final_path.parent() {
@@ -437,7 +475,7 @@ fn download_task(
         &part_path,
         &pb,
         max_retries,
-        data_channel,
+        data_channel.clone(),
     );
     log::debug!("download_task download_file_with_retries completed for {}, result: {:?}", url, result);
 
@@ -449,13 +487,56 @@ fn download_task(
     }
 
     match result {
-        Ok(()) => fs::rename(&part_path, &final_path)
-            .with_context(|| format!("Failed to rename file: {} to {}", part_path.display(), final_path.display()))?,
+        Ok(()) => {
+            fs::rename(&part_path, final_path)
+                .with_context(|| format!("Failed to rename file: {} to {}", part_path.display(), final_path.display()))?;
+
+            // Mark task as completed
+            let mut status = task.status.lock()
+                .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+            *status = DownloadStatus::Completed;
+        },
         Err(e) => {
-            fs::remove_file(&part_path)?;
+            if part_path.exists() {
+                fs::remove_file(&part_path)?;
+            }
+
+            // Mark task as failed
+            let mut status = task.status.lock()
+                .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+            *status = DownloadStatus::Failed(format!("{}", e));
+
             return Err(e);
         }
     }
+
+    Ok(())
+}
+
+/// Handles local file URLs by copying them to the destination
+///
+/// - Supports file:// URLs and absolute paths starting with /
+/// - Creates parent directories as needed
+/// - Marks the download task as completed
+fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Result<()> {
+    let source_path = if url.starts_with("file://") {
+        Path::new(&url[7..])
+    } else {
+        Path::new(url)
+    };
+
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent directory for {}: {}", final_path.display(), parent.display()))?;
+    }
+
+    fs::copy(source_path, final_path)
+        .with_context(|| format!("Failed to copy file from {} to {}", source_path.display(), final_path.display()))?;
+
+    // Mark task as completed
+    let mut status = task.status.lock()
+        .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+    *status = DownloadStatus::Completed;
 
     Ok(())
 }
@@ -849,28 +930,71 @@ fn download_file(
 }
 
 impl PackageManager {
-    fn download_or_copy_urls(&mut self, urls: Vec<String>, output_dir: &Path, max_retries: usize, async_mode: bool) -> Result<()> {
-        if urls.is_empty() {
-            return Ok(());
+    /// Submit download tasks for packages without waiting for completion
+    /// Returns a mapping from download URLs to their package keys for tracking
+    pub fn submit_download_tasks(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<HashMap<String, String>> {
+        let output_dir = dirs().epkg_downloads_cache.clone();
+        let mut url_to_pkgkey = HashMap::new();
+
+        // Create output directory
+        fs::create_dir_all(&output_dir)
+            .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
+
+        // Submit download tasks for each package (handles both local and remote)
+        for pkgkey in packages.keys() {
+            let package = self.load_package_info(pkgkey)
+                .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
+            let url = format!(
+                "{}/{}",
+                package.package_baseurl,
+                package.location
+            );
+
+            // Submit download task (handles both local and remote files)
+            let task = DownloadTask::new(url.clone(), output_dir.clone(), 6);
+            submit_download_task(task)
+                .with_context(|| format!("Failed to submit download task for {}", url))?;
+            url_to_pkgkey.insert(url, pkgkey.clone());
         }
-        if urls[0].starts_with("/") {
-            for url in urls {
-                let file_name = url.split('/').last()
-                    .ok_or_else(|| eyre!("Failed to extract filename from URL: {}", url))?;
-                let dest_path = output_dir.join(file_name);
-                match fs::copy(&url, &dest_path) {
-                    Ok(_) => log::debug!("Successfully copied '{}' to '{}'", url, dest_path.display()),
-                    Err(e) => {
-                        log::error!("Failed to local copy '{}' to '{}': {}", url, dest_path.display(), e);
-                        return Err(eyre!("Failed to copy local file: {} (While copying '{}' to '{}')", e, url, dest_path.display()));
-                    }
-                }
-            }
+
+        // Start processing download tasks
+        DOWNLOAD_MANAGER.start_processing();
+
+        Ok(url_to_pkgkey)
+    }
+
+    /// Get the local file path for a downloaded package
+    pub fn get_package_file_path(&mut self, pkgkey: &str) -> Result<String> {
+        let package = self.load_package_info(pkgkey)
+            .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
+        let url = format!(
+            "{}/{}",
+            package.package_baseurl,
+            package.location
+        );
+
+        // Check if we have a download task for this URL
+        let tasks = DOWNLOAD_MANAGER.tasks.lock()
+            .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
+
+        if let Some(task) = tasks.get(&url) {
+            // Return the final_path from the task
+            return Ok(task.final_path.to_string_lossy().to_string());
+        }
+
+        // If no task exists, calculate the path as before (fallback)
+        if url.starts_with("/") {
+            // Local file - return the destination path in downloads cache
+            let file_name = url.split('/').last()
+                .ok_or_else(|| eyre!("Failed to extract filename from URL: {}", url))?;
+            let dest_path = dirs().epkg_downloads_cache.join(file_name);
+            Ok(dest_path.to_string_lossy().to_string())
         } else {
-            download_urls(urls, output_dir, max_retries, async_mode)
-                .map_err(|e| eyre!("Failed to download URLs to {}: {}", output_dir.display(), e))?;
+            // Remote file - use the URL to cache path conversion
+            let cache_path = crate::repo::url_to_cache_path(&url)
+                .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?;
+            Ok(cache_path.to_string_lossy().to_string())
         }
-        Ok(())
     }
 
     // Download packages specified by their pkgkey strings.
@@ -895,9 +1019,9 @@ impl PackageManager {
             local_files.push(cache_path);
         }
 
-        // Step 2: Call the predefined download_urls function
-        self.download_or_copy_urls(urls, &output_dir, 6, async_mode)
-            .map_err(|e| eyre!("Failed to download or copy package URLs to {}: {}", output_dir.display(), e))?;
+        // Step 2: Call download_urls function (handles both local and remote files)
+        download_urls(urls, &output_dir, 6, async_mode)
+            .map_err(|e| eyre!("Failed to download URLs to {}: {}", output_dir.display(), e))?;
         Ok(local_files)
     }
 

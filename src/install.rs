@@ -13,6 +13,7 @@ use crate::models::*;
 use crate::utils::*;
 use crate::dirs::find_env_root;
 use crate::package;
+use crate::download::wait_for_any_download_task;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgkey, info)
@@ -540,61 +541,48 @@ impl PackageManager {
         if config().common.simulate {
             return Ok(());
         }
-        let files = self.download_packages(&packages_to_install, false)?;
-        let pkglines = crate::store::unpack_packages(files)?;
-        for pkgline in pkglines {
-            // Parse the pkgline which now includes architecture
-            let parsed = package::parse_pkgline(&pkgline)
-                .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
 
-            // Format the package key using the exact architecture from the package
-            let pkgkey = package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
-
-            // Update the package info with the pkgline
-            if let Some(pkg_info) = packages_to_install.get_mut(&pkgkey) {
-                pkg_info.pkgline = pkgline;
-            } else {
-                // If not found with the exact arch, return an error
-                return Err(eyre!("Package key not found: {} (with arch {})", parsed.pkgname, parsed.arch));
-            }
-        }
+        // Submit download tasks for all packages
+        let url_to_pkgkey = self.submit_download_tasks(&packages_to_install)?;
+        let pending_urls: Vec<String> = url_to_pkgkey.keys().cloned().collect();
 
         self.change_appbin_flag_same_source(&mut packages_to_install)?;
         let new_generation = self.create_new_generation()?;
 
-        let mut appbin_count = 0;
-        let mut appbin_packages = Vec::new();
         let env_root = self.get_default_env_root()?.clone();
         let store_root = dirs().epkg_store.clone();
 
-        // First phase: Link all packages
-        for (pkgkey, package_info) in &packages_to_install {
-            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-            self.link_package(&store_fs_dir, &env_root)
-                .with_context(|| format!("Failed to link package {}", pkgkey))?;
-        }
+        // Process packages as downloads complete
+        let completed_packages = self.process_downloads_and_install(
+            &url_to_pkgkey,
+            pending_urls,
+            &mut packages_to_install,
+            &store_root,
+            &env_root,
+        )?;
 
-        // Second phase: Expose packages and handle appbin flags
-        for (pkgkey, package_info) in &packages_to_install {
-            let appbin_flag = package_info.appbin_flag;
-            if appbin_flag {
+        // Expose packages that need to be exposed (after all packages have been linked)
+        let mut appbin_count = 0;
+        let mut appbin_packages = Vec::new();
+        for (pkgkey, package_info) in &completed_packages {
+            if package_info.appbin_flag {
                 appbin_count += 1;
                 appbin_packages.push(pkgkey.clone());
                 let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-                self.expose_package(&store_fs_dir, &env_root)
+                self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
             }
         }
 
         // Save installed packages
-        self.installed_packages.extend(packages_to_install.clone());
+        self.installed_packages.extend(completed_packages.clone());
         self.save_installed_packages(&new_generation)?;
-        self.record_history(&new_generation, "install", packages_to_install.keys().cloned().collect(), vec![])?;
+        self.record_history(&new_generation, "install", completed_packages.keys().cloned().collect(), vec![])?;
 
         // Last step: update current symlink to point to the new generation
         self.update_current_generation_symlink(new_generation)?;
 
-        println!("Installation successful - Total packages: {}, AppBin packages: {}", packages_to_install.len(), appbin_count);
+        println!("Installation successful - Total packages: {}, AppBin packages: {}", completed_packages.len(), appbin_count);
         if !appbin_packages.is_empty() {
             println!("AppBin package list: {}", appbin_packages.join(", "));
         }
@@ -602,4 +590,89 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Process downloads and install packages as they complete
+    fn process_downloads_and_install(
+        &mut self,
+        url_to_pkgkey: &HashMap<String, String>,
+        mut pending_urls: Vec<String>,
+        packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
+        store_root: &Path,
+        env_root: &Path,
+    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+        let mut completed_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+
+        // Process packages as downloads complete
+        while !pending_urls.is_empty() {
+            // Wait for any download to complete
+            if let Some(completed_url) = wait_for_any_download_task(&pending_urls)? {
+                // Get the package key for this completed URL
+                let completed_pkgkey = url_to_pkgkey.get(&completed_url).cloned();
+
+                if let Some(pkgkey) = completed_pkgkey {
+                    // Remove from pending list
+                    pending_urls.retain(|url| *url != completed_url);
+
+                    // Process the downloaded package
+                    if let Some((actual_pkgkey, package_info)) = self.process_downloaded_package(
+                        &pkgkey,
+                        packages_to_install,
+                        store_root,
+                        env_root,
+                    )? {
+                        // Store completed package
+                        completed_packages.insert(actual_pkgkey, package_info);
+                    }
+                } else {
+                    log::warn!("Could not find package key for completed URL: {}", completed_url);
+                }
+            }
+        }
+
+        Ok(completed_packages)
+    }
+
+    /// Process a downloaded package file
+    ///
+    /// - Gets the file path for the package
+    /// - Unpacks the package
+    /// - Updates package info with the pkgline
+    /// - Links the package (exposure happens later)
+    ///
+    /// Returns the actual package key and updated package info if successful
+    fn process_downloaded_package(
+        &mut self,
+        pkgkey: &str,
+        packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
+        store_root: &Path,
+        env_root: &Path,
+    ) -> Result<Option<(String, InstalledPackageInfo)>> {
+        // Get the downloaded file path
+        let file_path = self.get_package_file_path(pkgkey)?;
+
+        // Unpack the package
+        let pkgline = crate::store::unpack_mv_package(&file_path)
+            .with_context(|| format!("Failed to unpack package: {}", file_path))?;
+
+        // Parse the pkgline which now includes architecture
+        let parsed = package::parse_pkgline(&pkgline)
+            .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
+
+        // Format the package key using the exact architecture from the package
+        let actual_pkgkey = package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
+
+        // Update the package info with the pkgline
+        let mut package_info = packages_to_install.remove(pkgkey)
+            .or_else(|| packages_to_install.remove(&actual_pkgkey))
+            .ok_or_else(|| eyre!("Package key not found: {} (or {})", pkgkey, actual_pkgkey))?;
+        package_info.pkgline = pkgline;
+
+        // Link the package immediately after unpacking
+        let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
+        self.link_package(&store_fs_dir, &env_root.to_path_buf())
+            .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
+
+        // Exposure will happen later in install_pkgkeys
+
+        Ok(Some((actual_pkgkey, package_info)))
+    }
 }
