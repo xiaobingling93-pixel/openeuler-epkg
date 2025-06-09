@@ -26,6 +26,7 @@ pub struct DownloadTask {
     pub data_channel: Option<Sender<Vec<u8>>>,
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
     pub final_path: PathBuf, // Store the final download path
+    pub size: Option<u32>, // Expected file size for prioritization and verification
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,10 @@ pub enum DownloadStatus {
 
 impl DownloadTask {
     pub fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
+        Self::with_size(url, output_dir, max_retries, None)
+    }
+
+    pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, size: Option<u32>) -> Self {
         // Calculate final_path during task creation
         // - For normal URLs: output_dir/last_url_segment
         // - For URLs with triple slashes: output_dir/everything_after_triple_slash
@@ -57,6 +62,7 @@ impl DownloadTask {
             data_channel: None,
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Pending)),
             final_path,
+            size,
         }
     }
 
@@ -195,7 +201,7 @@ impl DownloadManager {
                         return;
                     }
                 };
-                let pending_tasks: Vec<_> = tasks_guard.iter_mut()
+                let mut pending_tasks: Vec<_> = tasks_guard.iter_mut()
                     .filter(|(_, t)| matches!(t.get_status(), DownloadStatus::Pending))
                     .collect();
 
@@ -211,6 +217,14 @@ impl DownloadManager {
                     thread::sleep(Duration::from_millis(100));
                     continue;
                 }
+
+                // Sort pending tasks by size (largest first) to prioritize large downloads
+                // Tasks without size information are treated as having size 0 and go last
+                pending_tasks.sort_by(|(_, a), (_, b)| {
+                    let size_a = a.size.unwrap_or(0);
+                    let size_b = b.size.unwrap_or(0);
+                    size_b.cmp(&size_a) // Descending order (largest first)
+                });
 
                 for (_task_url, task0) in pending_tasks {
                     let client = client.clone();
@@ -441,8 +455,9 @@ fn download_task(
     let final_path = &task.final_path;
     let data_channel = &task.data_channel;
     let max_retries = task.max_retries;
+    let expected_size = task.size;
 
-    log::debug!("download_task starting for {}, has_channel: {}", url, data_channel.is_some());
+    log::debug!("download_task starting for {}, has_channel: {}, expected_size: {:?}", url, data_channel.is_some(), expected_size);
 
     // Handle local file URLs (file:// or starting with /)
     if url.starts_with("file://") || url.starts_with("/") {
@@ -489,6 +504,24 @@ fn download_task(
 
     match result {
         Ok(()) => {
+            // Verify file size if expected size is provided
+            if let Some(expected) = expected_size {
+                if let Ok(metadata) = fs::metadata(&part_path) {
+                    let actual_size = metadata.len() as u32;
+                    if actual_size != expected {
+                        let error_msg = format!(
+                            "Downloaded file size mismatch: expected {} bytes, got {} bytes",
+                            expected, actual_size
+                        );
+                        log::warn!("{} for {}", error_msg, url);
+                        // Note: We could make this a hard error, but for now just warn
+                        // since size information might not always be accurate
+                    } else {
+                        log::debug!("Downloaded file size verified: {} bytes for {}", actual_size, url);
+                    }
+                }
+            }
+
             fs::rename(&part_path, final_path)
                 .with_context(|| format!("Failed to rename file: {} to {}", part_path.display(), final_path.display()))?;
 
@@ -519,6 +552,7 @@ fn download_task(
 /// - Supports file:// URLs and absolute paths starting with /
 /// - Creates parent directories as needed
 /// - Marks the download task as completed
+/// - Verifies file size if expected size is provided
 fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Result<()> {
     let source_path = if url.starts_with("file://") {
         Path::new(&url[7..])
@@ -533,6 +567,24 @@ fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Resul
 
     fs::copy(source_path, final_path)
         .with_context(|| format!("Failed to copy file from {} to {}", source_path.display(), final_path.display()))?;
+
+    // Verify file size if expected size is provided
+    if let Some(expected_size) = task.size {
+        if let Ok(metadata) = fs::metadata(final_path) {
+            let actual_size = metadata.len() as u32;
+            if actual_size != expected_size {
+                let error_msg = format!(
+                    "Local file size mismatch: expected {} bytes, got {} bytes",
+                    expected_size, actual_size
+                );
+                log::warn!("{} for {}", error_msg, url);
+                // Note: We could make this a hard error, but for now just warn
+                // since size information might not always be accurate
+            } else {
+                log::debug!("Local file size verified: {} bytes for {}", actual_size, url);
+            }
+        }
+    }
 
     // Mark task as completed
     let mut status = task.status.lock()
@@ -1039,8 +1091,16 @@ impl PackageManager {
                 package.location
             );
 
-            // Submit download task (handles both local and remote files)
-            let task = DownloadTask::new(url.clone(), output_dir.clone(), 6);
+            // Use the larger of compressed size or installed size for download prioritization
+            // This helps the download manager prioritize packages that are likely to take longer
+            let size = if package.size > 0 {
+                Some(package.size)
+            } else {
+                None
+            };
+
+            // Submit download task with size information (handles both local and remote files)
+            let task = DownloadTask::with_size(url.clone(), output_dir.clone(), 6, size);
             submit_download_task(task)
                 .with_context(|| format!("Failed to submit download task for {}", url))?;
             url_to_pkgkey.insert(url, pkgkey.clone());
