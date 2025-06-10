@@ -5,6 +5,7 @@ use color_eyre::eyre::{self, Result, WrapErr};
 use color_eyre::eyre::eyre;
 use crate::utils::*;
 use crate::models::*;
+use crate::scriptlets::{run_scriptlets, ScriptletType};
 
 impl PackageManager {
 
@@ -173,6 +174,34 @@ impl PackageManager {
         let new_generation = self.create_new_generation()?;
         let env_root = self.get_default_env_root()?;
         let store_root = dirs().epkg_store.clone();
+        
+        // Create packages_to_remove map for scriptlets
+        let packages_to_remove: HashMap<String, InstalledPackageInfo> = installed_to_remove
+            .iter()
+            .filter_map(|pkgkey| {
+                self.installed_packages.get(pkgkey)
+                    .map(|info| (pkgkey.clone(), info.clone()))
+            })
+            .collect();
+
+        // Run pre-remove scriptlets for all packages to be removed
+        let current_env_name_ref = &config().common.env;
+        let channel_config = self.channels_config.get(current_env_name_ref)
+            .ok_or_else(|| eyre::eyre!(
+                "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
+                current_env_name_ref
+            ))?;
+
+        // Step 1: Pre-remove scriptlets
+        run_scriptlets(
+            &packages_to_remove,
+            &store_root,
+            &env_root,
+            channel_config.format,
+            ScriptletType::PreRemove,
+            false, // is_upgrade
+        )?;
+
         for pkgkey in &installed_to_remove {
             // remove link files
             let pkgline = self.installed_packages.get(pkgkey)
@@ -181,6 +210,16 @@ impl PackageManager {
             log::debug!("Removing files for package {} from {:?}", pkgkey, store_root.join(&pkgline).join("fs"));
             self.unlink_package(&store_root.join(pkgline).join("fs"), &env_root)?;
         }
+
+        // Step 3: Post-remove scriptlets
+        run_scriptlets(
+            &packages_to_remove,
+            &store_root,
+            &env_root,
+            channel_config.format,
+            ScriptletType::PostRemove,
+            false, // is_upgrade
+        )?;
 
         // Step 7: Save installed packages
         for pkgkey in &installed_to_remove {

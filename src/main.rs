@@ -31,6 +31,7 @@ mod arch_pkg;
 mod index_html;
 mod epkg;
 mod version;
+mod scriptlets;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;

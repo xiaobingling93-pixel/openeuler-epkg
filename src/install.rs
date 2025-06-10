@@ -14,6 +14,7 @@ use crate::utils::*;
 use crate::dirs::find_env_root;
 use crate::package;
 use crate::download::wait_for_any_download_task;
+use crate::scriptlets::{run_scriptlets, run_scriptlet, ScriptletType};
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgkey, info)
@@ -553,7 +554,7 @@ impl PackageManager {
                 "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
                 current_env_name_ref
             ))?;
-        let repo_format = channel_config.format;
+        let package_format = channel_config.format;
         // First collect all dependencies
         let dependencies = self.collect_recursive_depends(&packages_to_install, repo_format)?;
 
@@ -595,6 +596,45 @@ impl PackageManager {
             &store_root,
             &env_root,
         )?;
+
+        // Separate packages into fresh installs and upgrades
+        let mut fresh_installs: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        let mut upgrades_new: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        let mut upgrades_old: HashMap<String, InstalledPackageInfo> = HashMap::new();
+
+        for (pkgkey, package_info) in &completed_packages {
+            // todo: pkgkey here is the new package's so you'll always get None for below
+            // old_package_info. Instead should search self.installed_packages() for pkgname
+            if let Some(old_package_info) = self.installed_packages.get(pkgkey) {
+                // This is an upgrade
+                upgrades_new.insert(pkgkey.clone(), package_info.clone());
+                upgrades_old.insert(pkgkey.clone(), old_package_info.clone());
+            } else {
+                // This is a fresh install
+                fresh_installs.insert(pkgkey.clone(), package_info.clone());
+            }
+        }
+
+        // Get channel config for scriptlets
+        let current_env_name_ref = &config().common.env;
+        let channel_config = self.channels_config.get(current_env_name_ref)
+            .ok_or_else(|| eyre::eyre!(
+                "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
+                current_env_name_ref
+            ))?;
+        let package_format = channel_config.format;
+
+        // Handle upgrade flow
+        if !upgrades_new.is_empty() {
+            log::info!("Processing {} upgrades", upgrades_new.len());
+            self.process_upgrades(&upgrades_old, &upgrades_new, &store_root, &env_root, package_format)?;
+        }
+
+        // Handle fresh install flow
+        if !fresh_installs.is_empty() {
+            log::info!("Processing {} fresh installations", fresh_installs.len());
+            self.process_fresh_installs(&fresh_installs, &store_root, &env_root, package_format)?;
+        }
 
         // Expose packages that need to be exposed (after all packages have been linked)
         let mut appbin_count = 0;
@@ -701,7 +741,7 @@ impl PackageManager {
             .ok_or_else(|| eyre!("Package key not found: {} (or {})", pkgkey, actual_pkgkey))?;
         package_info.pkgline = pkgline;
 
-        // Link the package immediately after unpacking
+        // Link new package immediately after unpacking
         let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
         self.link_package(&store_fs_dir, &env_root.to_path_buf())
             .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
@@ -709,5 +749,249 @@ impl PackageManager {
         // Exposure will happen later in install_pkgkeys
 
         Ok(Some((actual_pkgkey, package_info)))
+    }
+
+    /// Process upgrade flow for packages
+    fn process_upgrades(
+        &mut self,
+        old_packages: &HashMap<String, InstalledPackageInfo>,
+        new_packages: &HashMap<String, InstalledPackageInfo>,
+        store_root: &Path,
+        env_root: &Path,
+        package_format: PackageFormat,
+    ) -> Result<()> {
+        // Process each package upgrade individually
+        for (pkgkey, new_package_info) in new_packages {
+            if let Some(old_package_info) = old_packages.get(pkgkey) {
+                log::info!("Upgrading package: {}", pkgkey);
+                self.process_single_package_upgrade(
+                    pkgkey,
+                    old_package_info,
+                    new_package_info,
+                    store_root,
+                    env_root,
+                    package_format,
+                )?;
+            } else {
+                log::warn!("Old package info not found for upgrade: {}", pkgkey);
+            }
+        }
+        Ok(())
+    }
+
+    /// Process upgrade flow for a single package pair
+    fn process_single_package_upgrade(
+        &mut self,
+        pkgkey: &str,
+        old_package_info: &InstalledPackageInfo,
+        new_package_info: &InstalledPackageInfo,
+        store_root: &Path,
+        env_root: &Path,
+        package_format: PackageFormat,
+    ) -> Result<()> {
+        use crate::scriptlets::{run_scriptlet, ScriptletType};
+
+        // Extract version information
+        let old_version = crate::package::pkgkey2version(pkgkey).ok();
+        let new_version = crate::package::pkgkey2version(pkgkey).ok();
+
+        log::debug!(
+            "Processing upgrade for {}: {} -> {}",
+            pkgkey,
+            old_version.as_deref().unwrap_or("unknown"),
+            new_version.as_deref().unwrap_or("unknown")
+        );
+
+        // Step 1: New package pre-upgrade (with old version info)
+        run_scriptlet(
+            pkgkey,
+            new_package_info,
+            store_root,
+            env_root,
+            package_format,
+            ScriptletType::PreUpgrade,
+            true, // is_upgrade
+            old_version.as_deref(),
+            new_version.as_deref(),
+        )?;
+
+        // Step 2: Old package pre-remove (with new version info)
+        run_scriptlet(
+            pkgkey,
+            old_package_info,
+            store_root,
+            env_root,
+            package_format,
+            ScriptletType::PreRemove,
+            true, // is_upgrade
+            old_version.as_deref(),
+            new_version.as_deref(),
+        )?;
+
+        // Step 3: Link new package files to env
+        // Done in process_downloaded_package() for now
+        // let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
+        // self.link_package(&new_store_fs_dir, &env_root.to_path_buf())
+        //     .with_context(|| format!("Failed to link new package {}", new_package_info.pkgline))?;
+
+        // Step 4: Unlink old package unique files (files in old_pkg but not in new_pkg)
+        self.unlink_package_diff(old_package_info, new_package_info, store_root, env_root)
+            .with_context(|| format!("Failed to unlink old package files for {}", pkgkey))?;
+
+        // Step 5: New package post-upgrade (with old version info)
+        run_scriptlet(
+            pkgkey,
+            new_package_info,
+            store_root,
+            env_root,
+            package_format,
+            ScriptletType::PostUpgrade,
+            true, // is_upgrade
+            old_version.as_deref(),
+            new_version.as_deref(),
+        )?;
+
+        // Step 6: Old package post-remove (with new version info)
+        run_scriptlet(
+            pkgkey,
+            old_package_info,
+            store_root,
+            env_root,
+            package_format,
+            ScriptletType::PostRemove,
+            true, // is_upgrade
+            old_version.as_deref(),
+            new_version.as_deref(),
+        )?;
+
+        log::info!("Successfully upgraded package: {}", pkgkey);
+        Ok(())
+    }
+
+    /// Unlink files that are in old_package but not in new_package
+    /// This implements the Set(old_pkg - new_pkg) logic
+    fn unlink_package_diff(
+        &self,
+        old_package_info: &InstalledPackageInfo,
+        new_package_info: &InstalledPackageInfo,
+        store_root: &Path,
+        env_root: &Path,
+    ) -> Result<()> {
+        // Get file lists for both packages
+        let old_store_fs_dir = store_root.join(&old_package_info.pkgline).join("fs");
+        let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
+
+        let old_files = list_package_files(old_store_fs_dir.to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid old package fs path"))?)?;
+        let new_files = list_package_files(new_store_fs_dir.to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid new package fs path"))?)?;
+
+        // Convert to sets of relative paths for comparison
+        let old_rel_paths: std::collections::HashSet<PathBuf> = old_files
+            .iter()
+            .filter_map(|path| path.strip_prefix(&old_store_fs_dir).ok().map(|p| p.to_path_buf()))
+            .collect();
+
+        let new_rel_paths: std::collections::HashSet<PathBuf> = new_files
+            .iter()
+            .filter_map(|path| path.strip_prefix(&new_store_fs_dir).ok().map(|p| p.to_path_buf()))
+            .collect();
+
+        // Find files that are in old package but not in new package
+        let files_to_remove: Vec<PathBuf> = old_rel_paths
+            .difference(&new_rel_paths)
+            .cloned()
+            .collect();
+
+        log::debug!(
+            "Found {} files to remove during upgrade: old_pkg={}, new_pkg={}",
+            files_to_remove.len(),
+            old_package_info.pkgline,
+            new_package_info.pkgline
+        );
+
+        // Remove the files from environment
+        for rel_path in &files_to_remove {
+            let env_file_path = env_root.join(rel_path);
+
+            if env_file_path.exists() {
+                if env_file_path.is_dir() {
+                    // Only remove directory if it's empty
+                    match std::fs::read_dir(&env_file_path) {
+                        Ok(mut entries) => {
+                            if entries.next().is_none() {
+                                log::debug!("Removing empty directory: {}", env_file_path.display());
+                                std::fs::remove_dir(&env_file_path)
+                                    .with_context(|| format!("Failed to remove directory {}", env_file_path.display()))?;
+                            } else {
+                                log::debug!("Directory not empty, skipping: {}", env_file_path.display());
+                            }
+                        }
+                        Err(_) => {
+                            log::debug!("Cannot read directory, skipping: {}", env_file_path.display());
+                        }
+                    }
+                } else {
+                    log::debug!("Removing file: {}", env_file_path.display());
+                    std::fs::remove_file(&env_file_path)
+                        .with_context(|| format!("Failed to remove file {}", env_file_path.display()))?;
+                }
+            }
+        }
+
+        if !files_to_remove.is_empty() {
+            log::info!(
+                "Removed {} unique files from old package during upgrade",
+                files_to_remove.len()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Process fresh install flow for packages
+    fn process_fresh_installs(
+        &mut self,
+        fresh_installs: &HashMap<String, InstalledPackageInfo>,
+        store_root: &Path,
+        env_root: &Path,
+        package_format: PackageFormat,
+    ) -> Result<()> {
+        use crate::scriptlets::{run_scriptlets, ScriptletType};
+
+        // Fresh install flow:
+        // 1. pre_install  (check dependencies/conflicts)
+        // 2. install files (link packages)
+        // 3. post_install (start services/update config)
+
+        // Step 1: Pre-install
+        run_scriptlets(
+            fresh_installs,
+            store_root,
+            env_root,
+            package_format,
+            ScriptletType::PreInstall,
+            false, // is_upgrade
+        )?;
+
+        // Step 2: Install files (link packages)
+        // This is moved earlier to process_downloaded_package(), so that scriptlets have command to run.
+        // for (_, package_info) in fresh_installs {
+        //     let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+        //     self.link_package(&store_fs_dir, &env_root.to_path_buf())
+        //         .with_context(|| format!("Failed to link package {}", package_info.pkgline))?;
+        // }
+
+        // Step 3: Post-install
+        run_scriptlets(
+            fresh_installs,
+            store_root,
+            env_root,
+            package_format,
+            ScriptletType::PostInstall,
+            false, // is_upgrade
+        )?;
+
+        Ok(())
     }
 }
