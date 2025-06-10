@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use regex::Regex;
 
 /// Unpacks an RPM package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
@@ -254,7 +255,7 @@ fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) 
 
     // Process based on scriptlet.program if available
     if let Some(ref program) = scriptlet.program {
-        if !program.is_empty() {
+		if !program.is_empty() {
             let interpreter = &program[0];
 
             // CASE 1: Get extension from scripting language interpreter
@@ -272,6 +273,17 @@ fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) 
                 extension = "sh".to_string();
             }
         }
+    } else {
+        // CASE 4: Program is None but we can try to detect script type from content
+        // To workaround rpm-rs bug: program can be None even the libgcc rpm has interpreter defined:
+        // % rpm -q --xml /home/wfg/.cache/epkg/downloads/openeuler/openEuler-24.03-LTS-SP1/everything/x86_64/Packages/libgcc-12.3.1-62.oe2403sp1.x86_64.rpm|l
+        // <rpmTag name="Postinprog">
+        // <string>&lt;lua&gt;</string>
+        // </rpmTag>
+        if looks_like_lua_script(script_content) {
+            log::debug!("Detected Lua script from content pattern");
+            extension = "lua".to_string();
+        }
     }
 
     // Default to shell script if still no extension determined
@@ -280,6 +292,67 @@ fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) 
     }
 
     (extension, content)
+}
+
+/// Detects if a script content looks like Lua code based on common patterns
+fn looks_like_lua_script(content: &str) -> bool {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    // Define regex patterns for Lua code detection
+    static LUA_PATTERNS: OnceLock<Vec<(Regex, i32)>> = OnceLock::new();
+
+    let patterns = LUA_PATTERNS.get_or_init(|| {
+        vec![
+            // Function calls with posix, os, io modules (strong indicators)
+            (Regex::new(r"^\s*posix\.[a-zA-Z_][a-zA-Z0-9_]*\s*\(").unwrap(), 3),
+            (Regex::new(r"^\s*os\.[a-zA-Z_][a-zA-Z0-9_]*\s*\(").unwrap(), 2),
+            (Regex::new(r"^\s*io\.stdout:[a-zA-Z_][a-zA-Z0-9_]*\s*\(").unwrap(), 2),
+            (Regex::new(r"^\s*io\.stderr:[a-zA-Z_][a-zA-Z0-9_]*\s*\(").unwrap(), 2),
+            (Regex::new(r"^\s*io\.(write|read|open|close)\s*\(").unwrap(), 2),
+
+            // Control structures (medium indicators)
+            (Regex::new(r"^\s*if\s+[^;]*\s+then\s*$").unwrap(), 2),
+            (Regex::new(r"^\s*for\s+[^;]*\s+do\s*$").unwrap(), 2),
+            (Regex::new(r"^\s*while\s+[^;]*\s+do\s*$").unwrap(), 2),
+            (Regex::new(r"^\s*function\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(").unwrap(), 2),
+
+            // Variable declarations (medium indicators)
+            (Regex::new(r"^\s*local\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=").unwrap(), 1),
+
+            // Common Lua keywords and patterns (weak indicators)
+            (Regex::new(r"^\s*end\s*$").unwrap(), 1),
+            (Regex::new(r"^\s*elseif\s+.*\s+then").unwrap(), 1),
+            (Regex::new(r"^\s*require\s*\(").unwrap(), 1),
+            (Regex::new(r"^\s*--[^-]").unwrap(), 1), // Lua comments
+        ]
+    });
+
+    // Split content into lines and check each line against patterns
+    let mut lua_score = 0;
+    // log::debug!("lua detect '{:?}'", content);
+
+    for line in content.lines() {
+        for (pattern, score) in patterns {
+            if pattern.is_match(line) {
+                lua_score += score;
+
+                // Strong indicators that immediately suggest Lua
+                if *score >= 3 {
+                    log::debug!("Strong Lua indicator found: '{}'", line);
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Require a minimum score to avoid false positives
+    let is_lua = lua_score >= 3;
+    if is_lua {
+        log::debug!("Lua script detected with score: {}", lua_score);
+    }
+
+    is_lua
 }
 
 /// Maps scripting language interpreter paths/names to appropriate file extensions
