@@ -65,7 +65,7 @@ pub struct PackageRange {
 
 // $HOME/.cache/epkg/channel/debian:trixie/main/x86_64/packages-all.txt
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Package {
     pub pkgname: String,
     pub version: String,
@@ -133,6 +133,9 @@ pub struct Package {
     #[serde(default)]
     #[serde(rename = "originUrl")]
     pub origin_url: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "multiArch")]
+    pub multi_arch: Option<String>,
 
     #[serde(skip)]
     pub pkgkey: String,

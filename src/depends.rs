@@ -1,5 +1,5 @@
 use std::process::exit;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 
 use std::sync::Arc;
 use color_eyre::Result;
@@ -10,6 +10,60 @@ use crate::models::*;
 use crate::parse_requires::*;
 use crate::package;
 use crate::version;
+
+/*
+ * Debian Multi-Arch and Architecture Suffix Rules
+ * ===============================================
+ *
+ * Debian packages can specify architecture-specific dependencies using suffixes:
+ *
+ * 1. `:any` Suffix Rules:
+ *    - Can ONLY be used with packages that have Multi-Arch: allowed or Multi-Arch: foreign
+ *    - Means the dependency can be satisfied by ANY architecture version of the package
+ *    - Examples: perl:any, python3:any
+ *
+ * 2. Multi-Arch Field Values and Their Meanings:
+ *    - Multi-Arch: allowed
+ *      * Package can be installed for multiple architectures simultaneously
+ *      * Different architecture versions can coexist
+ *      * CAN satisfy :any dependencies
+ *      * Example: interpreters like perl, python3
+ *
+ *    - Multi-Arch: foreign
+ *      * Package can satisfy dependencies of any architecture
+ *      * Only one architecture version can be installed at a time
+ *      * CAN satisfy :any dependencies
+ *      * Example: architecture-independent tools
+ *
+ *    - Multi-Arch: same
+ *      * Must be same architecture as the package that depends on it
+ *      * CANNOT satisfy :any dependencies
+ *      * Example: shared libraries that must match requestor's architecture
+ *
+ *    - No Multi-Arch field (or Multi-Arch: no)
+ *      * Traditional behavior - architecture specific
+ *      * CANNOT satisfy :any dependencies
+ *      * Must match the architecture of the requesting package
+ *
+ * 3. Specific Architecture Suffixes:
+ *    - `:amd64`, `:arm64`, etc.
+ *    - Forces dependency to specific architecture regardless of Multi-Arch
+ *    - Used for cross-compilation or specific architecture requirements
+ *
+ * 4. No Architecture Suffix:
+ *    - Default behavior - architecture specific matching
+ *    - Dependency must match the architecture of the requesting package
+ *
+ * 5. Implementation Rules in this Code:
+ *    - For `:any`: Only allow packages with Multi-Arch: allowed/foreign
+ *    - For specific arch (`:amd64`): Filter to that architecture only
+ *    - For no suffix: Use default same-architecture filtering
+ *    - Fallback: If no Multi-Arch packages found for :any, fall back to same-arch
+ *
+ * References:
+ * - https://wiki.debian.org/Multiarch/HOWTO
+ * - https://www.debian.org/doc/debian-policy/ch-relationships.html#architecture-restrictions
+ */
 
 impl PackageManager {
     pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
@@ -40,7 +94,13 @@ impl PackageManager {
     fn add_one_package_installing(&mut self, pkg_name: &str, depth: u16, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) -> Option<String> {
-        log::debug!("Attempting to add package '{}' (depth: {}, ebin_flag: {})", pkg_name, depth, ebin_flag);
+        return self.add_one_package_installing_with_arch_spec(pkg_name, None, depth, ebin_flag, packages, missing_names);
+    }
+
+    fn add_one_package_installing_with_arch_spec(&mut self, pkg_name: &str, arch_spec: Option<&str>, depth: u16, ebin_flag: bool,
+                                  packages: &mut HashMap<String, InstalledPackageInfo>,
+                                  missing_names: &mut Vec<String>) -> Option<String> {
+        log::debug!("Attempting to add package '{}' with arch_spec {:?} (depth: {}, ebin_flag: {})", pkg_name, arch_spec, depth, ebin_flag);
         match self.map_pkgname2packages(pkg_name) {
             Ok(unfiltered_packages) => {
                 if unfiltered_packages.is_empty() {
@@ -49,9 +109,9 @@ impl PackageManager {
                     return None;
                 }
 
-                let arch_filtered_packages = self.filter_packages_by_arch(unfiltered_packages);
+                let arch_filtered_packages = self.filter_packages_by_arch_spec(unfiltered_packages, arch_spec);
                 if arch_filtered_packages.is_empty() {
-                    log::debug!("No packages for name '{}' matched current architecture.", pkg_name);
+                    log::debug!("No packages for name '{}' matched architecture specification '{:?}'.", pkg_name, arch_spec);
                     missing_names.push(format!("{} (no matching arch)", pkg_name));
                     return None;
                 }
@@ -86,7 +146,96 @@ impl PackageManager {
         }
     }
 
-    /// convert user provided @capabilities to exact packages hash
+    /// Parse capability name and extract architecture specification
+    /// Returns (base_capability, architecture_spec) where architecture_spec is:
+    /// - Some("any") for `:any` suffix
+    /// - Some(arch) for specific architecture like `:amd64`
+    /// - None for no architecture specification
+    fn parse_capability_architecture(&self, capability: &str) -> (String, Option<String>) {
+        if let Some(colon_pos) = capability.rfind(':') {
+            let base_capability = capability[..colon_pos].to_string();
+            let arch_spec = capability[colon_pos + 1..].to_string();
+            (base_capability, Some(arch_spec))
+        } else {
+            (capability.to_string(), None)
+        }
+    }
+
+    /// Filter packages based on architecture specification
+    /// If arch_spec is "any", only allow packages with Multi-Arch: allowed/foreign (per Debian rules)
+    /// If arch_spec is specific architecture, filter by that architecture
+    /// If arch_spec is None, use default architecture filtering
+    fn filter_packages_by_arch_spec(&self, packages: Vec<Package>, arch_spec: Option<&str>) -> Vec<Package> {
+        match arch_spec {
+            Some("any") => {
+                // For :any dependencies, ONLY allow packages that support Multi-Arch: allowed or foreign
+                // This is a strict requirement per Debian Multi-Arch specification
+                let multiarch_packages: Vec<Package> = packages.iter()
+                    .filter(|pkg| {
+                        match &pkg.multi_arch {
+                            Some(multi_arch) => {
+                                let multi_arch_lower = multi_arch.to_lowercase();
+                                // Only "allowed" and "foreign" can satisfy :any dependencies
+                                // "same" and "no" cannot satisfy :any dependencies
+                                multi_arch_lower == "allowed" || multi_arch_lower == "foreign"
+                            }
+                            None => {
+                                // No Multi-Arch field means Multi-Arch: no (traditional behavior)
+                                // Cannot satisfy :any dependency per Debian rules
+                                false
+                            }
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                if !multiarch_packages.is_empty() {
+                    log::trace!(
+                        "Filtered packages for :any specification: {} out of {} packages support Multi-Arch (allowed/foreign)",
+                        multiarch_packages.len(),
+                        packages.len()
+                    );
+                    multiarch_packages
+                } else {
+                    log::warn!(
+                        "No packages found with Multi-Arch: allowed/foreign for :any dependency. This violates Debian Multi-Arch rules. Falling back to same-architecture packages as last resort."
+                    );
+                    // Fallback to default architecture filtering as last resort
+                    // This is non-standard but provides graceful degradation
+                    self.filter_packages_by_arch(packages)
+                }
+            }
+            Some(specific_arch) => {
+                // Filter by specific architecture (e.g., :amd64, :arm64)
+                // This works regardless of Multi-Arch field value
+                let arch_packages: Vec<Package> = packages.iter()
+                    .filter(|pkg| !pkg.arch.is_empty() && pkg.arch == specific_arch)
+                    .cloned()
+                    .collect();
+
+                log::trace!(
+                    "Filtered packages by specific architecture '{}': {} out of {} packages matched",
+                    specific_arch,
+                    arch_packages.len(),
+                    packages.len()
+                );
+
+                if !arch_packages.is_empty() {
+                    arch_packages
+                } else {
+                    // If no packages match the specific architecture, return empty
+                    // (don't fall back to other architectures for explicit arch requests)
+                    packages
+                }
+            }
+            None => {
+                // No architecture suffix - use traditional same-architecture matching
+                // This respects Multi-Arch: same behavior and traditional dependencies
+                self.filter_packages_by_arch(packages)
+            }
+        }
+    }
+
     fn resolve_single_capability_item(
         &mut self,
         capability_or_pkg_name: &str,
@@ -102,11 +251,15 @@ impl PackageManager {
             ebin_flag
         );
 
-        let provider_pkgnames_result = crate::mmio::map_provide2pkgnames(capability_or_pkg_name);
+        // Parse capability name and architecture specification
+        let (base_capability, arch_spec) = self.parse_capability_architecture(capability_or_pkg_name);
+        let arch_spec_ref = arch_spec.as_deref();
+
+        let provider_pkgnames_result = crate::mmio::map_provide2pkgnames(&base_capability);
 
         let provider_list_to_check: Vec<String> = match provider_pkgnames_result {
             Ok(names) if !names.is_empty() => names,
-            _ => vec![capability_or_pkg_name.to_string()], // Treat as direct name if no providers or error
+            _ => vec![base_capability.clone()], // Treat as direct name if no providers or error
         };
 
         // Policy Step 1: Check if any provider is already satisfied/selected.
@@ -114,7 +267,7 @@ impl PackageManager {
             match self.map_pkgname2packages(provider_name) {
                 Ok(candidate_packages) => {
                     if candidate_packages.is_empty() { continue; }
-                    let arch_filtered = self.filter_packages_by_arch(candidate_packages);
+                    let arch_filtered = self.filter_packages_by_arch_spec(candidate_packages, arch_spec_ref);
                     if arch_filtered.is_empty() { continue; }
                     if let Some(selected_pkg_candidate) = version::select_highest_version(arch_filtered) {
                         let pkgkey_to_check = &selected_pkg_candidate.pkgkey;
@@ -169,11 +322,12 @@ impl PackageManager {
                 first_provider_to_try
             );
 
-            // `add_one_package_installing` returns Some(pkgkey) if it successfully adds the package
+            // `add_one_package_installing_with_arch_spec` returns Some(pkgkey) if it successfully adds the package
             // or if the package (with the correct version/arch) is already in `packages_map`.
             // It returns None if it fails and adds to `missing_items_log` for that specific provider.
-            if let Some(added_pkgkey) = self.add_one_package_installing(
+            if let Some(added_pkgkey) = self.add_one_package_installing_with_arch_spec(
                 first_provider_to_try,
+                arch_spec_ref,
                 depth.into(),
                 ebin_flag,
                 packages_map, // This is the map it adds to or checks against
@@ -187,7 +341,7 @@ impl PackageManager {
                 );
                 return Ok(Some(added_pkgkey));
             } else {
-                // add_one_package_installing returned None, meaning it failed for first_provider_to_try
+                // add_one_package_installing_with_arch_spec returned None, meaning it failed for first_provider_to_try
                 // and should have added an entry to missing_items_log for it.
                 log::debug!(
                     "Capability '{}': First provider '{}' failed to install or resolve. Check missing_items_log.",
@@ -592,4 +746,172 @@ impl PackageManager {
         Err(eyre::eyre!("Package not found: {}", pkgkey))
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_capability_architecture() {
+        let pm = PackageManager {
+            envs_config: HashMap::new(),
+            channels_config: HashMap::new(),
+            repos_data: Vec::new(),
+            pkgkey2package: HashMap::new(),
+            pkgline2package: HashMap::new(),
+            appbin_source: HashSet::new(),
+            installed_packages: HashMap::new(),
+            mirrors: HashMap::new(),
+            has_worker_process: false,
+            ipc_socket: String::new(),
+            ipc_stream: None,
+            child_pid: None,
+        };
+
+        // Test :any suffix
+        let (base, arch_spec) = pm.parse_capability_architecture("perl:any");
+        assert_eq!(base, "perl");
+        assert_eq!(arch_spec, Some("any".to_string()));
+
+        // Test specific architecture
+        let (base, arch_spec) = pm.parse_capability_architecture("python3:amd64");
+        assert_eq!(base, "python3");
+        assert_eq!(arch_spec, Some("amd64".to_string()));
+
+        // Test no architecture specification
+        let (base, arch_spec) = pm.parse_capability_architecture("gcc");
+        assert_eq!(base, "gcc");
+        assert_eq!(arch_spec, None);
+
+        // Test package with colon in name (edge case)
+        let (base, arch_spec) = pm.parse_capability_architecture("lib:foo");
+        assert_eq!(base, "lib");
+        assert_eq!(arch_spec, Some("foo".to_string()));
+
+        // Test package with multiple colons (should take the last one)
+        let (base, arch_spec) = pm.parse_capability_architecture("lib:test:any");
+        assert_eq!(base, "lib:test");
+        assert_eq!(arch_spec, Some("any".to_string()));
+    }
+
+    #[test]
+    fn test_filter_packages_by_arch_spec_multiarch() {
+        let pm = PackageManager {
+            envs_config: HashMap::new(),
+            channels_config: HashMap::new(),
+            repos_data: Vec::new(),
+            pkgkey2package: HashMap::new(),
+            pkgline2package: HashMap::new(),
+            appbin_source: HashSet::new(),
+            installed_packages: HashMap::new(),
+            mirrors: HashMap::new(),
+            has_worker_process: false,
+            ipc_socket: String::new(),
+            ipc_stream: None,
+            child_pid: None,
+        };
+
+        // Create test packages covering all Multi-Arch scenarios
+        let mut pkg_multiarch_allowed = Package {
+            pkgname: "perl".to_string(),
+            version: "5.32.0".to_string(),
+            arch: "amd64".to_string(),
+            multi_arch: Some("allowed".to_string()),  // CAN satisfy :any
+            ..Default::default()
+        };
+        pkg_multiarch_allowed.pkgkey = "perl__5.32.0__amd64".to_string();
+
+        let mut pkg_multiarch_foreign = Package {
+            pkgname: "python3".to_string(),
+            version: "3.9.0".to_string(),
+            arch: "amd64".to_string(),
+            multi_arch: Some("foreign".to_string()),  // CAN satisfy :any
+            ..Default::default()
+        };
+        pkg_multiarch_foreign.pkgkey = "python3__3.9.0__amd64".to_string();
+
+        let mut pkg_multiarch_same = Package {
+            pkgname: "libc6".to_string(),
+            version: "2.31".to_string(),
+            arch: "amd64".to_string(),
+            multi_arch: Some("same".to_string()),     // CANNOT satisfy :any
+            ..Default::default()
+        };
+        pkg_multiarch_same.pkgkey = "libc6__2.31__amd64".to_string();
+
+        let mut pkg_multiarch_no = Package {
+            pkgname: "some-tool".to_string(),
+            version: "1.0".to_string(),
+            arch: "amd64".to_string(),
+            multi_arch: Some("no".to_string()),       // CANNOT satisfy :any (explicit no)
+            ..Default::default()
+        };
+        pkg_multiarch_no.pkgkey = "some-tool__1.0__amd64".to_string();
+
+        let mut pkg_no_multiarch = Package {
+            pkgname: "gcc".to_string(),
+            version: "10.0.0".to_string(),
+            arch: "amd64".to_string(),
+            multi_arch: None,                         // CANNOT satisfy :any (implicit no)
+            ..Default::default()
+        };
+        pkg_no_multiarch.pkgkey = "gcc__10.0.0__amd64".to_string();
+
+        // Test case insensitivity - Multi-Arch fields can be in different cases
+        let mut pkg_multiarch_allowed_uppercase = Package {
+            pkgname: "python3-pip".to_string(),
+            version: "20.0".to_string(),
+            arch: "amd64".to_string(),
+            multi_arch: Some("ALLOWED".to_string()),  // CAN satisfy :any (case insensitive)
+            ..Default::default()
+        };
+        pkg_multiarch_allowed_uppercase.pkgkey = "python3-pip__20.0__amd64".to_string();
+
+        let packages = vec![
+            pkg_multiarch_allowed.clone(),
+            pkg_multiarch_foreign.clone(),
+            pkg_multiarch_same.clone(),
+            pkg_multiarch_no.clone(),
+            pkg_no_multiarch.clone(),
+            pkg_multiarch_allowed_uppercase.clone(),
+        ];
+
+        // Test :any filtering - should only return packages with Multi-Arch: allowed or foreign
+        // Excludes: same, no, None (missing field)
+        let filtered = pm.filter_packages_by_arch_spec(packages.clone(), Some("any"));
+        assert_eq!(filtered.len(), 3, "Only packages with Multi-Arch: allowed/foreign should satisfy :any");
+
+        // Should include Multi-Arch: allowed
+        assert!(filtered.iter().any(|p| p.pkgkey == pkg_multiarch_allowed.pkgkey),
+                "Multi-Arch: allowed should satisfy :any");
+
+        // Should include Multi-Arch: foreign
+        assert!(filtered.iter().any(|p| p.pkgkey == pkg_multiarch_foreign.pkgkey),
+                "Multi-Arch: foreign should satisfy :any");
+
+        // Should include Multi-Arch: ALLOWED (case insensitive)
+        assert!(filtered.iter().any(|p| p.pkgkey == pkg_multiarch_allowed_uppercase.pkgkey),
+                "Multi-Arch: ALLOWED (uppercase) should satisfy :any");
+
+        // Should NOT include Multi-Arch: same
+        assert!(!filtered.iter().any(|p| p.pkgkey == pkg_multiarch_same.pkgkey),
+                "Multi-Arch: same should NOT satisfy :any");
+
+        // Should NOT include Multi-Arch: no
+        assert!(!filtered.iter().any(|p| p.pkgkey == pkg_multiarch_no.pkgkey),
+                "Multi-Arch: no should NOT satisfy :any");
+
+        // Should NOT include packages with no Multi-Arch field
+        assert!(!filtered.iter().any(|p| p.pkgkey == pkg_no_multiarch.pkgkey),
+                "Packages without Multi-Arch field should NOT satisfy :any");
+
+        // Test specific architecture filtering - works regardless of Multi-Arch
+        let filtered = pm.filter_packages_by_arch_spec(packages.clone(), Some("amd64"));
+        assert_eq!(filtered.len(), 6, "All packages should match amd64 architecture");
+
+        // Test no architecture specification (should use default filtering)
+        let filtered = pm.filter_packages_by_arch_spec(packages.clone(), None);
+        assert_eq!(filtered.len(), 6, "All packages should match default arch filtering");
+    }
 }
