@@ -9,6 +9,7 @@ use nix::sched::{unshare, CloneFlags};
 use nix::mount::{mount, MsFlags};
 use color_eyre::Result;
 use color_eyre::eyre;
+use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn};
 use crate::models::*;
 
@@ -260,6 +261,63 @@ pub fn mount_env_dirs(env_root: &Path) -> Result<()> {
     mount_env_dir(env_root, "/usr")?;
     mount_env_dir(env_root, "/etc")?;
     mount_env_dir(env_root, "/var")?;
+
+    /*
+     * Special handling for /opt/epkg mount isolation:
+     *
+     * Problem:
+     * - When we bind-mount the user's /opt ($env_root/opt over /opt), it hides the original /opt/epkg
+     * - This breaks dependencies (e.g., LLVM libraries in /opt/openEuler) that are symlinked through /opt/epkg
+     *
+     * Solution:
+     * 1. Before mounting user's /opt:
+     *    - If /opt/epkg exists, create a backup bind-mount at $env_root/opt_real
+     * 2. Mount user's /opt normally (shadowing original)
+     * 3. Restore /opt/epkg access:
+     *    - Bind-mount the backup ($env_root/opt_real) back to /opt/epkg
+     *
+     * This gives us:
+     * - User's isolated /opt environment
+     * - Continued access to system /opt/epkg contents
+     * - No root privileges required after initial setup
+     *
+     * Note: Uses MS_BIND instead of MS_MOVE for reliability across different filesystem setups
+     */
+    let opt_epkg_path = Path::new("/opt/epkg");
+    let opt_real_path = env_root.join("opt_real");
+    if opt_epkg_path.exists() {
+        // Create opt_real directory in the environment root
+        std::fs::create_dir_all(&opt_real_path)
+            .wrap_err("Failed to create opt_real directory")?;
+
+        // Bind mount /opt/epkg to $env_root/opt_real
+        debug!("Bind mounting /opt/epkg mount to {}", opt_real_path.display());
+        mount(
+            Some(opt_epkg_path),
+            &opt_real_path,
+            Some(""),
+            // MsFlags::MS_MOVE, // will fail if src is not a mount point
+            MsFlags::MS_BIND,
+            Some(""),
+        ).wrap_err("Failed to move /opt mount")?;
+    }
+
+    // Mount environment /opt directory
+    mount_env_dir(env_root, "/opt")?;
+
+    // If /opt/epkg existed, bind mount it back
+    if opt_epkg_path.exists() {
+        if opt_real_path.exists() {
+            debug!("Bind mounting {} to {}", opt_real_path.display(), opt_epkg_path.display());
+            mount(
+                Some(&opt_real_path),
+                opt_epkg_path,
+                Some(""),
+                MsFlags::MS_BIND,
+                Some(""),
+            ).wrap_err("Failed to bind mount opt_real/epkg to /opt/epkg")?;
+        }
+    }
 
     Ok(())
 }
