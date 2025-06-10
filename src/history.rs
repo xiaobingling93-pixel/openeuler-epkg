@@ -213,7 +213,16 @@ impl PackageManager {
         let env_root = self.get_default_env_root()?;
 
         // Apply package changes directly to FHS directories at root level
-        // First phase: Link all packages
+        // Step1: Unlink old packages
+        for pkgkey in &del_packages {
+            let pkgline = current_packages.get(pkgkey)
+                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
+                .pkgline.clone();
+            let fs_dir = store_root.join(pkgline).join("fs");
+            self.unlink_package(&fs_dir, &env_root)?;
+        }
+
+        // Step2: Link new packages
         for (pkgkey, _) in &new_packages {
             let pkgline = rollback_packages.get(pkgkey)
                 .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
@@ -222,7 +231,7 @@ impl PackageManager {
             self.link_package(&fs_dir, &env_root)?;
         }
 
-        // Second phase: Expose packages and handle appbin flags
+        // Step3: Expose new packages
         for (pkgkey, appbin_flag) in &new_packages {
             let pkgline = rollback_packages.get(pkgkey)
                 .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
@@ -231,14 +240,6 @@ impl PackageManager {
             if *appbin_flag {
                 self.expose_package(&fs_dir, &env_root)?;
             }
-        }
-
-        for pkgkey in &del_packages {
-            let pkgline = current_packages.get(pkgkey)
-                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
-                .pkgline.clone();
-            let fs_dir = store_root.join(pkgline).join("fs");
-            self.unlink_package(&fs_dir, &env_root)?;
         }
 
         // Copy rollback generation's installed-packages.json to current generation
