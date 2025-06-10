@@ -67,13 +67,18 @@ impl PackageManager {
         log::debug!("Found duplicate packages: {:?}", duplicates);
 
         // Step 2: Check if packages is being depended on by installed packages
-        let duplicates_depended: Vec<String> = duplicates
+        let mut duplicates_depended: Vec<String> = duplicates
             .iter()
             .filter(|name| self.installed_packages.get(*name)
                 .map(|info| info.depend_depth > 0)
                 .unwrap_or(false))
             .cloned()
             .collect();
+
+        for pkg_name in input_package_info.keys() {
+            duplicates_depended.retain(|x| x != pkg_name);
+        }
+
         if !duplicates_depended.is_empty() {
             eprintln!("Warning: The following packages are depended on by others and cannot be removed:");
             for package_name in &duplicates_depended {
