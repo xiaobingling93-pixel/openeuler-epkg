@@ -32,6 +32,7 @@ mod index_html;
 mod epkg;
 mod version;
 mod scriptlets;
+mod run;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;
@@ -78,7 +79,8 @@ fn main() -> Result<()> {
         Some(("repo",       sub_matches))  =>  package_manager.command_repo(sub_matches)?,
         Some(("hash",       sub_matches))  =>  package_manager.command_hash(sub_matches)?,
         Some(("build",      sub_matches))  =>  package_manager.command_build(sub_matches)?,
-        Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(&sub_matches)?,
+        Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(sub_matches)?,
+        Some(("run",        sub_matches))  =>  package_manager.command_run(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
 
@@ -293,6 +295,14 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .about("Unpack package file(s) into a temporary directory")
                 .arg(arg!(<PACKAGE_FILE> ... "Package files to unpack").required(true))
         )
+        .subcommand(
+            Command::new("run")
+                .about("Run command in environment namespace")
+                .arg(arg!(-m --mount <DIRS> "Comma-separated list of additional directories to mount"))
+                .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
+                .arg(arg!(<command> "Command to execute"))
+                .arg(arg!([args] ... "Arguments to pass to the command"))
+        )
         .get_matches()
 }
 
@@ -416,6 +426,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("hash",       sub_matches))  =>  parse_options_hash(&mut config, sub_matches).expect("Failed to parse hash options"),
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
+        Some(("run",        sub_matches))  =>  parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         _ => {} // No subcommand or unknown subcommand
     }
     log::debug!("Configuration: {:#?}", config);
@@ -563,8 +574,12 @@ fn parse_options_build(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatche
     Ok(())
 }
 
-fn parse_options_unpack(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
-    // Placeholder for unpack specific options
+fn parse_options_unpack(_options: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    Ok(())
+}
+
+fn parse_options_run(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Nothing to store in EPKGConfig
     Ok(())
 }
 
@@ -794,5 +809,4 @@ impl PackageManager {
         // If not, an explicit error or log for "No package files specified" could be added.
         Ok(())
     }
-
 }

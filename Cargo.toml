@@ -30,7 +30,7 @@ base32 = { version = "0.5.1", default-features = false }
 glob = { version = "0.3", default-features = false }
 dirs = { version = "6.0", default-features = false }
 indicatif = { version = "0.17", default-features = false }
-nix = { version = "0.30", features = ["process", "user", "fs", "signal"], default-features = false }
+nix = { version = "0.30", features = ["process", "user", "fs", "signal", "sched", "mount"], default-features = false }
 rand = { version = "0.8", features = ["std", "std_rng", "getrandom"], default-features = false }
 users = { version = "0.11", default-features = false }
 crossbeam-channel = { version = "0.5", features = ["std"], default-features = false }
