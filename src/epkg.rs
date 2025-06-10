@@ -1,8 +1,13 @@
+use std::io::Write;
+use std::env;
 use std::path::Path;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::dirs;
 use crate::store::untar_zst;
+use std::fs::{File, OpenOptions};
+use tar::Builder;
+use zstd::stream::write::Encoder;
 
 /// Legacy function for unpacking .epkg files (original implementation)
 /// This function is kept for backward compatibility with existing .epkg packages
@@ -37,5 +42,50 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
         //     eprintln!("Hash mismatch, expect {} for {}", hash, dir_str);
         // }
     }
+    Ok(())
+}
+
+pub fn compress_packages(pkgline: &str, out_dir: &str, origin_url: &str) -> Result<()> {
+    let final_path = dirs().epkg_store.join(pkgline);
+    let package_txt_path = final_path.join("info/package.txt");
+    let file_basename = final_path.file_name().and_then(|os_str| os_str.to_str()).unwrap_or("unknown");
+    let output_file = Path::new(out_dir).join(&format!("{}.epkg", file_basename));
+    append_to_file(&package_txt_path, &format!("originUrl: {}", origin_url))?;
+    compress_folder_to_epkg(&final_path, &output_file.to_string_lossy())?;
+    Ok(())
+}
+
+pub fn compress_folder_to_epkg(
+    source_dir: &Path,
+    output_file: &str,
+) -> Result<()> {
+    // 创建输出文件
+    let output = File::create(output_file)?;
+
+    // 创建 zstd 编码器
+    let encoder = Encoder::new(output, 3)?;
+
+    // 创建 tar 构建器
+    let mut tar_builder = Builder::new(encoder.auto_finish());
+
+    // 添加目录到 tar
+    tar_builder.append_dir_all(".", Path::new(source_dir))?;
+
+    // 完成 tar 构建
+    tar_builder.finish()?;
+
+    Ok(())
+}
+
+pub fn append_to_file(file_path: &Path, content: &str) -> Result<()> {
+    // 以追加模式打开文件（如果不存在则创建）
+    let mut file = OpenOptions::new()
+        .append(true)   // 追加模式
+        .create(true)    // 如果文件不存在则创建
+        .open(file_path)?;
+
+    // 写入内容（添加换行符）
+    writeln!(file, "{}", content)?;
+
     Ok(())
 }

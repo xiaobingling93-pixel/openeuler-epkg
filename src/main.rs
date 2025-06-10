@@ -79,7 +79,8 @@ fn main() -> Result<()> {
         Some(("repo",       sub_matches))  =>  package_manager.command_repo(sub_matches)?,
         Some(("hash",       sub_matches))  =>  package_manager.command_hash(sub_matches)?,
         Some(("build",      sub_matches))  =>  package_manager.command_build(sub_matches)?,
-        Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(sub_matches)?,
+        Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(&sub_matches)?,
+        Some(("convert",    sub_matches))  =>  package_manager.command_convert(&sub_matches)?,
         Some(("run",        sub_matches))  =>  package_manager.command_run(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
@@ -296,6 +297,14 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .arg(arg!(<PACKAGE_FILE> ... "Package files to unpack").required(true))
         )
         .subcommand(
+            Command::new("convert")
+                .about("convert epkg directory")
+                .arg(arg!(--"out-dir" <OUTPUT_DIR> "epkg output directory").default_value("")
+                     .help("Output directory (default: path of packages)"))
+                .arg(arg!(--"origin-url" <ORIGIN_URL> "URL where package from").required(true))
+                .arg(arg!(<PACKAGE_FILE>... "convert epkg directory").required(true))
+        )
+        .subcommand(
             Command::new("run")
                 .about("Run command in environment namespace")
                 .arg(arg!(-m --mount <DIRS> "Comma-separated list of additional directories to mount"))
@@ -426,6 +435,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("hash",       sub_matches))  =>  parse_options_hash(&mut config, sub_matches).expect("Failed to parse hash options"),
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
+        Some(("convert",    sub_matches))  =>  parse_options_convert(&mut config, sub_matches).expect("Failed to parse convert options"),
         Some(("run",        sub_matches))  =>  parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         _ => {} // No subcommand or unknown subcommand
     }
@@ -574,7 +584,12 @@ fn parse_options_build(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatche
     Ok(())
 }
 
-fn parse_options_unpack(_options: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+fn parse_options_unpack(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    Ok(())
+}
+
+fn parse_options_convert(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Placeholder for convert specific options
     Ok(())
 }
 
@@ -794,6 +809,44 @@ impl PackageManager {
                     } else {
                         for pkgline in pkglines {
 							println!("{}", pkgline);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error during store unpacking process: {}", e);
+                    // Consider returning the error to propagate it, e.g.:
+                    // return Err(e).wrap_err("Failed in unpack command");
+                }
+            }
+        }
+        // If execution reaches here, it implies sub_matches.get_many was None,
+        // but clap should have handled the 'required' argument before calling this command.
+        // If not, an explicit error or log for "No package files specified" could be added.
+        Ok(())
+    }
+
+    fn command_convert(&self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
+            let files: Vec<String> = package_files_iter.cloned().collect();
+            let mut out_dir = sub_matches.get_one::<String>("out-dir").map(|s| s.as_str()).unwrap_or("");
+            if out_dir == "" {
+                out_dir = ".";
+            }
+            let origin_url = sub_matches.get_one::<String>("origin-url")
+                .map(|s| s.as_str())
+                .unwrap_or("default_url");
+
+            // PACKAGE_FILE is required by clap, so files should not be empty if this block is reached.
+            privdrop_on_suid(); // Drop privileges if running as SUID
+
+            match crate::store::unpack_packages(files) {
+                Ok(pkglines) => {
+                    if pkglines.is_empty() {
+                        println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
+                    } else {
+                        for pkgline in pkglines {
+                            epkg::compress_packages(&pkgline, &out_dir, &origin_url)?;
+                            println!("{}", pkgline);
                         }
                     }
                 }
