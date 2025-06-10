@@ -218,33 +218,71 @@ fn get_scriptlet_with_extension(metadata: &rpm::PackageMetadata, scriptlet_name:
     }?;
 
     let script_content = scriptlet.script.clone();
-    let file_extension = determine_script_extension(&scriptlet, &script_content);
+    let (file_extension, modified_content) = determine_script_extension(&scriptlet, &script_content);
 
-    Some((script_content, file_extension))
+    Some((modified_content, file_extension))
 }
 
+/**
+ * CASE 1: <lua>
+ * - scriptlet.program could be vec!["<lua>"]
+ * - This is handled correctly by interpreter_to_extension() which returns ext = "lua"
+ * - Content remains unchanged
+ * - Example: program = ["<lua>"] -> ext = "lua", content unchanged
+ *
+ * CASE 2: /bin/sh -c and similar common scripting language interpreter programs
+ * - scriptlet.program could be vec!["/bin/sh", "-c"] or vec!["/usr/bin/texhash"]
+ * - When interpreter starts with '/', we add a shebang line to script_content
+ * - Format: "#!{program.join(' ')}\n{original_content}"
+ * - Extension determined by interpreter_to_extension()
+ * - Example: program = ["/bin/sh", "-c"] -> adds "#!/bin/sh -c\n" to content, ext = "sh"
+ *
+ * CASE 3: One-liner utility programs like /sbin/ldconfig, /sbin/ldconfig libs, /usr/bin/texhash
+ * - These have empty script_content but meaningful program fields
+ * - When script_content is empty and no extension is determined, create a .sh wrapper
+ * - Format: "#!/bin/sh\n{program.join(' ')}\n"
+ * - Extension set to "sh"
+ * - Example: program = ["/sbin/ldconfig", "libs"], content = "" ->
+ *           content = "#!/bin/sh\n/sbin/ldconfig libs\n", ext = "sh"
+ */
 /// Determines the appropriate file extension based on scriptlet interpreter information
-fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) -> String {
-    // First, check if the scriptlet has explicit interpreter information in the program field
+/// Returns a tuple of (extension, modified_content)
+fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) -> (String, String) {
+    let mut extension = String::new();
+    let mut content = script_content.to_string();
+    // log::debug!("interpreter '{:?}' {:?}", scriptlet.program, content);
+
+    // Process based on scriptlet.program if available
     if let Some(ref program) = scriptlet.program {
-        if let Some(interpreter) = program.first() {
-            return interpreter_to_extension(interpreter);
+        if !program.is_empty() {
+            let interpreter = &program[0];
+
+            // CASE 1: Get extension from scripting language interpreter
+            extension = interpreter_to_extension(interpreter);
+
+            // CASE 2: Add shebang for path-based interpreters (except Lua which has special handling)
+            if interpreter.starts_with("/") {
+                let shebang = format!("#!{}\n", program.join(" "));
+                content = format!("{}{}", shebang, content);
+            }
+
+            // CASE 3: Create shell wrapper for empty content with no determined extension
+            if content.trim().is_empty() && extension.is_empty() {
+                content = format!("#!/bin/sh\n{}\n", program.join(" "));
+                extension = "sh".to_string();
+            }
         }
     }
 
-    // Fall back to heuristics based on script content if no explicit interpreter
-    // Check for shebang line
-    if let Some(first_line) = script_content.lines().next() {
-        if first_line.starts_with("#!") {
-            return shebang_to_extension(first_line);
-        }
+    // Default to shell script if still no extension determined
+    if extension.is_empty() {
+        extension = "sh".to_string();
     }
 
-    // Default to shell script
-    "sh".to_string()
+    (extension, content)
 }
 
-/// Maps interpreter paths/names to appropriate file extensions
+/// Maps scripting language interpreter paths/names to appropriate file extensions
 fn interpreter_to_extension(interpreter: &str) -> String {
     // Handle full paths by extracting basename
     let interpreter_name = std::path::Path::new(interpreter)
@@ -253,41 +291,20 @@ fn interpreter_to_extension(interpreter: &str) -> String {
         .unwrap_or(interpreter);
 
     match interpreter_name {
-        "lua" | "lua5.1" | "lua5.2" | "lua5.3" | "lua5.4" => "lua".to_string(),
-        name if name.starts_with("python") => "py".to_string(),
-        "perl" | "perl5" => "pl".to_string(),
-        "ruby" => "rb".to_string(),
-        "node" | "nodejs" => "js".to_string(),
-        "bash" | "sh" | "dash" | "zsh" | "fish" => "sh".to_string(),
+        name if name.contains("lua") => "lua".to_string(),
+        name if name.contains("python") => "py".to_string(),
+        name if name.contains("perl") => "pl".to_string(),
+        name if name.contains("node") => "js".to_string(),
+        name if name.contains("ruby") => "rb".to_string(),
         "tcl" | "tclsh" => "tcl".to_string(),
         "awk" | "gawk" | "mawk" => "awk".to_string(),
+        "bash" | "sh" | "dash" | "zsh" | "fish" => "sh".to_string(),
         _ => {
             // If we can't identify the interpreter, log it for debugging
-            log::debug!("Unknown interpreter '{}', defaulting to .sh extension", interpreter_name);
-            "sh".to_string()
+            log::debug!("Unknown interpreter '{}'", interpreter_name);
+            "".to_string()
         }
     }
-}
-
-/// Maps shebang lines to appropriate file extensions
-fn shebang_to_extension(shebang: &str) -> String {
-    // Extract interpreter from shebang line
-    let interpreter_part = &shebang[2..].trim(); // Remove #! and trim
-
-    // Handle "/usr/bin/env interpreter" format
-    if interpreter_part.starts_with("/usr/bin/env ") || interpreter_part.starts_with("env ") {
-        if let Some(interpreter) = interpreter_part.split_whitespace().nth(1) {
-            return interpreter_to_extension(interpreter);
-        }
-    }
-
-    // Handle direct interpreter path
-    if let Some(interpreter) = interpreter_part.split_whitespace().next() {
-        return interpreter_to_extension(interpreter);
-    }
-
-    // Default fallback
-    "sh".to_string()
 }
 
 /// Helper function to format a single RPM dependency
