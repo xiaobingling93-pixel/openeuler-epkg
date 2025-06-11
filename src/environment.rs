@@ -209,6 +209,7 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("usr/sbin"))?;
         fs::create_dir_all(env_root.join("usr/bin"))?;
         fs::create_dir_all(env_root.join("usr/lib"))?;
+        fs::create_dir_all(env_root.join("usr/local/bin"))?;
         fs::create_dir_all(env_root.join("var"))?;
 
         // Create symlinks in generation 1
@@ -237,6 +238,13 @@ impl PackageManager {
         symlink("1", generations_root.join("current"))?;
 
         fs::copy("/etc/resolv.conf", env_root.join("etc/resolv.conf"))?;
+
+        // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
+        let systemctl_path = env_root.join("usr/local/bin/systemctl");
+        if !systemctl_path.exists() {
+            symlink("/usr/bin/true", &systemctl_path)
+                .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
+        }
 
         Ok(())
     }

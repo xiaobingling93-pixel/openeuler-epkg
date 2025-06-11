@@ -597,6 +597,10 @@ impl PackageManager {
             &env_root,
         )?;
 
+        // Try removing /run/systemd/system directory to prevent blocking on systemctl daemon-reload
+        // Ignore any errors since this is just a workaround
+        let _ = std::fs::remove_dir("/run/systemd/system");
+
         // Separate packages into fresh installs and upgrades
         let mut fresh_installs: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut upgrades_new: HashMap<String, InstalledPackageInfo> = HashMap::new();
