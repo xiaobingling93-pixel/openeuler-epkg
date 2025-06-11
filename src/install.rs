@@ -62,28 +62,39 @@ fn remove_duplicates(
 }
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
-    // Constants for placeholder strings in elf-loader
-    const SOURCE_ENV_DIR_PLACEHOLDER: &str = "{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
-    const TARGET_ELF_PATH_PLACEHOLDER: &str = "{{TARGET_ELF_PATH LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9 LONG0 LONG1 LONG2 LONG3 LONG4 LONG5 LONG6 LONG7 LONG8 LONG9}}";
-
     // Get common environment root path
     let common_env_root = find_env_root("common")
         .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
 
-    // Copy elf-loader from common environment
+    // Path to elf-loader in common environment
     let elf_loader_path = common_env_root.join("usr/bin/elf-loader");
-    fs::copy(&elf_loader_path, target_path)
+
+    // Create hardlink from elf-loader to target path (replace copy&replace)
+    if target_path.exists() {
+        fs::remove_file(target_path)
+            .with_context(|| format!("Failed to remove existing file {}", target_path.display()))?;
+    }
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+    }
+
+    fs::hard_link(&elf_loader_path, target_path)
         .with_context(|| format!(
-            "Failed to copy elf-loader from {} to {}",
+            "Failed to create hardlink from {} to {}",
             elf_loader_path.display(),
             target_path.display()
         ))?;
 
-    // Replace placeholder strings with actual paths
-    replace_string(target_path, SOURCE_ENV_DIR_PLACEHOLDER, &env_root.to_string_lossy())
-        .with_context(|| format!("Failed to replace SOURCE_ENV_DIR_PLACEHOLDER in {}", target_path.display()))?;
-    replace_string(target_path, TARGET_ELF_PATH_PLACEHOLDER, &fs_file.to_string_lossy())
-        .with_context(|| format!("Failed to replace TARGET_ELF_PATH_PLACEHOLDER in {}", target_path.display()))?;
+    let has_symlink1 = replace_existing_symlink1(target_path, fs_file)
+        .with_context(|| format!("Failed to ensure symlink1 for {}", target_path.display()))?;
+
+    if !has_symlink1 {
+        create_symlink2(target_path, fs_file)
+            .with_context(|| format!("Failed to ensure symlink2 for {}", target_path.display()))?;
+    }
 
     log::debug!(
         "handle_elf target_path={}, env_root={}, fs_file={}",
@@ -94,20 +105,76 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
     Ok(())
 }
 
-fn replace_string(binary_file: &Path, long_id: &str, replacement: &str) -> Result<()> {
-    let data = fs::read(binary_file)
-        .with_context(|| format!("Failed to read {} for replace_string", binary_file.display()))?;
-    let pattern = long_id.as_bytes();
+// symlink1 = target_path.replace("ebin", "bin")
+fn replace_existing_symlink1(target_path: &Path, fs_file: &Path) -> Result<bool> {
+    let target_path_str = target_path.to_string_lossy();
+    let symlink1_path = PathBuf::from(target_path_str.replace("/ebin/", "/bin/"));
 
-    if let Some(pos) = data.windows(pattern.len()).position(|window| window == pattern) {
-        let mut file = fs::OpenOptions::new().write(true).open(binary_file)
-            .with_context(|| format!("Failed to open {} for replace_string", binary_file.display()))?;
-        file.seek(SeekFrom::Start(pos as u64))
-            .with_context(|| format!("Failed to seek to position {} in {}", pos, binary_file.display()))?;
-        // Write the replacement followed by a null terminator.
-        file.write_all(format!("{}\0", replacement).as_bytes())?;
+    if !symlink1_path.exists() {
+        return Ok(false);
     }
 
+    // Check if symlink1 points to fs_file
+    match fs::read_link(&symlink1_path) {
+        Ok(current_target) => {
+            if current_target == fs_file {
+                // symlink1 already points to the correct target or has been updated
+                return Ok(true);
+            }
+
+            log::debug!("symlink1 {} exists but points to {:?}, updating to point to {:?}",
+                       symlink1_path.display(), current_target, fs_file);
+            // Remove existing symlink and create new one
+            fs::remove_file(&symlink1_path)
+                .with_context(|| format!("Failed to remove existing symlink {}", symlink1_path.display()))?;
+
+            // Create parent directory if it doesn't exist
+            if let Some(parent) = symlink1_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+            }
+
+            symlink(fs_file, &symlink1_path)
+                .with_context(|| format!(
+                    "Failed to create symlink from {} to {}",
+                    symlink1_path.display(),
+                    fs_file.display()
+                ))?;
+            Ok(true)
+        }
+        Err(_) => {
+            // symlink1 exists but is not a symlink (regular file/directory)
+            // Don't modify it, indicate that symlink2 is needed
+            Ok(false)
+        }
+    }
+}
+
+// Create symlink2: "{dirname(target_path)}/.{filename(target_path)}" -> fs_file
+fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
+    let target_filename = target_path.file_name()
+        .ok_or_else(|| eyre::eyre!("Failed to get filename from {}", target_path.display()))?
+        .to_string_lossy();
+    let target_dirname = target_path.parent()
+        .ok_or_else(|| eyre::eyre!("Failed to get parent directory from {}", target_path.display()))?;
+
+    let symlink2_path = target_dirname.join(format!(".{}", target_filename));
+
+    // Remove existing symlink2 if it exists
+    if symlink2_path.exists() {
+        fs::remove_file(&symlink2_path)
+            .with_context(|| format!("Failed to remove existing symlink {}", symlink2_path.display()))?;
+    }
+
+    // Create symlink2 -> fs_file
+    symlink(fs_file, &symlink2_path)
+        .with_context(|| format!(
+            "Failed to create symlink from {} to {}",
+            symlink2_path.display(),
+            fs_file.display()
+        ))?;
+
+    log::debug!("Created symlink2: {} -> {}", symlink2_path.display(), fs_file.display());
     Ok(())
 }
 
