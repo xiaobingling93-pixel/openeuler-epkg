@@ -149,6 +149,12 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         }
     }
 
+    // Ensure the last package gets indexed
+    if !derived_files.current_pkgname.is_empty() {
+        log::debug!("Finalizing last package: {}", derived_files.current_pkgname);
+        derived_files.on_new_paragraph();
+    }
+
     log::debug!("Finalizing processing for {}", revise.location);
 
     // Finish compression and get the file handle back
