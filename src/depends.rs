@@ -151,14 +151,20 @@ impl PackageManager {
     /// - Some("any") for `:any` suffix
     /// - Some(arch) for specific architecture like `:amd64`
     /// - None for no architecture specification
-    fn parse_capability_architecture(&self, capability: &str) -> (String, Option<String>) {
-        if let Some(colon_pos) = capability.rfind(':') {
-            let base_capability = capability[..colon_pos].to_string();
-            let arch_spec = capability[colon_pos + 1..].to_string();
-            (base_capability, Some(arch_spec))
-        } else {
-            (capability.to_string(), None)
+    fn parse_capability_architecture(&self, capability: &str, format: PackageFormat) -> (String, Option<String>) {
+        // Handle based on package format
+        if format == PackageFormat::Deb {
+                if let Some(colon_pos) = capability.rfind(':') {
+                    let base_capability = capability[..colon_pos].to_string();
+                    let arch_spec = capability[colon_pos + 1..].to_string();
+
+                    return (base_capability, Some(arch_spec))
+                }
         }
+        // Other distros do not encode arch in require name.
+        // Alpine uses prefixes like: so:, cmd:, pc:, py3.XX:, ocaml4-intf:, dbus:, etc.
+        // which are not related to arch.
+        (capability.to_string(), None)
     }
 
     /// Filter packages based on architecture specification
@@ -339,16 +345,18 @@ impl PackageManager {
         depth: u16,
         ebin_flag: bool,
         missing_items_log: &mut Vec<String>,
+        format: PackageFormat,
     ) -> Result<Option<String>> { // Returns Some(pkgkey) if satisfied, None otherwise
         log::trace!(
-            "Resolving single capability item: '{}', depth: {}, ebin_flag: {}",
+            "Resolving single capability item: '{}', depth: {}, ebin_flag: {}, format: {:?}",
             capability_or_pkg_name,
             depth,
-            ebin_flag
+            ebin_flag,
+            format
         );
 
         // Parse capability name and architecture specification
-        let (base_capability, arch_spec) = self.parse_capability_architecture(capability_or_pkg_name);
+        let (base_capability, arch_spec) = self.parse_capability_architecture(capability_or_pkg_name, format);
         let arch_spec_ref = arch_spec.as_deref();
 
         // Policy Step 0: First try to lookup the name as a direct package name
@@ -448,9 +456,9 @@ impl PackageManager {
         Ok(None)
     }
 
-    // Refactored resolve_package_info
-    pub fn resolve_package_info(&mut self, capabilities_or_pkg_names: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
-        log::debug!("Resolving package info for {} initial capabilities/package names", capabilities_or_pkg_names.len());
+    // Implementation that accepts explicit format parameter
+    pub fn resolve_package_info(&mut self, capabilities_or_pkg_names: Vec<String>, format: PackageFormat) -> HashMap<String, InstalledPackageInfo> {
+        log::debug!("Resolving package info for {} initial capabilities/package names with format {:?}", capabilities_or_pkg_names.len(), format);
         log::trace!("Initial items: {:?}", capabilities_or_pkg_names);
         let mut packages_map = HashMap::new();
         let mut missing_items_log = Vec::new();
@@ -464,20 +472,28 @@ impl PackageManager {
                 depth,
                 ebin_flag_for_explicit_req,
                 &mut missing_items_log,
+                format,
             ); // We check missing_items_log at the end, so direct result of call isn't critical here
         }
 
+        // Handle any missing items if needed
         if !missing_items_log.is_empty() {
             eprintln!("Error: The following packages/capabilities could not be resolved:");
-            for item in &missing_items_log {
-                eprintln!("  - {}", item);
+            for item in missing_items_log {
+                eprintln!("  {}", item);
             }
-            if !config().common.ignore_missing {
-                log::error!("Exiting due to missing packages/capabilities.");
-                exit(1);
-            }
+            exit(1);
         }
+
         packages_map
+    }
+
+    // Backward compatibility implementation that uses a default format
+    pub fn resolve_package_info_with_default(&mut self, capabilities_or_pkg_names: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
+        // For top-level package requests without a specific format context
+        // Use Epkg as default which uses Debian-style parsing
+        let default_repo_format = PackageFormat::Epkg;
+        self.resolve_package_info(capabilities_or_pkg_names, default_repo_format)
     }
 
     pub fn collect_essential_packages(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
@@ -500,12 +516,12 @@ impl PackageManager {
     pub fn collect_recursive_depends(
         &mut self,
         initial_packages: &HashMap<String, InstalledPackageInfo>,
-        repo_format: PackageFormat,
+        format: PackageFormat,
     ) -> Result<HashMap<String, InstalledPackageInfo>> {
         log::info!(
             "Starting recursive dependency collection for {} initial packages. Repo format: {:?}",
             initial_packages.len(),
-            repo_format
+            format
         );
 
         let mut all_collected_deps: HashMap<String, InstalledPackageInfo> = HashMap::new();
@@ -525,7 +541,7 @@ impl PackageManager {
                 &current_layer_to_process,
                 &mut deps_found_this_layer, // collect_depends populates this with direct deps of current_layer
                 depth,
-                repo_format,
+                format,
             )?;
 
             let mut next_layer_to_process: HashMap<String, InstalledPackageInfo> = HashMap::new();
@@ -620,12 +636,12 @@ impl PackageManager {
         _current_iteration_packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>, // This is the main map to check and add to.
         depth: u16,
-        repo_format: PackageFormat,
+        format: PackageFormat,
         missing_deps_log: &mut Vec<String>,
     ) -> Result<()> {
         log::trace!("Processing requirements at depth {}: {:?}", depth, requirements_strings);
         for req_string in requirements_strings {
-            let and_groups = match parse_requires(repo_format, req_string) {
+            let and_groups = match parse_requires(format, req_string) {
                 Ok(groups) => groups,
                 Err(e) => {
                     missing_deps_log.push(format!("Failed to parse requirement string '{}': {}", req_string, e));
@@ -644,6 +660,7 @@ impl PackageManager {
                         depth,
                         false,           // ebin_flag is false for dependencies
                         missing_deps_log,
+                        format,          // Pass the format
                     )? {
                         Some(satisfied_by_pkgkey_b) => {
                             // Capability satisfied by pkgkey_b. Update its rdepends.
@@ -713,9 +730,9 @@ impl PackageManager {
         current_layer_packages: &HashMap<String, InstalledPackageInfo>,
         depend_packages: &mut HashMap<String, InstalledPackageInfo>,
         depth: u16,
-        repo_format: PackageFormat,
+        format: PackageFormat,
     ) -> Result<()> {
-        log::info!("[Depth {}] Enter collect_depends for {} packages. Repo format: {:?}", depth, current_layer_packages.len(), repo_format);
+        log::info!("[Depth {}] Enter collect_depends for {} packages. Repo format: {:?}", depth, current_layer_packages.len(), format);
         let mut missing_deps = Vec::new();
         for (requiring_pkgkey, _package_info) in current_layer_packages.iter() {
             log::info!("[Depth {}] Analyzing dependencies for package: {}", depth, requiring_pkgkey);
@@ -728,7 +745,7 @@ impl PackageManager {
                     current_layer_packages,
                     depend_packages,
                     depth,
-                    repo_format,
+                    format,
                     &mut missing_deps,
                 )?;
             }
@@ -747,7 +764,7 @@ impl PackageManager {
                     current_layer_packages,
                     depend_packages,
                     depth,
-                    repo_format,
+                    format,
                     &mut missing_deps,
                 )?;
             }
@@ -849,30 +866,63 @@ mod tests {
             child_pid: None,
         };
 
-        // Test :any suffix
-        let (base, arch_spec) = pm.parse_capability_architecture("perl:any");
+        // Test Debian-style architecture specifications
+        let (base, arch_spec) = pm.parse_capability_architecture("perl:any", PackageFormat::Deb);
         assert_eq!(base, "perl");
         assert_eq!(arch_spec, Some("any".to_string()));
 
-        // Test specific architecture
-        let (base, arch_spec) = pm.parse_capability_architecture("python3:amd64");
+        let (base, arch_spec) = pm.parse_capability_architecture("python3:amd64", PackageFormat::Deb);
         assert_eq!(base, "python3");
         assert_eq!(arch_spec, Some("amd64".to_string()));
 
         // Test no architecture specification
-        let (base, arch_spec) = pm.parse_capability_architecture("gcc");
+        let (base, arch_spec) = pm.parse_capability_architecture("gcc", PackageFormat::Deb);
         assert_eq!(base, "gcc");
         assert_eq!(arch_spec, None);
 
-        // Test package with colon in name (edge case)
-        let (base, arch_spec) = pm.parse_capability_architecture("lib:foo");
-        assert_eq!(base, "lib");
-        assert_eq!(arch_spec, Some("foo".to_string()));
+        // Test Alpine shared object capabilities (should NOT be parsed as arch specs)
+        let (base, arch_spec) = pm.parse_capability_architecture("so:libc.musl-x86_64.so.1", PackageFormat::Apk);
+        assert_eq!(base, "so:libc.musl-x86_64.so.1");
+        assert_eq!(arch_spec, None);
 
-        // Test package with multiple colons (should take the last one)
-        let (base, arch_spec) = pm.parse_capability_architecture("lib:test:any");
+        let (base, arch_spec) = pm.parse_capability_architecture("so:libzstd.so.1", PackageFormat::Apk);
+        assert_eq!(base, "so:libzstd.so.1");
+        assert_eq!(arch_spec, None);
+
+        // Test Alpine command capabilities
+        let (base, arch_spec) = pm.parse_capability_architecture("cmd:zstd", PackageFormat::Apk);
+        assert_eq!(base, "cmd:zstd");
+        assert_eq!(arch_spec, None);
+
+        // Test Alpine pkg-config capabilities
+        let (base, arch_spec) = pm.parse_capability_architecture("pc:libzstd", PackageFormat::Apk);
+        assert_eq!(base, "pc:libzstd");
+        assert_eq!(arch_spec, None);
+
+        // Test Alpine Python module capabilities
+        let (base, arch_spec) = pm.parse_capability_architecture("py3.12:setuptools", PackageFormat::Apk);
+        assert_eq!(base, "py3.12:setuptools");
+        assert_eq!(arch_spec, None);
+
+        // Test Alpine ocaml capabilities
+        let (base, arch_spec) = pm.parse_capability_architecture("ocaml4-intf:Csexp", PackageFormat::Apk);
+        assert_eq!(base, "ocaml4-intf:Csexp");
+        assert_eq!(arch_spec, None);
+
+        // Test unknown colon usage in Debian should not be treated as arch spec
+        let (base, arch_spec) = pm.parse_capability_architecture("lib:unknown", PackageFormat::Deb);
+        assert_eq!(base, "lib:unknown");
+        assert_eq!(arch_spec, None);
+
+        // Test Debian package with multiple colons (should take the last one if it's a known arch)
+        let (base, arch_spec) = pm.parse_capability_architecture("lib:test:any", PackageFormat::Deb);
         assert_eq!(base, "lib:test");
         assert_eq!(arch_spec, Some("any".to_string()));
+
+        // Test Alpine package with multiple colons (should never split)
+        let (base, arch_spec) = pm.parse_capability_architecture("so:lib:test.so.1", PackageFormat::Apk);
+        assert_eq!(base, "so:lib:test.so.1");
+        assert_eq!(arch_spec, None);
     }
 
     #[test]

@@ -513,11 +513,11 @@ impl PackageManager {
     pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_installed_packages()?;
 
-        let mut packages_to_install = self.resolve_package_info(package_specs.clone());
-        let mut packages_to_install_clone = packages_to_install.clone();
-        let mut depends_pkg : HashMap<String, InstalledPackageInfo> = HashMap::new();
         let channel_config = self.get_channel_config(config().common.env.clone())?;
         let repo_format = channel_config.format;
+        let mut packages_to_install = self.resolve_package_info(package_specs.clone(), repo_format);
+        let mut packages_to_install_clone = packages_to_install.clone();
+        let mut depends_pkg : HashMap<String, InstalledPackageInfo> = HashMap::new();
         for (pkgline, pkginfo) in packages_to_install_clone.drain() {
             let mut tmp_pkg = HashMap::new();
             tmp_pkg.insert(pkgline, pkginfo);

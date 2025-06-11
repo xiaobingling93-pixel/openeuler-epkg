@@ -44,7 +44,9 @@ impl PackageManager {
 
     pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_installed_packages()?;
-        let mut input_package_info = self.resolve_package_info(package_specs.clone());
+        let channel_config = self.get_channel_config(config().common.env.clone())?;
+        let repo_format = channel_config.format;
+        let mut input_package_info = self.resolve_package_info(package_specs.clone(), repo_format);
         log::debug!(
             "Loaded {} installed packages; Input specs: {:?}, resolved to {} packages",
             self.installed_packages.len(),
