@@ -236,6 +236,102 @@ impl PackageManager {
         }
     }
 
+    /// Helper function to check if a package is already satisfied and handle session tracking
+    /// Returns Some(pkgkey) if satisfied, None if not satisfied
+    fn check_package_satisfaction(
+        &mut self,
+        pkgkey: &str,
+        packages_map: &mut HashMap<String, InstalledPackageInfo>,
+    ) -> Option<String> {
+        let mut satisfied_by_packages_map = false;
+        let mut satisfied_by_installed_pkgs = false;
+
+        if packages_map.contains_key(pkgkey) {
+            satisfied_by_packages_map = true;
+        }
+        // Check self.installed_packages only if not already in packages_map
+        if !satisfied_by_packages_map && self.installed_packages.contains_key(pkgkey) {
+            satisfied_by_installed_pkgs = true;
+        }
+
+        if satisfied_by_packages_map || satisfied_by_installed_pkgs {
+            if satisfied_by_installed_pkgs && !satisfied_by_packages_map {
+                // Clone from installed_packages into packages_map for session tracking
+                if let Some(installed_info) = self.installed_packages.get(pkgkey) {
+                    let mut session_info = installed_info.clone();
+                    session_info.rdepends = Vec::new();
+                    packages_map.insert(pkgkey.to_string(), session_info);
+                } else {
+                    log::error!("INTERNAL ERROR: pkgkey '{}' not found in self.installed_packages after contains_key check.", pkgkey);
+                }
+            }
+            return Some(pkgkey.to_string());
+        }
+        None
+    }
+
+    /// Helper function to try resolving a package by name with architecture filtering
+    /// Returns Some(pkgkey) if resolved and satisfied/installed, None otherwise
+    fn try_resolve_package_by_name(
+        &mut self,
+        pkg_name: &str,
+        arch_spec: Option<&str>,
+        packages_map: &mut HashMap<String, InstalledPackageInfo>,
+        depth: u16,
+        ebin_flag: bool,
+        missing_items_log: &mut Vec<String>,
+        context: &str, // For logging context ("Direct package lookup", "Provider", etc.)
+    ) -> Option<String> {
+        match self.map_pkgname2packages(pkg_name) {
+            Ok(candidate_packages) if !candidate_packages.is_empty() => {
+                let arch_filtered = self.filter_packages_by_arch_spec(candidate_packages, arch_spec);
+                if !arch_filtered.is_empty() {
+                    if let Some(selected_pkg_candidate) = version::select_highest_version(arch_filtered) {
+                        let pkgkey = &selected_pkg_candidate.pkgkey;
+
+                        // First check if already satisfied
+                        if let Some(satisfied_pkgkey) = self.check_package_satisfaction(pkgkey, packages_map) {
+                            log::debug!(
+                                "{}: '{}' already satisfied by existing package '{}'",
+                                context,
+                                pkg_name,
+                                satisfied_pkgkey
+                            );
+                            return Some(satisfied_pkgkey);
+                        }
+
+                        // Try to install if not already satisfied
+                        log::debug!("{}: found '{}', attempting to install", context, pkg_name);
+                        if let Some(added_pkgkey) = self.add_one_package_installing_with_arch_spec(
+                            pkg_name,
+                            arch_spec,
+                            depth.into(),
+                            ebin_flag,
+                            packages_map,
+                            missing_items_log,
+                        ) {
+                            log::debug!(
+                                "{}: successfully installed '{}' (resolved to pkgkey '{}')",
+                                context,
+                                pkg_name,
+                                added_pkgkey
+                            );
+                            return Some(added_pkgkey);
+                        }
+                        log::debug!("{}: failed to install '{}'", context, pkg_name);
+                    }
+                }
+            }
+            Ok(_) => {
+                log::debug!("{}: no packages found for '{}'", context, pkg_name);
+            }
+            Err(e) => {
+                log::debug!("{}: error for '{}': {}", context, pkg_name, e);
+            }
+        }
+        None
+    }
+
     fn resolve_single_capability_item(
         &mut self,
         capability_or_pkg_name: &str,
@@ -255,6 +351,27 @@ impl PackageManager {
         let (base_capability, arch_spec) = self.parse_capability_architecture(capability_or_pkg_name);
         let arch_spec_ref = arch_spec.as_deref();
 
+        // Policy Step 0: First try to lookup the name as a direct package name
+        // This ensures that when someone explicitly requests "groff-x11", we try to install
+        // the actual "groff-x11" package rather than being satisfied by "groff" which provides "groff-x11"
+        log::debug!("Attempting direct package name lookup for '{}'", base_capability);
+        if let Some(pkgkey) = self.try_resolve_package_by_name(
+            &base_capability,
+            arch_spec_ref,
+            packages_map,
+            depth,
+            ebin_flag,
+            missing_items_log,
+            "Direct package lookup",
+        ) {
+            return Ok(Some(pkgkey));
+        }
+        log::debug!(
+            "Direct package lookup: failed to resolve '{}', falling back to provider lookup",
+            base_capability
+        );
+
+        // If direct package lookup didn't work, fall back to provider-based logic
         let provider_pkgnames_result = crate::mmio::map_provide2pkgnames(&base_capability);
 
         let provider_list_to_check: Vec<String> = match provider_pkgnames_result {
@@ -264,56 +381,26 @@ impl PackageManager {
 
         // Policy Step 1: Check if any provider is already satisfied/selected.
         for provider_name in &provider_list_to_check {
-            match self.map_pkgname2packages(provider_name) {
-                Ok(candidate_packages) => {
-                    if candidate_packages.is_empty() { continue; }
-                    let arch_filtered = self.filter_packages_by_arch_spec(candidate_packages, arch_spec_ref);
-                    if arch_filtered.is_empty() { continue; }
-                    if let Some(selected_pkg_candidate) = version::select_highest_version(arch_filtered) {
-                        let pkgkey_to_check = &selected_pkg_candidate.pkgkey;
-                        let mut satisfied_by_packages_map = false;
-                        let mut satisfied_by_installed_pkgs = false;
-
-                        if packages_map.contains_key(pkgkey_to_check) {
-                            satisfied_by_packages_map = true;
-                        }
-                        // Check self.installed_packages only if not already in packages_map, to avoid redundant work if it was already cloned.
-                        if !satisfied_by_packages_map && self.installed_packages.contains_key(pkgkey_to_check) {
-                            satisfied_by_installed_pkgs = true;
-                        }
-
-                        if satisfied_by_packages_map || satisfied_by_installed_pkgs {
-                            if satisfied_by_installed_pkgs && !satisfied_by_packages_map {
-                                // If satisfied by self.installed_packages and not yet in packages_map,
-                                // clone it into packages_map for this session's rdepends tracking.
-                                if let Some(installed_info) = self.installed_packages.get(pkgkey_to_check) {
-                                    let mut session_info = installed_info.clone();
-                                    // rdepends for already installed packages are tracked for this session.
-                                    // If there's a persistent rdepends strategy later, this might change.
-                                    session_info.rdepends = Vec::new();
-                                    packages_map.insert(pkgkey_to_check.clone(), session_info);
-                                } else {
-                                    // Should not happen due to contains_key check, but log if it does.
-                                    log::error!("INTERNAL ERROR: pkgkey '{}' not found in self.installed_packages after contains_key check.", pkgkey_to_check);
-                                }
-                            }
-                            log::debug!(
-                                "Capability '{}' already satisfied by package '{}' (provider: '{}')",
-                                capability_or_pkg_name,
-                                pkgkey_to_check,
-                                provider_name
-                            );
-                            return Ok(Some(pkgkey_to_check.clone()));
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::trace!("Error mapping provider name '{}' to packages: {}. Skipping provider.", provider_name, e);
-                }
+            if let Some(pkgkey) = self.try_resolve_package_by_name(
+                provider_name,
+                arch_spec_ref,
+                packages_map,
+                depth,
+                ebin_flag,
+                &mut Vec::new(), // Don't log provider lookup failures yet
+                &format!("Provider '{}'", provider_name),
+            ) {
+                log::debug!(
+                    "Capability '{}' satisfied by provider '{}' (resolved to pkgkey '{}')",
+                    capability_or_pkg_name,
+                    provider_name,
+                    pkgkey
+                );
+                return Ok(Some(pkgkey));
             }
         }
 
-        // Policy Step 2: If not satisfied by an existing package, try to install the first provider.
+        // Policy Step 2: If not satisfied by any provider, try to install the first provider.
         if !provider_list_to_check.is_empty() {
             let first_provider_to_try = &provider_list_to_check[0];
             log::debug!(
@@ -322,16 +409,13 @@ impl PackageManager {
                 first_provider_to_try
             );
 
-            // `add_one_package_installing_with_arch_spec` returns Some(pkgkey) if it successfully adds the package
-            // or if the package (with the correct version/arch) is already in `packages_map`.
-            // It returns None if it fails and adds to `missing_items_log` for that specific provider.
             if let Some(added_pkgkey) = self.add_one_package_installing_with_arch_spec(
                 first_provider_to_try,
                 arch_spec_ref,
                 depth.into(),
                 ebin_flag,
-                packages_map, // This is the map it adds to or checks against
-                missing_items_log, // This is the log it appends to on failure for this provider
+                packages_map,
+                missing_items_log,
             ) {
                 log::debug!(
                     "Capability '{}' satisfied by installing/finding first provider '{}' (resolved to pkgkey '{}')",
@@ -341,8 +425,6 @@ impl PackageManager {
                 );
                 return Ok(Some(added_pkgkey));
             } else {
-                // add_one_package_installing_with_arch_spec returned None, meaning it failed for first_provider_to_try
-                // and should have added an entry to missing_items_log for it.
                 log::debug!(
                     "Capability '{}': First provider '{}' failed to install or resolve. Check missing_items_log.",
                     capability_or_pkg_name, first_provider_to_try
@@ -352,9 +434,7 @@ impl PackageManager {
             log::debug!("Capability '{}': No providers found in provider_list_to_check.", capability_or_pkg_name);
         }
 
-        // If Policy Step 1 and Policy Step 2 (for the first provider) both failed to satisfy:
-        // The original code had a fall-through to a generic missing_items_log.push here.
-        // This is correct. If we reach here, the capability is not satisfied.
+        // If all steps failed to satisfy the capability
         log::warn!(
             "Capability '{}' could not be satisfied by any means (checked existing or tried first provider '{}').",
             capability_or_pkg_name,
