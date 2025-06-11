@@ -38,16 +38,17 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
                         WaitStatus::Exited(_, exit_code) => {
                             debug!("Child process exited with code {}", exit_code);
                             if exit_code != 0 {
-                                std::process::exit(exit_code);
+                                // Instead of terminating epkg, return an error
+                                return Err(eyre::eyre!("Command failed with exit code {}", exit_code));
                             }
                         }
                         WaitStatus::Signaled(_, signal, _) => {
                             debug!("Child process killed by signal {:?}", signal);
-                            std::process::exit(128 + signal as i32);
+                            return Err(eyre::eyre!("Command killed by signal {:?}", signal));
                         }
                         _ => {
                             debug!("Child process ended with status: {:?}", wait_status);
-                            std::process::exit(1);
+                            return Err(eyre::eyre!("Command ended with unexpected status: {:?}", wait_status));
                         }
                     }
                 }

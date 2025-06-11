@@ -330,14 +330,36 @@ pub fn run_scriptlet(
                         break; // Successfully executed, no need to try other interpreters
                     }
                     Err(e) => {
-                        log::debug!(
-                            "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
-                            scriptlet_type,
-                            pkgkey,
-                            interpreter,
-                            e
-                        );
-                        continue; // Try next interpreter
+                        // Check if this is a diversion conflict or other known recoverable error
+                        let error_msg = format!("{}", e);
+                        if error_msg.contains("dpkg-divert") && error_msg.contains("clashes") {
+                            log::warn!(
+                                "Diversion conflict in {:?} scriptlet for package {}: {}. Continuing installation.",
+                                scriptlet_type,
+                                pkgkey,
+                                e
+                            );
+                            script_executed = true;
+                            break; // Treat diversion conflicts as non-fatal
+                        } else if should_ignore_scriptlet_error(&error_msg, scriptlet_type) {
+                            log::warn!(
+                                "Ignoring recoverable error in {:?} scriptlet for package {}: {}",
+                                scriptlet_type,
+                                pkgkey,
+                                e
+                            );
+                            script_executed = true;
+                            break;
+                        } else {
+                            log::debug!(
+                                "Failed to execute {:?} scriptlet for package {} using {}: {}, trying next interpreter",
+                                scriptlet_type,
+                                pkgkey,
+                                interpreter,
+                                e
+                            );
+                            continue; // Try next interpreter
+                        }
                     }
                 }
             }
@@ -359,4 +381,22 @@ pub fn run_scriptlet(
     Ok(())
 }
 
+/// Check if a scriptlet error should be ignored to allow installation to continue
+fn should_ignore_scriptlet_error(error_msg: &str, scriptlet_type: ScriptletType) -> bool {
+    // Known patterns of recoverable errors
+    let recoverable_patterns = [
+        "dpkg-divert: error: ",
+        // Add more patterns as needed
+    ];
 
+    // Only ignore certain errors in postinst scripts to be conservative
+    if matches!(scriptlet_type, ScriptletType::PostInstall | ScriptletType::PostUpgrade) {
+        for pattern in &recoverable_patterns {
+            if error_msg.contains(pattern) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
