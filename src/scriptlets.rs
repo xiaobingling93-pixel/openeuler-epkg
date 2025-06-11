@@ -160,6 +160,52 @@ impl ScriptletType {
     }
 }
 
+/// Set up environment variables for Debian package scripts
+fn setup_deb_env_vars(
+    env_vars: &mut std::collections::HashMap<String, String>,
+    pkgkey: &str,
+    package_info: &InstalledPackageInfo,
+    scriptlet_type: ScriptletType,
+) {
+    use crate::package::{pkgkey2pkgname, pkgkey2version, pkgkey2arch};
+
+    // Set DPKG_MAINTSCRIPT_NAME based on scriptlet type
+    let script_type = match scriptlet_type {
+        ScriptletType::PreInstall | ScriptletType::PreUpgrade => "preinst",
+        ScriptletType::PostInstall | ScriptletType::PostUpgrade => "postinst",
+        ScriptletType::PreRemove => "prerm",
+        ScriptletType::PostRemove => "postrm",
+    };
+    env_vars.insert("DPKG_MAINTSCRIPT_NAME".to_string(), script_type.to_string());
+
+    // Set DPKG_MAINTSCRIPT_PACKAGE to package name
+    if let Ok(package_name) = pkgkey2pkgname(pkgkey) {
+        env_vars.insert("DPKG_MAINTSCRIPT_PACKAGE".to_string(), package_name);
+    }
+
+    // Set DPKG_MAINTSCRIPT_ARCH using pkgkey2arch
+    if let Ok(arch) = pkgkey2arch(pkgkey) {
+        env_vars.insert("DPKG_MAINTSCRIPT_ARCH".to_string(), arch);
+    } else {
+        // Fallback to the arch field from package_info
+        env_vars.insert("DPKG_MAINTSCRIPT_ARCH".to_string(), package_info.arch.clone());
+    }
+
+    // Set DPKG_MAINTSCRIPT_VERSION using pkgkey2version
+    if let Ok(version) = pkgkey2version(pkgkey) {
+        env_vars.insert("DPKG_MAINTSCRIPT_VERSION".to_string(), version);
+    }
+
+    // Set DPKG_MAINTSCRIPT_PACKAGE_REFCOUNT
+    // For now, we'll set it to 1 as a default value
+    env_vars.insert("DPKG_MAINTSCRIPT_PACKAGE_REFCOUNT".to_string(), "1".to_string());
+
+    // Set DPKG_MAINTSCRIPT_DEBUG if RUST_DEBUG is defined
+    if std::env::var("RUST_DEBUG").is_ok() {
+        env_vars.insert("DPKG_MAINTSCRIPT_DEBUG".to_string(), "1".to_string());
+    }
+}
+
 /// Get interpreters to try for a given script file extension
 fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     if script_name.ends_with(".sh") {
@@ -255,11 +301,20 @@ pub fn run_scriptlet(
                 script_args.extend(params);
 
                 // Create RunOptions for scriptlet execution with namespace isolation
+                // Set up environment variables required by package scripts
+                let mut env_vars = std::collections::HashMap::new();
+
+                // Add environment variables for package scripts based on format
+                if package_format == PackageFormat::Deb {
+                    setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
+                }
+
                 let run_options = crate::run::RunOptions {
                     mount_dirs: Vec::new(),  // No additional mounts needed for scriptlets
                     user: None,              // Run as current user
                     command: interpreter.to_string(),
                     args: script_args,
+                    env_vars,
                 };
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation

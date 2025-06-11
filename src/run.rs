@@ -19,6 +19,7 @@ pub struct RunOptions {
     pub user: Option<String>,
     pub command: String,
     pub args: Vec<String>,
+    pub env_vars: std::collections::HashMap<String, String>,
 }
 
 /// Fork a new process and execute command with namespace isolation
@@ -66,7 +67,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
             }
 
             // Execute the command - this replaces the current process
-            if let Err(e) = exec_command(cmd_path, &run_options.args) {
+            if let Err(e) = exec_command(cmd_path, &run_options.args, Some(&run_options.env_vars)) {
                 eprintln!("Failed to execute command: {}", e);
                 std::process::exit(127);
             }
@@ -400,9 +401,12 @@ pub fn write_id_map(path: &str, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Execute the command with arguments
-pub fn exec_command(cmd_path: &Path, args: &[String]) -> Result<()> {
+/// Execute the command with arguments and optional environment variables
+pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collections::HashMap<String, String>>) -> Result<()> {
     debug!("Executing: {} {:?}", cmd_path.display(), args);
+    if let Some(vars) = env_vars {
+        debug!("With environment variables: {:?}", vars);
+    }
 
     // Convert Path to CString for execvp
     let cmd_cstr = std::ffi::CString::new(cmd_path.to_str()
@@ -421,6 +425,19 @@ pub fn exec_command(cmd_path: &Path, args: &[String]) -> Result<()> {
         .map(|arg| arg.as_ptr() as *const i8)
         .collect();
     c_args_ptrs.push(std::ptr::null());
+
+    // Set environment variables if provided
+    if let Some(vars) = env_vars {
+        for (key, value) in vars {
+            if let Ok(key_cstr) = std::ffi::CString::new(key.as_str()) {
+                if let Ok(val_cstr) = std::ffi::CString::new(value.as_str()) {
+                    unsafe {
+                        libc::setenv(key_cstr.as_ptr(), val_cstr.as_ptr(), 1);
+                    }
+                }
+            }
+        }
+    }
 
     // Execute the command using execvp
     unsafe {
@@ -479,6 +496,7 @@ impl PackageManager {
             user,
             command,
             args,
+            env_vars: std::collections::HashMap::new(),
         })
     }
 
