@@ -3,12 +3,16 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::Mmap;
 use color_eyre::eyre::{Result, WrapErr};
 use color_eyre::eyre;
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::package;
+
+// Global status to track if provide2pkgnames data has been loaded
+static PROVIDE2PKGNAMES_LOADED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 pub struct FileMapper {
@@ -88,31 +92,64 @@ pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBu
 pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> Result<()> {
     let repo_dir = crate::dirs::get_repo_dir(&repo)?;
 
-    // Check if we need to load provide2pkgnames (expensive dependency resolution data)
-    // Skip for list command since it doesn't need dependency resolution
-    let load_provides = crate::models::config().subcommand != "list";
-
     for (_, shard) in &mut repo_index.repo_shards {
         let filename = shard.packages.filename.clone();
-        let (packages_path, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
+        let (packages_path, _provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
             get_package_paths(&repo_dir, &filename);
         shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
         shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
 
-        // Conditionally load provide2pkgnames only when needed
-        if load_provides {
-            shard.provide2pkgnames = deserialize_provide2pkgnames(&provide2pkgnames_path)?;
-        } else {
-            // Keep empty for list command
-            shard.provide2pkgnames = std::collections::HashMap::new();
-        }
+        // No longer load provide2pkgnames here - they will be loaded on demand
+        shard.provide2pkgnames = std::collections::HashMap::new();
 
         shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
     }
+
+    // Store the repo directory path in the RepoIndex for later use
+    repo_index.repo_dir_path = repo_dir.to_string_lossy().to_string();
+
     {
         let mut repodata_indice = repodata_indice_mut();
         repodata_indice.insert(repo.repodata_name.clone(), repo_index);
     }
+    Ok(())
+}
+
+/// Load provide2pkgnames data on demand for all repository shards
+pub fn ensure_provide2pkgnames_loaded() -> Result<()> {
+    // Check if already loaded using atomic flag
+    if PROVIDE2PKGNAMES_LOADED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    let mut repodata_indice = repodata_indice_mut();
+
+    for repo_index in repodata_indice.values_mut() {
+        // Use the stored repo directory path
+        let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
+
+        for shard in repo_index.repo_shards.values_mut() {
+            let filename = shard.packages.filename.clone();
+            let (_packages_path, provide2pkgnames_path, _essential_pkgnames_path, _pkgname2ranges_path) =
+                get_package_paths(&repo_dir, &filename);
+
+            // Load provide2pkgnames data from file
+            match deserialize_provide2pkgnames(&provide2pkgnames_path) {
+                Ok(provide2pkgnames) => {
+                    shard.provide2pkgnames = provide2pkgnames;
+                },
+                Err(e) => {
+                    log::warn!("Failed to load provide2pkgnames from {}: {}", provide2pkgnames_path.display(), e);
+                    // Set empty HashMap if loading fails
+                    shard.provide2pkgnames = std::collections::HashMap::new();
+                }
+            }
+        }
+    }
+
+    // Mark as loaded after processing all shards
+    PROVIDE2PKGNAMES_LOADED.store(true, Ordering::Relaxed);
+
     Ok(())
 }
 
@@ -388,6 +425,9 @@ pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
 }
 
 pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
+    // First, ensure provide2pkgnames data is loaded
+    ensure_provide2pkgnames_loaded()?;
+
     let mut pkgnames = Vec::new();
 
     let repodata_indice = repodata_indice();

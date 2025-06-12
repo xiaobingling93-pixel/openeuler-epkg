@@ -699,7 +699,12 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
     }
 
     // Save the index for the repo
-    let repo_index = RepoIndex { repodata_name: repo.repodata_name.clone(), package_baseurl: String::new(), repo_shards };
+    let repo_index = RepoIndex {
+        repodata_name: repo.repodata_name.clone(),
+        package_baseurl: String::new(),
+        repo_dir_path: String::new(),
+        repo_shards
+    };
     let index_path = repo_dir.join("RepoIndex.json");
     fs::write(&index_path, serde_json::to_string_pretty(&repo_index)?)
         .with_context(|| format!("Failed to write repo index to: {}", index_path.display()))?;
