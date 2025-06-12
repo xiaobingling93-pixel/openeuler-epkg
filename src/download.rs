@@ -466,7 +466,33 @@ fn download_task(
 
     let part_path = final_path.with_extension("part");
 
+    // Check if the file already exists and has the expected size
     if final_path.exists() {
+        // For package files with specific extensions, if the size matches, treat as already downloaded
+        let file_path = final_path.to_string_lossy();
+        let is_package_file = file_path.ends_with(".deb") ||
+                              file_path.ends_with(".rpm") ||
+                              file_path.ends_with(".apk") ||
+                              file_path.ends_with(".conda") ||
+                              file_path.ends_with(".pkg.tar.zst");
+
+        if is_package_file && task.size.is_some() {
+            if let Ok(metadata) = fs::metadata(final_path) {
+                let actual_size = metadata.len() as u32;
+                if actual_size == task.size.unwrap() {
+                    log::info!("File {} already exists with correct size {}, treating as already downloaded",
+                              final_path.display(), actual_size);
+
+                    // Mark task as completed
+                    let mut status = task.status.lock()
+                        .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+                    *status = DownloadStatus::Completed;
+                    return Ok(());
+                }
+            }
+        }
+
+        // If we get here, we need to re-download the file
         fs::rename(final_path, &part_path)
             .with_context(|| format!("Failed to rename file: {} to {}", final_path.display(), part_path.display()))?;
     }
