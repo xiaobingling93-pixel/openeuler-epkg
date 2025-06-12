@@ -60,6 +60,18 @@ fn process_package_spec(
     // Get packages from repository
     let mut packages = package_manager.map_pkgname2packages(package_spec)?;
 
+    // If no packages found, retry with capability/provide mapping
+    if packages.is_empty() {
+        // Try to find provider package names for this capability
+        let provider_pkgnames = crate::mmio::map_provide2pkgnames(package_spec)?;
+
+        // For each provider package name, get its packages
+        for provider_pkgname in provider_pkgnames {
+            let mut provider_packages = package_manager.map_pkgname2packages(&provider_pkgname)?;
+            packages.append(&mut provider_packages);
+        }
+    }
+
     // Apply key=val filtering if provided
     if !filters.is_empty() {
         packages.retain(|pkg| apply_filters(pkg, filters));
