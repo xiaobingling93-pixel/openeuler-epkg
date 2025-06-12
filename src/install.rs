@@ -499,12 +499,8 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         match find_link_interpreter(interpreter_in_env, interpreter_basename) {
             Ok(()) => {},
             Err(e) => {
-                if interpreter_basename.ends_with("sh") {
-                    println!("Shell interpreter {} is not found in environment. you can install it later.", interpreter_basename);
-                    return Ok("".to_string());
-                } else {
-                    return Err(e);
-                }
+                eprintln!("WARNING: script interpreter {} is not found in environment. Please install it later.", interpreter_basename);
+                return Ok("".to_string());
             }
         }
 

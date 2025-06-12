@@ -69,7 +69,8 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
 
             // Execute the command - this replaces the current process
             if let Err(e) = exec_command(cmd_path, &run_options.args, Some(&run_options.env_vars)) {
-                eprintln!("Failed to execute command: {}", e);
+                eprintln!("Failed to execute command '{}': {} (error: {:?})",
+                    cmd_path.display(), e, std::io::Error::last_os_error());
                 std::process::exit(127);
             }
 
@@ -443,7 +444,8 @@ pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::col
     // Execute the command using execvp
     unsafe {
         nix::unistd::execvp(&cmd_cstr, &c_args)
-            .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
+            .map_err(|e| eyre::eyre!("Failed to execute command '{}' with args {:?}: {}",
+                cmd_path.display(), args, e))?;
     }
 
     // This should never be reached as execvp replaces the current process
