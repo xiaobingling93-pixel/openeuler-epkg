@@ -439,7 +439,7 @@ pub struct CommonOptions {
     #[serde(skip)]
     pub download_only: bool,
     #[serde(skip)]
-    pub simulate: bool,
+    pub dry_run: bool,
 
     #[serde(default = "default_arch")]
     pub arch: String,

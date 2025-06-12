@@ -653,7 +653,7 @@ impl PackageManager {
             println!("Packages to install:");
             print_packages_by_depend_depth(&packages_to_install);
         }
-        if config().common.simulate {
+        if config().common.dry_run {
             return Ok(());
         }
 

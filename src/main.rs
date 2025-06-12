@@ -133,19 +133,40 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .author("Yingjiahui <ying_register@163.com>")
         .about("The EPKG package manager")
         .arg_required_else_help(true) // This will show help if no args are provided
-        .arg(arg!(-c --config <FILE> "Configuration file to use"))
-        .arg(arg!(-e --env <ENV> "Select the environment"))
-        .arg(arg!(--arch <ARCH> "Select the CPU architecture").default_value(std::env::consts::ARCH))
-        .arg(arg!(-s --simulate "Simulated run without changing the system").aliases(["dry-run"]))
-        .arg(arg!(--"download-only" "Download packages without installing"))
-        .arg(arg!(-q --quiet "Suppress output"))
-        .arg(arg!(-v --verbose "Verbose operation, show debug messages"))
-        .arg(arg!(-y --"assume-yes" "Automatically answer yes to all prompts"))
-        .arg(arg!(-m --"ignore-missing" "Ignore missing packages"))
-        .arg(arg!(--"metadata-expire" <SECONDS> "Metadata expiration time in seconds (0=never, -1=always)").value_parser(clap::value_parser!(i32)))
-        .arg(arg!(--proxy <URL> "HTTP proxy URL (e.g., http://proxy.example.com:8080)"))
-        .arg(arg!(--"nr-parallel" <NUMBER> "Number of parallel download threads").value_parser(clap::value_parser!(usize)))
-        .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)))
+        .arg(arg!(-C --config <FILE> "Configuration file to use").hide(true).global(true))
+        .arg(arg!(-e --env <ENV> "Select the environment").hide(true).global(true))
+        .arg(arg!(--arch <ARCH> "Select the CPU architecture").default_value(std::env::consts::ARCH).hide(true).global(true))
+        .arg(arg!(-d --"dry-run" "Simulated run without changing the system").hide(true).global(true))
+        .arg(arg!(--"download-only" "Download packages without installing").hide(true).global(true))
+        .arg(arg!(-q --quiet "Suppress output").hide(true).global(true))
+        .arg(arg!(-v --verbose "Verbose operation, show debug messages").hide(true).global(true))
+        .arg(arg!(-y --"assume-yes" "Automatically answer yes to all prompts").hide(true).global(true))
+        .arg(arg!(-m --"ignore-missing" "Ignore missing packages").hide(true).global(true))
+        .arg(arg!(--"metadata-expire" <SECONDS> "Metadata expiration time in seconds (0=never, -1=always)").value_parser(clap::value_parser!(i32)).hide(true).global(true))
+        .arg(arg!(--proxy <URL> "HTTP proxy URL (e.g., http://proxy.example.com:8080)").hide(true).global(true))
+        .arg(arg!(--"nr-parallel" <NUMBER> "Number of parallel download threads").value_parser(clap::value_parser!(usize)).hide(true).global(true))
+        .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)).hide(true).global(true))
+		.override_usage("epkg [OPTIONS] <COMMAND>")
+		.help_template(
+            "{about}\n\n\
+        USAGE:\n  {usage}\n\n\
+        COMMANDS:\n{subcommands}\n\n\
+        OPTIONS:
+  -C, --config <FILE>               Configuration file to use
+  -e, --env <ENV>                   Select the environment
+      --arch <ARCH>                 Select the CPU architecture
+  -d, --dry-run                     Simulated run without changing the system
+      --download-only               Download packages without installing
+  -q, --quiet                       Suppress output
+  -v, --verbose                     Verbose operation, show debug messages
+  -y, --assume-yes                  Automatically answer yes to all prompts
+  -m, --ignore-missing              Ignore missing packages
+      --metadata-expire <SECONDS>   Metadata expiration time in seconds (0=never, -1=always)
+      --proxy <URL>                 HTTP proxy URL (e.g., http://proxy.example.com:8080)
+      --nr-parallel <NUMBER>        Number of parallel download threads
+      --parallel-processing <BOOL>  Enable parallel processing for metadata updates (true/false) [possible values: true, false]
+  -h, --help                        Print help
+  -V, --version                     Print version")
         .subcommand(
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
@@ -298,16 +319,15 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         )
         .subcommand(
             Command::new("convert")
-                .about("convert epkg directory")
-                .arg(arg!(--"out-dir" <OUTPUT_DIR> "epkg output directory").default_value("")
-                     .help("Output directory (default: path of packages)"))
-                .arg(arg!(--"origin-url" <ORIGIN_URL> "URL where package from").required(true))
-                .arg(arg!(<PACKAGE_FILE>... "convert epkg directory").required(true))
+                .about("Convert rpm/deb/apk/... packages to epkg format")
+                .arg(arg!(--"out-dir" <OUTPUT_DIR> "Output directory").default_value("."))
+                .arg(arg!(--"origin-url" <ORIGIN_URL> "Where the package originated from").required(true))
+                .arg(arg!(<PACKAGE_FILE>... "Package files to convert (RPM, DEB, APK, etc.)").required(true))
         )
         .subcommand(
             Command::new("run")
                 .about("Run command in environment namespace")
-                .arg(arg!(-m --mount <DIRS> "Comma-separated list of additional directories to mount"))
+                .arg(arg!(-M --mount <DIRS> "Comma-separated list of additional directories to mount"))
                 .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
                 .arg(arg!(<command> "Command to execute"))
                 .arg(arg!([args] ... "Arguments to pass to the command"))
@@ -365,7 +385,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
         return Err(eyre::eyre!("Unsupported system architecture: {}", config.common.arch));
     }
 
-    config.common.simulate          = matches.get_flag("simulate");
+    config.common.dry_run          = matches.get_flag("dry-run");
     config.common.download_only     = matches.get_flag("download-only");
 
     if matches.contains_id("quiet") {

@@ -167,8 +167,8 @@ impl PackageManager {
             println!("No packages to remove.");
         }
 
-        // Exit early if in simulate mode, but only after all computations are done
-        if config().common.simulate {
+        // Exit early if in dry_run mode, but only after all computations are done
+        if config().common.dry_run {
             return Ok(());
         }
 
