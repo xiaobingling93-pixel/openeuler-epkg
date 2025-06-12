@@ -649,10 +649,8 @@ impl PackageManager {
     }
 
     pub fn install_pkgkeys(&mut self, mut packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        if config().common.verbose {
-            println!("Packages to install:");
-            print_packages_by_depend_depth(&packages_to_install);
-        }
+        println!("Packages to install:");
+        print_packages_by_depend_depth(&packages_to_install);
         if config().common.dry_run {
             return Ok(());
         }
