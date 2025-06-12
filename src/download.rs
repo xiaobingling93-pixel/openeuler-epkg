@@ -444,6 +444,114 @@ pub fn download_urls(
     }
 }
 
+/// Checks if a package file exists with matching size and can be considered already downloaded
+fn check_existing_package_file(task: &DownloadTask) -> Result<Option<()>> {
+    let final_path = &task.final_path;
+
+    if final_path.exists() && task.size.is_some() {
+        let file_path = final_path.to_string_lossy();
+        let is_package_file = file_path.ends_with(".deb") ||
+                              file_path.ends_with(".rpm") ||
+                              file_path.ends_with(".apk") ||
+                              file_path.ends_with(".conda") ||
+                              file_path.ends_with(".pkg.tar.zst");
+
+        if is_package_file {
+            if let Ok(metadata) = fs::metadata(final_path) {
+                let actual_size = metadata.len() as u32;
+                if actual_size == task.size.unwrap() {
+                    log::info!("File {} already exists with correct size {}, treating as already downloaded",
+                              final_path.display(), actual_size);
+
+                    // Mark task as completed
+                    let mut status = task.status.lock()
+                        .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+                    *status = DownloadStatus::Completed;
+                    return Ok(Some(()));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Prepare the download environment (rename existing file, create directories)
+fn prepare_download_environment(final_path: &Path, part_path: &Path) -> Result<()> {
+    if final_path.exists() {
+        fs::rename(final_path, part_path)
+            .with_context(|| format!("Failed to rename file: {} to {}", final_path.display(), part_path.display()))?;
+    }
+
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent directory for {}: {}", final_path.display(), parent.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Setup progress bar for download
+fn setup_progress_bar(multi_progress: &MultiProgress, url: &str) -> Result<ProgressBar> {
+    let pb = multi_progress.add(ProgressBar::new(0));
+    pb.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
+        .map_err(|e| eyre!("Failed to parse HTTP response: {}", e))?
+        .progress_chars("=> "));
+    pb.set_message(url.to_string());
+
+    Ok(pb)
+}
+
+/// Verify downloaded file size against expected size
+fn verify_file_size(part_path: &Path, expected_size: Option<u32>, url: &str) -> Result<()> {
+    if let Some(expected) = expected_size {
+        if let Ok(metadata) = fs::metadata(part_path) {
+            let actual_size = metadata.len() as u32;
+            if actual_size != expected {
+                let error_msg = format!(
+                    "Downloaded file size mismatch: expected {} bytes, got {} bytes",
+                    expected, actual_size
+                );
+                log::warn!("{} for {}", error_msg, url);
+                // Note: We could make this a hard error, but for now just warn
+                // since size information might not always be accurate
+            } else {
+                log::debug!("Downloaded file size verified: {} bytes for {}", actual_size, url);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Finalize download by renaming part file and marking task as completed
+fn finalize_download(part_path: &Path, final_path: &Path, task: &DownloadTask) -> Result<()> {
+    fs::rename(part_path, final_path)
+        .with_context(|| format!("Failed to rename file: {} to {}", part_path.display(), final_path.display()))?;
+
+    // Mark task as completed
+    let mut status = task.status.lock()
+        .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+    *status = DownloadStatus::Completed;
+
+    Ok(())
+}
+
+/// Handle download failure by cleaning up and marking task as failed
+fn handle_download_failure(part_path: &Path, task: &DownloadTask, error: color_eyre::eyre::Error) -> Result<()> {
+    if part_path.exists() {
+        fs::remove_file(part_path)?;
+    }
+
+    // Mark task as failed
+    let mut status = task.status.lock()
+        .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
+    *status = DownloadStatus::Failed(format!("{}", error));
+
+    Err(error)
+}
+
 /// Downloads a file from a URL to the output directory.
 /// Uses the final_path that was calculated when the task was created.
 fn download_task(
@@ -466,48 +574,16 @@ fn download_task(
 
     let part_path = final_path.with_extension("part");
 
-    // Check if the file already exists and has the expected size
-    if final_path.exists() {
-        // For package files with specific extensions, if the size matches, treat as already downloaded
-        let file_path = final_path.to_string_lossy();
-        let is_package_file = file_path.ends_with(".deb") ||
-                              file_path.ends_with(".rpm") ||
-                              file_path.ends_with(".apk") ||
-                              file_path.ends_with(".conda") ||
-                              file_path.ends_with(".pkg.tar.zst");
-
-        if is_package_file && task.size.is_some() {
-            if let Ok(metadata) = fs::metadata(final_path) {
-                let actual_size = metadata.len() as u32;
-                if actual_size == task.size.unwrap() {
-                    log::info!("File {} already exists with correct size {}, treating as already downloaded",
-                              final_path.display(), actual_size);
-
-                    // Mark task as completed
-                    let mut status = task.status.lock()
-                        .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
-                    *status = DownloadStatus::Completed;
-                    return Ok(());
-                }
-            }
-        }
-
-        // If we get here, we need to re-download the file
-        fs::rename(final_path, &part_path)
-            .with_context(|| format!("Failed to rename file: {} to {}", final_path.display(), part_path.display()))?;
-    }
-    if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create parent directory for {}: {}", final_path.display(), parent.display()))?;
+    // Check if we can skip download for existing package files
+    if let Some(()) = check_existing_package_file(task)? {
+        return Ok(());
     }
 
-    // Create progress bar but don't show it yet
-    let pb = multi_progress.add(ProgressBar::new(0));
-    pb.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
-        .map_err(|e| eyre!("Failed to parse HTTP response: {}", e))?
-        .progress_chars("=> "));
-    pb.set_message(url.to_string());
+    // Prepare download environment
+    prepare_download_environment(final_path, &part_path)?;
+
+    // Setup progress bar
+    let pb = setup_progress_bar(multi_progress, url)?;
 
     // Start the download
     log::debug!("download_task calling download_file_with_retries for {}", url);
@@ -521,56 +597,25 @@ fn download_task(
     );
     log::debug!("download_task download_file_with_retries completed for {}, result: {:?}", url, result);
 
-    // Only show progress bar after download has started
+    // Update progress bar based on result
     if result.is_ok() {
         pb.finish_with_message(format!("Downloaded {}", final_path.to_string_lossy()));
     } else {
         pb.finish_with_message(format!("Error: {:?}", result));
     }
 
+    // Handle download result
     match result {
         Ok(()) => {
-            // Verify file size if expected size is provided
-            if let Some(expected) = expected_size {
-                if let Ok(metadata) = fs::metadata(&part_path) {
-                    let actual_size = metadata.len() as u32;
-                    if actual_size != expected {
-                        let error_msg = format!(
-                            "Downloaded file size mismatch: expected {} bytes, got {} bytes",
-                            expected, actual_size
-                        );
-                        log::warn!("{} for {}", error_msg, url);
-                        // Note: We could make this a hard error, but for now just warn
-                        // since size information might not always be accurate
-                    } else {
-                        log::debug!("Downloaded file size verified: {} bytes for {}", actual_size, url);
-                    }
-                }
-            }
+            // Verify file size
+            verify_file_size(&part_path, expected_size, url)?;
 
-            fs::rename(&part_path, final_path)
-                .with_context(|| format!("Failed to rename file: {} to {}", part_path.display(), final_path.display()))?;
-
-            // Mark task as completed
-            let mut status = task.status.lock()
-                .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
-            *status = DownloadStatus::Completed;
+            // Finalize download
+            finalize_download(&part_path, final_path, task)?;
+            Ok(())
         },
-        Err(e) => {
-            if part_path.exists() {
-                fs::remove_file(&part_path)?;
-            }
-
-            // Mark task as failed
-            let mut status = task.status.lock()
-                .map_err(|e| eyre!("Failed to lock download status mutex: {}", e))?;
-            *status = DownloadStatus::Failed(format!("{}", e));
-
-            return Err(e);
-        }
+        Err(e) => handle_download_failure(&part_path, task, e),
     }
-
-    Ok(())
 }
 
 /// Handles local file URLs by copying them to the destination
