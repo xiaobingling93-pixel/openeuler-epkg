@@ -211,6 +211,7 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("usr/lib"))?;
         fs::create_dir_all(env_root.join("usr/local/bin"))?;
         fs::create_dir_all(env_root.join("var"))?;
+        fs::create_dir_all(env_root.join("opt/epkg"))?;
 
         // Create symlinks in generation 1
         symlink("usr/sbin", env_root.join("sbin"))?;
