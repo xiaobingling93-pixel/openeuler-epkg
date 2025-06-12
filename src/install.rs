@@ -191,6 +191,12 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
         }
 
         if fs_file.is_dir() {
+            // Check if target path exists and is not a directory
+            if target_path.exists() && !target_path.is_dir() {
+                // Remove the non-directory file first
+                fs::remove_file(&target_path)
+                    .with_context(|| format!("Failed to remove non-directory file {} for mirror_dir", target_path.display()))?;
+            }
             fs::create_dir_all(&target_path)
                 .with_context(|| format!("Failed to create directory {}", target_path.display()))?;
             continue;
@@ -198,8 +204,14 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
 
         if fs::symlink_metadata(&target_path).is_ok() {
             log::info!("Warning: File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
-            fs::remove_file(&target_path)
-                .with_context(|| format!("Failed to remove {} for mirror_dir", target_path.display()))?;
+            // Check if target path is a directory and handle accordingly
+            if target_path.is_dir() {
+                fs::remove_dir_all(&target_path)
+                    .with_context(|| format!("Failed to remove directory {} for mirror_dir", target_path.display()))?;
+            } else {
+                fs::remove_file(&target_path)
+                    .with_context(|| format!("Failed to remove file {} for mirror_dir", target_path.display()))?;
+            }
         }
 
         let metadata = fs::symlink_metadata(fs_file)
