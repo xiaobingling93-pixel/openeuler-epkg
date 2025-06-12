@@ -33,6 +33,7 @@ mod epkg;
 mod version;
 mod scriptlets;
 mod run;
+mod info;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;
@@ -70,12 +71,13 @@ fn main() -> Result<()> {
         Some(("init",       sub_matches))  =>  package_manager.command_init(sub_matches)?,
         Some(("env",        sub_matches))  =>  package_manager.command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  package_manager.command_list(sub_matches)?,
+        Some(("info",       sub_matches))  =>  package_manager.command_info(sub_matches)?,
         Some(("install",    sub_matches))  =>  package_manager.command_install(sub_matches)?,
         Some(("upgrade",    sub_matches))  =>  package_manager.command_upgrade(sub_matches)?,
         Some(("remove",     sub_matches))  =>  package_manager.command_remove(sub_matches)?,
         Some(("history",    sub_matches))  =>  package_manager.command_history(sub_matches)?,
         Some(("restore",    sub_matches))  =>  package_manager.command_restore(sub_matches)?,
-        Some(("update",     _))            =>  package_manager.command_update()?,
+        Some(("update",     sub_matches))  =>  package_manager.command_update(sub_matches)?,
         Some(("repo",       sub_matches))  =>  package_manager.command_repo(sub_matches)?,
         Some(("hash",       sub_matches))  =>  package_manager.command_hash(sub_matches)?,
         Some(("build",      sub_matches))  =>  package_manager.command_build(sub_matches)?,
@@ -263,6 +265,14 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .arg(arg!([GLOB_PATTERN] "Package name filtering"))
         )
         .subcommand(
+            Command::new("info")
+                .about("Show package information")
+                .arg(arg!(--"store-path" "Show store path for installed packages"))
+                .arg(arg!(--scripts "Show install scriptlets for installed packages"))
+                .arg(arg!(--files "Show filelist for installed packages"))
+                .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to show info for").required(true))
+        )
+        .subcommand(
             Command::new("install")
                 .about("Install packages")
                 .arg(arg!(--"install-suggests" "Consider suggested packages as a dependency for installing"))
@@ -445,6 +455,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("init",       sub_matches))  =>  parse_options_init(&mut config, sub_matches).expect("Failed to parse init options"),
         Some(("env",        sub_matches))  =>  parse_options_env(&mut config, sub_matches).expect("Failed to parse env options"),
         Some(("list",       sub_matches))  =>  parse_options_list(&mut config, sub_matches).expect("Failed to parse list options"),
+        Some(("info",       sub_matches))  =>  parse_options_info(&mut config, sub_matches).expect("Failed to parse info options"),
         Some(("install",    sub_matches))  =>  parse_options_install(&mut config, sub_matches).expect("Failed to parse install options"),
         Some(("upgrade",    sub_matches))  =>  parse_options_upgrade(&mut config, sub_matches).expect("Failed to parse upgrade options"),
         Some(("remove",     sub_matches))  =>  parse_options_remove(&mut config, sub_matches).expect("Failed to parse remove options"),
@@ -557,6 +568,11 @@ fn parse_options_list(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
     Ok(())
 }
 
+fn parse_options_info(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Info command options are handled directly in command_info
+    Ok(())
+}
+
 fn parse_options_install(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(_package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
         if sub_matches.contains_id("install-suggests") {
@@ -588,7 +604,7 @@ fn parse_options_restore(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatc
     Ok(())
 }
 
-fn parse_options_update(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+fn parse_options_update(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
@@ -720,6 +736,40 @@ impl PackageManager {
         Ok(())
     }
 
+    fn command_info(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        privdrop_on_suid();
+
+        // First call sync_channel_metadata to prepare data
+        self.sync_channel_metadata()?;
+
+        // Load installed packages info
+        self.load_installed_packages()?;
+
+        // Get all arguments (package specs and key=val filters combined)
+        let mut all_args: Vec<String> = Vec::new();
+
+        // Add PACKAGE_SPEC arguments
+        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+            all_args.extend(package_specs.cloned());
+        }
+
+        // Get command options
+        let show_files = sub_matches.get_flag("files");
+        let show_scripts = sub_matches.get_flag("scripts");
+        let show_store_path = sub_matches.get_flag("store-path");
+
+        // Use the info module function
+        crate::info::show_package_info(
+            self,
+            &all_args,
+            show_files,
+            show_scripts,
+            show_store_path,
+        )?;
+
+        Ok(())
+    }
+
     fn command_install(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if sub_matches.get_flag("local") {
             if let (Some(fs_dir), Some(symlink_dir)) = (sub_matches.get_one::<String>("fs"), sub_matches.get_one::<String>("symlink")) {
@@ -772,9 +822,10 @@ impl PackageManager {
         Ok(())
     }
 
-    fn command_update(&mut self) -> Result<()> {
+    fn command_update(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         self.fork_on_suid()?;
-        self.sync_channel_metadata()
+        self.sync_channel_metadata()?;
+        Ok(())
     }
 
     fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {

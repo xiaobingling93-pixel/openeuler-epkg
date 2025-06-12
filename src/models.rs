@@ -65,7 +65,7 @@ pub struct PackageRange {
 
 // $HOME/.cache/epkg/channel/debian:trixie/main/x86_64/packages-all.txt
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Package {
     pub pkgname: String,
     pub version: String,
@@ -82,7 +82,7 @@ pub struct Package {
     pub build_time: Option<u32>,
 
     #[serde(default)]
-    #[serde(rename = "sourcePkg")]
+    #[serde(rename = "source")]
     pub source: Option<String>,
     #[serde(default)]
     pub location: String,
@@ -99,7 +99,7 @@ pub struct Package {
     #[serde(default)]
     pub sha1sum: Option<String>,
 
-    #[serde(default)]
+    #[serde(skip)]
     pub depends: Vec<Dependency>,
     #[serde(default)]
     #[serde(rename = "requiresPre")]

@@ -283,35 +283,35 @@ pub fn calculate_file_sha256(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Saves package fields to package.txt file with consistent field ordering
-pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, store_tmp_dir: P) -> Result<()> {
-    let store_tmp_dir = store_tmp_dir.as_ref();
-    let package_txt_path = store_tmp_dir.join("info/package.txt");
-
-    // Write package.txt with mapped field names in a consistent order
-    let mut output = String::new();
-
-    // Define the preferred order for common fields
-    let field_order = [
-        "pkgname", "version", "summary", "license", "release", "homepage", "arch", "maintainer",
-        "description", "buildRequires", "requiresPre", "requires", "provides", "conflicts",
+/// Define the preferred order for common package fields
+pub fn get_field_order() -> &'static [&'static str] {
+    &[
+        "pkgname", "source", "version", "release",
+        "summary", "description", "homepage", "license", "arch", "maintainer",
+        "buildRequires", "requiresPre", "requires", "provides", "conflicts",
         "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "originUrl",
         "recipeMaintainers", "subdir", "constrains", "requirements", "commit", "caHash", "caHashVersion",
-        "size", "section", "priority", "buildTime", "buildHost", "group", "cookie", "platform", "source",
+        "size", "installedSize", "section", "priority", "buildTime", "buildHost", "group", "cookie", "platform",
         "sourcePkgId", "rsaHeader", "sha256Header", "OriginalVcsBrowser", "OriginalVcsGit", "builtUsing",
         "originalMaintainer", "conffiles", "changelogTime", "changelogName", "changelogText",
-        "installedSize", "location", "sha256", "md5sum", "descriptionMd5", "multiArch", "tag",
+        "location", "sha256", "md5sum", "descriptionMd5", "multiArch", "tag",
         "protected", "essential", "important", "buildEssential", "buildIds", "comment",
         "rubyVersions", "luaVersions", "pythonVersion", "pythonEggName", "staticBuiltUsing",
         "javascriptBuiltUsing", "xCargoBuiltUsing", "builtUsingNewlibSource", "goImportPath",
         "ghcPackage", "efiVendor", "cnfIgnoreCommands", "cnfVisiblePkgname", "cnfExtraCommands",
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
         "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
-    ];
+    ]
+}
+
+/// Formats package fields with consistent field ordering
+pub fn format_package_fields(package_fields: &[(String, String)]) -> String {
+    let mut output = String::new();
+    let field_order = get_field_order();
 
     // First, write fields in the preferred order
-    for preferred_field in &field_order {
-        for (original_field, value) in &package_fields {
+    for preferred_field in field_order {
+        for (original_field, value) in package_fields {
             if original_field == preferred_field {
                 output.push_str(&format!("{}: {}\n", original_field, value));
                 break;
@@ -320,12 +320,23 @@ pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, s
     }
 
     // Then write any remaining fields that weren't in the preferred order
-    for (original_field, value) in &package_fields {
+    for (original_field, value) in package_fields {
         if !field_order.contains(&original_field.as_str()) {
             log::warn!("Field name '{}' not found in predefined field order list", original_field);
             output.push_str(&format!("{}: {}\n", original_field, value));
         }
     }
+
+    output
+}
+
+/// Saves package fields to package.txt file with consistent field ordering
+pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let package_txt_path = store_tmp_dir.join("info/package.txt");
+
+    // Format the package fields
+    let output = format_package_fields(&package_fields);
 
     fs::write(&package_txt_path, output)
         .wrap_err_with(|| format!("Failed to write package.txt file: {}", package_txt_path.display()))?;
