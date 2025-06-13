@@ -1,7 +1,5 @@
 use std::fs;
-use std::io::Seek;
 use std::io::Write;
-use std::io::SeekFrom;
 use std::path::Path;
 use color_eyre::eyre::eyre;
 use std::path::PathBuf;
@@ -14,7 +12,6 @@ use crate::utils::*;
 use crate::dirs::find_env_root;
 use crate::package;
 use crate::download::wait_for_any_download_task;
-use crate::scriptlets::{run_scriptlets, run_scriptlet, ScriptletType};
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgkey, info)
@@ -499,7 +496,8 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         match find_link_interpreter(interpreter_in_env, interpreter_basename) {
             Ok(()) => {},
             Err(e) => {
-                eprintln!("WARNING: script interpreter {} is not found in environment. Please install it later.", interpreter_basename);
+                eprintln!("WARNING: script interpreter {} is not found in environment. Please install it later.\n env_path: {}, error: {}",
+                    interpreter_basename, interpreter_in_env.display(), e);
                 return Ok("".to_string());
             }
         }
@@ -678,15 +676,15 @@ impl PackageManager {
         self.load_installed_packages()?;
 
         let channel_config = self.get_channel_config(config().common.env.clone())?;
-        let repo_format = channel_config.format;
-        let mut packages_to_install = self.resolve_package_info(package_specs.clone(), repo_format);
+        let package_format = channel_config.format;
+        let mut packages_to_install = self.resolve_package_info(package_specs.clone(), package_format);
         let mut packages_to_install_clone = packages_to_install.clone();
         let mut depends_pkg : HashMap<String, InstalledPackageInfo> = HashMap::new();
         for (pkgline, pkginfo) in packages_to_install_clone.drain() {
             let mut tmp_pkg = HashMap::new();
             tmp_pkg.insert(pkgline, pkginfo);
             let mut tmp_depends : HashMap<String, InstalledPackageInfo> = HashMap::new();
-            self.collect_depends(&mut tmp_pkg, &mut tmp_depends, 1,  repo_format)?;
+            self.collect_depends(&mut tmp_pkg, &mut tmp_depends, 1,  package_format)?;
             depends_pkg.extend(tmp_depends);
         }
 
@@ -718,9 +716,8 @@ impl PackageManager {
                 "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
                 current_env_name_ref
             ))?;
-        let package_format = channel_config.format;
         // First collect all dependencies
-        let dependencies = self.collect_recursive_depends(&packages_to_install, repo_format)?;
+        let dependencies = self.collect_recursive_depends(&packages_to_install, package_format)?;
 
         // Download all packages including dependencies
         let mut all_packages = packages_to_install.clone();
@@ -891,11 +888,16 @@ impl PackageManager {
         let file_path = self.get_package_file_path(pkgkey)?;
 
         // Unpack the package
-        let pkgline = crate::store::unpack_mv_package(&file_path)
+        let final_dir = crate::store::unpack_mv_package(&file_path)
             .with_context(|| format!("Failed to unpack package: {}", file_path))?;
 
+        // Get the pkgline from the directory name
+        let pkgline = final_dir.file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| eyre!("Invalid UTF-8 in package directory name: {}", final_dir.display()))?;
+
         // Parse the pkgline which now includes architecture
-        let parsed = package::parse_pkgline(&pkgline)
+        let parsed = package::parse_pkgline(pkgline)
             .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
 
         // Format the package key using the exact architecture from the package
@@ -905,7 +907,7 @@ impl PackageManager {
         let mut package_info = packages_to_install.remove(pkgkey)
             .or_else(|| packages_to_install.remove(&actual_pkgkey))
             .ok_or_else(|| eyre!("Package key not found: {} (or {})", pkgkey, actual_pkgkey))?;
-        package_info.pkgline = pkgline;
+        package_info.pkgline = pkgline.to_string();
 
         // Link new package immediately after unpacking
         let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");

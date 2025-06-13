@@ -24,6 +24,7 @@ pub fn unpack_package<P: AsRef<Path>>(epkg_file: P, store_tmp_dir: P) -> Result<
 
 /// Legacy function for unpacking multiple .epkg files
 /// This maintains the original behavior for .epkg packages
+#[allow(dead_code)]
 pub fn unpack_packages(files: Vec<String>) -> Result<()> {
     for file in files {
         let filename = file.split('/').last()
@@ -45,13 +46,13 @@ pub fn unpack_packages(files: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-pub fn compress_packages(pkgline: &str, out_dir: &str, origin_url: &str) -> Result<()> {
-    let final_path = dirs().epkg_store.join(pkgline);
-    let package_txt_path = final_path.join("info/package.txt");
-    let file_basename = final_path.file_name().and_then(|os_str| os_str.to_str()).unwrap_or("unknown");
-    let output_file = Path::new(out_dir).join(&format!("{}.epkg", file_basename));
+pub fn compress_packages(store_dir: &std::path::PathBuf, out_dir: &str, origin_url: &str) -> Result<()> {
+    let package_txt_path = store_dir.join("info/package.txt");
+    let pkgline = store_dir.file_name().and_then(|os_str| os_str.to_str()).unwrap_or("unknown");
+    let output_file = Path::new(out_dir).join(&format!("{}.epkg", pkgline));
     append_to_file(&package_txt_path, &format!("originUrl: {}", origin_url))?;
-    compress_folder_to_epkg(&final_path, &output_file.to_string_lossy())?;
+    compress_folder_to_epkg(store_dir, &output_file.to_string_lossy())?;
+    println!("{}", output_file.display());
     Ok(())
 }
 

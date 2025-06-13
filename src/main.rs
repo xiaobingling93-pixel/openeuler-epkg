@@ -607,7 +607,7 @@ fn parse_options_restore(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatc
     Ok(())
 }
 
-fn parse_options_update(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+fn parse_options_update(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
@@ -825,7 +825,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn command_update(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+    fn command_update(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
         self.fork_on_suid()?;
         self.sync_channel_metadata()?;
         Ok(())
@@ -877,12 +877,13 @@ impl PackageManager {
             privdrop_on_suid(); // Drop privileges if running as SUID
 
             match crate::store::unpack_packages(files) {
-                Ok(pkglines) => {
-                    if pkglines.is_empty() {
+                Ok(final_dirs) => {
+                    if final_dirs.is_empty() {
                         println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                     } else {
-                        for pkgline in pkglines {
-							println!("{}", pkgline);
+                        for final_dir in &final_dirs {
+                            // Print both the final directory path and the pkgline (directory name)
+                            println!("{}", final_dir.display());
                         }
                     }
                 }
@@ -914,13 +915,13 @@ impl PackageManager {
             privdrop_on_suid(); // Drop privileges if running as SUID
 
             match crate::store::unpack_packages(files) {
-                Ok(pkglines) => {
-                    if pkglines.is_empty() {
+                Ok(final_dirs) => {
+                    if final_dirs.is_empty() {
                         println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                     } else {
-                        for pkgline in pkglines {
-                            epkg::compress_packages(&pkgline, &out_dir, &origin_url)?;
-                            println!("{}", pkgline);
+                        for final_dir in &final_dirs {
+                            // Compress the package using the final directory path
+                            epkg::compress_packages(final_dir, &out_dir, &origin_url)?;
                         }
                     }
                 }

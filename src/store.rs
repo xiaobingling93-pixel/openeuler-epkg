@@ -14,18 +14,20 @@ use crate::models::{dirs, PackageFormat};
 use log;
 
 /// Unpacks multiple packages and moves them to the store
-pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<String>> {
-    let mut pkglines = Vec::new();
+/// Returns a vector of paths to the final directories where packages were unpacked
+pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<std::path::PathBuf>> {
+    let mut final_dirs = Vec::new();
     for package_file in package_files {
-        let pkgline = unpack_mv_package(&package_file)
+        let final_dir = unpack_mv_package(&package_file)
             .wrap_err_with(|| format!("Failed to unpack package: {}", package_file))?;
-        pkglines.push(pkgline);
+        final_dirs.push(final_dir);
     }
-    Ok(pkglines)
+    Ok(final_dirs)
 }
 
 /// Unpacks a single package and moves it to the final store location
-pub fn unpack_mv_package(package_file: &str) -> Result<String> {
+/// Returns the path to the final directory where the package was unpacked
+pub fn unpack_mv_package(package_file: &str) -> Result<std::path::PathBuf> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = dirs().epkg_cache.join("unpack").join(&temp_name);
@@ -101,7 +103,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<String> {
     fs::rename(&store_tmp_dir, &final_dir)
         .wrap_err_with(|| format!("Failed to move package from {} to {}", store_tmp_dir.display(), final_dir.display()))?;
 
-    Ok(pkgline)
+    Ok(final_dir)
 }
 
 /// Generic package unpacking function that detects format and delegates to appropriate handler

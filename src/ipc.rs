@@ -277,10 +277,17 @@ fn handle_client(stream: &mut UnixStream) -> Result<()> {
     match command {
         WorkerCommand::Unpack(files) => {
             let res = match crate::store::unpack_packages(files) {
-                Ok(_) => send_response(
-                    stream,
-                    json!({"status": "success", "message": "Unpacked files"})
-                ),
+                Ok(store_dirs) => {
+                    // Convert PathBuf to String for JSON serialization
+                    let paths: Vec<String> = store_dirs.iter()
+                        .map(|path| path.display().to_string())
+                        .collect();
+
+                    send_response(
+                        stream,
+                        json!({"status": "success", "paths": paths})
+                    )
+                },
                 Err(e) => send_response(
                     stream,
                     json!({"status": "error", "message": e.to_string()})
@@ -318,6 +325,7 @@ fn send_response(stream: &mut UnixStream, response: Value) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
     let mut reader = io::BufReader::new(stream);
     let mut response_line = String::new();
@@ -334,6 +342,7 @@ fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
 
 // send side
 impl PackageManager {
+    #[allow(dead_code)]
     fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
         // Get ipc stream
         self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket).unwrap());
@@ -353,6 +362,7 @@ impl PackageManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
         if !self.has_worker_process {
             crate::store::unpack_packages(files)?;

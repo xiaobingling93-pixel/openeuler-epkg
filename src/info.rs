@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use color_eyre::Result;
-use serde_json::{Value, json, Map};
+use serde_json::{Value, json};
 use crate::models::{PackageManager, Package};
 
 pub fn show_package_info(
