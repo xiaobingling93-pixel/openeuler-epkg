@@ -151,9 +151,9 @@ pub fn parse_cmdline() -> clap::ArgMatches {
 		.override_usage("epkg [OPTIONS] <COMMAND>")
 		.help_template(
             "{about}\n\n\
-        USAGE:\n  {usage}\n\n\
-        COMMANDS:\n{subcommands}\n\n\
-        OPTIONS:
+USAGE: {usage}\n\n\
+COMMANDS:\n{subcommands}\n\n\
+OPTIONS:
   -C, --config <FILE>               Configuration file to use
   -e, --env <ENV>                   Select the environment
       --arch <ARCH>                 Select the CPU architecture
@@ -267,10 +267,11 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .subcommand(
             Command::new("info")
                 .about("Show package information")
-                .arg(arg!(--"store-path" "Show store path for installed packages"))
-                .arg(arg!(--scripts "Show install scriptlets for installed packages"))
                 .arg(arg!(--files "Show filelist for installed packages"))
+                .arg(arg!(--scripts "Show install scriptlets for installed packages"))
+                .arg(arg!(--"store-path" "Show store path for installed packages"))
                 .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to show info for").required(true))
+                .arg_required_else_help(true) // This will show help if no args are provided
         )
         .subcommand(
             Command::new("install")
@@ -285,7 +286,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         )
         .subcommand(
             Command::new("upgrade")
-                .about("upgrade packages")
+                .about("Upgrade packages")
                 .arg(arg!([PACKAGE_SPEC] ... "Package specifications to upgrade"))
         )
         .subcommand(
@@ -324,8 +325,9 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         )
         .subcommand(
             Command::new("unpack")
-                .about("Unpack package file(s) into a temporary directory")
+                .about("Unpack package file(s) into a store directory")
                 .arg(arg!(<PACKAGE_FILE> ... "Package files to unpack").required(true))
+                .arg_required_else_help(true) // This will show help if no args are provided
         )
         .subcommand(
             Command::new("convert")
@@ -333,6 +335,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
                 .arg(arg!(--"out-dir" <OUTPUT_DIR> "Output directory").default_value("."))
                 .arg(arg!(--"origin-url" <ORIGIN_URL> "Where the package originated from").required(true))
                 .arg(arg!(<PACKAGE_FILE>... "Package files to convert (RPM, DEB, APK, etc.)").required(true))
+                .arg_required_else_help(true) // This will show help if no args are provided
         )
         .subcommand(
             Command::new("run")
