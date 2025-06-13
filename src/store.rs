@@ -3,8 +3,9 @@ use std::io::{self, BufReader, BufWriter, Read};
 use std::path::Path;
 use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
 use tar::Archive;
-use nix::unistd::{User, Group};
 use zstd::stream::Decoder;
+use nix::unistd::{User, Group};
+use nix::unistd;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use walkdir::WalkDir;
@@ -238,14 +239,16 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         // Add owner/group if not root
         let uid = metadata.uid();
         let gid = metadata.gid();
+        let euid = unistd::geteuid();
+        let egid = unistd::getegid();
 
-        if uid != 0 {
+        if uid != 0 && uid != euid.as_raw() {
             if let Ok(Some(user)) = User::from_uid(uid.into()) {
                 attrs.push(format!("uname={}", user.name));
             }
         }
 
-        if gid != 0 {
+        if gid != 0 && gid != egid.as_raw() {
             if let Ok(Some(group)) = Group::from_gid(gid.into()) {
                 attrs.push(format!("gname={}", group.name));
             }
