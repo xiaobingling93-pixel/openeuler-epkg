@@ -354,7 +354,10 @@ fn search_with_aho_corasick(
     summary_pattern: &[u8],
 ) -> Result<()> {
     let user_pattern = options.pattern.as_bytes();
-    let patterns = vec![pkgname_pattern, summary_pattern, user_pattern];
+
+    // Create patterns for Aho-Corasick
+    // Add the newline pattern to detect line boundaries
+    let patterns = vec![pkgname_pattern, summary_pattern, user_pattern, b"\n"];
 
     // Create the Aho-Corasick automaton with proper error handling
     let ac = match AhoCorasick::new(patterns) {
@@ -363,52 +366,68 @@ fn search_with_aho_corasick(
     };
 
     let mut state = PackagesSearchState::new();
+    let mut current_line_start = 0;
 
-    // Iterate lines manually (faster than .split())
-    let mut start = 0;
-    for (i, &byte) in mmap.iter().enumerate() {
-        if byte != b'\n' { continue; }
+    // Track state for the current line
+    let mut is_pkgname = false;
+    let mut is_summary = false;
+    let mut has_pattern_match = false;
 
-        let line = &mmap[start..i];
-        start = i + 1;
-
-        if line.is_empty() { continue; }
-
-        // Find all matches in the current line
-        let mut matches = ac.find_iter(line);
-
-        // Check what kind of match we have
-        let mut is_pkgname = false;
-        let mut is_summary = false;
-        let mut has_pattern_match = false;
-
-        while let Some(mat) = matches.next() {
-            match mat.pattern().as_usize() {
-                0 => {
-                    // pkgname pattern
-                    state.current_pkgname = &line[mat.end()..];
+    // Process the entire mmap at once
+    for mat in ac.find_iter(mmap) {
+        match mat.pattern().as_usize() {
+            0 => {
+                // pkgname pattern - must be at start of line
+                if mat.start() == current_line_start {
+                    state.current_pkgname = &mmap[mat.end()..find_next_newline(mmap, mat.end())];
                     is_pkgname = true;
-                },
-                1 => {
-                    // summary pattern
-                    state.current_summary = &line[mat.end()..];
+                }
+            },
+            1 => {
+                // summary pattern - must be at start of line
+                if mat.start() == current_line_start {
+                    state.current_summary = &mmap[mat.end()..find_next_newline(mmap, mat.end())];
                     is_summary = true;
-                },
-                2 => {
-                    // user pattern
-                    has_pattern_match = true;
-                },
-                _ => unreachable!()
-            }
-        }
+                }
+            },
+            2 => {
+                // user pattern - check if it's not at start of line or not a pkgname/summary line
+                let line_end = find_next_newline(mmap, mat.start());
+                let current_line = &mmap[current_line_start..line_end];
 
-        // If we didn't find a pkgname or summary pattern but found the user pattern
-        if !is_pkgname && !is_summary && has_pattern_match {
-            state.print_match()?;
+                // Only consider it a match if it's not a pkgname or summary line
+                if !current_line.starts_with(pkgname_pattern) && !current_line.starts_with(summary_pattern) {
+                    has_pattern_match = true;
+                }
+            },
+            3 => {
+                // Newline - process the completed line
+                if has_pattern_match && !is_pkgname && !is_summary {
+                    state.print_match()?;
+                }
+
+                // Reset line state
+                current_line_start = mat.end();
+                is_pkgname = false;
+                is_summary = false;
+                has_pattern_match = false;
+            },
+            _ => unreachable!()
         }
     }
 
     Ok(())
+}
+
+// Helper function to find the next newline character
+#[inline]
+fn find_next_newline(data: &[u8], start: usize) -> usize {
+    for i in start..data.len() {
+        if data[i] == b'\n' {
+            return i;
+        }
+    }
+    data.len()
 }
 
 #[inline]
