@@ -10,6 +10,7 @@ use crate::dirs::*;
 use crate::models::*;
 use log;
 
+#[allow(dead_code)]
 pub fn load_package_json(file_path: &str) -> Result<Package> {
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path))?;

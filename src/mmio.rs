@@ -16,6 +16,7 @@ static PROVIDE2PKGNAMES_LOADED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 pub struct FileMapper {
+    #[allow(dead_code)]
     file: File,
     mmap: Mmap,
 }
@@ -29,6 +30,7 @@ impl FileMapper {
     }
 
     /// Get the entire mapped data
+    #[allow(dead_code)]
     pub fn data(&self) -> &[u8] {
         &self.mmap
     }

@@ -107,7 +107,7 @@ impl PackageManager {
         }
 
         // Step 4: Collect recursive dependencies that should be kept (Parse the packages that are only depended on by input_package_info)
-        let mut packages_to_keep: HashMap<String, InstalledPackageInfo> = self
+        let packages_to_keep: HashMap<String, InstalledPackageInfo> = self
             .installed_packages
             .iter()
             .filter(|(pkgkey, info)| {

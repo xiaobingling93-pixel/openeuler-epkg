@@ -11,7 +11,9 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 
 /// PKGINFO field definitions based on Arch Linux specification
 pub struct PkgInfoField {
+    #[allow(dead_code)]
     pub name: &'static str,
+    #[allow(dead_code)]
     pub description: &'static str,
     pub repeatable: bool,
 }
@@ -276,9 +278,6 @@ fn extract_install_scriptlets(install_content: &[u8], store_tmp_dir: &Path) -> R
 
     // Get all scriptlet names from SCRIPT_MAPPING
     let scriptlet_names: Vec<&str> = SCRIPT_MAPPING.keys().copied().collect();
-
-    // Copy the .INSTALL file to info/arch/ directory (should already be there, but ensure it's there)
-    let install_path = store_tmp_dir.join("info/arch/.INSTALL");
 
     // Create wrapper scripts for each scriptlet function
     for &scriptlet_name in scriptlet_names.iter() {

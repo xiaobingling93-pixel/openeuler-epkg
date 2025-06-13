@@ -710,12 +710,6 @@ impl PackageManager {
 
         self.record_appbin_source(&mut packages_to_install)?;
         self.collect_essential_packages(&mut packages_to_install)?;
-        let current_env_name_ref = &config().common.env;
-        let channel_config = self.channels_config.get(current_env_name_ref)
-            .ok_or_else(|| eyre::eyre!(
-                "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
-                current_env_name_ref
-            ))?;
         // First collect all dependencies
         let dependencies = self.collect_recursive_depends(&packages_to_install, package_format)?;
 

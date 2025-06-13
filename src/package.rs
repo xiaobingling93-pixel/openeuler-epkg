@@ -3,6 +3,7 @@ use color_eyre::eyre::{bail, eyre, Result};
 // parsed from pkgline
 #[derive(Debug, Clone)]
 pub struct PackageLine {
+    #[allow(dead_code)]
     pub ca_hash: String,
     pub pkgname: String,
     pub version: String,
@@ -53,6 +54,7 @@ pub fn pkgkey2version(pkgkey: &str) -> Result<String> {
 }
 
 // Extract a package key from a pkgline
+#[allow(dead_code)]
 pub fn pkgline2pkgkey(pkgline: &str) -> Result<String> {
     let parts: Vec<&str> = pkgline.split("__").collect();
     if parts.len() < 4 {
@@ -70,6 +72,7 @@ pub fn pkgkey2arch(pkgkey: &str) -> Result<String> {
     Ok(parts[2].to_string())
 }
 
+#[allow(dead_code)]
 pub fn parse_pkgkey(pkgkey: &str) -> Result<(String, String, String)> {
     let parts: Vec<&str> = pkgkey.split("__").collect();
     if parts.len() != 3 {

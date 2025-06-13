@@ -350,6 +350,7 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
 /// 
 /// # Returns
 /// * `Result<()>` - Ok if decompression was successful, Err otherwise
+#[allow(dead_code)]
 pub fn decompress_file(input_path: &Path, output_path: &Path, extension: &str) -> Result<()> {
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;

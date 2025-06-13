@@ -1,8 +1,7 @@
 use std::path::Path;
-use std::process::Command;
+use color_eyre::eyre::{Result};
+use crate::models::{InstalledPackageInfo, PackageFormat};
 use std::collections::HashMap;
-use color_eyre::eyre::{self, Result, Context};
-use crate::models::{InstalledPackageInfo, PackageFormat, PackageManager};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {

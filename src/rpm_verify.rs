@@ -32,6 +32,7 @@ pub(crate) enum ComparisonMismatchDetail {
     GroupMismatch { path: PathBuf, official_gid: u32, epkg_gid: u32 },
     SizeMismatch { path: PathBuf, official_size: u64, epkg_size: u64 },
     // Extended stat comparison fields
+    #[allow(dead_code)]
     MtimeMismatch { path: PathBuf, official_mtime: i64, epkg_mtime: i64 },
     DevMismatch { path: PathBuf, official_dev: u64, epkg_dev: u64 },
     // Device file specific fields

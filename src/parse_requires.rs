@@ -700,6 +700,7 @@ pub fn parse_conda_requires(requires: &str) -> Result<AndDepends, ParseError> {
     Ok(and_depends)
 }
 
+#[allow(dead_code)]
 pub fn get_package_format(origin_url: &str) -> Option<PackageFormat> {
     let path = Path::new(origin_url);
     let ext = path.extension().and_then(|s| s.to_str())?;

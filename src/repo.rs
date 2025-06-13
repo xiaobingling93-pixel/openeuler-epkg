@@ -32,6 +32,7 @@ pub enum ReleaseStatus {
 #[derive(Clone)]
 #[derive(Debug)]
 pub struct RepoRevise {
+    #[allow(dead_code)]
     pub format: PackageFormat,
     pub arch: String,
     pub channel: String,

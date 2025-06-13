@@ -1,5 +1,5 @@
 use std::process::exit;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use std::sync::Arc;
 use color_eyre::Result;
@@ -489,6 +489,7 @@ impl PackageManager {
     }
 
     // Backward compatibility implementation that uses a default format
+    #[allow(dead_code)]
     pub fn resolve_package_info_with_default(&mut self, capabilities_or_pkg_names: Vec<String>) -> HashMap<String, InstalledPackageInfo> {
         // For top-level package requests without a specific format context
         // Use Epkg as default which uses Debian-style parsing

@@ -21,6 +21,7 @@ use filetime::set_file_mtime;
 #[derive(Debug, Clone)]
 pub struct DownloadTask {
     pub url: String,
+    #[allow(dead_code)]
     pub output_dir: PathBuf,
     pub max_retries: usize,
     pub data_channel: Option<Sender<Vec<u8>>>,
@@ -292,6 +293,7 @@ impl DownloadManager {
         });
     }
 
+    #[allow(dead_code)]
     pub fn wait_for_all_tasks(&self) -> Result<()> {
         while self.is_processing.load(std::sync::atomic::Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(100));
@@ -1081,8 +1083,7 @@ fn download_content(
 /// Validate that the downloaded size matches the expected Content-Length
 fn validate_download_size(downloaded: u64, total_size: u64, part_path: &Path) -> Result<()> {
     if total_size > 0 && downloaded != total_size {
-        let error_msg = format!("Downloaded size ({}) does not match Content-Length ({})", downloaded, total_size);
-        return Err(eyre!("Download size mismatch: Downloaded size ({}) does not match Content-Length ({}) for {}", downloaded, total_size, part_path.display()));
+        return Err(eyre!("Download size mismatch: Downloaded size ({}) does not match expected size ({}) for {}", downloaded, total_size, part_path.display()));
     }
     Ok(())
 }
@@ -1218,6 +1219,7 @@ impl PackageManager {
     }
 
     // Download packages specified by their pkgkey strings.
+    #[allow(dead_code)]
     pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>, async_mode: bool) -> Result<Vec<String>> {
         let output_dir = dirs().epkg_downloads_cache.clone();
 
@@ -1246,6 +1248,7 @@ impl PackageManager {
     }
 
     // Wait for all pending downloads to complete
+    #[allow(dead_code)]
     pub fn wait_for_downloads(&self) -> Result<()> {
         DOWNLOAD_MANAGER.wait_for_all_tasks()
             .map_err(|e| eyre!("Failed to wait for download tasks to complete: {}", e))?;

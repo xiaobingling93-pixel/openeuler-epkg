@@ -52,7 +52,9 @@ pub struct PackageListItem {
     pub repodata_name: String,
     pub summary: String,
     pub status: String,
+    #[allow(dead_code)]
     pub pkgkey: String,
+    #[allow(dead_code)]
     pub installed_info: Option<InstalledPackageInfo>,
 }
 

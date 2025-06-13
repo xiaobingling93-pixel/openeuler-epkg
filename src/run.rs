@@ -2,9 +2,9 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process;
-use nix::unistd::{Uid, Gid, getuid, getgid, geteuid, User, fork, ForkResult};
-use nix::sys::wait::{waitpid, WaitStatus};
+
+use nix::unistd::{Uid, Gid, getuid, getgid, geteuid};
+
 use nix::sched::{unshare, CloneFlags};
 use nix::mount::{mount, MsFlags};
 use color_eyre::Result;
@@ -12,6 +12,7 @@ use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn};
 use crate::models::*;
+
 
 #[derive(Debug, Clone)]
 pub struct RunOptions {
@@ -442,11 +443,9 @@ pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::col
     }
 
     // Execute the command using execvp
-    unsafe {
-        nix::unistd::execvp(&cmd_cstr, &c_args)
-            .map_err(|e| eyre::eyre!("Failed to execute command '{}' with args {:?}: {}",
-                cmd_path.display(), args, e))?;
-    }
+    nix::unistd::execvp(&cmd_cstr, &c_args)
+        .map_err(|e| eyre::eyre!("Failed to execute command '{}' with args {:?}: {}",
+            cmd_path.display(), args, e))?;
 
     // This should never be reached as execvp replaces the current process
     unreachable!();
@@ -504,6 +503,7 @@ impl PackageManager {
     }
 
     /// Fork and execute with namespace isolation - kept for backward compatibility
+    #[allow(dead_code)]
     pub fn fork_and_execute(&self, env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
         fork_and_execute(env_root, run_options, cmd_path)
     }

@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::env;
 use std::path::Path;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
@@ -8,6 +7,7 @@ use crate::store::untar_zst;
 use std::fs::{File, OpenOptions};
 use tar::Builder;
 use zstd::stream::write::Encoder;
+
 
 /// Legacy function for unpacking .epkg files (original implementation)
 /// This function is kept for backward compatibility with existing .epkg packages

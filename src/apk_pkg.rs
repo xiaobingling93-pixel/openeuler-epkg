@@ -1,13 +1,13 @@
 use std::fs;
-use std::io::Read;
 use std::path::Path;
 use std::collections::HashMap;
-use tar::{Archive, Entry};
+use tar::Archive;
 use log;
-use flate2::read::{GzDecoder, MultiGzDecoder};
+use flate2::read::MultiGzDecoder;
 use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
+
 
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
@@ -50,7 +50,9 @@ lazy_static! {
 
 /// PKGINFO field definitions based on APK v2 specification
 pub struct PkgInfoField {
+    #[allow(dead_code)]
     pub name: &'static str,
+    #[allow(dead_code)]
     pub description: &'static str,
     pub repeatable: bool,
 }

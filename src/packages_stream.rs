@@ -75,10 +75,12 @@ impl ReceiverHasher {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_hash_valid(&self) -> bool {
         self.hash_validated
     }
 
+    #[allow(dead_code)]
     pub fn is_complete(&self) -> bool {
         if let Some(expected_size) = self.expected_size {
             self.total_bytes_received == expected_size
