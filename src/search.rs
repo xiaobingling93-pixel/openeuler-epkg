@@ -83,8 +83,8 @@ pub fn search_filelists(filelists: Vec<PathBuf>, options: &SearchOptions) -> Res
     Ok(())
 }
 
-// Start a producer thread to read and send file contents in chunks
-fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_channel::Sender<Vec<u8>>) -> thread::JoinHandle<Result<()>> {
+// Start a producer thread to read and send file contents in chunks using zero-copy with Arc<Vec<u8>>
+fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_channel::Sender<Arc<Vec<u8>>>) -> thread::JoinHandle<Result<()>> {
     thread::spawn(move || {
         // Use a reasonably sized buffer for chunks (32KB)
         const CHUNK_SIZE: usize = 32 * 1024;
@@ -102,11 +102,18 @@ fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_chann
             };
 
             // Use a buffer for reading and a separate buffer for leftover data
-            let mut buffer = vec![0; CHUNK_SIZE];
             let mut leftover = Vec::new();
 
             // Read chunks and send them through the channel
             loop {
+                // Create a new buffer for this chunk
+                let mut buffer = vec![0; CHUNK_SIZE + leftover.len()];
+
+                // Copy any leftover data to the beginning of the buffer
+                if !leftover.is_empty() {
+                    buffer[0..leftover.len()].copy_from_slice(&leftover);
+                }
+
                 // Read into the buffer after any leftover data
                 let bytes_read = reader.read(&mut buffer[leftover.len()..])?;
                 if bytes_read == 0 && leftover.is_empty() {
@@ -121,35 +128,42 @@ fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_chann
                     break;
                 }
 
+                // Resize buffer to actual data size
+                buffer.truncate(total_data);
+
                 // Find the last newline in the data
                 let mut end_pos = total_data;
 
-                // Only look for line boundaries if we have a full chunk or we're not at EOF
-                if bytes_read == CHUNK_SIZE - leftover.len() {
-                    for i in (0..total_data).rev() {
-                        if buffer[i] == b'\n' {
-                            end_pos = i + 1; // Include the newline
-                            break;
-                        }
+                for i in (0..total_data).rev() {
+                    if buffer[i] == b'\n' {
+                        end_pos = i + 1; // Include the newline
+                        break;
                     }
                 }
 
-                // Send the chunk up to the last complete line
+                // Create the chunk to send
                 if end_pos > 0 {
-                    let chunk = buffer[0..end_pos].to_vec();
-                    if tx.send(chunk).is_err() {
+                    let chunk_data = if end_pos == total_data {
+                        // We can send the entire buffer
+                        buffer
+                    } else {
+                        // We need to split the buffer
+                        let data = buffer[0..end_pos].to_vec();
+                        leftover = buffer[end_pos..].to_vec();
+                        data
+                    };
+
+                    // Wrap the chunk in Arc for zero-copy sending
+                    let arc_chunk = Arc::new(chunk_data);
+                    if tx.send(arc_chunk).is_err() {
                         // Channel is closed, receiver has terminated
                         return Ok(());
                     }
-                }
 
-                // Save any leftover data for the next iteration
-                if end_pos < total_data {
-                    leftover = buffer[end_pos..total_data].to_vec();
-                    // Copy leftover to the beginning of the buffer
-                    buffer[0..leftover.len()].copy_from_slice(&leftover);
-                } else {
-                    leftover.clear();
+                    // Clear leftover if we sent the entire buffer
+                    if end_pos == total_data {
+                        leftover.clear();
+                    }
                 }
 
                 // If we're at EOF and have sent all data, we're done
@@ -163,7 +177,7 @@ fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_chann
 }
 
 // Process filelists using regex pattern matching with chunked data
-fn process_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
+fn process_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
     // Create a regex from the pattern
     let regex = Arc::new(Regex::new(&options.pattern)?);
 
@@ -193,7 +207,7 @@ fn process_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, filelists: Vec<Pa
 }
 
 // Process filelists using Aho-Corasick pattern matching with chunked data
-fn process_filelists_with_aho_corasick_chunked(rx: Receiver<Vec<u8>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
+fn process_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
     // Convert pattern to bytes for Aho-Corasick
     let pattern = options.pattern.as_bytes().to_vec();
 
@@ -240,7 +254,7 @@ fn extract_line(data: &[u8], start: usize, end: usize) -> String {
     String::from_utf8_lossy(&data[start..end]).to_string()
 }
 
-fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, prefix: Vec<u8>, _options: &SearchOptions) -> Result<()> {
+fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, prefix: Vec<u8>, _options: &SearchOptions) -> Result<()> {
     let mut current_pkgname = String::new();
 
     // Create patterns for Aho-Corasick
@@ -250,7 +264,8 @@ fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Arc<R
         Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
     };
 
-    while let Ok(chunk) = rx.recv() {
+    while let Ok(arc_chunk) = rx.recv() {
+        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
         let mut matches = ac.find_iter(&chunk);
 
         while let Some(mat) = matches.next() {
@@ -295,14 +310,15 @@ fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Arc<R
     Ok(())
 }
 
-fn process_rpm_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
+fn process_rpm_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
     let mut current_pkgname = String::new();
 
     // Create patterns to quickly identify important lines
     let package_pattern = b"<package";
     let file_pattern = b"  <file>";
 
-    while let Ok(chunk) = rx.recv() {
+    while let Ok(arc_chunk) = rx.recv() {
+        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
         // First pass: find all package and file lines
         let mut i = 0;
         while i < chunk.len() {
@@ -434,86 +450,145 @@ fn should_print_file(file_path: &str, pattern: &[u8], options: &SearchOptions) -
     }
 }
 
-fn process_rpm_filelists_with_aho_corasick_chunked(rx: Receiver<Vec<u8>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
+fn process_rpm_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
     // Buffer to store partial XML elements across chunks
     let mut buffer = Vec::new();
     // Keep the previous chunk for backward package search
     let mut prev_chunk: Option<Vec<u8>> = None;
 
-    while let Ok(mut chunk) = rx.recv() {
-        // If we have data in the buffer from a previous chunk, prepend it
+    while let Ok(arc_chunk) = rx.recv() {
+        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
+
+        // Check if we need to combine with previous buffer
         if !buffer.is_empty() {
-            let mut combined = buffer.clone();
-            combined.extend_from_slice(&chunk);
-            chunk = combined;
+            // Combine the buffer with the new chunk
+            let mut combined = Vec::with_capacity(buffer.len() + chunk.len());
+            combined.extend_from_slice(&buffer);
+            combined.extend_from_slice(chunk);
             buffer.clear();
-        }
 
-        // Start position for our search
-        let mut pos = 0;
+            // Process the combined data
+            let mut pos = 0;
 
-        // Process the chunk
-        while pos < chunk.len() {
-            // First search for our pattern
-            if let Some(pattern_pos) = memchr::memmem::find(&chunk[pos..], &pattern) {
-                let pattern_pos = pos + pattern_pos;
+            // Process the chunk
+            while pos < combined.len() {
+                // First search for our pattern
+                if let Some(pattern_pos) = memchr::memmem::find(&combined[pos..], &pattern) {
+                    let pattern_pos = pos + pattern_pos;
 
-                // Find the line containing this pattern
-                let (line_start, line_end) = find_line_boundaries_memchr(&chunk, pattern_pos);
-                let line = &chunk[line_start..line_end];
+                    // Find the line containing this pattern
+                    let (line_start, line_end) = find_line_boundaries_memchr(&combined, pattern_pos);
+                    let line = &combined[line_start..line_end];
 
-                // Check if this is a file element line and extract the file path
-                if memchr::memmem::find(line, FILE_TAG).is_some() {
-                    if let Some(file_path) = extract_file_path(line) {
-                        // Check if we should print this file based on options
-                        if should_print_file(&file_path, &pattern, options) {
-                            // Try to find package name in current chunk
-                            let mut found_pkgname = false;
+                    // Check if this is a file element line and extract the file path
+                    if memchr::memmem::find(line, FILE_TAG).is_some() {
+                        if let Some(file_path) = extract_file_path(line) {
+                            // Check if we should print this file based on options
+                            if should_print_file(&file_path, &pattern, options) {
+                                // Try to find package name in current chunk
+                                let mut found_pkgname = false;
 
-                            // Search in current chunk
-                            if let Some(pkgname) = find_package_name(&chunk, line_start) {
-                                println!("{} {}", pkgname, file_path);
-                                found_pkgname = true;
-                            }
-                            // If not found, search in previous chunk
-                            else if let Some(prev) = &prev_chunk {
-                                if let Some(pkgname) = find_package_name(prev, prev.len()) {
+                                // Search in current chunk
+                                if let Some(pkgname) = find_package_name(&combined, line_start) {
                                     println!("{} {}", pkgname, file_path);
                                     found_pkgname = true;
                                 }
-                            }
+                                // If not found, search in previous chunk
+                                else if let Some(prev) = &prev_chunk {
+                                    if let Some(pkgname) = find_package_name(prev, prev.len()) {
+                                        println!("{} {}", pkgname, file_path);
+                                        found_pkgname = true;
+                                    }
+                                }
 
-                            // If we still couldn't find a package name, use a placeholder
-                            if !found_pkgname {
-                                println!("unknown-package {}", file_path);
+                                // If we still couldn't find a package name, use a placeholder
+                                if !found_pkgname {
+                                    println!("unknown-package {}", file_path);
+                                }
                             }
                         }
                     }
-                }
 
-                // Move position past this match
-                pos = line_end + 1;
-            } else {
-                // No more matches in this chunk
-                // Save the last part of the chunk that might contain a partial match
-                if chunk.len() - pos > pattern.len() {
-                    buffer.extend_from_slice(&chunk[chunk.len() - pattern.len()..]);
+                    // Move position past this match
+                    pos = line_end + 1;
                 } else {
-                    buffer.extend_from_slice(&chunk[pos..]);
+                    // No more matches in this chunk
+                    // Save the last part of the chunk that might contain a partial match
+                    if combined.len() - pos > pattern.len() {
+                        buffer.extend_from_slice(&combined[combined.len() - pattern.len()..]);
+                    } else {
+                        buffer.extend_from_slice(&combined[pos..]);
+                    }
+                    break;
                 }
-                break;
+            }
+        } else {
+            // Process the chunk directly
+            let mut pos = 0;
+
+            // Process the chunk
+            while pos < chunk.len() {
+                // First search for our pattern
+                if let Some(pattern_pos) = memchr::memmem::find(&chunk[pos..], &pattern) {
+                    let pattern_pos = pos + pattern_pos;
+
+                    // Find the line containing this pattern
+                    let (line_start, line_end) = find_line_boundaries_memchr(chunk, pattern_pos);
+                    let line = &chunk[line_start..line_end];
+
+                    // Check if this is a file element line and extract the file path
+                    if memchr::memmem::find(line, FILE_TAG).is_some() {
+                        if let Some(file_path) = extract_file_path(line) {
+                            // Check if we should print this file based on options
+                            if should_print_file(&file_path, &pattern, options) {
+                                // Try to find package name in current chunk
+                                let mut found_pkgname = false;
+
+                                // Search in current chunk
+                                if let Some(pkgname) = find_package_name(chunk, line_start) {
+                                    println!("{} {}", pkgname, file_path);
+                                    found_pkgname = true;
+                                }
+                                // If not found, search in previous chunk
+                                else if let Some(prev) = &prev_chunk {
+                                    if let Some(pkgname) = find_package_name(prev, prev.len()) {
+                                        println!("{} {}", pkgname, file_path);
+                                        found_pkgname = true;
+                                    }
+                                }
+
+                                // If we still couldn't find a package name, use a placeholder
+                                if !found_pkgname {
+                                    println!("unknown-package {}", file_path);
+                                }
+                            }
+                        }
+                    }
+
+                    // Move position past this match
+                    pos = line_end + 1;
+                } else {
+                    // No more matches in this chunk
+                    // Save the last part of the chunk that might contain a partial match
+                    if chunk.len() - pos > pattern.len() {
+                        buffer.extend_from_slice(&chunk[chunk.len() - pattern.len()..]);
+                    } else {
+                        buffer.extend_from_slice(&chunk[pos..]);
+                    }
+                    break;
+                }
             }
         }
 
         // Store current chunk as previous before moving to next chunk
-        prev_chunk = Some(chunk);
+        prev_chunk = Some(chunk.to_vec());
     }
 
     Ok(())
 }
 
 // Process simple filelists with regex and literal prefix optimization (chunked version)
-fn process_simple_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, prefix: Vec<u8>, options: &SearchOptions) -> Result<()> {
+fn process_simple_filelists_with_prefix_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, prefix: Vec<u8>, options: &SearchOptions) -> Result<()> {
     // Create the Aho-Corasick automaton with the prefix
     let patterns = vec![prefix.clone()];
     let ac = match AhoCorasick::new(&patterns) {
@@ -521,12 +596,13 @@ fn process_simple_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Ar
         Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
     };
 
-    while let Ok(chunk) = rx.recv() {
+    while let Ok(arc_chunk) = rx.recv() {
+        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
         // Find all matches of the prefix in the chunk
-        for mat in ac.find_iter(&chunk) {
+        for mat in ac.find_iter(chunk) {
             // Extract the line containing the match
-            let (line_start, line_end) = find_line_boundaries(&chunk, mat.start(), mat.end());
-            let line = extract_line(&chunk, line_start, line_end);
+            let (line_start, line_end) = find_line_boundaries(chunk, mat.start(), mat.end());
+            let line = extract_line(chunk, line_start, line_end);
 
             // Verify with full regex
             if let Some((pkgname, path)) = line.split_once(' ') {
@@ -547,12 +623,12 @@ fn process_simple_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Ar
     Ok(())
 }
 
-// Process simple filelists with full regex matching (chunked version)
-fn process_simple_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
+fn process_simple_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
     // Use a newline pattern to find line boundaries
     let newline = b'\n';
 
-    while let Ok(chunk) = rx.recv() {
+    while let Ok(arc_chunk) = rx.recv() {
+        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
         let mut start = 0;
 
         // Process each line in the chunk
@@ -585,14 +661,15 @@ fn process_simple_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, regex: Arc
 }
 
 // Process simple filelists using Aho-Corasick for non-regex pattern matching (chunked version)
-fn process_simple_filelists_with_aho_corasick_chunked(rx: Receiver<Vec<u8>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
+fn process_simple_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
     // Create an Aho-Corasick automaton for the pattern
     let ac = match AhoCorasick::new(&[pattern.clone()]) {
         Ok(ac) => ac,
         Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
     };
 
-    while let Ok(chunk) = rx.recv() {
+    while let Ok(arc_chunk) = rx.recv() {
+        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
         // Find all matches in the chunk
         for mat in ac.find_iter(&chunk) {
             // Extract the line containing the match
@@ -891,7 +968,7 @@ fn search_with_aho_corasick(
 
             // Find the line containing this pattern
             let (line_start, line_end) = find_line_boundaries_memchr(mmap, pattern_pos);
-            let line = &mmap[line_start..line_end];
+            let _line = &mmap[line_start..line_end];
 
             // We found a match, now search backward for the most recent pkgname and summary
             let (found_pkgname, found_summary) = search_metadata_in_chunk(
