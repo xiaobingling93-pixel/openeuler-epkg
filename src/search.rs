@@ -16,6 +16,8 @@ use memmap2::Mmap;
 use log::warn;
 // Import regex::bytes::Regex with an alias to avoid name conflict
 use regex::bytes::Regex as BytesRegex;
+use aho_corasick::AhoCorasick;
+use regex::bytes::RegexBuilder;
 
 pub struct SearchOptions {
     pub files: bool,
@@ -163,24 +165,107 @@ fn process_simple_filelists(rx: Receiver<String>, pattern: &Regex, options: &Sea
     Ok(())
 }
 
+// Common structure to hold the state during search operations
+struct PackagesSearchState<'a> {
+    current_pkgname: &'a [u8],
+    current_summary: &'a [u8],
+    stdout: BufWriter<std::io::Stdout>,
+}
+
+impl<'a> PackagesSearchState<'a> {
+    fn new() -> Self {
+        PackagesSearchState {
+            current_pkgname: &b""[..],
+            current_summary: &b""[..],
+            stdout: BufWriter::new(std::io::stdout()),
+        }
+    }
+
+    fn print_match(&mut self) -> Result<()> {
+        writeln!(
+            self.stdout,
+            "{} - {}",
+            String::from_utf8_lossy(self.current_pkgname),
+            String::from_utf8_lossy(self.current_summary)
+        )?;
+        Ok(())
+    }
+}
+
 pub fn search_packages_fast(packages_path: &Path, options: &SearchOptions) -> Result<()> {
     // Memory map the file
     let file = File::open(packages_path)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
-    // Choose the fastest matcher
-    let searcher: Box<dyn Fn(&[u8]) -> bool> = if options.regexp {
-        let regex = BytesRegex::new(&options.pattern)?;
-        Box::new(move |line| regex.is_match(line))
+    // Create patterns for Aho-Corasick
+    let pkgname_pattern = b"pkgname: ";
+    let summary_pattern = b"summary: ";
+
+    // Choose the fastest matcher based on options
+    if options.regexp {
+        search_with_regex(&mmap, options, pkgname_pattern, summary_pattern)?
     } else {
-        // Simple substring search without aho_corasick
-        let pattern_bytes = options.pattern.as_bytes();
-        Box::new(move |line| line.windows(pattern_bytes.len()).any(|window| window == pattern_bytes))
+        search_with_aho_corasick(&mmap, options, pkgname_pattern, summary_pattern)?
+    }
+
+    Ok(())
+}
+
+// Search using regex with potential literal prefix optimization
+fn search_with_regex(mmap: &Mmap, options: &SearchOptions, pkgname_pattern: &[u8], summary_pattern: &[u8]) -> Result<()> {
+    // Create regex for pattern matching
+    let regex = RegexBuilder::new(&options.pattern)
+        .unicode(false)
+        .build()?;
+
+    // Since regex.prefixes() isn't available in this version, we'll use a simpler approach
+    // Try to extract a literal prefix if the pattern starts with a literal
+    let literal_prefix = extract_literal_prefix(&options.pattern);
+
+    if let Some(prefix) = literal_prefix {
+        // We have a literal prefix to use for optimization
+        search_with_regex_prefix(mmap, &regex, prefix, pkgname_pattern, summary_pattern)
+    } else {
+        // No literal prefix available, use full regex search
+        search_with_full_regex(mmap, &regex, pkgname_pattern, summary_pattern)
+    }
+}
+
+// Helper function to extract a literal prefix from a regex pattern if possible
+fn extract_literal_prefix(pattern: &str) -> Option<Vec<u8>> {
+    // Very simple heuristic: if the pattern starts with non-special characters, use them as prefix
+    let special_chars = ['.', '*', '+', '?', '|', '(', ')', '[', ']', '{', '}', '^', '$', '\\'];
+
+    // Get the first few characters that are not regex special characters
+    let prefix: String = pattern.chars()
+        .take_while(|&c| !special_chars.contains(&c))
+        .collect();
+
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.into_bytes())
+    }
+}
+
+// Search using a single regex prefix with Aho-Corasick for pre-filtering
+fn search_with_regex_prefix(
+    mmap: &Mmap,
+    regex: &BytesRegex,
+    prefix: Vec<u8>,
+    pkgname_pattern: &[u8],
+    summary_pattern: &[u8],
+) -> Result<()> {
+    // Create patterns for Aho-Corasick
+    let patterns = vec![pkgname_pattern, summary_pattern, &prefix];
+
+    // Create the Aho-Corasick automaton
+    let ac = match AhoCorasick::new(patterns) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
     };
 
-    let mut current_pkgname = &b""[..];
-    let mut current_summary = &b""[..];
-    let mut stdout = BufWriter::new(std::io::stdout());
+    let mut state = PackagesSearchState::new();
 
     // Iterate lines manually (faster than .split())
     let mut start = 0;
@@ -192,17 +277,134 @@ pub fn search_packages_fast(packages_path: &Path, options: &SearchOptions) -> Re
 
         if line.is_empty() { continue; }
 
-        if let Some(rest) = strip_prefix(line, b"pkgname: ") {
-            current_pkgname = rest;
-        } else if let Some(rest) = strip_prefix(line, b"summary: ") {
-            current_summary = rest;
-        } else if searcher(line) {
-            writeln!(
-                stdout,
-                "{} - {}",
-                String::from_utf8_lossy(current_pkgname),
-                String::from_utf8_lossy(current_summary)
-            )?;
+        // Find all matches in the current line
+        let mut matches = ac.find_iter(line);
+
+        // Check what kind of match we have
+        let mut is_pkgname = false;
+        let mut is_summary = false;
+        let mut has_pattern_match = false;
+
+        while let Some(mat) = matches.next() {
+            match mat.pattern().as_usize() {
+                0 => {
+                    // pkgname pattern
+                    state.current_pkgname = &line[mat.end()..];
+                    is_pkgname = true;
+                },
+                1 => {
+                    // summary pattern
+                    state.current_summary = &line[mat.end()..];
+                    is_summary = true;
+                },
+                2 => {
+                    // Our literal prefix matched, verify with full regex
+                    if regex.is_match(line) {
+                        has_pattern_match = true;
+                    }
+                },
+                _ => unreachable!()
+            }
+        }
+
+        // If we didn't find a pkgname or summary pattern but found a potential match
+        if !is_pkgname && !is_summary && has_pattern_match {
+            state.print_match()?;
+        }
+    }
+
+    Ok(())
+}
+
+// Search using full regex when no literal prefixes are available
+fn search_with_full_regex(
+    mmap: &Mmap,
+    regex: &BytesRegex,
+    pkgname_pattern: &[u8],
+    summary_pattern: &[u8],
+) -> Result<()> {
+    let mut state = PackagesSearchState::new();
+
+    let mut start = 0;
+    for (i, &byte) in mmap.iter().enumerate() {
+        if byte != b'\n' { continue; }
+
+        let line = &mmap[start..i];
+        start = i + 1;
+
+        if line.is_empty() { continue; }
+
+        if let Some(rest) = strip_prefix(line, pkgname_pattern) {
+            state.current_pkgname = rest;
+        } else if let Some(rest) = strip_prefix(line, summary_pattern) {
+            state.current_summary = rest;
+        } else if regex.is_match(line) {
+            state.print_match()?;
+        }
+    }
+
+    Ok(())
+}
+
+// Search using Aho-Corasick for non-regex patterns
+fn search_with_aho_corasick(
+    mmap: &Mmap,
+    options: &SearchOptions,
+    pkgname_pattern: &[u8],
+    summary_pattern: &[u8],
+) -> Result<()> {
+    let user_pattern = options.pattern.as_bytes();
+    let patterns = vec![pkgname_pattern, summary_pattern, user_pattern];
+
+    // Create the Aho-Corasick automaton with proper error handling
+    let ac = match AhoCorasick::new(patterns) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+    };
+
+    let mut state = PackagesSearchState::new();
+
+    // Iterate lines manually (faster than .split())
+    let mut start = 0;
+    for (i, &byte) in mmap.iter().enumerate() {
+        if byte != b'\n' { continue; }
+
+        let line = &mmap[start..i];
+        start = i + 1;
+
+        if line.is_empty() { continue; }
+
+        // Find all matches in the current line
+        let mut matches = ac.find_iter(line);
+
+        // Check what kind of match we have
+        let mut is_pkgname = false;
+        let mut is_summary = false;
+        let mut has_pattern_match = false;
+
+        while let Some(mat) = matches.next() {
+            match mat.pattern().as_usize() {
+                0 => {
+                    // pkgname pattern
+                    state.current_pkgname = &line[mat.end()..];
+                    is_pkgname = true;
+                },
+                1 => {
+                    // summary pattern
+                    state.current_summary = &line[mat.end()..];
+                    is_summary = true;
+                },
+                2 => {
+                    // user pattern
+                    has_pattern_match = true;
+                },
+                _ => unreachable!()
+            }
+        }
+
+        // If we didn't find a pkgname or summary pattern but found the user pattern
+        if !is_pkgname && !is_summary && has_pattern_match {
+            state.print_match()?;
         }
     }
 
