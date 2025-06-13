@@ -12,6 +12,7 @@ use crate::utils::*;
 use crate::dirs::find_env_root;
 use crate::package;
 use crate::download::wait_for_any_download_task;
+use std::time::SystemTime;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
     // Convert HashMap to a Vec of tuples (pkgkey, info)
@@ -652,6 +653,66 @@ fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Run ldconfig if the library cache needs updating
+fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
+    let ld_so_cache = env_root.join("etc/ld.so.cache");
+    let lib_dirs = [
+        env_root.join("etc/ld.so.conf.d"),
+        env_root.join("lib"),
+        env_root.join("lib64"),
+        env_root.join("usr/lib"),
+        env_root.join("usr/lib64"),
+    ];
+
+    // Get mtime of ld.so.cache if it exists
+    let cache_mtime = if ld_so_cache.exists() {
+        fs::metadata(&ld_so_cache)
+            .with_context(|| format!("Failed to get metadata for {}", ld_so_cache.display()))?
+            .modified()
+            .with_context(|| format!("Failed to get modification time for {}", ld_so_cache.display()))?
+    } else {
+        // If cache doesn't exist, we need to run ldconfig
+        SystemTime::UNIX_EPOCH
+    };
+
+    // Check if any lib directory has been modified more recently than the cache
+    let needs_update = lib_dirs.iter().any(|dir| {
+        if !dir.exists() {
+            return false;
+        }
+        match fs::metadata(dir) {
+            Ok(metadata) => {
+                match metadata.modified() {
+                    Ok(dir_mtime) => dir_mtime > cache_mtime,
+                    Err(_) => true, // If we can't get mtime, assume update needed
+                }
+            }
+            Err(_) => false, // If we can't get metadata, skip this directory
+        }
+    });
+
+    if needs_update {
+        log::info!("Library cache needs updating, running ldconfig");
+        let run_options = crate::run::RunOptions {
+            mount_dirs: Vec::new(),
+            user: None,
+            command: "ldconfig".to_string(),
+            args: Vec::new(),
+            env_vars: std::collections::HashMap::new(),
+        };
+
+        // Find ldconfig in the environment
+        let ldconfig_path = crate::run::find_command_in_env_path("ldconfig", env_root)?;
+
+        // Execute ldconfig
+        crate::run::fork_and_execute(env_root, &run_options, &ldconfig_path)?;
+    } else {
+        log::debug!("Library cache is up to date, skipping ldconfig");
+    }
+
+    Ok(())
+}
+
 impl PackageManager {
 
     // link files from env_root to store_fs_dir
@@ -1153,6 +1214,9 @@ impl PackageManager {
             ScriptletType::PostInstall,
             false, // is_upgrade
         )?;
+
+        // Run ldconfig if needed
+        run_ldconfig_if_needed(env_root)?;
 
         Ok(())
     }
