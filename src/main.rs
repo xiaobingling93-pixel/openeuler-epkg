@@ -34,6 +34,7 @@ mod version;
 mod scriptlets;
 mod run;
 mod info;
+mod search;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;
@@ -84,6 +85,7 @@ fn main() -> Result<()> {
         Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(&sub_matches)?,
         Some(("convert",    sub_matches))  =>  package_manager.command_convert(&sub_matches)?,
         Some(("run",        sub_matches))  =>  package_manager.command_run(sub_matches)?,
+        Some(("search",     sub_matches))  =>  package_manager.command_search(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
 
@@ -345,6 +347,14 @@ OPTIONS:
                 .arg(arg!(<command> "Command to execute"))
                 .arg(arg!([args] ... "Arguments to pass to the command"))
         )
+        .subcommand(
+            Command::new("search")
+                .about("Search for packages and files")
+                .arg(arg!(--files "Search in file lists"))
+                .arg(arg!(--paths "Search in file paths"))
+                .arg(arg!(-x --regexp "Treat pattern as regular expression"))
+                .arg(arg!(<PATTERN> "Pattern to search for"))
+        )
         .get_matches()
 }
 
@@ -471,6 +481,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
         Some(("convert",    sub_matches))  =>  parse_options_convert(&mut config, sub_matches).expect("Failed to parse convert options"),
         Some(("run",        sub_matches))  =>  parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
+        Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
         _ => {} // No subcommand or unknown subcommand
     }
     log::debug!("Configuration: {:#?}", config);
@@ -633,6 +644,11 @@ fn parse_options_convert(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatch
 }
 
 fn parse_options_run(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Nothing to store in EPKGConfig
+    Ok(())
+}
+
+fn parse_options_search(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
     // Nothing to store in EPKGConfig
     Ok(())
 }
@@ -935,6 +951,19 @@ impl PackageManager {
         // If execution reaches here, it implies sub_matches.get_many was None,
         // but clap should have handled the 'required' argument before calling this command.
         // If not, an explicit error or log for "No package files specified" could be added.
+        Ok(())
+    }
+
+    fn command_search(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        let options = search::SearchOptions {
+            files: sub_matches.get_flag("files"),
+            paths: sub_matches.get_flag("paths"),
+            regexp: sub_matches.get_flag("regexp"),
+            pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
+        };
+
+        self.sync_channel_metadata()?;
+        search::search_repo_cache(&options)?;
         Ok(())
     }
 }
