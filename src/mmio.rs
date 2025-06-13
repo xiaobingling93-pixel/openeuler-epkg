@@ -94,17 +94,17 @@ pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBu
 pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> Result<()> {
     let repo_dir = crate::dirs::get_repo_dir(&repo)?;
 
-    for (_, shard) in &mut repo_index.repo_shards {
-        let filename = shard.packages.filename.clone();
-        let (packages_path, _provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
-            get_package_paths(&repo_dir, &filename);
-        shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
-        shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
+    let load_mappings = crate::models::config().subcommand != "search";
 
-        // No longer load provide2pkgnames here - they will be loaded on demand
-        shard.provide2pkgnames = std::collections::HashMap::new();
-
-        shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
+    if load_mappings {
+        for (_, shard) in &mut repo_index.repo_shards {
+            let filename = shard.packages.filename.clone();
+            let (packages_path, _provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
+                get_package_paths(&repo_dir, &filename);
+            shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
+            shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
+            shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
+        }
     }
 
     // Store the repo directory path in the RepoIndex for later use

@@ -61,24 +61,38 @@ fn search_filelists(filelists_path: &Path, options: &SearchOptions) -> Result<()
         return Ok(());
     }
 
-    let mut pattern = options.pattern.clone();
-    let pattern = if options.regexp {
-        if options.files && pattern.starts_with('/') {
-            pattern = format!("^{}", &pattern[1..]);
-        }
-        Regex::new(&pattern).map_err(|e| eyre!("Invalid regex pattern: {}", e))?
-    } else {
-        Regex::new(&regex::escape(&pattern)).map_err(|e| eyre!("Invalid pattern: {}", e))?
-    };
+    // Determine if we're dealing with RPM XML format or simple format
+    let is_rpm_format = filelists_path.to_str().unwrap_or("").contains(".xml");
+
+    // Prepare the pattern based on options
+    let mut pattern_str = options.pattern.clone();
+    if options.regexp && options.files && pattern_str.starts_with('/') {
+        pattern_str = format!("^{}", &pattern_str[1..]);
+    }
 
     // Create channels for producer/consumer pattern
     let (tx, rx) = bounded(1000);
-    let pattern = Arc::new(pattern);
-    let options = Arc::new(options);
 
+    // Start the producer thread to read the file
+    let producer_handle = start_filelists_producer(filelists_path, tx)?;
+
+    // Process the file contents based on pattern type and file format
+    if options.regexp {
+        process_filelists_with_regex(rx, &pattern_str, is_rpm_format, options)?;
+    } else {
+        process_filelists_with_aho_corasick(rx, pattern_str, is_rpm_format, options)?;
+    }
+
+    // Wait for producer thread to complete
+    producer_handle.join().unwrap()?;
+
+    Ok(())
+}
+
+// Start a producer thread to read and send file contents line by line
+fn start_filelists_producer(filelists_path: &Path, tx: crossbeam_channel::Sender<String>) -> Result<thread::JoinHandle<Result<()>>> {
     // Clone the path to avoid lifetime issues with the thread
     let filelists_path_owned = filelists_path.to_path_buf();
-    let is_rpm_format = filelists_path.to_str().unwrap_or("").contains(".xml");
 
     // Spawn producer thread to read and decode the file
     let producer_handle = thread::spawn(move || -> Result<()> {
@@ -92,71 +106,267 @@ fn search_filelists(filelists_path: &Path, options: &SearchOptions) -> Result<()
 
         for line in reader.lines() {
             let line_content = line?;
-            tx.send(line_content).map_err(|e| eyre!("Channel send error: {}", e))?;
+            tx.send(line_content).map_err(|e| eyre!("Channel send error: {}", e))?
         }
         Ok(())
     });
 
-    if is_rpm_format {
-        process_rpm_filelists(rx, &pattern, &options)?;
-    } else {
-        process_simple_filelists(rx, &pattern, &options)?;
-    }
+    Ok(producer_handle)
+}
 
-    // Wait for producer thread to complete
-    producer_handle.join().unwrap()?;
+// Process filelists using regex pattern matching
+fn process_filelists_with_regex(
+    rx: Receiver<String>,
+    pattern_str: &str,
+    is_rpm_format: bool,
+    options: &SearchOptions
+) -> Result<()> {
+    // Extract literal prefix if possible for optimization
+    let literal_prefix = extract_literal_prefix(pattern_str);
+    let regex = Arc::new(Regex::new(pattern_str).map_err(|e| eyre!("Invalid regex pattern: {}", e))?);
+    let options = Arc::new(options);
+
+    if is_rpm_format {
+        if let Some(prefix) = literal_prefix {
+            process_rpm_filelists_with_prefix(rx, regex, prefix, &options)?
+        } else {
+            process_rpm_filelists_with_regex(rx, regex, &options)?
+        }
+    } else {
+        if let Some(prefix) = literal_prefix {
+            process_simple_filelists_with_prefix(rx, regex, prefix, &options)?
+        } else {
+            process_simple_filelists_with_regex(rx, regex, &options)?
+        }
+    }
 
     Ok(())
 }
 
-fn process_rpm_filelists(rx: Receiver<String>, pattern: &Regex, options: &SearchOptions) -> Result<()> {
+// Process filelists using Aho-Corasick pattern matching
+fn process_filelists_with_aho_corasick(
+    rx: Receiver<String>,
+    pattern_str: String,
+    is_rpm_format: bool,
+    options: &SearchOptions
+) -> Result<()> {
+    let pattern_bytes = pattern_str.as_bytes().to_vec();
+    let options = Arc::new(options);
+
+    if is_rpm_format {
+        process_rpm_filelists_with_aho_corasick(rx, pattern_bytes, &options)?
+    } else {
+        process_simple_filelists_with_aho_corasick(rx, pattern_bytes, &options)?
+    }
+
+    Ok(())
+}
+
+fn process_rpm_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>, prefix: Vec<u8>, _options: &SearchOptions) -> Result<()> {
     let mut current_pkgname = String::new();
-    let mut in_package = false;
+
+    // Create patterns for Aho-Corasick
+    let patterns = vec![b"<package".to_vec(), b"  <file>".to_vec(), prefix];
+    let ac = match AhoCorasick::new(&patterns) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+    };
+
+    while let Ok(line) = rx.recv() {
+        let mut matches = ac.find_iter(line.as_bytes());
+
+        while let Some(mat) = matches.next() {
+            match mat.pattern().as_usize() {
+                0 => {
+                    // pkgname pattern
+                    if let Some(name_start) = line.find("name=\"") {
+                        if let Some(name_end) = line[name_start + 6..].find("\"") {
+                            current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
+                        }
+                    }
+                },
+                1 => {
+                    // file pattern
+                    let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
+
+                    if regex.is_match(file_path) {
+                        println!("{} {}", current_pkgname, file_path);
+                    }
+                },
+                2 => {
+                    // Our literal prefix matched, verify with full regex
+                    if regex.is_match(&line) {
+                        if let Some((pkgname, path)) = line.split_once(' ') {
+                            println!("{} {}", pkgname, path);
+                        }
+                    }
+                },
+                _ => unreachable!()
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn process_rpm_filelists_with_regex(rx: Receiver<String>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
+    let mut current_pkgname = String::new();
 
     while let Ok(line) = rx.recv() {
         if line.starts_with("<package") {
             if let Some(name_start) = line.find("name=\"") {
                 if let Some(name_end) = line[name_start + 6..].find("\"") {
                     current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
-                    in_package = true;
                 }
             }
         } else if line.starts_with("  <file>") {
-            if !in_package {
-                continue;
-            }
-
             let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
 
             let matches = if options.files {
                 let filename = Path::new(file_path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                pattern.is_match(filename)
+                regex.is_match(filename)
             } else {
-                pattern.is_match(file_path)
+                regex.is_match(file_path)
             };
 
             if matches {
                 println!("{} {}", current_pkgname, file_path);
             }
-        } else if line.starts_with("</package>") {
-            in_package = false;
         }
     }
 
     Ok(())
 }
 
-fn process_simple_filelists(rx: Receiver<String>, pattern: &Regex, options: &SearchOptions) -> Result<()> {
+/* Example input:
+<package pkgid="e01a85beb0abfbb377f060882d281d3052e0cbadf77d67c9ff1d4533c42f0d17" name="CUnit" arch="x86_64">
+  <version epoch="0" ver="2.1.3" rel="24.oe2403"/>
+  <file>/etc/ima/digest_lists.tlv/0-metadata_list-compact_tlv-CUnit-2.1.3-24.oe2403.x86_64</file>
+  <file>/etc/ima/digest_lists/0-metadata_list-compact-CUnit-2.1.3-24.oe2403.x86_64</file>
+  <file>/usr/lib64/libcunit.so.1</file>
+  <file>/usr/lib64/libcunit.so.1.0.1</file>
+  <file type="dir">/usr/share/CUnit</file>
+  <file>/usr/share/CUnit/CUnit-List.dtd</file>
+  <file>/usr/share/CUnit/CUnit-List.xsl</file>
+*/
+fn process_rpm_filelists_with_aho_corasick(rx: Receiver<String>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
+    let mut current_pkgname = String::new();
+
+    // Create patterns for Aho-Corasick
+    let patterns = vec![
+        b"<package".to_vec(),
+        pattern.clone()
+    ];
+
+    // Create the Aho-Corasick automaton
+    let ac = match AhoCorasick::new(&patterns) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+    };
+
+    while let Ok(line) = rx.recv() {
+        let line_bytes = line.as_bytes();
+        let mut has_pattern_match = false;
+
+        for mat in ac.find_iter(line_bytes) {
+            match mat.pattern().as_usize() {
+                0 => { // <package pattern
+                    if let Some(name_start) = line.find("name=\"") {
+                        if let Some(name_end) = line[name_start + 6..].find("\"") {
+                            current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
+                        }
+                    }
+                },
+                1 => { // User pattern
+                    has_pattern_match = true;
+                },
+                _ => unreachable!()
+            }
+        }
+
+        // Process file line with pattern match
+        if has_pattern_match {
+            let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
+
+            // For --files option, check if the pattern matches the filename only
+            if options.files {
+                let filename = Path::new(file_path).file_name().unwrap_or_default().to_str().unwrap_or_default();
+                if filename.as_bytes().windows(pattern.len()).any(|window| window == pattern.as_slice()) {
+                    println!("{} {}", current_pkgname, file_path);
+                }
+            } else {
+                println!("{} {}", current_pkgname, file_path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// Process simple filelists with regex and literal prefix optimization
+fn process_simple_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>, prefix: Vec<u8>, options: &SearchOptions) -> Result<()> {
+    // Create the Aho-Corasick automaton with the prefix
+    let patterns = vec![prefix.clone()];
+    let ac = match AhoCorasick::new(&patterns) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+    };
+
+    while let Ok(line) = rx.recv() {
+        // Fast pre-filtering with Aho-Corasick
+        if ac.is_match(line.as_bytes()) {
+            // Verify with full regex
+            if let Some((pkgname, path)) = line.split_once(' ') {
+                let matches = if options.files {
+                    let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
+                    regex.is_match(filename)
+                } else {
+                    regex.is_match(path)
+                };
+
+                if matches {
+                    println!("{} {}", pkgname, path);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// Process simple filelists with full regex matching
+fn process_simple_filelists_with_regex(rx: Receiver<String>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
     while let Ok(line) = rx.recv() {
         if let Some((pkgname, path)) = line.split_once(' ') {
             let matches = if options.files {
                 let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                pattern.is_match(filename)
+                regex.is_match(filename)
             } else {
-                pattern.is_match(path)
+                regex.is_match(path)
             };
 
             if matches {
+                println!("{} {}", pkgname, path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// Process simple filelists using Aho-Corasick for non-regex pattern matching
+fn process_simple_filelists_with_aho_corasick(rx: Receiver<String>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
+    while let Ok(line) = rx.recv() {
+        if let Some((pkgname, path)) = line.split_once(' ') {
+            let target = if options.files {
+                let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
+                filename
+            } else {
+                path
+            };
+
+            // Simple substring search
+            if target.as_bytes().windows(pattern.len()).any(|window| window == pattern.as_slice()) {
                 println!("{} {}", pkgname, path);
             }
         }
