@@ -799,7 +799,74 @@ fn search_with_full_regex(
     Ok(())
 }
 
-// Search using Aho-Corasick for non-regex patterns
+// Check if a position is at the start of a line
+fn is_line_start(data: &[u8], pos: usize, _pattern: &[u8]) -> bool {
+    pos == 0 || data[pos - 1] == b'\n'
+}
+
+// Find and extract a pattern value from a line
+fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8]) -> Option<(Vec<u8>, usize)> {
+    if let Some(pos) = memchr::memmem::rfind(&data[..search_end], pattern) {
+        // Check if it's at the start of a line
+        if is_line_start(data, pos, pattern) {
+            let value_start = pos + pattern.len();
+            let value_end = find_next_newline(data, value_start);
+            let mut value = Vec::new();
+            value.extend_from_slice(&data[value_start..value_end]);
+            return Some((value, pos));
+        }
+        return Some((Vec::new(), pos)); // Found pattern but not at line start
+    }
+    None
+}
+
+// Search for package name and summary in a chunk
+fn search_metadata_in_chunk(
+    chunk: &[u8],
+    search_end: usize,
+    pkgname_pattern: &[u8],
+    summary_pattern: &[u8],
+    current_pkgname: &mut Vec<u8>,
+    current_summary: &mut Vec<u8>,
+) -> (bool, bool) {
+    let mut found_pkgname = false;
+    let mut found_summary = false;
+    let mut current_search_end = search_end;
+
+    while current_search_end > 0 && (!found_pkgname || !found_summary) {
+        // Look for pkgname if we haven't found it yet
+        if !found_pkgname {
+            if let Some((pkg_value, pkg_pos)) = find_and_extract_pattern(chunk, current_search_end, pkgname_pattern) {
+                if !pkg_value.is_empty() {
+                    current_pkgname.clear();
+                    current_pkgname.extend_from_slice(&pkg_value);
+                    found_pkgname = true;
+                }
+                current_search_end = pkg_pos;
+            } else {
+                break; // No more pkgname patterns in this chunk
+            }
+        }
+
+        // Look for summary if we haven't found it yet
+        if !found_summary {
+            if let Some((sum_value, sum_pos)) = find_and_extract_pattern(chunk, current_search_end, summary_pattern) {
+                if !sum_value.is_empty() {
+                    current_summary.clear();
+                    current_summary.extend_from_slice(&sum_value);
+                    found_summary = true;
+                }
+                current_search_end = sum_pos;
+            } else {
+                break; // No more summary patterns in this chunk
+            }
+        }
+    }
+
+    (found_pkgname, found_summary)
+}
+
+// Search using memchr for non-regex patterns (optimized version of Aho-Corasick approach)
 fn search_with_aho_corasick(
     mmap: &Mmap,
     options: &SearchOptions,
@@ -807,65 +874,50 @@ fn search_with_aho_corasick(
     summary_pattern: &[u8],
 ) -> Result<()> {
     let user_pattern = options.pattern.as_bytes();
+    let mut stdout = BufWriter::new(std::io::stdout());
 
-    // Create patterns for Aho-Corasick
-    // Add the newline pattern to detect line boundaries
-    let patterns = vec![pkgname_pattern, summary_pattern, user_pattern, b"\n"];
+    // Keep track of the last seen package name and summary
+    let mut current_pkgname = Vec::new();
+    let mut current_summary = Vec::new();
 
-    // Create the Aho-Corasick automaton with proper error handling
-    let ac = match AhoCorasick::new(patterns) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
-    };
+    // Start position for our search
+    let mut pos = 0;
 
-    let mut state = PackagesSearchState::new();
-    let mut current_line_start = 0;
+    // Process the entire mmap
+    while pos < mmap.len() {
+        // First search for our pattern
+        if let Some(pattern_pos) = memchr::memmem::find(&mmap[pos..], user_pattern) {
+            let pattern_pos = pos + pattern_pos;
 
-    // Track state for the current line
-    let mut is_pkgname = false;
-    let mut is_summary = false;
-    let mut has_pattern_match = false;
+            // Find the line containing this pattern
+            let (line_start, line_end) = find_line_boundaries_memchr(mmap, pattern_pos);
+            let line = &mmap[line_start..line_end];
 
-    // Process the entire mmap at once
-    for mat in ac.find_iter(mmap) {
-        match mat.pattern().as_usize() {
-            0 => {
-                // pkgname pattern - must be at start of line
-                if mat.start() == current_line_start {
-                    state.current_pkgname = &mmap[mat.end()..find_next_newline(mmap, mat.end())];
-                    is_pkgname = true;
-                }
-            },
-            1 => {
-                // summary pattern - must be at start of line
-                if mat.start() == current_line_start {
-                    state.current_summary = &mmap[mat.end()..find_next_newline(mmap, mat.end())];
-                    is_summary = true;
-                }
-            },
-            2 => {
-                // user pattern - check if it's not at start of line or not a pkgname/summary line
-                let line_end = find_next_newline(mmap, mat.start());
-                let current_line = &mmap[current_line_start..line_end];
+            // We found a match, now search backward for the most recent pkgname and summary
+            let (found_pkgname, found_summary) = search_metadata_in_chunk(
+                mmap,
+                line_start,
+                pkgname_pattern,
+                summary_pattern,
+                &mut current_pkgname,
+                &mut current_summary
+            );
 
-                // Only consider it a match if it's not a pkgname or summary line
-                if !current_line.starts_with(pkgname_pattern) && !current_line.starts_with(summary_pattern) {
-                    has_pattern_match = true;
-                }
-            },
-            3 => {
-                // Newline - process the completed line
-                if has_pattern_match && !is_pkgname && !is_summary {
-                    state.print_match()?;
-                }
+            // Print the match if we found both pkgname and summary
+            if found_pkgname && found_summary {
+                writeln!(
+                    stdout,
+                    "{} - {}",
+                    String::from_utf8_lossy(&current_pkgname),
+                    String::from_utf8_lossy(&current_summary)
+                )?;
+            }
 
-                // Reset line state
-                current_line_start = mat.end();
-                is_pkgname = false;
-                is_summary = false;
-                has_pattern_match = false;
-            },
-            _ => unreachable!()
+            // Move position past this match
+            pos = line_end + 1;
+        } else {
+            // No more matches in the file
+            break;
         }
     }
 
