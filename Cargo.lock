@@ -355,7 +355,6 @@ dependencies = [
 name = "epkg"
 version = "0.1.0"
 dependencies = [
- "aho-corasick",
  "ar",
  "base32",
  "clap",

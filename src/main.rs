@@ -955,15 +955,21 @@ impl PackageManager {
     }
 
     fn command_search(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        let options = search::SearchOptions {
+        let mut options = search::SearchOptions {
             files: sub_matches.get_flag("files"),
             paths: sub_matches.get_flag("paths"),
             regexp: sub_matches.get_flag("regexp"),
             pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
+            show_package: true, // Default to showing package names
+            case_sensitive: false, // Default to case insensitive
+            exact_match: false, // Default to non-exact matching
+            show_version: false, // Default to not showing versions
+            show_path: true, // Default to showing paths
+            regex_pattern: None, // Will be set if regexp is true
         };
 
         self.sync_channel_metadata()?;
-        search::search_repo_cache(&options)?;
+        search::search_repo_cache(&mut options)?;
         Ok(())
     }
 }

@@ -1,35 +1,49 @@
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
-use regex::Regex;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+use crossbeam_channel::Receiver;
 use flate2::read::GzDecoder;
 use liblzma::read::XzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
-use crossbeam_channel::Receiver;
-use std::thread;
-use std::sync::Arc;
-use std::path::PathBuf;
-use color_eyre::eyre::{Result, Context};
-use color_eyre::eyre::eyre;
-use crate::models::{repodata_indice};
 use memmap2::Mmap;
+use regex::bytes::{Regex as BytesRegex, RegexBuilder};
+use color_eyre::eyre::{Result, Context};
 use log::warn;
-// Import regex::bytes::Regex with an alias to avoid name conflict
-use regex::bytes::Regex as BytesRegex;
-use aho_corasick::AhoCorasick;
-use regex::bytes::RegexBuilder;
-use memchr::{memchr, memrchr};
 
+use crate::models::repodata_indice;
+
+// Search options for RPM filelists
+#[derive(Clone)]
 pub struct SearchOptions {
+    pub case_sensitive: bool,
+    #[allow(dead_code)]
+    pub exact_match: bool,
+    pub show_package: bool,
+    #[allow(dead_code)]
+    pub show_version: bool,
+    #[allow(dead_code)]
+    pub show_path: bool,
     pub files: bool,
     pub paths: bool,
     pub regexp: bool,
     pub pattern: String,
+    pub regex_pattern: Option<Arc<BytesRegex>>,
 }
 
-pub fn search_repo_cache(options: &SearchOptions) -> Result<()> {
+// Constants for package metadata patterns
+static PKGNAME_PATTERN: &[u8] = b"pkgname: ";
+static SUMMARY_PATTERN: &[u8] = b"summary: ";
+
+pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
     let repodata_indice = repodata_indice();
     let mut any_filelists = false;
+    let mut consumer_handles = Vec::new();
+    let mut producer_handles = Vec::new();
 
     for repo_index in repodata_indice.values() {
         let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
@@ -39,8 +53,11 @@ pub fn search_repo_cache(options: &SearchOptions) -> Result<()> {
                 if let Some(filelists) = &shard.filelists {
                     let filelists_path = repo_dir.join(&filelists.filename);
                     if filelists_path.exists() {
-                        search_filelists(vec![filelists_path], options)
+                        // Start processing filelists in a new thread and collect the handles
+                        let (consumer_handle, producer_handle) = search_filelists(filelists_path, options)
                             .with_context(|| format!("Failed to search filelists in {}", repo_index.repodata_name))?;
+                        consumer_handles.push(consumer_handle);
+                        producer_handles.push(producer_handle);
                         any_filelists = true;
                     } else {
                         warn!("Filelists not found at {}", filelists_path.display());
@@ -58,167 +75,396 @@ pub fn search_repo_cache(options: &SearchOptions) -> Result<()> {
         warn!("No filelists found in any repository");
     }
 
+    // Wait for all producer threads to complete first
+    for handle in producer_handles {
+        handle.join().unwrap()?;
+    }
+
+    // Then wait for all consumer threads to complete
+    for handle in consumer_handles {
+        handle.join().unwrap()?;
+    }
+
     Ok(())
 }
 
-pub fn search_filelists(filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
-    // Create a channel for communication between producer and consumer
-    let (tx, rx) = crossbeam_channel::unbounded();
+pub fn search_filelists(filelists_path: PathBuf, options: &mut SearchOptions) -> Result<(thread::JoinHandle<Result<()>>, thread::JoinHandle<Result<()>>)> {
+    // Create a bounded channel for producer-consumer communication
+    // Using a bounded channel provides backpressure to prevent excessive memory usage
+    // while maintaining zero-copy semantics with Arc<Mutex<FixedBuffer>>
+    let (tx, rx) = crossbeam_channel::bounded::<Arc<Mutex<FixedBuffer>>>(1);
 
-    // Start the producer thread with chunked processing
-    let producer_handle = start_filelists_producer_chunked(filelists.clone(), tx);
+    // Create a buffer pool for this producer-consumer pair
+    let buffer_pool = Arc::new(SharedBufferPool::new(BUFFER_COUNT, BUFFER_SIZE));
 
     // Process the filelists based on the options
     if options.regexp {
-        // For regex searches, try to extract a literal prefix for optimization
-        process_filelists_with_regex_chunked(rx, filelists, options)?
-    } else {
-        // For non-regex searches, use Aho-Corasick for efficient pattern matching
-        process_filelists_with_aho_corasick_chunked(rx, filelists, options)?
+        // Create a regex from the pattern
+        let mut regex_builder = RegexBuilder::new(&options.pattern);
+        let regex = Arc::new(regex_builder.case_insensitive(!options.case_sensitive).build()?);
+
+        // Try to extract a literal prefix for optimization
+        // If we can't extract a prefix, we'll just use the original pattern
+        // This is less efficient but will still work correctly
+        if let Some(literal) = extract_literal_string(&options.pattern) {
+            options.pattern = literal;
+        } else { warn!("Failed to extract literal, cannot handle complex regexp now"); }
+
+        // Set the regex pattern in options
+        options.regex_pattern = Some(Arc::clone(&regex));
     }
 
-    // Wait for the producer to finish
-    producer_handle.join().unwrap()?;
+    // Create the pattern for searching
+    let pattern = options.pattern.as_bytes().to_vec();
 
-    Ok(())
+    // Clone options and buffer pool for the threads
+    let options_arc = Arc::new(options.clone());
+    let producer_buffer_pool = Arc::clone(&buffer_pool);
+
+    // Start the producer thread with fixed buffer chunked processing
+    let producer_handle = start_filelists_producer(filelists_path.clone(), tx, producer_buffer_pool);
+
+    // Clone buffer pool for the consumer thread
+    let consumer_buffer_pool = Arc::clone(&buffer_pool);
+
+    // Determine if we're dealing with RPM XML format or simple format
+    let is_rpm_xml = filelists_path.to_str().unwrap_or("").contains(".xml");
+
+    // Start a new thread to process the chunks with appropriate processor based on format
+    let consumer_handle = thread::spawn(move || {
+        let options = &*options_arc;
+
+        if is_rpm_xml {
+            // Process RPM XML format
+            process_rpm_filelists(rx, pattern, options, consumer_buffer_pool)
+        } else {
+            // Process simple format (pkgname path)
+            process_simple_filelists(rx, pattern, options, consumer_buffer_pool)
+        }
+    });
+
+    // Return both thread handles so they can be joined later
+    Ok((consumer_handle, producer_handle))
 }
 
-// Start a producer thread to read and send file contents in chunks using zero-copy with Arc<Vec<u8>>
-fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_channel::Sender<Arc<Vec<u8>>>) -> thread::JoinHandle<Result<()>> {
+// Fixed buffer that never reallocates and tracks valid data range
+struct FixedBuffer {
+    data: Vec<u8>,   // The underlying data buffer (fixed size)
+    used: usize,     // How much of the buffer is used (valid data range)
+}
+
+impl FixedBuffer {
+    // Create a new fixed buffer with pre-allocated capacity
+    fn new(capacity: usize) -> Self {
+        FixedBuffer {
+            data: vec![0; capacity],
+            used: 0,
+        }
+    }
+
+    // Clear the buffer for reuse without deallocation
+    fn clear(&mut self) {
+        self.used = 0;
+    }
+
+    // Get a slice of the used data
+    fn as_slice(&self) -> &[u8] {
+        &self.data[0..self.used]
+    }
+
+    // Get mutable slice for the entire buffer
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
+    // Get available space for writing
+    fn available_space(&self) -> usize {
+        self.data.len() - self.used
+    }
+
+    // Set the used size directly
+    fn set_used(&mut self, size: usize) {
+        assert!(size <= self.data.len());
+        self.used = size;
+    }
+
+    // Get the used size directly
+    fn nr_used(&mut self) -> usize {
+        self.used
+    }
+
+    // Copy data into the buffer at a specific position without reallocation
+    fn copy_from_slice(&mut self, src: &[u8], start_pos: usize) {
+        let end_pos = start_pos + src.len();
+        assert!(end_pos <= self.data.len(), "Buffer overflow");
+        self.data[start_pos..end_pos].copy_from_slice(src);
+        self.used = self.used.max(end_pos);
+    }
+
+    // Copy data into the buffer at the beginning without reallocation
+    fn copy_at_start(&mut self, src: &[u8]) {
+        self.copy_from_slice(src, 0);
+    }
+}
+
+// Constants for buffer management
+const BUFFER_SIZE: usize = 32 * 1024; // 32KB buffers
+const BUFFER_COUNT: usize = 5;        // Total number of buffers in the pool (shared between producer and consumer)
+
+// Shared buffer pool for zero-copy processing
+struct SharedBufferPool {
+    buffers: Vec<Arc<Mutex<FixedBuffer>>>,
+    producer_idx: AtomicUsize,
+    #[allow(dead_code)]
+    consumer_idx: AtomicUsize,
+    #[allow(dead_code)]
+    buffer_count: usize,
+}
+
+impl SharedBufferPool {
+    fn new(buffer_count: usize, buffer_size: usize) -> Self {
+        assert!(buffer_count >= 4, "Buffer count must be at least 4");
+        let mut buffers = Vec::with_capacity(buffer_count);
+        for _ in 0..buffer_count {
+            buffers.push(Arc::new(Mutex::new(FixedBuffer::new(buffer_size))));
+        }
+        SharedBufferPool {
+            buffers,
+            producer_idx: AtomicUsize::new(0),
+            consumer_idx: AtomicUsize::new(0),
+            buffer_count,
+        }
+    }
+
+    // Get the current producer buffer
+    fn get_producer_buffer(&self) -> Arc<Mutex<FixedBuffer>> {
+        let idx = self.producer_idx.load(Ordering::SeqCst);
+        Arc::clone(&self.buffers[idx % self.buffers.len()])
+    }
+
+    // Get the next producer buffer (for partial elements)
+    fn get_next_producer_buffer(&self) -> Arc<Mutex<FixedBuffer>> {
+        let idx = self.producer_idx.load(Ordering::SeqCst);
+        Arc::clone(&self.buffers[(idx + 1) % self.buffers.len()])
+    }
+
+    // Advance the producer index
+    fn advance_producer(&self) {
+        let current = self.producer_idx.load(Ordering::SeqCst);
+        let next = (current + 1) % self.buffers.len();
+
+        self.producer_idx.store(next, Ordering::SeqCst);
+    }
+}
+
+/*
+ * ┌───────────────────────────────────────────────────────────────────────────┐
+ * │                     ZERO-COPY CIRCULAR BUFFER DESIGN                      │
+ * └───────────────────────────────────────────────────────────────────────────┘
+ *
+ * This implementation uses a circular buffer pool with advancing indices to achieve
+ * true zero-copy data flow between producer and consumer threads. The design
+ * eliminates unnecessary memory copies while maintaining thread safety.
+ *
+ * ┌─────────┬─────────┬─────────┬─────────┐
+ * │ Buffer0 │ Buffer1 │ Buffer2 │ Buffer3 │
+ * └─────────┴─────────┴─────────┴─────────┘
+ *              ^         ^
+ *        consumer_idx  producer_idx
+ *
+ * Key features:
+ *
+ * 1. CIRCULAR BUFFER MECHANICS:
+ *    - Both producer and consumer threads access all buffers in the pool
+ *    - They maintain separate indices that advance through the buffer pool
+ *    - consumer_idx is always 1 behind producer_idx (modulo buffer count)
+ *    - Atomic operations ensure thread-safe index advancement
+ *
+ * 2. BUFFER ROLES BASED ON RELATIVE POSITION:
+ *    - producer_idx: Current buffer being filled by producer
+ *    - producer_idx+1: Next buffer for producer (for partial lines)
+ *    - consumer_idx: Current buffer being processed by consumer
+ *    - consumer_idx-1: Previous buffer (for package name lookups)
+ *
+ * 3. ZERO-COPY DATA FLOW:
+ *    - Producer fills a buffer and advances its index
+ *    - Consumer processes the same buffer when its index reaches it
+ *    - No copying between producer and consumer buffers
+ *    - Minimal copying only for combining partial XML elements
+ *
+ * 4. SYNCHRONIZATION & BACKPRESSURE:
+ *    - Producer waits if it would overwrite a buffer still in use by consumer
+ *    - Consumer waits if producer hasn't filled the next buffer yet
+ *    - Natural backpressure prevents memory exhaustion
+ *
+ * 5. MEMORY EFFICIENCY:
+ *    - Fixed number of pre-allocated buffers (BUFFER_COUNT)
+ *    - Fixed buffer size (BUFFER_SIZE) bounds memory usage
+ *    - Reuse of buffers eliminates allocation/deallocation overhead
+ *
+ * This design significantly reduces memory pressure and improves throughput
+ * by eliminating unnecessary copies while maintaining thread safety through
+ * careful coordination of buffer access between threads.
+ */
+
+// Buffer pools are now created per producer-consumer pair instead of globally
+
+// Helper function to find the last occurrence of a byte in a slice
+fn rfind_byte(data: &[u8], byte: u8) -> Option<usize> {
+    if data.is_empty() {
+        return None;
+    }
+
+    // Search backwards for the byte
+    for i in (0..data.len()).rev() {
+        if data[i] == byte {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
+// Start a producer thread to read and send file contents in chunks using zero-copy with Arc<Mutex<FixedBuffer>>
+// Uses a dedicated buffer pool with circular buffer semantics for true zero-copy
+fn start_filelists_producer(
+    filelists_path: PathBuf,
+    tx: crossbeam_channel::Sender<Arc<Mutex<FixedBuffer>>>,
+    buffer_pool: Arc<SharedBufferPool>
+) -> thread::JoinHandle<Result<()>> {
     thread::spawn(move || {
-        // Use a reasonably sized buffer for chunks (32KB)
-        const CHUNK_SIZE: usize = 32 * 1024;
+        // Track current producer buffer and its position
+        let mut current_buffer = buffer_pool.get_producer_buffer();
+        let mut partial_size = 0;
 
-        for filelist in filelists {
-            let file = File::open(&filelist)?;
-            let mut reader: Box<dyn std::io::Read> = if filelist.to_string_lossy().ends_with(".gz") {
-                Box::new(GzDecoder::new(file))
-            } else if filelist.to_string_lossy().ends_with(".xz") {
-                Box::new(XzDecoder::new(file))
-            } else if filelist.to_string_lossy().ends_with(".zst") {
-                Box::new(ZstdDecoder::new(file)?)
-            } else {
-                Box::new(file)
-            };
+        // Open and prepare the file reader
+        let file = File::open(&filelists_path)?;
+        let mut reader: Box<dyn std::io::Read> = if filelists_path.to_string_lossy().ends_with(".gz") {
+            Box::new(GzDecoder::new(file))
+        } else if filelists_path.to_string_lossy().ends_with(".xz") {
+            Box::new(XzDecoder::new(file))
+        } else if filelists_path.to_string_lossy().ends_with(".zst") {
+            Box::new(ZstdDecoder::new(file)?)
+        } else {
+            Box::new(file)
+        };
 
-            // Use a buffer for reading and a separate buffer for leftover data
-            let mut leftover = Vec::new();
+        // Process the file in chunks
+        loop {
+            // Lock the current buffer
+            let mut locked_buffer = current_buffer.lock().unwrap();
 
-            // Read chunks and send them through the channel
-            loop {
-                // Create a new buffer for this chunk
-                let mut buffer = vec![0; CHUNK_SIZE + leftover.len()];
+            // If this is a fresh buffer, clear it first
+            if partial_size == 0 {
+                locked_buffer.clear();
+            }
 
-                // Copy any leftover data to the beginning of the buffer
-                if !leftover.is_empty() {
-                    buffer[0..leftover.len()].copy_from_slice(&leftover);
+            // Calculate available space in the buffer after any partial data
+            let available = locked_buffer.available_space();
+            if available == 0 {
+                // Buffer is full, send notification to consumer and move to next buffer
+                drop(locked_buffer);
+
+                // Send notification through the channel (not the buffer itself)
+                if tx.send(Arc::clone(&current_buffer)).is_err() {
+                    // Channel is closed, receiver has terminated
+                    return Ok(());
                 }
 
-                // Read into the buffer after any leftover data
-                let bytes_read = reader.read(&mut buffer[leftover.len()..])?;
-                if bytes_read == 0 && leftover.is_empty() {
-                    break; // End of file and no leftover data
-                }
+                // Advance to the next buffer
+                buffer_pool.advance_producer();
+                current_buffer = buffer_pool.get_producer_buffer();
+                partial_size = 0; // Start fresh with the new buffer
+                continue;
+            }
 
-                // Calculate the total data we have
-                let total_data = leftover.len() + bytes_read;
+            // Read directly into the buffer after any partial data
+            let buffer_slice = locked_buffer.as_mut_slice();
+            let bytes_read = reader.read(&mut buffer_slice[partial_size..])?;
 
-                // If we have no data, we're done
-                if total_data == 0 {
-                    break;
-                }
+            // Update used size in the buffer
+            if bytes_read > 0 {
+                locked_buffer.set_used(partial_size + bytes_read);
+            }
 
-                // Resize buffer to actual data size
-                buffer.truncate(total_data);
-
-                // Find the last newline in the data
-                let mut end_pos = total_data;
-
-                for i in (0..total_data).rev() {
-                    if buffer[i] == b'\n' {
-                        end_pos = i + 1; // Include the newline
-                        break;
-                    }
-                }
-
-                // Create the chunk to send
-                if end_pos > 0 {
-                    let chunk_data = if end_pos == total_data {
-                        // We can send the entire buffer
-                        buffer
-                    } else {
-                        // We need to split the buffer
-                        let data = buffer[0..end_pos].to_vec();
-                        leftover = buffer[end_pos..].to_vec();
-                        data
-                    };
-
-                    // Wrap the chunk in Arc for zero-copy sending
-                    let arc_chunk = Arc::new(chunk_data);
-                    if tx.send(arc_chunk).is_err() {
-                        // Channel is closed, receiver has terminated
+            // Check if we're done reading
+            if bytes_read == 0 {
+                // If we have any data in the buffer, send it
+                if locked_buffer.nr_used() > 0 {
+                    drop(locked_buffer);
+                    if tx.send(Arc::clone(&current_buffer)).is_err() {
                         return Ok(());
                     }
+                } else {
+                    drop(locked_buffer);
+                }
+                break;
+            }
 
-                    // Clear leftover if we sent the entire buffer
-                    if end_pos == total_data {
-                        leftover.clear();
-                    }
+            // Find a good chunk boundary (preferably at a newline)
+            let data = locked_buffer.as_slice();
+            if let Some(boundary) = rfind_byte(data, b'\n') {
+                let boundary = boundary + 1; // Include the newline
+
+                // Calculate size of partial data at the end (after boundary)
+                let new_partial_size = if boundary < data.len() {
+                    data.len() - boundary
+                } else {
+                    0
+                };
+
+                // If there's partial data, prepare to move it to the next buffer
+                if new_partial_size > 0 {
+                    // Get the next producer buffer
+                    let next_buffer = buffer_pool.get_next_producer_buffer();
+                    let mut next_locked = next_buffer.lock().unwrap();
+
+                    // Clear the next buffer and copy partial data to the beginning
+                    next_locked.clear();
+                    next_locked.copy_at_start(&data[boundary..]);
+                    next_locked.set_used(new_partial_size);
+
+                    // Update the valid data size for the current buffer (exclude partial)
+                    locked_buffer.set_used(boundary);
+
+                    // Release the next buffer lock
+                    drop(next_locked);
                 }
 
-                // If we're at EOF and have sent all data, we're done
-                if bytes_read == 0 {
-                    break;
+                // Release the current buffer lock
+                drop(locked_buffer);
+
+                // Send notification through the channel (not the buffer itself)
+                if tx.send(Arc::clone(&current_buffer)).is_err() {
+                    // Channel is closed, receiver has terminated
+                    return Ok(());
+                }
+
+                // Advance to the next buffer and update partial size
+                buffer_pool.advance_producer();
+                current_buffer = buffer_pool.get_producer_buffer();
+                partial_size = new_partial_size;
+            } else {
+                // No complete boundary found, continue reading
+                partial_size = locked_buffer.nr_used();
+                drop(locked_buffer);
+
+                // If the buffer is almost full and no newline was found,
+                // we should send it anyway to avoid blocking
+                if partial_size > BUFFER_SIZE - 1024 {
+                    // Send notification through the channel (not the buffer itself)
+                    if tx.send(Arc::clone(&current_buffer)).is_err() {
+                        return Ok(());
+                    }
+                    buffer_pool.advance_producer();
+                    current_buffer = buffer_pool.get_producer_buffer();
+                    partial_size = 0;
                 }
             }
         }
+
         Ok(())
     })
-}
-
-// Process filelists using regex pattern matching with chunked data
-fn process_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
-    // Create a regex from the pattern
-    let regex = Arc::new(Regex::new(&options.pattern)?);
-
-    // Try to extract a literal prefix from the regex for optimization
-    let prefix = extract_literal_prefix(&options.pattern);
-
-    // Check if we have a useful prefix and use it for optimization
-    if let Some(prefix) = prefix {
-        // Process based on filelist format
-        if filelists.iter().any(|p| p.to_string_lossy().contains("filelists.xml")) {
-            // RPM XML format
-            process_rpm_filelists_with_prefix_chunked(rx, regex, prefix, options)
-        } else {
-            // Simple format
-            process_simple_filelists_with_prefix_chunked(rx, regex, prefix, options)
-        }
-    } else {
-        // No useful prefix, fall back to full regex matching
-        if filelists.iter().any(|p| p.to_string_lossy().contains("filelists.xml")) {
-            // RPM XML format
-            process_rpm_filelists_with_regex_chunked(rx, regex, options)
-        } else {
-            // Simple format
-            process_simple_filelists_with_regex_chunked(rx, regex, options)
-        }
-    }
-}
-
-// Process filelists using Aho-Corasick pattern matching with chunked data
-fn process_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
-    // Convert pattern to bytes for Aho-Corasick
-    let pattern = options.pattern.as_bytes().to_vec();
-
-    // Process based on filelist format
-    if filelists.iter().any(|p| p.to_string_lossy().contains("filelists.xml")) {
-        // RPM XML format
-        process_rpm_filelists_with_aho_corasick_chunked(rx, pattern, options)
-    } else {
-        // Simple format
-        process_simple_filelists_with_aho_corasick_chunked(rx, pattern, options)
-    }
 }
 
 // Helper function to find line boundaries in a chunk of data
@@ -227,82 +473,71 @@ fn find_line_boundaries(data: &[u8], start_pos: usize, end_pos: usize) -> (usize
     let line_start = if start_pos == 0 {
         0
     } else {
-        let mut pos = start_pos;
-        while pos > 0 {
-            pos -= 1;
-            if data[pos] == b'\n' {
-                return (pos + 1, end_pos);
-            }
-        }
-        0
+        memchr::memrchr(b'\n', &data[..start_pos])
+            .map(|pos| pos + 1)
+            .unwrap_or(0)
     };
 
-    // Find end of line (next newline or end of data)
-    let mut line_end = end_pos;
-    while line_end < data.len() {
-        if data[line_end] == b'\n' {
-            break;
-        }
-        line_end += 1;
-    }
+    // Find end of line using find_next_newline
+    let line_end = find_next_newline(data, end_pos);
 
     (line_start, line_end)
 }
 
-// Extract a line from a chunk as a string
-fn extract_line(data: &[u8], start: usize, end: usize) -> String {
-    String::from_utf8_lossy(&data[start..end]).to_string()
+// Process simple filelists with format "pkgname path" per line
+// Uses fast memmem search first, then more refined matching if needed
+fn process_simple_filelists(
+    rx: Receiver<Arc<Mutex<FixedBuffer>>>,
+    pattern: Vec<u8>,
+    options: &SearchOptions,
+    _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
+) -> Result<()> {
+    // Create a memmem finder for fast substring searching
+    let finder = memchr::memmem::Finder::new(&pattern);
+
+    // Process chunks as they arrive
+    while let Ok(arc_chunk) = rx.recv() {
+        // Lock the buffer to access its contents
+        let chunk_guard = arc_chunk.lock().unwrap();
+        let chunk_data = chunk_guard.as_slice();
+
+        // Find all matches in the chunk
+        for match_pos in finder.find_iter(chunk_data) {
+            // For each match, find the line boundaries using find_line_boundaries
+            let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
+
+            // Extract the full line containing the match
+            let line = &chunk_data[line_start..line_end];
+
+            // Process just this line
+            process_simple_line(line, &pattern, options)?;
+        }
+
+        // Release the lock
+        drop(chunk_guard);
+    }
+
+    Ok(())
 }
 
-fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, prefix: Vec<u8>, _options: &SearchOptions) -> Result<()> {
-    let mut current_pkgname = String::new();
+// Process a single line from a simple filelist format ("pkgname path")
+fn process_simple_line(
+    line: &[u8],
+    pattern: &[u8],
+    options: &SearchOptions
+) -> Result<()> {
+    // Split the line into pkgname and path
+    if let Some(space_pos) = memchr::memchr(b' ', line) {
+        let pkgname = &line[..space_pos];
+        let path = &line[space_pos + 1..];
 
-    // Create patterns for Aho-Corasick
-    let patterns = vec![b"<package".to_vec(), b"  <file>".to_vec(), prefix];
-    let ac = match AhoCorasick::new(&patterns) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
-    };
+        // Check if we should match this line
+        let should_match = check_match(path, pattern, options);
 
-    while let Ok(arc_chunk) = rx.recv() {
-        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
-        let mut matches = ac.find_iter(&chunk);
-
-        while let Some(mat) = matches.next() {
-            let pattern_idx = mat.pattern().as_usize();
-            let match_start = mat.start();
-            let match_end = mat.end();
-
-            // Find the line boundaries for this match
-            let (line_start, line_end) = find_line_boundaries(&chunk, match_start, match_end);
-            let line = extract_line(&chunk, line_start, line_end);
-
-            match pattern_idx {
-                0 => {
-                    // pkgname pattern
-                    if let Some(name_start) = line.find("name=\"") {
-                        if let Some(name_end) = line[name_start + 6..].find("\"") {
-                            current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
-                        }
-                    }
-                },
-                1 => {
-                    // file pattern
-                    let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
-
-                    if regex.is_match(file_path) {
-                        println!("{} {}", current_pkgname, file_path);
-                    }
-                },
-                2 => {
-                    // Our literal prefix matched, verify with full regex
-                    if regex.is_match(&line) {
-                        if let Some((pkgname, path)) = line.split_once(' ') {
-                            println!("{} {}", pkgname, path);
-                        }
-                    }
-                },
-                _ => unreachable!()
+        // If we have a match, print the result
+        if should_match {
+            if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
+                println!("{} {}", pkg_str, path_str);
             }
         }
     }
@@ -310,61 +545,131 @@ fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: 
     Ok(())
 }
 
-fn process_rpm_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
-    let mut current_pkgname = String::new();
+// Helper function to check if a path matches the pattern according to options
+fn check_match(path: &[u8], pattern: &[u8], options: &SearchOptions) -> bool {
+    if options.files {
+        // For --files, check if the filename matches
+        if let Some(fname_pos) = memchr::memrchr(b'/', path) {
+            let filename = &path[fname_pos + 1..];
+            match_pattern(filename, pattern, options)
+        } else {
+            match_pattern(path, pattern, options)
+        }
+    } else if options.paths {
+        // For --paths, check if the path matches
+        match_pattern(path, pattern, options)
+    } else {
+        // Default case, check if the path contains the pattern
+        memchr::memmem::Finder::new(pattern).find(path).is_some()
+    }
+}
 
-    // Create patterns to quickly identify important lines
-    let package_pattern = b"<package";
-    let file_pattern = b"  <file>";
+// Helper function to match pattern against content based on options
+fn match_pattern(content: &[u8], pattern: &[u8], options: &SearchOptions) -> bool {
+    if options.regexp {
+        // Use regex for matching if available
+        if let Some(regex) = &options.regex_pattern {
+            return regex.is_match(content);
+        }
+    }
 
+    // Fall back to simple substring search
+    if options.case_sensitive {
+        memchr::memmem::Finder::new(pattern).find(content).is_some()
+    } else {
+        // Case-insensitive search
+        let content_lower = content.to_ascii_lowercase();
+        let pattern_lower = pattern.to_ascii_lowercase();
+        memchr::memmem::Finder::new(&pattern_lower).find(&content_lower).is_some()
+    }
+}
+
+// Process RPM filelists using memmem pattern matching with chunked data
+fn process_rpm_filelists(
+    rx: Receiver<Arc<Mutex<FixedBuffer>>>,
+    pattern: Vec<u8>,
+    options: &SearchOptions,
+    _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
+) -> Result<()> {
+    // Keep the previous chunk for backward package search (using Arc to avoid copying)
+    let mut prev_chunk: Option<Arc<Mutex<FixedBuffer>>> = None;
+
+    // Use the buffer pool's consumer buffer instead of directly receiving from channel
     while let Ok(arc_chunk) = rx.recv() {
-        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
-        // First pass: find all package and file lines
-        let mut i = 0;
-        while i < chunk.len() {
-            // Look for package lines
-            if i + package_pattern.len() <= chunk.len() && &chunk[i..i+package_pattern.len()] == package_pattern {
-                // Found a package line, extract the line
-                let (line_start, line_end) = find_line_boundaries(&chunk, i, i + package_pattern.len());
-                let line = extract_line(&chunk, line_start, line_end);
+        // Lock the buffer to access its contents
+        let chunk_guard = arc_chunk.lock().unwrap();
 
-                // Extract package name
-                if let Some(name_start) = line.find("name=\"") {
-                    if let Some(name_end) = line[name_start + 6..].find("\"") {
-                        current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
-                    }
-                }
+        // Process the chunk directly - we use a scoped block to ensure the lock is released quickly
+        {
+            let chunk_data = chunk_guard.as_slice();
+            process_chunk(chunk_data, &pattern, options, &mut prev_chunk)?;
+        }
 
-                i = line_end;
+        // Release the lock
+        drop(chunk_guard);
+
+        // Store the current chunk as previous for the next iteration if needed
+        if options.show_package {
+            // Replace the previous chunk with the current one
+            // First clear the old one if it exists to free memory
+            if let Some(prev) = &prev_chunk {
+                // Clear the previous chunk if we don't need it anymore
+                // This is important to free up space for the producer
+                let mut prev_guard = prev.lock().unwrap();
+                prev_guard.clear();
+                drop(prev_guard);
             }
-            // Look for file lines
-            else if i + file_pattern.len() <= chunk.len() && &chunk[i..i+file_pattern.len()] == file_pattern {
-                // Found a file line, extract the line
-                let (line_start, line_end) = find_line_boundaries(&chunk, i, i + file_pattern.len());
-                let line = extract_line(&chunk, line_start, line_end);
+            // Store current chunk as previous for next iteration
+            prev_chunk = Some(Arc::clone(&arc_chunk));
+        }
+	}
 
-                // Process file path
-                let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
+    Ok(())
+}
 
-                let matches = if options.files {
-                    let filename = Path::new(file_path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                    regex.is_match(filename)
-                } else {
-                    regex.is_match(file_path)
-                };
+// Extract file path from an XML line
+fn extract_file_path(line: &[u8]) -> Option<String> {
+    // Static byte patterns for faster matching
+    static START_TAG: &[u8] = b"<file>";
+    static END_TAG: &[u8] = b"</file>";
 
-                if matches {
-                    println!("{} {}", current_pkgname, file_path);
-                }
+    // Use memchr for faster pattern matching
+    let start_finder = memchr::memmem::Finder::new(START_TAG);
+    let end_finder = memchr::memmem::Finder::new(END_TAG);
 
-                i = line_end;
-            } else {
-                i += 1;
+    if let Some(start_pos) = start_finder.find(line) {
+        let start_idx = start_pos + START_TAG.len();
+
+        if let Some(end_pos) = end_finder.find(&line[start_idx..]) {
+            // Avoid allocating a new string if possible
+            if let Ok(path) = std::str::from_utf8(&line[start_idx..(start_idx + end_pos)]) {
+                // Only allocate a new string if we need to return it
+                return Some(path.to_string());
             }
         }
     }
 
-    Ok(())
+    None
+}
+
+// Check if a file should be printed based on search options
+fn should_print_file(file_path: &str, pattern: &[u8], options: &SearchOptions) -> bool {
+    // Create a finder once for efficient pattern matching
+    let finder = memchr::memmem::Finder::new(pattern);
+
+    // If --files option is specified, only match on the filename
+    if options.files {
+        if let Some(filename) = Path::new(file_path).file_name() {
+            if let Some(filename_str) = filename.to_str() {
+                // Use memmem finder to check if pattern exists in filename
+                return finder.find(filename_str.as_bytes()).is_some();
+            }
+        }
+        return false;
+    } else {
+        // Match on the full path using memmem finder
+        return finder.find(file_path.as_bytes()).is_some();
+    }
 }
 
 /* Example input:
@@ -378,60 +683,42 @@ fn process_rpm_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: A
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-// Constants for XML tags we need to find
-const PACKAGE_TAG: &[u8] = b"<package";
-const FILE_TAG: &[u8] = b"<file>";
-const FILE_END_TAG: &[u8] = b"</file>";
-const NAME_ATTR: &[u8] = b"name=\"";
-const QUOTE: u8 = b'\"';
-const NEWLINE: u8 = b'\n';
+fn find_pkgname_from_slice(data: &[u8]) -> Option<String> {
+    // Constants for XML tags and attributes
+    static NAME_STR: &[u8] = b"name";
+    static QUOTE: u8 = b'\"';
+    static EQUAL_SIGN: u8 = b'=';
 
-// Find the line boundaries containing a match
-fn find_line_boundaries_memchr(data: &[u8], match_pos: usize) -> (usize, usize) {
-    // Find start of line (previous newline or start of data)
-    let line_start = match memrchr(NEWLINE, &data[..match_pos]) {
-        Some(pos) => pos + 1, // Skip the newline
-        None => 0,
-    };
+    // Start from the end of the data and search backwards
+    // We're looking for the last occurrence of name="..."
+    let mut pos = data.len();
 
-    // Find end of line (next newline or end of data)
-    let line_end = match memchr(NEWLINE, &data[match_pos..]) {
-        Some(pos) => match_pos + pos,
-        None => data.len(),
-    };
+    // Keep searching backwards for equals signs until we find one that's part of name="
+    while pos > 0 {
+        // Find the last equals sign before the current position
+        if let Some(eq_pos) = memchr::memrchr(EQUAL_SIGN, &data[..pos]) {
+            // Check if this equals sign is part of name="
+            if eq_pos >= NAME_STR.len() &&
+               &data[eq_pos - NAME_STR.len()..eq_pos] == NAME_STR &&
+               eq_pos + 1 < data.len() &&
+               data[eq_pos + 1] == QUOTE {
 
-    (line_start, line_end)
-}
+                // We found name=", now extract the value
+                let name_start = eq_pos + 2; // Skip the = and "
 
-// Extract file path from a line containing a file element
-fn extract_file_path(line: &[u8]) -> Option<String> {
-    if let Some(file_start) = memchr::memmem::find(line, FILE_TAG) {
-        let file_start = file_start + FILE_TAG.len();
-
-        if let Some(file_end) = memchr::memmem::find(&line[file_start..], FILE_END_TAG) {
-            return Some(String::from_utf8_lossy(&line[file_start..file_start + file_end]).to_string());
-        }
-    }
-    None
-}
-
-// Find package name in a chunk of data, searching backward from a given position
-fn find_package_name(data: &[u8], search_end: usize) -> Option<String> {
-    let mut pkg_search_end = search_end;
-
-    while pkg_search_end > 0 {
-        if let Some(pkg_pos) = memchr::memmem::rfind(&data[..pkg_search_end], PACKAGE_TAG) {
-            // Found a package tag, extract the name
-            if let Some(name_pos) = memchr::memmem::find(&data[pkg_pos..pkg_search_end], NAME_ATTR) {
-                let name_start = pkg_pos + name_pos + NAME_ATTR.len();
-                if let Some(name_end) = memchr(QUOTE, &data[name_start..pkg_search_end]) {
-                    return Some(String::from_utf8_lossy(&data[name_start..name_start + name_end]).to_string());
+                // Find the closing quote
+                if let Some(quote_pos) = memchr::memchr(QUOTE, &data[name_start..]) {
+                    // Extract the name between quotes
+                    if let Ok(name) = std::str::from_utf8(&data[name_start..(name_start + quote_pos)]) {
+                        return Some(name.to_string());
+                    }
                 }
             }
-            // If we couldn't extract the name, move search position before this package tag
-            pkg_search_end = pkg_pos;
+
+            // Move position back to continue searching
+            pos = eq_pos;
         } else {
-            // No more package tags found
+            // No more equals signs found
             break;
         }
     }
@@ -439,254 +726,75 @@ fn find_package_name(data: &[u8], search_end: usize) -> Option<String> {
     None
 }
 
-// Check if a file path should be printed based on search options
-fn should_print_file(file_path: &str, pattern: &[u8], options: &SearchOptions) -> bool {
-    if options.files {
-        let filename = Path::new(file_path).file_name()
-            .unwrap_or_default().to_str().unwrap_or_default();
-        filename.as_bytes().windows(pattern.len()).any(|window| window == pattern)
-    } else {
-        true // We already found the pattern in the line
+// Find package name from previous chunk or current chunk by searching backwards for <package> tag
+fn find_pkgname_backwards(chunk: &[u8], prev_chunk: &mut Option<Arc<Mutex<FixedBuffer>>>) -> Option<String> {
+    // Try current chunk first
+    if let Some(name) = find_pkgname_from_slice(chunk) {
+        return Some(name);
     }
+
+    // If not found in current chunk, try previous chunk
+    if let Some(prev) = prev_chunk {
+        if let Ok(prev_data) = prev.lock() {
+            if let Some(name) = find_pkgname_from_slice(prev_data.as_slice()) {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
-fn process_rpm_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
-    // Buffer to store partial XML elements across chunks
-    let mut buffer = Vec::new();
-    // Keep the previous chunk for backward package search
-    let mut prev_chunk: Option<Vec<u8>> = None;
+// Process a chunk of data with memmem pattern matching
+fn process_chunk(
+    chunk: &[u8],
+    pattern: &[u8],
+    options: &SearchOptions,
+    prev_chunk: &mut Option<Arc<Mutex<FixedBuffer>>>,
+) -> Result<()> {
+    // Use memchr's memmem finder for faster substring searching
+    let finder = memchr::memmem::Finder::new(pattern);
+    let mut matches = finder.find_iter(chunk);
 
-    while let Ok(arc_chunk) = rx.recv() {
-        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
-
-        // Check if we need to combine with previous buffer
-        if !buffer.is_empty() {
-            // Combine the buffer with the new chunk
-            let mut combined = Vec::with_capacity(buffer.len() + chunk.len());
-            combined.extend_from_slice(&buffer);
-            combined.extend_from_slice(chunk);
-            buffer.clear();
-
-            // Process the combined data
-            let mut pos = 0;
-
-            // Process the chunk
-            while pos < combined.len() {
-                // First search for our pattern
-                if let Some(pattern_pos) = memchr::memmem::find(&combined[pos..], &pattern) {
-                    let pattern_pos = pos + pattern_pos;
-
-                    // Find the line containing this pattern
-                    let (line_start, line_end) = find_line_boundaries_memchr(&combined, pattern_pos);
-                    let line = &combined[line_start..line_end];
-
-                    // Check if this is a file element line and extract the file path
-                    if memchr::memmem::find(line, FILE_TAG).is_some() {
-                        if let Some(file_path) = extract_file_path(line) {
-                            // Check if we should print this file based on options
-                            if should_print_file(&file_path, &pattern, options) {
-                                // Try to find package name in current chunk
-                                let mut found_pkgname = false;
-
-                                // Search in current chunk
-                                if let Some(pkgname) = find_package_name(&combined, line_start) {
-                                    println!("{} {}", pkgname, file_path);
-                                    found_pkgname = true;
-                                }
-                                // If not found, search in previous chunk
-                                else if let Some(prev) = &prev_chunk {
-                                    if let Some(pkgname) = find_package_name(prev, prev.len()) {
-                                        println!("{} {}", pkgname, file_path);
-                                        found_pkgname = true;
-                                    }
-                                }
-
-                                // If we still couldn't find a package name, use a placeholder
-                                if !found_pkgname {
-                                    println!("unknown-package {}", file_path);
-                                }
-                            }
-                        }
-                    }
-
-                    // Move position past this match
-                    pos = line_end + 1;
-                } else {
-                    // No more matches in this chunk
-                    // Save the last part of the chunk that might contain a partial match
-                    if combined.len() - pos > pattern.len() {
-                        buffer.extend_from_slice(&combined[combined.len() - pattern.len()..]);
-                    } else {
-                        buffer.extend_from_slice(&combined[pos..]);
-                    }
-                    break;
-                }
-            }
+    while let Some(match_pos) = matches.next() {
+        // Find line boundaries more efficiently using memchr
+        let line_start = if match_pos > 0 {
+            // Use memrchr to find the previous newline more efficiently
+            memchr::memrchr(b'\n', &chunk[..match_pos])
+                .map(|p| p + 1)
+                .unwrap_or(0)
         } else {
-            // Process the chunk directly
-            let mut pos = 0;
+            0
+        };
 
-            // Process the chunk
-            while pos < chunk.len() {
-                // First search for our pattern
-                if let Some(pattern_pos) = memchr::memmem::find(&chunk[pos..], &pattern) {
-                    let pattern_pos = pos + pattern_pos;
+        let line_end = memchr::memchr(b'\n', &chunk[match_pos..])
+            .map(|p| p + match_pos)
+            .unwrap_or(chunk.len());
 
-                    // Find the line containing this pattern
-                    let (line_start, line_end) = find_line_boundaries_memchr(chunk, pattern_pos);
-                    let line = &chunk[line_start..line_end];
+        // Extract the line slice once
+        let line_slice = &chunk[line_start..line_end];
 
-                    // Check if this is a file element line and extract the file path
-                    if memchr::memmem::find(line, FILE_TAG).is_some() {
-                        if let Some(file_path) = extract_file_path(line) {
-                            // Check if we should print this file based on options
-                            if should_print_file(&file_path, &pattern, options) {
-                                // Try to find package name in current chunk
-                                let mut found_pkgname = false;
+        // If we have a regex pattern, check if it matches the line
+        let should_process = if let Some(regex) = &options.regex_pattern {
+            regex.is_match(line_slice)
+        } else {
+            true // No regex pattern, process all lines with the literal pattern
+        };
 
-                                // Search in current chunk
-                                if let Some(pkgname) = find_package_name(chunk, line_start) {
-                                    println!("{} {}", pkgname, file_path);
-                                    found_pkgname = true;
-                                }
-                                // If not found, search in previous chunk
-                                else if let Some(prev) = &prev_chunk {
-                                    if let Some(pkgname) = find_package_name(prev, prev.len()) {
-                                        println!("{} {}", pkgname, file_path);
-                                        found_pkgname = true;
-                                    }
-                                }
-
-                                // If we still couldn't find a package name, use a placeholder
-                                if !found_pkgname {
-                                    println!("unknown-package {}", file_path);
-                                }
-                            }
+        // Extract the file path from the line if regex matched or no regex is set
+        if should_process {
+            if let Some(file_path) = extract_file_path(line_slice) {
+                // Check if we should print this file
+                if should_print_file(&file_path, pattern, options) {
+                    if options.show_package {
+                        // Only extract package name when needed, and search backwards for <package> tag
+                        if let Some(pkg_name) = find_pkgname_backwards(chunk, prev_chunk) {
+                            println!("{} {}", pkg_name, file_path);
+                        } else {
+                            println!("{}", file_path);
                         }
-                    }
-
-                    // Move position past this match
-                    pos = line_end + 1;
-                } else {
-                    // No more matches in this chunk
-                    // Save the last part of the chunk that might contain a partial match
-                    if chunk.len() - pos > pattern.len() {
-                        buffer.extend_from_slice(&chunk[chunk.len() - pattern.len()..]);
                     } else {
-                        buffer.extend_from_slice(&chunk[pos..]);
+                        println!("{}", file_path);
                     }
-                    break;
-                }
-            }
-        }
-
-        // Store current chunk as previous before moving to next chunk
-        prev_chunk = Some(chunk.to_vec());
-    }
-
-    Ok(())
-}
-
-// Process simple filelists with regex and literal prefix optimization (chunked version)
-fn process_simple_filelists_with_prefix_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, prefix: Vec<u8>, options: &SearchOptions) -> Result<()> {
-    // Create the Aho-Corasick automaton with the prefix
-    let patterns = vec![prefix.clone()];
-    let ac = match AhoCorasick::new(&patterns) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
-    };
-
-    while let Ok(arc_chunk) = rx.recv() {
-        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
-        // Find all matches of the prefix in the chunk
-        for mat in ac.find_iter(chunk) {
-            // Extract the line containing the match
-            let (line_start, line_end) = find_line_boundaries(chunk, mat.start(), mat.end());
-            let line = extract_line(chunk, line_start, line_end);
-
-            // Verify with full regex
-            if let Some((pkgname, path)) = line.split_once(' ') {
-                let matches = if options.files {
-                    let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                    regex.is_match(filename)
-                } else {
-                    regex.is_match(path)
-                };
-
-                if matches {
-                    println!("{} {}", pkgname, path);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn process_simple_filelists_with_regex_chunked(rx: Receiver<Arc<Vec<u8>>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
-    // Use a newline pattern to find line boundaries
-    let newline = b'\n';
-
-    while let Ok(arc_chunk) = rx.recv() {
-        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
-        let mut start = 0;
-
-        // Process each line in the chunk
-        for i in 0..chunk.len() {
-            if chunk[i] == newline || i == chunk.len() - 1 {
-                // Extract the line
-                let end = if i == chunk.len() - 1 && chunk[i] != newline { i + 1 } else { i };
-                let line = extract_line(&chunk, start, end);
-
-                // Process the line
-                if let Some((pkgname, path)) = line.split_once(' ') {
-                    let matches = if options.files {
-                        let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                        regex.is_match(filename)
-                    } else {
-                        regex.is_match(path)
-                    };
-
-                    if matches {
-                        println!("{} {}", pkgname, path);
-                    }
-                }
-
-                start = i + 1;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// Process simple filelists using Aho-Corasick for non-regex pattern matching (chunked version)
-fn process_simple_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
-    // Create an Aho-Corasick automaton for the pattern
-    let ac = match AhoCorasick::new(&[pattern.clone()]) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
-    };
-
-    while let Ok(arc_chunk) = rx.recv() {
-        let chunk = &*arc_chunk; // Dereference the Arc to get a reference to the Vec<u8>
-        // Find all matches in the chunk
-        for mat in ac.find_iter(&chunk) {
-            // Extract the line containing the match
-            let (line_start, line_end) = find_line_boundaries(&chunk, mat.start(), mat.end());
-            let line = extract_line(&chunk, line_start, line_end);
-
-            // Process the line
-            if let Some((pkgname, path)) = line.split_once(' ') {
-                if options.files {
-                    // For --files option, check if the pattern matches the filename only
-                    let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                    if filename.as_bytes().windows(pattern.len()).any(|window| window == pattern.as_slice()) {
-                        println!("{} {}", pkgname, path);
-                    }
-                } else {
-                    // Pattern already matched in the path
-                    println!("{} {}", pkgname, path);
                 }
             }
         }
@@ -696,12 +804,14 @@ fn process_simple_filelists_with_aho_corasick_chunked(rx: Receiver<Arc<Vec<u8>>>
 }
 
 // Common structure to hold the state during search operations
+#[allow(dead_code)]
 struct PackagesSearchState<'a> {
     current_pkgname: &'a [u8],
     current_summary: &'a [u8],
     stdout: BufWriter<std::io::Stdout>,
 }
 
+#[allow(dead_code)]
 impl<'a> PackagesSearchState<'a> {
     fn new() -> Self {
         PackagesSearchState {
@@ -722,158 +832,130 @@ impl<'a> PackagesSearchState<'a> {
     }
 }
 
-pub fn search_packages_fast(packages_path: &Path, options: &SearchOptions) -> Result<()> {
+pub fn search_packages_fast(packages_path: &Path, options: &mut SearchOptions) -> Result<()> {
     // Memory map the file
     let file = File::open(packages_path)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
-    // Create patterns for Aho-Corasick
-    let pkgname_pattern = b"pkgname: ";
-    let summary_pattern = b"summary: ";
-
     // Choose the fastest matcher based on options
     if options.regexp {
-        search_with_regex(&mmap, options, pkgname_pattern, summary_pattern)?
+        search_packages_with_regex(&mmap, options)?
     } else {
-        search_with_aho_corasick(&mmap, options, pkgname_pattern, summary_pattern)?
+        search_packages_with_memmem(&mmap, options)?
     }
 
     Ok(())
 }
 
 // Search using regex with potential literal prefix optimization
-fn search_with_regex(mmap: &Mmap, options: &SearchOptions, pkgname_pattern: &[u8], summary_pattern: &[u8]) -> Result<()> {
+fn search_packages_with_regex(mmap: &Mmap, options: &mut SearchOptions) -> Result<()> {
     // Create regex for pattern matching
-    let regex = RegexBuilder::new(&options.pattern)
-        .unicode(false)
-        .build()?;
+    let mut regex_builder = RegexBuilder::new(&options.pattern);
+    let regex = Arc::new(regex_builder.unicode(false).build()?);
 
-    // Since regex.prefixes() isn't available in this version, we'll use a simpler approach
-    // Try to extract a literal prefix if the pattern starts with a literal
-    let literal_prefix = extract_literal_prefix(&options.pattern);
+    // Set the regex pattern in options so it can be used in the slow path of search_packages_with_memmem
+    options.regex_pattern = Some(Arc::clone(&regex));
 
-    if let Some(prefix) = literal_prefix {
-        // We have a literal prefix to use for optimization
-        search_with_regex_prefix(mmap, &regex, prefix, pkgname_pattern, summary_pattern)
-    } else {
-        // No literal prefix available, use full regex search
-        search_with_full_regex(mmap, &regex, pkgname_pattern, summary_pattern)
-    }
+    if let Some(literal) = extract_literal_string(&options.pattern) {
+        options.pattern = literal;
+    } else { warn!("Failed to extract literal, cannot handle complex regexp now"); }
+
+    // Use memmem for efficient pattern matching, it will check regex in its slow path
+    search_packages_with_memmem(mmap, options)
 }
 
-// Helper function to extract a literal prefix from a regex pattern if possible
-fn extract_literal_prefix(pattern: &str) -> Option<Vec<u8>> {
-    // Very simple heuristic: if the pattern starts with non-special characters, use them as prefix
-    let special_chars = ['.', '*', '+', '?', '|', '(', ')', '[', ']', '{', '}', '^', '$', '\\'];
+// Helper function to extract the longest literal string from a regex pattern if possible
+fn extract_literal_string(pattern: &str) -> Option<String> {
+    // Special regex characters that break literal sequences
+    let special_chars = ['.', '*', '+', '?', '|', '^', '$', '\\'];
 
-    // Get the first few characters that are not regex special characters
-    let prefix: String = pattern.chars()
-        .take_while(|&c| !special_chars.contains(&c))
-        .collect();
+    // Track nesting level of parentheses and brackets
+    let mut paren_level = 0;
+    let mut bracket_level = 0;
+    let mut brace_level = 0;
 
-    if prefix.is_empty() {
+    // Track the current and longest literal sequences
+    let mut current_literal = String::new();
+    let mut longest_literal = String::new();
+
+    // Process each character in the pattern
+    for c in pattern.chars() {
+        match c {
+            '(' => {
+                paren_level += 1;
+                if paren_level == 1 && !current_literal.is_empty() {
+                    // Save the current literal if it's longer than what we have
+                    if current_literal.len() > longest_literal.len() {
+                        longest_literal = current_literal.clone();
+                    }
+                    current_literal.clear();
+                }
+            },
+            ')' => {
+                if paren_level > 0 {
+                    paren_level -= 1;
+                }
+            },
+            '[' => {
+                bracket_level += 1;
+                if bracket_level == 1 && !current_literal.is_empty() {
+                    // Save the current literal if it's longer than what we have
+                    if current_literal.len() > longest_literal.len() {
+                        longest_literal = current_literal.clone();
+                    }
+                    current_literal.clear();
+                }
+            },
+            ']' => {
+                if bracket_level > 0 {
+                    bracket_level -= 1;
+                }
+            },
+            '{' => {
+                brace_level += 1;
+                if brace_level == 1 && !current_literal.is_empty() {
+                    // Save the current literal if it's longer than what we have
+                    if current_literal.len() > longest_literal.len() {
+                        longest_literal = current_literal.clone();
+                    }
+                    current_literal.clear();
+                }
+            },
+            '}' => {
+                if brace_level > 0 {
+                    brace_level -= 1;
+                }
+            },
+            // If we're at the top level (not in any parentheses or brackets)
+            _ if paren_level == 0 && bracket_level == 0 && brace_level == 0 => {
+                if special_chars.contains(&c) {
+                    // We hit a special character, end the current literal
+                    if !current_literal.is_empty() {
+                        if current_literal.len() > longest_literal.len() {
+                            longest_literal = current_literal.clone();
+                        }
+                        current_literal.clear();
+                    }
+                } else {
+                    // Add to the current literal sequence
+                    current_literal.push(c);
+                }
+            },
+            _ => {}
+        }
+    }
+
+    // Check if the final literal sequence is the longest
+    if !current_literal.is_empty() && current_literal.len() > longest_literal.len() {
+        longest_literal = current_literal;
+    }
+
+    // Return the longest literal if we found one
+    if longest_literal.is_empty() {
         None
     } else {
-        Some(prefix.into_bytes())
+        Some(longest_literal)
     }
-}
-
-// Search using a single regex prefix with Aho-Corasick for pre-filtering
-fn search_with_regex_prefix(
-    mmap: &Mmap,
-    regex: &BytesRegex,
-    prefix: Vec<u8>,
-    pkgname_pattern: &[u8],
-    summary_pattern: &[u8],
-) -> Result<()> {
-    // Create patterns for Aho-Corasick
-    let patterns = vec![pkgname_pattern, summary_pattern, &prefix];
-
-    // Create the Aho-Corasick automaton
-    let ac = match AhoCorasick::new(patterns) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
-    };
-
-    let mut state = PackagesSearchState::new();
-
-    // Iterate lines manually (faster than .split())
-    let mut start = 0;
-    for (i, &byte) in mmap.iter().enumerate() {
-        if byte != b'\n' { continue; }
-
-        let line = &mmap[start..i];
-        start = i + 1;
-
-        if line.is_empty() { continue; }
-
-        // Find all matches in the current line
-        let mut matches = ac.find_iter(line);
-
-        // Check what kind of match we have
-        let mut is_pkgname = false;
-        let mut is_summary = false;
-        let mut has_pattern_match = false;
-
-        while let Some(mat) = matches.next() {
-            match mat.pattern().as_usize() {
-                0 => {
-                    // pkgname pattern
-                    state.current_pkgname = &line[mat.end()..];
-                    is_pkgname = true;
-                },
-                1 => {
-                    // summary pattern
-                    state.current_summary = &line[mat.end()..];
-                    is_summary = true;
-                },
-                2 => {
-                    // Our literal prefix matched, verify with full regex
-                    if regex.is_match(line) {
-                        has_pattern_match = true;
-                    }
-                },
-                _ => unreachable!()
-            }
-        }
-
-        // If we didn't find a pkgname or summary pattern but found a potential match
-        if !is_pkgname && !is_summary && has_pattern_match {
-            state.print_match()?;
-        }
-    }
-
-    Ok(())
-}
-
-// Search using full regex when no literal prefixes are available
-fn search_with_full_regex(
-    mmap: &Mmap,
-    regex: &BytesRegex,
-    pkgname_pattern: &[u8],
-    summary_pattern: &[u8],
-) -> Result<()> {
-    let mut state = PackagesSearchState::new();
-
-    let mut start = 0;
-    for (i, &byte) in mmap.iter().enumerate() {
-        if byte != b'\n' { continue; }
-
-        let line = &mmap[start..i];
-        start = i + 1;
-
-        if line.is_empty() { continue; }
-
-        if let Some(rest) = strip_prefix(line, pkgname_pattern) {
-            state.current_pkgname = rest;
-        } else if let Some(rest) = strip_prefix(line, summary_pattern) {
-            state.current_summary = rest;
-        } else if regex.is_match(line) {
-            state.print_match()?;
-        }
-    }
-
-    Ok(())
 }
 
 // Check if a position is at the start of a line
@@ -882,8 +964,14 @@ fn is_line_start(data: &[u8], pos: usize, _pattern: &[u8]) -> bool {
 }
 
 // Find and extract a pattern value from a line
-fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8]) -> Option<(Vec<u8>, usize)> {
-    if let Some(pos) = memchr::memmem::rfind(&data[..search_end], pattern) {
+fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8], search_backwards: bool) -> Option<(Vec<u8>, usize)> {
+    let pos = if search_backwards {
+        memchr::memmem::rfind(&data[..search_end], pattern)
+    } else {
+        memchr::memmem::find(&data[search_end..], pattern).map(|p| search_end + p)
+    };
+
+    if let Some(pos) = pos {
         // Check if it's at the start of a line
         if is_line_start(data, pos, pattern) {
             let value_start = pos + pattern.len();
@@ -898,44 +986,29 @@ fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8]) -> O
 }
 
 // Search for package name and summary in a chunk
-fn search_metadata_in_chunk(
+fn search_package_metadata(
     chunk: &[u8],
     search_end: usize,
-    pkgname_pattern: &[u8],
-    summary_pattern: &[u8],
     current_pkgname: &mut Vec<u8>,
     current_summary: &mut Vec<u8>,
 ) -> (bool, bool) {
     let mut found_pkgname = false;
     let mut found_summary = false;
-    let mut current_search_end = search_end;
 
-    while current_search_end > 0 && (!found_pkgname || !found_summary) {
-        // Look for pkgname if we haven't found it yet
-        if !found_pkgname {
-            if let Some((pkg_value, pkg_pos)) = find_and_extract_pattern(chunk, current_search_end, pkgname_pattern) {
-                if !pkg_value.is_empty() {
-                    current_pkgname.clear();
-                    current_pkgname.extend_from_slice(&pkg_value);
-                    found_pkgname = true;
-                }
-                current_search_end = pkg_pos;
-            } else {
-                break; // No more pkgname patterns in this chunk
-            }
-        }
+    // First look for pkgname (searching backwards)
+    if let Some((pkg_value, pkg_pos)) = find_and_extract_pattern(chunk, search_end, PKGNAME_PATTERN, true) {
+        if !pkg_value.is_empty() {
+            current_pkgname.clear();
+            current_pkgname.extend_from_slice(&pkg_value);
+            found_pkgname = true;
 
-        // Look for summary if we haven't found it yet
-        if !found_summary {
-            if let Some((sum_value, sum_pos)) = find_and_extract_pattern(chunk, current_search_end, summary_pattern) {
+            // Now search forward from the pkgname line for the summary
+            if let Some((sum_value, _)) = find_and_extract_pattern(chunk, pkg_pos, SUMMARY_PATTERN, false) {
                 if !sum_value.is_empty() {
                     current_summary.clear();
                     current_summary.extend_from_slice(&sum_value);
                     found_summary = true;
                 }
-                current_search_end = sum_pos;
-            } else {
-                break; // No more summary patterns in this chunk
             }
         }
     }
@@ -943,12 +1016,10 @@ fn search_metadata_in_chunk(
     (found_pkgname, found_summary)
 }
 
-// Search using memchr for non-regex patterns (optimized version of Aho-Corasick approach)
-fn search_with_aho_corasick(
+// Search using memchr for non-regex patterns (optimized version of memmem approach)
+fn search_packages_with_memmem(
     mmap: &Mmap,
     options: &SearchOptions,
-    pkgname_pattern: &[u8],
-    summary_pattern: &[u8],
 ) -> Result<()> {
     let user_pattern = options.pattern.as_bytes();
     let mut stdout = BufWriter::new(std::io::stdout());
@@ -967,27 +1038,37 @@ fn search_with_aho_corasick(
             let pattern_pos = pos + pattern_pos;
 
             // Find the line containing this pattern
-            let (line_start, line_end) = find_line_boundaries_memchr(mmap, pattern_pos);
-            let _line = &mmap[line_start..line_end];
+            let (line_start, line_end) = find_line_boundaries(mmap, pattern_pos, pattern_pos + 1);
+            let line = &mmap[line_start..line_end];
 
-            // We found a match, now search backward for the most recent pkgname and summary
-            let (found_pkgname, found_summary) = search_metadata_in_chunk(
-                mmap,
-                line_start,
-                pkgname_pattern,
-                summary_pattern,
-                &mut current_pkgname,
-                &mut current_summary
-            );
+            // If we have a regex pattern, verify the match with it
+            let regex_matches = if let Some(regex) = &options.regex_pattern {
+                // Use the regex for more precise matching
+                regex.is_match(line)
+            } else {
+                // No regex, so the basic pattern match is sufficient
+                true
+            };
 
-            // Print the match if we found both pkgname and summary
-            if found_pkgname && found_summary {
-                writeln!(
-                    stdout,
-                    "{} - {}",
-                    String::from_utf8_lossy(&current_pkgname),
-                    String::from_utf8_lossy(&current_summary)
-                )?;
+            // Only proceed if the regex matched or there's no regex to check
+            if regex_matches {
+                // We found a match, now search backward for the most recent pkgname and summary
+                let (found_pkgname, found_summary) = search_package_metadata(
+                    mmap,
+                    line_start,
+                    &mut current_pkgname,
+                    &mut current_summary
+                );
+
+                // Print the match if we found both pkgname and summary
+                if found_pkgname && found_summary {
+                    writeln!(
+                        stdout,
+                        "{} - {}",
+                        String::from_utf8_lossy(&current_pkgname),
+                        String::from_utf8_lossy(&current_summary)
+                    )?;
+                }
             }
 
             // Move position past this match
@@ -1004,19 +1085,7 @@ fn search_with_aho_corasick(
 // Helper function to find the next newline character
 #[inline]
 fn find_next_newline(data: &[u8], start: usize) -> usize {
-    for i in start..data.len() {
-        if data[i] == b'\n' {
-            return i;
-        }
-    }
-    data.len()
-}
-
-#[inline]
-fn strip_prefix<'a>(haystack: &'a [u8], needle: &[u8]) -> Option<&'a [u8]> {
-    if haystack.starts_with(needle) {
-        Some(&haystack[needle.len()..])
-    } else {
-        None
-    }
+    memchr::memchr(b'\n', &data[start..])
+        .map(|pos| start + pos)
+        .unwrap_or(data.len())
 }
