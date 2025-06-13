@@ -374,6 +374,7 @@ dependencies = [
  "libc",
  "liblzma",
  "log",
+ "memchr",
  "memmap2",
  "nix",
  "num_cpus",

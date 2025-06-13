@@ -1,11 +1,11 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use regex::Regex;
 use flate2::read::GzDecoder;
 use liblzma::read::XzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
-use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::Receiver;
 use std::thread;
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -18,6 +18,7 @@ use log::warn;
 use regex::bytes::Regex as BytesRegex;
 use aho_corasick::AhoCorasick;
 use regex::bytes::RegexBuilder;
+use memchr::{memchr, memrchr};
 
 pub struct SearchOptions {
     pub files: bool,
@@ -36,9 +37,14 @@ pub fn search_repo_cache(options: &SearchOptions) -> Result<()> {
         for shard in repo_index.repo_shards.values() {
             if options.files || options.paths {
                 if let Some(filelists) = &shard.filelists {
-                    search_filelists(&repo_dir.join(&filelists.filename), options)
-                        .with_context(|| format!("Failed to search filelists in {}", repo_index.repodata_name))?;
-                    any_filelists = true;
+                    let filelists_path = repo_dir.join(&filelists.filename);
+                    if filelists_path.exists() {
+                        search_filelists(vec![filelists_path], options)
+                            .with_context(|| format!("Failed to search filelists in {}", repo_index.repodata_name))?;
+                        any_filelists = true;
+                    } else {
+                        warn!("Filelists not found at {}", filelists_path.display());
+                    }
                 }
             } else {
                 let filename = shard.packages.filename.clone();
@@ -55,114 +61,186 @@ pub fn search_repo_cache(options: &SearchOptions) -> Result<()> {
     Ok(())
 }
 
-fn search_filelists(filelists_path: &Path, options: &SearchOptions) -> Result<()> {
-    if !filelists_path.exists() {
-        warn!("Filelists not found at {}", filelists_path.display());
-        return Ok(());
-    }
+pub fn search_filelists(filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
+    // Create a channel for communication between producer and consumer
+    let (tx, rx) = crossbeam_channel::unbounded();
 
-    // Determine if we're dealing with RPM XML format or simple format
-    let is_rpm_format = filelists_path.to_str().unwrap_or("").contains(".xml");
+    // Start the producer thread with chunked processing
+    let producer_handle = start_filelists_producer_chunked(filelists.clone(), tx);
 
-    // Prepare the pattern based on options
-    let mut pattern_str = options.pattern.clone();
-    if options.regexp && options.files && pattern_str.starts_with('/') {
-        pattern_str = format!("^{}", &pattern_str[1..]);
-    }
-
-    // Create channels for producer/consumer pattern
-    let (tx, rx) = bounded(1000);
-
-    // Start the producer thread to read the file
-    let producer_handle = start_filelists_producer(filelists_path, tx)?;
-
-    // Process the file contents based on pattern type and file format
+    // Process the filelists based on the options
     if options.regexp {
-        process_filelists_with_regex(rx, &pattern_str, is_rpm_format, options)?;
+        // For regex searches, try to extract a literal prefix for optimization
+        process_filelists_with_regex_chunked(rx, filelists, options)?
     } else {
-        process_filelists_with_aho_corasick(rx, pattern_str, is_rpm_format, options)?;
+        // For non-regex searches, use Aho-Corasick for efficient pattern matching
+        process_filelists_with_aho_corasick_chunked(rx, filelists, options)?
     }
 
-    // Wait for producer thread to complete
+    // Wait for the producer to finish
     producer_handle.join().unwrap()?;
 
     Ok(())
 }
 
-// Start a producer thread to read and send file contents line by line
-fn start_filelists_producer(filelists_path: &Path, tx: crossbeam_channel::Sender<String>) -> Result<thread::JoinHandle<Result<()>>> {
-    // Clone the path to avoid lifetime issues with the thread
-    let filelists_path_owned = filelists_path.to_path_buf();
+// Start a producer thread to read and send file contents in chunks
+fn start_filelists_producer_chunked(filelists: Vec<PathBuf>, tx: crossbeam_channel::Sender<Vec<u8>>) -> thread::JoinHandle<Result<()>> {
+    thread::spawn(move || {
+        // Use a reasonably sized buffer for chunks (32KB)
+        const CHUNK_SIZE: usize = 32 * 1024;
 
-    // Spawn producer thread to read and decode the file
-    let producer_handle = thread::spawn(move || -> Result<()> {
-        let file = File::open(&filelists_path_owned)?;
-        let reader = match filelists_path_owned.extension().and_then(|ext| ext.to_str()) {
-            Some("gz") => Box::new(BufReader::new(GzDecoder::new(file))) as Box<dyn BufRead>,
-            Some("xz") => Box::new(BufReader::new(XzDecoder::new(file))) as Box<dyn BufRead>,
-            Some("zst") => Box::new(BufReader::new(ZstdDecoder::new(file)?)) as Box<dyn BufRead>,
-            _ => Box::new(BufReader::new(file)) as Box<dyn BufRead>,
-        };
+        for filelist in filelists {
+            let file = File::open(&filelist)?;
+            let mut reader: Box<dyn std::io::Read> = if filelist.to_string_lossy().ends_with(".gz") {
+                Box::new(GzDecoder::new(file))
+            } else if filelist.to_string_lossy().ends_with(".xz") {
+                Box::new(XzDecoder::new(file))
+            } else if filelist.to_string_lossy().ends_with(".zst") {
+                Box::new(ZstdDecoder::new(file)?)
+            } else {
+                Box::new(file)
+            };
 
-        for line in reader.lines() {
-            let line_content = line?;
-            tx.send(line_content).map_err(|e| eyre!("Channel send error: {}", e))?
+            // Use a buffer for reading and a separate buffer for leftover data
+            let mut buffer = vec![0; CHUNK_SIZE];
+            let mut leftover = Vec::new();
+
+            // Read chunks and send them through the channel
+            loop {
+                // Read into the buffer after any leftover data
+                let bytes_read = reader.read(&mut buffer[leftover.len()..])?;
+                if bytes_read == 0 && leftover.is_empty() {
+                    break; // End of file and no leftover data
+                }
+
+                // Calculate the total data we have
+                let total_data = leftover.len() + bytes_read;
+
+                // If we have no data, we're done
+                if total_data == 0 {
+                    break;
+                }
+
+                // Find the last newline in the data
+                let mut end_pos = total_data;
+
+                // Only look for line boundaries if we have a full chunk or we're not at EOF
+                if bytes_read == CHUNK_SIZE - leftover.len() {
+                    for i in (0..total_data).rev() {
+                        if buffer[i] == b'\n' {
+                            end_pos = i + 1; // Include the newline
+                            break;
+                        }
+                    }
+                }
+
+                // Send the chunk up to the last complete line
+                if end_pos > 0 {
+                    let chunk = buffer[0..end_pos].to_vec();
+                    if tx.send(chunk).is_err() {
+                        // Channel is closed, receiver has terminated
+                        return Ok(());
+                    }
+                }
+
+                // Save any leftover data for the next iteration
+                if end_pos < total_data {
+                    leftover = buffer[end_pos..total_data].to_vec();
+                    // Copy leftover to the beginning of the buffer
+                    buffer[0..leftover.len()].copy_from_slice(&leftover);
+                } else {
+                    leftover.clear();
+                }
+
+                // If we're at EOF and have sent all data, we're done
+                if bytes_read == 0 {
+                    break;
+                }
+            }
         }
         Ok(())
-    });
-
-    Ok(producer_handle)
+    })
 }
 
-// Process filelists using regex pattern matching
-fn process_filelists_with_regex(
-    rx: Receiver<String>,
-    pattern_str: &str,
-    is_rpm_format: bool,
-    options: &SearchOptions
-) -> Result<()> {
-    // Extract literal prefix if possible for optimization
-    let literal_prefix = extract_literal_prefix(pattern_str);
-    let regex = Arc::new(Regex::new(pattern_str).map_err(|e| eyre!("Invalid regex pattern: {}", e))?);
-    let options = Arc::new(options);
+// Process filelists using regex pattern matching with chunked data
+fn process_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
+    // Create a regex from the pattern
+    let regex = Arc::new(Regex::new(&options.pattern)?);
 
-    if is_rpm_format {
-        if let Some(prefix) = literal_prefix {
-            process_rpm_filelists_with_prefix(rx, regex, prefix, &options)?
+    // Try to extract a literal prefix from the regex for optimization
+    let prefix = extract_literal_prefix(&options.pattern);
+
+    // Check if we have a useful prefix and use it for optimization
+    if let Some(prefix) = prefix {
+        // Process based on filelist format
+        if filelists.iter().any(|p| p.to_string_lossy().contains("filelists.xml")) {
+            // RPM XML format
+            process_rpm_filelists_with_prefix_chunked(rx, regex, prefix, options)
         } else {
-            process_rpm_filelists_with_regex(rx, regex, &options)?
+            // Simple format
+            process_simple_filelists_with_prefix_chunked(rx, regex, prefix, options)
         }
     } else {
-        if let Some(prefix) = literal_prefix {
-            process_simple_filelists_with_prefix(rx, regex, prefix, &options)?
+        // No useful prefix, fall back to full regex matching
+        if filelists.iter().any(|p| p.to_string_lossy().contains("filelists.xml")) {
+            // RPM XML format
+            process_rpm_filelists_with_regex_chunked(rx, regex, options)
         } else {
-            process_simple_filelists_with_regex(rx, regex, &options)?
+            // Simple format
+            process_simple_filelists_with_regex_chunked(rx, regex, options)
         }
     }
-
-    Ok(())
 }
 
-// Process filelists using Aho-Corasick pattern matching
-fn process_filelists_with_aho_corasick(
-    rx: Receiver<String>,
-    pattern_str: String,
-    is_rpm_format: bool,
-    options: &SearchOptions
-) -> Result<()> {
-    let pattern_bytes = pattern_str.as_bytes().to_vec();
-    let options = Arc::new(options);
+// Process filelists using Aho-Corasick pattern matching with chunked data
+fn process_filelists_with_aho_corasick_chunked(rx: Receiver<Vec<u8>>, filelists: Vec<PathBuf>, options: &SearchOptions) -> Result<()> {
+    // Convert pattern to bytes for Aho-Corasick
+    let pattern = options.pattern.as_bytes().to_vec();
 
-    if is_rpm_format {
-        process_rpm_filelists_with_aho_corasick(rx, pattern_bytes, &options)?
+    // Process based on filelist format
+    if filelists.iter().any(|p| p.to_string_lossy().contains("filelists.xml")) {
+        // RPM XML format
+        process_rpm_filelists_with_aho_corasick_chunked(rx, pattern, options)
     } else {
-        process_simple_filelists_with_aho_corasick(rx, pattern_bytes, &options)?
+        // Simple format
+        process_simple_filelists_with_aho_corasick_chunked(rx, pattern, options)
+    }
+}
+
+// Helper function to find line boundaries in a chunk of data
+fn find_line_boundaries(data: &[u8], start_pos: usize, end_pos: usize) -> (usize, usize) {
+    // Find start of line (previous newline + 1 or 0)
+    let line_start = if start_pos == 0 {
+        0
+    } else {
+        let mut pos = start_pos;
+        while pos > 0 {
+            pos -= 1;
+            if data[pos] == b'\n' {
+                return (pos + 1, end_pos);
+            }
+        }
+        0
+    };
+
+    // Find end of line (next newline or end of data)
+    let mut line_end = end_pos;
+    while line_end < data.len() {
+        if data[line_end] == b'\n' {
+            break;
+        }
+        line_end += 1;
     }
 
-    Ok(())
+    (line_start, line_end)
 }
 
-fn process_rpm_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>, prefix: Vec<u8>, _options: &SearchOptions) -> Result<()> {
+// Extract a line from a chunk as a string
+fn extract_line(data: &[u8], start: usize, end: usize) -> String {
+    String::from_utf8_lossy(&data[start..end]).to_string()
+}
+
+fn process_rpm_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, prefix: Vec<u8>, _options: &SearchOptions) -> Result<()> {
     let mut current_pkgname = String::new();
 
     // Create patterns for Aho-Corasick
@@ -172,11 +250,19 @@ fn process_rpm_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>, pr
         Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
     };
 
-    while let Ok(line) = rx.recv() {
-        let mut matches = ac.find_iter(line.as_bytes());
+    while let Ok(chunk) = rx.recv() {
+        let mut matches = ac.find_iter(&chunk);
 
         while let Some(mat) = matches.next() {
-            match mat.pattern().as_usize() {
+            let pattern_idx = mat.pattern().as_usize();
+            let match_start = mat.start();
+            let match_end = mat.end();
+
+            // Find the line boundaries for this match
+            let (line_start, line_end) = find_line_boundaries(&chunk, match_start, match_end);
+            let line = extract_line(&chunk, line_start, line_end);
+
+            match pattern_idx {
                 0 => {
                     // pkgname pattern
                     if let Some(name_start) = line.find("name=\"") {
@@ -209,28 +295,55 @@ fn process_rpm_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>, pr
     Ok(())
 }
 
-fn process_rpm_filelists_with_regex(rx: Receiver<String>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
+fn process_rpm_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
     let mut current_pkgname = String::new();
 
-    while let Ok(line) = rx.recv() {
-        if line.starts_with("<package") {
-            if let Some(name_start) = line.find("name=\"") {
-                if let Some(name_end) = line[name_start + 6..].find("\"") {
-                    current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
+    // Create patterns to quickly identify important lines
+    let package_pattern = b"<package";
+    let file_pattern = b"  <file>";
+
+    while let Ok(chunk) = rx.recv() {
+        // First pass: find all package and file lines
+        let mut i = 0;
+        while i < chunk.len() {
+            // Look for package lines
+            if i + package_pattern.len() <= chunk.len() && &chunk[i..i+package_pattern.len()] == package_pattern {
+                // Found a package line, extract the line
+                let (line_start, line_end) = find_line_boundaries(&chunk, i, i + package_pattern.len());
+                let line = extract_line(&chunk, line_start, line_end);
+
+                // Extract package name
+                if let Some(name_start) = line.find("name=\"") {
+                    if let Some(name_end) = line[name_start + 6..].find("\"") {
+                        current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
+                    }
                 }
+
+                i = line_end;
             }
-        } else if line.starts_with("  <file>") {
-            let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
+            // Look for file lines
+            else if i + file_pattern.len() <= chunk.len() && &chunk[i..i+file_pattern.len()] == file_pattern {
+                // Found a file line, extract the line
+                let (line_start, line_end) = find_line_boundaries(&chunk, i, i + file_pattern.len());
+                let line = extract_line(&chunk, line_start, line_end);
 
-            let matches = if options.files {
-                let filename = Path::new(file_path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                regex.is_match(filename)
+                // Process file path
+                let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
+
+                let matches = if options.files {
+                    let filename = Path::new(file_path).file_name().unwrap_or_default().to_str().unwrap_or_default();
+                    regex.is_match(filename)
+                } else {
+                    regex.is_match(file_path)
+                };
+
+                if matches {
+                    println!("{} {}", current_pkgname, file_path);
+                }
+
+                i = line_end;
             } else {
-                regex.is_match(file_path)
-            };
-
-            if matches {
-                println!("{} {}", current_pkgname, file_path);
+                i += 1;
             }
         }
     }
@@ -249,62 +362,158 @@ fn process_rpm_filelists_with_regex(rx: Receiver<String>, regex: Arc<Regex>, opt
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-fn process_rpm_filelists_with_aho_corasick(rx: Receiver<String>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
-    let mut current_pkgname = String::new();
+// Constants for XML tags we need to find
+const PACKAGE_TAG: &[u8] = b"<package";
+const FILE_TAG: &[u8] = b"<file>";
+const FILE_END_TAG: &[u8] = b"</file>";
+const NAME_ATTR: &[u8] = b"name=\"";
+const QUOTE: u8 = b'\"';
+const NEWLINE: u8 = b'\n';
 
-    // Create patterns for Aho-Corasick
-    let patterns = vec![
-        b"<package".to_vec(),
-        pattern.clone()
-    ];
-
-    // Create the Aho-Corasick automaton
-    let ac = match AhoCorasick::new(&patterns) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+// Find the line boundaries containing a match
+fn find_line_boundaries_memchr(data: &[u8], match_pos: usize) -> (usize, usize) {
+    // Find start of line (previous newline or start of data)
+    let line_start = match memrchr(NEWLINE, &data[..match_pos]) {
+        Some(pos) => pos + 1, // Skip the newline
+        None => 0,
     };
 
-    while let Ok(line) = rx.recv() {
-        let line_bytes = line.as_bytes();
-        let mut has_pattern_match = false;
+    // Find end of line (next newline or end of data)
+    let line_end = match memchr(NEWLINE, &data[match_pos..]) {
+        Some(pos) => match_pos + pos,
+        None => data.len(),
+    };
 
-        for mat in ac.find_iter(line_bytes) {
-            match mat.pattern().as_usize() {
-                0 => { // <package pattern
-                    if let Some(name_start) = line.find("name=\"") {
-                        if let Some(name_end) = line[name_start + 6..].find("\"") {
-                            current_pkgname = line[name_start + 6..name_start + 6 + name_end].to_string();
+    (line_start, line_end)
+}
+
+// Extract file path from a line containing a file element
+fn extract_file_path(line: &[u8]) -> Option<String> {
+    if let Some(file_start) = memchr::memmem::find(line, FILE_TAG) {
+        let file_start = file_start + FILE_TAG.len();
+
+        if let Some(file_end) = memchr::memmem::find(&line[file_start..], FILE_END_TAG) {
+            return Some(String::from_utf8_lossy(&line[file_start..file_start + file_end]).to_string());
+        }
+    }
+    None
+}
+
+// Find package name in a chunk of data, searching backward from a given position
+fn find_package_name(data: &[u8], search_end: usize) -> Option<String> {
+    let mut pkg_search_end = search_end;
+
+    while pkg_search_end > 0 {
+        if let Some(pkg_pos) = memchr::memmem::rfind(&data[..pkg_search_end], PACKAGE_TAG) {
+            // Found a package tag, extract the name
+            if let Some(name_pos) = memchr::memmem::find(&data[pkg_pos..pkg_search_end], NAME_ATTR) {
+                let name_start = pkg_pos + name_pos + NAME_ATTR.len();
+                if let Some(name_end) = memchr(QUOTE, &data[name_start..pkg_search_end]) {
+                    return Some(String::from_utf8_lossy(&data[name_start..name_start + name_end]).to_string());
+                }
+            }
+            // If we couldn't extract the name, move search position before this package tag
+            pkg_search_end = pkg_pos;
+        } else {
+            // No more package tags found
+            break;
+        }
+    }
+
+    None
+}
+
+// Check if a file path should be printed based on search options
+fn should_print_file(file_path: &str, pattern: &[u8], options: &SearchOptions) -> bool {
+    if options.files {
+        let filename = Path::new(file_path).file_name()
+            .unwrap_or_default().to_str().unwrap_or_default();
+        filename.as_bytes().windows(pattern.len()).any(|window| window == pattern)
+    } else {
+        true // We already found the pattern in the line
+    }
+}
+
+fn process_rpm_filelists_with_aho_corasick_chunked(rx: Receiver<Vec<u8>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
+    // Buffer to store partial XML elements across chunks
+    let mut buffer = Vec::new();
+    // Keep the previous chunk for backward package search
+    let mut prev_chunk: Option<Vec<u8>> = None;
+
+    while let Ok(mut chunk) = rx.recv() {
+        // If we have data in the buffer from a previous chunk, prepend it
+        if !buffer.is_empty() {
+            let mut combined = buffer.clone();
+            combined.extend_from_slice(&chunk);
+            chunk = combined;
+            buffer.clear();
+        }
+
+        // Start position for our search
+        let mut pos = 0;
+
+        // Process the chunk
+        while pos < chunk.len() {
+            // First search for our pattern
+            if let Some(pattern_pos) = memchr::memmem::find(&chunk[pos..], &pattern) {
+                let pattern_pos = pos + pattern_pos;
+
+                // Find the line containing this pattern
+                let (line_start, line_end) = find_line_boundaries_memchr(&chunk, pattern_pos);
+                let line = &chunk[line_start..line_end];
+
+                // Check if this is a file element line and extract the file path
+                if memchr::memmem::find(line, FILE_TAG).is_some() {
+                    if let Some(file_path) = extract_file_path(line) {
+                        // Check if we should print this file based on options
+                        if should_print_file(&file_path, &pattern, options) {
+                            // Try to find package name in current chunk
+                            let mut found_pkgname = false;
+
+                            // Search in current chunk
+                            if let Some(pkgname) = find_package_name(&chunk, line_start) {
+                                println!("{} {}", pkgname, file_path);
+                                found_pkgname = true;
+                            }
+                            // If not found, search in previous chunk
+                            else if let Some(prev) = &prev_chunk {
+                                if let Some(pkgname) = find_package_name(prev, prev.len()) {
+                                    println!("{} {}", pkgname, file_path);
+                                    found_pkgname = true;
+                                }
+                            }
+
+                            // If we still couldn't find a package name, use a placeholder
+                            if !found_pkgname {
+                                println!("unknown-package {}", file_path);
+                            }
                         }
                     }
-                },
-                1 => { // User pattern
-                    has_pattern_match = true;
-                },
-                _ => unreachable!()
-            }
-        }
-
-        // Process file line with pattern match
-        if has_pattern_match {
-            let file_path = line.trim_start_matches("  <file>").trim_end_matches("</file>");
-
-            // For --files option, check if the pattern matches the filename only
-            if options.files {
-                let filename = Path::new(file_path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                if filename.as_bytes().windows(pattern.len()).any(|window| window == pattern.as_slice()) {
-                    println!("{} {}", current_pkgname, file_path);
                 }
+
+                // Move position past this match
+                pos = line_end + 1;
             } else {
-                println!("{} {}", current_pkgname, file_path);
+                // No more matches in this chunk
+                // Save the last part of the chunk that might contain a partial match
+                if chunk.len() - pos > pattern.len() {
+                    buffer.extend_from_slice(&chunk[chunk.len() - pattern.len()..]);
+                } else {
+                    buffer.extend_from_slice(&chunk[pos..]);
+                }
+                break;
             }
         }
+
+        // Store current chunk as previous before moving to next chunk
+        prev_chunk = Some(chunk);
     }
 
     Ok(())
 }
 
-// Process simple filelists with regex and literal prefix optimization
-fn process_simple_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>, prefix: Vec<u8>, options: &SearchOptions) -> Result<()> {
+// Process simple filelists with regex and literal prefix optimization (chunked version)
+fn process_simple_filelists_with_prefix_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, prefix: Vec<u8>, options: &SearchOptions) -> Result<()> {
     // Create the Aho-Corasick automaton with the prefix
     let patterns = vec![prefix.clone()];
     let ac = match AhoCorasick::new(&patterns) {
@@ -312,9 +521,13 @@ fn process_simple_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>,
         Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
     };
 
-    while let Ok(line) = rx.recv() {
-        // Fast pre-filtering with Aho-Corasick
-        if ac.is_match(line.as_bytes()) {
+    while let Ok(chunk) = rx.recv() {
+        // Find all matches of the prefix in the chunk
+        for mat in ac.find_iter(&chunk) {
+            // Extract the line containing the match
+            let (line_start, line_end) = find_line_boundaries(&chunk, mat.start(), mat.end());
+            let line = extract_line(&chunk, line_start, line_end);
+
             // Verify with full regex
             if let Some((pkgname, path)) = line.split_once(' ') {
                 let matches = if options.files {
@@ -334,19 +547,36 @@ fn process_simple_filelists_with_prefix(rx: Receiver<String>, regex: Arc<Regex>,
     Ok(())
 }
 
-// Process simple filelists with full regex matching
-fn process_simple_filelists_with_regex(rx: Receiver<String>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
-    while let Ok(line) = rx.recv() {
-        if let Some((pkgname, path)) = line.split_once(' ') {
-            let matches = if options.files {
-                let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                regex.is_match(filename)
-            } else {
-                regex.is_match(path)
-            };
+// Process simple filelists with full regex matching (chunked version)
+fn process_simple_filelists_with_regex_chunked(rx: Receiver<Vec<u8>>, regex: Arc<Regex>, options: &SearchOptions) -> Result<()> {
+    // Use a newline pattern to find line boundaries
+    let newline = b'\n';
 
-            if matches {
-                println!("{} {}", pkgname, path);
+    while let Ok(chunk) = rx.recv() {
+        let mut start = 0;
+
+        // Process each line in the chunk
+        for i in 0..chunk.len() {
+            if chunk[i] == newline || i == chunk.len() - 1 {
+                // Extract the line
+                let end = if i == chunk.len() - 1 && chunk[i] != newline { i + 1 } else { i };
+                let line = extract_line(&chunk, start, end);
+
+                // Process the line
+                if let Some((pkgname, path)) = line.split_once(' ') {
+                    let matches = if options.files {
+                        let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
+                        regex.is_match(filename)
+                    } else {
+                        regex.is_match(path)
+                    };
+
+                    if matches {
+                        println!("{} {}", pkgname, path);
+                    }
+                }
+
+                start = i + 1;
             }
         }
     }
@@ -354,20 +584,33 @@ fn process_simple_filelists_with_regex(rx: Receiver<String>, regex: Arc<Regex>, 
     Ok(())
 }
 
-// Process simple filelists using Aho-Corasick for non-regex pattern matching
-fn process_simple_filelists_with_aho_corasick(rx: Receiver<String>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
-    while let Ok(line) = rx.recv() {
-        if let Some((pkgname, path)) = line.split_once(' ') {
-            let target = if options.files {
-                let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
-                filename
-            } else {
-                path
-            };
+// Process simple filelists using Aho-Corasick for non-regex pattern matching (chunked version)
+fn process_simple_filelists_with_aho_corasick_chunked(rx: Receiver<Vec<u8>>, pattern: Vec<u8>, options: &SearchOptions) -> Result<()> {
+    // Create an Aho-Corasick automaton for the pattern
+    let ac = match AhoCorasick::new(&[pattern.clone()]) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+    };
 
-            // Simple substring search
-            if target.as_bytes().windows(pattern.len()).any(|window| window == pattern.as_slice()) {
-                println!("{} {}", pkgname, path);
+    while let Ok(chunk) = rx.recv() {
+        // Find all matches in the chunk
+        for mat in ac.find_iter(&chunk) {
+            // Extract the line containing the match
+            let (line_start, line_end) = find_line_boundaries(&chunk, mat.start(), mat.end());
+            let line = extract_line(&chunk, line_start, line_end);
+
+            // Process the line
+            if let Some((pkgname, path)) = line.split_once(' ') {
+                if options.files {
+                    // For --files option, check if the pattern matches the filename only
+                    let filename = Path::new(path).file_name().unwrap_or_default().to_str().unwrap_or_default();
+                    if filename.as_bytes().windows(pattern.len()).any(|window| window == pattern.as_slice()) {
+                        println!("{} {}", pkgname, path);
+                    }
+                } else {
+                    // Pattern already matched in the path
+                    println!("{} {}", pkgname, path);
+                }
             }
         }
     }
