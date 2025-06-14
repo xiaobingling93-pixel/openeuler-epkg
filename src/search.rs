@@ -3,6 +3,7 @@ use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use memchr::memchr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -13,10 +14,11 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 use memmap2::Mmap;
 use regex::bytes::{Regex as BytesRegex, RegexBuilder};
 use color_eyre::eyre::{Result, Context};
+use color_eyre::eyre::eyre;
 use log::warn;
+use aho_corasick::AhoCorasick;
 
 use crate::models::repodata_indice;
-
 use crate::models::PackageFormat;
 
 // Search options for RPM filelists
@@ -25,7 +27,6 @@ pub struct SearchOptions {
     pub case_sensitive: bool,
     #[allow(dead_code)]
     pub exact_match: bool,
-    pub show_package: bool,
     #[allow(dead_code)]
     pub show_version: bool,
     #[allow(dead_code)]
@@ -615,85 +616,37 @@ fn process_rpm_filelists(
     options: &SearchOptions,
     _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
 ) -> Result<()> {
-    // Keep the previous chunk for backward package search (using Arc to avoid copying)
-    let mut prev_chunk: Option<Arc<Mutex<FixedBuffer>>> = None;
+    let mut current_pkgname = Vec::<u8>::new();
+
+    // Create patterns for Aho-Corasick
+    let patterns = vec![
+        b" name=\"".to_vec(),
+        pattern.clone()
+    ];
+
+    // Create the Aho-Corasick automaton
+    let ac = match AhoCorasick::new(&patterns) {
+        Ok(ac) => ac,
+        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
+    };
 
     // Use the buffer pool's consumer buffer instead of directly receiving from channel
     while let Ok(arc_chunk) = rx.recv() {
         // Lock the buffer to access its contents
-        let chunk_guard = arc_chunk.lock().unwrap();
+        let mut chunk_guard = arc_chunk.lock().unwrap();
 
         // Process the chunk directly - we use a scoped block to ensure the lock is released quickly
         {
             let chunk_data = chunk_guard.as_slice();
-            process_chunk(chunk_data, &pattern, options, &mut prev_chunk)?;
+            process_rpm_filelists_with_aho_corasick(&mut current_pkgname, chunk_data, &ac, &pattern, options)?;
         }
 
+        chunk_guard.clear();
         // Release the lock
         drop(chunk_guard);
-
-        // Store the current chunk as previous for the next iteration if needed
-        if options.show_package {
-            // Replace the previous chunk with the current one
-            // First clear the old one if it exists to free memory
-            if let Some(prev) = &prev_chunk {
-                // Clear the previous chunk if we don't need it anymore
-                // This is important to free up space for the producer
-                let mut prev_guard = prev.lock().unwrap();
-                prev_guard.clear();
-                drop(prev_guard);
-            }
-            // Store current chunk as previous for next iteration
-            prev_chunk = Some(Arc::clone(&arc_chunk));
-        }
 	}
 
     Ok(())
-}
-
-// Extract file path from an XML line
-fn extract_file_path(line: &[u8]) -> Option<String> {
-    // Static byte patterns for faster matching
-    static START_TAG: &[u8] = b"<file>";
-    static END_TAG: &[u8] = b"</file>";
-
-    // Use memchr for faster pattern matching
-    let start_finder = memchr::memmem::Finder::new(START_TAG);
-    let end_finder = memchr::memmem::Finder::new(END_TAG);
-
-    if let Some(start_pos) = start_finder.find(line) {
-        let start_idx = start_pos + START_TAG.len();
-
-        if let Some(end_pos) = end_finder.find(&line[start_idx..]) {
-            // Avoid allocating a new string if possible
-            if let Ok(path) = std::str::from_utf8(&line[start_idx..(start_idx + end_pos)]) {
-                // Only allocate a new string if we need to return it
-                return Some(path.to_string());
-            }
-        }
-    }
-
-    None
-}
-
-// Check if a file should be printed based on search options
-fn should_print_file(file_path: &str, pattern: &[u8], options: &SearchOptions) -> bool {
-    // Create a finder once for efficient pattern matching
-    let finder = memchr::memmem::Finder::new(pattern);
-
-    // If --files option is specified, only match on the filename
-    if options.files {
-        if let Some(filename) = Path::new(file_path).file_name() {
-            if let Some(filename_str) = filename.to_str() {
-                // Use memmem finder to check if pattern exists in filename
-                return finder.find(filename_str.as_bytes()).is_some();
-            }
-        }
-        return false;
-    } else {
-        // Match on the full path using memmem finder
-        return finder.find(file_path.as_bytes()).is_some();
-    }
 }
 
 /* Example input:
@@ -707,123 +660,58 @@ fn should_print_file(file_path: &str, pattern: &[u8], options: &SearchOptions) -
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-fn find_pkgname_from_slice(data: &[u8]) -> Option<String> {
-    // Constants for XML tags and attributes
-    static NAME_STR: &[u8] = b"name";
-    static QUOTE: u8 = b'\"';
-    static EQUAL_SIGN: u8 = b'=';
-
-    // Start from the end of the data and search backwards
-    // We're looking for the last occurrence of name="..."
-    let mut pos = data.len();
-
-    // Keep searching backwards for equals signs until we find one that's part of name="
-    while pos > 0 {
-        // Find the last equals sign before the current position
-        if let Some(eq_pos) = memchr::memrchr(EQUAL_SIGN, &data[..pos]) {
-            // Check if this equals sign is part of name="
-            if eq_pos >= NAME_STR.len() &&
-               &data[eq_pos - NAME_STR.len()..eq_pos] == NAME_STR &&
-               eq_pos + 1 < data.len() &&
-               data[eq_pos + 1] == QUOTE {
-
-                // We found name=", now extract the value
-                let name_start = eq_pos + 2; // Skip the = and "
-
-                // Find the closing quote
-                if let Some(quote_pos) = memchr::memchr(QUOTE, &data[name_start..]) {
-                    // Extract the name between quotes
-                    if let Ok(name) = std::str::from_utf8(&data[name_start..(name_start + quote_pos)]) {
-                        return Some(name.to_string());
-                    }
-                }
-            }
-
-            // Move position back to continue searching
-            pos = eq_pos;
-        } else {
-            // No more equals signs found
-            break;
+fn process_rpm_filelists_with_aho_corasick(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], ac: &AhoCorasick, pattern: &Vec<u8>, options: &SearchOptions) -> Result<()> {
+    for mat in ac.find_iter(chunk_data) {
+        match mat.pattern().as_usize() {
+            0 => { // package name=" pattern
+                   // Extract package name from the XML data
+                   if let Some(quote_pos) = memchr(b'"', &chunk_data[mat.end()+1..]) {
+                       current_pkgname.clear();
+                       current_pkgname.extend_from_slice(&chunk_data[mat.end()+1..mat.end()+1+quote_pos]);
+                   }
+                },
+            1 => { // User pattern
+                let (line_start, line_end) = find_line_boundaries(chunk_data, mat.start(), mat.end());
+                let line = &chunk_data[line_start..line_end];
+                process_rpm_file_line(line, pattern, options, &current_pkgname)?;
+            },
+            _ => unreachable!()
         }
     }
-
-    None
+    Ok(())
 }
 
-// Find package name from previous chunk or current chunk by searching backwards for <package> tag
-fn find_pkgname_backwards(chunk: &[u8], prev_chunk: &mut Option<Arc<Mutex<FixedBuffer>>>) -> Option<String> {
-    // Try current chunk first
-    if let Some(name) = find_pkgname_from_slice(chunk) {
-        return Some(name);
-    }
-
-    // If not found in current chunk, try previous chunk
-    if let Some(prev) = prev_chunk {
-        if let Ok(prev_data) = prev.lock() {
-            if let Some(name) = find_pkgname_from_slice(prev_data.as_slice()) {
-                return Some(name);
-            }
-        }
-    }
-    None
-}
-
-// Process a chunk of data with memmem pattern matching
-fn process_chunk(
-    chunk: &[u8],
+fn process_rpm_file_line(
+    line: &[u8],
     pattern: &[u8],
     options: &SearchOptions,
-    prev_chunk: &mut Option<Arc<Mutex<FixedBuffer>>>,
+    current_pkgname: &[u8]
 ) -> Result<()> {
-    // Use memchr's memmem finder for faster substring searching
-    let finder = memchr::memmem::Finder::new(pattern);
-    let mut matches = finder.find_iter(chunk);
-
-    while let Some(match_pos) = matches.next() {
-        // Find line boundaries more efficiently using memchr
-        let line_start = if match_pos > 0 {
-            // Use memrchr to find the previous newline more efficiently
-            memchr::memrchr(b'\n', &chunk[..match_pos])
-                .map(|p| p + 1)
-                .unwrap_or(0)
+    let file_path = if let Some(rest) = line.strip_prefix(b"  <file>") {
+        if let Some(rest) = rest.strip_suffix(b"</file>") {
+            rest
         } else {
-            0
-        };
-
-        let line_end = memchr::memchr(b'\n', &chunk[match_pos..])
-            .map(|p| p + match_pos)
-            .unwrap_or(chunk.len());
-
-        // Extract the line slice once
-        let line_slice = &chunk[line_start..line_end];
-
-        // If we have a regex pattern, check if it matches the line
-        let should_process = if let Some(regex) = &options.regex_pattern {
-            regex.is_match(line_slice)
-        } else {
-            true // No regex pattern, process all lines with the literal pattern
-        };
-
-        // Extract the file path from the line if regex matched or no regex is set
-        if should_process {
-            if let Some(file_path) = extract_file_path(line_slice) {
-                // Check if we should print this file
-                if should_print_file(&file_path, pattern, options) {
-                    if options.show_package {
-                        // Only extract package name when needed, and search backwards for <package> tag
-                        if let Some(pkg_name) = find_pkgname_backwards(chunk, prev_chunk) {
-                            println!("{} {}", pkg_name, file_path);
-                        } else {
-                            println!("{}", file_path);
-                        }
-                    } else {
-                        println!("{}", file_path);
-                    }
-                }
-            }
+            line
         }
-    }
+    } else if let Some(rest) = line.strip_prefix(b"  <file type=\"dir\">") {
+        if let Some(rest) = rest.strip_suffix(b"</file>") {
+            rest
+        } else {
+            line
+        }
+    } else {
+        line
+    };
 
+    // For --files option, check if the pattern matches the filename only
+    if options.files {
+        let filename = Path::new(std::str::from_utf8(file_path).unwrap_or("")).file_name().unwrap_or_default().to_str().unwrap_or("");
+        if match_pattern(filename.as_bytes(), pattern, options) {
+            println!("{} {}", std::str::from_utf8(current_pkgname).unwrap_or(""), std::str::from_utf8(file_path).unwrap_or(""));
+        }
+    } else if match_pattern(file_path, pattern, options) {
+        println!("{} {}", std::str::from_utf8(current_pkgname).unwrap_or(""), std::str::from_utf8(file_path).unwrap_or(""));
+    }
     Ok(())
 }
 

@@ -962,7 +962,6 @@ impl PackageManager {
             paths: sub_matches.get_flag("paths"),
             regexp: sub_matches.get_flag("regexp"),
             pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
-            show_package: true, // Default to showing package names
             case_sensitive: false, // Default to case insensitive
             exact_match: false, // Default to non-exact matching
             show_version: false, // Default to not showing versions
