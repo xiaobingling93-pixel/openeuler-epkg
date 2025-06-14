@@ -704,6 +704,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
         repodata_name: repo.repodata_name.clone(),
         package_baseurl: String::new(),
         repo_dir_path: String::new(),
+        format: repo.format, // Use the format from the repo configuration
         repo_shards
     };
     let index_path = repo_dir.join("RepoIndex.json");

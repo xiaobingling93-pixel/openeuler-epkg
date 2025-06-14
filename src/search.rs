@@ -17,6 +17,8 @@ use log::warn;
 
 use crate::models::repodata_indice;
 
+use crate::models::PackageFormat;
+
 // Search options for RPM filelists
 #[derive(Clone)]
 pub struct SearchOptions {
@@ -33,6 +35,7 @@ pub struct SearchOptions {
     pub regexp: bool,
     pub pattern: String,
     pub regex_pattern: Option<Arc<BytesRegex>>,
+    pub format: PackageFormat,
 }
 
 // Constants for package metadata patterns
@@ -47,6 +50,9 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
 
     for repo_index in repodata_indice.values() {
         let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
+
+        // Pass the package format from the repository to the search options
+        options.format = repo_index.format;
 
         for shard in repo_index.repo_shards.values() {
             if options.files || options.paths {
@@ -520,7 +526,7 @@ fn process_simple_filelists(
     Ok(())
 }
 
-// Process a single line from a simple filelist format ("pkgname path")
+// Process a single line from a simple filelist format ("pkgname path" or "path pkgname/section" on Deb)
 fn process_simple_line(
     line: &[u8],
     pattern: &[u8],
@@ -528,8 +534,26 @@ fn process_simple_line(
 ) -> Result<()> {
     // Split the line into pkgname and path
     if let Some(space_pos) = memchr::memchr(b' ', line) {
-        let pkgname = &line[..space_pos];
-        let path = &line[space_pos + 1..];
+        // Handle different package formats
+        let (pkgname, path) = match options.format {
+            // For Deb format, the order is "path pkgname/section"
+            PackageFormat::Deb => {
+                let path = &line[..space_pos];
+                // Strip leading spaces from pkgname
+                let mut pkgname_start = space_pos + 1;
+                while pkgname_start < line.len() && line[pkgname_start] == b' ' {
+                    pkgname_start += 1;
+                }
+                let pkgname = &line[pkgname_start..];
+                (pkgname, path)
+            },
+            // For all other formats, the order is "pkgname path"
+            _ => {
+                let pkgname = &line[..space_pos];
+                let path = &line[space_pos + 1..];
+                (pkgname, path)
+            }
+        };
 
         // Check if we should match this line
         let should_match = check_match(path, pattern, options);

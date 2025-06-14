@@ -377,6 +377,8 @@ pub struct RepoIndex {
     pub package_baseurl: String,
     #[serde(skip)]
     pub repo_dir_path: String,
+    #[serde(default)]
+    pub format: PackageFormat,
     pub repo_shards: HashMap<String, RepoShard>, // key: shard name or id
 }
 

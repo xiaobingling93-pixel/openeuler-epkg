@@ -955,6 +955,8 @@ impl PackageManager {
     }
 
     fn command_search(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        self.sync_channel_metadata()?;
+
         let mut options = search::SearchOptions {
             files: sub_matches.get_flag("files"),
             paths: sub_matches.get_flag("paths"),
@@ -966,9 +968,9 @@ impl PackageManager {
             show_version: false, // Default to not showing versions
             show_path: true, // Default to showing paths
             regex_pattern: None, // Will be set if regexp is true
+            format: self.get_channel_config(config().common.env.clone())?.format.clone(),
         };
 
-        self.sync_channel_metadata()?;
         search::search_repo_cache(&mut options)?;
         Ok(())
     }
