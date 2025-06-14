@@ -3,7 +3,6 @@ use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use memchr::memchr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -12,9 +11,7 @@ use flate2::read::GzDecoder;
 use liblzma::read::XzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use memmap2::Mmap;
-use aho_corasick::AhoCorasick;
 use color_eyre::eyre::{Result, Context};
-use color_eyre::eyre::eyre;
 use log::warn;
 
 use crate::models::repodata_indice;
@@ -195,8 +192,8 @@ impl FixedBuffer {
 }
 
 // Constants for buffer management
-const BUFFER_SIZE: usize = 32 * 1024; // 32KB buffers
-const BUFFER_COUNT: usize = 5;        // Total number of buffers in the pool (shared between producer and consumer)
+const BUFFER_SIZE: usize = 128 * 1024; // 128KB buffers
+const BUFFER_COUNT: usize = 4;         // Total number of buffers in the pool (shared between producer and consumer)
 
 // Shared buffer pool for zero-copy processing
 struct SharedBufferPool {
@@ -256,8 +253,8 @@ impl SharedBufferPool {
  * ┌─────────┬─────────┬─────────┬─────────┐
  * │ Buffer0 │ Buffer1 │ Buffer2 │ Buffer3 │
  * └─────────┴─────────┴─────────┴─────────┘
- *              ^         ^
- *        consumer_idx  producer_idx
+ *         ^                   ^
+ *   consumer_idx            producer_idx
  *
  * Key features:
  *
@@ -270,8 +267,8 @@ impl SharedBufferPool {
  * 2. BUFFER ROLES BASED ON RELATIVE POSITION:
  *    - producer_idx: Current buffer being filled by producer
  *    - producer_idx+1: Next buffer for producer (for partial lines)
+ *    - producer_idx-1: Pending in channel
  *    - consumer_idx: Current buffer being processed by consumer
- *    - consumer_idx-1: Previous buffer (for package name lookups)
  *
  * 3. ZERO-COPY DATA FLOW:
  *    - Producer fills a buffer and advances its index
@@ -484,7 +481,7 @@ fn process_simple_filelists(
     // Process chunks as they arrive
     while let Ok(arc_chunk) = rx.recv() {
         // Lock the buffer to access its contents
-        let chunk_guard = arc_chunk.lock().unwrap();
+        let mut chunk_guard = arc_chunk.lock().unwrap();
         let chunk_data = chunk_guard.as_slice();
 
         // Find all matches in the chunk
@@ -499,6 +496,7 @@ fn process_simple_filelists(
             process_simple_line(line, options)?;
         }
 
+        chunk_guard.clear();
         // Release the lock
         drop(chunk_guard);
     }
@@ -534,19 +532,19 @@ fn process_simple_line(
             }
         };
 
-        check_print_path(pkgname, path, options);
+        // If we have a match, print the result
+        let indeed_match = check_match_path(path, options);
+        if indeed_match {
+            print_path(pkgname, path, options);
+        }
     }
 
     Ok(())
 }
 
-fn check_print_path(pkgname: &[u8], path: &[u8], options: &SearchOptions) {
-    // If we have a match, print the result
-    let should_match = check_match_path(path, options);
-    if should_match {
-        if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
-            println!("{} {}", pkg_str, path_str);
-        }
+fn print_path(pkgname: &[u8], path: &[u8], _options: &SearchOptions) {
+    if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
+        println!("{} {}", pkg_str, path_str);
     }
 }
 
@@ -601,17 +599,7 @@ fn process_rpm_filelists(
 ) -> Result<()> {
     let mut current_pkgname = Vec::<u8>::new();
 
-    // Create patterns for Aho-Corasick
-    let patterns = vec![
-        b" name=\"".to_vec(),
-        options.u8_pattern.clone()
-    ];
-
-    // Create the Aho-Corasick automaton
-    let ac = match AhoCorasick::new(&patterns) {
-        Ok(ac) => ac,
-        Err(e) => return Err(eyre!("Failed to create Aho-Corasick automaton: {}", e)),
-    };
+    let finder = memchr::memmem::Finder::new(&options.u8_pattern);
 
     // Use the buffer pool's consumer buffer instead of directly receiving from channel
     while let Ok(arc_chunk) = rx.recv() {
@@ -621,7 +609,7 @@ fn process_rpm_filelists(
         // Process the chunk directly - we use a scoped block to ensure the lock is released quickly
         {
             let chunk_data = chunk_guard.as_slice();
-            process_rpm_filelists_with_aho_corasick(&mut current_pkgname, chunk_data, &ac, options)?;
+            process_rpm_filelists_with_memmem(&mut current_pkgname, chunk_data, &finder, options)?;
         }
 
         chunk_guard.clear();
@@ -643,50 +631,93 @@ fn process_rpm_filelists(
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-fn process_rpm_filelists_with_aho_corasick(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], ac: &AhoCorasick, options: &SearchOptions) -> Result<()> {
-    for mat in ac.find_iter(chunk_data) {
-        match mat.pattern().as_usize() {
-            0 => { // package name=" pattern
-                   // Extract package name from the XML data
-                   if let Some(quote_pos) = memchr(b'"', &chunk_data[mat.end()+1..]) {
-                       current_pkgname.clear();
-                       current_pkgname.extend_from_slice(&chunk_data[mat.end()+1..mat.end()+1+quote_pos]);
-                   }
-                },
-            1 => { // User pattern
-                let (line_start, line_end) = find_line_boundaries(chunk_data, mat.start(), mat.end());
-                let line = &chunk_data[line_start..line_end];
-                process_rpm_file_line(line, options, &current_pkgname)?;
-            },
-            _ => unreachable!()
+fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], finder: &memchr::memmem::Finder, options: &SearchOptions) -> Result<()> {
+    for match_pos in finder.find_iter(chunk_data) {
+        // For each match, find the line boundaries using find_line_boundaries
+        let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
+
+        // Extract the full line containing the match
+        let line = &chunk_data[line_start..line_end];
+
+        // Process the file line directly here instead of calling process_rpm_file_line
+        let file_path = if let Some(rest) = line.strip_prefix(b"  <file>") {
+                            if let Some(rest) = rest.strip_suffix(b"</file>") {
+                                rest
+                            } else {
+                                line
+                            }
+                        } else if let Some(rest) = line.strip_prefix(b"  <file type=\"dir\">") {
+                            if let Some(rest) = rest.strip_suffix(b"</file>") {
+                                rest
+                            } else {
+                                line
+                            }
+                        } else {
+                            line
+                        };
+
+        // If we have a match, print the result
+        let indeed_match = check_match_path(file_path, options);
+        if indeed_match {
+            // Update the package name if we can find it in the chunk
+            if let Some(pkg_name) = rfind_pkgname_in_xml(&chunk_data[0..line_start]) {
+                *current_pkgname = pkg_name.into();
+            }
+            // Use the current package name for output
+            print_path(current_pkgname, file_path, options);
         }
     }
+
+    // Record last pkgname before leaving this chunk
+    // This adds ~10KB/128KB=8% backscan cost, however can handle package with huge filelist.
+    if let Some(pkg_name) = rfind_pkgname_in_xml(chunk_data) {
+        *current_pkgname = pkg_name.into();
+    }
+
     Ok(())
 }
 
-fn process_rpm_file_line(
-    line: &[u8],
-    options: &SearchOptions,
-    current_pkgname: &[u8]
-) -> Result<()> {
-    let file_path = if let Some(rest) = line.strip_prefix(b"  <file>") {
-        if let Some(rest) = rest.strip_suffix(b"</file>") {
-            rest
-        } else {
-            line
-        }
-    } else if let Some(rest) = line.strip_prefix(b"  <file type=\"dir\">") {
-        if let Some(rest) = rest.strip_suffix(b"</file>") {
-            rest
-        } else {
-            line
-        }
-    } else {
-        line
-    };
+fn rfind_pkgname_in_xml(data: &[u8]) -> Option<String> {
+    // Constants for XML tags and attributes
+    static NAME_STR: &[u8] = b"name";
+    static QUOTE: u8 = b'\"';
+    static EQUAL_SIGN: u8 = b'=';
 
-    check_print_path(current_pkgname, file_path, options);
-    Ok(())
+    // Start from the end of the data and search backwards
+    // We're looking for the last occurrence of name="..."
+    let mut pos = data.len();
+
+    // Keep searching backwards for equals signs until we find one that's part of name="
+    while pos > 0 {
+        // Find the last equals sign before the current position
+        if let Some(eq_pos) = memchr::memrchr(EQUAL_SIGN, &data[..pos]) {
+            // Check if this equals sign is part of name="
+            if eq_pos >= NAME_STR.len() &&
+               &data[eq_pos - NAME_STR.len()..eq_pos] == NAME_STR &&
+               eq_pos + 1 < data.len() &&
+               data[eq_pos + 1] == QUOTE {
+
+                // We found name=", now extract the value
+                let name_start = eq_pos + 2; // Skip the = and "
+
+                // Find the closing quote
+                if let Some(quote_pos) = memchr::memchr(QUOTE, &data[name_start..]) {
+                    // Extract the name between quotes
+                    if let Ok(name) = std::str::from_utf8(&data[name_start..(name_start + quote_pos)]) {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+
+            // Move position back to continue searching
+            pos = eq_pos;
+        } else {
+            // No more equals signs found
+            break;
+        }
+    }
+
+    None
 }
 
 // Common structure to hold the state during search operations
