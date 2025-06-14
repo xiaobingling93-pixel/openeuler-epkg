@@ -555,10 +555,8 @@ fn process_simple_line(
             }
         };
 
-        // Check if we should match this line
-        let should_match = check_match(path, options);
-
         // If we have a match, print the result
+        let should_match = check_match_path(path, options);
         if should_match {
             if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
                 println!("{} {}", pkg_str, path_str);
@@ -570,11 +568,16 @@ fn process_simple_line(
 }
 
 // Helper function to check if a path matches the pattern according to options
-fn check_match(path: &[u8], options: &SearchOptions) -> bool {
+fn check_match_path(path: &[u8], options: &SearchOptions) -> bool {
     if options.files {
         // For --files, check if the filename matches
-        if let Some(fname_pos) = memchr::memrchr(b'/', path) {
-            let filename = &path[fname_pos + 1..];
+        if let Some(mut fname_pos) = memchr::memrchr(b'/', path) {
+            if !options.u8_pattern.is_empty() && options.u8_pattern[0] != b'/' {
+                fname_pos += 1;
+            } else {
+                // pattern="/bash" => filename starts with "bash"
+            }
+            let filename = &path[fname_pos..];
             match_pattern(filename, options)
         } else {
             match_pattern(path, options)
@@ -950,16 +953,7 @@ fn search_packages_with_memmem(
             let (line_start, line_end) = find_line_boundaries(mmap, pattern_pos, pattern_pos + 1);
             let line = &mmap[line_start..line_end];
 
-            // If we have a regex pattern, verify the match with it
-            let regex_matches = if let Some(regex) = &options.regex_pattern {
-                // Use the regex for more precise matching
-                regex.is_match(line)
-            } else {
-                // No regex, so the basic pattern match is sufficient
-                true
-            };
-
-            // Only proceed if the regex matched or there's no regex to check
+            let regex_matches = match_pattern(line, options);
             if regex_matches {
                 // We found a match, now search backward for the most recent pkgname and summary
                 let (found_pkgname, found_summary) = search_package_metadata(
