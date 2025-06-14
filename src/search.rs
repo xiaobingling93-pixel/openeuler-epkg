@@ -534,16 +534,20 @@ fn process_simple_line(
             }
         };
 
-        // If we have a match, print the result
-        let should_match = check_match_path(path, options);
-        if should_match {
-            if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
-                println!("{} {}", pkg_str, path_str);
-            }
-        }
+        check_print_path(pkgname, path, options);
     }
 
     Ok(())
+}
+
+fn check_print_path(pkgname: &[u8], path: &[u8], options: &SearchOptions) {
+    // If we have a match, print the result
+    let should_match = check_match_path(path, options);
+    if should_match {
+        if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
+            println!("{} {}", pkg_str, path_str);
+        }
+    }
 }
 
 // Helper function to check if a path matches the pattern according to options
@@ -681,21 +685,7 @@ fn process_rpm_file_line(
         line
     };
 
-    let should_match = if options.files {
-        let path_str = std::str::from_utf8(file_path).unwrap_or("");
-        let filename = Path::new(path_str).file_name()
-            .map(|f| f.to_str().unwrap_or(""))
-            .unwrap_or("");
-        match_pattern(filename.as_bytes(), options)
-    } else {
-        match_pattern(file_path, options)
-    };
-
-    if should_match {
-        println!("{} {}",
-            std::str::from_utf8(current_pkgname).unwrap_or(""),
-            std::str::from_utf8(file_path).unwrap_or(""));
-    }
+    check_print_path(current_pkgname, file_path, options);
     Ok(())
 }
 
