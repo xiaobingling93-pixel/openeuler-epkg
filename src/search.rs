@@ -342,7 +342,7 @@ fn start_filelists_producer(
         let mut reader: Box<dyn std::io::Read> = if filelists_path.to_string_lossy().ends_with(".gz") {
             Box::new(GzDecoder::new(file))
         } else if filelists_path.to_string_lossy().ends_with(".xz") {
-            Box::new(XzDecoder::new(file))
+            Box::new(XzDecoder::new_parallel(file))
         } else if filelists_path.to_string_lossy().ends_with(".zst") {
             Box::new(ZstdDecoder::new(file)?)
         } else {
