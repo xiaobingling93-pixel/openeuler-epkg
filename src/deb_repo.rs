@@ -139,13 +139,17 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
 
                 // Check if this is a file we're interested in
                 let is_packages = location.contains("/binary-") && location.ends_with("/Packages.xz");
-                let is_contents = location.contains("/Contents-") && location.ends_with(".gz");
+                let is_contents = location.contains("Contents-") && location.ends_with(".gz");
 
                 // Only process entries that match the Debian repo metadata files of interest
                 if is_packages || is_contents {
                     // repo_name: e.g. "main" from "main/binary-amd64/Packages.xz"
-                    let repo_name = location.split('/').next().unwrap_or("").to_string();
-                    if repo_name != repo.repo_name {
+                    let mut repo_name = location.split('/').next().unwrap_or("").to_string();
+                    if repo_name == location && repo.repo_name == "main" {
+                        repo_name = repo.repo_name.clone();
+                        // Ubuntu has a single Contents file outside of a specific repo
+                        // As a workaround, attribute it to the "main" repo
+                    } else if repo_name != repo.repo_name {
                         continue;
                     }
 
@@ -197,12 +201,13 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     //   e.g. main/binary-amd64/Packages.xz
                     //   or   main/Contents-amd64.gz
                     let download_location = if acquire_by_hash {
-                        format!(
-                            "{}/by-hash/{}/{}",
-                            location.rsplitn(2, '/').nth(1).unwrap(), // = location.parent()
-                            current_hash_type, // e.g. "SHA256"
-                            hash // e.g. "aaa"
-                        )
+                        std::path::Path::new(&location).parent().unwrap().join(
+                            format!(
+                                "by-hash/{}/{}",
+                                current_hash_type, // e.g. "SHA256"
+                                hash // e.g. "aaa"
+                            )
+                        ).display().to_string()
                     } else {
                         location.clone() // Use original location
                     };
