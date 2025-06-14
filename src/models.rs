@@ -227,10 +227,18 @@ pub struct InstalledPackageInfo {
     pub depend_depth: u16,
     #[serde(default)]
     pub install_time: u64,
+
+    // appbin_flag=true if:
+    // (1) package is user-requested (depend_depth == 0), OR
+    // (2) package is a dependency whose 'source' package matches the 'source' of any user-requested package.
+    // Otherwise, false. Set by `record_appbin_source`.
     #[serde(default)]
     pub appbin_flag: bool,
+
     #[serde(default)] // Default to empty Vec if missing during deserialization
     pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
+    #[serde(default)] // Default to empty Vec if missing during deserialization
+    pub depends: Vec<String>, // Stores pkgkeys of packages this package depends on
 }
 
 impl InstalledPackageInfo {
@@ -242,6 +250,7 @@ impl InstalledPackageInfo {
             install_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
             appbin_flag,
             rdepends: Vec::new(), // Initialize rdepends as empty
+            depends: Vec::new(), // Initialize depends as empty
         }
     }
 }
@@ -600,7 +609,6 @@ pub struct PackageManager {
     // cache need to installing packages info
     pub pkgkey2package: HashMap<String, Arc<Package>>,
     pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages
-    pub appbin_source: HashSet<String>,
 
     // loaded from env installed-packages.json
     pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey

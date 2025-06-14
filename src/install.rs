@@ -30,35 +30,6 @@ fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInf
     }
 }
 
-/// Finds duplicates between `a` and `b`,
-/// shows a warning about the duplicates, and removes them from `b`.
-fn remove_duplicates(
-    a: &HashMap<String, InstalledPackageInfo>,
-    b: &mut HashMap<String, InstalledPackageInfo>,
-    warn: &str) {
-
-    let duplicates: Vec<_> = b
-        .keys()
-        .filter(|&package_name| a.contains_key(package_name))
-        .cloned()
-        .collect();
-
-    if !duplicates.is_empty() {
-        if !warn.is_empty() {
-            log::info!("{} {:?}", warn, duplicates);
-        }
-
-        // Remove duplicates from `b`
-        for package_name in duplicates {
-            // appbin_flag 变更需要处理
-            if a.get(&package_name).unwrap().appbin_flag ==
-               b.get(&package_name).unwrap().appbin_flag {
-                b.remove(&package_name);
-            }
-        }
-    }
-}
-
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     // Get common environment root path
     let common_env_root = find_env_root("common")
@@ -733,59 +704,86 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Installs specified packages and their dependencies.
+    ///
+    /// This function orchestrates the package installation process as follows:
+    /// 1.  Loads existing installed package metadata (`installed-packages.json`) into
+    ///     `self.installed_packages` and creates a copy (`original_installed_packages`)
+    ///     to represent the state at the start of the operation.
+    /// 2.  Resolves the initial `package_specs` (user-provided package names) against
+    ///     repository metadata to get basic package information.
+    /// 3.  Recursively collects all dependencies for these initial packages, resulting
+    ///     in `all_packages_for_session`. This map contains `InstalledPackageInfo`
+    ///     for all packages involved in the current session, with `pkgline` fields
+    ///     correctly initialized as empty strings (`String::new()`).
+    /// 4.  Further processes this set collect essential packages (`collect_essential_packages`),
+    ///     resulting in `processed_session_packages`.
+    /// 5.  Determines `packages_needing_file_ops`:
+    ///     Iterates through `processed_session_packages`. A package is added to
+    ///     `packages_needing_file_ops` if:
+    ///     a. It was not present in `original_installed_packages` (i.e., it's a new package).
+    ///     b. Or, if its `appbin_flag` has changed compared to `original_installed_packages`.
+    ///        (This implies a change in how it should be exposed, requiring file operations).
+    /// 6.  Updates `self.installed_packages` (the in-memory representation that will be saved):
+    ///     It's cleared and then fully repopulated from `processed_session_packages`.
+    ///     This ensures that all metadata (depend_depth, rdepends, depends, appbin_flag,
+    ///     and initially empty pkglines) is current for ALL packages involved in this session.
+    /// 7.  If `packages_needing_file_ops` is empty:
+    ///     Prints a message indicating no new files need to be installed/linked.
+    ///     Saves the (potentially updated metadata in) `self.installed_packages` to a new
+    ///     generation, as metadata like dependency relationships might have changed even
+    ///     if no files were physically altered.
+    ///     Then, exits.
+    /// 8.  If `packages_needing_file_ops` is NOT empty:
+    ///     Calls `self.install_pkgkeys()` with `packages_needing_file_ops`.
+    ///     `install_pkgkeys` handles the actual downloading, unpacking, linking, and
+    ///     exposure of package files. Critically, during this process (specifically in
+    ///     `process_downloaded_package`), the `pkgline` in `InstalledPackageInfo`
+    ///     is populated with its final value. The pkgline format is `{ca_hash}__{pkgkey}`,
+    ///     where `ca_hash` is computed from the content of the unpacked package.
+    ///     `install_pkgkeys` is responsible for ensuring these `InstalledPackageInfo`
+    ///     objects (with corrected `pkglines`) are used to update `self.installed_packages`
+    ///     before it finally saves `installed-packages.json` for the new generation.
     pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_installed_packages()?;
+        let original_installed_packages = self.installed_packages.clone();
 
         let channel_config = self.get_channel_config(config().common.env.clone())?;
         let package_format = channel_config.format;
-        let mut packages_to_install = self.resolve_package_info(package_specs.clone(), package_format);
-        let mut packages_to_install_clone = packages_to_install.clone();
-        let mut depends_pkg : HashMap<String, InstalledPackageInfo> = HashMap::new();
-        for (pkgline, pkginfo) in packages_to_install_clone.drain() {
-            let mut tmp_pkg = HashMap::new();
-            tmp_pkg.insert(pkgline, pkginfo);
-            let mut tmp_depends : HashMap<String, InstalledPackageInfo> = HashMap::new();
-            self.collect_depends(&mut tmp_pkg, &mut tmp_depends, 1,  package_format)?;
-            depends_pkg.extend(tmp_depends);
-        }
 
-        for pkg in depends_pkg.keys() {
-            if let Some(info) = packages_to_install.get_mut(pkg) {
-                info.depend_depth = 1;
-            }
-        }
+        let mut initial_packages_info = self.resolve_package_info(package_specs.clone(), package_format);
 
-        let current_installed: Vec<String> = packages_to_install
+        let current_installed_from_request: Vec<String> = initial_packages_info
             .keys()
-            .filter(|name| self.installed_packages.contains_key(*name))
+            .filter(|name| original_installed_packages.contains_key(*name))
             .cloned()
             .collect();
-        if packages_to_install.len() == current_installed.len() &&
-           packages_to_install.keys().all(|k| current_installed.contains(k)) {
-           println!("All packages input have already installed");
-           return Ok(());
-        }
-        if current_installed.len() > 0 {
-            println!("These packages have already been installed: {}", current_installed.join(","));
+        if !current_installed_from_request.is_empty() {
+            println!("Note: Some of the directly requested packages were already recorded as installed: {}. All dependencies will be re-evaluated and metadata updated.", current_installed_from_request.join(", "));
         }
 
-        self.record_appbin_source(&mut packages_to_install)?;
-        self.collect_essential_packages(&mut packages_to_install)?;
-        // First collect all dependencies
-        let dependencies = self.collect_recursive_depends(&packages_to_install, package_format)?;
+        self.collect_essential_packages(&mut initial_packages_info)?;
+        let mut all_packages_for_session = self.collect_recursive_depends(&initial_packages_info, package_format)?;
 
-        // Download all packages including dependencies
-        let mut all_packages = packages_to_install.clone();
-        all_packages.extend(dependencies);
-        remove_duplicates(&self.installed_packages, &mut all_packages, "Warning: Some packages are already installed and will be skipped:");
-        if all_packages.is_empty() {
-            println!("No packages to install");
+        let packages_to_expose = self.extend_appbin_by_source(&mut all_packages_for_session)?;
+
+        if packages_to_expose.is_empty() && all_packages_for_session.is_empty() {
+            println!("No packages to install or upgrade.");
             return Ok(());
         }
-        self.install_pkgkeys(all_packages)
+
+        self.installed_packages.clear();
+        for (pkgkey, info) in &all_packages_for_session {
+            self.installed_packages.insert(pkgkey.clone(), info.clone());
+        }
+
+        self.install_pkgkeys(all_packages_for_session, packages_to_expose, &original_installed_packages)
     }
 
-    pub fn install_pkgkeys(&mut self, mut packages_to_install: HashMap<String, InstalledPackageInfo>) -> Result<()> {
+    pub fn install_pkgkeys(&mut self,
+            mut packages_to_install: HashMap<String, InstalledPackageInfo>,
+            packages_to_expose: HashMap<String, InstalledPackageInfo>,
+            original_installed_packages: &HashMap<String, InstalledPackageInfo>) -> Result<()> {
         println!("Packages to install:");
         print_packages_by_depend_depth(&packages_to_install);
         if config().common.dry_run {
@@ -796,7 +794,6 @@ impl PackageManager {
         let url_to_pkgkey = self.submit_download_tasks(&packages_to_install)?;
         let pending_urls: Vec<String> = url_to_pkgkey.keys().cloned().collect();
 
-        self.change_appbin_flag_same_source(&mut packages_to_install)?;
         let new_generation = self.create_new_generation()?;
 
         let env_root = self.get_default_env_root()?.clone();
@@ -823,7 +820,7 @@ impl PackageManager {
         for (pkgkey, package_info) in &completed_packages {
             // todo: pkgkey here is the new package's so you'll always get None for below
             // old_package_info. Instead should search self.installed_packages() for pkgname
-            if let Some(old_package_info) = self.installed_packages.get(pkgkey) {
+            if let Some(old_package_info) = original_installed_packages.get(pkgkey) {
                 // This is an upgrade
                 upgrades_new.insert(pkgkey.clone(), package_info.clone());
                 upgrades_old.insert(pkgkey.clone(), old_package_info.clone());
@@ -865,6 +862,13 @@ impl PackageManager {
                 self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
             }
+        }
+        for (pkgkey, package_info) in &packages_to_expose {
+            appbin_count += 1;
+            appbin_packages.push(pkgkey.clone());
+            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
+            self.expose_package(&store_fs_dir, &env_root.to_path_buf())
+                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
         }
 
         // Save installed packages

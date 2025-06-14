@@ -1,7 +1,9 @@
 use std::process::exit;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use color_eyre::Result;
 use color_eyre::eyre;
 use log;
@@ -66,29 +68,57 @@ use crate::version;
  */
 
 impl PackageManager {
-    pub fn record_appbin_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        log::debug!("Recording appbin source for {} packages", packages.len());
-        for pkgkey in packages.keys() {
-            let pkg_json = self.load_package_info(pkgkey)?;
-            if pkg_json.source.is_some() {
-                self.appbin_source.insert(pkg_json.source.as_ref().unwrap().clone());
-            }
-        }
-        Ok(())
-    }
+    pub fn extend_appbin_by_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<HashMap<String, InstalledPackageInfo>> {
+        log::debug!("Setting appbin_flag for {} packages based on source matching.", packages.len());
 
-    pub fn change_appbin_flag_same_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        log::debug!("Checking appbin flag for {} packages with same source", packages.len());
-        for (pkgkey, package_info) in packages.iter_mut() {
-            let pkg_json = self.load_package_info(pkgkey.as_str())?;
-            if package_info.appbin_flag == false && pkg_json.source.is_some() {
-                let Some(source) = &pkg_json.source else { continue };
-                if self.appbin_source.contains(source) {
-                    package_info.appbin_flag = true;
+        let mut user_requested_sources = std::collections::HashSet::new();
+        let mut packages_to_expose = HashMap::new();
+
+        // First, collect all source package names from user-requested packages (depth 0)
+        for (pkgkey, info) in packages.iter() {
+            if info.appbin_flag == true {
+                // Ensure appbin_flag is true for explicitly requested packages
+                // This will be done in the next loop, but good to note.
+                match self.load_package_info(pkgkey) {
+                    Ok(pkg_details) => {
+                        if let Some(source_name) = &pkg_details.source {
+                            if !source_name.is_empty() {
+                                user_requested_sources.insert(source_name.clone());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load package info for {}: {} during appbin source collection. Skipping.", pkgkey, e);
+                        // Decide if this should be a hard error or just a warning.
+                        // For now, it skips, potentially leading to incorrect appbin_flags for related packages.
+                    }
                 }
             }
         }
-        Ok(())
+        log::debug!("User-requested sources for appbin_flag logic: {:?}", user_requested_sources);
+
+        // Now, iterate again to set the appbin_flag for all packages
+        for (pkgkey, info) in packages.iter_mut() {
+            if info.appbin_flag == false {
+                // For dependencies, check if their source matches any user-requested source
+                match self.load_package_info(pkgkey) {
+                    Ok(pkg_details) => {
+                        if let Some(source_name) = &pkg_details.source {
+                            if !source_name.is_empty() && user_requested_sources.contains(source_name) {
+                                info.appbin_flag = true;
+                                packages_to_expose.insert(pkgkey.clone(), info.clone());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load package info for {}: {} during appbin_flag setting. Defaulting appbin_flag to false.", pkgkey, e);
+                        info.appbin_flag = false; // Default to false if info can't be loaded
+                    }
+                }
+            }
+        }
+
+        Ok(packages_to_expose)
     }
 
     fn add_one_package_installing(&mut self, pkg_name: &str, depth: u16, ebin_flag: bool,
@@ -97,10 +127,11 @@ impl PackageManager {
         return self.add_one_package_installing_with_arch_spec(pkg_name, None, depth, ebin_flag, packages, missing_names);
     }
 
-    fn add_one_package_installing_with_arch_spec(&mut self, pkg_name: &str, arch_spec: Option<&str>, depth: u16, ebin_flag: bool,
+    fn add_one_package_installing_with_arch_spec(&mut self, pkg_name: &str, arch_spec: Option<&str>, candidate_depth: u16, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) -> Option<String> {
-        log::debug!("Attempting to add package '{}' with arch_spec {:?} (depth: {}, ebin_flag: {})", pkg_name, arch_spec, depth, ebin_flag);
+        log::debug!("Attempting to add package '{}' (dependency of a depth {} package) with arch_spec {:?} (ebin_flag: {})", pkg_name, candidate_depth, arch_spec, ebin_flag);
+
         match self.map_pkgname2packages(pkg_name) {
             Ok(unfiltered_packages) => {
                 if unfiltered_packages.is_empty() {
@@ -117,20 +148,32 @@ impl PackageManager {
                 }
 
                 if let Some(package_to_add) = version::select_highest_version(arch_filtered_packages) {
-                    if packages.contains_key(&package_to_add.pkgkey) {
-                        log::debug!("Package {} already in target map, not re-adding.", package_to_add.pkgkey);
-                        return Some(package_to_add.pkgkey.clone()); // Already there, effectively 'added' for satisfaction purposes
+                    if let Some(existing_info) = packages.get_mut(&package_to_add.pkgkey) {
+                        log::debug!(
+                            "Package {} already in target map. Current depth: {}. New path depth: {}. Updating if shorter.",
+                            package_to_add.pkgkey, existing_info.depend_depth, candidate_depth
+                        );
+                        existing_info.depend_depth = std::cmp::min(existing_info.depend_depth, candidate_depth);
+                        // Appbin flag is true if its effective depth is 1, false otherwise.
+                        existing_info.appbin_flag = ebin_flag;
+                        log::trace!("Updated package {} in map. New depth: {}, New appbin_flag: {}", package_to_add.pkgkey, existing_info.depend_depth, existing_info.appbin_flag);
+                        return Some(package_to_add.pkgkey.clone());
                     }
-                    log::info!("Selected package {} version {} for {}", package_to_add.pkgkey, package_to_add.version, pkg_name);
+
+                    log::info!("Selected package {} version {} for {}. Adding with depth {}.", package_to_add.pkgkey, package_to_add.version, pkg_name, candidate_depth);
                     packages.insert(
                         package_to_add.pkgkey.clone(),
-                        crate::models::InstalledPackageInfo::new(
-                            String::new(), // pkgline will be filled later in installation
-                            package_to_add.arch.clone(),   // arch
-                            depth,                         // depend_depth
-                            ebin_flag                      // appbin_flag
-                        ),
+                        InstalledPackageInfo {
+                            pkgline: String::new(),
+                            arch: package_to_add.arch.clone(),
+                            depend_depth: candidate_depth,
+                            install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                            appbin_flag: ebin_flag,
+                            rdepends: Vec::new(),
+                            depends: Vec::new(), // Will be populated by process_requirements
+                        }
                     );
+                    log::trace!("Added package {} to map. Depth: {}, Appbin_flag: {}", package_to_add.pkgkey, candidate_depth, ebin_flag);
                     return Some(package_to_add.pkgkey.clone());
                 } else {
                     log::warn!("No suitable package found for '{}' after arch filtering and version selection.", pkg_name);
@@ -283,7 +326,7 @@ impl PackageManager {
         pkg_name: &str,
         arch_spec: Option<&str>,
         packages_map: &mut HashMap<String, InstalledPackageInfo>,
-        depth: u16,
+        candidate_depth: u16,
         ebin_flag: bool,
         missing_items_log: &mut Vec<String>,
         context: &str, // For logging context ("Direct package lookup", "Provider", etc.)
@@ -293,43 +336,50 @@ impl PackageManager {
                 let arch_filtered = self.filter_packages_by_arch_spec(candidate_packages, arch_spec);
                 if !arch_filtered.is_empty() {
                     if let Some(selected_pkg_candidate) = version::select_highest_version(arch_filtered) {
-                        let pkgkey = &selected_pkg_candidate.pkgkey;
+                        let pkgkey_of_candidate = &selected_pkg_candidate.pkgkey;
 
-                        // First check if already satisfied
-                        if let Some(satisfied_pkgkey) = self.check_package_satisfaction(pkgkey, packages_map) {
+                        // First, check if this specific candidate version is already satisfied (e.g., from self.installed_packages or already processed in this run)
+                        if let Some(satisfied_pkgkey) = self.check_package_satisfaction(pkgkey_of_candidate, packages_map) {
                             log::debug!(
-                                "{}: '{}' already satisfied by existing package '{}'",
-                                context,
-                                pkg_name,
-                                satisfied_pkgkey
+                                "{}: Candidate package {} ({}) already satisfied/selected.",
+                                context, pkg_name, satisfied_pkgkey
                             );
+                            // Ensure its depth and appbin_flag in packages_map are updated for this path
+                            if let Some(info) = packages_map.get_mut(&satisfied_pkgkey) {
+                                info.depend_depth = std::cmp::min(info.depend_depth, candidate_depth);
+                                info.appbin_flag = ebin_flag;
+                                log::trace!("{}: Updated package {} in map. New depth: {}, New appbin_flag: {}. (ebin_flag from requiring context was: {})",
+                                           context, satisfied_pkgkey, info.depend_depth, info.appbin_flag, ebin_flag);
+                            } else {
+                                // This case should ideally not happen if check_package_satisfaction guarantees it's in packages_map
+                                log::warn!("{}: Package {} reported as satisfied by check_package_satisfaction but not found in packages_map for depth update.", context, satisfied_pkgkey);
+                            }
                             return Some(satisfied_pkgkey);
                         }
 
-                        // Try to install if not already satisfied
-                        log::debug!("{}: found '{}', attempting to install", context, pkg_name);
+                        // If not satisfied by check_package_satisfaction (meaning it's not in self.installed_packages or not yet in packages_map with the right state),
+                        // then try to add it to packages_map.
+                        log::debug!("{}: Candidate {} ({}) not satisfied by prior state, attempting to add/select for current resolution.", context, pkg_name, pkgkey_of_candidate);
                         if let Some(added_pkgkey) = self.add_one_package_installing_with_arch_spec(
-                            pkg_name,
-                            arch_spec,
-                            depth.into(),
-                            ebin_flag,
-                            packages_map,
+                            pkg_name, // Use original pkg_name for selection logic within add_one...
+                            arch_spec, // Architecture spec for filtering within add_one...
+                            candidate_depth,  // Depth of the *current* package
+                            ebin_flag, // ebin_flag from the requiring context
+                            packages_map, // The map to update
                             missing_items_log,
                         ) {
                             log::debug!(
-                                "{}: successfully installed '{}' (resolved to pkgkey '{}')",
-                                context,
-                                pkg_name,
-                                added_pkgkey
+                                "{}: Package {} successfully added/selected as {}. add_one_package_installing_with_arch_spec handled depth update.",
+                                context, pkg_name, added_pkgkey
                             );
                             return Some(added_pkgkey);
                         }
-                        log::debug!("{}: failed to install '{}'", context, pkg_name);
+                        log::debug!("{}: Failed to add/select package {} (candidate {}) for current resolution.", context, pkg_name, pkgkey_of_candidate);
                     }
                 }
-            }
-            Ok(_) => {
-                log::debug!("{}: no packages found for '{}'", context, pkg_name);
+            } // This closes 'if !arch_filtered.is_empty()'
+            Ok(_) => { // This means map_pkgname2packages was Ok, but arch_filtered was empty or select_highest_version was None
+                log::debug!("{}: no suitable packages found for '{}' after filtering or version selection", context, pkg_name);
             }
             Err(e) => {
                 log::debug!("{}: error for '{}': {}", context, pkg_name, e);
@@ -384,7 +434,7 @@ impl PackageManager {
 
         let provider_list_to_check: Vec<String> = match provider_pkgnames_result {
             Ok(names) if !names.is_empty() => names,
-            _ => vec![base_capability.clone()], // Treat as direct name if no providers or error
+            _ => vec![base_capability.to_string()], // Treat as direct name if no providers or error
         };
 
         // Policy Step 1: Check if any provider is already satisfied/selected.
@@ -514,6 +564,37 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Collects all recursive dependencies for a given set of initial packages.
+    ///
+    /// This function is central to the dependency resolution process. It starts with an
+    /// `initial_packages` map (typically representing user-requested packages or a set of packages
+    /// to keep during a removal operation) and iteratively discovers all their dependencies.
+    ///
+    /// Key operations and behaviors:
+    /// - It maintains a comprehensive `all_pkgs_info_map` which stores `InstalledPackageInfo`
+    ///   for every package encountered during the resolution (both initial and dependencies).
+    ///   This map is mutated throughout the process to update dependency information.
+    /// - A queue (`processing_queue`) is used to manage packages whose dependencies still need
+    ///   to be processed. Initially, this queue is populated from `initial_packages`.
+    /// - For each package dequeued, its raw requirements (from `Requires` and `Requires(pre)`)
+    ///   are parsed and resolved via `process_requirements`.
+    /// - `process_requirements` attempts to find suitable providers for each requirement. If a
+    ///   provider is found and added to `all_pkgs_info_map` (or an existing entry is updated),
+    ///   it might be added to the `processing_queue` if its own dependencies haven't been
+    ///   processed yet in the current context.
+    /// - Crucially, this function (via `add_one_package_installing_with_arch_spec` and
+    ///   `try_resolve_package_by_name` called by `process_requirements`) ensures that:
+    ///     - `depend_depth` is correctly calculated for each package. For a dependency, this is
+    ///       `depth_of_requiring_package + 1`. If a package is reached via multiple paths,
+    ///       its `depend_depth` is set to the minimum depth found.
+    ///     - `appbin_flag` is set to `true` if and only if the package's final `depend_depth` is 1
+    ///       (i.e., it's a directly requested package or becomes one due to depth updates).
+    ///     - `depends` (list of packages this package directly depends on) and `rdepends`
+    ///       (list of packages that directly depend on this package) are populated within
+    ///       the `InstalledPackageInfo` structs in `all_pkgs_info_map`.
+    ///
+    /// The function returns the `all_pkgs_info_map` containing all initial packages and their
+    /// fully resolved recursive dependencies, with accurate metadata.
     pub fn collect_recursive_depends(
         &mut self,
         initial_packages: &HashMap<String, InstalledPackageInfo>,
@@ -525,127 +606,199 @@ impl PackageManager {
             format
         );
 
-        let mut all_collected_deps: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        let mut current_layer_to_process: HashMap<String, InstalledPackageInfo> = initial_packages.clone();
-        let mut depth: u16 = 1;
+        let mut all_pkgs_info_map: HashMap<String, InstalledPackageInfo> = initial_packages.clone();
+        let mut current_layer_pkg_keys: Vec<String> = initial_packages.keys().cloned().collect();
+        let mut processed_requiring_pkg_keys: HashSet<String> = HashSet::new();
+        let mut missing_deps_log: Vec<String> = Vec::new();
+        let mut iteration_count: u16 = 0; // For safety break and logging
 
-        while !current_layer_to_process.is_empty() {
+        while !current_layer_pkg_keys.is_empty() {
+            iteration_count += 1;
             log::info!(
-                "[Depth {}] Processing {} packages in current_layer. Total collected so far: {}",
-                depth,
-                current_layer_to_process.len(),
-                all_collected_deps.len()
+                "[Iteration {}] Processing {} package(s) in current layer. Total packages in map: {}. Processed requiring keys: {}",
+                iteration_count,
+                current_layer_pkg_keys.len(),
+                all_pkgs_info_map.len(),
+                processed_requiring_pkg_keys.len()
             );
 
-            let mut deps_found_this_layer: HashMap<String, InstalledPackageInfo> = HashMap::new();
-            self.collect_depends(
-                &current_layer_to_process,
-                &mut deps_found_this_layer, // collect_depends populates this with direct deps of current_layer
-                depth,
-                format,
-            )?;
-
-            let mut next_layer_to_process: HashMap<String, InstalledPackageInfo> = HashMap::new();
-            for (pkgkey, pkg_info) in deps_found_this_layer.iter() {
-                let in_all_collected = all_collected_deps.contains_key(pkgkey);
-                let in_initial = initial_packages.contains_key(pkgkey);
-
-                if !in_all_collected && !in_initial {
-                    // Add to next_layer only if it's not something we've already fully processed or was an initial package
-                    log::info!("[Depth {}] Adding NEW dependency to next_layer_to_process: {} ({}). Not in all_collected_deps ({}), Not in initial_packages ({}).",
-                             depth, pkg_info.pkgline, pkgkey, !in_all_collected, !in_initial);
-                    next_layer_to_process.insert(pkgkey.clone(), pkg_info.clone());
-                    all_collected_deps.insert(pkgkey.clone(), pkg_info.clone()); // Also add to our master list
-                } else {
-                    log::debug!("[Depth {}] Dependency {} ({}) already processed or initial. In all_collected_deps: {}, In initial_packages: {}. Not adding to next_layer.",
-                              depth, pkg_info.pkgline, pkgkey, in_all_collected, in_initial);
-                }
-            }
-
-            log::info!(
-                "[Depth {}] Found {} new, unique dependencies for the next layer.",
-                depth,
-                next_layer_to_process.len()
-            );
-
-            current_layer_to_process = next_layer_to_process;
-            depth += 1;
-
-            if depth > 50 { // Safety break
+            if iteration_count > 50 { // Safety break
                 log::error!(
-                    "[Depth {}] Exceeded maximum recursion depth (50). Breaking loop.",
-                    depth
+                    "[Iteration {}] Exceeded maximum recursion depth (50). Breaking loop.",
+                    iteration_count
                 );
-                log::error!("Total collected dependencies so far: {:#?}", all_collected_deps.keys());
-                log::error!("Last 'current_layer_to_process' (would have been next): {:#?}", current_layer_to_process.keys());
-                // Depending on desired behavior, you might return an error or the partial list.
-                // For now, returning the partial list.
+                log::error!("Total packages in map: {:#?}", all_pkgs_info_map.keys());
+                log::error!("Last 'current_layer_pkg_keys' (would have been next): {:#?}", current_layer_pkg_keys);
+                // Consider returning an error or the partial map based on desired strictness
                 break;
             }
-        }
 
-        log::info!("Recursive dependency collection finished. Total {} dependencies collected.", all_collected_deps.len());
-        Ok(all_collected_deps)
-    }
+            let mut next_layer_pkg_keys_candidates: Vec<String> = Vec::new();
 
-    fn process_dependencies(
-        &mut self,
-        dependencies: &Vec<Dependency>,
-        packages: &HashMap<String, InstalledPackageInfo>,
-        depend_packages: &mut HashMap<String, InstalledPackageInfo>,
-        depth: u16,
-        missing_deps: &mut Vec<String>,
-    ) -> Result<()> {
-        log::trace!("Dependencies: {:?}", dependencies);
-        for dep in dependencies {
-            // Try to get version and arch from dependency, fallback to defaults if empty
-            let version = if dep.version.is_empty() { "unknown" } else { &dep.version };
-            let arch = if dep.arch.is_empty() {
-                &crate::models::config().common.arch
-            } else {
-                &dep.arch
-            };
-            let pkgkey = package::format_pkgkey(&dep.pkgname, version, arch);
+            for requiring_pkgkey_str in &current_layer_pkg_keys {
+                let requiring_pkgkey = requiring_pkgkey_str.as_str();
 
-            if !packages.contains_key(&pkgkey) &&
-                !depend_packages.contains_key(&pkgkey) {
-                match self.load_package_info(&pkgkey) {
-                    Ok(package) => {
-                        depend_packages.insert(
-                            pkgkey,
-                            crate::models::InstalledPackageInfo::new(
-                                String::new(), // pkgline will be filled later in installation
-                                package.arch.clone(),
-                                depth,
-                                false),
+                if processed_requiring_pkg_keys.contains(requiring_pkgkey) {
+                    log::trace!("[Iteration {}] Skipping already processed requiring package: {}", iteration_count, requiring_pkgkey);
+                    continue;
+                }
+
+                // Get current package depth from the InstalledPackageInfo in our map
+                let current_pkg_depth = {
+                    let pkg_info_installed = all_pkgs_info_map.get(requiring_pkgkey).expect(&format!(
+                        "BUG: Requiring package {} (InstalledPackageInfo) not found in all_pkgs_info_map during iteration {}",
+                        requiring_pkgkey, iteration_count
+                    ));
+                    pkg_info_installed.depend_depth
+                };
+
+                // Load full package metadata to get raw requirement strings
+                let pkg_full_info = match self.load_package_info(requiring_pkgkey) {
+                    Ok(info) => info,
+                    Err(e) => {
+                        log::error!(
+                            "[Iteration {}] Failed to load full package info for {}: {}. Skipping its requirements processing.",
+                            iteration_count, requiring_pkgkey, e
                         );
+                        missing_deps_log.push(format!("Failed to load full info for {}: {}", requiring_pkgkey, e));
+                        // Mark as processed to avoid retrying, even though its deps weren't processed
+                        processed_requiring_pkg_keys.insert(requiring_pkgkey.to_string());
+                        continue;
                     }
-                    Err(_) => {
-                        missing_deps.push(pkgkey);
+                };
+
+                let mut all_resolved_direct_deps_for_current_pkg: Vec<String> = Vec::new();
+                // Variable to track if a critical error occurred while processing requirements for *this* package.
+                // If so, we might not want to add its (partially) resolved dependencies to the next layer.
+                let mut critical_processing_error_occurred = false;
+
+                // Process Pre-Depends (requires_pre)
+                if !pkg_full_info.requires_pre.is_empty() {
+                    log::debug!(
+                        "[Iteration {}] Processing pre-requirements for package {} (Depth: {})
+                         Requirements: {:?}",
+                        iteration_count, requiring_pkgkey, current_pkg_depth, pkg_full_info.requires_pre
+                    );
+                    match self.process_requirements(
+                        requiring_pkgkey,
+                        &pkg_full_info.requires_pre,
+                        &mut all_pkgs_info_map,
+                        current_pkg_depth,
+                        format,
+                        &mut missing_deps_log,
+                    ) {
+                        Ok(resolved_keys) => {
+                            log::trace!("[Iteration {}] Package {} resolved pre-dependencies: {:?}", iteration_count, requiring_pkgkey, resolved_keys);
+                            all_resolved_direct_deps_for_current_pkg.extend(resolved_keys);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "Error processing pre-requirements for package {}: {}. Dependencies from this step might be incomplete.",
+                                requiring_pkgkey, e
+                            );
+                            missing_deps_log.push(format!("Error processing pre-requirements for {}: {}", requiring_pkgkey, e));
+                            critical_processing_error_occurred = true;
+                        }
                     }
                 }
+
+                // Process Depends (requires) only if no critical error occurred during pre-depends
+                if !critical_processing_error_occurred && !pkg_full_info.requires.is_empty() {
+                     log::debug!(
+                        "[Iteration {}] Processing requirements for package {} (Depth: {})
+                         Requirements: {:?}",
+                        iteration_count, requiring_pkgkey, current_pkg_depth, pkg_full_info.requires
+                    );
+                    match self.process_requirements(
+                        requiring_pkgkey,
+                        &pkg_full_info.requires,
+                        &mut all_pkgs_info_map,
+                        current_pkg_depth,
+                        format,
+                        &mut missing_deps_log,
+                    ) {
+                        Ok(resolved_keys) => {
+                            log::trace!("[Iteration {}] Package {} resolved dependencies: {:?}", iteration_count, requiring_pkgkey, resolved_keys);
+                            all_resolved_direct_deps_for_current_pkg.extend(resolved_keys);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "Error processing requirements for package {}: {}. Dependencies from this step might be incomplete.",
+                                requiring_pkgkey, e
+                            );
+                            missing_deps_log.push(format!("Error processing requirements for {}: {}", requiring_pkgkey, e));
+                            critical_processing_error_occurred = true;
+                        }
+                    }
+                }
+
+                if pkg_full_info.requires_pre.is_empty() && pkg_full_info.requires.is_empty() {
+                    log::trace!("[Iteration {}] Package {} has no 'requires_pre' or 'requires' fields to process.", iteration_count, requiring_pkgkey);
+                }
+
+                // Only add resolved dependencies to the next layer if no critical error occurred during *this* package's requirement processing.
+                if !critical_processing_error_occurred {
+                    for dep_key in all_resolved_direct_deps_for_current_pkg {
+                        if !processed_requiring_pkg_keys.contains(&dep_key) {
+                            if !all_pkgs_info_map.contains_key(&dep_key) {
+                                log::warn!(
+                                    "[Iteration {}] Dependency key '{}' (from '{}') resolved by process_requirements was not found in all_pkgs_info_map.
+                                     This might indicate an issue where resolve_single_capability_item did not add it, or it was unexpectedly removed.
+                                     It will still be added to the next layer for processing.",
+                                    iteration_count, dep_key, requiring_pkgkey
+                                );
+                                // Potentially, we might need to ensure it's added to all_pkgs_info_map here if that's a strict invariant,
+                                // but process_requirements is expected to add new packages to the map.
+                            }
+                            next_layer_pkg_keys_candidates.push(dep_key);
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "[Iteration {}] Due to critical errors processing requirements for {}, its resolved dependencies (if any) will not be added to the next processing layer to prevent cascading issues.",
+                        iteration_count, requiring_pkgkey
+                    );
+                }
+                processed_requiring_pkg_keys.insert(requiring_pkgkey.to_string());
+            }
+
+            // Deduplicate keys for the next layer
+            current_layer_pkg_keys = next_layer_pkg_keys_candidates.into_iter().collect::<HashSet<_>>().into_iter().collect();
+
+            if current_layer_pkg_keys.is_empty() {
+                log::info!("[Iteration {}] No new packages for the next layer. Dependency resolution complete for this branch.", iteration_count);
             }
         }
 
-        Ok(())
+        if !missing_deps_log.is_empty() {
+            log::warn!("Recursive dependency collection encountered unresolved dependencies or errors for some packages. See log above. Missing/Error count: {}", missing_deps_log.len());
+            self.handle_missing_dependencies(missing_deps_log)?; // Decide if this should be an error or just a warning state
+        }
+
+        log::info!(
+            "Recursive dependency collection finished. Total {} packages in the final map (initial + dependencies).",
+            all_pkgs_info_map.len()
+        );
+        Ok(all_pkgs_info_map)
     }
 
     fn process_requirements(
         &mut self,
         requiring_pkgkey: &str, // The package that has these requirements
         requirements_strings: &Vec<String>,
-        _current_iteration_packages: &HashMap<String, InstalledPackageInfo>,
-        depend_packages: &mut HashMap<String, InstalledPackageInfo>, // This is the main map to check and add to.
-        depth: u16,
+        all_pkgs_info_map: &mut HashMap<String, InstalledPackageInfo>, // This is the main map to check and add to.
+        current_pkg_depth: u16,
         format: PackageFormat,
         missing_deps_log: &mut Vec<String>,
-    ) -> Result<()> {
-        log::trace!("Processing requirements at depth {}: {:?}", depth, requirements_strings);
+    ) -> Result<Vec<String>> { // Changed return type
+        log::trace!("Processing requirements for {} at depth {}: {:?}", requiring_pkgkey, current_pkg_depth, requirements_strings);
+        let mut resolved_direct_dependencies: Vec<String> = Vec::new(); // To store keys of resolved direct dependencies
+
         for req_string in requirements_strings {
             let and_groups = match parse_requires(format, req_string) {
                 Ok(groups) => groups,
                 Err(e) => {
-                    missing_deps_log.push(format!("Failed to parse requirement string '{}': {}", req_string, e));
+                    missing_deps_log.push(format!("Failed to parse requirement string \"{}\" for {}: {}", req_string, requiring_pkgkey, e));
                     continue; // Move to the next requirement string
                 }
             };
@@ -657,27 +810,37 @@ impl PackageManager {
                 for dep_capability_info in &or_group { // dep_capability_info.capability is the string
                     match self.resolve_single_capability_item(
                         &dep_capability_info.capability,
-                        depend_packages, // Pass the main accumulating map
-                        depth,
+                        all_pkgs_info_map, // Pass the main accumulating map
+                        current_pkg_depth + 1,
                         false,           // ebin_flag is false for dependencies
                         missing_deps_log,
                         format,          // Pass the format
                     )? {
                         Some(satisfied_by_pkgkey_b) => {
-                            // Capability satisfied by pkgkey_b. Update its rdepends.
-                            if let Some(info_b) = depend_packages.get_mut(&satisfied_by_pkgkey_b) {
-                                if !info_b.rdepends.contains(&requiring_pkgkey.to_string()) {
-                                    info_b.rdepends.push(requiring_pkgkey.to_string());
-                                }
-                            } else {
-                                // This case should ideally not happen if resolve_single_capability_item guarantees the key is in depend_packages upon Some return.
-                                // Or, if satisfied_by_pkgkey_b was from self.installed_packages, we'd need to update it there (more complex).
-                                // For now, assume depend_packages is the primary target for new/selected dependencies.
-                                log::warn!("Could not find {} in depend_packages to update rdepends for {}", satisfied_by_pkgkey_b, requiring_pkgkey);
+                            // Capability satisfied by pkgkey_b.
+
+                            // Add to the 'depends' list of the requiring package
+                            let requiring_pkg_info = all_pkgs_info_map.get_mut(requiring_pkgkey)
+                                .expect(&format!("BUG: Requiring package {} not found in all_pkgs_info_map", requiring_pkgkey));
+                            if !requiring_pkg_info.depends.contains(&satisfied_by_pkgkey_b) {
+                                requiring_pkg_info.depends.push(satisfied_by_pkgkey_b.clone());
                             }
+
+                            // Update rdepends of the satisfied package
+                            let satisfied_pkg_info = all_pkgs_info_map.get_mut(&satisfied_by_pkgkey_b)
+                                .expect(&format!("BUG: Satisfied package {} not found in all_pkgs_info_map", satisfied_by_pkgkey_b));
+                            if !satisfied_pkg_info.rdepends.contains(&requiring_pkgkey.to_string()) {
+                                satisfied_pkg_info.rdepends.push(requiring_pkgkey.to_string());
+                            }
+
+                            // Record this as a direct dependency for the current requiring_pkgkey
+                            if !resolved_direct_dependencies.contains(&satisfied_by_pkgkey_b) {
+                                resolved_direct_dependencies.push(satisfied_by_pkgkey_b.clone());
+                            }
+
                             or_group_satisfied = true;
                             log::debug!(
-                                "OR group for '{}' satisfied by capability '{}' (via pkgkey '{}')",
+                                "OR group for {} satisfied by capability \"{}\" (via pkgkey \"{}\")",
                                 requiring_pkgkey, dep_capability_info.capability, satisfied_by_pkgkey_b
                             );
                             break; // This OR group is satisfied, move to the next AND group
@@ -688,15 +851,16 @@ impl PackageManager {
 
                 if !or_group_satisfied {
                     let group_caps: Vec<&str> = or_group.iter().map(|d| d.capability.as_str()).collect();
-                    log::warn!("Failed to satisfy OR dependency group: {:?}", group_caps);
-                    missing_deps_log.push(format!("Dependency group not satisfied: {:?}", group_caps));
+                    // Removed single quotes from the format string here
+                    let error_msg = format!("For package {}, dependency group not satisfied: {:?}", requiring_pkgkey, group_caps);
+                    log::warn!("{}", error_msg);
+                    missing_deps_log.push(error_msg);
                     // If one AND group (which is a collection of OR choices) fails, the whole requirement might be considered failed.
-                    // Depending on strictness, we could 'return Ok(())' or 'return Err(...)' or just continue to collect all failures.
                     // Current logic: collect all failures and let handle_missing_dependencies deal with it.
                 }
             }
         }
-        Ok(())
+        Ok(resolved_direct_dependencies) // Return the list of direct dependencies found
     }
 
     // Filter packages based on architecture that matches config().common.arch
@@ -724,55 +888,6 @@ impl PackageManager {
             packages
         }
 
-    }
-
-    pub fn collect_depends(
-        &mut self,
-        current_layer_packages: &HashMap<String, InstalledPackageInfo>,
-        depend_packages: &mut HashMap<String, InstalledPackageInfo>,
-        depth: u16,
-        format: PackageFormat,
-    ) -> Result<()> {
-        log::info!("[Depth {}] Enter collect_depends for {} packages. Repo format: {:?}", depth, current_layer_packages.len(), format);
-        let mut missing_deps = Vec::new();
-        for (requiring_pkgkey, _package_info) in current_layer_packages.iter() {
-            log::info!("[Depth {}] Analyzing dependencies for package: {}", depth, requiring_pkgkey);
-            let pkg_info = self.load_package_info(requiring_pkgkey)?;
-
-            if !pkg_info.requires_pre.is_empty() {
-                self.process_requirements(
-                    requiring_pkgkey, // Pass the key of the package whose dependencies are being processed
-                    &pkg_info.requires_pre,
-                    current_layer_packages,
-                    depend_packages,
-                    depth,
-                    format,
-                    &mut missing_deps,
-                )?;
-            }
-            if !pkg_info.depends.is_empty() {
-                self.process_dependencies(
-                    &pkg_info.depends,
-                    current_layer_packages,
-                    depend_packages,
-                    depth,
-                    &mut missing_deps,
-                )?;
-            } else if !pkg_info.requires.is_empty() { // This 'else if' is important
-                self.process_requirements(
-                    requiring_pkgkey, // Pass the key of the package whose dependencies are being processed
-                    &pkg_info.requires,
-                    current_layer_packages,
-                    depend_packages,
-                    depth,
-                    format,
-                    &mut missing_deps,
-                )?;
-            }
-        }
-
-        self.handle_missing_dependencies(missing_deps)?;
-        Ok(())
     }
 
     fn handle_missing_dependencies(&self, missing_deps: Vec<String>) -> Result<()> {
@@ -858,7 +973,6 @@ mod tests {
             repos_data: Vec::new(),
             pkgkey2package: HashMap::new(),
             pkgline2package: HashMap::new(),
-            appbin_source: HashSet::new(),
             installed_packages: HashMap::new(),
             mirrors: HashMap::new(),
             has_worker_process: false,
@@ -934,7 +1048,6 @@ mod tests {
             repos_data: Vec::new(),
             pkgkey2package: HashMap::new(),
             pkgline2package: HashMap::new(),
-            appbin_source: HashSet::new(),
             installed_packages: HashMap::new(),
             mirrors: HashMap::new(),
             has_worker_process: false,

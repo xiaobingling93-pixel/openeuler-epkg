@@ -333,7 +333,7 @@ impl PackageManager {
 
         // Install packages if any
         if !env_config.packages.is_empty() {
-            self.install_pkgkeys(env_config.packages)?;
+            self.install_pkgkeys(env_config.packages, std::collections::HashMap::new(), &std::collections::HashMap::new())?;
         } else {
             // Create metadata files
             let generations_root = env_root.join("generations");
