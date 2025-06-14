@@ -35,6 +35,7 @@ pub struct SearchOptions {
     pub paths: bool,
     pub regexp: bool,
     pub pattern: String,
+    pub u8_pattern: Vec<u8>,
     pub regex_pattern: Option<Arc<BytesRegex>>,
     pub format: PackageFormat,
 }
@@ -121,8 +122,8 @@ pub fn search_filelists(filelists_path: PathBuf, options: &mut SearchOptions) ->
         options.regex_pattern = Some(Arc::clone(&regex));
     }
 
-    // Create the pattern for searching
-    let pattern = options.pattern.as_bytes().to_vec();
+    // Create the pattern for searching and store it in options
+    options.u8_pattern = options.pattern.as_bytes().to_vec();
 
     // Clone options and buffer pool for the threads
     let options_arc = Arc::new(options.clone());
@@ -143,10 +144,10 @@ pub fn search_filelists(filelists_path: PathBuf, options: &mut SearchOptions) ->
 
         if is_rpm_xml {
             // Process RPM XML format
-            process_rpm_filelists(rx, pattern, options, consumer_buffer_pool)
+            process_rpm_filelists(rx, options, consumer_buffer_pool)
         } else {
             // Process simple format (pkgname path)
-            process_simple_filelists(rx, pattern, options, consumer_buffer_pool)
+            process_simple_filelists(rx, options, consumer_buffer_pool)
         }
     });
 
@@ -495,12 +496,11 @@ fn find_line_boundaries(data: &[u8], start_pos: usize, end_pos: usize) -> (usize
 // Uses fast memmem search first, then more refined matching if needed
 fn process_simple_filelists(
     rx: Receiver<Arc<Mutex<FixedBuffer>>>,
-    pattern: Vec<u8>,
     options: &SearchOptions,
     _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
 ) -> Result<()> {
     // Create a memmem finder for fast substring searching
-    let finder = memchr::memmem::Finder::new(&pattern);
+    let finder = memchr::memmem::Finder::new(&options.u8_pattern);
 
     // Process chunks as they arrive
     while let Ok(arc_chunk) = rx.recv() {
@@ -517,7 +517,7 @@ fn process_simple_filelists(
             let line = &chunk_data[line_start..line_end];
 
             // Process just this line
-            process_simple_line(line, &pattern, options)?;
+            process_simple_line(line, options)?;
         }
 
         // Release the lock
@@ -530,7 +530,6 @@ fn process_simple_filelists(
 // Process a single line from a simple filelist format ("pkgname path" or "path pkgname/section" on Deb)
 fn process_simple_line(
     line: &[u8],
-    pattern: &[u8],
     options: &SearchOptions
 ) -> Result<()> {
     // Split the line into pkgname and path
@@ -557,7 +556,7 @@ fn process_simple_line(
         };
 
         // Check if we should match this line
-        let should_match = check_match(path, pattern, options);
+        let should_match = check_match(path, options);
 
         // If we have a match, print the result
         if should_match {
@@ -571,26 +570,26 @@ fn process_simple_line(
 }
 
 // Helper function to check if a path matches the pattern according to options
-fn check_match(path: &[u8], pattern: &[u8], options: &SearchOptions) -> bool {
+fn check_match(path: &[u8], options: &SearchOptions) -> bool {
     if options.files {
         // For --files, check if the filename matches
         if let Some(fname_pos) = memchr::memrchr(b'/', path) {
             let filename = &path[fname_pos + 1..];
-            match_pattern(filename, pattern, options)
+            match_pattern(filename, options)
         } else {
-            match_pattern(path, pattern, options)
+            match_pattern(path, options)
         }
     } else if options.paths {
         // For --paths, check if the path matches
-        match_pattern(path, pattern, options)
+        match_pattern(path, options)
     } else {
         // Default case, check if the path contains the pattern
-        memchr::memmem::Finder::new(pattern).find(path).is_some()
+        memchr::memmem::Finder::new(&options.u8_pattern).find(path).is_some()
     }
 }
 
 // Helper function to match pattern against content based on options
-fn match_pattern(content: &[u8], pattern: &[u8], options: &SearchOptions) -> bool {
+fn match_pattern(content: &[u8], options: &SearchOptions) -> bool {
     if options.regexp {
         // Use regex for matching if available
         if let Some(regex) = &options.regex_pattern {
@@ -600,11 +599,11 @@ fn match_pattern(content: &[u8], pattern: &[u8], options: &SearchOptions) -> boo
 
     // Fall back to simple substring search
     if options.case_sensitive {
-        memchr::memmem::Finder::new(pattern).find(content).is_some()
+        memchr::memmem::Finder::new(&options.u8_pattern).find(content).is_some()
     } else {
         // Case-insensitive search
         let content_lower = content.to_ascii_lowercase();
-        let pattern_lower = pattern.to_ascii_lowercase();
+        let pattern_lower = options.u8_pattern.to_ascii_lowercase();
         memchr::memmem::Finder::new(&pattern_lower).find(&content_lower).is_some()
     }
 }
@@ -612,7 +611,6 @@ fn match_pattern(content: &[u8], pattern: &[u8], options: &SearchOptions) -> boo
 // Process RPM filelists using memmem pattern matching with chunked data
 fn process_rpm_filelists(
     rx: Receiver<Arc<Mutex<FixedBuffer>>>,
-    pattern: Vec<u8>,
     options: &SearchOptions,
     _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
 ) -> Result<()> {
@@ -621,7 +619,7 @@ fn process_rpm_filelists(
     // Create patterns for Aho-Corasick
     let patterns = vec![
         b" name=\"".to_vec(),
-        pattern.clone()
+        options.u8_pattern.clone()
     ];
 
     // Create the Aho-Corasick automaton
@@ -638,7 +636,7 @@ fn process_rpm_filelists(
         // Process the chunk directly - we use a scoped block to ensure the lock is released quickly
         {
             let chunk_data = chunk_guard.as_slice();
-            process_rpm_filelists_with_aho_corasick(&mut current_pkgname, chunk_data, &ac, &pattern, options)?;
+            process_rpm_filelists_with_aho_corasick(&mut current_pkgname, chunk_data, &ac, options)?;
         }
 
         chunk_guard.clear();
@@ -660,7 +658,7 @@ fn process_rpm_filelists(
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-fn process_rpm_filelists_with_aho_corasick(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], ac: &AhoCorasick, pattern: &Vec<u8>, options: &SearchOptions) -> Result<()> {
+fn process_rpm_filelists_with_aho_corasick(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], ac: &AhoCorasick, options: &SearchOptions) -> Result<()> {
     for mat in ac.find_iter(chunk_data) {
         match mat.pattern().as_usize() {
             0 => { // package name=" pattern
@@ -673,7 +671,7 @@ fn process_rpm_filelists_with_aho_corasick(current_pkgname: &mut Vec<u8>, chunk_
             1 => { // User pattern
                 let (line_start, line_end) = find_line_boundaries(chunk_data, mat.start(), mat.end());
                 let line = &chunk_data[line_start..line_end];
-                process_rpm_file_line(line, pattern, options, &current_pkgname)?;
+                process_rpm_file_line(line, options, &current_pkgname)?;
             },
             _ => unreachable!()
         }
@@ -683,7 +681,6 @@ fn process_rpm_filelists_with_aho_corasick(current_pkgname: &mut Vec<u8>, chunk_
 
 fn process_rpm_file_line(
     line: &[u8],
-    pattern: &[u8],
     options: &SearchOptions,
     current_pkgname: &[u8]
 ) -> Result<()> {
@@ -706,10 +703,10 @@ fn process_rpm_file_line(
     // For --files option, check if the pattern matches the filename only
     if options.files {
         let filename = Path::new(std::str::from_utf8(file_path).unwrap_or("")).file_name().unwrap_or_default().to_str().unwrap_or("");
-        if match_pattern(filename.as_bytes(), pattern, options) {
+        if match_pattern(filename.as_bytes(), options) {
             println!("{} {}", std::str::from_utf8(current_pkgname).unwrap_or(""), std::str::from_utf8(file_path).unwrap_or(""));
         }
-    } else if match_pattern(file_path, pattern, options) {
+    } else if match_pattern(file_path, options) {
         println!("{} {}", std::str::from_utf8(current_pkgname).unwrap_or(""), std::str::from_utf8(file_path).unwrap_or(""));
     }
     Ok(())
