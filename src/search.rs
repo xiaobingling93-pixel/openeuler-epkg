@@ -12,11 +12,10 @@ use flate2::read::GzDecoder;
 use liblzma::read::XzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use memmap2::Mmap;
-use regex::bytes::{Regex as BytesRegex, RegexBuilder};
+use aho_corasick::AhoCorasick;
 use color_eyre::eyre::{Result, Context};
 use color_eyre::eyre::eyre;
 use log::warn;
-use aho_corasick::AhoCorasick;
 
 use crate::models::repodata_indice;
 use crate::models::PackageFormat;
@@ -24,7 +23,7 @@ use crate::models::PackageFormat;
 // Search options for RPM filelists
 #[derive(Clone)]
 pub struct SearchOptions {
-    pub case_sensitive: bool,
+    pub ignore_case: bool,
     #[allow(dead_code)]
     pub exact_match: bool,
     #[allow(dead_code)]
@@ -36,7 +35,7 @@ pub struct SearchOptions {
     pub regexp: bool,
     pub pattern: String,
     pub u8_pattern: Vec<u8>,
-    pub regex_pattern: Option<Arc<BytesRegex>>,
+    pub regex_pattern: Option<Arc<regex::bytes::Regex>>,
     pub format: PackageFormat,
 }
 
@@ -73,7 +72,7 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
                 }
             } else {
                 let filename = shard.packages.filename.clone();
-                search_packages_fast(&repo_dir.join(&filename), options)
+                search_packages(&repo_dir.join(&filename), options)
                     .with_context(|| format!("Failed to search package info in {}", repo_index.repodata_name))?;
             }
         }
@@ -104,26 +103,6 @@ pub fn search_filelists(filelists_path: PathBuf, options: &mut SearchOptions) ->
 
     // Create a buffer pool for this producer-consumer pair
     let buffer_pool = Arc::new(SharedBufferPool::new(BUFFER_COUNT, BUFFER_SIZE));
-
-    // Process the filelists based on the options
-    if options.regexp {
-        // Create a regex from the pattern
-        let mut regex_builder = RegexBuilder::new(&options.pattern);
-        let regex = Arc::new(regex_builder.case_insensitive(!options.case_sensitive).build()?);
-
-        // Try to extract a literal prefix for optimization
-        // If we can't extract a prefix, we'll just use the original pattern
-        // This is less efficient but will still work correctly
-        if let Some(literal) = extract_literal_string(&options.pattern) {
-            options.pattern = literal;
-        } else { warn!("Failed to extract literal, cannot handle complex regexp now"); }
-
-        // Set the regex pattern in options
-        options.regex_pattern = Some(Arc::clone(&regex));
-    }
-
-    // Create the pattern for searching and store it in options
-    options.u8_pattern = options.pattern.as_bytes().to_vec();
 
     // Clone options and buffer pool for the threads
     let options_arc = Arc::new(options.clone());
@@ -601,13 +580,12 @@ fn match_pattern(content: &[u8], options: &SearchOptions) -> bool {
     }
 
     // Fall back to simple substring search
-    if options.case_sensitive {
+    if !options.ignore_case {
         memchr::memmem::Finder::new(&options.u8_pattern).find(content).is_some()
     } else {
         // Case-insensitive search
         let content_lower = content.to_ascii_lowercase();
-        let pattern_lower = options.u8_pattern.to_ascii_lowercase();
-        memchr::memmem::Finder::new(&pattern_lower).find(&content_lower).is_some()
+        memchr::memmem::Finder::new(&options.u8_pattern).find(&content_lower).is_some()
     }
 }
 
@@ -703,14 +681,20 @@ fn process_rpm_file_line(
         line
     };
 
-    // For --files option, check if the pattern matches the filename only
-    if options.files {
-        let filename = Path::new(std::str::from_utf8(file_path).unwrap_or("")).file_name().unwrap_or_default().to_str().unwrap_or("");
-        if match_pattern(filename.as_bytes(), options) {
-            println!("{} {}", std::str::from_utf8(current_pkgname).unwrap_or(""), std::str::from_utf8(file_path).unwrap_or(""));
-        }
-    } else if match_pattern(file_path, options) {
-        println!("{} {}", std::str::from_utf8(current_pkgname).unwrap_or(""), std::str::from_utf8(file_path).unwrap_or(""));
+    let should_match = if options.files {
+        let path_str = std::str::from_utf8(file_path).unwrap_or("");
+        let filename = Path::new(path_str).file_name()
+            .map(|f| f.to_str().unwrap_or(""))
+            .unwrap_or("");
+        match_pattern(filename.as_bytes(), options)
+    } else {
+        match_pattern(file_path, options)
+    };
+
+    if should_match {
+        println!("{} {}",
+            std::str::from_utf8(current_pkgname).unwrap_or(""),
+            std::str::from_utf8(file_path).unwrap_or(""));
     }
     Ok(())
 }
@@ -744,40 +728,8 @@ impl<'a> PackagesSearchState<'a> {
     }
 }
 
-pub fn search_packages_fast(packages_path: &Path, options: &mut SearchOptions) -> Result<()> {
-    // Memory map the file
-    let file = File::open(packages_path)?;
-    let mmap = unsafe { Mmap::map(&file)? };
-
-    // Choose the fastest matcher based on options
-    if options.regexp {
-        search_packages_with_regex(&mmap, options)?
-    } else {
-        search_packages_with_memmem(&mmap, options)?
-    }
-
-    Ok(())
-}
-
-// Search using regex with potential literal prefix optimization
-fn search_packages_with_regex(mmap: &Mmap, options: &mut SearchOptions) -> Result<()> {
-    // Create regex for pattern matching
-    let mut regex_builder = RegexBuilder::new(&options.pattern);
-    let regex = Arc::new(regex_builder.unicode(false).build()?);
-
-    // Set the regex pattern in options so it can be used in the slow path of search_packages_with_memmem
-    options.regex_pattern = Some(Arc::clone(&regex));
-
-    if let Some(literal) = extract_literal_string(&options.pattern) {
-        options.pattern = literal;
-    } else { warn!("Failed to extract literal, cannot handle complex regexp now"); }
-
-    // Use memmem for efficient pattern matching, it will check regex in its slow path
-    search_packages_with_memmem(mmap, options)
-}
-
 // Helper function to extract the longest literal string from a regex pattern if possible
-fn extract_literal_string(pattern: &str) -> Option<String> {
+pub fn extract_literal_string(pattern: &str) -> Option<String> {
     // Special regex characters that break literal sequences
     let special_chars = ['.', '*', '+', '?', '|', '^', '$', '\\'];
 
@@ -928,11 +880,11 @@ fn search_package_metadata(
     (found_pkgname, found_summary)
 }
 
-// Search using memchr for non-regex patterns (optimized version of memmem approach)
-fn search_packages_with_memmem(
-    mmap: &Mmap,
-    options: &SearchOptions,
-) -> Result<()> {
+pub fn search_packages(packages_path: &Path, options: &mut SearchOptions) -> Result<()> {
+    // Memory map the file
+    let file = File::open(packages_path)?;
+    let mmap = unsafe { Mmap::map(&file)? };
+
     let user_pattern = options.pattern.as_bytes();
     let mut stdout = BufWriter::new(std::io::stdout());
 
@@ -950,14 +902,14 @@ fn search_packages_with_memmem(
             let pattern_pos = pos + pattern_pos;
 
             // Find the line containing this pattern
-            let (line_start, line_end) = find_line_boundaries(mmap, pattern_pos, pattern_pos + 1);
+            let (line_start, line_end) = find_line_boundaries(&mmap, pattern_pos, pattern_pos + 1);
             let line = &mmap[line_start..line_end];
 
             let regex_matches = match_pattern(line, options);
             if regex_matches {
                 // We found a match, now search backward for the most recent pkgname and summary
                 let (found_pkgname, found_summary) = search_package_metadata(
-                    mmap,
+                    &mmap,
                     line_start,
                     &mut current_pkgname,
                     &mut current_summary

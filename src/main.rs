@@ -45,6 +45,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
 use std::backtrace::Backtrace;
+use std::sync::Arc;
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
@@ -56,6 +57,7 @@ use ctrlc;
 use clap::{arg, Command};
 use env_logger;
 use log;
+use regex::bytes::RegexBuilder;
 use list::ListScope;
 
 fn main() -> Result<()> {
@@ -353,6 +355,7 @@ OPTIONS:
                 .arg(arg!(--files "Search in file lists"))
                 .arg(arg!(--paths "Search in file paths"))
                 .arg(arg!(-x --regexp "Treat pattern as regular expression"))
+                .arg(arg!(-i --"ignore-case" "Perform case-insensitive matching"))
                 .arg(arg!(<PATTERN> "Pattern to search for"))
         )
         .get_matches()
@@ -963,13 +966,39 @@ impl PackageManager {
             regexp: sub_matches.get_flag("regexp"),
             pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
             u8_pattern: Vec::new(), // Will be populated in search_filelists
-            case_sensitive: false, // Default to case insensitive
+            ignore_case: sub_matches.get_flag("ignore-case"), // Use the new ignore-case flag
             exact_match: false, // Default to non-exact matching
             show_version: false, // Default to not showing versions
             show_path: true, // Default to showing paths
             regex_pattern: None, // Will be set if regexp is true
             format: self.get_channel_config(config().common.env.clone())?.format.clone(),
         };
+
+        // Process the filelists based on the options
+        if options.regexp {
+            // Create a regex from the pattern
+            let mut regex_builder = RegexBuilder::new(&options.pattern);
+            let regex = Arc::new(regex_builder.case_insensitive(options.ignore_case).build()?);
+
+            // Try to extract a literal prefix for optimization
+            // If we can't extract a prefix, we'll just use the original pattern
+            // This is less efficient but will still work correctly
+            if let Some(literal) = crate::search::extract_literal_string(&options.pattern) {
+                options.pattern = literal;
+            } else {
+                log::warn!("Failed to extract literal, cannot handle complex regexp now");
+            }
+
+            // Set the regex pattern in options
+            options.regex_pattern = Some(Arc::clone(&regex));
+        }
+
+        if options.ignore_case {
+            options.pattern = options.pattern.to_lowercase();
+        }
+
+        // Create the pattern for searching and store it in options
+        options.u8_pattern = options.pattern.as_bytes().to_vec();
 
         search::search_repo_cache(&mut options)?;
         Ok(())
