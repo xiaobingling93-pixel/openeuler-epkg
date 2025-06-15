@@ -776,15 +776,6 @@ impl PackageManager {
             return Ok(());
         }
 
-        // Iterate over all packages determined for this session (new installs and their dependencies).
-        // For each package, if it's already in self.installed_packages (loaded at the start of this function),
-        // its info (depend_depth, rdepends, depends, ebin_exposure, etc.) will be updated with the version
-        // from 'all_packages_for_session'. If it's not present, it will be added.
-        // This preserves any existing packages in self.installed_packages that are not part of the current session.
-        // The pkglines are initially empty here and will be populated later during install_pkgkeys.
-        for (pkgkey, info) in &all_packages_for_session {
-            self.installed_packages.insert(pkgkey.clone(), info.clone());
-        }
 
         self.install_pkgkeys(all_packages_for_session, packages_to_expose, &original_installed_packages)
     }
@@ -826,16 +817,46 @@ impl PackageManager {
         let mut upgrades_new: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut upgrades_old: HashMap<String, InstalledPackageInfo> = HashMap::new();
 
-        for (pkgkey, package_info) in &completed_packages {
-            // todo: pkgkey here is the new package's so you'll always get None for below
-            // old_package_info. Instead should search self.installed_packages() for pkgname
-            if let Some(old_package_info) = original_installed_packages.get(pkgkey) {
-                // This is an upgrade
-                upgrades_new.insert(pkgkey.clone(), package_info.clone());
-                upgrades_old.insert(pkgkey.clone(), old_package_info.clone());
-            } else {
-                // This is a fresh install
-                fresh_installs.insert(pkgkey.clone(), package_info.clone());
+        for (new_pkgkey, new_package_info) in &completed_packages {
+            let (new_pkgname, _, new_arch) = match package::parse_pkgkey(new_pkgkey) {
+                Ok(parts) => parts,
+                Err(e) => {
+                    log::warn!("Failed to parse new_pkgkey {}: {}. Skipping for upgrade/fresh_install classification.", new_pkgkey, e);
+                    fresh_installs.insert(new_pkgkey.clone(), new_package_info.clone());
+                    continue;
+                }
+            };
+
+            let mut found_upgrade = false;
+            for (original_pkgkey, original_package_info) in original_installed_packages {
+                // If new_pkgkey is identical to original_pkgkey, it means we are considering a reinstall of the exact same version.
+                // We should skip this comparison and look for an *actual* different version to upgrade from.
+                // If no different version is found, it will be treated as a fresh install later.
+                if new_pkgkey == original_pkgkey {
+                    continue;
+                }
+
+                match package::parse_pkgkey(original_pkgkey) {
+                    Ok((original_pkgname, _, original_arch)) => {
+                        if new_pkgname == original_pkgname && new_arch == original_arch {
+                            // Different versions of the same package name and arch: This is an upgrade.
+                            upgrades_new.insert(new_pkgkey.clone(), new_package_info.clone());
+                            upgrades_old.insert(original_pkgkey.clone(), original_package_info.clone());
+                            self.installed_packages.remove(original_pkgkey);
+                            found_upgrade = true;
+                            break; // Found the package it upgrades from
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to parse original_pkgkey {}: {}. Skipping for upgrade comparison.", original_pkgkey, e);
+                        continue;
+                    }
+                }
+            }
+
+            if !found_upgrade {
+                // This is a fresh install (or a reinstall of the exact same version not classified as an upgrade above)
+                fresh_installs.insert(new_pkgkey.clone(), new_package_info.clone());
             }
         }
 
@@ -878,6 +899,7 @@ impl PackageManager {
             let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
             self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                 .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+            self.installed_packages.insert(pkgkey.clone(), package_info.clone()); // to update the ebin_exposure member
         }
 
         // Save installed packages
