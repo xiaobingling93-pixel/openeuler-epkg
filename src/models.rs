@@ -204,7 +204,7 @@ pub struct FileInfo {
 		"arch": "x86_64",
 		"depend_depth": 0,
 		"install_time": 1749433093,
-		"appbin_flag": true,
+		"ebin_exposure": true,
 		"rdepends": []
 	  },
 	  "filesystem__2025.05.03-1__any": {
@@ -212,7 +212,7 @@ pub struct FileInfo {
 		"arch": "any",
 		"depend_depth": 2,
 		"install_time": 1749437271,
-		"appbin_flag": false,
+		"ebin_exposure": false,
 		"rdepends": [
 		  "glibc__2.41+r48+g5cb575ca9a3d-1__x86_64"
 		]
@@ -230,12 +230,12 @@ pub struct InstalledPackageInfo {
     #[serde(default)]
     pub install_time: u64,
 
-    // appbin_flag=true if:
+    // ebin_exposure=true if:
     // (1) package is user-requested (depend_depth == 0), OR
     // (2) package is a dependency whose 'source' package matches the 'source' of any user-requested package.
     // Otherwise, false. Set by `record_appbin_source`.
     #[serde(default)]
-    pub appbin_flag: bool,
+    pub ebin_exposure: bool,
 
     #[serde(default)] // Default to empty Vec if missing during deserialization
     pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
@@ -244,13 +244,13 @@ pub struct InstalledPackageInfo {
 }
 
 impl InstalledPackageInfo {
-    pub fn new(pkgline: String, arch: String, depend_depth: u16, appbin_flag: bool) -> Self {
+    pub fn new(pkgline: String, arch: String, depend_depth: u16, ebin_exposure: bool) -> Self {
         Self {
             pkgline,
             arch,
             depend_depth,
             install_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-            appbin_flag,
+            ebin_exposure,
             rdepends: Vec::new(), // Initialize rdepends as empty
             depends: Vec::new(), // Initialize depends as empty
         }

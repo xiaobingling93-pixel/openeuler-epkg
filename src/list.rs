@@ -264,7 +264,7 @@ impl PackageManager {
     /// Determine the status string for an installed package
     fn determine_status_for_installed(&mut self, pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<String> {
         // Position 1: Installation/Exposure status
-        let pos1 = if installed_info.appbin_flag { 'E' } else { 'I' };
+        let pos1 = if installed_info.ebin_exposure { 'E' } else { 'I' };
 
         // Position 2: Depth/Essential status
         let pos2 = if crate::mmio::is_essential_pkgname(pkgname) {

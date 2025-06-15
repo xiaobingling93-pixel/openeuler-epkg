@@ -182,7 +182,7 @@ A__ python3-dev                     3.11.2-1+b1                   amd64        d
 ### Status Column (3 characters)
 
 #### Position 1 - Installation/Exposure Status
-- **`E`** - Exposed package (appbin_flag == true, in ebin/)
+- **`E`** - Exposed package (ebin_exposure == true, in ebin/)
 - **`I`** - Installed package
 - **`A`** - Available (not installed)
 
@@ -265,7 +265,7 @@ fn is_package_upgradable(&mut self, pkgname: &str, installed_info: &InstalledPac
 ```rust
 fn determine_status_for_installed(&mut self, pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<String>
 ```
-- **Position 1**: Check appbin_flag for exposed status
+- **Position 1**: Check ebin_exposure for exposed status
 - **Position 2**: Essential check via `is_essential_pkgname()`, then depth
 - **Position 3**: Upgrade check via `is_package_upgradable()`
 

@@ -304,7 +304,7 @@ fn add_installation_info(
             // Add specific fields from installed_info
             package_fields.push(("dependDepth".to_string(), installed_info.depend_depth.to_string()));
             package_fields.push(("installTime".to_string(), installed_info.install_time.to_string()));
-            if installed_info.appbin_flag {
+            if installed_info.ebin_exposure {
                 package_fields.push(("ebin".to_string(), "true".to_string()));
             }
 

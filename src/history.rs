@@ -179,7 +179,7 @@ impl PackageManager {
         // Calculate packages to add/remove
         let new_packages: Vec<(String, bool)> = rollback_packages.keys()
             .filter(|name| !current_packages.contains_key(*name))
-            .map(|name| (name.clone(), rollback_packages[name].appbin_flag))
+            .map(|name| (name.clone(), rollback_packages[name].ebin_exposure))
             .collect();
         let del_packages: Vec<String> = current_packages.keys()
             .filter(|name| !rollback_packages.contains_key(*name))
@@ -232,12 +232,12 @@ impl PackageManager {
         }
 
         // Step3: Expose new packages
-        for (pkgkey, appbin_flag) in &new_packages {
+        for (pkgkey, ebin_exposure) in &new_packages {
             let pkgline = rollback_packages.get(pkgkey)
                 .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
                 .pkgline.clone();
             let fs_dir = store_root.join(pkgline).join("fs");
-            if *appbin_flag {
+            if *ebin_exposure {
                 self.expose_package(&fs_dir, &env_root)?;
             }
         }

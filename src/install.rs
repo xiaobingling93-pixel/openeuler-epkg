@@ -722,11 +722,11 @@ impl PackageManager {
     ///     Iterates through `processed_session_packages`. A package is added to
     ///     `packages_needing_file_ops` if:
     ///     a. It was not present in `original_installed_packages` (i.e., it's a new package).
-    ///     b. Or, if its `appbin_flag` has changed compared to `original_installed_packages`.
+    ///     b. Or, if its `ebin_exposure` has changed compared to `original_installed_packages`.
     ///        (This implies a change in how it should be exposed, requiring file operations).
     /// 6.  Updates `self.installed_packages` (the in-memory representation that will be saved):
     ///     It's cleared and then fully repopulated from `processed_session_packages`.
-    ///     This ensures that all metadata (depend_depth, rdepends, depends, appbin_flag,
+    ///     This ensures that all metadata (depend_depth, rdepends, depends, ebin_exposure,
     ///     and initially empty pkglines) is current for ALL packages involved in this session.
     /// 7.  If `packages_needing_file_ops` is empty:
     ///     Prints a message indicating no new files need to be installed/linked.
@@ -855,7 +855,7 @@ impl PackageManager {
         let mut appbin_count = 0;
         let mut appbin_packages = Vec::new();
         for (pkgkey, package_info) in &completed_packages {
-            if package_info.appbin_flag {
+            if package_info.ebin_exposure {
                 appbin_count += 1;
                 appbin_packages.push(pkgkey.clone());
                 let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");

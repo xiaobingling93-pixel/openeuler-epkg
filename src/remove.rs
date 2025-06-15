@@ -69,7 +69,7 @@ impl PackageManager {
     ///    b. For each dependency (`pkg_B`):
     ///       i. If `pkg_B` is already in `final_removal_set`, it's skipped.
     ///       ii. `pkg_B` is NOT automatically removed if it's marked as user-installed
-    ///           (`appbin_flag` is true or `depend_depth == 1`) or if it's an essential package.
+    ///           (`ebin_exposure` is true or `depend_depth == 1`) or if it's an essential package.
     ///       iii. Otherwise, `pkg_B` is considered an orphan (and added to `final_removal_set`
     ///            and the `processing_queue`) if ALL of its recorded reverse dependencies
     ///            (`pkg_B.rdepends`) are already present in the `final_removal_set`.
@@ -162,7 +162,7 @@ impl PackageManager {
                     }
                 };
 
-                if dep_info.appbin_flag || dep_info.depend_depth == 1 {
+                if dep_info.ebin_exposure || dep_info.depend_depth == 1 {
                     log::debug!("Dependency '{}' is explicitly installed or depth 1, not removing automatically.", dep_pkgkey);
                     continue;
                 }

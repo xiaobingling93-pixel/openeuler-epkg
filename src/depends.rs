@@ -69,15 +69,15 @@ use crate::version;
 
 impl PackageManager {
     pub fn extend_appbin_by_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<HashMap<String, InstalledPackageInfo>> {
-        log::debug!("Setting appbin_flag for {} packages based on source matching.", packages.len());
+        log::debug!("Setting ebin_exposure for {} packages based on source matching.", packages.len());
 
         let mut user_requested_sources = std::collections::HashSet::new();
         let mut packages_to_expose = HashMap::new();
 
         // First, collect all source package names from user-requested packages (depth 0)
         for (pkgkey, info) in packages.iter() {
-            if info.appbin_flag == true {
-                // Ensure appbin_flag is true for explicitly requested packages
+            if info.ebin_exposure == true {
+                // Ensure ebin_exposure is true for explicitly requested packages
                 // This will be done in the next loop, but good to note.
                 match self.load_package_info(pkgkey) {
                     Ok(pkg_details) => {
@@ -90,29 +90,29 @@ impl PackageManager {
                     Err(e) => {
                         log::warn!("Failed to load package info for {}: {} during appbin source collection. Skipping.", pkgkey, e);
                         // Decide if this should be a hard error or just a warning.
-                        // For now, it skips, potentially leading to incorrect appbin_flags for related packages.
+                        // For now, it skips, potentially leading to incorrect ebin_exposures for related packages.
                     }
                 }
             }
         }
-        log::debug!("User-requested sources for appbin_flag logic: {:?}", user_requested_sources);
+        log::debug!("User-requested sources for ebin_exposure logic: {:?}", user_requested_sources);
 
-        // Now, iterate again to set the appbin_flag for all packages
+        // Now, iterate again to set the ebin_exposure for all packages
         for (pkgkey, info) in packages.iter_mut() {
-            if info.appbin_flag == false {
+            if info.ebin_exposure == false {
                 // For dependencies, check if their source matches any user-requested source
                 match self.load_package_info(pkgkey) {
                     Ok(pkg_details) => {
                         if let Some(source_name) = &pkg_details.source {
                             if !source_name.is_empty() && user_requested_sources.contains(source_name) {
-                                info.appbin_flag = true;
+                                info.ebin_exposure = true;
                                 packages_to_expose.insert(pkgkey.clone(), info.clone());
                             }
                         }
                     }
                     Err(e) => {
-                        log::warn!("Failed to load package info for {}: {} during appbin_flag setting. Defaulting appbin_flag to false.", pkgkey, e);
-                        info.appbin_flag = false; // Default to false if info can't be loaded
+                        log::warn!("Failed to load package info for {}: {} during ebin_exposure setting. Defaulting ebin_exposure to false.", pkgkey, e);
+                        info.ebin_exposure = false; // Default to false if info can't be loaded
                     }
                 }
             }
@@ -155,8 +155,8 @@ impl PackageManager {
                         );
                         existing_info.depend_depth = std::cmp::min(existing_info.depend_depth, candidate_depth);
                         // Appbin flag is true if its effective depth is 1, false otherwise.
-                        existing_info.appbin_flag = ebin_flag;
-                        log::trace!("Updated package {} in map. New depth: {}, New appbin_flag: {}", package_to_add.pkgkey, existing_info.depend_depth, existing_info.appbin_flag);
+                        existing_info.ebin_exposure = ebin_flag;
+                        log::trace!("Updated package {} in map. New depth: {}, New ebin_exposure: {}", package_to_add.pkgkey, existing_info.depend_depth, existing_info.ebin_exposure);
                         return Some(package_to_add.pkgkey.clone());
                     }
 
@@ -168,7 +168,7 @@ impl PackageManager {
                             arch: package_to_add.arch.clone(),
                             depend_depth: candidate_depth,
                             install_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                            appbin_flag: ebin_flag,
+                            ebin_exposure: ebin_flag,
                             rdepends: Vec::new(),
                             depends: Vec::new(), // Will be populated by process_requirements
                         }
@@ -344,12 +344,12 @@ impl PackageManager {
                                 "{}: Candidate package {} ({}) already satisfied/selected.",
                                 context, pkg_name, satisfied_pkgkey
                             );
-                            // Ensure its depth and appbin_flag in packages_map are updated for this path
+                            // Ensure its depth and ebin_exposure in packages_map are updated for this path
                             if let Some(info) = packages_map.get_mut(&satisfied_pkgkey) {
                                 info.depend_depth = std::cmp::min(info.depend_depth, candidate_depth);
-                                info.appbin_flag = ebin_flag;
-                                log::trace!("{}: Updated package {} in map. New depth: {}, New appbin_flag: {}. (ebin_flag from requiring context was: {})",
-                                           context, satisfied_pkgkey, info.depend_depth, info.appbin_flag, ebin_flag);
+                                info.ebin_exposure = ebin_flag;
+                                log::trace!("{}: Updated package {} in map. New depth: {}, New ebin_exposure: {}. (ebin_flag from requiring context was: {})",
+                                           context, satisfied_pkgkey, info.depend_depth, info.ebin_exposure, ebin_flag);
                             } else {
                                 // This case should ideally not happen if check_package_satisfaction guarantees it's in packages_map
                                 log::warn!("{}: Package {} reported as satisfied by check_package_satisfaction but not found in packages_map for depth update.", context, satisfied_pkgkey);
@@ -587,7 +587,7 @@ impl PackageManager {
     ///     - `depend_depth` is correctly calculated for each package. For a dependency, this is
     ///       `depth_of_requiring_package + 1`. If a package is reached via multiple paths,
     ///       its `depend_depth` is set to the minimum depth found.
-    ///     - `appbin_flag` is set to `true` if and only if the package's final `depend_depth` is 1
+    ///     - `ebin_exposure` is set to `true` if and only if the package's final `depend_depth` is 1
     ///       (i.e., it's a directly requested package or becomes one due to depth updates).
     ///     - `depends` (list of packages this package directly depends on) and `rdepends`
     ///       (list of packages that directly depend on this package) are populated within
