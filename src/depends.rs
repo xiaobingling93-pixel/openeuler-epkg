@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use color_eyre::Result;
 use color_eyre::eyre;
 use log;
-use crate::models::{config, EpkgCommand, *};
+use crate::models::{config, *};
 
 use crate::parse_requires::*;
 use crate::package;
@@ -154,7 +154,7 @@ impl PackageManager {
                             package_to_add.pkgkey, existing_info.depend_depth, candidate_depth
                         );
                         existing_info.depend_depth = std::cmp::min(existing_info.depend_depth, candidate_depth);
-                        // Appbin flag is true if its effective depth is 1, false otherwise.
+                        // Appbin flag is true if its effective depth is 0, false otherwise.
                         existing_info.ebin_exposure = ebin_flag;
                         log::trace!("Updated package {} in map. New depth: {}, New ebin_exposure: {}", package_to_add.pkgkey, existing_info.depend_depth, existing_info.ebin_exposure);
                         return Some(package_to_add.pkgkey.clone());
@@ -602,8 +602,8 @@ impl PackageManager {
     ///     - `depend_depth` is correctly calculated for each package. For a dependency, this is
     ///       `depth_of_requiring_package + 1`. If a package is reached via multiple paths,
     ///       its `depend_depth` is set to the minimum depth found.
-    ///     - `ebin_exposure` is set to `true` if and only if the package's final `depend_depth` is 1
-    ///       (i.e., it's a directly requested package or becomes one due to depth updates).
+    ///     - `ebin_exposure` is set to `true` if and only if the package's directly requested by
+    ///     user or essential_pkgname or has same source with them
     ///     - `depends` (list of packages this package directly depends on) and `rdepends`
     ///       (list of packages that directly depend on this package) are populated within
     ///       the `InstalledPackageInfo` structs in `all_pkgs_info_map`.
