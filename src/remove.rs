@@ -288,8 +288,8 @@ impl PackageManager {
             println!("- {}", pkgkey);
         }
 
-        if config().common.dry_run {
-            log::info!("Dry run: No changes will be made.");
+        // Ask for user confirmation before proceeding (also skips dry run)
+        if !user_prompt_and_confirm()? {
             return Ok(());
         }
 
