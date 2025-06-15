@@ -1,5 +1,6 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, ErrorKind};
+use std::io;
+use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom, ErrorKind};
 use std::path::Path;
 use std::path::PathBuf;
 use color_eyre::Result;
@@ -13,6 +14,7 @@ use liblzma;
 use zstd;
 use std::os::unix::fs::PermissionsExt; // For checking execute permissions
 use nix::unistd;
+use crate::models;
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -383,4 +385,22 @@ pub fn decompress_file(input_path: &Path, output_path: &Path, extension: &str) -
     }
 
     Ok(())
+}
+
+pub fn user_prompt_and_confirm() -> Result<bool> {
+    if models::config().common.dry_run {
+        println!("\nDry run: No changes will be made to the system.");
+        return Ok(false);
+    }
+
+    print!("\nDo you want to continue? [Y/n] ");
+    io::stdout().flush()?;
+    let mut user_input = String::new();
+    io::stdin().read_line(&mut user_input)?;
+    let trimmed = user_input.trim().to_lowercase();
+    if trimmed != "y" && trimmed != "yes" && trimmed != "" {
+        println!("{:?} cancelled by user.", models::config().subcommand);
+        return Ok(false);
+    }
+    Ok(true)
 }

@@ -190,7 +190,6 @@ pub struct FileInfo {
     pub filename: String,
     pub sha256sum: String,
     pub datetime: String,
-    #[allow(dead_code)]
     pub size: u64,
 }
 
@@ -220,7 +219,7 @@ pub struct FileInfo {
     }
 */
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstalledPackageInfo {
     // pkgline format is: {ca_hash}__{pkgname}__{version}__{arch}
     // that means pkgline={ca_hash}__{pkgkey}
@@ -244,6 +243,7 @@ pub struct InstalledPackageInfo {
 }
 
 impl InstalledPackageInfo {
+    #[allow(dead_code)]
     pub fn new(pkgline: String, arch: String, depend_depth: u16, ebin_exposure: bool) -> Self {
         Self {
             pkgline,

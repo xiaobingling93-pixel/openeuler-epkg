@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use color_eyre::eyre::eyre;
 use std::path::PathBuf;
@@ -12,6 +11,15 @@ use crate::utils::*;
 use crate::dirs::find_env_root;
 use crate::package;
 use crate::download::wait_for_any_download_task;
+use std::io::Write;
+
+#[derive(Debug, Default)]
+pub struct InstallationPlan {
+    pub fresh_installs: HashMap<String, InstalledPackageInfo>,
+    pub upgrades_new: HashMap<String, InstalledPackageInfo>,
+    pub upgrades_old: HashMap<String, InstalledPackageInfo>,
+    pub skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
+}
 use std::time::SystemTime;
 
 fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInfo>) {
@@ -22,11 +30,11 @@ fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInf
     packages_vec.sort_by(|a, b| a.1.depend_depth.cmp(&b.1.depend_depth));
 
     // Print the header
-    println!("{:<12} {:<10}", "depend_depth", "package");
+    println!("{:<16} {:<30}", "# depend_depth", "package");
 
     // Print each package
     for (pkgkey, info) in packages_vec {
-        println!("{:<12} {:<10}", info.depend_depth, pkgkey);
+        println!("{:<16} {:<30}", info.depend_depth, pkgkey);
     }
 }
 
@@ -685,6 +693,62 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 }
 
 impl PackageManager {
+    fn prepare_installation_plan(
+        &self,
+        all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
+        original_installed_packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> Result<InstallationPlan> {
+        let mut plan = InstallationPlan::default();
+
+        for (session_pkgkey, session_pkg_info) in all_packages_for_session {
+            if original_installed_packages.contains_key(session_pkgkey) {
+                plan.skipped_reinstalls.insert(session_pkgkey.clone(), session_pkg_info.clone());
+                continue;
+            }
+
+            let (session_pkgname, _, session_arch) = match package::parse_pkgkey(session_pkgkey) {
+                Ok(parts) => parts,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to parse session_pkgkey {}: {}. Considering as fresh install.",
+                        session_pkgkey, e
+                    );
+                    plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
+                    continue;
+                }
+            };
+
+            let mut found_upgrade_target = false;
+            for (original_pkgkey, original_pkg_info) in original_installed_packages {
+                if original_pkgkey == session_pkgkey {
+                    continue;
+                }
+
+                match package::parse_pkgkey(original_pkgkey) {
+                    Ok((original_pkgname, _, original_arch)) => {
+                        if session_pkgname == original_pkgname && session_arch == original_arch {
+                            plan.upgrades_new.insert(session_pkgkey.clone(), session_pkg_info.clone());
+                            plan.upgrades_old.insert(original_pkgkey.clone(), original_pkg_info.clone());
+                            found_upgrade_target = true;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse original_pkgkey {}: {}. Skipping for upgrade comparison.",
+                            original_pkgkey, e
+                        );
+                    }
+                }
+            }
+
+            if !found_upgrade_target {
+                plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
+            }
+        }
+        Ok(plan)
+    }
+
 
     // link files from env_root to store_fs_dir
     pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
@@ -780,87 +844,191 @@ impl PackageManager {
         self.install_pkgkeys(all_packages_for_session, packages_to_expose, &original_installed_packages)
     }
 
-    pub fn install_pkgkeys(&mut self,
-            mut packages_to_install: HashMap<String, InstalledPackageInfo>,
-            packages_to_expose: HashMap<String, InstalledPackageInfo>,
-            original_installed_packages: &HashMap<String, InstalledPackageInfo>) -> Result<()> {
-        println!("Packages to install:");
-        print_packages_by_depend_depth(&packages_to_install);
-        if config().common.dry_run {
+    pub fn install_pkgkeys(
+        &mut self,
+        all_packages_for_session: HashMap<String, InstalledPackageInfo>,
+        packages_to_expose_from_args: HashMap<String, InstalledPackageInfo>,
+        original_installed_packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> Result<()> {
+        let plan = self.prepare_installation_plan(&all_packages_for_session, original_installed_packages)?;
+
+        // --- USER PROMPT AND PRE-EXECUTION CHECKS ---
+        let actions_planned = self.prompt_and_confirm_install_plan(
+            &plan,
+            &all_packages_for_session,
+            original_installed_packages,
+        )?;
+
+        if !actions_planned {
             return Ok(());
         }
 
-        // Submit download tasks for all packages
-        let url_to_pkgkey = self.submit_download_tasks(&packages_to_install)?;
+        // If we reach here, actions_planned was true, user confirmed, and not dry_run.
+        // Proceed with actual installation steps by calling the new execution method.
+        self.execute_installation_plan(plan, all_packages_for_session, packages_to_expose_from_args)
+    }
+
+    /// Prompt the user with the installation plan and confirm before proceeding.
+    /// Returns actions_planned
+    fn prompt_and_confirm_install_plan(
+        &mut self,
+        plan: &InstallationPlan,
+        all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
+        original_installed_packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> Result<bool> {
+        let mut actions_planned = false;
+
+        if !plan.fresh_installs.is_empty() {
+            actions_planned = true;
+            println!("Packages to be freshly installed:");
+            print_packages_by_depend_depth(&plan.fresh_installs);
+        }
+
+        if !plan.upgrades_new.is_empty() {
+            actions_planned = true;
+            println!("  Packages to be upgraded:");
+            for (new_pkgkey, _) in &plan.upgrades_new {
+                let (new_name_parsed, _, new_arch_parsed) = package::parse_pkgkey(new_pkgkey).unwrap_or_default();
+                let old_pkgkey_display = plan.upgrades_old.iter()
+                    .find_map(|(old_key, _)| {
+                        let (old_name, _, old_arch) = package::parse_pkgkey(old_key).unwrap_or_default();
+                        if new_name_parsed == old_name && new_arch_parsed == old_arch { Some(old_key.as_str()) } else { None }
+                    })
+                    .unwrap_or("unknown previous version");
+                println!("    - {} (replacing {})", new_pkgkey, old_pkgkey_display);
+            }
+        }
+
+        let mut exposure_changes_summary: Vec<String> = Vec::new();
+        for (pkgkey, session_info) in all_packages_for_session {
+            let is_new_install = plan.fresh_installs.contains_key(pkgkey);
+            let is_new_version_of_upgrade = plan.upgrades_new.contains_key(pkgkey);
+
+            if !is_new_install && !is_new_version_of_upgrade {
+                if let Some(original_info) = original_installed_packages.get(pkgkey) {
+                    if original_info.ebin_exposure != session_info.ebin_exposure {
+                        actions_planned = true;
+                        exposure_changes_summary.push(format!(
+                            "    - {}: exposure will change ({} -> {})",
+                            pkgkey, original_info.ebin_exposure, session_info.ebin_exposure
+                        ));
+                    }
+                } else if session_info.ebin_exposure { // Not in original, not new/upgrade, but to be exposed
+                     actions_planned = true;
+                     exposure_changes_summary.push(format!(
+                        "    - {}: will be exposed (newly tracked or metadata update)", pkgkey
+                    ));
+                }
+            }
+        }
+
+        if !exposure_changes_summary.is_empty() {
+            println!("  Exposure changes for existing/skipped packages:");
+            for summary in &exposure_changes_summary {
+                println!("{}", summary);
+            }
+        }
+
+        // if !plan.skipped_reinstalls.is_empty() {
+        //     println!("  Packages already installed and up-to-date (will be skipped):");
+        //     for pkgkey in plan.skipped_reinstalls.keys() {
+        //         let mentioned_in_exposure = exposure_changes_summary.iter().any(|s| s.contains(pkgkey));
+        //         if !mentioned_in_exposure {
+        //             println!("    - {}", pkgkey);
+        //         }
+        //     }
+        // }
+
+        // --- APT-STYLE SUMMARY ---
+        let num_upgraded = plan.upgrades_new.len();
+        let num_new = plan.fresh_installs.len();
+        let num_remove = 0; // Not supported yet
+        let num_not_upgraded = all_packages_for_session.len().saturating_sub(num_new + num_upgraded);
+
+        // Sum sizes
+        let mut total_download: u64 = 0;
+        let mut total_install: u64 = 0;
+        for pkgkey in plan.fresh_installs.keys().chain(plan.upgrades_new.keys()) {
+            if let Ok(pkginfo) = self.load_package_info(pkgkey) {
+                total_download += pkginfo.size as u64;
+                total_install += pkginfo.installed_size as u64;
+            }
+        }
+
+        // Human-readable size formatting
+        fn human_size(bytes: u64) -> String {
+            const KB: u64 = 1024;
+            const MB: u64 = KB * 1024;
+            const GB: u64 = MB * 1024;
+            if bytes >= GB {
+                format!("{:.1} GB", bytes as f64 / GB as f64)
+            } else if bytes >= MB {
+                format!("{:.1} MB", bytes as f64 / MB as f64)
+            } else if bytes >= KB {
+                format!("{:.1} KB", bytes as f64 / KB as f64)
+            } else {
+                format!("{} B", bytes)
+            }
+        }
+
+        println!(
+            "\n{} upgraded, {} newly installed, {} to remove and {} not upgraded.",
+            num_upgraded, num_new, num_remove, num_not_upgraded
+        );
+        println!(
+            "Need to get {}/{} of archives.",
+            if total_download == 0 { "0 B".to_string() } else { human_size(total_download) },
+            human_size(total_download)
+        );
+        println!(
+            "After this operation, {} of additional disk space will be used.",
+            human_size(total_install)
+        );
+
+        if !actions_planned {
+            if plan.skipped_reinstalls.len() == all_packages_for_session.len() && exposure_changes_summary.is_empty() {
+                println!("\nAll requested packages are already installed and up-to-date. No changes to package installations or exposures.");
+            } else if exposure_changes_summary.is_empty() { // No actions and no exposure changes means truly nothing or only metadata
+                println!("\nNo installation, upgrade, or exposure changes planned based on the current request.");
+            }
+            return Ok(false);
+        }
+
+        user_prompt_and_confirm()
+    }
+
+    fn execute_installation_plan(
+        &mut self,
+        plan: InstallationPlan, // Taking ownership as it's constructed just for this or the prompt path
+        all_packages_for_session: HashMap<String, InstalledPackageInfo>, // Taking ownership
+        packages_to_expose_from_args: HashMap<String, InstalledPackageInfo>, // Taking ownership
+    ) -> Result<()> {
+        let mut packages_to_download_and_process = plan.fresh_installs.clone();
+        packages_to_download_and_process.extend(plan.upgrades_new.clone());
+
+        // Remove old versions of upgraded packages from self.installed_packages *before* downloads
+        for old_pkgkey_to_remove in plan.upgrades_old.keys() {
+            self.installed_packages.remove(old_pkgkey_to_remove);
+        }
+
+        let url_to_pkgkey = self.submit_download_tasks(&packages_to_download_and_process)?;
         let pending_urls: Vec<String> = url_to_pkgkey.keys().cloned().collect();
 
         let new_generation = self.create_new_generation()?;
-
         let env_root = self.get_default_env_root()?.clone();
         let store_root = dirs().epkg_store.clone();
 
-        // Process packages as downloads complete
+        let mut mutable_packages_for_processing = packages_to_download_and_process.clone();
         let completed_packages = self.process_downloads_and_install(
             &url_to_pkgkey,
             pending_urls,
-            &mut packages_to_install,
+            &mut mutable_packages_for_processing,
             &store_root,
             &env_root,
         )?;
 
-        // Try removing /run/systemd/system directory to prevent blocking on systemctl daemon-reload
-        // Ignore any errors since this is just a workaround
         let _ = std::fs::remove_dir("/run/systemd/system");
 
-        // Separate packages into fresh installs and upgrades
-        let mut fresh_installs: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        let mut upgrades_new: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        let mut upgrades_old: HashMap<String, InstalledPackageInfo> = HashMap::new();
-
-        for (new_pkgkey, new_package_info) in &completed_packages {
-            let (new_pkgname, _, new_arch) = match package::parse_pkgkey(new_pkgkey) {
-                Ok(parts) => parts,
-                Err(e) => {
-                    log::warn!("Failed to parse new_pkgkey {}: {}. Skipping for upgrade/fresh_install classification.", new_pkgkey, e);
-                    fresh_installs.insert(new_pkgkey.clone(), new_package_info.clone());
-                    continue;
-                }
-            };
-
-            let mut found_upgrade = false;
-            for (original_pkgkey, original_package_info) in original_installed_packages {
-                // If new_pkgkey is identical to original_pkgkey, it means we are considering a reinstall of the exact same version.
-                // We should skip this comparison and look for an *actual* different version to upgrade from.
-                // If no different version is found, it will be treated as a fresh install later.
-                if new_pkgkey == original_pkgkey {
-                    continue;
-                }
-
-                match package::parse_pkgkey(original_pkgkey) {
-                    Ok((original_pkgname, _, original_arch)) => {
-                        if new_pkgname == original_pkgname && new_arch == original_arch {
-                            // Different versions of the same package name and arch: This is an upgrade.
-                            upgrades_new.insert(new_pkgkey.clone(), new_package_info.clone());
-                            upgrades_old.insert(original_pkgkey.clone(), original_package_info.clone());
-                            self.installed_packages.remove(original_pkgkey);
-                            found_upgrade = true;
-                            break; // Found the package it upgrades from
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse original_pkgkey {}: {}. Skipping for upgrade comparison.", original_pkgkey, e);
-                        continue;
-                    }
-                }
-            }
-
-            if !found_upgrade {
-                // This is a fresh install (or a reinstall of the exact same version not classified as an upgrade above)
-                fresh_installs.insert(new_pkgkey.clone(), new_package_info.clone());
-            }
-        }
-
-        // Get channel config for scriptlets
         let current_env_name_ref = &config().common.env;
         let channel_config = self.channels_config.get(current_env_name_ref)
             .ok_or_else(|| eyre::eyre!(
@@ -869,21 +1037,32 @@ impl PackageManager {
             ))?;
         let package_format = channel_config.format;
 
-        // Handle upgrade flow
-        if !upgrades_new.is_empty() {
-            log::info!("Processing {} upgrades", upgrades_new.len());
-            self.process_upgrades(&upgrades_old, &upgrades_new, &store_root, &env_root, package_format)?;
+        let mut upgrades_new_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        for (pkgkey, info) in &completed_packages {
+            if plan.upgrades_new.contains_key(pkgkey) {
+                upgrades_new_completed.insert(pkgkey.clone(), info.clone());
+            }
         }
 
-        // Handle fresh install flow
-        if !fresh_installs.is_empty() {
-            log::info!("Processing {} fresh installations", fresh_installs.len());
-            self.process_fresh_installs(&fresh_installs, &store_root, &env_root, package_format)?;
+        if !upgrades_new_completed.is_empty() {
+            log::info!("Processing {} upgrades", upgrades_new_completed.len());
+            self.process_upgrades(&plan.upgrades_old, &upgrades_new_completed, &store_root, &env_root, package_format)?;
         }
 
-        // Expose packages that need to be exposed (after all packages have been linked)
+        let mut fresh_installs_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
+         for (pkgkey, info) in &completed_packages {
+            if plan.fresh_installs.contains_key(pkgkey) {
+                fresh_installs_completed.insert(pkgkey.clone(), info.clone());
+            }
+        }
+        if !fresh_installs_completed.is_empty() {
+            log::info!("Processing {} fresh installations", fresh_installs_completed.len());
+            self.process_fresh_installs(&fresh_installs_completed, &store_root, &env_root, package_format)?;
+        }
+
         let mut appbin_count = 0;
         let mut appbin_packages = Vec::new();
+
         for (pkgkey, package_info) in &completed_packages {
             if package_info.ebin_exposure {
                 appbin_count += 1;
@@ -893,30 +1072,43 @@ impl PackageManager {
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
             }
         }
-        for (pkgkey, package_info) in &packages_to_expose {
-            appbin_count += 1;
-            appbin_packages.push(pkgkey.clone());
-            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-            self.expose_package(&store_fs_dir, &env_root.to_path_buf())
-                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
-            self.installed_packages.insert(pkgkey.clone(), package_info.clone()); // to update the ebin_exposure member
+
+        for (pkgkey, package_info) in &packages_to_expose_from_args {
+            if !completed_packages.contains_key(pkgkey) && package_info.ebin_exposure {
+                appbin_count += 1;
+                appbin_packages.push(pkgkey.clone());
+                let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
+                self.expose_package(&store_fs_dir, &env_root.to_path_buf())
+                    .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+                self.installed_packages.insert(pkgkey.clone(), package_info.clone());
+            }
         }
 
-        // Save installed packages
         self.installed_packages.extend(completed_packages.clone());
-        self.save_installed_packages(&new_generation)?;
-        self.record_history(&new_generation, "install", completed_packages.keys().cloned().collect(), vec![])?;
+        // Below is necessary since skipped_reinstalls' depends/rdepends metadata may changed,
+        // so should be recorded.
+        for (pkgkey, session_info) in &all_packages_for_session {
+            if plan.skipped_reinstalls.contains_key(pkgkey) {
+                if self.installed_packages.get(pkgkey) != Some(session_info) {
+                    self.installed_packages.insert(pkgkey.clone(), session_info.clone());
+                }
+            }
+        }
 
-        // Last step: update current symlink to point to the new generation
+        self.save_installed_packages(&new_generation)?;
+        let final_installed_session_keys: Vec<String> = all_packages_for_session.keys().cloned().collect();
+        self.record_history(&new_generation, "install", final_installed_session_keys, vec![])?;
+
         self.update_current_generation_symlink(new_generation)?;
 
-        println!("Installation successful - Total packages: {}, AppBin packages: {}", completed_packages.len(), appbin_count);
+        println!("Installation successful - Total packages in transaction: {}, AppBin packages: {}", all_packages_for_session.len(), appbin_count);
         if !appbin_packages.is_empty() {
             println!("AppBin package list: {}", appbin_packages.join(", "));
         }
 
         Ok(())
     }
+
 
     /// Process downloads and install packages as they complete
     fn process_downloads_and_install(
