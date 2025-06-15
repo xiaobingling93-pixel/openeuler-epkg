@@ -336,6 +336,9 @@ fn process_line(line: &str,
         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
             if !mapped_key.is_empty() {
                 derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+                if *mapped_key == "installedSize" {
+                    derived_files.output.push_str("000");   // Debian original Installed-Size is in KB.
+                }
             }
 
             if key == "Package" {

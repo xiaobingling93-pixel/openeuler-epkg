@@ -229,7 +229,13 @@ fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
                 }
             }
         } else if let Some(mapped_field) = PACKAGE_KEY_MAPPING.get(original_field.as_str()) {
-            package_fields.push((mapped_field.to_string(), value));
+            let mut current_value = value; // `value` is the parsed field value String
+            if *mapped_field == "installedSize" {
+                // Debian original Installed-Size is in KB. Append "000" to represent bytes.
+                // Assuming current_value is a string representation of a number.
+                current_value.push_str("000");
+            }
+            package_fields.push((mapped_field.to_string(), current_value));
         } else {
             log::warn!("Field name '{}' not found in predefined mapping list", original_field);
             // Include unmapped fields with their original names
