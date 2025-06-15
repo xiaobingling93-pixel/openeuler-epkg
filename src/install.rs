@@ -1085,12 +1085,19 @@ impl PackageManager {
         }
 
         self.installed_packages.extend(completed_packages.clone());
-        // Below is necessary since skipped_reinstalls' depends/rdepends metadata may changed,
-        // so should be recorded.
+        // For packages that were already installed but involved in this session
+        // (skipped_reinstalls), their metadata (like dependencies) might have
+        // changed. We need to update this metadata in our main installed_packages
+        // map without overwriting the persistent fields like 'pkgline'.
         for (pkgkey, session_info) in &all_packages_for_session {
             if plan.skipped_reinstalls.contains_key(pkgkey) {
-                if self.installed_packages.get(pkgkey) != Some(session_info) {
-                    self.installed_packages.insert(pkgkey.clone(), session_info.clone());
+                if let Some(installed_info) = self.installed_packages.get_mut(pkgkey) {
+                    // Only update fields that can change between sessions.
+                    // Crucially, DO NOT overwrite `pkgline` or `install_time`.
+                    installed_info.depend_depth = session_info.depend_depth;
+                    installed_info.ebin_exposure = session_info.ebin_exposure;
+                    installed_info.depends = session_info.depends.clone();
+                    installed_info.rdepends = session_info.rdepends.clone();
                 }
             }
         }
