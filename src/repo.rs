@@ -293,12 +293,12 @@ pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<
     }
 
     // if never auto update
-    if expire_secs == 0 && config().subcommand != "update" {
+    if expire_secs == 0 && config().subcommand != EpkgCommand::Update {
         return Ok(ReleaseStatus::FineExist);
     }
 
     // if not always update
-    if !(expire_secs < 0 || config().subcommand == "update") {
+    if !(expire_secs < 0 || config().subcommand == EpkgCommand::Update) {
         let duration = std::time::Duration::from_secs(expire_secs.try_into()
             .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
         // Check if release file is recent
@@ -490,12 +490,12 @@ pub fn sync_repo_metadata(format: PackageFormat, repo: &RepoRevise, result_tx: &
     let release_items_clone = release_items.clone();
     let revises: Vec<_> = release_items_clone.iter()
         .filter(|revise| revise.need_download || revise.need_convert)
-        .filter(|revise| revise.is_packages || config().subcommand == "update")
+        .filter(|revise| revise.is_packages || config().subcommand == EpkgCommand::Update)
         .cloned()
         .collect();
 
     if revises.is_empty() {
-        if config().subcommand == "update" {
+        if config().subcommand == EpkgCommand::Update {
             return Ok(false);
         } else {
             // `epkg install/upgrade/remove` need continue to load RepoIndex below

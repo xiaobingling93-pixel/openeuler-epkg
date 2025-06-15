@@ -462,8 +462,8 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
 }
 
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
-    config.subcommand = matches.subcommand().map(|(name, _)| name.to_string()).unwrap_or_default();
-    if config.subcommand != "init" {
+    config.subcommand = EpkgCommand::from(matches.subcommand_name().unwrap_or(""));
+    if config.subcommand != EpkgCommand::Init {
         config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/store").exists();
     }
 

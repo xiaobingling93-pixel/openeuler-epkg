@@ -411,6 +411,54 @@ pub struct RepoShard {
     pub packages_mmap: Option<crate::mmio::FileMapper>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum EpkgCommand {
+    #[default]
+    None,
+    Init,
+    Env,
+    List,
+    Info,
+    Install,
+    Upgrade,
+    Remove,
+    History,
+    Restore,
+    Update,
+    Repo,
+    Hash,
+    Build,
+    Unpack,
+    Convert,
+    Run,
+    Search,
+}
+
+impl From<&str> for EpkgCommand {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "init" => EpkgCommand::Init,
+            "env" => EpkgCommand::Env,
+            "list" => EpkgCommand::List,
+            "info" => EpkgCommand::Info,
+            "install" => EpkgCommand::Install,
+            "upgrade" => EpkgCommand::Upgrade,
+            "remove" => EpkgCommand::Remove,
+            "history" => EpkgCommand::History,
+            "restore" => EpkgCommand::Restore,
+            "update" => EpkgCommand::Update,
+            "repo" => EpkgCommand::Repo,
+            "hash" => EpkgCommand::Hash,
+            "build" => EpkgCommand::Build,
+            "unpack" => EpkgCommand::Unpack,
+            "convert" => EpkgCommand::Convert,
+            "run" => EpkgCommand::Run,
+            "search" => EpkgCommand::Search,
+            _ => EpkgCommand::None, // Default for empty or unrecognized strings
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct EPKGConfig {
@@ -432,7 +480,7 @@ pub struct EPKGConfig {
     #[serde(skip)]
     pub command_line: String,
     #[serde(skip)]
-    pub subcommand: String,
+    pub subcommand: EpkgCommand,
 }
 
 // Custom default function that ensures serde field-level defaults are applied
