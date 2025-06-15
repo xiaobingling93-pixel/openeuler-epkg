@@ -827,7 +827,8 @@ impl PackageManager {
             .cloned()
             .collect();
         if !current_installed_from_request.is_empty() {
-            println!("Note: Some of the directly requested packages were already recorded as installed: {}. All dependencies will be re-evaluated and metadata updated.", current_installed_from_request.join(", "));
+            println!("Packages already installed: {}", current_installed_from_request.join(" "));
+            return Ok(());
         }
 
         self.collect_essential_packages(&mut initial_packages_info)?;
