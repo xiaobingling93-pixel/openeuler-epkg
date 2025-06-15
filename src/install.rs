@@ -725,9 +725,13 @@ impl PackageManager {
     ///     b. Or, if its `ebin_exposure` has changed compared to `original_installed_packages`.
     ///        (This implies a change in how it should be exposed, requiring file operations).
     /// 6.  Updates `self.installed_packages` (the in-memory representation that will be saved):
-    ///     It's cleared and then fully repopulated from `processed_session_packages`.
-    ///     This ensures that all metadata (depend_depth, rdepends, depends, ebin_exposure,
-    ///     and initially empty pkglines) is current for ALL packages involved in this session.
+    ///     Packages from `all_packages_for_session` (which includes newly requested packages
+    ///     and all their dependencies, potentially re-evaluating existing ones) are merged into
+    ///     `self.installed_packages`. If a package from `all_packages_for_session` already
+    ///     exists in `self.installed_packages`, its information is updated. If not, it's added.
+    ///     This ensures that metadata (depend_depth, rdepends, depends, ebin_exposure, and
+    ///     initially empty pkglines) is updated for packages involved in this session, while
+    ///     preserving other unrelated, already-installed packages.
     /// 7.  If `packages_needing_file_ops` is empty:
     ///     Prints a message indicating no new files need to be installed/linked.
     ///     Saves the (potentially updated metadata in) `self.installed_packages` to a new
@@ -772,7 +776,12 @@ impl PackageManager {
             return Ok(());
         }
 
-        self.installed_packages.clear();
+        // Iterate over all packages determined for this session (new installs and their dependencies).
+        // For each package, if it's already in self.installed_packages (loaded at the start of this function),
+        // its info (depend_depth, rdepends, depends, ebin_exposure, etc.) will be updated with the version
+        // from 'all_packages_for_session'. If it's not present, it will be added.
+        // This preserves any existing packages in self.installed_packages that are not part of the current session.
+        // The pkglines are initially empty here and will be populated later during install_pkgkeys.
         for (pkgkey, info) in &all_packages_for_session {
             self.installed_packages.insert(pkgkey.clone(), info.clone());
         }
