@@ -298,26 +298,28 @@ impl PackageManager {
         if packages_map.contains_key(pkgkey) {
             satisfied_by_packages_map = true;
         }
-        // Check self.installed_packages only if not already in packages_map
+
         if !satisfied_by_packages_map && self.installed_packages.contains_key(pkgkey) {
             satisfied_by_installed_pkgs = true;
         }
 
         if satisfied_by_packages_map || satisfied_by_installed_pkgs {
             if satisfied_by_installed_pkgs && !satisfied_by_packages_map {
-                // For 'upgrade', we re-evaluate dependencies of already-installed packages by adding them to the session map.
-                // For 'install', we behave conservatively: if a dependency is met, we don't re-walk its dependencies.
-                if config().subcommand != EpkgCommand::Install {
-                    if let Some(installed_info) = self.installed_packages.get(pkgkey) {
-                        let mut session_info = installed_info.clone();
-                        session_info.rdepends = Vec::new(); // rdepends are recalculated for the session.
-                        packages_map.insert(pkgkey.to_string(), session_info);
-                        log::trace!("Added installed pkg '{}' to session for aggressive dep walk (subcommand: {:?})", pkgkey, config().subcommand);
-                    } else {
-                        log::error!("INTERNAL ERROR: pkgkey '{}' not found in self.installed_packages after contains_key check.", pkgkey);
-                    }
+                // If the package is in self.installed_packages but not yet in the current session's packages_map,
+                // add it to packages_map. This ensures its presence for subsequent operations in the current resolution.
+                if let Some(installed_info) = self.installed_packages.get(pkgkey) {
+                    let mut session_info = installed_info.clone();
+                    // rdepends are specific to a resolution context and should be fresh.
+                    session_info.rdepends = Vec::new();
+                    // `depends` are inherent to the package, can be cloned.
+                    // `depend_depth` and `ebin_exposure` from `installed_info` will be used as a base
+                    // and then updated by the caller (try_resolve_package_by_name) based on the current path.
+                    packages_map.insert(pkgkey.to_string(), session_info);
+                    log::trace!("Added installed pkg '{}' to session map from self.installed_packages for current resolution context.", pkgkey);
                 } else {
-                    log::trace!("Skipping dep walk for already-installed pkg '{}' (subcommand: Install)", pkgkey);
+                    // This should not happen if contains_key was true.
+                    log::error!("INTERNAL ERROR: pkgkey '{}' was reported in self.installed_packages but now not found for cloning.", pkgkey);
+                    return None; // Cannot satisfy if we can't get its info.
                 }
             }
             return Some(pkgkey.to_string());
@@ -351,15 +353,22 @@ impl PackageManager {
                                 context, pkg_name, satisfied_pkgkey
                             );
                             // Ensure its depth and ebin_exposure in packages_map are updated for this path
-                            if let Some(info) = packages_map.get_mut(&satisfied_pkgkey) {
-                                info.depend_depth = std::cmp::min(info.depend_depth, candidate_depth);
-                                info.ebin_exposure = ebin_flag;
-                                log::trace!("{}: Updated package {} in map. New depth: {}, New ebin_exposure: {}. (ebin_flag from requiring context was: {})",
-                                           context, satisfied_pkgkey, info.depend_depth, info.ebin_exposure, ebin_flag);
-                            } else {
-                                // This case should ideally not happen if check_package_satisfaction guarantees it's in packages_map
-                                log::warn!("{}: Package {} reported as satisfied by check_package_satisfaction but not found in packages_map for depth update.", context, satisfied_pkgkey);
-                            }
+                            // After the fix to check_package_satisfaction, this get_mut should ALWAYS succeed.
+                            let info = packages_map.get_mut(&satisfied_pkgkey)
+                                .expect(&format!("{}: BUG: Package {} reported as satisfied but NOT in packages_map for update", context, satisfied_pkgkey));
+
+                            let old_depth = info.depend_depth;
+                            let old_ebin = info.ebin_exposure;
+
+                            info.depend_depth = std::cmp::min(info.depend_depth, candidate_depth);
+
+                            // If ebin_flag is true for the current path, then ebin_exposure becomes true.
+                            // If ebin_flag is false, existing ebin_exposure (if true) should persist.
+                            info.ebin_exposure = info.ebin_exposure || ebin_flag;
+
+                            log::trace!("{}: Updated package {} in map. Depth: {}->{}, Ebin: {}->{}. (Context ebin_flag: {})",
+                            context, satisfied_pkgkey, old_depth, info.depend_depth, old_ebin, info.ebin_exposure, ebin_flag);
+
                             return Some(satisfied_pkgkey);
                         }
 
