@@ -138,7 +138,7 @@ pub struct Package {
     pub multi_arch: Option<String>,
 
     #[serde(skip)]
-    pub pkgkey: String,
+    pub pkgkey: String, // != pkgline
     #[serde(skip)]
     pub repodata_name: String,
     #[serde(skip)]
@@ -172,8 +172,8 @@ pub struct Repodata {
     pub essential_pkgnames: HashSet<String>,
 }
 
-// pkgline format: {ca_hash}__{pkgname}__{version}
-// 09c88c8eb9820a3570d9a856b91f419c__libselinux__3.3-5.oe2203sp3
+// pkgline format: {ca_hash}__{pkgname}__{version}__{arch}
+// 09c88c8eb9820a3570d9a856b91f419c__libselinux__3.3-5.oe2203sp3__x86_64
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct StorePathsIndex {
@@ -200,7 +200,7 @@ pub struct FileInfo {
       "${pkgkey}": {
       },
 	  "jq__1.8.0-1__x86_64": {
-		"pkgline": "g5zo2bniyoyf3jwx4vo25qrf46al7ric__jq__1.8.0-1",
+		"pkgline": "g5zo2bniyoyf3jwx4vo25qrf46al7ric__jq__1.8.0-1__x86_64",
 		"arch": "x86_64",
 		"depend_depth": 0,
 		"install_time": 1749433093,
@@ -222,6 +222,8 @@ pub struct FileInfo {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackageInfo {
+    // pkgline format is: {ca_hash}__{pkgname}__{version}__{arch}
+    // that means pkgline={ca_hash}__{pkgkey}
     pub pkgline: String,
     pub arch: String,
     pub depend_depth: u16,
@@ -291,7 +293,7 @@ pub struct EnvConfig {
     // Only for importing from exported config file
     #[serde(skip_serializing)]
     #[serde(default)]
-    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey
+    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
     #[serde(skip_serializing)]
     #[serde(default)]
     pub pypi_packages: HashMap<String, InstalledPackageInfo>,   // key is pkgkey
@@ -611,7 +613,10 @@ pub struct PackageManager {
     pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages
 
     // loaded from env installed-packages.json
-    pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey
+    // `self.installed_packages` (loaded from installed-packages.json) is the
+    // authoritative data source. If a pkgkey is not found here, the package
+    // is treated as not installed.
+    pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey (!= pkgline)
 
     pub mirrors: HashMap<String, Mirror>,   // key: mirror id
 
