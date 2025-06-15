@@ -240,6 +240,8 @@ pub struct InstalledPackageInfo {
     pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
     #[serde(default)] // Default to empty Vec if missing during deserialization
     pub depends: Vec<String>, // Stores pkgkeys of packages this package depends on
+    #[serde(default)] // for backward compatibility with older installed-packages.json
+    pub ebin_links: Vec<String>,
 }
 
 impl InstalledPackageInfo {
@@ -253,6 +255,7 @@ impl InstalledPackageInfo {
             ebin_exposure,
             rdepends: Vec::new(), // Initialize rdepends as empty
             depends: Vec::new(), // Initialize depends as empty
+            ebin_links: Vec::new(), // Initialize ebin_links as empty
         }
     }
 }

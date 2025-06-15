@@ -33,19 +33,39 @@ impl PackageManager {
 
             // Remove file (include symlink)
             if fs::symlink_metadata(&target_path).is_ok() {
+                log::trace!("Removing package file: {}", target_path.display());
                 fs::remove_file(&target_path)?;
             }
-            // Remove appbin-file
-            if fhs_file.starts_with("usr/bin/") || fhs_file.starts_with("usr/sbin/") {
-                let ebin_file = fhs_file.to_string_lossy()
-                    .replace("/bin", "/ebin")
-                    .replace("/sbin", "/ebin");
-                let appbin_target_path = env_root.join(&ebin_file);
-                if fs::symlink_metadata(&appbin_target_path).is_ok() {
-                    log::debug!("Removing appbin file: {}", appbin_target_path.display());
-                    fs::remove_file(&appbin_target_path)?;
+        }
+
+        // Remove ebin wrappers based on stored links
+        let pkgline_osstr = pkg_store_path.file_name().ok_or_else(||
+            eyre::eyre!("Could not extract file name from path: {}", pkg_store_path.display())
+        )?;
+        let pkgline = pkgline_osstr.to_string_lossy();
+        if pkgline.is_empty() {
+            return Err(eyre::eyre!("Extracted pkgline is empty from path: {}", pkg_store_path.display()));
+        }
+
+        let pkgkey = crate::package::pkgline2pkgkey(&pkgline)
+            .map_err(|e| eyre::eyre!("Failed to get pkgkey from pkgline '{}' (from {}): {}", pkgline, pkg_store_path.display(), e))?;
+
+        if let Some(package_info) = self.installed_packages.get(&pkgkey) {
+            if !package_info.ebin_links.is_empty() {
+                log::debug!("Removing {} ebin wrappers for package '{}'", package_info.ebin_links.len(), pkgkey);
+                for relative_ebin_path_str in &package_info.ebin_links {
+                    let ebin_path = env_root.join(relative_ebin_path_str);
+                    if fs::symlink_metadata(&ebin_path).is_ok() {
+                        log::debug!("Removing ebin wrapper: {}", ebin_path.display());
+                        fs::remove_file(&ebin_path)
+                            .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
+                        } else {
+                            log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
+                    }
                 }
             }
+        } else {
+            log::warn!("Package info not found for key '{}' (derived from pkgline '{}' from path '{}') during unlink. Cannot remove ebin wrappers.", pkgkey, pkgline, pkg_store_path.display());
         }
 
         Ok(())

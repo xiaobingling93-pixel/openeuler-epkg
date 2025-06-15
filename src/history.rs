@@ -238,7 +238,15 @@ impl PackageManager {
                 .pkgline.clone();
             let fs_dir = store_root.join(pkgline).join("fs");
             if *ebin_exposure {
-                self.expose_package(&fs_dir, &env_root)?;
+                let links = self.expose_package(&fs_dir, &env_root)
+                    .with_context(|| format!("Failed to expose package {} during rollback", pkgkey))?;
+
+                // self.installed_packages should have been reloaded from the rollback generation's JSON by now.
+                if let Some(package_info_mut) = self.installed_packages.get_mut(pkgkey) {
+                    package_info_mut.ebin_links = links;
+                } else {
+                    log::warn!("Rollback: pkgkey '{}' from new_packages (to be exposed) not found in self.installed_packages after loading rollback state. Ebin links not stored.", pkgkey);
+                }
             }
         }
 

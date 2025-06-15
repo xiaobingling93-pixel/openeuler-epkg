@@ -54,7 +54,6 @@ pub fn pkgkey2version(pkgkey: &str) -> Result<String> {
 }
 
 // Extract a package key from a pkgline
-#[allow(dead_code)]
 pub fn pkgline2pkgkey(pkgline: &str) -> Result<String> {
     let parts: Vec<&str> = pkgline.split("__").collect();
     if parts.len() < 4 {

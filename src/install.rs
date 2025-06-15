@@ -256,7 +256,8 @@ fn normalize_join(base: &Path, subpath: &Path) -> PathBuf {
     components.iter().collect()
 }
 
-fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
+fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut created_ebin_paths: Vec<PathBuf> = Vec::new();
     log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
     for fs_file in fs_files {
         let path_str = fs_file.to_string_lossy();
@@ -278,13 +279,16 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<()> {
             continue;
         }
 
-        create_ebin_wrapper(env_root, fs_file)
-            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file.display()))?;
+        if let Some(created_path) = create_ebin_wrapper(env_root, fs_file)
+            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file.display()))? {
+            created_ebin_paths.push(created_path);
+        }
     }
-    Ok(())
+    log::debug!("create_ebin_wrappers: returning {} created paths: {:?}", created_ebin_paths.len(), created_ebin_paths);
+    Ok(created_ebin_paths)
 }
 
-fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
+fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<Option<PathBuf>> {
     let (file_type, first_line) = get_file_type(fs_file)
         .with_context(|| format!("Failed to determine file type for {}", fs_file.display()))?;
     let basename = fs_file.file_name()
@@ -302,6 +306,7 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
         FileType::Elf => {
             handle_elf(&ebin_path, env_root, fs_file)
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
+            return Ok(Some(ebin_path));
         }
         FileType::ShellScript
         | FileType::PerlScript
@@ -311,10 +316,10 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<()> {
         | FileType::LuaScript => {
             create_script_wrapper(env_root, fs_file, &ebin_path, file_type, &first_line)
                 .with_context(|| format!("Failed to create script wrapper for {}", fs_file.display()))?;
+            return Ok(Some(ebin_path));
         }
-        _ => {}
+        _ => return Ok(None),
     }
-    Ok(())
 }
 
 fn create_script_wrapper(
@@ -761,11 +766,28 @@ impl PackageManager {
 
     // - run post-install scriptlets
     // - create ebin wrappers
-    pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
-        log::debug!("expose_package {}", store_fs_dir.display());
+    // Returns a list of relative paths to the created ebin wrappers (relative to env_root).
+    pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
+        log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
         let fs_files = list_package_files(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
-        create_ebin_wrappers(env_root, &fs_files)?;
-        Ok(())
+        let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;
+        log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
+        let mut relative_ebin_links: Vec<String> = Vec::new();
+        for abs_path in absolute_ebin_paths {
+            log::debug!("expose_package for store_fs_dir '{}': processing abs_path='{}', env_root='{}'", store_fs_dir.display(), abs_path.display(), env_root.display());
+            match abs_path.strip_prefix(env_root) {
+                Ok(rel_path) => {
+                    log::debug!("expose_package for store_fs_dir '{}': successfully stripped prefix, rel_path='{}'", store_fs_dir.display(), rel_path.display());
+                    relative_ebin_links.push(rel_path.to_string_lossy().into_owned());
+                }
+                Err(e) => {
+                    // Still log a warning, as this indicates a potential issue in path generation or env_root handling.
+                    log::warn!("Failed to strip prefix {} from path {} for store_fs_dir '{}': {}", env_root.display(), abs_path.display(), store_fs_dir.display(), e);
+                }
+            }
+        }
+        log::debug!("expose_package for store_fs_dir '{}': returning {} relative_ebin_links: {:?}", store_fs_dir.display(), relative_ebin_links.len(), relative_ebin_links);
+        Ok(relative_ebin_links)
     }
 
     /// Installs specified packages and their dependencies.
@@ -1061,31 +1083,58 @@ impl PackageManager {
             self.process_fresh_installs(&fresh_installs_completed, &store_root, &env_root, package_format)?;
         }
 
+        // Update self.installed_packages with successfully processed packages *before* exposure.
+        // This ensures that when expose_package is called, it can find the package info
+        // (especially the correct pkgline) and update its ebin_links field correctly.
+        self.installed_packages.extend(completed_packages.clone());
+
         let mut appbin_count = 0;
         let mut appbin_packages = Vec::new();
 
-        for (pkgkey, package_info) in &completed_packages {
+        for (pkgkey, package_info) in &completed_packages { // package_info here is from completed_packages, which is a clone
             if package_info.ebin_exposure {
                 appbin_count += 1;
                 appbin_packages.push(pkgkey.clone());
                 let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-                self.expose_package(&store_fs_dir, &env_root.to_path_buf())
+                let links = self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+
+                // Now, update self.installed_packages with these links
+                if let Some(installed_package_info_mut) = self.installed_packages.get_mut(pkgkey) {
+                    installed_package_info_mut.ebin_links = links;
+                } else {
+                    // This should ideally not happen because we extended self.installed_packages with completed_packages
+                    log::warn!("execute_installation_plan: pkgkey '{}' from completed_packages not found in self.installed_packages after exposure. Ebin links not stored.", pkgkey);
+                }
             }
         }
 
-        for (pkgkey, package_info) in &packages_to_expose_from_args {
-            if !completed_packages.contains_key(pkgkey) && package_info.ebin_exposure {
+        for (pkgkey, package_info_from_args) in &packages_to_expose_from_args { // Renamed package_info to avoid confusion
+            if !completed_packages.contains_key(pkgkey) && package_info_from_args.ebin_exposure {
                 appbin_count += 1;
                 appbin_packages.push(pkgkey.clone());
-                let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-                self.expose_package(&store_fs_dir, &env_root.to_path_buf())
+                let store_fs_dir = store_root.join(package_info_from_args.pkgline.clone()).join("fs");
+
+                // Ensure package_info is in self.installed_packages *before* calling expose_package.
+                // This is crucial for the subsequent get_mut to find the package.
+                // The clone here is important as we might modify the entry in self.installed_packages.
+                if !self.installed_packages.contains_key(pkgkey) {
+                    self.installed_packages.insert(pkgkey.clone(), package_info_from_args.clone());
+                }
+
+                let links = self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
-                self.installed_packages.insert(pkgkey.clone(), package_info.clone());
+
+                // Now, update self.installed_packages with these links
+                if let Some(installed_package_info_mut) = self.installed_packages.get_mut(pkgkey) {
+                    installed_package_info_mut.ebin_links = links;
+                } else {
+                    // This case implies the insert above didn't take effect or some other logic error.
+                    log::error!("execute_installation_plan: pkgkey '{}' from packages_to_expose_from_args was expected in self.installed_packages but not found after exposure. Ebin links not stored.", pkgkey);
+                }
             }
         }
 
-        self.installed_packages.extend(completed_packages.clone());
         // For packages that were already installed but involved in this session
         // (skipped_reinstalls), their metadata (like dependencies) might have
         // changed. We need to update this metadata in our main installed_packages

@@ -52,9 +52,9 @@ use crate::models::*;
 use crate::ipc::privdrop_on_suid;
 use crate::dirs::get_epkg_manager_path;
 use color_eyre::Result;
-use color_eyre::eyre;
-use ctrlc;
+use color_eyre::eyre::{self, WrapErr};
 use clap::{arg, Command};
+use ctrlc;
 use env_logger;
 use log;
 use regex::bytes::RegexBuilder;
@@ -802,7 +802,23 @@ impl PackageManager {
                 self.link_package(&fs_dir, &symlink_dir)?;
                 // Second phase: Expose the package if ebin flag is set
                 if ebin {
-                    self.expose_package(&fs_dir, &symlink_dir)?;
+                    let local_pkgline = fs_dir.file_name().ok_or_else(|| eyre::eyre!("Failed to get filename from fs_dir for local expose: {}", fs_dir.display()))?.to_string_lossy();
+                        if local_pkgline.is_empty() {
+                            return Err(eyre::eyre!("Filename from fs_dir is empty for local expose: {}", fs_dir.display()));
+                        }
+                        // Attempt to derive pkgkey. If fs_dir is not named like a pkgline, this might fail or produce an unexpected key.
+                        let local_pkgkey = crate::package::pkgline2pkgkey(&local_pkgline).unwrap_or_else(|_| local_pkgline.to_string());
+                        let links = self.expose_package(&fs_dir, &symlink_dir)
+                            .with_context(|| format!("Failed to expose local package from fs_dir: {}", fs_dir.display()))?;
+
+                        // For local installs, the pkgkey might not be in self.installed_packages.
+                        // If it is, update its ebin_links. Otherwise, the links are created but not tracked for removal by this mechanism.
+                        if let Some(package_info_mut) = self.installed_packages.get_mut(&local_pkgkey) {
+                            package_info_mut.ebin_links = links;
+                            log::info!("Local expose for managed package '{}': updated ebin_links.", local_pkgkey);
+                        } else {
+                            log::info!("Local expose for '{}': {} ebin wrappers created. Links not stored in managed package metadata as key was not found.", local_pkgkey, links.len());
+                        }
                 }
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {

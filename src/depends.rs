@@ -171,6 +171,7 @@ impl PackageManager {
                             ebin_exposure: ebin_flag,
                             rdepends: Vec::new(),
                             depends: Vec::new(), // Will be populated by process_requirements
+                            ebin_links: Vec::new(),
                         }
                     );
                     log::trace!("Added package {} to map. Depth: {}, Appbin_flag: {}", package_to_add.pkgkey, candidate_depth, ebin_flag);
