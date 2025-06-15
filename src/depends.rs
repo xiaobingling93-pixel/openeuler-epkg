@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use color_eyre::Result;
 use color_eyre::eyre;
 use log;
-use crate::models::*;
+use crate::models::{config, EpkgCommand, *};
 
 use crate::parse_requires::*;
 use crate::package;
@@ -127,7 +127,7 @@ impl PackageManager {
         return self.add_one_package_installing_with_arch_spec(pkg_name, None, depth, ebin_flag, packages, missing_names);
     }
 
-    fn add_one_package_installing_with_arch_spec(&mut self, pkg_name: &str, arch_spec: Option<&str>, candidate_depth: u16, ebin_flag: bool,
+    pub fn add_one_package_installing_with_arch_spec(&mut self, pkg_name: &str, arch_spec: Option<&str>, candidate_depth: u16, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) -> Option<String> {
         log::debug!("Attempting to add package '{}' (dependency of a depth {} package) with arch_spec {:?} (ebin_flag: {})", pkg_name, candidate_depth, arch_spec, ebin_flag);
@@ -305,13 +305,19 @@ impl PackageManager {
 
         if satisfied_by_packages_map || satisfied_by_installed_pkgs {
             if satisfied_by_installed_pkgs && !satisfied_by_packages_map {
-                // Clone from installed_packages into packages_map for session tracking
-                if let Some(installed_info) = self.installed_packages.get(pkgkey) {
-                    let mut session_info = installed_info.clone();
-                    session_info.rdepends = Vec::new();
-                    packages_map.insert(pkgkey.to_string(), session_info);
+                // For 'upgrade', we re-evaluate dependencies of already-installed packages by adding them to the session map.
+                // For 'install', we behave conservatively: if a dependency is met, we don't re-walk its dependencies.
+                if config().subcommand != EpkgCommand::Install {
+                    if let Some(installed_info) = self.installed_packages.get(pkgkey) {
+                        let mut session_info = installed_info.clone();
+                        session_info.rdepends = Vec::new(); // rdepends are recalculated for the session.
+                        packages_map.insert(pkgkey.to_string(), session_info);
+                        log::trace!("Added installed pkg '{}' to session for aggressive dep walk (subcommand: {:?})", pkgkey, config().subcommand);
+                    } else {
+                        log::error!("INTERNAL ERROR: pkgkey '{}' not found in self.installed_packages after contains_key check.", pkgkey);
+                    }
                 } else {
-                    log::error!("INTERNAL ERROR: pkgkey '{}' not found in self.installed_packages after contains_key check.", pkgkey);
+                    log::trace!("Skipping dep walk for already-installed pkg '{}' (subcommand: Install)", pkgkey);
                 }
             }
             return Some(pkgkey.to_string());

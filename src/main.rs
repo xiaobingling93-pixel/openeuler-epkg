@@ -815,12 +815,15 @@ impl PackageManager {
     }
 
     fn command_upgrade(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            self.fork_on_suid()?;
-            self.sync_channel_metadata()?;
-            self.upgrade_packages(package_specs)?;
-        }
-        Ok(())
+        self.fork_on_suid()?;
+        self.sync_channel_metadata()?;
+
+        let package_names: Vec<String> = sub_matches
+            .get_many::<String>("PACKAGE_SPEC")
+            .map(|vals| vals.cloned().collect())
+            .unwrap_or_else(Vec::new);
+
+        self.upgrade_packages(package_names)
     }
 
     fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
