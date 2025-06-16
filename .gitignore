@@ -1,4 +1,11 @@
 # Cargo build
+rpm-rs/
 target/
 dist/
+files
+src/tags
+src/*.sh
+*.sh
 *.swp
+perf.data*
+test*
