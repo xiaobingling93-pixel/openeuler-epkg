@@ -28,10 +28,11 @@ pub struct DownloadTask {
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
     pub final_path: PathBuf, // Store the final download path
     pub size: Option<u32>, // Expected file size for prioritization and verification
+    pub attempt_number: Arc<std::sync::atomic::AtomicUsize>, // Track which attempt number this is (0 = first attempt)
 
     // New fields for chunking
     pub chunk_tasks: Arc<std::sync::Mutex<Vec<Arc<DownloadTask>>>>,
-    pub chunk_path: PathBuf, // Path to the chunk file (for master: .part, for chunks: .part-O{offset})
+    pub chunk_path: PathBuf, // Full path to the chunk file (for master: .part, for chunks: .part-O{offset})
     pub chunk_offset: u64, // Starting byte offset for this chunk
     pub chunk_size: Option<u64>, // Size of this chunk in bytes
     pub thread_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
@@ -76,6 +77,7 @@ impl DownloadTask {
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Pending)),
             final_path,
             size,
+            attempt_number: Arc::new(std::sync::atomic::AtomicUsize::new(0)), // Initialize to 0 (first attempt)
             chunk_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             chunk_path,
             chunk_offset: 0,
@@ -105,6 +107,17 @@ impl DownloadTask {
     /// Check if this is a chunk task (has non-zero offset or is explicitly a chunk)
     pub fn is_chunk_task(&self) -> bool {
         self.chunk_offset > 0 || self.chunk_path.to_string_lossy().contains(".part-O")
+    }
+
+    /// Check if this is the first download attempt for this task
+    /// This is more reliable than checking the retries parameter in download_file
+    pub fn is_first_attempt(&self) -> bool {
+        self.attempt_number.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+
+    /// Increment the attempt number when a retry is needed
+    pub fn increment_attempt(&self) {
+        self.attempt_number.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Create a chunk task for a specific byte range
@@ -791,6 +804,7 @@ fn download_file_with_retries(
                 }
 
                 retries += 1;
+
                 let delay = Duration::from_secs(2u64.pow(retries as u32));
                 pb.println(format!("Retrying {} (attempt {}/{}) after {}s delay...", url, retries + 1, max_retries + 1, delay.as_secs()));
                 thread::sleep(delay);
@@ -927,42 +941,47 @@ fn download_file(
 
     let total_size = setup_progress_tracking(&response, pb, downloaded);
 
-    // Check if we should create chunk tasks for large files (beforehand chunking)
-    let should_chunk = retries == 0 && !task.is_chunk_task() && total_size > 0;
-    if should_chunk {
-        if let Ok(chunks) = create_chunk_tasks(task, total_size) {
-            if !chunks.is_empty() {
-                log::info!("Creating {} chunk tasks for large file {} ({} bytes)",
-                          chunks.len(), url, total_size);
+    if task.is_first_attempt() {
+        task.increment_attempt();
+        // Check if we should create chunk tasks for large files (beforehand chunking)
+        // Only create chunks on first attempt (not on retries) and only for master tasks with sufficient size
+        let should_chunk = !task.is_chunk_task() && total_size > 0;
+        if should_chunk {
+            if let Ok(chunks) = create_chunk_tasks(task, total_size) {
+                if !chunks.is_empty() {
+                    log::info!("Creating {} chunk tasks for large file {} ({} bytes)",
+                              chunks.len(), url, total_size);
 
-                // Add chunks to the master task
-                for chunk in &chunks {
-                    task.add_chunk_task(Arc::clone(chunk));
+                    // Add chunks to the master task
+                    for chunk in &chunks {
+                        task.add_chunk_task(Arc::clone(chunk));
+                    }
+
+                    // Start chunk processing
+                    if let Err(e) = start_chunks_processing(chunks, config().common.nr_parallel) {
+                        log::warn!("Failed to start chunk processing: {}, falling back to single-threaded", e);
+                    }
+
+                    // Adjust master task to download only first chunk (0 to 1MB)
+                    let first_chunk_size = std::cmp::min(1024 * 1024, total_size);
+                    // Note: We continue with the current response for the first chunk
+                    log::debug!("Master task will handle first {} bytes of {}", first_chunk_size, total_size);
                 }
+            }
+        }
 
-                // Start chunk processing
-                if let Err(e) = start_chunks_processing(chunks, config().common.nr_parallel) {
-                    log::warn!("Failed to start chunk processing: {}, falling back to single-threaded", e);
-                }
-
-                // Adjust master task to download only first chunk (0 to 1MB)
-                let first_chunk_size = std::cmp::min(1024 * 1024, total_size);
-                // Note: We continue with the current response for the first chunk
-                log::debug!("Master task will handle first {} bytes of {}", first_chunk_size, total_size);
+        // Send existing file content to channel if resuming
+        // Only send on first attempt (not on retries) to avoid duplicate data
+        if downloaded > 0 {
+            if let Some(channel) = &data_channel {
+                send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e))?;
             }
         }
     }
 
-    // Send existing file content to channel if resuming
-    if downloaded > 0 && retries == 0 {
-        if let Some(channel) = &data_channel {
-            send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e))?;
-        }
-    }
-
-    // Set start time for estimation
-    if retries == 0 {
-        if let Ok(mut start_time) = task.start_time.lock() {
+    // Set start time for estimation if not already set
+    if let Ok(mut start_time) = task.start_time.lock() {
+        if start_time.is_none() {
             *start_time = Some(std::time::Instant::now());
         }
     }
