@@ -21,15 +21,15 @@ pub fn load_package_json(file_path: &str) -> Result<Package> {
     Ok(package)
 }
 
-/// Load channel/mirrors.yaml
+/// Load channel/mirrors.json
 #[allow(dead_code)]
 pub fn load_mirrors() -> Result<HashMap<String, Mirror>> {
-    let file_path = get_epkg_manager_path()?.join("channel/mirrors.yaml");
+    let file_path = get_epkg_manager_path()?.join("channel/mirrors.json");
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
-    serde_yaml::from_str(&contents)
-        .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))
+    serde_json::from_str(&contents)
+        .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))
 }
 
 impl PackageManager {
@@ -55,7 +55,7 @@ impl PackageManager {
         Ok(&self.envs_config[&env_name])
     }
 
-    /// On-demand load channel/mirrors.yaml to self.mirrors
+    /// On-demand load channel/mirrors.json to self.mirrors
     #[allow(dead_code)]
     pub fn get_mirrors(&mut self) -> Result<&HashMap<String, Mirror>> {
         if self.mirrors.is_empty() {
