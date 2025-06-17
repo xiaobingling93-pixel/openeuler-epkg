@@ -42,7 +42,7 @@ pub struct Mirror {
     #[serde(default)]
     pub top_level: bool,
     #[serde(default)]
-    pub supports: Vec<String>,
+    pub distro_dirs: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -669,7 +669,7 @@ pub struct PackageManager {
     // is treated as not installed.
     pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey (!= pkgline)
 
-    pub mirrors: HashMap<String, Mirror>,   // key: mirror id
+    pub mirrors: HashMap<String, Mirror>,   // key: mirror url
 
     pub has_worker_process: bool,
     pub ipc_socket: String,

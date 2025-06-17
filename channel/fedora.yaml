@@ -6,6 +6,33 @@ versions:
 - "40"
 - "39"
 - "38"
+distro_dirs:
+- fedora-projects/fedora-secondary
+- fedora-projects/fedora/linux
+- fedora-projects/fedora
+- fedora-projects/alt
+- fedora-projects
+- fedora.redhat.com/linux
+- Fedora/archive
+- Fedora/fedora/linux
+- fedora/fedora
+- fedora/linux
+- fedora/alt
+- fedora/fedora-secondary
+- fedora-linux/fedora-secondary
+- fedora-linux/fedora/linux
+- fedora-linux
+- fedora-eln
+- fedora-archive
+- fedora-altarch
+- fedora-secondary # Common suffix for secondary archs: AArch64 (ARM64), ARMhfp (ARM 32-bit), PowerPC (ppc64le), s390x
+- fedora-alt # Alternative/legacy builds: Older ARM, MIPS, other niche architectures
+- alt.fedoraproject.org
+- archive.fedoraproject.org
+- fedoraproject.org
+- Fedora
+- fedora
+- alt
 repos:
   Everything:
 index_url:         $mirror/releases/$version/$repo/$arch/os/repodata/repomd.xml

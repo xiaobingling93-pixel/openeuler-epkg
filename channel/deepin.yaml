@@ -1,0 +1,21 @@
+format: deb
+distro: deepin
+distro_dirs:
+- packages.deepin.com
+- deepin.org
+- deepin
+- deepin-store
+versions:
+- apricot  23
+- beige    20.9
+- eagle    20.8
+repos:
+  main:
+  contrib:
+  non-free:
+  commercial:
+index_url: $mirror/deepin/dists/$version/Release
+
+# Example URLs:
+# https://packages.deepin.com/deepin/dists/apricot/main/binary-amd64/Packages.xz
+# https://packages.deepin.com/deepin/dists/beige/contrib/binary-amd64/Packages.xz

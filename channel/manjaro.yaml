@@ -1,0 +1,23 @@
+format: pacman
+distro: manjaro
+distro_dirs:
+- repo.manjaro.org
+- manjaro.org
+- manjaro-packages
+- manjaro-repo
+- manjaro-pkg
+- manjaro
+versions:
+- stable
+- testing
+- unstable
+repos:
+  core:
+  extra:
+  community:
+  multilib:
+index_url: $mirror/$version/$repo/$arch/$repo.db.tar.xz
+
+# Example URLs:
+# https://mirrors.manjaro.org/repo/stable/core/x86_64/core.db.tar.xz
+# https://mirrors.manjaro.org/repo/testing/extra/x86_64/extra.db.tar.xz

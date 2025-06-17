@@ -1,9 +1,6 @@
 # Global mirrors that host multiple distributions
-huawei:
-  name: "Huawei Cloud Mirror"
-  url: "https://mirrors.huaweicloud.com"
-  priority: 10
-  supports:
+"https://mirrors.huaweicloud.com":
+  distros:
     - debian
     - ubuntu
     - fedora
@@ -13,11 +10,8 @@ huawei:
     - almalinux
     - alpine
 
-tsinghua:
-  name: "Tsinghua University Mirror"
-  url: "https://mirrors.tuna.tsinghua.edu.cn"
-  priority: 20
-  supports:
+"https://mirrors.tuna.tsinghua.edu.cn":
+  distros:
     - debian
     - ubuntu
     - fedora
@@ -28,11 +22,8 @@ tsinghua:
     - archlinux
     - alpine
 
-ustc:
-  name: "USTC Mirror"
-  url: "https://mirrors.ustc.edu.cn"
-  priority: 30
-  supports:
+"https://mirrors.ustc.edu.cn":
+  distros:
     - debian
     - ubuntu
     - fedora
@@ -41,11 +32,8 @@ ustc:
     - archlinux
     - alpine
 
-rackspace:
-  name: "Rackspace Mirror"
-  url: "https://mirror.rackspace.com"
-  priority: 40
-  supports:
+"https://mirror.rackspace.com":
+  distros:
     - debian
     - ubuntu
     - fedora
@@ -53,80 +41,144 @@ rackspace:
     - rocky
     - almalinux
 
-netease:
-  name: "Netease Mirror"
-  url: "https://mirrors.163.com"
-  priority: 50
-  supports:
+"https://mirrors.163.com":
+  distros:
     - debian
     - ubuntu
     - fedora
     - centos
 
 # Distribution-specific mirrors
-debian_official:
-  name: "Debian Official Mirror"
-  url: "https://deb.debian.org"
-  priority: 1
-  supports:
+"https://deb.debian.org":
+  distros:
     - debian
 
-ubuntu_official:
-  name: "Ubuntu Official Mirror"
-  url: "https://archive.ubuntu.com"
-  priority: 1
-  supports:
+"https://archive.ubuntu.com":
+  distros:
     - ubuntu
 
-# https://dl.fedoraproject.org/pub/fedora/linux/releases/42/Everything/x86_64/os/repodata/
-fedora_official:
-  name: "Fedora Official Mirror"
-  url: "https://dl.fedoraproject.org/pub"
-  priority: 1
-  supports:
+"https://dl.fedoraproject.org/pub":
+  distros:
     - fedora
 
-opensuse_official:
-  name: "openSUSE Official Mirror"
-  url: "https://download.opensuse.org"
-  priority: 1
-  supports:
+"https://download.opensuse.org":
+  distros:
     - opensuse
 
-openeuler_official:
-  name: "openEuler Official Mirror"
-  url: "https://repo.openeuler.org"
+"https://repo.openeuler.org":
   top_level: true
-  priority: 1
-  supports:
+  distros:
     - openeuler
 
-rocky_official:
-  name: "Rocky Linux Official Mirror"
-  url: "https://dl.rockylinux.org/pub"
-  priority: 1
-  supports:
+"https://dl.rockylinux.org/pub":
+  distros:
     - rocky
 
-almalinux_official:
-  name: "AlmaLinux Official Mirror"
-  url: "https://repo.almalinux.org"
-  priority: 1
-  supports:
+"https://repo.almalinux.org":
+  distros:
     - almalinux
 
-archlinux_official:
-  name: "Arch Linux Official Mirror"
-  url: "https://geo.mirror.pkgbuild.com"
+"https://geo.mirror.pkgbuild.com":
   top_level: true
-  priority: 1
-  supports:
+  distros:
     - archlinux
 
-alpine_official:
-  name: "Alpine Linux Official Mirror"
-  url: "https://dl-cdn.alpinelinux.org"
+"https://dl-cdn.alpinelinux.org":
   top_level: true
-  priority: 1
-  supports:
+  distros:
     - alpine
+
+"https://us.mirror.ionos.com/linux/distributions":
+  country_code: US
+  bandwidth: 20000
+  distros:
+    - almalinux
+    - alpine
+    - archlinux
+    - centos
+    - centos-stream
+    - centos-vault
+    - crux
+    - debian
+    - fedora
+    - gentoo
+    - grml
+    - kali
+    - knoppix
+    - mint
+    - mx
+    - opensuse
+    - raspberry
+    - rockylinux
+    - slackware
+    - ubuntu
+http://ftp.gwdg.de/pub/linux:
+http://merlin.fit.vutbr.cz/mirrors:
+  ls:
+  - debian
+  - centos
+  - ubuntu
+  - epel
+http://mirror.aarnet.edu.au/pub:
+  ls:
+  - centos
+  - fedora/linux
+  - linuxmint
+  - opensuse
+  - ubuntu
+http://mirror.eu.oneandone.net/linux/distributions:
+  ls:
+  - archlinux
+  - centos-stream
+  - centos-vault
+  - debian/debian
+  - fedora
+  - opensuse
+  - ubuntu/ubuntu
+  - almalinux
+  - alpine
+http://mirror.us.oneandone.net/linux/distributions:
+  ls:
+  - archlinux
+  - centos-stream
+  - centos-vault
+  - debian/debian
+  - fedora
+  - opensuse
+  - ubuntu/ubuntu
+  - almalinux
+  - alpine
+http://www.nic.funet.fi/pub/Linux/INSTALL:
+  ls:
+  - almalinux
+  - centos
+  - debian
+  - fedora
+  - opensuse
+  - ubuntu
+https://mirrors.aliyun.com/mirror:
+  ls:
+  - ubuntu
+  - centos
+  - epel
+  - deepin
+  - debian
+  - manjaro
+  - arch4edu
+  - archlinuxcn
+  - archlinuxarm
+  - archlinux
+  - fedora
+  - artixlinux
+  - mxlinux
+  - alpine
+  - opensuse
+  - rpmfusion
+  - raspbian
+  - fedora-altarch
+  - ubuntu-ports
+  - debian-security
+  - centos-vault
+  - fedora-alt
+  - linuxmint
+  - ros

@@ -1,5 +1,9 @@
 format: apk
 distro: alpine
+distro_dirs:
+- alpinelinux.org
+- alpinelinux
+- alpine
 versions: # Stable releases
 - "3.22"
 - "3.21"

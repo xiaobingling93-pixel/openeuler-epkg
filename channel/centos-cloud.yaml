@@ -1,0 +1,24 @@
+format: rpm
+distro: centos
+distro_dirs:
+- mirror.centos.org
+- mirror.stream.centos.org
+- vault.centos.org
+- centos.org
+- centos
+- centos-vault
+- centos-stream
+repo_type: cloud
+versions:
+- "9"
+- "8"
+- "7"
+repos:
+  cloud-common:
+  cloud-x86_64:
+  extras:
+index_url: $mirror/centos/$version/cloud/$arch/openstack-$release/repodata/repomd.xml
+
+# Example URLs:
+# http://vault.centos.org/centos/7/cloud/x86_64/openstack-queens/repodata/repomd.xml
+# http://vault.centos.org/centos/8/cloud/x86_64/openstack-train/repodata/repomd.xml

@@ -1,0 +1,12 @@
+PyYAML
+requests
+beautifulsoup4
+# For JavaScript rendering
+pycountry
+geoip2
+python-geoip
+python-geoip-geolite2
+pygeoip
+# For JavaScript rendering
+pyppeteer
+asyncio

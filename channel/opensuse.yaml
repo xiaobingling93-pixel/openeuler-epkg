@@ -1,5 +1,13 @@
 format: rpm
 distro: opensuse
+distro_dirs:
+- ftp.opensuse.org/opensuse
+- ftp.opensuse.org
+- opensuse.org
+- opensuse-full
+- openSUSE
+- opensuse/opensuse
+- opensuse
 versions: # Leap versions
 - "16.0"
 - "15.6"

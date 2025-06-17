@@ -1,0 +1,21 @@
+format: deb
+distro: debian-elts
+distro_dirs:
+- ftp.debian.org
+- deb.freexian.com
+- elts.debian.org
+- debian-elts
+- freexian
+versions:
+- stretch   9
+- jessie    8
+- wheezy    7
+repos:
+  main:
+  contrib:
+  non-free:
+index_url: $mirror/elts/dists/$version/Release
+
+# Example URLs:
+# https://deb.freexian.com/extended-lts/dists/stretch/main/binary-amd64/Packages.xz
+# https://deb.freexian.com/extended-lts/dists/jessie/contrib/binary-amd64/Packages.xz

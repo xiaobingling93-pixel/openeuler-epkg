@@ -1,5 +1,20 @@
 format: pacman
 distro: archlinux
+distro_dirs:
+- ftp.archlinux.org
+- archlinux.org
+- archlinux-pkgbuild
+- archlinux-mirror
+- archmirror
+- archlinuxarm
+- archlinuxcn
+- ArchLinux
+- Archlinux
+- archlinux
+- Arch-Linux
+- arch-linux
+- Arch
+- arch
 versions: # Rolling release
 - "latest"
 repos:

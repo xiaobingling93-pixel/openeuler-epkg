@@ -1,0 +1,25 @@
+format: deb
+distro: raspbian
+distro_dirs:
+- archive.raspbian.org
+- archive.raspberrypi.org
+- archive.raspberrypi.com
+- raspbian.org
+- raspbian
+- raspberry-pi
+- raspberrypi
+- rpi
+versions:
+- bookworm  12
+- bullseye  11
+- buster    10
+repos:
+  main:
+  contrib:
+  non-free:
+  rpi:
+index_url: $mirror/raspbian/dists/$version/Release
+
+# Example URLs:
+# http://archive.raspberrypi.org/debian/dists/bookworm/main/binary-armhf/Packages.xz
+# http://raspbian.raspberrypi.org/raspbian/dists/bookworm/rpi/binary-armhf/Packages.xz

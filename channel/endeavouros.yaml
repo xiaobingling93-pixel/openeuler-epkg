@@ -1,0 +1,17 @@
+format: pacman
+distro: endeavouros
+distro_dirs:
+- mirror.alpix.eu/endeavouros
+- endeavouros.com
+- endeavouros
+- eos
+versions:
+- "latest"
+repos:
+  endeavouros:
+  endeavouros-testing:
+index_url: $mirror/repo/$repo/$arch/$repo.db.tar.xz
+
+# Example URLs:
+# https://mirror.alpix.eu/endeavouros/repo/endeavouros/x86_64/endeavouros.db.tar.xz
+# https://mirror.alpix.eu/endeavouros/repo/endeavouros-testing/x86_64/endeavouros-testing.db.tar.xz

@@ -1,0 +1,18 @@
+format: pacman
+distro: cachyos
+distro_dirs:
+- mirror.cachyos.org
+- cachyos.org
+- cachyos
+versions:
+- "latest"
+repos:
+  cachyos:
+  cachyos-core-v3:
+  cachyos-extra-v3:
+  cachyos-kde:
+index_url: $mirror/$repo/x86_64_v3/$repo.db.tar.xz
+
+# Example URLs:
+# https://mirror.cachyos.org/repo/x86_64_v3/cachyos/cachyos.db.tar.xz
+# https://mirror.cachyos.org/repo/x86_64_v3/cachyos-core-v3/cachyos-core-v3.db.tar.xz

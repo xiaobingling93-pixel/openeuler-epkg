@@ -82,7 +82,7 @@ impl PackageManager {
         // Get mirrors for the distribution and filter by support
         let filtered_mirrors: Vec<&Mirror> = mirrors
             .values()
-            .filter(|mirror| mirror.supports.contains(&config.distro))
+            .filter(|mirror| mirror.distro_dirs.contains(&config.distro))
             .collect();
         let mut combined_mirrors: Vec<&Mirror> = filtered_mirrors.into_iter().collect();
         combined_mirrors.extend(config.mirrors.iter());

@@ -1,5 +1,7 @@
 format: conda
 distro: anaconda
+distro_dirs:
+- anaconda
 versions: # Latest release
 - "latest"
 repos:

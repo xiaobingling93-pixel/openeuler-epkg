@@ -1,0 +1,24 @@
+format: deb
+distro: linuxmint
+distro_dirs:
+- packages.linuxmint.com
+- www.linuxmint.com
+- linuxmint.com
+- linuxmint
+- mint
+versions:
+- virginia  21.3
+- una       21.2
+- vanessa   21.1
+- vera      21
+- wilma     22
+repos:
+  main:
+  upstream:
+  import:
+  backport:
+index_url: $mirror/packages/dists/$version/Release
+
+# Example URLs:
+# http://packages.linuxmint.com/dists/virginia/main/binary-amd64/Packages.xz
+# http://packages.linuxmint.com/dists/una/upstream/binary-amd64/Packages.xz

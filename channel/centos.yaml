@@ -1,0 +1,30 @@
+# CentOS Configuration
+format: rpm
+distro: centos
+distro_dirs:
+- centos-stream-all
+- centos_stream_all
+- CentOS-Stream-All
+- centos-stream
+- centosstream
+- CentOS-stream
+- CentOS
+- centos9
+- centos
+# Add other common CentOS path components if known, e.g., specific versioned paths
+# or variants like 'centos-stream' if they appear as distinct suffixes in mirror URLs.
+# For now, 'centos' is the primary one. 'Stream' or 'Linux' are usually part of the category name
+# and 'centos' is the key used in DISTRO_CONFIGS.
+
+# Basic repo structure (example, might need adjustment based on actual CentOS structure)
+# This part is not directly used by fetch_new_mirrors.py for URL stripping.
+versions:
+  - "9-stream"
+  - "8-stream"
+  - "7"
+repos:
+  baseos:
+    index_url: $mirror/$version/BaseOS/$arch/os/repodata/repomd.xml
+    # Example: http://mirror.centos.org/centos/9-stream/BaseOS/x86_64/os/repodata/repomd.xml
+  appstream:
+    index_url: $mirror/$version/AppStream/$arch/os/repodata/repomd.xml

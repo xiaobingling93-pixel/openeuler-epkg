@@ -1,5 +1,21 @@
 format: deb
 distro: ubuntu
+distro_dirs: # longer first
+- archive.ubuntu.com/ubuntu
+- archive.ubuntu.com
+- ubuntu/ubuntu-archive
+- ubuntu/ubuntu
+- debian/ubuntu
+- ubuntu.com
+- ubuntu-ports
+- ubuntu-mirror
+- ubuntu-packages
+- ubuntu/packages
+- ubuntu-archive
+- ubuntu/archive
+- ubuntuarchive
+- releases.ubuntu.com/ubuntu
+- ubuntu
 version: noble
 versions: # First value is official, others are aliases
 - noble   24.04
@@ -13,9 +29,9 @@ repos:
   universe:
   restricted:
   multiverse:
-index_url:          $mirror/ubuntu/dists/$version/Release
-index_url_updates:  $mirror/ubuntu/dists/$version-updates/Release
-index_url_security: $mirror/ubuntu/dists/$version-security/Release
+index_url:          $mirror/dists/$version/Release
+index_url_updates:  $mirror/dists/$version-updates/Release
+index_url_security: $mirror/dists/$version-security/Release
 
 # Packages url:
 # - ubuntu/dists/{version}/{repo}/binary-{arch}/Packages.xz

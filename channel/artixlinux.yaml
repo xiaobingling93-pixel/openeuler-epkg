@@ -1,0 +1,21 @@
+format: pacman
+distro: artixlinux
+distro_dirs:
+- packages.artixlinux.org
+- artixlinux.org
+- artixlinux
+- artix
+versions:
+- system
+- world
+- galaxy
+repos:
+  system:
+  world:
+  extra:
+  community:
+index_url: $mirror/repos/$version/os/$arch/$version.db.tar.xz
+
+# Example URLs:
+# https://packages.artixlinux.org/repos/system/os/x86_64/system.db.tar.xz
+# https://packages.artixlinux.org/repos/world/os/x86_64/world.db.tar.xz

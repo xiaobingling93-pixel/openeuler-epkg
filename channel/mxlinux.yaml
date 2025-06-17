@@ -1,0 +1,20 @@
+format: deb
+distro: mxlinux
+distro_dirs:
+- mxrepo.com
+- mx-linux.org
+- mxlinux
+- mx-repo
+versions:
+- mx-23    23
+- mx-21    21
+- mx-19    19
+repos:
+  main:
+  test:
+  ahs:
+index_url: $mirror/mx/repo/dists/$version/Release
+
+# Example URLs:
+# https://mxrepo.com/mx/repo/dists/mx-23/main/binary-amd64/Packages.xz
+# https://mxrepo.com/mx/repo/dists/mx-21/test/binary-amd64/Packages.xz

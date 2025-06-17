@@ -1,5 +1,17 @@
 format: rpm
 distro: rocky
+distro_dirs: # longer first
+- rocky-linux
+- rocky
+- fedoraproject.org/epel
+- fedora-projects/epel
+- fedora-linux/epel
+- fedora/fedora-epel
+- Fedora/epel
+- fedora/epel
+- Fedora-EPEL
+- fedora-epel
+- epel
 versions: # RHEL-compatible versions
 - "9"
 - "8"

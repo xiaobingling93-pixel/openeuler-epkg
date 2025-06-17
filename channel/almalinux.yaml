@@ -1,5 +1,7 @@
 format: rpm
 distro: almalinux
+distro_dirs:
+- almalinux
 versions: # RHEL-compatible versions
 - "9"
 - "8"
