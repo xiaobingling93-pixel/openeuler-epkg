@@ -1,6 +1,5 @@
 use crate::models::*;
 use color_eyre::{eyre::eyre, Result};
-use crate::models::config;
 use std::collections::HashMap;
 
 impl PackageManager {
@@ -49,13 +48,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        let current_env_name_ref = &config().common.env;
-        let channel_config = self.channels_config.get(current_env_name_ref).ok_or_else(|| {
-            eyre!(
-                "Channel configuration not found for environment '{}'. Ensure it is initialized.",
-                current_env_name_ref
-            )
-        })?;
+        let channel_config = crate::models::channel_config();
         let format = channel_config.format;
 
         // Collect all dependencies for the initial set of packages.

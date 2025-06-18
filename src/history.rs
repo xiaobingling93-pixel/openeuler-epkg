@@ -1,18 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
 use std::os::unix::fs::symlink;
-use color_eyre::eyre;
-use color_eyre::eyre::WrapErr;
-use color_eyre::Result;
+use color_eyre::eyre::{self, eyre, Result, WrapErr};
 use time::OffsetDateTime;
 use time::macros::format_description;
-use crate::eyre::eyre;
 use crate::models::*;
 
 impl PackageManager {
 
     pub fn get_current_generation_id(&mut self) -> Result<u32> {
-        let generations_root = self.get_default_generations_root()?;
+        let generations_root = crate::dirs::get_default_generations_root()?;
         let current_link = generations_root.join("current");
         let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
         let generation_id = target.to_str().unwrap().parse::<u32>().with_context(||
@@ -21,7 +18,7 @@ impl PackageManager {
     }
 
     pub fn get_generation_path(&mut self, generation_id: u32) -> Result<PathBuf> {
-        let generations_root = self.get_default_generations_root()?;
+        let generations_root = crate::dirs::get_default_generations_root()?;
         Ok(generations_root.join(generation_id.to_string()))
     }
 
@@ -60,7 +57,7 @@ impl PackageManager {
     }
 
     pub fn update_current_generation_symlink(&mut self, new_generation: PathBuf) -> Result<()> {
-        let generations_root = self.get_default_generations_root()?;
+        let generations_root = crate::dirs::get_default_generations_root()?;
         let current_link = generations_root.join("current");
 
         if current_link.exists() {
@@ -93,7 +90,7 @@ impl PackageManager {
         println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", "id", "timestamp", "action", "new_packages", "del_packages", "command line");
         println!("{:-<3}-+-{:-<26}-+-{:-<10}-+-{:-<12}-+-{:-<12}-+-{:-<40}", "", "", "", "", "", "");
 
-        let generations_root = self.get_default_generations_root()?;
+        let generations_root = crate::dirs::get_default_generations_root()?;
         let mut history_entries: Vec<(u32, GenerationCommand)> = Vec::new();
 
         // Collect history entries
@@ -147,7 +144,7 @@ impl PackageManager {
     }
 
     pub fn rollback_history(&mut self, rollback_id: i32) -> Result<()> {
-        let generations_root = self.get_default_generations_root()?;
+        let generations_root = crate::dirs::get_default_generations_root()?;
         let current_generation_id = self.get_current_generation_id()?;
 
         // Handle negative rollback IDs (relative rollback)
@@ -210,7 +207,7 @@ impl PackageManager {
         // Create a new generation for this rollback operation
         let new_generation = self.create_new_generation()?;
         let store_root = dirs().epkg_store.clone();
-        let env_root = self.get_default_env_root()?;
+        let env_root = crate::dirs::get_default_env_root()?;
 
         // Apply package changes directly to FHS directories at root level
         // Step1: Unlink old packages
@@ -264,4 +261,5 @@ impl PackageManager {
 
         Ok(())
     }
+
 }

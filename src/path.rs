@@ -3,6 +3,7 @@ use std::env;
 use color_eyre::Result;
 use color_eyre::eyre;
 use crate::models::*;
+use crate::dirs::get_env_root;
 
 impl PackageManager {
 
@@ -52,7 +53,7 @@ impl PackageManager {
     fn get_active_env_paths(&mut self, active_env: &str, pure: bool) -> Result<Vec<String>> {
         let mut path_components = Vec::new();
 
-        let env_root = self.get_env_root(active_env.to_string())?;
+        let env_root = get_env_root(active_env.to_string())?;
 
         // Validate environment exists
         if !env_root.exists() {

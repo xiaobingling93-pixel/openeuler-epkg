@@ -288,9 +288,6 @@ impl PackageManager {
             let channel_yaml = serde_yaml::to_string(&channel_config)?;
             fs::write(&env_channel_yaml, channel_yaml)?;
 
-            // Store channel config
-            self.channels_config.insert(name.to_string(), channel_config);
-
             env_config
         } else {
             // Initialize channel from command line option or default
@@ -318,22 +315,19 @@ impl PackageManager {
         env_config.register_to_path = false;
         env_config.register_priority = 0;
 
-        // Store environment config
-        self.envs_config.insert(name.to_string(), env_config.clone());
-
+        // Get packages before saving config (since env_config will be moved)
+        let packages_to_install = env_config.packages.clone();
+        
         // Save environment config
-        let env_config_path = get_env_config_path(name);
-        fs::create_dir_all(env_config_path.parent().unwrap())?;
-        let yaml = serde_yaml::to_string(&env_config)?;
-        fs::write(env_config_path, yaml)?;
+        crate::io::serialize_env_config(env_config)?;
 
         // Get channel config from the above env_channel_yaml
-        let format = self.get_channel_config(name.to_string())?.format.clone();
+        let format = crate::models::channel_config().format.clone();
         self.create_environment_directories(&env_root, &format)?;
 
         // Install packages if any
-        if !env_config.packages.is_empty() {
-            self.install_pkgkeys(env_config.packages, std::collections::HashMap::new(), &std::collections::HashMap::new())?;
+        if !packages_to_install.is_empty() {
+            self.install_pkgkeys(packages_to_install, std::collections::HashMap::new(), &std::collections::HashMap::new())?;
         } else {
             // Create metadata files
             let generations_root = env_root.join("generations");
@@ -356,7 +350,7 @@ impl PackageManager {
         }
 
         // Check if environment exists
-        let env_path = self.get_env_root(name.to_string())?;
+        let env_path = get_env_root(name.to_string())?;
         if !env_path.exists() {
             return Err(eyre::eyre!("Environment does not exist: '{}'", name));
         }
@@ -398,7 +392,7 @@ impl PackageManager {
         }
 
         // Check if environment exists
-        if !self.get_env_root(name.to_string())?.exists() {
+        if !get_env_root(name.to_string())?.exists() {
             return Err(eyre::eyre!("Environment not exist: '{}'", name));
         }
 
@@ -422,7 +416,7 @@ impl PackageManager {
         }
 
         // Get environment config for env_vars
-        let env_config = self.get_env_config(name.to_string())?;
+        let env_config = crate::models::env_config();
 
         // Initialize deactivate script
         let mut script = String::new();
@@ -526,10 +520,7 @@ impl PackageManager {
             return Err(eyre::eyre!("Environment 'common' cannot be registered"));
         }
 
-        let env_config = match self.get_env_config(name.to_string()) {
-            Ok(config) => config,
-            Err(_) => return Err(eyre::eyre!("Environment '{}' does not exist", name))
-        };
+        let env_config = crate::models::env_config();
 
         if env_config.register_to_path {
             println!("# Environment '{}' is already registered.", name);
@@ -577,8 +568,7 @@ impl PackageManager {
         let mut env_config = env_config.clone();
         env_config.register_to_path = true;
         env_config.register_priority = priority;
-        self.envs_config.insert(name.to_string(), env_config.clone());
-        self.save_env_config(&name)?;
+        crate::io::serialize_env_config(env_config)?;
 
         self.update_path()?;
         println!("# Environment '{}' has been registered with priority {}.", name, priority);
@@ -587,7 +577,7 @@ impl PackageManager {
 
     pub fn unregister_environment(&mut self, name: &str) -> Result<()> {
         // Check if already unregistered
-        let env_config = self.get_env_config(name.to_string())?;
+        let env_config = crate::models::env_config();
         if !env_config.register_to_path {
             println!("# Environment '{}' is not registered.", name);
             return Ok(());
@@ -611,8 +601,7 @@ impl PackageManager {
         let mut env_config = env_config.clone();
         env_config.register_to_path = false;
         env_config.register_priority = 0;
-        self.envs_config.insert(name.to_string(), env_config.clone());
-        self.save_env_config(&name)?;
+        crate::io::serialize_env_config(env_config)?;
 
         self.update_path()?;
         println!("# Environment '{}' has been unregistered.", name);
@@ -673,13 +662,13 @@ impl PackageManager {
     #[allow(dead_code)]
     pub fn list_generations(&mut self, name: &str) -> Result<()> {
         // Check if environment exists
-        let env_root = self.get_env_root(name.to_string())?;
+        let env_root = get_env_root(name.to_string())?;
         if !env_root.exists() {
             return Err(eyre::eyre!("Environment does not exist: '{}'", name));
         }
 
         // Get generations directory
-        let generations_root = self.get_generations_root(name)?;
+        let generations_root = get_generations_root(name)?;
         if !generations_root.exists() {
             return Err(eyre::eyre!("No generations found for environment: '{}'", name));
         }
@@ -746,13 +735,12 @@ impl PackageManager {
 
     pub fn export_environment(&mut self, name: &str, output: Option<String>) -> Result<()> {
         // Get environment config and channel config first
-        let env_config = self.get_env_config(name.to_string())?.clone();
-        let generations_root = self.get_generations_root(name)?;
+        let mut env_config = crate::models::env_config().clone();
+        let generations_root = get_generations_root(name)?;
 
         // Get installed packages
         let current_gen = fs::read_link(generations_root.join("current"))?;
         let installed_packages_path = current_gen.join("installed-packages.json");
-        let mut env_config = env_config;
 
         if installed_packages_path.exists() {
             let contents = fs::read_to_string(&installed_packages_path)?;
@@ -763,7 +751,7 @@ impl PackageManager {
         }
 
         // Serialize each config separately
-        let channel_config = self.get_channel_config(name.to_string())?;
+        let channel_config = crate::models::channel_config();
         let channel_yaml = serde_yaml::to_string(&channel_config)?;
         let env_yaml = serde_yaml::to_string(&env_config)?;
 
@@ -791,8 +779,7 @@ impl PackageManager {
 
     /// Get environment configuration value
     pub fn get_environment_config(&mut self, name: &str) -> Result<()> {
-        let env_name = config().common.env.clone();
-        let config = self.get_env_config(env_name)?;
+        let config = crate::models::env_config();
 
         // Split name by dots to handle nested fields
         let parts: Vec<&str> = name.split('.').collect();
@@ -810,9 +797,8 @@ impl PackageManager {
 
     /// Set environment configuration value
     pub fn set_environment_config(&mut self, name: &str, value: &str) -> Result<()> {
-        let env_name = config().common.env.clone();
-        self.get_env_config(env_name.clone())?; // load from file
-
+        let config = crate::models::env_config(); // load from file
+        let mut config = config.clone();
         // Split name by dots to handle nested fields
         let parts: Vec<&str> = name.split('.').collect();
 
@@ -821,11 +807,6 @@ impl PackageManager {
             return Err(eyre::eyre!("Can only set top-level configuration keys"));
         }
 
-        // Get a mutable reference to the config
-        let config = self.envs_config.get_mut(&env_name)
-            .ok_or_else(|| eyre::eyre!("Environment not found: {}", env_name))?;
-
-        // Set the value directly on config
         match parts[0] {
             "name" => config.name = value.to_string(),
             "env_base" => config.env_base = value.to_string(),
@@ -837,8 +818,7 @@ impl PackageManager {
         }
 
         // Save the updated config
-        // self.envs_config.insert(env_name.clone(), config.clone());
-        self.save_env_config(&env_name)?;
+        crate::io::serialize_env_config(config)?;
 
         Ok(())
     }

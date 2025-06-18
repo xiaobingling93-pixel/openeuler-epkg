@@ -838,7 +838,7 @@ impl PackageManager {
         self.load_installed_packages()?;
         let original_installed_packages = self.installed_packages.clone();
 
-        let channel_config = self.get_channel_config(config().common.env.clone())?;
+        let channel_config = crate::models::channel_config();
         let package_format = channel_config.format;
 
         let mut initial_packages_info = self.resolve_package_info(package_specs.clone(), package_format);
@@ -1038,7 +1038,7 @@ impl PackageManager {
         let pending_urls: Vec<String> = url_to_pkgkey.keys().cloned().collect();
 
         let new_generation = self.create_new_generation()?;
-        let env_root = self.get_default_env_root()?.clone();
+        let env_root = crate::dirs::get_default_env_root()?.clone();
         let store_root = dirs().epkg_store.clone();
 
         let mut mutable_packages_for_processing = packages_to_download_and_process.clone();
@@ -1052,12 +1052,7 @@ impl PackageManager {
 
         let _ = std::fs::remove_dir("/run/systemd/system");
 
-        let current_env_name_ref = &config().common.env;
-        let channel_config = self.channels_config.get(current_env_name_ref)
-            .ok_or_else(|| eyre::eyre!(
-                "Channel configuration not found for environment '{}'. Ensure environment is initialized and linked to a channel.",
-                current_env_name_ref
-            ))?;
+        let channel_config = crate::models::channel_config();
         let package_format = channel_config.format;
 
         let mut upgrades_new_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();

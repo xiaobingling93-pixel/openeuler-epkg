@@ -9,7 +9,8 @@ use color_eyre::eyre;
 use crate::models::*;
 use crate::download::download_urls;
 use crate::utils;
-use crate::dirs::find_env_root;
+use crate::dirs::{find_env_root, get_env_root};
+use crate::models::dirs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 
@@ -238,7 +239,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        let common_env_root = self.get_env_root("common".to_string())?;
+        let common_env_root = get_env_root("common".to_string())?;
 
         for shell_rc_info in shell_rc_infos {
             let rc_content = format!(

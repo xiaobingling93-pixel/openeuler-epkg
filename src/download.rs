@@ -15,6 +15,7 @@ use ureq::{Agent, Proxy};
 use ureq::http;
 use crate::dirs;
 use crate::models::*;
+use crate::mirror::{append_download_log, track_mirror_usage_start, track_mirror_usage_end, MIRRORS, Mirrors};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use filetime::set_file_mtime;
 
@@ -65,18 +66,7 @@ impl DownloadTask {
     }
 
     pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, size: Option<u64>) -> Self {
-        // Calculate final_path during task creation
-        // - For normal URLs: output_dir/last_url_segment
-        // - For URLs with triple slashes: output_dir/everything_after_triple_slash
-        //   Example: "https://example.com///foo/bar.txt" -> output_dir/foo/bar.txt
-        let final_path = if let Some((_, str_b)) = url.split_once("///") {
-            output_dir.join(str_b)
-        } else {
-            let file_name = url.split('/').last()
-                .unwrap_or("unknown_file");
-            output_dir.join(file_name)
-        };
-
+        let final_path = Mirrors::resolve_mirror_path(&url, &output_dir);
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = final_path.with_extension("part");
 
@@ -135,6 +125,8 @@ impl DownloadTask {
     pub fn reset_attempt(&self) {
         self.attempt_number.store(0, std::sync::atomic::Ordering::SeqCst);
     }
+
+
 
     /// Create a chunk task for a specific byte range
     pub fn create_chunk_task(&self, offset: u64, size: u64) -> Arc<DownloadTask> {
@@ -505,6 +497,15 @@ impl DownloadManager {
             let chunk_clone = Arc::clone(&chunk_task);
             let _chunk_handles_clone = Arc::clone(chunk_handles);
 
+            // Resolve mirror URL before spawning thread to ensure consistency
+            let resolved_url = match resolve_mirror_in_url(&chunk_clone.url, 0, &chunk_clone.output_dir) {
+                Ok((resolved_url, final_path)) => (resolved_url, final_path),
+                Err(e) => {
+                    log::error!("Failed to resolve mirror for chunk {}: {}", chunk_clone.url, e);
+                    continue; // Skip this chunk if mirror resolution fails
+                }
+            };
+
             let handle = thread::spawn(move || {
                 let client = Agent::config_builder()
                     .user_agent("curl/8.13.0")
@@ -517,10 +518,16 @@ impl DownloadManager {
                     *start_time = Some(std::time::Instant::now());
                 }
 
-                if let Err(e) = download_chunk_task(
+                let chunk_result = download_chunk_task(
                     &client,
                     &chunk_clone,
-                ) {
+                    &resolved_url.0,
+                );
+
+                // Ensure mirror usage tracking is ended using the same resolved URL
+                track_mirror_end_from_url(&resolved_url.0);
+
+                if let Err(e) = chunk_result {
                     log::error!("Chunk task failed for {} at offset {}: {}",
                                chunk_clone.url, chunk_clone.chunk_offset, e);
 
@@ -641,6 +648,123 @@ impl std::fmt::Display for FatalError {
 }
 
 impl std::error::Error for FatalError {}
+
+
+
+/// Helper function to extract distro and format info from URL for mirror selection
+
+
+/*
+ * ============================================================================
+ * DOWNLOAD-TIME MIRROR RESOLUTION SYSTEM
+ * ============================================================================
+ *
+ * INTELLIGENT RESOLUTION STRATEGY:
+ *
+ * This system implements mirror resolution at download time rather than at
+ * repo metadata preparation time. This provides several key advantages:
+ *
+ * 1. **Failure Recovery**: Can switch mirrors on download failures
+ * 2. **Load Balancing**: Distributes downloads across multiple mirrors
+ * 3. **Performance Optimization**: Uses real-time performance data
+ * 4. **Retry Intelligence**: Selects different mirrors for retry attempts
+ *
+ * RETRY LOGIC:
+ *
+ * - First attempt: Use optimal mirror with normal concurrent limits
+ * - Retry attempts: Reduce concurrent limits to encourage different selection
+ * - This naturally provides fallback to less-loaded mirrors on failures
+ *
+ * DISTRO-AGNOSTIC DESIGN:
+ *
+ * Since mirrors are pre-filtered by distro at initialization, this function
+ * no longer needs to extract distro information from URLs or pass it through
+ * the selection chain. This eliminates heuristic parsing and simplifies
+ * the resolution logic significantly.
+ */
+
+/// Resolve mirror placeholder in URL with smart mirror selection
+///
+/// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
+fn resolve_mirror_in_url(url: &str, retry_count: usize, output_dir: &Path) -> Result<(String, PathBuf)> {
+    if !url.contains("$mirror") {
+        // For URLs without mirror placeholders, return as-is
+        return Ok((url.to_string(), Mirrors::resolve_mirror_path(&url, output_dir)));
+    }
+
+    let mirrors = MIRRORS.lock()
+        .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
+
+    // For retries, try different mirrors by adjusting the max concurrent limit
+    // This encourages selection of different mirrors on failures
+    let max_concurrent = if retry_count == 0 { 10 } else { 5 };
+
+    let selected_mirror = mirrors.select_mirror_with_usage_tracking(max_concurrent)?;
+
+    // Get distro directory for the selected mirror
+    let distro = &crate::models::channel_config().distro;
+    let arch = &crate::models::channel_config().arch;
+    let distro_dir = crate::mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch);
+    let final_distro_dir = if distro_dir.is_empty() { distro } else { &distro_dir };
+
+    let url_formatted = mirrors.format_mirror_url(&selected_mirror.url, selected_mirror.top_level, final_distro_dir)?;
+
+    let resolved_url = url.replace("$mirror", &url_formatted);
+
+    let final_path = Mirrors::resolve_mirror_path(&url, output_dir);
+
+    log::debug!("Mirror resolution: {} -> {} (retry: {})", url, resolved_url, retry_count);
+
+    Ok((resolved_url, final_path))
+}
+
+/// Track mirror usage for a URL (extract base mirror and increment)
+fn track_mirror_start_from_url(url: &str) {
+    if let Some(mirror_part) = extract_mirror_base_from_url(url) {
+        track_mirror_usage_start(&mirror_part);
+    }
+}
+
+/// Stop tracking mirror usage for a URL
+fn track_mirror_end_from_url(url: &str) {
+    if let Some(mirror_part) = extract_mirror_base_from_url(url) {
+        track_mirror_usage_end(&mirror_part);
+    }
+}
+
+/// Extract mirror base URL from a resolved URL
+fn extract_mirror_base_from_url(url: &str) -> Option<String> {
+    if let Some(triple_slash_pos) = url.find("///") {
+        Some(url[..triple_slash_pos].to_string())
+    } else if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        if let Some(path_start) = after_scheme.find('/') {
+            Some(format!("{}://{}", &url[..scheme_end], &after_scheme[..path_start]))
+        } else {
+            Some(url.to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/*
+ * ============================================================================
+ * SIMPLIFIED MIRROR SYSTEM
+ * ============================================================================
+ *
+ * STREAMLINED INITIALIZATION:
+ *
+ * The mirror system is now initialized directly with distro filtering at startup,
+ * eliminating the need for complex runtime initialization logic:
+ *
+ * 1. **Immediate Filtering**: Uses channel_config().distro at LazyLock time
+ * 2. **Performance Data Loading**: Historical logs loaded during initialization
+ * 3. **No Runtime Setup**: Mirrors are ready for use immediately
+ * 4. **Simplified Code Path**: Removes initialization complexity from download path
+ *
+ * This provides better performance and reliability while simplifying the codebase.
+ */
 
 pub static DOWNLOAD_MANAGER: LazyLock<DownloadManager> = LazyLock::new(|| {
     DownloadManager::new(config().common.nr_parallel, &config().common.proxy)
@@ -769,8 +893,28 @@ fn verify_file_size(part_path: &Path, expected_size: Option<u64>, url: &str) -> 
     Ok(())
 }
 
+/*
+ * ============================================================================
+ * DOWNLOAD ORCHESTRATION WITH MIRROR OPTIMIZATION
+ * ============================================================================
+ *
+ * PERFORMANCE LOGGING INTEGRATION:
+ *
+ * Every download operation contributes to the mirror performance database:
+ *
+ * 1. **Latency Tracking**: HTTP request timing for all call() operations
+ * 2. **Throughput Measurement**: Actual transfer speeds during content download
+ * 3. **Error Classification**: Distinguishes server errors from network issues
+ * 4. **Capability Detection**: Tracks range request support and content availability
+ *
+ * This comprehensive logging enables the mirror selection system to make
+ * increasingly intelligent decisions over time.
+ */
+
 /// Downloads a file from a URL to the output directory.
 /// Uses the final_path that was calculated when the task was created.
+///
+/// Ensures optimal mirror configuration and comprehensive performance logging
 fn download_task(
     client: &Agent,
     task: &DownloadTask,
@@ -812,16 +956,16 @@ fn download_task(
     // Setup progress bar
     let pb = setup_progress_bar(multi_progress, url)?;
 
-    // Start the download
+    // Start the download - download_file_with_retries handles mirror resolution
     log::debug!("download_task calling download_file_with_retries for {}", url);
     let result = download_file_with_retries(
         client,
-        url,
+        url, // Pass original URL, mirror resolution happens in download_file_with_retries
         &part_path,
         &pb,
         max_retries,
         data_channel.clone(),
-        task, // Pass the task for chunking support
+        task,
     );
     log::debug!("download_task download_file_with_retries completed for {}, result: {:?}", url, result);
 
@@ -830,7 +974,7 @@ fn download_task(
 
     // Update progress bar based on result
     if result.is_ok() {
-        pb.finish_with_message(format!("Downloaded {}", final_path.to_string_lossy()));
+        pb.finish_with_message(format!("Downloaded {}", final_path.display()));
     } else {
         pb.finish_with_message(format!("Error: {:?}", result));
     }
@@ -909,26 +1053,56 @@ fn download_file_with_retries(
 ) -> Result<()> {
     log::debug!("download_file_with_retries starting for {}, has_channel: {}", url, data_channel.is_some());
     let mut retries = 0;
+    let mut current_mirror_url: Option<String> = None;
 
     loop {
-        log::debug!("download_file_with_retries calling download_file for {}, attempt {}", url, retries + 1);
+        // Resolve mirror for this attempt (try different mirrors on retries)
+        let resolved_url = match resolve_mirror_in_url(url, retries, &task.output_dir) {
+            Ok((resolved, final_path)) => {
+                log::debug!("Mirror resolved for attempt {}: {} -> {}", retries + 1, url, resolved);
+                if resolved != url {
+                    current_mirror_url = Some(resolved.clone());
+                }
+                resolved
+            }
+            Err(e) => {
+                log::warn!("Failed to resolve mirror for {}: {}", url, e);
+                return Err(eyre!("Mirror resolution failed: {}", e));
+            }
+        };
+
+        // Track mirror usage start
+        if current_mirror_url.is_some() {
+            track_mirror_start_from_url(&resolved_url);
+        }
+
+        log::debug!("download_file_with_retries calling download_file for {}, attempt {}", resolved_url, retries + 1);
         log::debug!("About to call download_file with data_channel.is_some() = {}", data_channel.is_some());
-        match download_file(client, url, part_path, pb, retries, &data_channel, task) {
+
+        let download_result = download_file(client, &resolved_url, &part_path, pb, retries, &data_channel, task);
+
+        // Track mirror usage end
+        if current_mirror_url.is_some() {
+            track_mirror_end_from_url(&resolved_url);
+        }
+
+        match download_result {
             Ok(()) => {
-                log::debug!("download_file_with_retries completed successfully for {}, dropping channel", url);
+                log::debug!("download_file_with_retries completed successfully for {}, dropping channel", resolved_url);
+
                 return Ok(());
             },
             Err(e) => {
-                log::debug!("download_file_with_retries got error for {}: {:?}", url, e);
+                log::debug!("download_file_with_retries got error for {}: {:?}", resolved_url, e);
 
                 // Check if this is a fatal error (like 404) that shouldn't be retried
                 if e.downcast_ref::<FatalError>().is_some() {
-                    log::info!("Skipping retries for fatal error (client error 4xx) for {}", url);
+                    log::info!("Skipping retries for fatal error (client error 4xx) for {}", resolved_url);
                     return Err(e);
                 }
 
                 if retries >= max_retries {
-                    return Err(eyre!("Max retries ({}) exceeded for {}: {}", max_retries, url, e));
+                    return Err(eyre!("Max retries ({}) exceeded for {}: {}", max_retries, resolved_url, e));
                 }
 
                 retries += 1;
@@ -1171,7 +1345,26 @@ fn download_file(
         }
     }
 
+        let download_start = std::time::Instant::now();
     let final_downloaded = download_content(&mut response, part_path, pb, existing_bytes, data_channel, task)?;
+    let total_duration = download_start.elapsed().as_millis() as u64;
+
+    // Calculate network bytes transferred (excluding resumed bytes)
+    let network_bytes = task.get_network_bytes();
+
+    // Log comprehensive download performance
+    if let Err(e) = append_download_log(
+        url,
+        network_bytes,
+        total_duration,
+        0, // We don't have the initial latency here, it was logged separately
+        true,
+        None,
+        Some(!task.chunk_tasks.lock().unwrap().is_empty() || response.status().as_u16() == 206), // Range support if chunked or got 206
+        Some(true),
+    ) {
+        log::warn!("Failed to log download completion: {}", e);
+    }
 
     // If this is a master task with chunks, wait for all chunks to complete
     if task.is_master_task() {
@@ -1225,7 +1418,10 @@ fn make_download_request_with_416_handling(
     pb: &ProgressBar,
     data_channel: &Option<Sender<Vec<u8>>>,
 ) -> Result<http::Response<ureq::Body>> {
-    let mut request = client.get(url.replace("///", "/"));
+    let mut request = client.get(url.replace("///", "/"))
+        .config()
+        .max_redirects(3)
+        .build();
 
     // Get the download offset from task's chunk_offset or use the downloaded size
     let downloaded = task.chunk_offset;
@@ -1243,16 +1439,65 @@ fn make_download_request_with_416_handling(
         }
     }
 
+    let request_start = std::time::Instant::now();
     match request.call() {
-        Ok(response) => Ok(response),
+        Ok(response) => {
+            let latency = request_start.elapsed().as_millis() as u64;
+            // Log latency info for successful requests
+            if let Err(e) = append_download_log(
+                url,
+                0, // No bytes transferred yet for this call
+                latency,
+                latency,
+                true,
+                None,
+                None,
+                Some(true), // Content was available since we got a response
+            ) {
+                log::warn!("Failed to log download latency: {}", e);
+            }
+            Ok(response)
+        },
         Err(ureq::Error::StatusCode(code)) => {
+            let latency = request_start.elapsed().as_millis() as u64;
             log::debug!("download_file got HTTP error code: {}", code);
+
+            // Log the error for performance tracking
+            if let Err(e) = append_download_log(
+                url,
+                0,
+                latency,
+                latency,
+                false,
+                Some(format!("HTTP {}", code)),
+                None,
+                Some(code != 404), // Content available unless it's 404
+            ) {
+                log::warn!("Failed to log download error: {}", e);
+            }
+
             if code == 416 && downloaded > 0 {
                 // The requested byte range is outside the size of the file
                 log::debug!("download_file handling HTTP 416 with downloaded={}", downloaded);
                 return handle_416_range_error(client, url, task, part_path, pb, data_channel);
             }
-            handle_non_416_http_error(code, url, pb)
+            let result = handle_non_416_http_error(code, url, pb);
+
+            // Log the error handling
+            if let Err(e) = append_download_log(
+                url,
+                0,
+                latency,
+                latency,
+                false,
+                Some(format!("HTTP {}", code)),
+                None,
+                Some(code != 404),
+            ) {
+                log::warn!("Failed to log HTTP error: {}", e);
+            }
+
+            result
         }
         Err(ureq::Error::Io(e)) => {
             let error_msg = format!("Network error: {} - {}", e, url);
@@ -1278,8 +1523,28 @@ fn handle_416_range_error(
 ) -> Result<http::Response<ureq::Body>> {
     let downloaded = task.chunk_offset; // Use task's chunk_offset instead of downloaded parameter
     // Send a request to check remote size and time, then compare with local
-    let remote_metadata = client.get(url.replace("///", "/")).call()
+    let metadata_request_start = std::time::Instant::now();
+    let remote_metadata = client.get(url.replace("///", "/"))
+        .config()
+        .max_redirects(3)
+        .build()
+        .call()
         .with_context(|| format!("Failed to make HTTP request for {}", url))?;
+    let metadata_latency = metadata_request_start.elapsed().as_millis() as u64;
+
+    // Log metadata request latency
+    if let Err(e) = append_download_log(
+        url,
+        0,
+        metadata_latency,
+        metadata_latency,
+        true,
+        None,
+        None,
+        Some(true),
+    ) {
+        log::warn!("Failed to log metadata request latency: {}", e);
+    }
 
     let remote_size = parse_content_length(&remote_metadata);
     log::debug!("download_file remote_size: {}, local_size: {}", remote_size, downloaded);
@@ -1370,6 +1635,20 @@ fn handle_resume_logic(
     status: u16,
 ) -> Result<u64> {
     if existing_bytes > 0 && status != 206 {
+        // Log that server doesn't support range requests
+        if let Err(e) = append_download_log(
+            url,
+            0,
+            0,
+            0,
+            false,
+            Some("No range support".to_string()),
+            Some(false), // Server doesn't support range requests
+            Some(true),
+        ) {
+            log::warn!("Failed to log range support info: {}", e);
+        }
+
         fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
         pb.println(format!("Server doesn't support resume, restarting: {}", url));
         Ok(0)
@@ -1663,7 +1942,7 @@ impl PackageManager {
             Ok(dest_path.to_string_lossy().to_string())
         } else {
             // Remote file - use the URL to cache path conversion
-            let cache_path = crate::repo::url_to_cache_path(&url)
+            let cache_path = crate::mirror::Mirrors::url_to_cache_path(&url)
                 .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?;
             Ok(cache_path.to_string_lossy().to_string())
         }
@@ -1686,7 +1965,7 @@ impl PackageManager {
                 package.location
             );
             urls.push(url.clone());
-            let cache_path = crate::repo::url_to_cache_path(&url)
+            let cache_path = crate::mirror::Mirrors::url_to_cache_path(&url)
                 .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?
                 .to_string_lossy().to_string();
             local_files.push(cache_path);
@@ -1788,13 +2067,18 @@ fn create_chunk_tasks(task: &DownloadTask, total_size: u64, downloaded: u64) -> 
     Ok(chunk_tasks)
 }
 
+
 /// Download a specific chunk of a file
 fn download_chunk_task(
     client: &Agent,
     task: &DownloadTask,
+    resolved_url: &str,
 ) -> Result<()> {
-    let url = &task.url;
+    let url = resolved_url;
     let chunk_path = &task.chunk_path;
+
+    // Track mirror usage for chunk
+    track_mirror_start_from_url(url);
     let chunk_offset = task.chunk_offset;
     let chunk_size = task.chunk_size;
 
@@ -1839,20 +2123,72 @@ fn download_chunk_task(
     let end_offset = chunk_offset + chunk_size - 1; // Keep the original end offset
     let range_header = format!("bytes={}-{}", adjusted_offset, end_offset);
 
+    let chunk_request_start = std::time::Instant::now();
     let response = client.get(url)
         .header("Range", &range_header)
+        .config()
+        .max_redirects(3)
+        .build()
         .call()
         .map_err(|e| eyre!("Failed to make chunk request for {}: {}", url, e))?;
+    let chunk_latency = chunk_request_start.elapsed().as_millis() as u64;
+
+    // Log chunk request latency
+    if let Err(e) = append_download_log(
+        url,
+        0,
+        chunk_latency,
+        chunk_latency,
+        true,
+        None,
+        Some(response.status().as_u16() == 206), // Server supports range requests
+        Some(true),
+    ) {
+        log::warn!("Failed to log chunk request latency: {}", e);
+    }
 
     if response.status().as_u16() != 206 {
+        // Log that server doesn't support range requests for chunks
+        if let Err(e) = append_download_log(
+            url,
+            0,
+            chunk_latency,
+            chunk_latency,
+            false,
+            Some(format!("No chunk range support (got {})", response.status())),
+            Some(false),
+            Some(true),
+        ) {
+            log::warn!("Failed to log chunk range error: {}", e);
+        }
         return Err(eyre!("Server doesn't support range requests (got {})", response.status()));
     }
 
     // Download the chunk content
+    let chunk_download_start = std::time::Instant::now();
     download_chunk_content(response, chunk_path, task)?;
+    let chunk_download_duration = chunk_download_start.elapsed().as_millis() as u64;
+
+    // Log chunk download completion
+    let chunk_bytes = task.received_bytes.load(std::sync::atomic::Ordering::Relaxed);
+    if let Err(e) = append_download_log(
+        url,
+        chunk_bytes,
+        chunk_download_duration + chunk_latency, // Total time including latency
+        chunk_latency,
+        true,
+        None,
+        Some(true), // Range requests work for chunks
+        Some(true),
+    ) {
+        log::warn!("Failed to log chunk download completion: {}", e);
+    }
 
     log::debug!("Completed chunk download: {} bytes at offset {} for {}",
                chunk_size, chunk_offset, url);
+
+    // Track mirror usage end for chunk
+    track_mirror_end_from_url(url);
 
     // Mark task as completed
     update_download_status(task, DownloadStatus::Completed)?;
@@ -2216,7 +2552,15 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Check if process is still running (Unix-like systems)
+    // Get current process ID
+    let current_pid = std::process::id();
+
+    // Check if PID in file matches current process ID
+    if pid == current_pid {
+        return false;
+    }
+
+    // If not our PID, check if the process is still running (Unix-like systems)
     #[cfg(unix)]
     {
         use std::process::Command;

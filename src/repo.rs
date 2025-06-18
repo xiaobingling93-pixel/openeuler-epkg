@@ -12,7 +12,6 @@ use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
 use crate::models::*;
-
 use crate::dirs;
 use crate::download::download_urls;
 use crate::download::DownloadTask;
@@ -64,60 +63,8 @@ pub struct RepoReleaseItem {
 #[allow(dead_code)]
 impl PackageManager {
 
-    // Replace variables in the index_url string with actual values
-    // Examples:
-    // input:  $mirror/debian/dists/$VERSION/Release
-    // output: https://mirrors.huaweicloud.com///debian/dists/TRIXIE/contrib/Release
-    //
-    // Variables:
-    // - $mirror: the top priority mirror that supports the distribution
-    // - $VERSION: the upper case version string
-    // - $version: the version string
-    // - $repo: the repository name
-    // - $arch: the architecture name
-    #[allow(dead_code)]
-    pub fn interpolate_index_url(&mut self, config: &ChannelConfig, repo_name: &str, index_url: &str) -> Result<String> {
-        let mirrors = self.get_mirrors()
-            .with_context(|| "Failed to get mirrors for index URL interpolation")?;
-        // Get mirrors for the distribution and filter by support
-        let filtered_mirrors: Vec<&Mirror> = mirrors
-            .values()
-            .filter(|mirror| mirror.distro_dirs.contains(&config.distro))
-            .collect();
-        let mut combined_mirrors: Vec<&Mirror> = filtered_mirrors.into_iter().collect();
-        combined_mirrors.extend(config.mirrors.iter());
-        // Avoid borrowing self mutably and immutably at the same time
-        let selected_mirror = {
-            let mirrors_ref = &combined_mirrors;
-            select_mirror(mirrors_ref, &config.distro, config.format.clone())?
-        };
-
-        let mut url = index_url.to_string();
-
-        if !url.contains("$mirror") {
-            // Find the first '/' after '://'
-            if let Some(pos) = url.find("://") {
-                let rest = &url[pos + 3..]; // Skip past '://'
-                if let Some(slash_pos) = rest.find('/') {
-                    let replace_pos = pos + 3 + slash_pos;
-                    url.replace_range(replace_pos..replace_pos + 1, "///");
-                }
-            }
-        } else {
-            url = url.replace("$mirror", &selected_mirror);
-        }
-
-        url = url.replace("$VERSION", &config.version.to_uppercase());
-        url = url.replace("$version", &config.version);
-        url = url.replace("$repo", repo_name);
-        url = url.replace("$arch", &config.arch);
-
-        Ok(url)
-    }
-
     pub fn sync_channel_metadata(&mut self) -> Result<()> {
-        let channel_config = self.get_channel_config(config().common.env.clone())
-            .with_context(|| "Failed to get channel configuration")?;
+        let channel_config = crate::models::channel_config();
 
         let all_repos = get_revise_repos(channel_config.clone())
             .with_context(|| "Failed to get repository revision information")?;
@@ -127,41 +74,6 @@ impl PackageManager {
         Ok(())
     }
 
-}
-
-/// Selects the highest priority mirror for a given distribution.
-///
-/// # Arguments
-/// * `mirrors` - Map of distribution names to their available mirrors
-/// * `distro` - The distribution to find a mirror for
-///
-/// # Returns
-/// * `Result<String>` - The selected mirror URL with appropriate path formatting
-///
-/// # Behavior
-/// * Sorts by mirror priority
-/// * For top_level=true mirrors, appends "//" to the URL
-/// * For other levels, appends "/$distro//" to the URL
-#[allow(dead_code)]
-fn select_mirror(mirrors: &Vec<&Mirror>, distro: &str, format: PackageFormat) -> Result<String> {
-    if mirrors.is_empty() {
-        return Err(eyre::eyre!("No supported mirrors found for distro: {}", distro));
-    }
-
-    // Sort by priority in descending order (highest priority first)
-    let mut sorted_mirrors = mirrors.clone();
-    sorted_mirrors.sort_by(|a, b| b.priority.cmp(&a.priority));
-
-    // Select highest priority mirror and format URL appropriately
-    let mirror = sorted_mirrors.first()
-        .ok_or_else(|| eyre::eyre!("No mirrors available after sorting"))?;
-    let url = if mirror.top_level || format == PackageFormat::Deb {
-        format!("{}//", mirror.url.trim_end_matches('/'))
-    } else {
-        format!("{}///{}", mirror.url.trim_end_matches('/'), distro)
-    };
-
-    Ok(url)
 }
 
 pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
@@ -232,20 +144,6 @@ fn revise_repos(format: PackageFormat, all_repos: Vec<RepoRevise>) -> Result<()>
     }
 
     Ok(())
-}
-
-pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
-    // Find the '///' and replace everything before it with the cache dir
-    let cache_root = dirs().epkg_downloads_cache.clone();
-    if let Some(idx) = url.find("///") {
-        let rel = &url[idx + 3..];
-        Ok(cache_root.join(rel))
-    } else if let Some(after_scheme) = url.split("://").nth(1) {
-        Ok(cache_root.join(after_scheme))
-    } else {
-        // this should never happen, error instead
-        eyre::bail!("Error: cannot determine cache path for url: {}", url);
-    }
 }
 
 fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
@@ -471,7 +369,7 @@ fn sync_from_package_database(format: PackageFormat, repo: &RepoRevise, packages
 pub fn sync_repo_metadata(format: PackageFormat, repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
     let repo_dir = dirs::get_repo_dir(&repo)
         .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
-    let release_path = url_to_cache_path(&repo.index_url)
+    let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url)
         .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
 
     let release_items = if repo.index_url.ends_with("Release") || repo.index_url.ends_with("repomd.xml") {

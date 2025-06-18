@@ -77,25 +77,27 @@ impl EPKGDirsBuilder {
     }
 }
 
-impl PackageManager {
-
-    pub fn get_env_root(&mut self, env_name: String) -> Result<PathBuf> {
-        let env_config = self.get_env_config(env_name)?;
+pub fn get_env_root(env_name: String) -> Result<PathBuf> {
+    let env_config = crate::models::env_config();
+    if env_config.name == env_name {
+        Ok(PathBuf::from(&env_config.env_root))
+    } else {
+        let env_config = crate::io::deserialize_env_config_for(env_name)?;
         Ok(PathBuf::from(&env_config.env_root))
     }
+}
 
-    pub fn get_default_env_root(&mut self) -> Result<PathBuf> {
-        self.get_env_root(config().common.env.clone())
-    }
+pub fn get_default_env_root() -> Result<PathBuf> {
+    get_env_root(config().common.env.clone())
+}
 
-    pub fn get_generations_root(&mut self, env_name: &str) -> Result<PathBuf> {
-        let env_root = self.get_env_root(env_name.to_string())?;
-        Ok(env_root.join("generations"))
-    }
+pub fn get_generations_root(env_name: &str) -> Result<PathBuf> {
+    let env_root = get_env_root(env_name.to_string())?;
+    Ok(env_root.join("generations"))
+}
 
-    pub fn get_default_generations_root(&mut self) -> Result<PathBuf> {
-        self.get_generations_root(&config().common.env)
-    }
+pub fn get_default_generations_root() -> Result<PathBuf> {
+    get_generations_root(&config().common.env)
 }
 
 // Find the path to an environment's root directory, the path is canonicalized and exists

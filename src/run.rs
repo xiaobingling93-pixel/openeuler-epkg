@@ -460,7 +460,7 @@ impl PackageManager {
         debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
 
         // Get the default environment root
-        let env_root = self.get_default_env_root()?.clone();
+        let env_root = crate::dirs::get_default_env_root()?.clone();
         info!("Using environment root: {}", env_root.display());
 
         // Find the command in environment PATH under env_root prefix

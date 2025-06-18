@@ -6,7 +6,7 @@ use color_eyre::eyre::{self, eyre, WrapErr, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use crate::models::*;
-use crate::repo::{RepoRevise, RepoReleaseItem, url_to_cache_path};
+use crate::repo::{RepoRevise, RepoReleaseItem};
 use regex::Regex;
 use crate::dirs;
 use crate::packages_stream;
@@ -142,7 +142,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 index_url.trim_end_matches('/')
                             };
                             let url = format!("{}/{}", baseurl, current_location);
-                            let download_path = url_to_cache_path(&url)
+                            let download_path = crate::mirror::Mirrors::url_to_cache_path(&url)
                                 .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
                             let need_download = !download_path.exists();
 

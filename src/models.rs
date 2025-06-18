@@ -9,6 +9,7 @@ use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use std::sync::Arc;
 
+
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"debian";
@@ -31,18 +32,6 @@ pub enum PackageFormat {
     Conda,
     #[serde(rename = "python")]
     Python,
-}
-
-// Mirror configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Mirror {
-    pub url: String,
-    #[serde(default)]
-    pub priority: u32,
-    #[serde(default)]
-    pub top_level: bool,
-    #[serde(default)]
-    pub distro_dirs: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -333,6 +322,8 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub distro: String,
     #[serde(default)]
+    pub distro_dirs: Vec<String>,
+    #[serde(default)]
     pub version: String,
     #[serde(default)]
     pub arch: String,
@@ -342,8 +333,6 @@ pub struct ChannelConfig {
     pub channel: String,
     #[serde(default)]
     pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
-    #[serde(default)]
-    pub mirrors: Vec<Mirror>,
     pub index_url: String,
     #[serde(default)]
     pub index_url_updates: Option<String>,
@@ -372,6 +361,24 @@ pub struct RepoConfig {
 
 static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
         LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+
+// Global ENV_CONFIG and CHANNEL_CONFIG using LazyLock
+static ENV_CONFIG: LazyLock<EnvConfig> = LazyLock::new(|| {
+    crate::io::deserialize_env_config().expect("Failed to deserialize env config")
+});
+
+static CHANNEL_CONFIG: LazyLock<ChannelConfig> = LazyLock::new(|| {
+    crate::io::deserialize_channel_config().expect("Failed to deserialize channel config")
+});
+
+// Accessor functions for global configs
+pub fn env_config() -> &'static EnvConfig {
+    &ENV_CONFIG
+}
+
+pub fn channel_config() -> &'static ChannelConfig {
+    &CHANNEL_CONFIG
+}
 
 // use at package install time
 pub fn repodata_indice() -> std::sync::RwLockReadGuard<'static, HashMap<String, RepoIndex>> {
@@ -648,9 +655,6 @@ pub struct EPKGDirs {
 #[allow(dead_code)]
 #[derive(Default)]
 pub struct PackageManager {
-    pub envs_config: HashMap<String, EnvConfig>,            // key: env_name
-    pub channels_config: HashMap<String, ChannelConfig>,    // key: env_name
-
     // legacy epkg data structure
     pub repos_data: Vec<Repodata>,
     // These legacy fields have been obsoleted:
@@ -668,8 +672,6 @@ pub struct PackageManager {
     // authoritative data source. If a pkgkey is not found here, the package
     // is treated as not installed.
     pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey (!= pkgline)
-
-    pub mirrors: HashMap<String, Mirror>,   // key: mirror url
 
     pub has_worker_process: bool,
     pub ipc_socket: String,

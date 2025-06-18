@@ -318,10 +318,10 @@ impl PackageManager {
         }
 
         let new_generation = self.create_new_generation()?;
-        let env_root = self.get_default_env_root()?;
+        let env_root = crate::dirs::get_default_env_root()?;
         let store_root = dirs().epkg_store.clone();
         let repo_format = {
-            let channel_config = self.get_channel_config(config().common.env.clone())?;
+            let channel_config = crate::models::channel_config();
             channel_config.format
         };
 

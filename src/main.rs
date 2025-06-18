@@ -18,6 +18,8 @@ mod init;
 mod path;
 mod repo;
 mod mmio;
+mod mirror;
+mod location;
 mod package;
 mod packages_stream;
 mod deb_repo;
@@ -990,7 +992,7 @@ impl PackageManager {
             show_version: false, // Default to not showing versions
             show_path: true, // Default to showing paths
             regex_pattern: None, // Will be set if regexp is true
-            format: self.get_channel_config(config().common.env.clone())?.format.clone(),
+            format: crate::models::channel_config().format.clone(),
         };
 
         // Process the filelists based on the options
