@@ -30,6 +30,7 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
 }
 
 /// Get environment configuration (simplified API)
+#[allow(dead_code)]
 pub fn get_env_config() -> Result<EnvConfig> {
     Ok(env_config().clone())
 }
@@ -172,6 +173,7 @@ pub fn deserialize_channel_config() -> Result<ChannelConfig> {
     Ok(channel_config)
 }
 
+#[allow(dead_code)]
 pub fn get_channel_config() -> Result<ChannelConfig> {
     Ok(channel_config().clone())
 }

@@ -1,48 +1,158 @@
 use serde::{Deserialize, Serialize};
 use crate::models::channel_config;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, Arc};
+use std::sync::{LazyLock, Mutex};
 use std::path::Path;
 use std::path::PathBuf;
 use crate::dirs::get_epkg_manager_path;
 use crate::models::dirs;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, eyre, bail};
 use std::fs;
 use crate::location;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use time::{OffsetDateTime, UtcOffset};
+use time::macros::format_description;
+// Removed unused serde imports
 // Removed chrono dependency
 
+/// Convert Unix timestamp to formatted datetime string using time crate
+fn format_timestamp_to_local_datetime(timestamp: u64) -> String {
+    // Convert timestamp to OffsetDateTime in UTC first
+    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
+        Ok(utc_datetime) => {
+            // Try to get local offset and convert to local time
+            let local_datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
+                utc_datetime.to_offset(local_offset)
+            } else {
+                // Fallback to UTC if we can't get local offset (e.g., in multi-threaded environment)
+                utc_datetime
+            };
+
+            // Use the same format as in history.rs for consistency
+            local_datetime.format(&format_description!("[year]-[month]-[day].[hour repr:24]:[minute]:[second]"))
+                .unwrap_or_else(|_| format!("{}", timestamp))
+        },
+        Err(_) => format!("{}", timestamp), // Fallback to timestamp if conversion fails
+    }
+}
+
+/// Generate log file name from timestamp using proper date formatting
+fn generate_log_file_name(timestamp: u64) -> String {
+    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
+        Ok(utc_datetime) => {
+            // Try to get local offset and convert to local time, fallback to UTC
+            let datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
+                utc_datetime.to_offset(local_offset)
+            } else {
+                // Fallback to UTC if we can't get local offset
+                utc_datetime
+            };
+
+            // Use YYYY-MM format for monthly log rotation
+            datetime.format(&format_description!("[year]-[month padding:zero]"))
+                .map(|date_str| format!("mirror-{}.log", date_str))
+                .unwrap_or_else(|_| {
+                    // Final fallback - use UTC formatting directly
+                    utc_datetime.format(&format_description!("[year]-[month padding:zero]"))
+                        .map(|date_str| format!("mirror-{}.log", date_str))
+                        .unwrap_or_else(|_| format!("mirror-{}.log", timestamp))
+                })
+        },
+        Err(_) => {
+            // Last resort fallback if timestamp conversion completely fails
+            format!("mirror-{}.log", timestamp)
+        }
+    }
+}
+
+/// Generate a list of month strings for the last N months using proper date formatting
+fn generate_recent_month_strings(timestamp: u64, months_back: usize) -> Vec<String> {
+    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
+        Ok(utc_datetime) => {
+            // Try to get local offset and convert to local time, fallback to UTC
+            let current_datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
+                utc_datetime.to_offset(local_offset)
+            } else {
+                // Fallback to UTC if we can't get local offset
+                utc_datetime
+            };
+
+            let mut month_strings = Vec::new();
+
+            for i in 0..months_back {
+                // Calculate the date for i months ago (approximate with 30 days per month)
+                let days_to_subtract = i as i64 * 30;
+                let target_date = if let Some(target) = current_datetime.checked_sub(time::Duration::days(days_to_subtract)) {
+                    target
+                } else {
+                    // Try UTC fallback if local time calculation fails
+                    if let Some(target) = utc_datetime.checked_sub(time::Duration::days(days_to_subtract)) {
+                        target
+                    } else {
+                        continue;
+                    }
+                };
+
+                if let Ok(month_str) = target_date.format(&format_description!("[year]-[month padding:zero]")) {
+                    month_strings.push(month_str);
+                }
+            }
+
+            month_strings
+        },
+        Err(_) => {
+            // Last resort fallback if timestamp conversion completely fails
+            vec![format!("{}", timestamp / (24 * 3600 * 30))] // Very rough month approximation
+        }
+    }
+}
+
+
+
 // Add at the top level with other constants
+#[allow(dead_code)]
 pub const PROTO_HTTP: u8 = 1;   // 0b001
+#[allow(dead_code)]
 pub const PROTO_HTTPS: u8 = 2;  // 0b010
+#[allow(dead_code)]
 pub const PROTO_RSYNC: u8 = 4;  // 0b100
 
-// Performance log entry structure
+// Static variable to track how many times mirror performance stats function was called
+static STATS_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// HTTP event types for non-download operations
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum HttpEvent {
+    Latency(u64),       // ms
+    NoRange,            // Server doesn't support range requests
+    NoContent,          // Content not available (404)
+    NetError(String),   // Network error
+    HttpError(u16),     // HTTP error code
+}
+
+// Performance log entry structure (simplified - removed latency_ms, error_type, supports_range, content_available)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PerformanceLog {
     pub timestamp: u64,      // Unix timestamp
     pub url: String,         // The actual URL used for download
+    pub offset: u64,         // Starting offset for chunk tasks
     pub bytes_transferred: u64, // Actual bytes transferred from network
     pub duration_ms: u64,    // Total duration including latency
-    pub latency_ms: u64,     // Just the initial connection/request latency
     pub throughput_bps: u64, // Calculated: bytes_transferred * 1000 / duration_ms
     pub success: bool,       // Whether the operation succeeded
-    pub error_type: Option<String>, // HTTP error code or error description
-    pub supports_range: Option<bool>, // Whether server supports Range requests
-    pub content_available: Option<bool>, // Whether content was available (not 404)
 }
 
-// Mirror usage tracking
-#[derive(Debug, Default)]
-pub struct MirrorUsage {
-    pub active_downloads: AtomicUsize,
-    pub total_uses: AtomicU64,
-    pub last_used: AtomicU64, // Unix timestamp
-}
-
-// Mirror configuration with compact field names
+// HTTP log entry structure for non-download events
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HttpLog {
+    pub timestamp: u64,      // Unix timestamp
+    pub url: String,         // The actual URL used
+    pub event: HttpEvent,    // Event type
+}
+
+// Mirror configuration with compact field names - now includes usage tracking
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Mirror {
     #[serde(default)]
     #[serde(skip_serializing)]
@@ -69,7 +179,7 @@ pub struct Mirror {
     #[serde(rename = "i2", default, deserialize_with = "crate::mirror::bool_from_number")]
     pub internet2: bool,
     #[serde(default)]
-    pub score: u32,
+    pub score: u64,
     #[serde(default)]
     pub throughputs: Vec<u32>,  // historical download speeds in bytes/sec
     #[serde(default)]
@@ -79,18 +189,86 @@ pub struct Mirror {
     #[serde(default)]
     pub no_online: bool,        // whether server is in service
     #[serde(default)]
-    pub no_content: bool,       // whether server has the files we requested
+    pub no_content: bool,       // whether server has the files we requested in current run
     #[serde(default)]
-    pub performance_logs: Vec<PerformanceLog>, // Recent performance history
+    #[serde(skip_serializing)]
+    pub adaptive_max_concurrent: usize,  // cached value of adaptive max concurrent limit
+
+    // Usage tracking fields (merged from MirrorUsage)
+    #[serde(skip_serializing)]
+    #[serde(skip_deserializing)]
+    pub active_downloads: AtomicUsize,
+    #[serde(skip_serializing)]
+    #[serde(skip_deserializing)]
+    pub total_uses: AtomicU64,
+    #[serde(skip_serializing)]
+    #[serde(skip_deserializing)]
+    pub last_used: AtomicU64, // Unix timestamp
+}
+
+// Implement Clone manually since AtomicUsize/AtomicU64 don't implement Clone
+impl Clone for Mirror {
+    fn clone(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+            distros: self.distros.clone(),
+            distro_dirs: self.distro_dirs.clone(),
+            ls_dirs: self.ls_dirs.clone(),
+            top_level: self.top_level,
+            country_code: self.country_code.clone(),
+            protocols: self.protocols,
+            bandwidth: self.bandwidth,
+            internet2: self.internet2,
+            score: self.score,
+            throughputs: self.throughputs.clone(),
+            latencies: self.latencies.clone(),
+            no_range: self.no_range,
+            no_online: self.no_online,
+            no_content: self.no_content,
+            adaptive_max_concurrent: self.adaptive_max_concurrent,
+            active_downloads: AtomicUsize::new(self.active_downloads.load(Ordering::Relaxed)),
+            total_uses: AtomicU64::new(self.total_uses.load(Ordering::Relaxed)),
+            last_used: AtomicU64::new(self.last_used.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+// Implement Default for Mirror
+impl Default for Mirror {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            distros: Vec::new(),
+            distro_dirs: Vec::new(),
+            ls_dirs: Vec::new(),
+            top_level: false,
+            country_code: None,
+            protocols: 0,
+            bandwidth: None,
+            internet2: false,
+            score: 0,
+            throughputs: Vec::new(),
+            latencies: Vec::new(),
+            no_range: false,
+            no_online: false,
+            no_content: false,
+            adaptive_max_concurrent: 0,
+            active_downloads: AtomicUsize::new(0),
+            total_uses: AtomicU64::new(0),
+            last_used: AtomicU64::new(0),
+        }
+    }
 }
 
 impl Mirror {
     // Helper method to check if a protocol is supported
+    #[allow(dead_code)]
     pub fn supports_protocol(&self, protocol: u8) -> bool {
         self.protocols & protocol != 0
     }
 
     // Helper method to get supported protocols as strings (if needed)
+    #[allow(dead_code)]
     pub fn protocol_list(&self) -> Vec<String> {
         let mut protocols = Vec::new();
         if self.supports_protocol(PROTO_HTTP) {
@@ -107,143 +285,124 @@ impl Mirror {
 
     // Helper method to update performance metrics
     pub fn record_performance(&mut self, throughput: u32, latency: u32) {
-        const MAX_HISTORY: usize = 5;  // Keep last 5 measurements
+        const MAX_HISTORY: usize = 10;  // Keep last 10 measurements
 
-        // Add new throughput
-        self.throughputs.push(throughput);
-        if self.throughputs.len() > MAX_HISTORY {
-            self.throughputs.remove(0);
+        // Add new throughput if non-zero
+        if throughput > 0 {
+            self.throughputs.push(throughput);
+            if self.throughputs.len() > MAX_HISTORY {
+                self.throughputs.remove(0);
+            }
         }
 
-        // Add new latency
-        self.latencies.push(latency);
-        if self.latencies.len() > MAX_HISTORY {
-            self.latencies.remove(0);
-        }
-    }
-
-    // Helper method to calculate average throughput
-    pub fn avg_throughput(&self) -> Option<u32> {
-        if self.throughputs.is_empty() {
-            None
-        } else {
-            Some(self.throughputs.iter().sum::<u32>() / self.throughputs.len() as u32)
-        }
-    }
-
-    // Helper method to calculate average latency
-    pub fn avg_latency(&self) -> Option<u32> {
-        if self.latencies.is_empty() {
-            None
-        } else {
-            Some(self.latencies.iter().sum::<u32>() / self.latencies.len() as u32)
-        }
-    }
-
-    // Calculate weighted performance score based on recent history
-    pub fn calculate_performance_score(&self) -> f64 {
-        if self.performance_logs.is_empty() {
-            return self.score as f64;
-        }
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let mut weighted_score = 0.0;
-        let mut weight_sum = 0.0;
-
-        // Filter to recent logs (last 24 hours) and successful transfers
-        let recent_logs: Vec<_> = self.performance_logs.iter()
-            .filter(|log| {
-                let age_hours = (now - log.timestamp) / 3600;
-                age_hours <= 24 && log.success && log.bytes_transferred > 0
-            })
-            .collect();
-
-        if recent_logs.is_empty() {
-            return self.score as f64;
-        }
-
-        for log in recent_logs {
-            let age_hours = (now - log.timestamp) / 3600;
-            let recency_weight = 1.0 / (1.0 + age_hours as f64 * 0.1); // Newer logs have higher weight
-
-            // Score based on throughput (higher is better) and latency (lower is better)
-            let throughput_score = (log.throughput_bps as f64 / 1_000_000.0).min(100.0); // Cap at 100 Mbps
-            let latency_penalty = (log.latency_ms as f64 / 1000.0).min(5.0); // Cap penalty at 5 seconds
-            let performance_score = throughput_score - latency_penalty;
-
-            weighted_score += performance_score * recency_weight;
-            weight_sum += recency_weight;
-        }
-
-        if weight_sum > 0.0 {
-            let final_score = (weighted_score / weight_sum) + self.score as f64;
-            final_score.max(0.0)
-        } else {
-            self.score as f64
-        }
-    }
-
-    // Add a new performance log entry
-    pub fn add_performance_log(&mut self, log: PerformanceLog) {
-        const MAX_LOGS: usize = 50; // Keep last 50 performance logs
-
-        self.performance_logs.push(log);
-
-        // Keep only recent logs
-        if self.performance_logs.len() > MAX_LOGS {
-            self.performance_logs.remove(0);
-        }
-
-        // Also update the legacy throughputs/latencies arrays for backward compatibility
-        if let Some(last_log) = self.performance_logs.last() {
-            if last_log.success && last_log.bytes_transferred > 0 {
-                self.record_performance(
-                    last_log.throughput_bps as u32,
-                    last_log.latency_ms as u32
-                );
+        // Add new latency if non-zero
+        if latency > 0 {
+            self.latencies.push(latency);
+            if self.latencies.len() > MAX_HISTORY {
+                self.latencies.remove(0);
             }
         }
     }
 
-    // Check if mirror has recent failed attempts
-    pub fn has_recent_failures(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+    // Helper method to calculate weighted average throughput
+    // Newer measurements have higher weights: sum(i * self.throughputs[i]) / sum(i)
+    pub fn avg_throughput(&self) -> Option<u32> {
+        if self.throughputs.is_empty() {
+            None
+        } else {
+            // Calculate sum of weights (1 + 2 + ... + n)
+            let n = self.throughputs.len();
+            let sum_weights = (n * (n + 1)) / 2;
 
-        self.performance_logs.iter()
-            .filter(|log| (now - log.timestamp) < 3600) // Last hour
-            .any(|log| !log.success)
+            // Calculate weighted sum: 1*throughputs[0] + 2*throughputs[1] + ... + n*throughputs[n-1]
+            let weighted_sum: u64 = self.throughputs.iter().enumerate()
+                .map(|(i, &t)| (i + 1) as u64 * t as u64)
+                .sum();
+
+            Some((weighted_sum / sum_weights as u64) as u32)
+        }
     }
 
-    // Get recent success rate (0.0 to 1.0)
-    pub fn recent_success_rate(&self) -> f64 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+    // Helper method to calculate median latency
+    pub fn avg_latency(&self) -> Option<u32> {
+        if self.latencies.is_empty() {
+            None
+        } else {
+            // Create a sorted copy of latencies
+            let mut sorted = self.latencies.clone();
+            sorted.sort();
 
-        let recent_logs: Vec<_> = self.performance_logs.iter()
-            .filter(|log| (now - log.timestamp) < 3600) // Last hour
-            .collect();
+            // Get the middle value (median)
+            let mid = sorted.len() / 2;
+            if sorted.len() % 2 == 0 && sorted.len() >= 2 {
+                // Even number of elements, average the two middle values
+                Some((sorted[mid - 1] + sorted[mid]) / 2)
+            } else {
+                // Odd number of elements, return the middle value
+                Some(sorted[mid])
+            }
+        }
+    }
 
-        if recent_logs.is_empty() {
-            return 1.0; // Default to good if no recent data
+    /// Calculate weighted performance score for mirror selection optimization
+    ///
+    /// This algorithm combines multiple factors to produce a single score for mirror ranking:
+    ///
+    /// **Core Performance Metrics:**
+    /// - **Throughput**: Based on historical download speeds (higher = better)
+    /// - **Latency**: Based on historical response times (lower is better, squared penalty)
+    ///
+    /// **Fallback Strategy:**
+    /// - Uses optimistic defaults for mirrors without historical data to encourage exploration
+    /// - Default latency: 30ms, Default throughput: estimated from bandwidth specs
+    ///
+    /// **Score Formula:**
+    /// ```
+    /// base_score = avg_throughput / avg_latency
+    /// final_score = base_score * country_multiplier
+    /// ```
+    ///
+    /// **Geographic Optimization:**
+    /// - 8x bonus for mirrors in the same country as the user
+    /// - This heavily favors local mirrors for better performance and compliance
+    ///
+    /// **Constraints:**
+    /// - Throughput capped between 1KB/s and 100MB/s to prevent outliers
+    /// - Latency capped between 10ms and 500ms for realistic bounds
+    /// - Squared latency penalty amplifies the preference for low-latency mirrors
+    ///
+    /// **Returns:** Calculated score (higher values indicate better mirrors)
+    pub fn calculate_performance_score(&mut self) -> u64 {
+        let avg_latency = self.avg_latency().unwrap_or(100) as u64;
+        let avg_throughput = self.avg_throughput().unwrap_or(
+                            self.bandwidth.unwrap_or(512) * (1024*1024/8/1024)) as u64; // Mbps => B/s; the last /1024 is total_site_bw => my_connection_throughput
+
+        // Score based on throughput (higher is better) and latency (lower is better)
+        let mut throughput_score = (avg_throughput).min(100_000_000).max(1000); // Cap in [1KB/s, 100MB/s]
+
+        // Apply country bonus
+        // Highly prefer mirrors in same country
+        if let Ok(user_country_code) = location::get_country_code() {
+            if self.country_code.as_deref() == Some(user_country_code.as_str()) {
+                throughput_score *= 8; // Country bonus
+            }
         }
 
-        let success_count = recent_logs.iter().filter(|log| log.success).count();
-        success_count as f64 / recent_logs.len() as f64
+        // real tests in CN show there may be 2-3 times difference in same country
+        // so divide it twice to prefer the near sites
+        let latency_penalty = (avg_latency).min(500).max(10); // Cap in 10-500 ms
+        let performance_score = throughput_score / latency_penalty;
+        if performance_score > 0 {
+            self.score = performance_score;
+        }
+
+        self.score
     }
 }
 
 pub struct Mirrors {
-    pub mirrors: HashMap<String, Mirror>, // key: mirror url
-    pub mirror_usage: HashMap<String, Arc<MirrorUsage>>, // Track concurrent usage
+    pub mirrors: HashMap<String, Mirror>, // key: mirror site (without protocol scheme)
+    pub available_mirrors: Vec<String>, // Site names of available mirrors (sorted by score)
 }
 
 /*
@@ -253,33 +412,43 @@ pub struct Mirrors {
  *
  * SIMPLIFIED DESIGN PHILOSOPHY:
  *
- * This system implements direct distro-filtered mirror initialization for
- * optimal performance and simplicity:
+ * This system implements country-aware distro-filtered mirror initialization
+ * for optimal performance and geographic proximity:
  *
  * 1. **Direct Initialization**: Mirrors are loaded with distro filtering at
  *    startup time using channel_config().distro directly
  *
- * 2. **Fallback Strategy**: If distro-specific loading fails or returns empty,
- *    automatically falls back to loading all mirrors
+ * 2. **Country-Based Filtering**: When user country code is available, filters
+ *    mirrors to match the user's country for better performance
  *
- * 3. **Bulk Performance Loading**: All 6 months of performance logs are loaded
+ * 3. **Smart Fallback Strategy**: If fewer than 3 country-specific mirrors are
+ *    found, falls back to all distro mirrors (not all mirrors globally)
+ *
+ * 4. **Bulk Performance Loading**: All 6 months of performance logs are loaded
  *    at initialization time in a single efficient pass
  *
- * 4. **Integrated Usage Tracking**: Mirror usage is tracked within the Mirrors
+ * 5. **Integrated Usage Tracking**: Mirror usage is tracked within the Mirrors
  *    struct itself, eliminating the need for separate global state
  *
- * 5. **Date-Based Log Rotation**: Performance logs use monthly rotation with
+ * 6. **Date-Based Log Rotation**: Performance logs use monthly rotation with
  *    key=value format for better compatibility and debugging
  *
  * IMPLEMENTATION BENEFITS:
  *
+ * - Geographic optimization: Country-based mirror selection when possible
+ * - Smart fallback: Ensures adequate mirror availability
  * - Single initialization: No complex re-initialization sequences
  * - Immediate performance data: 6 months of logs loaded at startup
  * - Clean architecture: All mirror state in one place
  * - Future-proof logging: Extensible key=value log format
  */
 
-pub static MIRRORS: LazyLock<Mutex<Mirrors>> = LazyLock::new(initialize_mirrors);
+pub static MIRRORS: LazyLock<Mutex<Mirrors>> = LazyLock::new(|| {
+    initialize_mirrors().unwrap_or_else(|e| {
+        eprintln!("Failed to initialize mirrors: {}", e);
+        std::process::exit(1);
+    })
+});
 
 /// Load channel/mirrors.json with optional distro filtering
 ///
@@ -290,13 +459,19 @@ pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<St
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
-    let mut all_mirrors: HashMap<String, Mirror> = serde_json::from_str(&contents)
+    let all_mirrors_raw: HashMap<String, Mirror> = serde_json::from_str(&contents)
         .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
 
-    // Merge ls_dirs into distro_dirs and assign URL keys for all mirrors
-    for (url, mirror) in all_mirrors.iter_mut() {
+    // Convert URL keys to site keys and merge distros and ls_dirs into distro_dirs
+    let mut all_mirrors: HashMap<String, Mirror> = HashMap::new();
+    for (url, mut mirror) in all_mirrors_raw {
         mirror.distro_dirs.extend(mirror.ls_dirs.clone());
+        mirror.distro_dirs.extend(mirror.distros.clone());
         mirror.url = url.clone();
+
+        // Use site name as key instead of full URL
+        let site_key = url2site(&url);
+        all_mirrors.insert(site_key, mirror);
     }
 
     // Apply distro filtering if requested
@@ -373,7 +548,7 @@ fn is_mirror_suitable_for_distro(mirror: &Mirror, target_distro: &str) -> bool {
  *
  * 4. **Key=Value Format**: Future-proof logging format that supports easy
  *    extension without breaking compatibility:
- *    ts=1234567890 url=https://... bytes=1024 dur=500 lat=100 ok=1
+ *    [1234567890] https://... bytes=1024 dur=500 lat=100 ok=1
  *
  * 5. **Intelligent Mirror Matching**: Each log entry finds its mirror using
  *    URL pattern matching, eliminating the need for per-mirror log loading
@@ -383,23 +558,26 @@ fn is_mirror_suitable_for_distro(mirror: &Mirror, target_distro: &str) -> bool {
  */
 
 /// Append download performance log both to file and in-memory structures
+/// This should only be called for actual downloads with bytes > 0
 pub fn append_download_log(
     url: &str,
+    offset: u64,
     bytes_transferred: u64,
     duration_ms: u64,
-    latency_ms: u64,
     success: bool,
-    error_type: Option<String>,
-    supports_range: Option<bool>,
-    content_available: Option<bool>,
 ) -> Result<()> {
+    // Only log actual downloads with bytes > 0
+    if bytes_transferred == 0 {
+        return Ok(());
+    }
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
     let throughput_bps = if duration_ms > 0 && bytes_transferred > 0 {
-        (bytes_transferred * 1000) / duration_ms
+        (bytes_transferred * 1024) / duration_ms
     } else {
         0
     };
@@ -407,14 +585,11 @@ pub fn append_download_log(
     let log_entry = PerformanceLog {
         timestamp,
         url: url.to_string(),
+        offset,
         bytes_transferred,
         duration_ms,
-        latency_ms,
         throughput_bps,
         success,
-        error_type: error_type.clone(),
-        supports_range,
-        content_available,
     };
 
     // Log to file
@@ -425,21 +600,46 @@ pub fn append_download_log(
 
     // Debug output for informative dumps as requested
     if log::log_enabled!(log::Level::Debug) {
-        let mbps = throughput_bps as f64 / 1_000_000.0;
+        let kbps = throughput_bps / 1024;
         log::debug!(
-            "Mirror performance: {} | {:.2} MB/s | {}ms latency | {}ms total | {} bytes | success: {}{}{}",
-            extract_mirror_base_url(url),
-            mbps,
-            latency_ms,
+            "Mirror performance: {} | {} KB/s | {}ms total | {} bytes | offset: {} | success: {}",
+            url2site(url),
+            kbps,
             duration_ms,
             bytes_transferred,
+            offset,
             success,
-            error_type.as_ref().map(|e| format!(" | error: {}", e)).unwrap_or_default(),
-            if let Some(range) = supports_range {
-                format!(" | range: {}", range)
-            } else {
-                String::new()
-            }
+        );
+    }
+
+    Ok(())
+}
+
+/// Append HTTP event log for non-download operations
+pub fn append_http_log(url: &str, event: HttpEvent) -> Result<()> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let http_log = HttpLog {
+        timestamp,
+        url: url.to_string(),
+        event: event.clone(),
+    };
+
+    // Log to file
+    append_http_log_to_file(&http_log)?;
+
+    // Update in-memory mirror data based on event
+    update_mirror_http_event(&http_log)?;
+
+    // Debug output
+    if log::log_enabled!(log::Level::Debug) {
+        log::debug!(
+            "Mirror HTTP event: {} | {:?}",
+            url2site(url),
+            event,
         );
     }
 
@@ -450,13 +650,9 @@ pub fn append_download_log(
 fn append_log_to_file(log_entry: &PerformanceLog) -> Result<()> {
     use std::io::Write;
 
-    // Generate current month string using standard library
-    let days_since_epoch = log_entry.timestamp / (24 * 3600);
-    let current_year = 1970 + (days_since_epoch / 365);
-    let current_month = ((days_since_epoch % 365) / 30) + 1;
-
-    let log_file_name = format!("mirror-{}-{:02}.log", current_year, current_month);
-    let log_file_path = dirs().epkg_downloads_cache.join("logs").join(log_file_name);
+    // Generate log file name using proper date formatting
+    let log_file_name = generate_log_file_name(log_entry.timestamp);
+    let log_file_path = dirs().epkg_downloads_cache.join("log").join(log_file_name);
 
     // Ensure parent directory exists
     if let Some(parent) = log_file_path.parent() {
@@ -471,17 +667,14 @@ fn append_log_to_file(log_entry: &PerformanceLog) -> Result<()> {
         .with_context(|| format!("Failed to open log file: {}", log_file_path.display()))?;
 
     // Use key=value format for better compatibility and extensibility
-    let log_line = format!("ts={} url={} bytes={} dur={} lat={} tput={} ok={} err={} range={} avail={}\n",
-        log_entry.timestamp,
+    let log_line = format!("{} {} offset={} bytes={} dur={} tput={} ok={}\n",
+        format_timestamp_to_local_datetime(log_entry.timestamp),
         log_entry.url,
+        log_entry.offset,
         log_entry.bytes_transferred,
         log_entry.duration_ms,
-        log_entry.latency_ms,
         log_entry.throughput_bps,
         if log_entry.success { "1" } else { "0" },
-        log_entry.error_type.as_deref().unwrap_or("-"),
-        log_entry.supports_range.map(|b| if b { "1" } else { "0" }).unwrap_or("-"),
-        log_entry.content_available.map(|b| if b { "1" } else { "0" }).unwrap_or("-"),
     );
 
     file.write_all(log_line.as_bytes())
@@ -490,22 +683,60 @@ fn append_log_to_file(log_entry: &PerformanceLog) -> Result<()> {
     Ok(())
 }
 
+/// Append HTTP log entry to the log file with date-based rotation
+fn append_http_log_to_file(http_log: &HttpLog) -> Result<()> {
+    use std::io::Write;
+
+    // Generate log file name using proper date formatting
+    let log_file_name = generate_log_file_name(http_log.timestamp);
+    let log_file_path = dirs().epkg_downloads_cache.join("log").join(log_file_name);
+
+    // Ensure parent directory exists
+    if let Some(parent) = log_file_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create log directory: {}", parent.display()))?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)
+        .with_context(|| format!("Failed to open log file: {}", log_file_path.display()))?;
+
+    // Use key=value format for HTTP events
+    let event_str = match &http_log.event {
+        HttpEvent::Latency(ms) => format!("latency={}", ms),
+        HttpEvent::NoRange => "no_range=1".to_string(),
+        HttpEvent::NoContent => "no_content=1".to_string(),
+        HttpEvent::NetError(err) => format!("net_error={}", err),
+        HttpEvent::HttpError(code) => format!("http_error={}", code),
+    };
+
+    let log_line = format!("{} {} {}\n",
+        format_timestamp_to_local_datetime(http_log.timestamp),
+        http_log.url,
+        event_str,
+    );
+
+    file.write_all(log_line.as_bytes())
+        .with_context(|| "Failed to write HTTP log to file")?;
+
+    Ok(())
+}
+
 /// Update in-memory mirror performance data
 fn update_mirror_performance(log_entry: &PerformanceLog) -> Result<()> {
-    let mirror_base_url = extract_mirror_base_url(&log_entry.url);
+    let site = url2site(&log_entry.url);
 
     if let Ok(mut mirrors_guard) = MIRRORS.lock() {
-        if let Some(mirror) = mirrors_guard.mirrors.get_mut(&mirror_base_url) {
-            mirror.add_performance_log(log_entry.clone());
-
-            // Update mirror status flags based on the log
-            if let Some(supports_range) = log_entry.supports_range {
-                mirror.no_range = !supports_range;
-            }
-
-            if let Some(content_available) = log_entry.content_available {
-                mirror.no_content = !content_available;
-                mirror.no_online = !content_available && !log_entry.success;
+        if let Some(mirror) = mirrors_guard.mirrors.get_mut(&site) {
+            // Update performance data if successful
+            if log_entry.success && log_entry.bytes_transferred > 0 {
+                mirror.record_performance(
+                    log_entry.throughput_bps as u32,
+                    0
+                );
+                mirror.calculate_performance_score();
             }
         }
     }
@@ -513,22 +744,57 @@ fn update_mirror_performance(log_entry: &PerformanceLog) -> Result<()> {
     Ok(())
 }
 
-/// Extract the base mirror URL from a full download URL
-fn extract_mirror_base_url(url: &str) -> String {
-    // Handle URLs with triple slashes (our mirror format)
-    if let Some(triple_slash_pos) = url.find("///") {
-        url[..triple_slash_pos].to_string()
-    } else if let Some(scheme_end) = url.find("://") {
-        // For regular URLs, find the domain part
-        let after_scheme = &url[scheme_end + 3..];
-        if let Some(path_start) = after_scheme.find('/') {
-            format!("{}://{}", &url[..scheme_end], &after_scheme[..path_start])
-        } else {
-            url.to_string()
+/// Update in-memory mirror data based on HTTP events
+fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
+    let site = url2site(&http_log.url);
+
+    if let Ok(mut mirrors_guard) = MIRRORS.lock() {
+        if let Some(mirror) = mirrors_guard.mirrors.get_mut(&site) {
+            match &http_log.event {
+                HttpEvent::Latency(ms) => {
+                    // Update latency data
+                    mirror.record_performance(0, *ms as u32);
+                    mirror.calculate_performance_score();
+                },
+                HttpEvent::NoRange => {
+                    mirror.no_range = true;
+                },
+                HttpEvent::NoContent => {
+                    mirror.no_content = true;
+                },
+                HttpEvent::NetError(_) => {
+                    mirror.no_online = true;
+                },
+                HttpEvent::HttpError(code) => {
+                    if *code == 404 {
+                        mirror.no_content = true;
+                    } else if *code >= 500 {
+                        mirror.no_online = true;
+                    }
+                },
+            }
         }
-    } else {
-        url.to_string()
     }
+
+    Ok(())
+}
+
+/// Extract the site from a full download URL
+pub fn url2site(url: &str) -> String {
+    // Normalise to host(:port) -- ignore everything after the first single '/'
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..]; // skip scheme://
+
+        // Take up to the first '/' **ignoring** any extra slashes that may be part of the
+        // epkg "///" placeholder syntax. This ensures that URLs such as
+        // "https://mirror.example.com/ubuntu///dists/..." are mapped back to the base
+        // "https://mirror.example.com" instead of "https://mirror.example.com/ubuntu".
+        let host_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+        return after_scheme[..host_end].to_string(); // Return just the site without scheme
+    }
+
+    // Fallback – return unchanged
+    url.to_string()
 }
 
 /*
@@ -566,109 +832,144 @@ fn extract_mirror_base_url(url: &str) -> String {
 
 impl Mirrors {
 
-    /// Select mirror with usage tracking and concurrent limits
+    /// Select mirror with adaptive usage tracking and load balancing
     ///
     /// This is the core mirror selection algorithm that balances performance,
-    /// availability, and load distribution, with distro directory validation
-    pub fn select_mirror_with_usage_tracking(&self, max_concurrent: usize) -> Result<Mirror> {
+    /// availability, and load distribution using adaptive max_concurrent limits
+    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool) -> Result<&Mirror> {
         let distro = &channel_config().distro;
         let arch = &channel_config().arch;
+        let call_count = STATS_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+        let should_dump = call_count % 2 == 1;
 
-        // Since mirrors are pre-filtered by distro, we only need to check basic availability
-        let available_mirrors: Vec<&Mirror> = self.mirrors.values()
-            .filter(|m| !m.no_online && !m.no_content)
+        // Update available mirrors based on filtering criteria
+        self.update_available_mirrors(need_range, distro, arch);
+
+        if self.available_mirrors.is_empty() {
+            dump_mirror_performance_stats(&self, true);
+            if need_range == true {
+                return Err(eyre!("No mirrors with Range support found"));
+            } else {
+                return Err(eyre!("No available mirrors found in pre-filtered set"));
+            }
+        }
+
+        // Calculate adaptive concurrent limits and update mirrors directly
+        self.calculate_mirror_stats();
+
+        if should_dump && log::log_enabled!(log::Level::Debug) {
+            dump_mirror_performance_stats(&self, false);
+        }
+
+        // Select the best available mirror
+        self.select_best_mirror()
+    }
+
+    /// Filter mirrors based on availability and requirements and update available_mirrors
+    fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str) {
+        self.available_mirrors = self.mirrors.iter()
+            .filter_map(|(site, mirror)| {
+                // Exclude mirrors with no_content or no_online
+                if mirror.no_content || mirror.no_online {
+                    return None;
+                }
+
+                // If need_range is true, exclude mirrors with no_range=true
+                if need_range && mirror.no_range {
+                    return None;
+                }
+
+                // Check if this mirror can provide a valid distro directory
+                let distro_dir = Self::find_distro_dir(mirror, distro, arch);
+                if distro_dir.is_empty() && mirror.distro_dirs.is_empty() {
+                    log::info!("WARNING: Mirror {} does not provide a valid distro directory: {:?}", mirror.url, mirror);
+                    return None;
+                }
+
+                Some(site.clone())
+            })
             .collect();
 
-        if available_mirrors.is_empty() {
-            return Err(eyre!("No available mirrors found in pre-filtered set"));
-        }
+        // Apply throughput-based filtering
+        self.apply_throughput_based_filtering();
 
-        let user_country_code = location::get_country_code().ok();
+        // Sort available mirrors by score (descending)
+        self.available_mirrors.sort_by(|a, b| {
+            let score_a = self.mirrors.get(a).map(|m| m.score).unwrap_or(0);
+            let score_b = self.mirrors.get(b).map(|m| m.score).unwrap_or(0);
+            score_b.cmp(&score_a)
+        });
+    }
 
-        if let Some(cc) = &user_country_code {
-            eprintln!("Detected country: {}", cc);
-        }
+    /// Calculate adaptive concurrent limits and update mirrors directly
+    fn calculate_mirror_stats(&mut self) {
+        // Calculate total active downloads across all mirrors
+        let total_downloads: usize = self.mirrors.values()
+            .map(|mirror| mirror.active_downloads.load(Ordering::Relaxed))
+            .sum();
 
-        // Calculate scores for all available mirrors and validate distro directories
-        let mut valid_mirrors: Vec<(Mirror, f64, usize)> = Vec::new();
+        let total_mirrors = self.available_mirrors.len();
 
-        for mirror in available_mirrors {
-            // Check if this mirror can provide a valid distro directory
-            let distro_dir = Self::find_distro_dir(mirror, distro, arch);
-            if distro_dir.is_empty() && mirror.distro_dirs.is_empty() {
-                // Skip mirrors that have no valid distro directories
-                continue;
+        // Scale based on total downloads vs total capacity
+        let total_base_capacity: usize = total_mirrors * (total_mirrors + 1) / 2; // 1+2+3+...+N = N*(N+1)/2
+        let scale_factor = (total_downloads as f64) / (total_base_capacity as f64);
+
+        log::debug!("Total downloads/mirrors: {}/{}, scale factor: {:.2}", total_downloads, total_mirrors, scale_factor);
+
+        // Calculate and assign adaptive max_concurrent for each mirror
+        for (i, site) in self.available_mirrors.iter().rev().enumerate() {
+            if let Some(mirror) = self.mirrors.get_mut(site) {
+                // Calculate adaptive max_concurrent for this mirror
+                // Mirror index starts from 1, so max_concurrent = [1, 2, 3, ..., N]
+                let base_limit = i + 1;
+
+                let adaptive_max_concurrent = ((base_limit as f64) * scale_factor).ceil() as usize;
+                let adaptive_max_concurrent = adaptive_max_concurrent.max(1); // Ensure at least 1
+
+                // Update the adaptive_max_concurrent field directly
+                mirror.adaptive_max_concurrent = adaptive_max_concurrent;
             }
-
-            let mut score = mirror.calculate_performance_score();
-
-            // Apply country bonus
-            if let Some(user_cc) = &user_country_code {
-                if mirror.country_code.as_deref() == Some(user_cc.as_str()) {
-                    score *= 2.0; // Country bonus
-                }
-            }
-
-            // Apply success rate multiplier
-            score *= mirror.recent_success_rate();
-
-            // Penalty for recent failures
-            if mirror.has_recent_failures() {
-                score *= 0.5;
-            }
-
-            // Get current usage
-            let current_usage = self.mirror_usage.get(&mirror.url)
-                .map(|usage| usage.active_downloads.load(Ordering::Relaxed))
-                .unwrap_or(0);
-
-            valid_mirrors.push((mirror.clone(), score, current_usage));
         }
+    }
 
-        if valid_mirrors.is_empty() {
+    /// Select the best available mirror from available mirrors list
+    fn select_best_mirror(&self) -> Result<&Mirror> {
+        if self.available_mirrors.is_empty() {
             return Err(eyre!("No mirrors with valid distro directories found"));
         }
 
-        // Sort by score descending
-        valid_mirrors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Filter out mirrors that are at their concurrent limit
-        let available_mirrors: Vec<_> = valid_mirrors.iter()
-            .filter(|(_, _, usage)| *usage < max_concurrent)
+        // Filter out mirrors that are at their adaptive concurrent limit
+        let mirrors_under_thresh: Vec<_> = self.available_mirrors.iter()
+            .filter_map(|site| {
+                self.mirrors.get(site).map(|mirror| {
+                    let current_usage = mirror.active_downloads.load(Ordering::Relaxed);
+                    if current_usage < mirror.adaptive_max_concurrent {
+                        Some((site, mirror))
+                    } else {
+                        None
+                    }
+                }).flatten()
+            })
             .collect();
 
-        if available_mirrors.is_empty() {
+        if mirrors_under_thresh.is_empty() {
+            log::warn!("WARNING: ALL mirrors at capacity, selecting highest scoring one");
             // All mirrors are at capacity, return the highest scoring one anyway
-            return Ok(valid_mirrors[0].0.clone());
+            let call_count = STATS_CALL_COUNT.load(Ordering::Relaxed);
+            let rand_site = &self.available_mirrors[call_count as usize % self.available_mirrors.len()];
+            return Ok(self.mirrors.get(rand_site).unwrap());
         }
 
-        // Weighted selection based on scores
-        let total_score: f64 = available_mirrors.iter().map(|(_, score, _)| score).sum();
+        let (_selected_site, selected_mirror) = mirrors_under_thresh[0];
+        let current_usage = selected_mirror.active_downloads.load(Ordering::Relaxed);
 
-        if total_score <= 0.0 {
-            // Fallback to first available mirror
-            return Ok(available_mirrors[0].0.clone());
-        }
+        log::debug!("Selected mirror: {} (usage: {}/{})",
+            selected_mirror.url,
+            current_usage,
+            selected_mirror.adaptive_max_concurrent
+        );
 
-        // Select mirror with probability proportional to score
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        std::thread::current().id().hash(&mut hasher);
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos().hash(&mut hasher);
-        let random_value = (hasher.finish() % 10000) as f64 / 10000.0; // 0.0 to 1.0
-
-        let mut cumulative_score = 0.0;
-        for (mirror, score, _) in &available_mirrors {
-            cumulative_score += score / total_score;
-            if random_value <= cumulative_score {
-                return Ok(mirror.clone());
-            }
-        }
-
-        // Fallback
-        Ok(available_mirrors[0].0.clone())
+        Ok(selected_mirror)
     }
 
     /// Find the best matching distro directory for a mirror
@@ -707,8 +1008,9 @@ impl Mirrors {
                     }
                 }
             }
-            if mirror.distro_dirs.iter().any(|dir| dir.to_lowercase() == item_lower) {
-                found_dir = item.clone();
+            if let Some(orig_dir) = mirror.distro_dirs.iter().find(|dir| dir.eq_ignore_ascii_case(item)) {
+                // Use the original casing from the mirror itself to avoid wrong capitalisation
+                found_dir = orig_dir.clone();
                 break;
             }
         }
@@ -771,179 +1073,304 @@ impl Mirrors {
     }
 
     /// Increment active usage counter for a mirror
-    pub fn increment_mirror_usage(&self, mirror_url: &str) {
-        let base_url = extract_mirror_base_url(mirror_url);
-        if let Some(usage) = self.mirror_usage.get(&base_url) {
-            usage.active_downloads.fetch_add(1, Ordering::Relaxed);
-            usage.total_uses.fetch_add(1, Ordering::Relaxed);
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            usage.last_used.store(now, Ordering::Relaxed);
+    pub fn increment_mirror_usage(&mut self, mirror_url: &str) {
+        let site = url2site(mirror_url);
+        if let Some(mirror) = self.mirrors.get_mut(&site) {
+            mirror.active_downloads.fetch_add(1, Ordering::Relaxed);
+            mirror.total_uses.fetch_add(1, Ordering::Relaxed);
+            mirror.last_used.store(
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+                Ordering::Relaxed
+            );
         }
     }
 
     /// Decrement active usage counter for a mirror
-    pub fn decrement_mirror_usage(&self, mirror_url: &str) {
-        let base_url = extract_mirror_base_url(mirror_url);
-        if let Some(usage) = self.mirror_usage.get(&base_url) {
-            usage.active_downloads.fetch_sub(1, Ordering::Relaxed);
+    pub fn decrement_mirror_usage(&mut self, mirror_url: &str) {
+        let site = url2site(mirror_url);
+        if let Some(mirror) = self.mirrors.get_mut(&site) {
+            mirror.active_downloads.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
     /// Get current usage statistics for debugging
+    #[allow(dead_code)]
     pub fn get_usage_stats(&self) -> HashMap<String, (usize, u64, u64)> {
-        self.mirror_usage.iter()
-            .map(|(url, usage)| {
-                let active = usage.active_downloads.load(Ordering::Relaxed);
-                let total = usage.total_uses.load(Ordering::Relaxed);
-                let last_used = usage.last_used.load(Ordering::Relaxed);
+        self.mirrors.iter()
+            .map(|(url, mirror)| {
+                let active = mirror.active_downloads.load(Ordering::Relaxed);
+                let total = mirror.total_uses.load(Ordering::Relaxed);
+                let last_used = mirror.last_used.load(Ordering::Relaxed);
                 (url.clone(), (active, total, last_used))
             })
             .collect()
+    }
+
+    /*
+     * THROUGHPUT-BASED MIRROR EXPLORATION FILTERING
+     *
+     * This filter implements adaptive exploration of new mirrors based on how many
+     * mirrors already have performance history (throughput data). The goal is to:
+     *
+     * 1. Prioritize mirrors with known performance data for reliability
+     * 2. Allow controlled exploration of new mirrors without performance history
+     * 3. Reduce exploration as more mirrors with data become available
+     *
+     * Logic:
+     * - Count mirrors with throughput data (nr_has_log)
+     * - If nr_has_log > 10: Keep at most 1 mirror with empty throughputs
+     *   (minimal exploration when we have plenty of data)
+     * - If nr_has_log <= 1: No filtering by throughputs
+     *   (aggressive exploration when we lack data)
+     * - Otherwise: Keep at most (11 - nr_has_log) mirrors with empty throughputs
+     *   (balanced exploration that decreases as data increases)
+     *
+     * This ensures we gradually shift from exploration to exploitation as we
+     * gather more mirror performance data over time.
+     */
+    fn apply_throughput_based_filtering(&mut self) {
+        let nr_has_log = self.available_mirrors.iter()
+            .filter(|site| {
+                self.mirrors.get(*site)
+                    .map(|mirror| !mirror.throughputs.is_empty())
+                    .unwrap_or(false)
+            })
+            .count();
+
+        let max_empty_throughputs = if nr_has_log > 10 {
+            1  // keep at most 1 mirror with empty throughputs
+        } else if nr_has_log <= 1 {
+            // do not filter by empty throughputs
+            self.available_mirrors.len()
+        } else {
+            11 - nr_has_log  // keep at most (11 - nr_has_log) mirrors with empty throughputs
+        };
+
+        if max_empty_throughputs < self.available_mirrors.len() {
+            let mut empty_count = 0;
+            self.available_mirrors.retain(|site| {
+                if let Some(mirror) = self.mirrors.get(site) {
+                    if mirror.throughputs.is_empty() {
+                        empty_count += 1;
+                        if empty_count > max_empty_throughputs {
+                            return false;  // Filter out this mirror
+                        }
+                    }
+                }
+                true  // Keep this mirror
+            });
+        }
     }
 }
 
 /// Helper function to track mirror usage (called from download code)
 pub fn track_mirror_usage_start(url: &str) {
-    if let Ok(mirrors) = MIRRORS.lock() {
+    if let Ok(mut mirrors) = MIRRORS.lock() {
         mirrors.increment_mirror_usage(url);
     }
 }
 
 /// Helper function to track mirror usage end (called from download code)
 pub fn track_mirror_usage_end(url: &str) {
-    if let Ok(mirrors) = MIRRORS.lock() {
+    if let Ok(mut mirrors) = MIRRORS.lock() {
         mirrors.decrement_mirror_usage(url);
     }
 }
 
-/// Debug function to dump mirror performance stats
-pub fn dump_mirror_performance_stats() {
-    if !log::log_enabled!(log::Level::Debug) {
-        return;
-    }
+/// RAII guard that tracks mirror usage and automatically calls end when dropped
+pub struct MirrorUsageGuard {
+    url: String,
+}
 
-    if let Ok(mirrors) = MIRRORS.lock() {
-        log::debug!("=== Mirror Performance Stats ===");
-
-        let mut sorted_mirrors: Vec<_> = mirrors.mirrors.iter().collect();
-        sorted_mirrors.sort_by(|a, b| {
-            b.1.calculate_performance_score()
-                .partial_cmp(&a.1.calculate_performance_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        for (url, mirror) in sorted_mirrors.iter().take(10) {
-            let score = mirror.calculate_performance_score();
-            let success_rate = mirror.recent_success_rate();
-            let usage_stats = mirrors.mirror_usage.get(*url)
-                .map(|u| (
-                    u.active_downloads.load(Ordering::Relaxed),
-                    u.total_uses.load(Ordering::Relaxed)
-                ))
-                .unwrap_or((0, 0));
-
-            log::debug!(
-                "Mirror: {} | Score: {:.1} | Success: {:.1}% | Usage: {}/{} | Logs: {}",
-                url,
-                score,
-                success_rate * 100.0,
-                usage_stats.0,
-                usage_stats.1,
-                mirror.performance_logs.len()
-            );
-
-            // Show recent performance summary
-            if !mirror.performance_logs.is_empty() {
-                let recent_logs: Vec<_> = mirror.performance_logs.iter()
-                    .rev()
-                    .take(3)
-                    .collect();
-
-                for log in recent_logs {
-                    let mbps = log.throughput_bps as f64 / 1_000_000.0;
-                    log::debug!(
-                        "  Recent: {:.1} MB/s | {}ms | {} bytes | {}",
-                        mbps,
-                        log.latency_ms,
-                        log.bytes_transferred,
-                        if log.success { "OK" } else { "FAIL" }
-                    );
-                }
-            }
+impl MirrorUsageGuard {
+    pub fn new(url: &str) -> Self {
+        let site = url2site(url);
+        track_mirror_usage_start(&site);
+        Self {
+            url: url.to_string(),
         }
-        log::debug!("=== End Mirror Stats ===");
     }
 }
 
-/// Initialize mirrors with distro filtering and load performance logs
-fn initialize_mirrors() -> Mutex<Mirrors> {
-    let mirrors = match load_mirrors_for_distro(Some(&channel_config().distro)) {
-        Ok(m) if !m.is_empty() => m,
-        Ok(_) | Err(_) => {
-            // Either got empty mirrors for the distro or failed to load, try fallback
-            eprintln!("Failed to load mirrors for distro '{}', trying all mirrors", channel_config().distro);
-            match load_mirrors_for_distro(None) {
-                Ok(fallback) => fallback,
-                Err(e2) => {
-                    eprintln!("Failed to load any mirrors: {}", e2);
-                    HashMap::new()
-                }
+impl Drop for MirrorUsageGuard {
+    fn drop(&mut self) {
+        let site = url2site(&self.url);
+        track_mirror_usage_end(&site);
+    }
+}
+
+/// Show performance stats for a single mirror
+fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
+    // Show last 3 throughputs and latencies
+    let recent_throughputs: Vec<u32> = mirror.throughputs.iter().rev().take(3).copied().collect();
+    let recent_latencies: Vec<u32> = mirror.latencies.iter().rev().take(3).copied().collect();
+
+    let throughput_str = if recent_throughputs.is_empty() {
+        "[none]".to_string()
+    } else {
+        format!("[{}KB/s]", recent_throughputs.iter()
+            .map(|&t| format!("{}", t / 1024))
+            .collect::<Vec<_>>()
+            .join(", "))
+    };
+
+    let latency_str = if recent_latencies.is_empty() {
+        "[none]".to_string()
+    } else {
+        format!("[{}ms]", recent_latencies.iter()
+            .map(|&l| format!("{}", l))
+            .collect::<Vec<_>>()
+            .join(", "))
+    };
+
+    // Build status flags string - removed is_available check
+    let mut status_flags = Vec::new();
+    if mirror.no_range {
+        status_flags.push("NoRange");
+    }
+    if mirror.no_content {
+        status_flags.push("NoContent");
+    }
+    if mirror.no_online {
+        status_flags.push("NoOnline");
+    }
+    let status_str = status_flags.join(", ");
+
+    println!(
+        " {:2}  | {:38} | {:5} | {:2}<{:2}<{:2} | {:32} | {:28} | {}",
+        rank,
+        // Truncate long URLs for alignment
+        if site.len() > 38 { site[..35].to_string() + "..." } else { site.to_string() },
+        mirror.score,
+        mirror.active_downloads.load(Ordering::Relaxed),
+        mirror.adaptive_max_concurrent,
+        mirror.total_uses.load(Ordering::Relaxed),
+        // Limit throughput string length for alignment
+        if throughput_str.len() > 28 { throughput_str[..26].to_string() + ".." } else { throughput_str },
+        latency_str,
+        status_str,
+    );
+}
+
+/// Debug function to dump mirror performance stats with unavailable mirrors
+pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
+    println!("=== Top Mirrors with Stats ===");
+    println!("");
+    println!("Rank |  URL                                   | Score |  Usage   |  Throughputs (KB/s)              |  Latencies (ms)              | Status Flags");
+    println!("-----|----------------------------------------|-------|----------|----------------------------------|------------------------------|---------------------------");
+
+    let max_avail = if show_all { 100 } else { 10 };
+
+    // Show available mirrors first
+    for (i, site) in mirrors.available_mirrors.iter().enumerate().take(max_avail) {
+        if let Some(mirror) = mirrors.mirrors.get(site) {
+            show_one_mirror(i + 1, site, mirror);
+        }
+    }
+
+    if show_all {
+        println!("");
+        println!("=== Unavailable Mirrors ===");
+
+        // Show mirrors not in available_mirrors
+        let mut unavailable_count = 0;
+        for (site, mirror) in &mirrors.mirrors {
+            if !mirrors.available_mirrors.contains(site) {
+                unavailable_count += 1;
+                show_one_mirror(unavailable_count, site, mirror);
             }
+        }
+
+        if unavailable_count == 0 {
+            println!("No unavailable mirrors found.");
+        }
+    }
+
+    println!("");
+    println!("=== End Mirror Stats ===");
+}
+
+/// Apply country code filtering to mirrors
+fn apply_country_code_filtering(mirrors: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
+    let world_mirrors = mirrors.clone();
+
+    // Apply country code filtering if we have a user country code
+    // Don't block on country code detection - proceed if it fails or times out
+    match location::get_country_code() {
+        Ok(user_country_code) => {
+            log::debug!("Filtering mirrors by country code: {}", user_country_code);
+
+            // Filter mirrors by country code
+            let country_filtered: HashMap<String, Mirror> = mirrors.into_iter()
+                .filter(|(_, mirror)| {
+                    mirror.country_code.as_deref() == Some(user_country_code.as_str())
+                })
+                .collect();
+
+            log::debug!("Found {} mirrors matching country code {}", country_filtered.len(), user_country_code);
+
+            // If we have more than 2 mirrors with matching country code, use them
+             if country_filtered.len() > 2 {
+                 country_filtered
+             } else {
+                 // Fall back to all mirrors for the distro (not None)
+                 log::debug!("Only {} mirrors found for country {}, falling back to all distro mirrors",
+                            country_filtered.len(), user_country_code);
+                 world_mirrors
+             }
+        }
+        Err(e) => {
+            log::debug!("Failed to get country code: {}, using all distro mirrors", e);
+            mirrors
+        }
+    }
+}
+
+/// Initialize mirrors with distro and country code filtering
+fn initialize_mirrors() -> Result<Mutex<Mirrors>> {
+    let mirrors = match load_mirrors_for_distro(Some(&channel_config().distro)) {
+        Ok(m) if !m.is_empty() => apply_country_code_filtering(m),
+        Ok(_) | Err(_) => {
+            bail!("Failed to load mirrors for distro '{}'", channel_config().distro);
         }
     };
 
     // Load performance logs efficiently - process all log files at once
     let mut loaded_mirrors = mirrors;
-    load_all_performance_logs(&mut loaded_mirrors);
+    load_performance_logs(&mut loaded_mirrors);
 
-    let mut mirror_usage = HashMap::new();
-    for url in loaded_mirrors.keys() {
-        mirror_usage.insert(url.clone(), Arc::new(MirrorUsage::default()));
+    // Calculate performance scores for all mirrors after loading logs
+    for mirror in loaded_mirrors.values_mut() {
+        mirror.calculate_performance_score();
     }
 
-    Mutex::new(Mirrors { mirrors: loaded_mirrors, mirror_usage })
+    let mirrors = Mirrors {
+        mirrors: loaded_mirrors,
+        available_mirrors: Vec::new(), // Will be populated by update_available_mirrors() when needed
+    };
+
+    if log::log_enabled!(log::Level::Debug) {
+        dump_mirror_performance_stats(&mirrors, true);
+    }
+    Ok(Mutex::new(mirrors))
 }
 
-/// Load performance logs from all available log files at once
-fn load_all_performance_logs(mirrors: &mut HashMap<String, Mirror>) {
+/// Load performance logs from recent log files at once
+fn load_performance_logs(mirrors: &mut HashMap<String, Mirror>) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    // Generate current and previous 6 months strings using standard library
-    let days_since_epoch = now / (24 * 3600);
-    let current_year = 1970 + (days_since_epoch / 365);
-    let current_month = ((days_since_epoch % 365) / 30) + 1;
-
-    // Generate the last 6 months (including current month)
-    let mut months_to_check = Vec::new();
-    for i in 0..6 {
-        let months_back = i;
-        let (year, month) = if current_month > months_back {
-            (current_year, current_month - months_back)
-        } else {
-            // Need to go back to previous year
-            let months_needed = months_back - current_month + 1;
-            let years_back = (months_needed / 12) + 1;
-            let month_in_prev_year = 12 - (months_needed % 12);
-            (current_year - years_back, if month_in_prev_year == 12 { 12 } else { month_in_prev_year })
-        };
-        months_to_check.push(format!("{}-{:02}", year, month));
-    }
-
-    // Load logs from the last 6 months (180 days)
-    let cutoff_time = now.saturating_sub(180 * 24 * 3600);
+    // Generate the last 6 months (including current month) using proper date formatting
+    let months_to_check = generate_recent_month_strings(now, 6);
 
     for month in months_to_check {
         let log_file_path = dirs().epkg_downloads_cache
-            .join(format!("logs/mirror-{}.log", month));
+            .join(format!("log/mirror-{}.log", month));
 
         if log_file_path.exists() {
-            if let Err(e) = parse_and_distribute_log_entries(&log_file_path, mirrors, cutoff_time) {
+            if let Err(e) = parse_and_distribute_log_entries(&log_file_path, mirrors) {
                 log::debug!("Failed to parse log file {}: {}", log_file_path.display(), e);
             }
         }
@@ -954,7 +1381,6 @@ fn load_all_performance_logs(mirrors: &mut HashMap<String, Mirror>) {
 fn parse_and_distribute_log_entries(
     log_file_path: &std::path::Path,
     mirrors: &mut HashMap<String, Mirror>,
-    cutoff_time: u64
 ) -> Result<()> {
     let contents = fs::read_to_string(log_file_path)?;
 
@@ -963,53 +1389,60 @@ fn parse_and_distribute_log_entries(
             continue;
         }
 
-        // Parse key=value format
-        let mut log_entry = PerformanceLog {
-            timestamp: 0,
-            url: String::new(),
-            bytes_transferred: 0,
-            duration_ms: 0,
-            latency_ms: 0,
-            throughput_bps: 0,
-            success: false,
-            error_type: None,
-            supports_range: None,
-            content_available: None,
-        };
+        let mut bytes_transferred = 0u64;
+        let mut throughput_bps = 0u64;
+        let mut success = false;
+        let mut latency_ms = None;
+        let mut no_range = None;
+        let mut net_error = None;
+        let mut http_error = None;
 
-        for pair in line.split_whitespace() {
-            if let Some((key, value)) = pair.split_once('=') {
+        // Split the line into tokens
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+
+        if tokens.len() < 2 {
+            continue;
+        }
+
+        // Format: time url key=value key=value...
+        let url = tokens[1].to_string();
+
+        // Parse the remaining key=value pairs
+        for &token in tokens.iter() {
+            if let Some((key, value)) = token.split_once('=') {
                 match key {
-                    "ts" => log_entry.timestamp = value.parse().unwrap_or(0),
-                    "url" => log_entry.url = value.to_string(),
-                    "bytes" => log_entry.bytes_transferred = value.parse().unwrap_or(0),
-                    "dur" => log_entry.duration_ms = value.parse().unwrap_or(0),
-                    "lat" => log_entry.latency_ms = value.parse().unwrap_or(0),
-                    "tput" => log_entry.throughput_bps = value.parse().unwrap_or(0),
-                    "ok" => log_entry.success = value == "1" || value == "true",
-                    "err" => if !value.is_empty() && value != "-" {
-                        log_entry.error_type = Some(value.to_string());
-                    },
-                    "range" => if !value.is_empty() && value != "-" {
-                        log_entry.supports_range = Some(value == "1" || value == "true");
-                    },
-                    "avail" => if !value.is_empty() && value != "-" {
-                        log_entry.content_available = Some(value == "1" || value == "true");
-                    },
+                    "bytes" => bytes_transferred = value.parse().unwrap_or(0),
+                    "tput" => throughput_bps = value.parse().unwrap_or(0),
+                    "ok" => success = value == "1" || value == "true",
+                    "lat" | "latency" => latency_ms = Some(value.parse().unwrap_or(0)),
+                    "no_range" => no_range = Some(value == "1" || value == "true"),
+                    "net_error" => net_error = Some(value.to_string()),
+                    "http_error" => http_error = Some(value.parse().unwrap_or(0)),
+                    "dur" => {}, // Duration field, ignored for now
                     _ => {} // Ignore unknown keys for forward compatibility
                 }
             }
         }
 
-        // Skip old entries
-        if log_entry.timestamp < cutoff_time {
-            continue;
-        }
-
         // Find the mirror this log entry belongs to
-        let mirror_base_url = extract_mirror_base_url(&log_entry.url);
-        if let Some(mirror) = mirrors.get_mut(&mirror_base_url) {
-            mirror.add_performance_log(log_entry);
+        let site = url2site(&url);
+        if let Some(mirror) = mirrors.get_mut(&site) {
+            // Update mirror attributes based on the log entry
+            if bytes_transferred > 0 && success {
+                // This is a download log entry
+                mirror.record_performance(throughput_bps as u32, 0);
+                mirror.calculate_performance_score();
+            } else if let Some(latency) = latency_ms {
+                // This is a latency event
+                mirror.record_performance(0, latency as u32);
+                mirror.calculate_performance_score();
+            } else if let Some(true) = no_range {
+                // Server doesn't support range requests (permanent attribute)
+                mirror.no_range = true;
+            } else if net_error.is_some() || http_error.is_some() {
+                // Network error or server error
+                mirror.no_online = true;
+            }
         }
     }
 

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use crate::dirs::get_epkg_manager_path;
+use crate::models::dirs;
 use color_eyre::eyre::{Context, Result, eyre};
 use std::fs;
 use ureq;
@@ -22,7 +23,7 @@ struct CountryCodeCache {
 }
 
 impl CountryCodeCache {
-    const CACHE_DURATION_SECS: u64 = 24 * 60 * 60; // 24 hours
+    const CACHE_DURATION_SECS: u64 = 180 * 24 * 60 * 60; // 180 days
 
     fn is_expired(&self) -> bool {
         let now = SystemTime::now()
@@ -40,12 +41,12 @@ fn get_lan_info() -> String {
     if let Ok(gateway_ip) = get_default_gateway_from_proc() {
         if let Ok(gateway_mac) = get_gateway_mac_from_arp_table(&gateway_ip) {
             // Return in format "$gwmac@$gwip"
-            return format!("{mac}@{ip}", mac = gateway_mac, ip = gateway_ip);
+            return format!("{mac}@{ip}", mac = gateway_mac.replace(":", "-"), ip = gateway_ip);
         }
     }
 
     // Fallback to default string if we couldn't get both gateway MAC and IP
-    "unknown_lan".to_string()
+    "".to_string()
 }
 
 /// Get the MAC address of the gateway by reading /proc/net/arp directly
@@ -108,7 +109,7 @@ fn get_default_gateway_from_proc() -> Result<String> {
 
 /// Get cache file path based on LAN hash
 fn get_cache_file_path(lan_hash: &str) -> Result<std::path::PathBuf> {
-    let cache_dir = get_epkg_manager_path()?.join("cache");
+    let cache_dir = dirs().epkg_cache.join("iploc");
     fs::create_dir_all(&cache_dir)
         .with_context(|| format!("Failed to create cache directory: {}", cache_dir.display()))?;
     Ok(cache_dir.join(format!("country_code_{}.json", lan_hash)))
@@ -162,8 +163,12 @@ pub fn get_country_code_from_ip() -> Result<String> {
         return Ok(cached_country_code);
     }
 
-    // Cache miss or expired, fetch from internet
-    let mut resp = ureq::get("https://ipwho.is/").call()
+    // Cache miss or expired, fetch from internet with timeout
+    let mut resp = ureq::get("http://ipwho.is/")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(3)))
+        .build()
+        .call()
         .map_err(|e| eyre!("Failed to get country code from ipwho.is: {}", e))?;
     let body = resp.body_mut().read_to_string()
         .map_err(|e| eyre!("Failed to read response body: {}", e))?;
@@ -174,7 +179,7 @@ pub fn get_country_code_from_ip() -> Result<String> {
 
     // Save to cache for future use
     if let Err(e) = save_country_code_cache(&country_code, &lan_hash) {
-        eprintln!("Warning: Failed to save country code to cache: {}", e);
+        log::warn!("Warning: Failed to save country code to cache: {}", e);
     }
 
     Ok(country_code)
@@ -197,7 +202,7 @@ pub fn get_country_code() -> Result<String> {
     // If not cached, try to get from IP or timezone
     let country_code = get_country_code_from_ip()
         .or_else(|e| {
-            eprintln!("Failed to get country from IP, trying timezone. Error: {}", e);
+            log::warn!("Failed to get country from IP, trying timezone. Error: {}", e);
             get_country_code_from_timezone()
         })
         .ok();
@@ -261,6 +266,7 @@ fn get_timezone_name() -> Result<String> {
     Err(eyre!("Could not determine timezone from /etc/localtime symlink"))
 }
 
+#[allow(dead_code)]
 fn timezone_to_country_code(tz: &str) -> Option<&'static str> {
     TIMEZONE_COUNTRY_MAP.get(tz).map(|s| s.as_str())
 }

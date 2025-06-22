@@ -492,10 +492,11 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     let (data_tx, data_rx) = channel();
 
     // Create and submit download task
-    let task = DownloadTask::new(
+    let task = DownloadTask::with_size(
         revise.url.clone(),
         dirs().epkg_downloads_cache.clone(),
-        6
+        6,
+        if revise.size > 0 { Some(revise.size as u64) } else { None }
     ).with_data_channel(data_tx);
 
     // Submit download task
