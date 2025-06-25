@@ -1,5 +1,5 @@
 # Global mirrors that host multiple distributions
-"https://mirrors.huaweicloud.com":
+https://mirrors.huaweicloud.com:
   distros:
     - debian
     - ubuntu
@@ -10,7 +10,7 @@
     - almalinux
     - alpine
 
-"https://mirrors.tuna.tsinghua.edu.cn":
+https://mirrors.tuna.tsinghua.edu.cn:
   distros:
     - debian
     - ubuntu
@@ -22,7 +22,7 @@
     - archlinux
     - alpine
 
-"https://mirrors.ustc.edu.cn":
+https://mirrors.ustc.edu.cn:
   distros:
     - debian
     - ubuntu
@@ -32,7 +32,7 @@
     - archlinux
     - alpine
 
-"https://mirror.rackspace.com":
+https://mirror.rackspace.com:
   distros:
     - debian
     - ubuntu
@@ -41,7 +41,7 @@
     - rocky
     - almalinux
 
-"https://mirrors.163.com":
+https://mirrors.163.com:
   distros:
     - debian
     - ubuntu
@@ -49,49 +49,47 @@
     - centos
 
 # Distribution-specific mirrors
-"https://deb.debian.org":
+https://deb.debian.org:
   distros:
     - debian
 
-"https://archive.ubuntu.com":
+https://archive.ubuntu.com:
   distros:
     - ubuntu
 
-"https://dl.fedoraproject.org/pub":
+https://dl.fedoraproject.org/pub:
   distros:
     - fedora
 
-"https://download.opensuse.org":
+https://download.opensuse.org:
   distros:
     - opensuse
 
-"https://repo.openeuler.org":
+https://repo.openeuler.org:
   top_level: true
   distros:
     - openeuler
 
-"https://dl.rockylinux.org/pub":
+https://dl.rockylinux.org/pub:
   distros:
     - rocky
 
-"https://repo.almalinux.org":
+https://repo.almalinux.org:
   distros:
     - almalinux
 
-"https://geo.mirror.pkgbuild.com":
+https://geo.mirror.pkgbuild.com:
   top_level: true
   distros:
     - archlinux
 
-"https://dl-cdn.alpinelinux.org":
+https://dl-cdn.alpinelinux.org:
   top_level: true
   distros:
     - alpine
 
-"https://us.mirror.ionos.com/linux/distributions":
-  country_code: US
-  bandwidth: 20000
-  distros:
+https://us.mirror.ionos.com/linux/distributions:
+  ls:
     - almalinux
     - alpine
     - archlinux
@@ -112,13 +110,14 @@
     - rockylinux
     - slackware
     - ubuntu
-http://ftp.gwdg.de/pub/linux:
+
 http://merlin.fit.vutbr.cz/mirrors:
   ls:
   - debian
   - centos
   - ubuntu
   - epel
+
 http://mirror.aarnet.edu.au/pub:
   ls:
   - centos
@@ -126,6 +125,7 @@ http://mirror.aarnet.edu.au/pub:
   - linuxmint
   - opensuse
   - ubuntu
+
 http://mirror.eu.oneandone.net/linux/distributions:
   ls:
   - archlinux
@@ -137,6 +137,7 @@ http://mirror.eu.oneandone.net/linux/distributions:
   - ubuntu/ubuntu
   - almalinux
   - alpine
+
 http://mirror.us.oneandone.net/linux/distributions:
   ls:
   - archlinux
@@ -148,6 +149,7 @@ http://mirror.us.oneandone.net/linux/distributions:
   - ubuntu/ubuntu
   - almalinux
   - alpine
+
 http://www.nic.funet.fi/pub/Linux/INSTALL:
   ls:
   - almalinux
@@ -156,29 +158,206 @@ http://www.nic.funet.fi/pub/Linux/INSTALL:
   - fedora
   - opensuse
   - ubuntu
-https://mirrors.aliyun.com/mirror:
+
+# User-added mirrors from China
+https://mirrors.aliyun.com:
   ls:
-  - ubuntu
-  - centos
-  - epel
-  - deepin
-  - debian
-  - manjaro
-  - arch4edu
-  - archlinuxcn
-  - archlinuxarm
-  - archlinux
-  - fedora
-  - artixlinux
-  - mxlinux
-  - alpine
-  - opensuse
-  - rpmfusion
-  - raspbian
-  - fedora-altarch
-  - ubuntu-ports
-  - debian-security
-  - centos-vault
-  - fedora-alt
-  - linuxmint
-  - ros
+    - ubuntu
+    - centos
+    - epel
+    - deepin
+    - kali
+    - debian
+    - manjaro
+    - openwrt
+    - archlinux
+    - fedora
+    - artixlinux
+    - blackarch
+    - mxlinux
+    - slackware
+    - alpine
+    - opensuse
+    - ubuntukylin
+    - scientificlinux
+    - raspbian
+    - linuxmint
+    - ros
+
+https://mirrors.jxust.edu.cn:
+  ls:
+    - almalinux
+    - alpine
+    - anolis
+    - archlinux
+    - centos-stream
+    - centos-vault
+    - debian
+    - debian-security
+    - deepin
+    - docker-ce
+    - epel
+    - fedora
+    - fedora-altarch
+    - kali
+    - openbsd
+    - opencloudos
+    - openeuler
+    - openkylin
+    - opensuse
+    - rocky
+    - ubuntu
+
+https://mirrors.njtech.edu.cn:
+  ls:
+    - anaconda
+    - archlinux
+    - centos
+    - debian
+    - deepin
+    - docker-ce
+    - openeuler
+    - pypi
+    - raspbian
+    - rocky
+    - ubuntu
+
+https://mirrors.qlu.edu.cn:
+  ls:
+    - archlinux
+    - armbian
+    - centos
+    - centos-stream
+    - debian
+    - deepin
+    - epel
+    - fedora
+    - kali
+    - msys2
+    - openwrt
+    - rocky
+    - ros
+    - ros2
+    - ubuntu
+
+https://mirrors.tencent.com:
+  ls:
+    - almalinux
+    - alpine
+    - archlinux
+    - centos
+    - debian
+    - epel
+    - fedora
+    - kali
+    - opencloudos
+    - opensuse
+    - rocky
+    - tencentos
+    - ubuntu
+https://mirrors.volces.com:
+  ls:
+    - almalinux
+    - anaconda
+    - anolis
+    - alpine
+    - archlinux
+    - centos
+    - debian
+    - deepin
+    - epel
+    - fedora
+    - kali
+    - opencloudos
+    - openeuler
+    - openkylin
+    - rockylinux
+    - ubuntu
+
+https://mirrors.xjtu.edu.cn:
+  ls:
+    - alpine
+    - archlinux
+    - archlinuxcn
+    - centos
+    - centos-vault
+    - ceph
+    - cpan
+    - cran
+    - ctan
+    - cygwin
+    - debian
+    - debian-security
+    - deepin
+    - docker-ce
+    - epel
+    - fedora
+    - gentoo-portage
+    - gnu
+    - homebrew-bottles
+    - iina
+    - jenkins
+    - kali
+    - kernel
+    - manjaro
+    - mongodb
+    - monitoring-plugins
+    - openeuler
+    - openwrt
+    - pypi
+    - python
+    - qt
+    - rockylinux
+    - rustup
+    - stackage
+    - termux
+    - ubuntu
+
+https://mirror.aarnet.edu.au/pub:
+  ls:
+    - centos
+    - fedora
+    - FreeBSD
+    - kali
+    - ftp.kernel.org
+    - linuxmint
+    - netbsd
+    - OpenBSD
+    - opensuse
+    - ubuntu
+
+https://mirror-nist.isrc.ac.cn:
+  ls:
+    - alpine
+    - centos-altarch
+    - centos-stream
+    - fedora
+    - fedora-altarch
+    - oepkgs
+    - openanolis
+    - opencloudos
+    - openeuler
+    - openkylin
+    - opensuse
+    - rvbook
+    - test
+    - ubuntu
+    - ubuntu-ports
+    - ubuntukylin
+
+https://mirrors.pku.edu.cn:
+  ls:
+    - almalinux
+    - archlinux
+    - archlinuxcn
+    - archriscv
+    - centos
+    - centos-stream
+    - centos-vault
+    - debian
+    - epel
+    - manjaro
+    - opensuse
+    - openwrt
+    - ubuntu
+    - ubuntu-ports
