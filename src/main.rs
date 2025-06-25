@@ -134,6 +134,14 @@ fn setup_ctrlc() {
         println!("Current directory: {:?}", std::env::current_dir().unwrap_or_default());
         println!("Elapsed time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default());
 
+        // Dump mirror performance stats if available
+        if let Ok(mirrors_guard) = crate::mirror::MIRRORS.try_lock() {
+            println!("\nMirror performance statistics:");
+            crate::mirror::dump_mirror_performance_stats(&mirrors_guard, true);
+        } else {
+            println!("\nCould not access mirror statistics (lock contention)");
+        }
+
         // Get information about all threads
         print_all_thread_backtraces();
 
@@ -181,72 +189,6 @@ fn print_all_thread_backtraces() {
         }
     }
 
-    // Get REAL backtraces from kernel - this shows where threads were actually running
-    println!("\n=== REAL Thread Backtraces (from kernel) ===");
-    if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
-        let mut thread_ids: Vec<_> = entries.filter_map(|entry| {
-            entry.ok()?.file_name().to_str()?.parse::<u32>().ok()
-        }).collect();
-        thread_ids.sort(); // Sort for consistent output
-
-        println!("Found {} threads with kernel stack traces:", thread_ids.len());
-        for tid in thread_ids {
-            if let Ok(comm) = std::fs::read_to_string(format!("/proc/self/task/{}/comm", tid)) {
-                let comm = comm.trim();
-
-                // Get detailed thread state
-                let mut state = "?".to_string();
-                let mut wchan = "unknown".to_string();
-                if let Ok(stat) = std::fs::read_to_string(format!("/proc/self/task/{}/stat", tid)) {
-                    let fields: Vec<&str> = stat.split_whitespace().collect();
-                    if fields.len() > 2 {
-                        state = fields.get(2).unwrap_or(&"?").to_string();
-                    }
-                }
-
-                // Get what the thread is waiting on
-                if let Ok(wchan_content) = std::fs::read_to_string(format!("/proc/self/task/{}/wchan", tid)) {
-                    let wchan_str = wchan_content.trim();
-                    if !wchan_str.is_empty() && wchan_str != "0" {
-                        wchan = wchan_str.to_string();
-                    }
-                }
-
-                println!("\n  --- Thread {} ({}) state:{} waiting:{} ---", tid, comm, state, wchan);
-
-                // THIS is the useful part - the actual kernel stack trace
-                if let Ok(stack) = std::fs::read_to_string(format!("/proc/self/task/{}/stack", tid)) {
-                    if !stack.trim().is_empty() {
-                        println!("  Kernel stack (where this thread was ACTUALLY running):");
-                        for (i, line) in stack.lines().enumerate() {
-                            let line = line.trim();
-                            if !line.is_empty() {
-                                // Try to make the stack trace more readable
-                                if line.contains("epkg") || line.contains("main") ||
-                                   line.contains("download") || line.contains("install") ||
-                                   line.contains("poll") || line.contains("read") || line.contains("write") {
-                                    println!("    → {}", line);  // Highlight relevant frames
-                                } else {
-                                    println!("      {}", line);
-                                }
-                            }
-                            if i >= 15 { // Limit depth but show more than before
-                                println!("      ... (truncated)");
-                                break;
-                            }
-                        }
-                    } else {
-                        println!("  (Thread running in userspace - no kernel stack)");
-                    }
-                } else {
-                    println!("  (Could not read kernel stack)");
-                }
-            }
-        }
-    } else {
-        println!("Could not read thread information from /proc/self/task");
-    }
-
     // Show currently open files
     if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
         let mut fds = Vec::new();
@@ -282,9 +224,7 @@ fn print_all_thread_backtraces() {
         }
     }
 
-    // Try to get userspace backtraces using gdb if available
-    println!("\n=== Attempting to get userspace backtraces via gdb ===");
-    try_gdb_backtrace();
+    try_print_backtrace();
 
     println!("\n=== Debugging Tips ===");
     println!("To get more detailed debugging information:");
@@ -294,52 +234,53 @@ fn print_all_thread_backtraces() {
     println!("4. Check system logs: journalctl --since '1 minute ago' --grep epkg");
 }
 
-fn try_gdb_backtrace() {
+fn try_print_backtrace() {
     use std::process::Command;
 
-    let pid = std::process::id();
+    // Only run in debug builds
+    if !cfg!(debug_assertions) {
+        return;
+    }
 
-    // Try to get backtraces using gdb
-    match Command::new("gdb")
-        .args([
-            "--batch",
-            "--quiet",
-            "-ex", "set auto-load off",         // Disable auto-loading of Python scripts
-            "-ex", "set pagination off",        // Disable pagination
-            "-ex", "set confirm off",           // Disable confirmations
-            "-ex", "set height 0",              // No limit on output
-            "-ex", "thread apply all bt",
-            "-ex", "quit",
-            "-p", &pid.to_string()
-        ])
+    let pid = std::process::id();
+    println!("=== Attempting to get userspace backtraces ===");
+
+    // Try kernel stack trace first - this is always safe and never hangs
+    if let Ok(stack) = std::fs::read_to_string(format!("/proc/{}/stack", pid)) {
+        if !stack.trim().is_empty() {
+            println!("Kernel stack trace:");
+            println!("{}", stack);
+        }
+    }
+
+    // Try lightweight tools that don't hang (eu-stack, pstack)
+    // eu-stack requires -p flag for PID
+    if let Ok(output) = Command::new("eu-stack")
+        .args(["-p", &pid.to_string()])
         .output()
     {
-        Ok(output) => {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if !stdout.trim().is_empty() {
-                    println!("GDB backtraces for all threads:");
-                    // Parse and clean up the gdb output
-                    for line in stdout.lines() {
-                        let line = line.trim();
-                        if line.starts_with("#") || line.contains("epkg::") ||
-                           line.contains("main") || line.contains("Thread") {
-                            println!("  {}", line);
-                        }
-                    }
-                } else {
-                    println!("GDB produced no output");
-                }
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                println!("GDB failed: {}", stderr);
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().is_empty() {
+                println!("eu-stack output:");
+                println!("{}", stdout);
+                return; // Successfully got stack trace
             }
         }
-        Err(e) => {
-            println!("Could not run gdb ({}). Install gdb for better backtraces:", e);
-            println!("  sudo apt install gdb    # On Debian/Ubuntu");
-            println!("  sudo yum install gdb    # On RHEL/CentOS");
-            println!("  sudo pacman -S gdb      # On Arch");
+    }
+
+    // pstack takes PID directly
+    if let Ok(output) = Command::new("pstack")
+        .arg(pid.to_string())
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().is_empty() {
+                println!("pstack output:");
+                println!("{}", stdout);
+                return; // Successfully got stack trace
+            }
         }
     }
 }
