@@ -530,6 +530,7 @@ def parse_generic_links(soup):
     for link in links:
         href = link.get('href', '').strip()
         text = link.get_text(strip=True)
+        data_name = link.get('data-name', '')
 
         # Skip parent directory links and common file types
         if href in ['..', '../', '/', '.'] or text in ['..', 'Parent Directory']:
@@ -539,6 +540,22 @@ def parse_generic_links(soup):
         # Skip obvious files
         if any(href.lower().endswith(ext) for ext in ['.html', '.htm', '.txt', '.xml', '.gz', '.tar', '.zip', '.deb', '.rpm']):
             debug_print(f"parse_generic_links: Skipping file with known extension: {href}")
+            continue
+
+        # Handle '?dir=' style href links
+        dir_param_match = re.search(r'\?dir=([^&]+)', href)
+        if dir_param_match:
+            dirname = dir_param_match.group(1)
+            debug_print(f"parse_generic_links: Found '?dir=' style link: {dirname}")
+            if dirname and dirname not in directories:
+                debug_print(f"parse_generic_links: Adding '?dir=' directory: {dirname}")
+                directories.append(dirname)
+            continue
+
+        # Use data-name attribute if available (common in some modern directory listings)
+        if data_name and data_name not in directories:
+            debug_print(f"parse_generic_links: Using data-name attribute: {data_name}")
+            directories.append(data_name)
             continue
 
         # If no extension and not ending with common file patterns, might be directory
@@ -674,7 +691,7 @@ def fetch_directory_listing_with_lftp(mirror_url, timeout=30):
         debug_print(f"Attempting lftp directory listing for: {mirror_url}")
 
         # Prepare lftp command
-        lftp_cmd = ['lftp', '-c', f'open {mirror_url}/; ls']
+        lftp_cmd = ['lftp', '-c', f'set ssl:verify-certificate no; open {mirror_url}/; ls']
         os.system(f"touch {lftp_cache_file}")
 
         # Run lftp with timeout
@@ -767,12 +784,17 @@ def parse_lftp_output(lftp_output, mirror_url):
     if redirect_url:
         print(f"\n### REDIRECTION DETECTED via LFTP")
         print(f"Mirror {mirror_url} redirects to: {redirect_url}")
-        print(f"### RECOMMENDED: Add the redirect URL to channel/mirrors.yaml:")
-        print(f"#{redirect_url}:")
+        print(f"### RECOMMENDED: Add the redirect URL to channel/manual-mirrors.json:")
+        redirect_url_json = json.dumps(redirect_url)
+        entry_data = {}
         if directories:
-            print("#  ls:")
-            for dir_name in sorted(directories):
-                print(f"#  - {dir_name}")
+            # Filter directories to only include valid distro directories
+            initialize_distro_configs()  # Ensure VALID_DIRS is initialized
+            filtered_dirs = [d for d in directories if d.lower() in VALID_DIRS]
+            if filtered_dirs:
+                entry_data["ls"] = sorted(filtered_dirs)
+        entry_json = json.dumps(entry_data, separators=(',', ':'))
+        print(f"{redirect_url_json}:{entry_json},")
         return []  # Return empty to indicate redirection
 
     debug_print(f"LFTP found {len(directories)} directories: {directories}")
@@ -993,8 +1015,8 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
 
                 for valid_dir, original_path in matches:
                     print(f"  - {original_path} (matches '{valid_dir}')")
-                    # Only collect if prefix matches mirror URL structure
-                    if prefix_matches_mirror:
+                    # Only collect if prefix matches mirror URL structure AND valid_dir is in VALID_DIRS
+                    if prefix_matches_mirror and valid_dir.lower() in VALID_DIRS:
                         collected_dirs.add(valid_dir)
 
                 if '://' in prefix:
@@ -1010,11 +1032,13 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
                 if new_url in mirrors_data:
                     continue
 
-                print("\n### RECOMMENDED CONFIGURATION for channel/mirrors.yaml")
-                print(f"#{new_url}:")
-                print("#  ls:")
-                for valid_dir, _ in matches:
-                    print(f"#  - {valid_dir}")
+                print("\n### RECOMMENDED CONFIGURATION for channel/manual-mirrors.json")
+                new_url_json = json.dumps(new_url)
+                # Filter valid_dir entries to only include those in VALID_DIRS
+                filtered_ls_entries = [valid_dir for valid_dir, _ in matches if valid_dir.lower() in VALID_DIRS]
+                entry_data = {"ls": filtered_ls_entries}
+                entry_json = json.dumps(entry_data, separators=(',', ':'))
+                print(f"{new_url_json}:{entry_json},")
 
         # Return collected valid directories if any were found
         if collected_dirs:

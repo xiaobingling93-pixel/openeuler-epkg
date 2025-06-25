@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import json
-import yaml
 import os
 import re
 from collections import OrderedDict
@@ -25,7 +24,9 @@ URL_BLACKLIST = [
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NEW_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'new-mirrors.json')
 LS_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
-EXISTING_YAML_PATH = os.path.join(BASE_DIR, '../..', 'channel', 'mirrors.yaml') # Original YAML
+PROBE_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'probe-mirrors.json')
+NOREACH_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'noreach-mirrors.txt')
+NOCONTENT_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'nocontent-mirrors.txt')
 FINAL_JSON_OUTPUT_PATH = os.path.join(BASE_DIR, '../..', 'channel', 'mirrors.json')
 
 # Define protocol bit masks
@@ -34,18 +35,21 @@ PROTO_HTTPS = 2   # 0b010
 PROTO_RSYNC = 4   # 0b100
 
 # Update key order with new compact names
-KEY_ORDER = ['distros', 'distro_dirs', 'top_level', 'country_code', 'protocols', 'bandwidth', 'internet2', 'ls']
+# Final output field order is determined by the code order in compact_mirror_data()
+KEY_ORDER = ['country_code', 'distros', 'distro_dirs', 'probe_dirs', 'ls', 'top_level', 'protocols', 'bandwidth', 'internet2']
 
 # Mapping of old keys to new compact keys (for final output)
+# It's unused, real mapping is in code compact_mirror_data()
 KEY_MAP = {
     'distros': 'os',
     'distro_dirs': 'dir',
+    'probe_dirs': 'pdir',   # lftp cls probed directories
+    'ls': 'ls',             # lftp ls directories
     'top_level': 'root',
     'country_code': 'cc',
     'protocols': 'p',
     'bandwidth': 'bw',
     'internet2': 'i2',
-    'ls': 'ls'  # Keep ls as is
 }
 
 # debug_print is now imported from common.py
@@ -237,6 +241,10 @@ def compact_mirror_data(data):
     """Convert mirror data to compact format."""
     compact = {}
 
+    # Handle country_code → cc
+    if 'country_code' in data:
+        compact['cc'] = data['country_code']
+
     # Handle distros → os
     if 'distros' in data:
         compact['os'] = data['distros']
@@ -250,13 +258,29 @@ def compact_mirror_data(data):
         if unique_dirs:
             compact['dir'] = sorted(list(unique_dirs))
 
+    # Handle probe_dirs → pdir (remove duplicates with distros, distro_dirs, and ls)
+    if 'probe_dirs' in data and data['probe_dirs']:
+        probe_dirs = data['probe_dirs']
+        distros_set = set(data.get('distros', []))
+        distro_dirs_set = set(data.get('distro_dirs', []))
+        ls_set = set(data.get('ls', [])) if 'ls' in data else set()
+        unique_pdir = [d for d in probe_dirs if d not in distros_set and d not in distro_dirs_set and d not in ls_set]
+        if unique_pdir:
+            compact['pdir'] = unique_pdir
+
+    # Handle ls → ls (remove duplicates with distros and distro_dirs)
+    if 'ls' in data and data['ls']:
+        ls_dirs = data['ls']
+        # Remove duplicates that exist in distros and distro_dirs
+        distros_set = set(data.get('distros', []))
+        distro_dirs_set = set(data.get('distro_dirs', []))
+        unique_ls = [d for d in ls_dirs if d not in distros_set and d not in distro_dirs_set]
+        if unique_ls:
+            compact['ls'] = unique_ls
+
     # Handle top_level → root (1)
     if data.get('top_level'):
         compact['root'] = 1
-
-    # Handle country_code → cc
-    if 'country_code' in data:
-        compact['cc'] = data['country_code']
 
     # Handle protocols → p (bitmask)
     if 'protocols' in data:
@@ -279,16 +303,6 @@ def compact_mirror_data(data):
     # Handle internet2 → i2 (1)
     if data.get('internet2'):
         compact['i2'] = 1
-
-    # Handle ls → ls (remove duplicates with distros and distro_dirs)
-    if 'ls' in data and data['ls']:
-        ls_dirs = data['ls']
-        # Remove duplicates that exist in distros and distro_dirs
-        distros_set = set(data.get('distros', []))
-        distro_dirs_set = set(data.get('distro_dirs', []))
-        unique_ls = [d for d in ls_dirs if d not in distros_set and d not in distro_dirs_set]
-        if unique_ls:
-            compact['ls'] = unique_ls
 
     return compact
 
@@ -339,32 +353,86 @@ def deduplicate_mirrors_by_base_url(mirrors):
 
     return deduplicated_mirrors
 
+def load_blacklist():
+    """Load mirror blacklist from noreach-mirrors.txt and nocontent-mirrors.txt"""
+    blacklist = set()
+    noreach_count = 0
+    nocontent_count = 0
+
+    if os.path.exists(NOREACH_MIRRORS_INPUT_PATH):
+        try:
+            with open(NOREACH_MIRRORS_INPUT_PATH, 'r') as f:
+                for line in f:
+                    url = line.strip()
+                    if url and not url.startswith('#'):
+                        blacklist.add(url.rstrip('/'))
+                        noreach_count += 1
+            print(f"Loaded {noreach_count} connection error mirrors from {NOREACH_MIRRORS_INPUT_PATH}")
+        except Exception as e:
+            print(f"Error loading noreach blacklist from {NOREACH_MIRRORS_INPUT_PATH}: {e}")
+
+    if os.path.exists(NOCONTENT_MIRRORS_INPUT_PATH):
+        try:
+            with open(NOCONTENT_MIRRORS_INPUT_PATH, 'r') as f:
+                for line in f:
+                    url = line.strip()
+                    if url and not url.startswith('#'):
+                        blacklist.add(url.rstrip('/'))
+                        nocontent_count += 1
+            print(f"Loaded {nocontent_count} no content mirrors from {NOCONTENT_MIRRORS_INPUT_PATH}")
+        except Exception as e:
+            print(f"Error loading nocontent blacklist from {NOCONTENT_MIRRORS_INPUT_PATH}: {e}")
+
+    print(f"Total blacklisted mirrors: {len(blacklist)}")
+    return blacklist
+
+def merge_probe_data(existing_mirrors, probe_data):
+    """Merge probe data into existing mirrors, removing duplicates with ls/dir/os fields."""
+    for url, probe_info in probe_data.items():
+        if url not in existing_mirrors:
+            existing_mirrors[url] = OrderedDict()
+            # Initialize with default order for new entries
+            for key in KEY_ORDER:
+                if key == 'protocols':
+                    existing_mirrors[url][key] = []
+                elif key == 'distro_dirs':
+                    existing_mirrors[url][key] = []
+                elif key == 'distros':
+                    existing_mirrors[url][key] = []
+
+        if 'probe_dirs' in probe_info and probe_info['probe_dirs']:
+            # Get existing directories from ls, dir, and os fields
+            existing_dirs = set()
+
+            # Add ls directories
+            if 'ls' in existing_mirrors[url]:
+                existing_dirs.update(existing_mirrors[url]['ls'])
+
+            # Add distro_dirs
+            if 'distro_dirs' in existing_mirrors[url]:
+                existing_dirs.update(existing_mirrors[url]['distro_dirs'])
+
+            # Add distros (os field)
+            if 'distros' in existing_mirrors[url]:
+                existing_dirs.update(existing_mirrors[url]['distros'])
+
+            # Filter out duplicates
+            filtered_probe_dirs = [d for d in probe_info['probe_dirs'] if d not in existing_dirs]
+
+            if filtered_probe_dirs:
+                existing_mirrors[url]['probe_dirs'] = filtered_probe_dirs
+                debug_print(f"Merged probe data for {url}: {len(filtered_probe_dirs)} unique directories")
+            else:
+                debug_print(f"No unique probe directories for {url} (all duplicates)")
+
 def main():
     print("Starting mirror merging process...")
     final_mirrors = OrderedDict()
 
-    # 1. Load existing mirrors.yaml (if it exists) as a base
-    if os.path.exists(EXISTING_YAML_PATH):
-        print(f"Loading base mirrors from {EXISTING_YAML_PATH}...")
-        try:
-            with open(EXISTING_YAML_PATH, 'r') as f:
-                yaml_mirrors = yaml.safe_load(f) or {}
-                for url, data in yaml_mirrors.items():
-                    # Convert to OrderedDict to maintain structure when merging
-                    ordered_data = OrderedDict()
-                    for key in KEY_ORDER:
-                        if key in data:
-                            ordered_data[key] = data[key]
-                    final_mirrors[url.rstrip('/')] = ordered_data
-            print(f"Loaded {len(final_mirrors)} mirrors from YAML.")
-        except Exception as e:
-            print(f"Error loading or parsing {EXISTING_YAML_PATH}: {e}. Starting with an empty base.")
-            final_mirrors = OrderedDict()
-    else:
-        print(f"{EXISTING_YAML_PATH} not found. Starting with an empty base.")
-        final_mirrors = OrderedDict()
+    # Load blacklist first
+    blacklist = load_blacklist()
 
-    # 2. Load new mirrors from new-mirrors.json
+    # 1. Load new mirrors from new-mirrors.json
     if os.path.exists(NEW_MIRRORS_INPUT_PATH):
         print(f"Loading new mirrors from {NEW_MIRRORS_INPUT_PATH}...")
         try:
@@ -372,13 +440,17 @@ def main():
                 new_mirrors_data = json.load(f)
             print(f"Loaded {len(new_mirrors_data)} mirrors from {NEW_MIRRORS_INPUT_PATH}.")
             for url, data in new_mirrors_data.items():
+                # Skip blacklisted URLs
+                if url.rstrip('/') in blacklist:
+                    print(f"Skipping blacklisted URL from new-mirrors.json: {url}")
+                    continue
                 merge_mirror_data(final_mirrors, url, data)
         except Exception as e:
             print(f"Error loading or parsing {NEW_MIRRORS_INPUT_PATH}: {e}")
     else:
         print(f"{NEW_MIRRORS_INPUT_PATH} not found. No new mirrors to merge.")
 
-    # 3. Load and merge ls data from ls-mirrors.json
+    # 2. Load and merge ls data from ls-mirrors.json
     if os.path.exists(LS_MIRRORS_INPUT_PATH):
         print(f"Loading ls data from {LS_MIRRORS_INPUT_PATH}...")
         try:
@@ -386,6 +458,11 @@ def main():
                 ls_mirrors_data = json.load(f)
             print(f"Loaded ls data for {len(ls_mirrors_data)} mirrors from {LS_MIRRORS_INPUT_PATH}.")
             for url, ls_data in ls_mirrors_data.items():
+                # Skip blacklisted URLs
+                if url.rstrip('/') in blacklist:
+                    print(f"Skipping blacklisted URL from ls-mirrors.json: {url}")
+                    continue
+
                 # Ensure the mirror exists in final_mirrors
                 if url not in final_mirrors:
                     final_mirrors[url] = OrderedDict()
@@ -410,6 +487,19 @@ def main():
             print(f"Error loading or parsing {LS_MIRRORS_INPUT_PATH}: {e}")
     else:
         print(f"{LS_MIRRORS_INPUT_PATH} not found. No ls data to merge.")
+
+    # 3. Load and merge probe data from probe-mirrors.json
+    if os.path.exists(PROBE_MIRRORS_INPUT_PATH):
+        print(f"Loading probe data from {PROBE_MIRRORS_INPUT_PATH}...")
+        try:
+            with open(PROBE_MIRRORS_INPUT_PATH, 'r') as f:
+                probe_mirrors_data = json.load(f)
+            print(f"Loaded probe data for {len(probe_mirrors_data)} mirrors from {PROBE_MIRRORS_INPUT_PATH}.")
+            merge_probe_data(final_mirrors, probe_mirrors_data)
+        except Exception as e:
+            print(f"Error loading or parsing {PROBE_MIRRORS_INPUT_PATH}: {e}")
+    else:
+        print(f"{PROBE_MIRRORS_INPUT_PATH} not found. No probe data to merge.")
 
     print(f"Mirrors after loading and merging: {len(final_mirrors)}")
 
@@ -456,10 +546,10 @@ def main():
             continue
 
         # Add mirror if it has required fields and valid ls data
-        if ordered_data.get('os') or ordered_data.get('dir') or ordered_data.get('ls'):
+        if ordered_data.get('os') or ordered_data.get('dir') or ordered_data.get('ls') or ordered_data.get('pdir'):
             processed_final_mirrors[url] = ordered_data
         else:
-            print(f"Skipping mirror {url}: missing os/dir/ls data")
+            print(f"Skipping mirror {url}: missing os/dir/ls/pdir data")
 
     print(f"Writing {len(processed_final_mirrors)} merged mirrors to {FINAL_JSON_OUTPUT_PATH}...")
     os.makedirs(os.path.dirname(FINAL_JSON_OUTPUT_PATH), exist_ok=True)
