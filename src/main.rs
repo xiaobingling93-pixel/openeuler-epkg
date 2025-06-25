@@ -46,8 +46,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
-use std::backtrace::Backtrace;
 use std::sync::Arc;
+use std::backtrace::Backtrace;
+use std::panic;
+
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
@@ -116,21 +118,230 @@ fn setup_logging() {
 }
 
 fn setup_ctrlc() {
+    // Enable backtrace collection if RUST_BACKTRACE is set
     if !std::env::var("RUST_BACKTRACE").is_ok() {
         return;
     }
 
-    // Set up Ctrl-C handler
+    // Set up Ctrl-C handler with better debugging info
     ctrlc::set_handler(move || {
-        println!("\nReceived Ctrl-C! Printing backtrace...");
+        println!("\nReceived Ctrl-C! Collecting thread backtraces...");
 
-        // Capture and print the backtrace
-        let backtrace = Backtrace::capture();
-        println!("{:#?}", backtrace);
+        // Print current command and process info
+        let args: Vec<String> = std::env::args().collect();
+        println!("Command: {}", args.join(" "));
+        println!("Process ID: {}", std::process::id());
+        println!("Current directory: {:?}", std::env::current_dir().unwrap_or_default());
+        println!("Elapsed time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default());
+
+        // Get information about all threads
+        print_all_thread_backtraces();
+
+        // Show some system info that might be helpful
+        println!("\nEnvironment variables of interest:");
+        for (key, value) in std::env::vars() {
+            if key.starts_with("RUST_") || key.starts_with("EPKG_") || key.starts_with("CARGO_") {
+                println!("  {}={}", key, value);
+            }
+        }
 
         // Exit gracefully
-        std::process::exit(1);
+        println!("\nExiting due to Ctrl-C...");
+        std::process::exit(130); // Standard exit code for SIGINT
     }).expect("Failed to set Ctrl-C handler");
+
+
+    // Also set panic handler to show backtraces
+    panic::set_hook(Box::new(|panic_info| {
+        println!("Panic occurred:");
+        if let Some(location) = panic_info.location() {
+            println!("Panic location: {}", location);
+        }
+        println!("{:?}", Backtrace::capture());
+    }));
+
+}
+
+fn print_all_thread_backtraces() {
+    // DON'T capture the useless signal handler backtrace - it shows nothing useful
+    // Instead, get the actual kernel stack traces of all threads
+
+    // Try to get detailed runtime information
+    println!("\n=== Runtime Information ===");
+
+    // Show memory usage and thread info
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        println!("Process status:");
+        for line in status.lines() {
+            if line.starts_with("VmRSS:") || line.starts_with("VmSize:") ||
+               line.starts_with("Threads:") || line.starts_with("State:") ||
+               line.starts_with("PPid:") || line.starts_with("TracerPid:") {
+                println!("  {}", line);
+            }
+        }
+    }
+
+    // Get REAL backtraces from kernel - this shows where threads were actually running
+    println!("\n=== REAL Thread Backtraces (from kernel) ===");
+    if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
+        let mut thread_ids: Vec<_> = entries.filter_map(|entry| {
+            entry.ok()?.file_name().to_str()?.parse::<u32>().ok()
+        }).collect();
+        thread_ids.sort(); // Sort for consistent output
+
+        println!("Found {} threads with kernel stack traces:", thread_ids.len());
+        for tid in thread_ids {
+            if let Ok(comm) = std::fs::read_to_string(format!("/proc/self/task/{}/comm", tid)) {
+                let comm = comm.trim();
+
+                // Get detailed thread state
+                let mut state = "?".to_string();
+                let mut wchan = "unknown".to_string();
+                if let Ok(stat) = std::fs::read_to_string(format!("/proc/self/task/{}/stat", tid)) {
+                    let fields: Vec<&str> = stat.split_whitespace().collect();
+                    if fields.len() > 2 {
+                        state = fields.get(2).unwrap_or(&"?").to_string();
+                    }
+                }
+
+                // Get what the thread is waiting on
+                if let Ok(wchan_content) = std::fs::read_to_string(format!("/proc/self/task/{}/wchan", tid)) {
+                    let wchan_str = wchan_content.trim();
+                    if !wchan_str.is_empty() && wchan_str != "0" {
+                        wchan = wchan_str.to_string();
+                    }
+                }
+
+                println!("\n  --- Thread {} ({}) state:{} waiting:{} ---", tid, comm, state, wchan);
+
+                // THIS is the useful part - the actual kernel stack trace
+                if let Ok(stack) = std::fs::read_to_string(format!("/proc/self/task/{}/stack", tid)) {
+                    if !stack.trim().is_empty() {
+                        println!("  Kernel stack (where this thread was ACTUALLY running):");
+                        for (i, line) in stack.lines().enumerate() {
+                            let line = line.trim();
+                            if !line.is_empty() {
+                                // Try to make the stack trace more readable
+                                if line.contains("epkg") || line.contains("main") ||
+                                   line.contains("download") || line.contains("install") ||
+                                   line.contains("poll") || line.contains("read") || line.contains("write") {
+                                    println!("    → {}", line);  // Highlight relevant frames
+                                } else {
+                                    println!("      {}", line);
+                                }
+                            }
+                            if i >= 15 { // Limit depth but show more than before
+                                println!("      ... (truncated)");
+                                break;
+                            }
+                        }
+                    } else {
+                        println!("  (Thread running in userspace - no kernel stack)");
+                    }
+                } else {
+                    println!("  (Could not read kernel stack)");
+                }
+            }
+        }
+    } else {
+        println!("Could not read thread information from /proc/self/task");
+    }
+
+    // Show currently open files
+    if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+        let mut fds = Vec::new();
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let fd_num = entry.file_name();
+                if let Ok(link) = std::fs::read_link(entry.path()) {
+                    fds.push(format!("{}: {}", fd_num.to_string_lossy(), link.display()));
+                }
+            }
+        }
+        println!("Open file descriptors ({}):", fds.len());
+        for fd in fds.iter().take(20) { // Show first 20 FDs
+            println!("  {}", fd);
+        }
+        if fds.len() > 20 {
+            println!("  ... and {} more", fds.len() - 20);
+        }
+    }
+
+    // Show network connections if available
+    if let Ok(tcp) = std::fs::read_to_string("/proc/self/net/tcp") {
+        let mut lines = tcp.lines();
+        if let Some(header) = lines.next() {
+            let connections: Vec<_> = lines.take(10).collect();
+            if !connections.is_empty() {
+                println!("Active TCP connections:");
+                println!("  {}", header); // Show the header explaining columns
+                for conn in connections {
+                    println!("  {}", conn);
+                }
+            }
+        }
+    }
+
+    // Try to get userspace backtraces using gdb if available
+    println!("\n=== Attempting to get userspace backtraces via gdb ===");
+    try_gdb_backtrace();
+
+    println!("\n=== Debugging Tips ===");
+    println!("To get more detailed debugging information:");
+    println!("1. Attach gdb: gdb -p $(pidof epkg)");
+    println!("2. Use strace: strace -p $(pidof epkg)");
+    println!("3. Run with: RUST_LOG=debug RUST_BACKTRACE=full {}", std::env::args().collect::<Vec<_>>().join(" "));
+    println!("4. Check system logs: journalctl --since '1 minute ago' --grep epkg");
+}
+
+fn try_gdb_backtrace() {
+    use std::process::Command;
+
+    let pid = std::process::id();
+
+    // Try to get backtraces using gdb
+    match Command::new("gdb")
+        .args([
+            "--batch",
+            "--quiet",
+            "-ex", "set auto-load off",         // Disable auto-loading of Python scripts
+            "-ex", "set pagination off",        // Disable pagination
+            "-ex", "set confirm off",           // Disable confirmations
+            "-ex", "set height 0",              // No limit on output
+            "-ex", "thread apply all bt",
+            "-ex", "quit",
+            "-p", &pid.to_string()
+        ])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if !stdout.trim().is_empty() {
+                    println!("GDB backtraces for all threads:");
+                    // Parse and clean up the gdb output
+                    for line in stdout.lines() {
+                        let line = line.trim();
+                        if line.starts_with("#") || line.contains("epkg::") ||
+                           line.contains("main") || line.contains("Thread") {
+                            println!("  {}", line);
+                        }
+                    }
+                } else {
+                    println!("GDB produced no output");
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("GDB failed: {}", stderr);
+            }
+        }
+        Err(e) => {
+            println!("Could not run gdb ({}). Install gdb for better backtraces:", e);
+            println!("  sudo apt install gdb    # On Debian/Ubuntu");
+            println!("  sudo yum install gdb    # On RHEL/CentOS");
+            println!("  sudo pacman -S gdb      # On Arch");
+        }
+    }
 }
 
 pub fn parse_cmdline() -> clap::ArgMatches {
