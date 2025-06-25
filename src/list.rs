@@ -338,7 +338,7 @@ impl PackageManager {
     /// Check if a name matches a glob pattern
     fn matches_glob_pattern(&self, name: &str, pattern: &str) -> bool {
         // Handle simple cases
-        if pattern == "*" {
+        if pattern.is_empty() || pattern == "*" {
             return true; // matches everything
         }
 
@@ -454,19 +454,15 @@ impl PackageManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     // Helper function to create a dummy PackageManager for testing
     fn create_test_package_manager() -> PackageManager {
         PackageManager {
-            envs_config: HashMap::new(),
-            channels_config: HashMap::new(),
             repos_data: Vec::new(),
             pkgkey2package: HashMap::new(),
             pkgline2package: HashMap::new(),
-            appbin_source: HashSet::new(),
             installed_packages: HashMap::new(),
-            mirrors: HashMap::new(),
             has_worker_process: false,
             ipc_socket: String::new(),
             ipc_stream: None,
@@ -564,6 +560,12 @@ mod tests {
     #[test]
     fn test_matches_glob_pattern_edge_cases() {
         let pm = create_test_package_manager();
+
+        // Empty pattern should match everything (fix for "epkg list" without pattern)
+        assert!(pm.matches_glob_pattern("anything", ""));
+        assert!(pm.matches_glob_pattern("bash", ""));
+        assert!(pm.matches_glob_pattern("", ""));
+        assert!(pm.matches_glob_pattern("java-openjdk", ""));
 
         // Just wildcard
         assert!(pm.matches_glob_pattern("anything", "*"));

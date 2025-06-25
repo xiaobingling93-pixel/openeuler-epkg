@@ -984,13 +984,10 @@ mod tests {
     #[test]
     fn test_parse_capability_architecture() {
         let pm = PackageManager {
-            envs_config: HashMap::new(),
-            channels_config: HashMap::new(),
             repos_data: Vec::new(),
             pkgkey2package: HashMap::new(),
             pkgline2package: HashMap::new(),
             installed_packages: HashMap::new(),
-            mirrors: HashMap::new(),
             has_worker_process: false,
             ipc_socket: String::new(),
             ipc_stream: None,
@@ -1059,13 +1056,10 @@ mod tests {
     #[test]
     fn test_filter_packages_by_arch_spec_multiarch() {
         let pm = PackageManager {
-            envs_config: HashMap::new(),
-            channels_config: HashMap::new(),
             repos_data: Vec::new(),
             pkgkey2package: HashMap::new(),
             pkgline2package: HashMap::new(),
             installed_packages: HashMap::new(),
-            mirrors: HashMap::new(),
             has_worker_process: false,
             ipc_socket: String::new(),
             ipc_stream: None,
