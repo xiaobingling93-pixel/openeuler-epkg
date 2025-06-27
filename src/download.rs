@@ -278,6 +278,16 @@ impl DownloadTask {
         }
     }
 
+    /// Clean helper to get data channel without repeated error handling
+    pub fn get_data_channel(&self) -> Option<Sender<Vec<u8>>> {
+        self.data_channel.lock().ok().and_then(|dc| dc.clone())
+    }
+
+    /// Clean helper to take data channel (for closing)
+    pub fn take_data_channel(&self) -> Option<Sender<Vec<u8>>> {
+        self.data_channel.lock().ok().and_then(|mut dc| dc.take())
+    }
+
     /// Set progress bar length
     pub fn set_length(&self, length: u64) {
         if let Ok(pb_guard) = self.progress_bar.lock() {
@@ -591,12 +601,7 @@ impl DownloadManager {
 
             // CRITICAL: Take data_channel to close it and unblock receivers
             // This prevents recv() from blocking forever after download completion
-            let _data_channel = {
-                match task_clone.data_channel.lock() {
-                    Ok(mut dc) => dc.take(),
-                    Err(_) => None,
-                }
-            };
+            let _data_channel = task_clone.take_data_channel();
         });
 
         // Store the handle
@@ -899,6 +904,28 @@ enum ProcessingResult {
     AllCompleted,
 }
 
+/// Clear response action instead of mysterious boolean returns
+#[derive(Debug, PartialEq)]
+enum ResponseAction {
+    ContinueDownload,
+    CompleteTask,
+}
+
+/// Download operation result with clear semantics instead of mixed error types
+#[derive(Debug)]
+enum DownloadResult {
+    Success,
+    Skipped { reason: String },
+    Failed { error: DownloadError },
+}
+
+/// Cache decision logic to replace complex nested conditionals
+#[derive(Debug)]
+enum CacheDecision {
+    UseCache { reason: String },
+    RedownloadDueTo { reason: String },
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 struct FatalError(String);
@@ -1169,10 +1196,7 @@ fn download_task(
 ) -> Result<()> {
     let url = &task.url.clone();
     let final_path = &task.final_path.clone();
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
+    let data_channel = task.get_data_channel();
     let expected_size = task.file_size.load(Ordering::Relaxed);
 
     log::debug!("download_task starting for {}, has_channel: {}, expected_size: {:?}", url, data_channel.is_some(), expected_size);
@@ -1298,10 +1322,7 @@ fn download_file_with_retries(
 ) -> Result<()> {
     let url = &task.url;
     let max_retries = task.max_retries;
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
+    let data_channel = task.get_data_channel();
 
     log::debug!("download_file_with_retries starting for {}, has_channel: {}", url, data_channel.is_some());
     let mut retries = 0;
@@ -1734,10 +1755,7 @@ fn handle_416_range_error(
 ) -> Result<http::Response<ureq::Body>> {
     let url = task.get_resolved_url();
     let part_path = &task.chunk_path;
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
+    let data_channel = task.get_data_channel();
 
     let downloaded = task.chunk_offset.load(Ordering::Relaxed); // Use task's chunk_offset instead of downloaded parameter
     // Send a request to check remote size and time, then compare with local
@@ -1768,48 +1786,25 @@ fn handle_416_range_error(
     let local_last_modified_sys_time = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
     let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
 
-    if let Some(remote_ts) = remote_timestamp_opt {
-        // A remote timestamp was successfully parsed from headers
-        if remote_size == local_size && (remote_ts - local_last_modified).unsigned_abs() <= std::time::Duration::from_secs(2) {
-            log::debug!("download_file sizes and timestamps match (remote_ts: {}, local_ts: {}), skipping download.", remote_ts, local_last_modified);
-            let message = format!("Remote file unchanged (size and timestamp match), skipping download {}", part_path.display());
-            task.set_message(message.clone());
+    // Use clean cache decision logic instead of complex nested conditionals
+    let decision = should_redownload(remote_timestamp_opt, remote_size, local_size, local_last_modified);
+
+    match decision {
+        CacheDecision::UseCache { reason } => {
+            log::debug!("Using cached file: {}", reason);
+            task.set_message(format!("Remote file unchanged ({}), skipping download {}", reason, part_path.display()));
             if let Some(channel) = &data_channel {
                 send_file_to_channel(part_path, channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
             }
-            log::debug!("download_file returning Ok after skipping download due to matching size and timestamp.");
-            // Return a dummy response since we're skipping the download
             return Err(eyre!("Download skipped - file unchanged"));
-        } else {
-            let mut reason = String::from("Remote file differs");
-            if remote_size != local_size {
-                reason.push_str(&format!(" (size mismatch: remote {}, local {})", remote_size, local_size));
-            }
-            if remote_ts != local_last_modified {
-                reason.push_str(&format!(" (timestamp mismatch: remote {}, local {})", remote_ts, local_last_modified));
-            }
+        }
+        CacheDecision::RedownloadDueTo { reason } => {
             let error_msg = format!("{}, restarting download from 0: {}", reason, url);
-            log::debug!("{}", error_msg.clone());
+            log::debug!("{}", error_msg);
             task.set_message(error_msg.clone());
             fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
             return Err(DownloadError::TimestampMismatch(error_msg).into());
         }
-    } else {
-        // No valid remote timestamp header found, or parsing failed.
-        if remote_size == local_size {
-            log::debug!("No remote timestamp but size matches, assuming file is unchanged – skipping download.");
-            task.set_message(format!("Remote file unchanged (size match), skipping download {}", part_path.display()));
-            if let Some(channel) = &data_channel {
-                send_file_to_channel(part_path, channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
-            }
-            return Err(eyre!("Download skipped - file unchanged"));
-        }
-
-        log::debug!("No valid remote timestamp – size differs (remote {}, local {}), forcing re-download.", remote_size, local_size);
-        let error_msg = format!("Size mismatch without timestamp, re-downloading (current local size: {}, path: {})", local_size, part_path.display());
-        task.set_message(error_msg.clone());
-        fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
-        return Err(DownloadError::TimestampMismatch(error_msg).into());
     }
 }
 
@@ -1910,10 +1905,7 @@ fn initialize_chunk_download_context(
 ) -> Result<ChunkDownloadContext> {
     // Get data channel for master tasks only
     let data_channel = if task.is_master_task() {
-        match task.data_channel.lock() {
-            Ok(dc) => dc.clone(),
-            Err(_) => None,
-        }
+        task.get_data_channel()
     } else {
         None // Chunk tasks don't use data channels
     };
@@ -2582,8 +2574,8 @@ fn process_download_response(
 ) -> Result<()> {
     // Handle task-specific response validation and metadata
     if task.is_master_task() {
-        let is_range_continue = handle_master_task_response(task, &response, &context.resolved_url, context.existing_bytes)?;
-        if !is_range_continue {
+        let response_action = handle_master_task_response(task, &response, &context.resolved_url, context.existing_bytes)?;
+        if response_action == ResponseAction::CompleteTask {
             return Ok(()); // Early exit for completed downloads
         }
     } else {
@@ -3279,7 +3271,7 @@ fn handle_master_task_response(
     response: &http::Response<ureq::Body>,
     resolved_url: &str,
     existing_bytes: u64
-) -> Result<bool> {
+) -> Result<ResponseAction> {
     // Check for unchanged file case
     if let Some(status_line) = response.headers().get("status") {
         if let Ok(status_str) = status_line.to_str() {
@@ -3288,7 +3280,7 @@ fn handle_master_task_response(
                 if !task.final_path.exists() && task.chunk_path.exists() {
                     atomic_file_completion(&task.chunk_path, &task.final_path)?;
                 }
-                return Ok(true); // Task is complete
+                return Ok(ResponseAction::CompleteTask);
             }
         }
     }
@@ -3329,7 +3321,7 @@ fn handle_master_task_response(
         }
     }
 
-    Ok(false) // Task is not complete yet
+    Ok(ResponseAction::ContinueDownload)
 }
 
 /// Handle chunk task specific response validation
@@ -3365,6 +3357,42 @@ fn log_download_completion(
             true,
         ) {
             log::warn!("Failed to log download completion: {}", e);
+        }
+    }
+}
+
+/// Clean cache decision logic replacing complex nested conditionals
+fn should_redownload(
+    remote_ts: Option<OffsetDateTime>,
+    remote_size: u64,
+    local_size: u64,
+    local_ts: OffsetDateTime
+) -> CacheDecision {
+    use std::time::Duration;
+
+    match remote_ts {
+        Some(ts) if remote_size == local_size && (ts - local_ts).unsigned_abs() <= Duration::from_secs(2) => {
+            CacheDecision::UseCache {
+                reason: format!("Size and timestamp match (remote: {}, local: {})", ts, local_ts)
+            }
+        }
+        Some(ts) => {
+            let mut reasons = Vec::new();
+            if remote_size != local_size {
+                reasons.push(format!("size mismatch: remote {}, local {}", remote_size, local_size));
+            }
+            if ts != local_ts {
+                reasons.push(format!("timestamp mismatch: remote {}, local {}", ts, local_ts));
+            }
+            CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") }
+        }
+        None if remote_size == local_size => {
+            CacheDecision::UseCache { reason: "Size matches, no timestamp available".to_string() }
+        }
+        None => {
+            CacheDecision::RedownloadDueTo {
+                reason: format!("Size differs (remote {}, local {}) and no timestamp", remote_size, local_size)
+            }
         }
     }
 }
