@@ -30,6 +30,7 @@ pub struct DownloadTask {
     #[allow(dead_code)]
     pub output_dir: PathBuf,
     pub max_retries: usize,
+    pub client: Arc<Mutex<Option<Agent>>>, // HTTP client created on-demand
     pub data_channel: Arc<Mutex<Option<Sender<Vec<u8>>>>>,  // will never change, but need take()
                                                             // to avoid blocking the consumer side
     pub status: Arc<Mutex<DownloadStatus>>,
@@ -98,6 +99,7 @@ impl DownloadTask {
             resolved_url: Mutex::new(url), // Initialize resolved_url with the original url
             output_dir,
             max_retries,
+            client: Arc::new(Mutex::new(None)), // Initialize with no client
             data_channel: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new(DownloadStatus::Pending)),
             final_path,
@@ -155,6 +157,50 @@ impl DownloadTask {
         self.attempt_number.store(0, Ordering::SeqCst);
     }
 
+    /// Get the resolved URL, falling back to the original URL if resolution failed
+    pub fn get_resolved_url(&self) -> String {
+        if let Ok(resolved) = self.resolved_url.lock() {
+            if resolved.is_empty() {
+                self.url.clone()
+            } else {
+                resolved.clone()
+            }
+        } else {
+            self.url.clone()
+        }
+    }
+
+    /// Get or create the HTTP client on-demand with configuration from config().common
+    pub fn get_client(&self) -> Result<Agent> {
+        let mut client_guard = self.client.lock()
+            .map_err(|e| eyre!("Failed to lock client mutex: {}", e))?;
+
+        if client_guard.is_none() {
+            // Create client with proxy configuration from config
+            let mut config_builder = Agent::config_builder()
+                .user_agent("curl/8.13.0")
+                .timeout_connect(Some(Duration::from_secs(5)))
+                .timeout_recv_response(Some(Duration::from_secs(9)));
+
+            let proxy_config = &crate::models::config().common.proxy;
+            if !proxy_config.is_empty() {
+                match ureq::Proxy::new(proxy_config) {
+                    Ok(p) => {
+                        config_builder = config_builder.proxy(Some(p));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create proxy from {}: {}", proxy_config, e);
+                        return Err(eyre!("Failed to create proxy: {}", e));
+                    }
+                }
+            }
+
+            *client_guard = Some(config_builder.build().into());
+        }
+
+        Ok(client_guard.as_ref().unwrap().clone())
+    }
+
     /// Create a chunk task for a specific byte range
     pub fn create_chunk_task(&self, offset: u64, size: u64) -> Arc<DownloadTask> {
         // Create a chunk task with a specific offset and size
@@ -163,15 +209,10 @@ impl DownloadTask {
 
         Arc::new(DownloadTask {
             url: self.url.clone(),
-            resolved_url: Mutex::new(
-                if let Ok(resolved) = self.resolved_url.lock() {
-                    resolved.clone()
-                } else {
-                    self.url.clone()
-                }
-            ), // Initialize with parent's resolved_url
+            resolved_url: Mutex::new(self.get_resolved_url()), // Use helper method
             output_dir: self.output_dir.clone(),
             max_retries: self.max_retries,
+            client: Arc::new(Mutex::new(None)), // Initialize with no client
             data_channel: Arc::new(Mutex::new(None)), // Chunks don't need data channels
             status: Arc::new(Mutex::new(DownloadStatus::Pending)),
             final_path: self.final_path.clone(),
@@ -266,7 +307,6 @@ impl DownloadTask {
 }
 
 pub struct DownloadManager {
-    client: Agent,
     multi_progress: MultiProgress,
     tasks: Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>,
     nr_parallel: usize,
@@ -277,33 +317,12 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(nr_parallel: usize, proxy: &str) -> Result<Self> {
-        let mut config_builder = Agent::config_builder()
-            .user_agent("curl/8.13.0") // necessary to avoid download error for some URLs
-            .timeout_connect(Some(Duration::from_secs(5)))
-            // Prevent indefinitely hanging downloads by setting reasonable read and overall timeouts
-            .timeout_recv_response(Some(Duration::from_secs(9))) // stall protection for slow servers
-            ;
+    pub fn new(nr_parallel: usize) -> Result<Self> {
+        // Note: Proxy configuration is now handled per-task via on-demand client creation from config().common.proxy
 
-        if !proxy.is_empty() {
-            match Proxy::new(proxy) {
-                Ok(p) => {
-                    config_builder = config_builder.proxy(Some(p));
-                }
-                Err(e) => {
-                    log::error!("Failed to create proxy from {}: {}", proxy, e);
-                    panic!("Failed to create proxy: {}", e);
-                }
-            }
-        }
-        // If proxy.is_empty(), .proxy() is not called on config_builder.
-        // This allows ureq::Agent to use its default proxy detection (e.g., from environment variables).
-
-        let client = config_builder.build().into();
         let multi_progress = MultiProgress::new();
 
         Ok(Self {
-            client,
             multi_progress,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             nr_parallel,
@@ -379,7 +398,7 @@ impl DownloadManager {
 
         self.is_processing.store(true, Ordering::Relaxed);
         let tasks = Arc::clone(&self.tasks);
-        let client = self.client.clone();
+
         let multi_progress = self.multi_progress.clone();
         let is_processing = Arc::clone(&self.is_processing);
         let task_handles = Arc::clone(&self.task_handles);
@@ -448,7 +467,7 @@ impl DownloadManager {
                         break; // We've reached our task thread limit
                     }
 
-                    let client = client.clone();
+
                     let multi_progress = multi_progress.clone();
                     let task_clone = Arc::clone(&task);
                     let _task_handles_clone = Arc::clone(&task_handles);
@@ -467,7 +486,6 @@ impl DownloadManager {
                         // Now we can work directly with the Arc since critical mutable operations
                         // (like data_channel.take()) have been handled above
                         if let Err(e) = download_task(
-                            &client,
                             &task_clone,
                             &multi_progress,
                         ) {
@@ -663,11 +681,6 @@ impl DownloadManager {
             }
 
             let handle = thread::spawn(move || {
-                let client = Agent::config_builder()
-                    .user_agent("curl/8.13.0")
-                    .timeout_connect(Some(Duration::from_secs(5)))
-                    .build()
-                    .into();
 
                 // Mark chunk as started
                 if let Ok(mut start_time) = chunk_clone.start_time.lock() {
@@ -675,7 +688,6 @@ impl DownloadManager {
                 }
 
                 let chunk_result = download_chunk_task(
-                    &client,
                     &chunk_clone,
                     &resolved_url,
                 );
@@ -912,7 +924,7 @@ fn resolve_mirror_in_url(url: &str, output_dir: &Path, need_range: bool) -> Resu
  */
 
 pub static DOWNLOAD_MANAGER: LazyLock<DownloadManager> = LazyLock::new(|| {
-    DownloadManager::new(config().common.nr_parallel, &config().common.proxy)
+    DownloadManager::new(config().common.nr_parallel)
         .expect("Failed to initialize download manager")
 });
 
@@ -1077,7 +1089,6 @@ fn verify_file_size(part_path: &Path, expected_size: Option<u64>, url: &str) -> 
 ///
 /// Ensures optimal mirror configuration and comprehensive performance logging
 fn download_task(
-    client: &Agent,
     task: &DownloadTask,
     multi_progress: &MultiProgress,
 ) -> Result<()> {
@@ -1125,7 +1136,6 @@ fn download_task(
     // Start the download - download_file_with_retries handles mirror resolution
     log::debug!("download_task calling download_file_with_retries for {}", url);
     let result = download_file_with_retries(
-        client,
         task,
     );
     log::debug!("download_task download_file_with_retries completed for {}, result: {:?}", url, result);
@@ -1209,7 +1219,6 @@ fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Resul
 //   - Pure retry wrapper around download_file()
 //   - Only handles retry logic and error handling
 fn download_file_with_retries(
-    client: &Agent,
     task: &DownloadTask,
 ) -> Result<()> {
     let url = &task.url;
@@ -1226,16 +1235,8 @@ fn download_file_with_retries(
         log::debug!("download_file_with_retries calling download_file for {}, attempt {}", url, retries + 1);
         log::debug!("About to call download_file with data_channel.is_some() = {}", data_channel.is_some());
 
-        let download_result = download_file(client, task);
-        let resolved_url = if let Ok(resolved) = task.resolved_url.lock() {
-            if resolved.is_empty() {
-                url.to_string()
-            } else {
-                resolved.clone()
-            }
-        } else {
-            url.to_string()
-        };
+        let download_result = download_file(task);
+        let resolved_url = task.get_resolved_url();
 
         match download_result {
             Ok(()) => {
@@ -1386,7 +1387,6 @@ pub fn send_file_to_channel(
 }
 
 fn download_file(
-    client: &Agent,
     task: &DownloadTask,
 ) -> Result<()> {
     let url = &task.url;
@@ -1419,7 +1419,7 @@ fn download_file(
     let _mirror_guard = MirrorUsageGuard::new(&&resolved_url);
 
     // Step 3: Make the HTTP request with range header if we have partial download
-    let mut response = match make_download_request_with_416_handling(client, task) {
+    let mut response = match make_download_request_with_416_handling(task) {
         Ok(response) => response,
         Err(e) => {
             // Check if this is the special case where download was skipped due to file unchanged
@@ -1674,24 +1674,16 @@ fn get_existing_file_size(part_path: &Path) -> Result<u64> {
 //    Content-Length: 1000
 //    [...data...]
 fn make_download_request_with_416_handling(
-    client: &Agent,
     task: &DownloadTask,
 ) -> Result<http::Response<ureq::Body>> {
-    let url = if let Ok(resolved) = task.resolved_url.lock() {
-        if resolved.is_empty() {
-            task.url.clone()
-        } else {
-            resolved.clone()
-        }
-    } else {
-        task.url.clone()
-    };
+    let url = task.get_resolved_url();
     let part_path = &task.chunk_path;
     let data_channel = match task.data_channel.lock() {
         Ok(dc) => dc.clone(),
         Err(_) => None,
     };
 
+    let client = task.get_client()?;
     let mut request = client.get(url.replace("///", "/"))
         .config()
         .max_redirects(3)
@@ -1770,7 +1762,7 @@ fn make_download_request_with_416_handling(
             if code == 416 && downloaded > 0 {
                 // The requested byte range is outside the size of the file
                 log::debug!("download_file handling HTTP 416 with downloaded={}", downloaded);
-                return handle_416_range_error(client, task);
+                return handle_416_range_error(task);
             }
 
             // Log specific HTTP error
@@ -1820,18 +1812,9 @@ fn make_download_request_with_416_handling(
 
 /// Handle 416 Range Not Satisfiable error with full access to required context
 fn handle_416_range_error(
-    client: &Agent,
     task: &DownloadTask,
 ) -> Result<http::Response<ureq::Body>> {
-    let url = if let Ok(resolved) = task.resolved_url.lock() {
-        if resolved.is_empty() {
-            task.url.clone()
-        } else {
-            resolved.clone()
-        }
-    } else {
-        task.url.clone()
-    };
+    let url = task.get_resolved_url();
     let part_path = &task.chunk_path;
     let data_channel = match task.data_channel.lock() {
         Ok(dc) => dc.clone(),
@@ -1841,6 +1824,7 @@ fn handle_416_range_error(
     let downloaded = task.chunk_offset.load(Ordering::Relaxed); // Use task's chunk_offset instead of downloaded parameter
     // Send a request to check remote size and time, then compare with local
     let metadata_request_start = std::time::Instant::now();
+            let client = task.get_client()?;
     let remote_metadata = client.get(url.replace("///", "/"))
         .config()
         .max_redirects(3)
@@ -1957,15 +1941,7 @@ fn handle_resume_logic(
     status: u16,
 ) -> Result<u64> {
     let part_path = &task.chunk_path;
-    let url = if let Ok(resolved) = task.resolved_url.lock() {
-        if resolved.is_empty() {
-            task.url.clone()
-        } else {
-            resolved.clone()
-        }
-    } else {
-        task.url.clone()
-    };
+    let url = task.get_resolved_url();
 
     if existing_bytes > 0 && status != 206 {
         // Log that server doesn't support range requests
@@ -2534,7 +2510,6 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
 
 /// Download a specific chunk of a file
 fn download_chunk_task(
-    client: &Agent,
     task: &DownloadTask,
     resolved_url: &str,
 ) -> Result<()> {
@@ -2588,6 +2563,7 @@ fn download_chunk_task(
     let range_header = format!("bytes={}-{}", adjusted_offset, end_offset);
 
     let chunk_request_start = std::time::Instant::now();
+    let client = task.get_client()?;
     let response = client.get(url)
         .header("Range", &range_header)
         .config()
