@@ -397,8 +397,15 @@ impl DownloadManager {
         }
 
         self.is_processing.store(true, Ordering::Relaxed);
-        let tasks = Arc::clone(&self.tasks);
 
+        // Initialize processing thread with all required context
+        self.spawn_main_processing_thread();
+    }
+
+    /// Spawn the main processing thread that coordinates all download activities
+    /// Level 2: Thread Management - handles the main processing lifecycle
+    fn spawn_main_processing_thread(&self) {
+        let tasks = Arc::clone(&self.tasks);
         let multi_progress = self.multi_progress.clone();
         let is_processing = Arc::clone(&self.is_processing);
         let task_handles = Arc::clone(&self.task_handles);
@@ -406,135 +413,199 @@ impl DownloadManager {
         let nr_parallel = self.nr_parallel;
         let current_task_count_arc = Arc::clone(&self.current_task_count);
 
-        // Spawn the main processing thread
         thread::spawn(move || {
-            loop {
-                // Clean up finished task handles
-                Self::cleanup_finished_handles(&task_handles);
-                Self::cleanup_finished_handles(&chunk_handles);
-
-                let tasks_guard = match tasks.lock() {
-                    Ok(guard) => guard,
-                    Err(e) => {
-                        log::error!("Failed to lock tasks mutex: {}", e);
-                        is_processing.store(false, Ordering::Relaxed);
-                        return;
-                    }
-                };
-
-                let pending_tasks: Vec<_> = tasks_guard.iter()
-                    .filter(|(_, t)| matches!(t.get_status(), DownloadStatus::Pending))
-                    .map(|(url, task)| (url.clone(), Arc::clone(task)))
-                    .collect();
-
-                if pending_tasks.is_empty() {
-                    // Check if all tasks are completed or failed
-                    let all_done = tasks_guard.iter()
-                        .all(|(_, t)| matches!(t.get_status(), DownloadStatus::Completed | DownloadStatus::Failed(_)));
-                    if all_done {
-                        is_processing.store(false, Ordering::Relaxed);
-                        break;
-                    }
-                    drop(tasks_guard);
-
-                    // No new master tasks to start, but we may still need to process chunks
-                    Self::start_chunks_processing(&tasks, &chunk_handles, nr_parallel);
-
-                    thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-
-                // Sort pending tasks by size (largest first)
-                let mut sorted_pending = pending_tasks;
-                sorted_pending.sort_by(|(_, a), (_, b)| {
-                    let size_a = a.file_size.load(Ordering::Relaxed);
-                    let size_b = b.file_size.load(Ordering::Relaxed);
-                    size_b.cmp(&size_a) // Descending order (largest first)
-                });
-
-                // Check how many task threads are currently running
-                let mut current_task_count = {
-                    let handles_guard = task_handles.lock().unwrap();
-                    let count = handles_guard.len();
-                    is_processing.load(Ordering::Relaxed); // Ensure memory ordering
-                    count
-                };
-
-                // Spawn new task threads if we have capacity
-                for (_task_url, task) in sorted_pending {
-                    current_task_count_arc.store(current_task_count, Ordering::Relaxed);
-                    if current_task_count >= nr_parallel {
-                        break; // We've reached our task thread limit
-                    }
-
-
-                    let multi_progress = multi_progress.clone();
-                    let task_clone = Arc::clone(&task);
-                    let _task_handles_clone = Arc::clone(&task_handles);
-
-                    // Mark task as downloading
-                    match task.status.lock() {
-                        Ok(mut status) => *status = DownloadStatus::Downloading,
-                        Err(e) => {
-                            log::error!("Failed to lock task status mutex: {}", e);
-                            continue;
-                        }
-                    };
-
-                    // Spawn task thread
-                    let handle = thread::spawn(move || {
-                        // Now we can work directly with the Arc since critical mutable operations
-                        // (like data_channel.take()) have been handled above
-                        if let Err(e) = download_task(
-                            &task_clone,
-                            &multi_progress,
-                        ) {
-                            log::error!("Download task failed for {}: {}", task_clone.url, e);
-                        }
-
-                        /*
-                         * CRITICAL: We must take() the data_channel here to prevent recv() side from blocking forever.
-                         *
-                         * Problem: The data_channel sender is stored in the DownloadTask which lives in self.tasks HashMap.
-                         * Since tasks are stored permanently (for deduplication), the sender side of the channel
-                         * remains alive even after download completes. This means any recv() calls on the receiver
-                         * side will block indefinitely waiting for more data, because the channel is never closed.
-                         *
-                         * Solution: By calling take() here, we move the sender out of the task and into the download
-                         * thread. When the download thread exits (successfully or with error), the sender is
-                         * automatically dropped, which closes the channel and unblocks any recv() calls.
-                         *
-                         * This is especially important for async submission patterns where the caller submits a
-                         * download task and immediately starts reading from the receiver without waiting for
-                         * task completion. Without take(), the receiver would hang forever even after the
-                         * download finishes.
-                         *
-                         * Note: With Arc<DownloadTask> and Arc<Mutex<Option<Sender<...>>>>, we can now call take()
-                         * even through the Arc since data_channel uses interior mutability.
-                         */
-                        let _data_channel = {
-                            match task_clone.data_channel.lock() {
-                                Ok(mut dc) => dc.take(),
-                                Err(_) => None,
-                            }
-                        };
-                    });
-
-                    // Store the handle
-                    if let Ok(mut handles_guard) = task_handles.lock() {
-                        handles_guard.push(handle);
-                        current_task_count += 1;
-                    }
-                }
-
-                drop(tasks_guard);
-
-                // Start chunk processing for existing tasks
-                Self::start_chunks_processing(&tasks, &chunk_handles, nr_parallel);
-
-                thread::sleep(Duration::from_millis(100));
-            }
+            Self::run_main_processing_loop(
+                tasks,
+                multi_progress,
+                is_processing,
+                task_handles,
+                chunk_handles,
+                nr_parallel,
+                current_task_count_arc,
+            );
         });
+    }
+
+    /// Main processing loop that handles task scheduling and coordination
+    /// Level 3: Task Coordination - orchestrates task and chunk processing
+    fn run_main_processing_loop(
+        tasks: Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>,
+        multi_progress: MultiProgress,
+        is_processing: Arc<AtomicBool>,
+        task_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+        chunk_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+        nr_parallel: usize,
+        current_task_count_arc: Arc<AtomicUsize>,
+    ) {
+        loop {
+            // Clean up finished threads
+            Self::cleanup_finished_handles(&task_handles);
+            Self::cleanup_finished_handles(&chunk_handles);
+
+            // Check for completion or process pending tasks
+            match Self::process_pending_master_tasks(
+                &tasks,
+                &multi_progress,
+                &task_handles,
+                nr_parallel,
+                &current_task_count_arc,
+            ) {
+                ProcessingResult::AllCompleted => {
+                    is_processing.store(false, Ordering::Relaxed);
+                    break;
+                }
+                ProcessingResult::Continue => {
+                    // Start chunk processing for existing tasks
+                    Self::start_chunks_processing(&tasks, &chunk_handles, nr_parallel);
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    /// Process pending master tasks and spawn new download threads
+    /// Level 4: Task Scheduling - handles master task prioritization and spawning
+    fn process_pending_master_tasks(
+        tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>,
+        multi_progress: &MultiProgress,
+        task_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+        nr_parallel: usize,
+        current_task_count_arc: &Arc<AtomicUsize>,
+    ) -> ProcessingResult {
+        let tasks_guard = match tasks.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!("Failed to lock tasks mutex: {}", e);
+                return ProcessingResult::AllCompleted;
+            }
+        };
+
+        // Collect and prioritize pending tasks
+        let pending_tasks = Self::collect_and_prioritize_pending_tasks(&tasks_guard);
+
+        if pending_tasks.is_empty() {
+            // Check if all tasks are completed
+            let all_done = tasks_guard.iter()
+                .all(|(_, t)| matches!(t.get_status(), DownloadStatus::Completed | DownloadStatus::Failed(_)));
+
+            drop(tasks_guard);
+
+            if all_done {
+                return ProcessingResult::AllCompleted;
+            } else {
+                return ProcessingResult::Continue;
+            }
+        }
+
+        // Spawn new task threads within capacity limits
+        let spawned_count = Self::spawn_task_threads(
+            pending_tasks,
+            multi_progress,
+            task_handles,
+            nr_parallel,
+            current_task_count_arc,
+        );
+
+        drop(tasks_guard);
+
+        log::debug!("Spawned {} new download threads", spawned_count);
+        ProcessingResult::Continue
+    }
+
+    /// Collect pending tasks and sort them by priority (largest first)
+    /// Level 5: Task Collection - handles task filtering and prioritization
+    fn collect_and_prioritize_pending_tasks(
+        tasks_guard: &HashMap<String, Arc<DownloadTask>>
+    ) -> Vec<(String, Arc<DownloadTask>)> {
+        let mut pending_tasks: Vec<_> = tasks_guard.iter()
+            .filter(|(_, t)| matches!(t.get_status(), DownloadStatus::Pending))
+            .map(|(url, task)| (url.clone(), Arc::clone(task)))
+            .collect();
+
+        // Sort by file size (largest first) for optimal resource utilization
+        pending_tasks.sort_by(|(_, a), (_, b)| {
+            let size_a = a.file_size.load(Ordering::Relaxed);
+            let size_b = b.file_size.load(Ordering::Relaxed);
+            size_b.cmp(&size_a) // Descending order
+        });
+
+        pending_tasks
+    }
+
+    /// Spawn task threads for pending downloads within capacity limits
+    /// Level 5: Thread Spawning - handles individual task thread creation
+    fn spawn_task_threads(
+        pending_tasks: Vec<(String, Arc<DownloadTask>)>,
+        multi_progress: &MultiProgress,
+        task_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+        nr_parallel: usize,
+        current_task_count_arc: &Arc<AtomicUsize>,
+    ) -> usize {
+        let mut current_task_count = {
+            let handles_guard = task_handles.lock().unwrap();
+            handles_guard.len()
+        };
+
+        let mut spawned_count = 0;
+
+        for (_task_url, task) in pending_tasks {
+            current_task_count_arc.store(current_task_count, Ordering::Relaxed);
+
+            if current_task_count >= nr_parallel {
+                break; // Reached task thread limit
+            }
+
+            if Self::spawn_single_task_thread(task, multi_progress, task_handles) {
+                current_task_count += 1;
+                spawned_count += 1;
+            }
+        }
+
+        spawned_count
+    }
+
+    /// Spawn a single task thread with proper error handling and cleanup
+    /// Level 6: Individual Thread Management - handles single task execution
+    fn spawn_single_task_thread(
+        task: Arc<DownloadTask>,
+        multi_progress: &MultiProgress,
+        task_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+    ) -> bool {
+        // Mark task as downloading
+        match task.status.lock() {
+            Ok(mut status) => *status = DownloadStatus::Downloading,
+            Err(e) => {
+                log::error!("Failed to lock task status mutex: {}", e);
+                return false;
+            }
+        };
+
+        let multi_progress = multi_progress.clone();
+        let task_clone = Arc::clone(&task);
+
+        // Spawn task thread
+        let handle = thread::spawn(move || {
+            if let Err(e) = download_task(&task_clone, &multi_progress) {
+                log::error!("Download task failed for {}: {}", task_clone.url, e);
+            }
+
+            // CRITICAL: Take data_channel to close it and unblock receivers
+            // This prevents recv() from blocking forever after download completion
+            let _data_channel = {
+                match task_clone.data_channel.lock() {
+                    Ok(mut dc) => dc.take(),
+                    Err(_) => None,
+                }
+            };
+        });
+
+        // Store the handle
+        if let Ok(mut handles_guard) = task_handles.lock() {
+            handles_guard.push(handle);
+            true
+        } else {
+            false
+        }
     }
 
     /// Clean up finished thread handles
@@ -820,6 +891,13 @@ impl std::fmt::Display for DownloadError {
 }
 
 impl std::error::Error for DownloadError {}
+
+/// Result type for processing operations to indicate whether to continue or complete
+#[derive(Debug, PartialEq)]
+enum ProcessingResult {
+    Continue,
+    AllCompleted,
+}
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -1502,7 +1580,7 @@ fn execute_download_request(
     let downloaded = task.chunk_offset.load(Ordering::Relaxed);
     if downloaded == 0 && task.chunk_size.load(Ordering::Relaxed) == 0 {
         if part_path.exists() {
-            if let Some(stored_etag) = load_etag(&part_path) {
+            if let Some(stored_etag) = load_etag(part_path) {
                 log::debug!("Adding If-None-Match header with ETag '{}' for conditional request", stored_etag);
                 request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
             }
@@ -1514,88 +1592,139 @@ fn execute_download_request(
     }
 
     // Add Range headers for partial content requests
-    if task.chunk_size.load(Ordering::Relaxed) > 0 {
-        let end = downloaded + task.chunk_size.load(Ordering::Relaxed) - 1;
+    let chunk_size = task.chunk_size.load(Ordering::Relaxed);
+    if chunk_size > 0 {
+        let end = downloaded + chunk_size - 1;
         log::debug!("Setting Range header: bytes={}-{}", downloaded, end);
         request = request.header("Range", &format!("bytes={}-{}", downloaded, end));
     } else if downloaded > 0 {
+        // Resume request from offset to end
         log::debug!("Setting Range header: bytes={}-", downloaded);
         request = request.header("Range", &format!("bytes={}-", downloaded));
     }
 
+    // Execute the request and handle all possible outcomes
     let request_start = std::time::Instant::now();
     match request.call() {
-        Ok(response) => {
-            let latency = request_start.elapsed().as_millis() as u64;
+        Ok(response) => handle_successful_response(response, task, resolved_url, request_start),
+        Err(ureq::Error::StatusCode(code)) => handle_http_status_error(code, task, resolved_url, existing_bytes, request_start),
+        Err(ureq::Error::Io(e)) => handle_network_io_error(e, task, resolved_url),
+        Err(e) => handle_general_request_error(e, task, resolved_url),
+    }
+}
 
-            // Handle 304 Not Modified responses for ETag conditional requests
-            if response.status().as_u16() == 304 {
-                return handle_304_not_modified_response(task, resolved_url, latency);
-            }
+/// Handle successful HTTP responses (2xx status codes)
+/// Level 6: Response Processing - handles successful HTTP responses
+fn handle_successful_response(
+    response: http::Response<ureq::Body>,
+    task: &DownloadTask,
+    resolved_url: &str,
+    request_start: std::time::Instant,
+) -> Result<http::Response<ureq::Body>> {
+    let latency = request_start.elapsed().as_millis() as u64;
 
-            // Log latency info for successful requests
-            if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
-                log::warn!("Failed to log download latency: {}", e);
-            }
-            Ok(response)
-        },
-        Err(ureq::Error::StatusCode(code)) => {
-            let latency = request_start.elapsed().as_millis() as u64;
-            log::debug!("download_file got HTTP error code: {}", code);
+    // Handle 304 Not Modified responses for ETag conditional requests
+    if response.status().as_u16() == 304 {
+        return handle_304_not_modified_response(task, resolved_url, latency);
+    }
 
-            // Log latency and error
-            if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
-                log::warn!("Failed to log latency: {}", e);
-            }
+    // Log latency info for successful requests
+    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
+        log::warn!("Failed to log download latency: {}", e);
+    }
 
-            if code == 416 && existing_bytes > 0 {
-                // The requested byte range is outside the size of the file
-                log::debug!("download_file handling HTTP 416 with existing_bytes={}", existing_bytes);
-                return handle_416_range_error(task);
-            }
+    Ok(response)
+}
 
-            // Log specific HTTP error
-            let http_event = if code == 404 {
-                HttpEvent::NoContent
-            } else {
-                HttpEvent::HttpError(code)
-            };
+/// Handle HTTP status code errors (4xx, 5xx responses)
+/// Level 6: Error Handling - processes HTTP status code errors
+fn handle_http_status_error(
+    code: u16,
+    task: &DownloadTask,
+    resolved_url: &str,
+    existing_bytes: u64,
+    request_start: std::time::Instant,
+) -> Result<http::Response<ureq::Body>> {
+    let latency = request_start.elapsed().as_millis() as u64;
+    log::debug!("HTTP error code {}", code);
 
-            if let Err(e) = append_http_log(resolved_url, http_event) {
-                log::warn!("Failed to log HTTP error: {}", e);
-            }
+    // Log latency even for errors
+    log_http_request_metrics(resolved_url, latency);
 
-            handle_non_416_http_error(code, resolved_url, task)
-        }
-        Err(ureq::Error::Io(e)) => {
-            let error_msg = format!("Network error: {} - {}", e, resolved_url);
+    // Handle specific HTTP status codes
+    if code == 416 && existing_bytes > 0 {
+        log::debug!("Handling HTTP 416 with existing_bytes={}", existing_bytes);
+        return handle_416_range_error(task);
+    }
 
-            // Log network error
-            if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
-                log::warn!("Failed to log network error: {}", log_err);
-            }
+    // Log the specific HTTP error type
+    log_http_status_error(resolved_url, code);
 
-            task.set_message(error_msg.clone());
-            Err(DownloadError::NetworkError(error_msg).into())
-        }
-        Err(e) => {
-            // Check if this is a timeout error
-            let error_str = e.to_string();
-            let error_msg = format!("Error downloading: {} - {}", error_str, resolved_url);
+    handle_non_416_http_error(code, resolved_url, task)
+}
 
-            // Log general error as network error
-            if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
-                log::warn!("Failed to log download error: {}", log_err);
-            }
+/// Handle network I/O errors
+/// Level 6: Error Handling - processes network I/O errors
+fn handle_network_io_error(
+    e: std::io::Error,
+    task: &DownloadTask,
+    resolved_url: &str,
+) -> Result<http::Response<ureq::Body>> {
+    let error_msg = format!("Network error: {} - {}", e, resolved_url);
 
-            task.set_message(error_msg.clone());
+    // Log network error
+    if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
+        log::warn!("Failed to log network error: {}", log_err);
+    }
 
-            if error_str.contains("timeout") {
-                Err(DownloadError::Timeout(error_msg).into())
-            } else {
-                Err(DownloadError::NetworkError(error_msg).into())
-            }
-        }
+    task.set_message(error_msg.clone());
+    Err(DownloadError::NetworkError(error_msg).into())
+}
+
+/// Handle general request errors (timeouts, DNS failures, etc.)
+/// Level 6: Error Handling - processes general request errors
+fn handle_general_request_error(
+    e: ureq::Error,
+    task: &DownloadTask,
+    resolved_url: &str,
+) -> Result<http::Response<ureq::Body>> {
+    let error_str = e.to_string();
+    let error_msg = format!("Error downloading: {} - {}", error_str, resolved_url);
+
+    // Log general error as network error
+    if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
+        log::warn!("Failed to log download error: {}", log_err);
+    }
+
+    task.set_message(error_msg.clone());
+
+    // Classify error type based on error message
+    if error_str.contains("timeout") {
+        Err(DownloadError::Timeout(error_msg).into())
+    } else {
+        Err(DownloadError::NetworkError(error_msg).into())
+    }
+}
+
+/// Log HTTP request metrics for performance tracking
+/// Level 7: Logging - handles HTTP metrics logging
+fn log_http_request_metrics(resolved_url: &str, latency: u64) {
+    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
+        log::warn!("Failed to log latency: {}", e);
+    }
+}
+
+/// Log specific HTTP status errors for monitoring
+/// Level 7: Logging - handles HTTP status error logging
+fn log_http_status_error(resolved_url: &str, code: u16) {
+    let http_event = if code == 404 {
+        HttpEvent::NoContent
+    } else {
+        HttpEvent::HttpError(code)
+    };
+
+    if let Err(e) = append_http_log(resolved_url, http_event) {
+        log::warn!("Failed to log HTTP error: {}", e);
     }
 }
 
@@ -1754,6 +1883,32 @@ fn download_chunk_content(
     mut response: http::Response<ureq::Body>,
     task: &DownloadTask,
 ) -> Result<u64> {
+    // Initialize download context and validate response
+    let download_context = initialize_chunk_download_context(task, &response)?;
+
+    // Setup file for writing
+    let (mut file, existing_bytes) = setup_download_file(task)?;
+
+    // Execute the main download stream processing
+    let total_downloaded = process_chunk_download_stream(
+        &mut response,
+        &mut file,
+        task,
+        existing_bytes,
+        &download_context,
+    )?;
+
+    // Finalize download with progress updates and logging
+    finalize_chunk_download(task, total_downloaded, existing_bytes)
+}
+
+/// Initialize download context and validate response for chunk downloads
+/// Level 5: Context Initialization - sets up download state and validates response
+fn initialize_chunk_download_context(
+    task: &DownloadTask,
+    response: &http::Response<ureq::Body>,
+) -> Result<ChunkDownloadContext> {
+    // Get data channel for master tasks only
     let data_channel = if task.is_master_task() {
         match task.data_channel.lock() {
             Ok(dc) => dc.clone(),
@@ -1768,77 +1923,158 @@ fn download_chunk_content(
         return Err(eyre!("Expected 206 Partial Content for chunk download, got {}", response.status()));
     }
 
-    // Setup file for writing
-    let (mut file, existing_bytes) = setup_download_file(task)?;
+    Ok(ChunkDownloadContext {
+        data_channel,
+        is_master: task.is_master_task(),
+        last_update: std::time::Instant::now(),
+        last_ondemand_check: std::time::Instant::now(),
+    })
+}
 
+/// Process the main download stream with chunked reading and progress tracking
+/// Level 5: Stream Processing - handles the core download loop with boundaries
+fn process_chunk_download_stream(
+    response: &mut http::Response<ureq::Body>,
+    file: &mut File,
+    task: &DownloadTask,
+    existing_bytes: u64,
+    download_context: &ChunkDownloadContext,
+) -> Result<u64> {
     let mut reader = response.body_mut().as_reader();
     let mut buffer = vec![0; 8192];
-    let mut last_update = std::time::Instant::now();
-    let mut last_ondemand_check = std::time::Instant::now();
-
-    // Track bytes separately
-    let mut total_downloaded = existing_bytes; // Total bytes in file (reused + network)
-    let mut network_bytes = 0u64; // Only bytes received from network
-
-    let is_master = task.is_master_task();
+    let mut total_downloaded = existing_bytes;
+    let mut network_bytes = 0u64;
+    let mut last_update = download_context.last_update;
+    let mut last_ondemand_check = download_context.last_ondemand_check;
 
     loop {
-        let bytes_read = match reader.read(&mut buffer) {
-            Ok(0) => break, // EOF reached
-            Ok(n) => n,
-            Err(e) => {
-                if is_master {
-                    let error_msg = format!("Read error at {} bytes: {}", total_downloaded,
-                        task.resolved_url.lock().map(|r| r.clone()).unwrap_or_else(|_| task.url.clone()));
-                    task.set_message(error_msg.clone());
-                }
-                return Err(eyre!("Failed to read from response (total_downloaded={}, buffer_size={}): {}", total_downloaded, buffer.len(), e));
-            }
-        };
+        // Read data from network stream
+        let bytes_read = read_chunk_from_stream(&mut reader, &mut buffer, task, total_downloaded)?;
 
-        // Calculate bytes to write based on chunk boundaries
-        let bytes_to_write = calculate_write_bytes(task, bytes_read, total_downloaded);
+        if bytes_read == 0 {
+            break; // EOF reached
+        }
 
-        // Write data to file with boundary checks
-        let written_bytes = write_chunk_data(
-            &mut file,
+        // Process and write the chunk data
+        let written_bytes = process_chunk_data_write(
+            file,
             &buffer,
-            bytes_to_write,
+            bytes_read,
             task,
-            total_downloaded
+            total_downloaded,
         )?;
 
         if written_bytes == 0 {
-            break; // Chunk task completed or reached boundary
+            break; // Chunk boundary reached
         }
 
+        // Update download counters
         total_downloaded += written_bytes as u64;
         network_bytes += written_bytes as u64;
 
-        // Send data to channel for master tasks
-        if let Some(channel) = &data_channel {
-            if let Err(_) = channel.send(buffer[..written_bytes].to_vec()) {
-                // Channel was closed, but we continue downloading
-            }
-        }
+        // Handle data channel and boundary checks
+        handle_chunk_data_processing(
+            &download_context.data_channel,
+            &buffer,
+            written_bytes,
+            bytes_read,
+            task,
+            network_bytes,
+        );
 
         if written_bytes < bytes_read {
-            // Reached chunk boundary for master task
-            break;
+            break; // Reached chunk boundary for master task
         }
 
-        // Store only network bytes in received_bytes
-        task.received_bytes.store(network_bytes, Ordering::Relaxed);
-
-        // Update progress tracking
-        update_download_progress(task, total_downloaded, &mut last_update);
-
-        // Check for on-demand chunking opportunities
-        check_ondemand_chunking(task, total_downloaded, &mut last_ondemand_check);
+        // Perform periodic updates
+        perform_chunk_periodic_updates(task, total_downloaded, &mut last_update, &mut last_ondemand_check);
     }
 
+    Ok(total_downloaded)
+}
+
+/// Read chunk data from network stream with error handling
+/// Level 6: Network I/O - handles reading from response stream
+fn read_chunk_from_stream(
+    reader: &mut dyn std::io::Read,
+    buffer: &mut [u8],
+    task: &DownloadTask,
+    total_downloaded: u64,
+) -> Result<usize> {
+    match reader.read(buffer) {
+        Ok(0) => Ok(0), // EOF reached
+        Ok(n) => Ok(n),
+        Err(e) => {
+            if task.is_master_task() {
+                let error_msg = format!("Read error at {} bytes: {}", total_downloaded,
+                    task.resolved_url.lock().map(|r| r.clone()).unwrap_or_else(|_| task.url.clone()));
+                task.set_message(error_msg);
+            }
+            Err(eyre!("Failed to read from response (total_downloaded={}, buffer_size={}): {}", total_downloaded, buffer.len(), e))
+        }
+    }
+}
+
+/// Process chunk data and write to file with boundary checking
+/// Level 6: Data Processing - handles chunk boundary logic and file writing
+fn process_chunk_data_write(
+    file: &mut File,
+    buffer: &[u8],
+    bytes_read: usize,
+    task: &DownloadTask,
+    total_downloaded: u64,
+) -> Result<usize> {
+    // Calculate bytes to write based on chunk boundaries
+    let bytes_to_write = calculate_write_bytes(task, bytes_read, total_downloaded);
+
+    // Write data to file with boundary checks
+    write_chunk_data(file, buffer, bytes_to_write, task, total_downloaded)
+}
+
+/// Handle data channel communication and progress tracking
+/// Level 6: Progress Management - manages data channels and counters
+fn handle_chunk_data_processing(
+    data_channel: &Option<Sender<Vec<u8>>>,
+    buffer: &[u8],
+    written_bytes: usize,
+    _bytes_read: usize,
+    task: &DownloadTask,
+    network_bytes: u64,
+) {
+    // Send data to channel for master tasks
+    if let Some(channel) = data_channel {
+        if channel.send(buffer[..written_bytes].to_vec()).is_err() {
+            log::debug!("Data channel closed during download");
+        }
+    }
+
+    // Store only network bytes in received_bytes
+    task.received_bytes.store(network_bytes, Ordering::Relaxed);
+}
+
+/// Perform periodic progress updates and chunking checks
+/// Level 6: Update Management - handles timed progress and chunking updates
+fn perform_chunk_periodic_updates(
+    task: &DownloadTask,
+    total_downloaded: u64,
+    last_update: &mut std::time::Instant,
+    last_ondemand_check: &mut std::time::Instant,
+) {
+    update_download_progress(task, total_downloaded, last_update);
+    check_ondemand_chunking(task, total_downloaded, last_ondemand_check);
+}
+
+/// Finalize chunk download with progress updates and completion logging
+/// Level 5: Download Finalization - completes download with final updates
+fn finalize_chunk_download(
+    task: &DownloadTask,
+    total_downloaded: u64,
+    existing_bytes: u64,
+) -> Result<u64> {
+    let network_bytes = total_downloaded - existing_bytes;
+
     // Final progress update
-    if is_master {
+    if task.is_master_task() {
         let (total_received, _downloading_chunks) = task.get_total_progress_bytes();
         task.set_position(total_received);
     } else {
@@ -3313,4 +3549,12 @@ struct DownloadContext {
     resolved_url: String,
     existing_bytes: u64,
     _mirror_guard: MirrorUsageGuard,
+}
+
+/// Context for chunk download operations
+struct ChunkDownloadContext {
+    data_channel: Option<Sender<Vec<u8>>>,
+    is_master: bool,
+    last_update: std::time::Instant,
+    last_ondemand_check: std::time::Instant,
 }
