@@ -1338,8 +1338,6 @@ fn download_file_with_retries(
             Ok(()) => {
                 log::debug!("download_file_with_retries completed successfully for {}, dropping channel", &resolved_url);
 
-                log::debug!("download_file_with_retries completed successfully for {}, dropping channel", &resolved_url);
-
                 return Ok(());
             },
             Err(e) => {
@@ -1650,9 +1648,7 @@ fn handle_successful_response(
     }
 
     // Log latency info for successful requests
-    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
-        log::warn!("Failed to log download latency: {}", e);
-    }
+    log_http_event_safe(resolved_url, HttpEvent::Latency(latency));
 
     Ok(response)
 }
@@ -1694,9 +1690,7 @@ fn handle_network_io_error(
     let error_msg = format!("Network error: {} - {}", e, resolved_url);
 
     // Log network error
-    if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
-        log::warn!("Failed to log network error: {}", log_err);
-    }
+    log_http_event_safe(resolved_url, HttpEvent::NetError(error_msg.clone()));
 
     task.set_message(error_msg.clone());
     Err(DownloadError::NetworkError(error_msg).into())
@@ -1713,9 +1707,7 @@ fn handle_general_request_error(
     let error_msg = format!("Error downloading: {} - {}", error_str, resolved_url);
 
     // Log general error as network error
-    if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
-        log::warn!("Failed to log download error: {}", log_err);
-    }
+    log_http_event_safe(resolved_url, HttpEvent::NetError(error_msg.clone()));
 
     task.set_message(error_msg.clone());
 
@@ -1730,9 +1722,7 @@ fn handle_general_request_error(
 /// Log HTTP request metrics for performance tracking
 /// Level 7: Logging - handles HTTP metrics logging
 fn log_http_request_metrics(resolved_url: &str, latency: u64) {
-    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
-        log::warn!("Failed to log latency: {}", e);
-    }
+    log_http_event_safe(resolved_url, HttpEvent::Latency(latency));
 }
 
 /// Log specific HTTP status errors for monitoring
@@ -1744,9 +1734,7 @@ fn log_http_status_error(resolved_url: &str, code: u16) {
         HttpEvent::HttpError(code)
     };
 
-    if let Err(e) = append_http_log(resolved_url, http_event) {
-        log::warn!("Failed to log HTTP error: {}", e);
-    }
+    log_http_event_safe(resolved_url, http_event);
 }
 
 /// Handle 416 Range Not Satisfiable error with full access to required context
@@ -1770,9 +1758,7 @@ fn handle_416_range_error(
     let metadata_latency = metadata_request_start.elapsed().as_millis() as u64;
 
     // Log metadata request latency
-    if let Err(e) = append_http_log(&url, HttpEvent::Latency(metadata_latency)) {
-        log::warn!("Failed to log metadata request latency: {}", e);
-    }
+    log_http_event_safe(&url, HttpEvent::Latency(metadata_latency));
 
     let remote_size_opt = parse_content_length(&remote_metadata);
     let remote_size = remote_size_opt.unwrap_or(0);
@@ -1781,7 +1767,7 @@ fn handle_416_range_error(
 
     let remote_timestamp_opt = parse_remote_timestamp(&remote_metadata);
 
-    let local_metadata = fs::metadata(part_path).map_err(|e| eyre!("Failed to get local file metadata: {}", e))?;
+    let local_metadata = map_io_error(fs::metadata(part_path), "get local file metadata", part_path)?;
     let local_size = local_metadata.len();
     let local_last_modified_sys_time = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
     let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
@@ -1802,7 +1788,7 @@ fn handle_416_range_error(
             let error_msg = format!("{}, restarting download from 0: {}", reason, url);
             log::debug!("{}", error_msg);
             task.set_message(error_msg.clone());
-            fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
+            safe_remove_file(part_path, "part")?;
             return Err(DownloadError::TimestampMismatch(error_msg).into());
         }
     }
@@ -1862,7 +1848,7 @@ fn handle_resume_logic(
             log::warn!("Failed to log range support info: {}", e);
         }
 
-        fs::remove_file(part_path).map_err(|e| eyre!("Failed to remove part file '{}': {}", part_path.display(), e))?;
+        safe_remove_file(part_path, "part")?;
         task.set_message(format!("Server cannot resume, restarting - {}", url));
         Ok(0)
     } else {
@@ -2711,11 +2697,7 @@ fn update_chunk_progress(
         .map(|r| r.clone())
         .unwrap_or_else(|_| chunk_task.url.clone());
 
-    if downloading_chunks == 0 {
-        master_task.set_message(resolved_url);
-    } else {
-        master_task.set_message(format!("#{} {}", downloading_chunks, resolved_url));
-    }
+    master_task.set_message(format_progress_message(&resolved_url, downloading_chunks));
 
     master_task.set_position(total_received);
     log::trace!("Chunk progress update: {} bytes received", total_received);
@@ -2821,23 +2803,23 @@ fn append_file_to_file(source_path: &Path, target_path: &Path) -> Result<()> {
     }
 
     // Open source file for reading
-    let mut source = File::open(source_path)
-        .map_err(|e| eyre!("Failed to open source file {}: {}", source_path.display(), e))?;
+    let mut source = map_io_error(File::open(source_path), "open source file", source_path)?;
 
     // Open target file for appending
-    let mut target = OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(target_path)
-        .map_err(|e| eyre!("Failed to open target file {}: {}", target_path.display(), e))?;
+    let mut target = map_io_error(
+        OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(target_path),
+        "open target file",
+        target_path
+    )?;
 
     // Copy data from source to target
-    std::io::copy(&mut source, &mut target)
-        .map_err(|e| eyre!("Failed to append file {}: {}", source_path.display(), e))?;
+    map_io_error(std::io::copy(&mut source, &mut target), "append file", source_path)?;
 
     // Ensure data is written to disk
-    target.sync_all()
-        .map_err(|e| eyre!("Failed to sync target file {}: {}", target_path.display(), e))?;
+    map_io_error(target.sync_all(), "sync target file", target_path)?;
 
     Ok(())
 }
@@ -3397,6 +3379,32 @@ fn should_redownload(
     }
 }
 
+/// Helper to safely remove files with consistent error handling
+fn safe_remove_file(path: &Path, context: &str) -> Result<()> {
+    fs::remove_file(path).map_err(|e| eyre!("Failed to remove {} file '{}': {}", context, path.display(), e))
+}
+
+/// Helper to safely log HTTP events with error handling
+fn log_http_event_safe(url: &str, event: HttpEvent) {
+    if let Err(e) = append_http_log(url, event) {
+        log::warn!("Failed to log HTTP event for {}: {}", url, e);
+    }
+}
+
+/// Helper for consistent error mapping patterns
+fn map_io_error<T>(result: std::io::Result<T>, context: &str, path: &Path) -> Result<T> {
+    result.map_err(|e| eyre!("Failed to {} '{}': {}", context, path.display(), e))
+}
+
+/// Helper to format progress messages with chunk counts
+fn format_progress_message(resolved_url: &str, downloading_chunks: usize) -> String {
+    if downloading_chunks == 0 {
+        resolved_url.to_string()
+    } else {
+        format!("+{} {}", downloading_chunks, resolved_url)
+    }
+}
+
 /// Setup file for download content writing
 fn setup_download_file(task: &DownloadTask) -> Result<(File, u64)> {
     let chunk_path = &task.chunk_path;
@@ -3410,13 +3418,16 @@ fn setup_download_file(task: &DownloadTask) -> Result<(File, u64)> {
         0
     };
 
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(existing_bytes > 0) // Append if file exists with content
-        .truncate(existing_bytes == 0) // Only truncate if file is empty or doesn't exist
-        .open(chunk_path)
-        .map_err(|e| eyre!("Failed to open file '{}': {}", chunk_path.display(), e))?;
+    let file = map_io_error(
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(existing_bytes > 0) // Append if file exists with content
+            .truncate(existing_bytes == 0) // Only truncate if file is empty or doesn't exist
+            .open(chunk_path),
+        "open file",
+        chunk_path
+    )?;
 
     Ok((file, existing_bytes))
 }
@@ -3512,11 +3523,8 @@ fn update_download_progress(
             let resolved_url = task.resolved_url.lock()
                 .map(|r| r.clone())
                 .unwrap_or_else(|_| task.url.clone());
-            if downloading_chunks == 0 {
-                task.set_message(resolved_url);
-            } else {
-                task.set_message(format!("+{} {}", downloading_chunks, resolved_url));
-            }
+            let message = format_progress_message(&resolved_url, downloading_chunks);
+            task.set_message(message);
         } else {
             // For chunk tasks, show total downloaded (reused + network bytes)
             task.set_position(total_downloaded);
