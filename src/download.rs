@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 
 use color_eyre::{eyre::eyre, eyre::WrapErr, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ureq::{Agent, Proxy};
+use ureq::Agent;
 use ureq::http;
 use crate::dirs;
 use crate::models::*;
@@ -1481,60 +1481,26 @@ fn get_existing_file_size(part_path: &Path) -> Result<u64> {
     }
 }
 
-/// Make the HTTP download request with special handling for 416 errors
-/// The 416 logic is kept inline as it needs access to part_path and data_channel
-// ### HTTP Standards & Headers
-// #### `Range` (Request Header)
-// - Requests a specific part of a resource:
-//   ```http
-//   Range: bytes=0-499
-//   ```
-// - Server responds with:
-//   - `206 Partial Content` (success) + `Content-Range`.
-//   - `416 Range Not Satisfiable` (invalid range).
-//
-// #### `Accept-Ranges` (Response Header)
-// - Indicates if the server supports range requests:
-//   ```http
-//   Accept-Ranges: bytes
-//   ```
-//   (or `none` if unsupported).
-//
-// ### Example Flow
-// 1. Client requests a range:
-//    ```http
-//    GET /largefile.zip HTTP/1.1
-//    Range: bytes=0-999
-//    ```
-// 2. Server responds:
-//    ```http
-//    HTTP/1.1 206 Partial Content
-//    Content-Range: bytes 0-999/5000
-//    Content-Length: 1000
-//    [...data...]
-fn make_download_request_with_416_handling(
+/// Execute HTTP download request with comprehensive error handling
+///
+/// This function handles:
+/// - ETag conditional requests (304 Not Modified)
+/// - Range request errors (416 Range Not Satisfiable)
+/// - Network and timeout errors
+/// - Request logging and metrics
+fn execute_download_request(
     task: &DownloadTask,
+    resolved_url: &str,
+    existing_bytes: u64,
 ) -> Result<http::Response<ureq::Body>> {
-    let url = task.get_resolved_url();
-    let part_path = &task.chunk_path;
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
-
+    // Build HTTP request with appropriate headers
     let client = task.get_client()?;
-    let mut request = client.get(url.replace("///", "/"))
-        .config()
-        .max_redirects(3)
-        .build();
+    let mut request = client.get(resolved_url.replace("///", "/"));
 
-    // Get the download offset from task's chunk_offset or use the downloaded size
+    // Add ETag conditional headers for cache validation
+    let part_path = &task.chunk_path;
     let downloaded = task.chunk_offset.load(Ordering::Relaxed);
-
-    // Check for existing ETag to enable conditional requests
-    // Only for complete file downloads (not partial/range requests)
     if downloaded == 0 && task.chunk_size.load(Ordering::Relaxed) == 0 {
-        // First check if the local file exists before considering ETag
         if part_path.exists() {
             if let Some(stored_etag) = load_etag(&part_path) {
                 log::debug!("Adding If-None-Match header with ETag '{}' for conditional request", stored_etag);
@@ -1542,20 +1508,18 @@ fn make_download_request_with_416_handling(
             }
         } else {
             log::debug!("Local file {} doesn't exist, skipping ETag header", part_path.display());
-            // Remove stale ETag sidecar so that next attempt performs full GET.
             let etag_path = part_path.with_extension("etag");
             let _ = std::fs::remove_file(&etag_path);
         }
     }
 
-    // If we have a chunk size, use a specific range
+    // Add Range headers for partial content requests
     if task.chunk_size.load(Ordering::Relaxed) > 0 {
-        let end = downloaded + task.chunk_size.load(Ordering::Relaxed) - 1; // HTTP ranges are inclusive
-        log::debug!("download_file setting Range header: bytes={}-{}", downloaded, end);
+        let end = downloaded + task.chunk_size.load(Ordering::Relaxed) - 1;
+        log::debug!("Setting Range header: bytes={}-{}", downloaded, end);
         request = request.header("Range", &format!("bytes={}-{}", downloaded, end));
     } else if downloaded > 0 {
-        // Otherwise request from offset to the end
-        log::debug!("download_file setting Range header: bytes={}-", downloaded);
+        log::debug!("Setting Range header: bytes={}-", downloaded);
         request = request.header("Range", &format!("bytes={}-", downloaded));
     }
 
@@ -1566,25 +1530,11 @@ fn make_download_request_with_416_handling(
 
             // Handle 304 Not Modified responses for ETag conditional requests
             if response.status().as_u16() == 304 {
-                log::debug!("Received 304 Not Modified - file unchanged on server");
-                task.set_message(format!("File unchanged (ETag match), skipping download - {}", part_path.display()));
-
-                // If the final file exists, send it to the channel if needed
-                if let Some(channel) = &data_channel {
-                    send_file_to_channel(&part_path, channel)
-                        .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
-                }
-
-                // Log this as a successful conditional request
-                if let Err(e) = append_http_log(&url, HttpEvent::Latency(latency)) {
-                    log::warn!("Failed to log 304 latency: {}", e);
-                }
-
-                return Err(eyre!("Download skipped - file unchanged (ETag match)"));
+                return handle_304_not_modified_response(task, resolved_url, latency);
             }
 
             // Log latency info for successful requests
-            if let Err(e) = append_http_log(&url, HttpEvent::Latency(latency)) {
+            if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
                 log::warn!("Failed to log download latency: {}", e);
             }
             Ok(response)
@@ -1594,13 +1544,13 @@ fn make_download_request_with_416_handling(
             log::debug!("download_file got HTTP error code: {}", code);
 
             // Log latency and error
-            if let Err(e) = append_http_log(&url, HttpEvent::Latency(latency)) {
+            if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
                 log::warn!("Failed to log latency: {}", e);
             }
 
-            if code == 416 && downloaded > 0 {
+            if code == 416 && existing_bytes > 0 {
                 // The requested byte range is outside the size of the file
-                log::debug!("download_file handling HTTP 416 with downloaded={}", downloaded);
+                log::debug!("download_file handling HTTP 416 with existing_bytes={}", existing_bytes);
                 return handle_416_range_error(task);
             }
 
@@ -1611,17 +1561,17 @@ fn make_download_request_with_416_handling(
                 HttpEvent::HttpError(code)
             };
 
-            if let Err(e) = append_http_log(&url, http_event) {
+            if let Err(e) = append_http_log(resolved_url, http_event) {
                 log::warn!("Failed to log HTTP error: {}", e);
             }
 
-            handle_non_416_http_error(code, &url, task)
+            handle_non_416_http_error(code, resolved_url, task)
         }
         Err(ureq::Error::Io(e)) => {
-            let error_msg = format!("Network error: {} - {}", e, url);
+            let error_msg = format!("Network error: {} - {}", e, resolved_url);
 
             // Log network error
-            if let Err(log_err) = append_http_log(&url, HttpEvent::NetError(error_msg.clone())) {
+            if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
                 log::warn!("Failed to log network error: {}", log_err);
             }
 
@@ -1631,10 +1581,10 @@ fn make_download_request_with_416_handling(
         Err(e) => {
             // Check if this is a timeout error
             let error_str = e.to_string();
-            let error_msg = format!("Error downloading: {} - {}", error_str, url);
+            let error_msg = format!("Error downloading: {} - {}", error_str, resolved_url);
 
             // Log general error as network error
-            if let Err(log_err) = append_http_log(&url, HttpEvent::NetError(error_msg.clone())) {
+            if let Err(log_err) = append_http_log(resolved_url, HttpEvent::NetError(error_msg.clone())) {
                 log::warn!("Failed to log download error: {}", log_err);
             }
 
@@ -2316,9 +2266,24 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
 
 /// Unified download task function that handles both master and chunk tasks
 ///
-/// This function coordinates the download process by using helper functions for
-/// different aspects of the download lifecycle.
+/// This function coordinates the download process by delegating to specialized functions.
+/// Level 3: Download Strategy - coordinates download execution
 fn download_chunk_task(task: &DownloadTask) -> Result<()> {
+    // Phase 1: Setup and validation
+    let download_context = prepare_download_context(task)?;
+
+    // Phase 2: Execute HTTP request
+    let response = execute_download_request(task, &download_context.resolved_url, download_context.existing_bytes)?;
+
+    // Phase 3: Process response and download content
+    process_download_response(task, response, &download_context)?;
+
+    Ok(())
+}
+
+/// Prepare download context and validate readiness
+/// Level 4: Setup Operations - handles download preparation
+fn prepare_download_context(task: &DownloadTask) -> Result<DownloadContext> {
     let url = &task.url;
     let chunk_path = &task.chunk_path;
 
@@ -2354,7 +2319,7 @@ fn download_chunk_task(task: &DownloadTask) -> Result<()> {
 
     // Check if chunk task is already complete
     if check_chunk_completion(task, existing_bytes)? {
-        return Ok(());
+        return Err(eyre!("Chunk already complete")); // Early exit for completed chunks
     }
 
     // Setup resumption state
@@ -2365,26 +2330,28 @@ fn download_chunk_task(task: &DownloadTask) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    // Create and execute HTTP request with comprehensive error handling
-    let response = make_download_request_with_416_handling(task)?;
+    Ok(DownloadContext {
+        resolved_url,
+        existing_bytes,
+        _mirror_guard,
+    })
+}
 
-    // Handle task-specific response validation
+/// Process HTTP response and execute content download
+/// Level 4: Response Processing - handles HTTP response validation and content download
+fn process_download_response(
+    task: &DownloadTask,
+    response: http::Response<ureq::Body>,
+    context: &DownloadContext
+) -> Result<()> {
+    // Handle task-specific response validation and metadata
     if task.is_master_task() {
-        if handle_master_task_response(task, &response, &resolved_url, existing_bytes)? {
-            return Ok(()); // Task completed early
-        }
-
-        // Handle metadata for master tasks
-        handle_response_metadata(&response, task);
-
-        // Save ETag for future conditional requests
-        if let Some(etag) = parse_etag(&response) {
-            if let Err(e) = save_etag(&task.chunk_path.with_extension("etag"), &etag) {
-                log::warn!("Failed to save ETag for {}: {}", task.chunk_path.display(), e);
-            }
+        let is_range_continue = handle_master_task_response(task, &response, &context.resolved_url, context.existing_bytes)?;
+        if !is_range_continue {
+            return Ok(()); // Early exit for completed downloads
         }
     } else {
-        handle_chunk_task_response(&response, &resolved_url)?;
+        handle_chunk_task_response(&response, &context.resolved_url)?;
     }
 
     // Download the content using unified function
@@ -2400,21 +2367,13 @@ fn download_chunk_task(task: &DownloadTask) -> Result<()> {
         }
     }
 
-    // Log download completion (use resolved_url since we don't have request_latency)
-    log::debug!("Download completed for {}: {} bytes in {}ms",
-               resolved_url, final_downloaded, download_duration);
-
-    // Final logging and status update
-    if task.is_chunk_task() {
-        log::debug!("Completed chunk download: {} bytes at offset {} for {}",
-                   chunk_size, chunk_offset, url);
-        update_download_status(task, DownloadStatus::Completed)?;
-    } else {
-        log::debug!("Completed master download: {} bytes for {}", final_downloaded, url);
-    }
+    // Log download completion
+    log_download_completion(task, &context.resolved_url, 0, download_duration);
 
     Ok(())
 }
+
+
 
 
 
@@ -3317,4 +3276,41 @@ fn check_ondemand_chunking(
         check_for_ondemand_chunking_opportunity(task, total_downloaded);
         *last_ondemand_check = now;
     }
+}
+
+/// Handle 304 Not Modified response
+fn handle_304_not_modified_response(
+    task: &DownloadTask,
+    resolved_url: &str,
+    latency: u64,
+) -> Result<http::Response<ureq::Body>> {
+    let part_path = &task.chunk_path;
+
+    log::debug!("Received 304 Not Modified - file unchanged on server");
+    task.set_message(format!("File unchanged (ETag match), skipping download - {}", part_path.display()));
+
+    // If the final file exists, send it to the channel if needed
+    let data_channel = match task.data_channel.lock() {
+        Ok(dc) => dc.clone(),
+        Err(_) => None,
+    };
+    if let Some(channel) = data_channel {
+        send_file_to_channel(&part_path, &channel)
+            .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
+    }
+
+    // Log this as a successful conditional request
+    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
+        log::warn!("Failed to log 304 latency: {}", e);
+    }
+
+    Err(eyre!("Download skipped - file unchanged (ETag match)"))
+}
+
+/// Context information for a download operation
+#[allow(dead_code)]
+struct DownloadContext {
+    resolved_url: String,
+    existing_bytes: u64,
+    _mirror_guard: MirrorUsageGuard,
 }
