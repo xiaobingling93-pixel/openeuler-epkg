@@ -453,33 +453,6 @@ impl DownloadManager {
                     let task_clone = Arc::clone(&task);
                     let _task_handles_clone = Arc::clone(&task_handles);
 
-					/*
-					 * CRITICAL: We must take() the data_channel here to prevent recv() side from blocking forever.
-					 *
-					 * Problem: The data_channel sender is stored in the DownloadTask which lives in self.tasks HashMap.
-					 * Since tasks are stored permanently (for deduplication), the sender side of the channel
-					 * remains alive even after download completes. This means any recv() calls on the receiver
-					 * side will block indefinitely waiting for more data, because the channel is never closed.
-					 *
-					 * Solution: By calling take() here, we move the sender out of the task and into the download
-					 * thread. When the download thread exits (successfully or with error), the sender is
-					 * automatically dropped, which closes the channel and unblocks any recv() calls.
-					 *
-					 * This is especially important for async submission patterns where the caller submits a
-					 * download task and immediately starts reading from the receiver without waiting for
-					 * task completion. Without take(), the receiver would hang forever even after the
-					 * download finishes.
-					 *
-					 * Note: With Arc<DownloadTask> and Arc<Mutex<Option<Sender<...>>>>, we can now call take()
-					 * even through the Arc since data_channel uses interior mutability.
-					 */
-                    let data_channel = {
-                        match task.data_channel.lock() {
-                            Ok(mut dc) => dc.take(),
-                            Err(_) => None,
-                        }
-                    };
-
                     // Mark task as downloading
                     match task.status.lock() {
                         Ok(mut status) => *status = DownloadStatus::Downloading,
@@ -493,18 +466,40 @@ impl DownloadManager {
                     let handle = thread::spawn(move || {
                         // Now we can work directly with the Arc since critical mutable operations
                         // (like data_channel.take()) have been handled above
-                        if let Err(e) = download_task_arc(
+                        if let Err(e) = download_task(
                             &client,
                             &task_clone,
                             &multi_progress,
-                            data_channel,
                         ) {
                             log::error!("Download task failed for {}: {}", task_clone.url, e);
                         }
 
-                        // Remove self from task handles when done
-                        // Note: We can't remove by handle since we're inside the thread
-                        // The cleanup will happen in the next iteration
+                        /*
+                         * CRITICAL: We must take() the data_channel here to prevent recv() side from blocking forever.
+                         *
+                         * Problem: The data_channel sender is stored in the DownloadTask which lives in self.tasks HashMap.
+                         * Since tasks are stored permanently (for deduplication), the sender side of the channel
+                         * remains alive even after download completes. This means any recv() calls on the receiver
+                         * side will block indefinitely waiting for more data, because the channel is never closed.
+                         *
+                         * Solution: By calling take() here, we move the sender out of the task and into the download
+                         * thread. When the download thread exits (successfully or with error), the sender is
+                         * automatically dropped, which closes the channel and unblocks any recv() calls.
+                         *
+                         * This is especially important for async submission patterns where the caller submits a
+                         * download task and immediately starts reading from the receiver without waiting for
+                         * task completion. Without take(), the receiver would hang forever even after the
+                         * download finishes.
+                         *
+                         * Note: With Arc<DownloadTask> and Arc<Mutex<Option<Sender<...>>>>, we can now call take()
+                         * even through the Arc since data_channel uses interior mutability.
+                         */
+                        let _data_channel = {
+                            match task_clone.data_channel.lock() {
+                                Ok(mut dc) => dc.take(),
+                                Err(_) => None,
+                            }
+                        };
                     });
 
                     // Store the handle
@@ -1075,22 +1070,7 @@ fn verify_file_size(part_path: &Path, expected_size: Option<u64>, url: &str) -> 
  * increasingly intelligent decisions over time.
  */
 
-/// Download a task with Arc<DownloadTask> wrapper
-/// This function handles the Arc<DownloadTask> case by directly calling download_task
-fn download_task_arc(
-    client: &Agent,
-    task: &Arc<DownloadTask>,
-    multi_progress: &MultiProgress,
-    data_channel: Option<Sender<Vec<u8>>>,
-) -> Result<()> {
-    // Temporarily override the data_channel for this download
-    if let Ok(mut dc) = task.data_channel.lock() {
-        *dc = data_channel;
-    }
 
-    // Call the download_task function directly with the Arc task
-    download_task(client, task, multi_progress)
-}
 
 /// Downloads a file from a URL to the output directory.
 /// Uses the final_path that was calculated when the task was created.
@@ -1107,7 +1087,6 @@ fn download_task(
         Ok(dc) => dc.clone(),
         Err(_) => None,
     };
-    let max_retries = task.max_retries;
     let expected_size = task.file_size.load(Ordering::Relaxed);
 
     log::debug!("download_task starting for {}, has_channel: {}, expected_size: {:?}", url, data_channel.is_some(), expected_size);
@@ -1147,10 +1126,6 @@ fn download_task(
     log::debug!("download_task calling download_file_with_retries for {}", url);
     let result = download_file_with_retries(
         client,
-        url, // Pass original URL, mirror resolution happens in download_file_with_retries
-        &part_path,
-        max_retries,
-        data_channel,
         task,
     );
     log::debug!("download_task download_file_with_retries completed for {}, result: {:?}", url, result);
@@ -1235,12 +1210,15 @@ fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Resul
 //   - Only handles retry logic and error handling
 fn download_file_with_retries(
     client: &Agent,
-    url: &str,
-    part_path: &Path,
-    max_retries: usize,
-    data_channel: Option<Sender<Vec<u8>>>,
     task: &DownloadTask,
 ) -> Result<()> {
+    let url = &task.url;
+    let max_retries = task.max_retries;
+    let data_channel = match task.data_channel.lock() {
+        Ok(dc) => dc.clone(),
+        Err(_) => None,
+    };
+
     log::debug!("download_file_with_retries starting for {}, has_channel: {}", url, data_channel.is_some());
     let mut retries = 0;
 
@@ -1248,7 +1226,7 @@ fn download_file_with_retries(
         log::debug!("download_file_with_retries calling download_file for {}, attempt {}", url, retries + 1);
         log::debug!("About to call download_file with data_channel.is_some() = {}", data_channel.is_some());
 
-        let download_result = download_file(client, url, &part_path, retries, &data_channel, task);
+        let download_result = download_file(client, task);
         let resolved_url = if let Ok(resolved) = task.resolved_url.lock() {
             if resolved.is_empty() {
                 url.to_string()
@@ -1409,12 +1387,15 @@ pub fn send_file_to_channel(
 
 fn download_file(
     client: &Agent,
-    url: &str,
-    part_path: &Path,
-    _retries: usize,
-    data_channel: &Option<Sender<Vec<u8>>>,
     task: &DownloadTask,
 ) -> Result<()> {
+    let url = &task.url;
+    let part_path = &task.chunk_path;
+    let data_channel = match task.data_channel.lock() {
+        Ok(dc) => dc.clone(),
+        Err(_) => None,
+    };
+
     log::debug!("download_file starting for {}, part_path: {}", url, part_path.display());
 
     // Step 1: Get existing file size
@@ -1438,7 +1419,7 @@ fn download_file(
     let _mirror_guard = MirrorUsageGuard::new(&&resolved_url);
 
     // Step 3: Make the HTTP request with range header if we have partial download
-    let mut response = match make_download_request_with_416_handling(client, &resolved_url, task, part_path, data_channel) {
+    let mut response = match make_download_request_with_416_handling(client, task) {
         Ok(response) => response,
         Err(e) => {
             // Check if this is the special case where download was skipped due to file unchanged
@@ -1461,7 +1442,7 @@ fn download_file(
 
     // Step 4: Validate response and handle resume logic
     validate_response_content_type(&response, &resolved_url, task)?;
-    let new_existing_bytes = handle_resume_logic(part_path, task, &resolved_url, existing_bytes, status.as_u16())?;
+    let new_existing_bytes = handle_resume_logic(task, existing_bytes, status.as_u16())?;
 
     // Step 5: If resume failed (existing_bytes was reset to 0), reset chunk tasks and attempt counter
     if existing_bytes > 0 && new_existing_bytes == 0 {
@@ -1526,7 +1507,7 @@ fn download_file(
         // Step 7: Send existing file content to channel if resuming
         if existing_bytes > 0 {
             if let Some(channel) = data_channel {
-                send_file_to_channel(part_path, channel).map_err(|e|
+                send_file_to_channel(part_path, &channel).map_err(|e|
                     eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e)
                 )?;
             }
@@ -1561,7 +1542,7 @@ fn download_file(
     }
 
     let download_start = std::time::Instant::now();
-    let mut final_downloaded = download_content(&mut response, part_path, existing_bytes, data_channel, task)?;
+    let mut final_downloaded = download_content(&mut response, existing_bytes, task)?;
     let total_duration = download_start.elapsed().as_millis() as u64;
 
     // Calculate network bytes transferred (excluding resumed bytes)
@@ -1694,11 +1675,23 @@ fn get_existing_file_size(part_path: &Path) -> Result<u64> {
 //    [...data...]
 fn make_download_request_with_416_handling(
     client: &Agent,
-    url: &str,
     task: &DownloadTask,
-    part_path: &Path,
-    data_channel: &Option<Sender<Vec<u8>>>,
 ) -> Result<http::Response<ureq::Body>> {
+    let url = if let Ok(resolved) = task.resolved_url.lock() {
+        if resolved.is_empty() {
+            task.url.clone()
+        } else {
+            resolved.clone()
+        }
+    } else {
+        task.url.clone()
+    };
+    let part_path = &task.chunk_path;
+    let data_channel = match task.data_channel.lock() {
+        Ok(dc) => dc.clone(),
+        Err(_) => None,
+    };
+
     let mut request = client.get(url.replace("///", "/"))
         .config()
         .max_redirects(3)
@@ -1746,13 +1739,13 @@ fn make_download_request_with_416_handling(
                 task.set_message(format!("File unchanged (ETag match), skipping download - {}", part_path.display()));
 
                 // If the final file exists, send it to the channel if needed
-                if let Some(channel) = data_channel {
+                if let Some(channel) = &data_channel {
                     send_file_to_channel(&part_path, channel)
                         .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
                 }
 
                 // Log this as a successful conditional request
-                if let Err(e) = append_http_log(url, HttpEvent::Latency(latency)) {
+                if let Err(e) = append_http_log(&url, HttpEvent::Latency(latency)) {
                     log::warn!("Failed to log 304 latency: {}", e);
                 }
 
@@ -1760,7 +1753,7 @@ fn make_download_request_with_416_handling(
             }
 
             // Log latency info for successful requests
-            if let Err(e) = append_http_log(url, HttpEvent::Latency(latency)) {
+            if let Err(e) = append_http_log(&url, HttpEvent::Latency(latency)) {
                 log::warn!("Failed to log download latency: {}", e);
             }
             Ok(response)
@@ -1770,14 +1763,14 @@ fn make_download_request_with_416_handling(
             log::debug!("download_file got HTTP error code: {}", code);
 
             // Log latency and error
-            if let Err(e) = append_http_log(url, HttpEvent::Latency(latency)) {
+            if let Err(e) = append_http_log(&url, HttpEvent::Latency(latency)) {
                 log::warn!("Failed to log latency: {}", e);
             }
 
             if code == 416 && downloaded > 0 {
                 // The requested byte range is outside the size of the file
                 log::debug!("download_file handling HTTP 416 with downloaded={}", downloaded);
-                return handle_416_range_error(client, url, task, part_path, data_channel);
+                return handle_416_range_error(client, task);
             }
 
             // Log specific HTTP error
@@ -1787,17 +1780,17 @@ fn make_download_request_with_416_handling(
                 HttpEvent::HttpError(code)
             };
 
-            if let Err(e) = append_http_log(url, http_event) {
+            if let Err(e) = append_http_log(&url, http_event) {
                 log::warn!("Failed to log HTTP error: {}", e);
             }
 
-            handle_non_416_http_error(code, url, task)
+            handle_non_416_http_error(code, &url, task)
         }
         Err(ureq::Error::Io(e)) => {
             let error_msg = format!("Network error: {} - {}", e, url);
 
             // Log network error
-            if let Err(log_err) = append_http_log(url, HttpEvent::NetError(error_msg.clone())) {
+            if let Err(log_err) = append_http_log(&url, HttpEvent::NetError(error_msg.clone())) {
                 log::warn!("Failed to log network error: {}", log_err);
             }
 
@@ -1810,7 +1803,7 @@ fn make_download_request_with_416_handling(
             let error_msg = format!("Error downloading: {} - {}", error_str, url);
 
             // Log general error as network error
-            if let Err(log_err) = append_http_log(url, HttpEvent::NetError(error_msg.clone())) {
+            if let Err(log_err) = append_http_log(&url, HttpEvent::NetError(error_msg.clone())) {
                 log::warn!("Failed to log download error: {}", log_err);
             }
 
@@ -1828,11 +1821,23 @@ fn make_download_request_with_416_handling(
 /// Handle 416 Range Not Satisfiable error with full access to required context
 fn handle_416_range_error(
     client: &Agent,
-    url: &str,
     task: &DownloadTask,
-    part_path: &Path,
-    data_channel: &Option<Sender<Vec<u8>>>,
 ) -> Result<http::Response<ureq::Body>> {
+    let url = if let Ok(resolved) = task.resolved_url.lock() {
+        if resolved.is_empty() {
+            task.url.clone()
+        } else {
+            resolved.clone()
+        }
+    } else {
+        task.url.clone()
+    };
+    let part_path = &task.chunk_path;
+    let data_channel = match task.data_channel.lock() {
+        Ok(dc) => dc.clone(),
+        Err(_) => None,
+    };
+
     let downloaded = task.chunk_offset.load(Ordering::Relaxed); // Use task's chunk_offset instead of downloaded parameter
     // Send a request to check remote size and time, then compare with local
     let metadata_request_start = std::time::Instant::now();
@@ -1845,7 +1850,7 @@ fn handle_416_range_error(
     let metadata_latency = metadata_request_start.elapsed().as_millis() as u64;
 
     // Log metadata request latency
-    if let Err(e) = append_http_log(url, HttpEvent::Latency(metadata_latency)) {
+    if let Err(e) = append_http_log(&url, HttpEvent::Latency(metadata_latency)) {
         log::warn!("Failed to log metadata request latency: {}", e);
     }
 
@@ -1867,8 +1872,8 @@ fn handle_416_range_error(
             log::debug!("download_file sizes and timestamps match (remote_ts: {}, local_ts: {}), skipping download.", remote_ts, local_last_modified);
             let message = format!("Remote file unchanged (size and timestamp match), skipping download {}", part_path.display());
             task.set_message(message.clone());
-            if let Some(channel) = data_channel {
-                send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+            if let Some(channel) = &data_channel {
+                send_file_to_channel(part_path, channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
             }
             log::debug!("download_file returning Ok after skipping download due to matching size and timestamp.");
             // Return a dummy response since we're skipping the download
@@ -1892,8 +1897,8 @@ fn handle_416_range_error(
         if remote_size == local_size {
             log::debug!("No remote timestamp but size matches, assuming file is unchanged – skipping download.");
             task.set_message(format!("Remote file unchanged (size match), skipping download {}", part_path.display()));
-            if let Some(channel) = data_channel {
-                send_file_to_channel(part_path, &channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+            if let Some(channel) = &data_channel {
+                send_file_to_channel(part_path, channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
             }
             return Err(eyre!("Download skipped - file unchanged"));
         }
@@ -1947,15 +1952,24 @@ fn validate_response_content_type(
 
 /// Handle resume logic - check if server supports resuming and adjust downloaded bytes accordingly
 fn handle_resume_logic(
-    part_path: &Path,
     task: &DownloadTask,
-    url: &str,
     existing_bytes: u64,
     status: u16,
 ) -> Result<u64> {
+    let part_path = &task.chunk_path;
+    let url = if let Ok(resolved) = task.resolved_url.lock() {
+        if resolved.is_empty() {
+            task.url.clone()
+        } else {
+            resolved.clone()
+        }
+    } else {
+        task.url.clone()
+    };
+
     if existing_bytes > 0 && status != 206 {
         // Log that server doesn't support range requests
-        if let Err(e) = append_http_log(url, HttpEvent::NoRange) {
+        if let Err(e) = append_http_log(&url, HttpEvent::NoRange) {
             log::warn!("Failed to log range support info: {}", e);
         }
 
@@ -1970,11 +1984,15 @@ fn handle_resume_logic(
 /// Download the actual content from the response to the file
 fn download_content(
     response: &mut http::Response<ureq::Body>,
-    part_path: &Path,
     mut existing_bytes: u64,
-    data_channel: &Option<Sender<Vec<u8>>>,
     task: &DownloadTask,
 ) -> Result<u64> {
+    let part_path = &task.chunk_path;
+    let data_channel = match task.data_channel.lock() {
+        Ok(dc) => dc.clone(),
+        Err(_) => None,
+    };
+
     // Open the file in append mode to resume partial downloads
     let mut file = OpenOptions::new()
         .create(true)
