@@ -42,8 +42,6 @@ pub struct DownloadTask {
     pub start_time: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     pub received_bytes: Arc<std::sync::atomic::AtomicU64>, // Bytes actually received from network
     pub resumed_bytes: Arc<std::sync::atomic::AtomicU64>, // Bytes reused from local partial files
-    pub last_modified: Arc<std::sync::Mutex<String>>, // Last-Modified header from response
-    pub etag: Arc<std::sync::Mutex<String>>, // ETag header from response
 
     // Progress bar for this download task
     pub progress_bar: Option<ProgressBar>,
@@ -107,8 +105,6 @@ impl DownloadTask {
             start_time: Arc::new(std::sync::Mutex::new(None)),
             received_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             resumed_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            last_modified: Arc::new(std::sync::Mutex::new(String::new())),
-            etag: Arc::new(std::sync::Mutex::new(String::new())),
             progress_bar: None,
         }
     }
@@ -178,8 +174,6 @@ impl DownloadTask {
             start_time: Arc::new(std::sync::Mutex::new(None)),
             received_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             resumed_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            last_modified: Arc::new(std::sync::Mutex::new(String::new())),
-            etag: Arc::new(std::sync::Mutex::new(String::new())),
             progress_bar: None,
         })
     }
@@ -1575,24 +1569,14 @@ fn download_file(
 
     let etag = parse_etag(&response).unwrap_or_default();
 
-    // Store metadata in the task
-    if let Ok(mut lm) = task.last_modified.lock() {
-        *lm = last_modified;
-    }
-    if let Ok(mut et) = task.etag.lock() {
-        *et = etag;
-    }
-
     // Verify file size
     verify_file_size(part_path, task.file_size, url)?;
 
     // Finalize download atomically
     atomic_file_completion(part_path, &task.final_path)?;
 
-    // Set metadata (timestamp and ETag) for the final file using stored metadata
-    if let (Ok(last_modified), Ok(etag)) = (task.last_modified.lock(), task.etag.lock()) {
-        set_file_metadata(&last_modified, &etag, &task.final_path, task);
-    }
+    // Set metadata (timestamp and ETag) for the final file
+    set_file_metadata(&last_modified, &etag, &task.final_path, task);
 
     log::info!("download_file completed: {}", resolved_url);
 
