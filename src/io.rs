@@ -265,6 +265,12 @@ pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
     let yaml = serde_yaml::to_string(&env_config)
         .with_context(|| format!("Failed to serialize environment config to YAML"))?;
 
+    // Ensure the parent directory exists before writing the file
+    if let Some(parent_dir) = config_path.parent() {
+        fs::create_dir_all(parent_dir)
+            .with_context(|| format!("Failed to create directory for environment config: {}", parent_dir.display()))?;
+    }
+
     // Write the YAML to the file
     fs::write(&config_path, yaml)
         .with_context(|| format!("Failed to write environment config to file: {}", config_path.display()))?;
