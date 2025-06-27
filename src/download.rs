@@ -687,10 +687,7 @@ impl DownloadManager {
                     *start_time = Some(std::time::Instant::now());
                 }
 
-                let chunk_result = download_chunk_task(
-                    &chunk_clone,
-                    &resolved_url,
-                );
+                let chunk_result = download_chunk_task(&chunk_clone);
 
                 if let Err(e) = chunk_result {
                     log::debug!("Chunk task failed for {} at offset {}: {}",
@@ -1390,233 +1387,63 @@ fn download_file(
     task: &DownloadTask,
 ) -> Result<()> {
     let url = &task.url;
-    let part_path = &task.chunk_path;
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
+    log::debug!("download_file starting for {}", url);
 
-    log::debug!("download_file starting for {}, part_path: {}", url, part_path.display());
-
-    // Step 1: Get existing file size
-    let existing_bytes = get_existing_file_size(part_path)?;
-    task.chunk_offset.store(existing_bytes, Ordering::Relaxed);
-
-    // Step 2: try to create chunks before HTTP request
-    let mut chunks = create_chunk_tasks(task)?;
-
-    // Determine if we need Range support based on task characteristics
-    let need_range = task.chunk_offset.load(Ordering::Relaxed) > 0 || task.chunk_size.load(Ordering::Relaxed) > 0;
-
-    // Resolve mirror for this attempt with appropriate Range requirements
-    let (resolved_url, _final_path) = resolve_mirror_in_url(url, &task.output_dir, need_range)?;
-    task.set_message(resolved_url.to_string());
-    if let Ok(mut resolved) = task.resolved_url.lock() {
-        *resolved = resolved_url.clone();
-    }
-
-    // Track mirror usage with RAII guard
-    let _mirror_guard = MirrorUsageGuard::new(&&resolved_url);
-
-    // Step 3: Make the HTTP request with range header if we have partial download
-    let mut response = match make_download_request_with_416_handling(task) {
-        Ok(response) => response,
-        Err(e) => {
-            // Check if this is the special case where download was skipped due to file unchanged
-            if e.to_string().contains("Download skipped - file unchanged") {
-                // Ensure the final file exists. If the download was previously interrupted, we may only
-                // have the `.part` file on disk, which downstream code does not recognise.  Rename it
-                // atomically to the expected final path before declaring success.
-                if !task.final_path.exists() && part_path.exists() {
-                    atomic_file_completion(part_path, &task.final_path)?;
-                }
-
-                // No new metadata to persist (we already verified size/timestamp/etag), so we can
-                // safely treat this as a successful download.
-                return Ok(());
-            }
-            return Err(e);
-        }
-    };
-    let status = response.status();
-
-    // Step 4: Validate response and handle resume logic
-    validate_response_content_type(&response, &resolved_url, task)?;
-    let new_existing_bytes = handle_resume_logic(task, existing_bytes, status.as_u16())?;
-
-    // Step 5: If resume failed (existing_bytes was reset to 0), reset chunk tasks and attempt counter
-    if existing_bytes > 0 && new_existing_bytes == 0 {
-        // Clear our local chunks vector
-        if !chunks.is_empty() {
-            log::debug!("Resume failed, clearing {} local chunk tasks", chunks.len());
-            chunks.clear();
-        }
-        // Continue downloading from 0
-        // Since we've asked for mirror that support Range, retry may only help in the rare case
-        // we have no cached log for this mirror yet.
-    }
-
-    // Update existing_bytes to the new value and set resumed_bytes for resumed downloads
-    let existing_bytes = new_existing_bytes;
-    task.chunk_offset.store(existing_bytes, Ordering::Relaxed);
-
-    // Set resumed_bytes to track bytes from existing partial file
-    if existing_bytes > 0 {
-        task.resumed_bytes.store(existing_bytes, Ordering::Relaxed);
-        log::debug!("Set resumed_bytes to {} bytes for resumed download", existing_bytes);
-    }
-
-    // Step 6: Setup progress tracking and get total file size
-    if task.file_size.load(Ordering::Relaxed) == 0 {
-        let content_length = parse_content_length(&response); // for Range={}-
-        if let Some(length) = content_length {
-            let total_size = length + existing_bytes; // Total file size
-
-            // total_size only represents file size for Range={}- not Range={}-{} (chunking case)
-            // however in chunking case, we already know the file_size, so won't enter this if block
-            task.file_size.store(total_size, Ordering::Relaxed);
-            log::debug!("Content-Length header found, file size = {}", total_size);
-        } else {
-            // Check if this is due to compression
-            if let Some(content_encoding) = response.headers().get("content-encoding") {
-                if let Ok(encoding) = content_encoding.to_str() {
-                    log::debug!("Cannot determine file size: content compressed with '{}', Content-Length refers to compressed size", encoding);
-                } else {
-                    log::debug!("Cannot determine file size: content encoding header present but unreadable");
-                }
-            } else {
-                log::debug!("No Content-Length header found, cannot determine file size");
-            }
-        }
-    }
-
-    // Set progress bar length to total file size
-    let file_size_val = task.file_size.load(Ordering::Relaxed);
-    if file_size_val > 0 {
-        task.set_length(file_size_val);
-    } else {
-        // If we don't know the total size, set progress bar to indeterminate mode
-        task.set_length(0);
-        log::debug!("Progress bar set to indeterminate mode (unknown file size)");
-    }
-    // Set position to already downloaded bytes (reused from partial file)
-    task.set_position(existing_bytes);
-
-    // After we've established the total file size, decide whether to chunk.
     if task.is_master_task() {
-        // Step 7: Send existing file content to channel if resuming
+        // Master task: handle chunk creation and coordination
+        log::debug!("Processing master task for {}", url);
+
+        // Step 1: Get existing file size
+        let existing_bytes = get_existing_file_size(&task.chunk_path)?;
+        task.chunk_offset.store(existing_bytes, Ordering::Relaxed);
+
+        // Step 2: Try to create chunks before HTTP request
+        let chunks = create_chunk_tasks(task)?;
+
+        // Step 3: Add chunk tasks to the master task
+        if !chunks.is_empty() {
+            if let Ok(mut master_chunks) = task.chunk_tasks.lock() {
+                master_chunks.clear();
+                for chunk in &chunks {
+                    master_chunks.push(Arc::clone(chunk));
+                }
+                log::info!("Added {} chunk tasks to master task for download {}", chunks.len(), task.url);
+            }
+        }
+
+        // Step 4: Send existing file content to channel if resuming
         if existing_bytes > 0 {
+            let data_channel = match task.data_channel.lock() {
+                Ok(dc) => dc.clone(),
+                Err(_) => None,
+            };
             if let Some(channel) = data_channel {
-                send_file_to_channel(part_path, &channel).map_err(|e|
-                    eyre!("Failed to send file '{}' to channel: {}", part_path.display(), e)
+                send_file_to_channel(&task.chunk_path, &channel).map_err(|e|
+                    eyre!("Failed to send file '{}' to channel: {}", task.chunk_path.display(), e)
                 )?;
             }
         }
-
-        // Step 8: Ensure chunk tasks are created as soon as we know the file size
-        if chunks.is_empty() {
-            chunks = create_chunk_tasks(task)?;
-        }
     }
 
-    // Step 9: Add all chunk tasks to the master task
-    if !chunks.is_empty() {
-        // Add all chunk tasks to the master task in one go
-        if let Ok(mut master_chunks) = task.chunk_tasks.lock() {
-            // Clear any existing chunks first to avoid duplicates
-            master_chunks.clear();
+    // Use the unified download_chunk_task for both master and chunk tasks
+    download_chunk_task(task)?;
 
-            // Add all our local chunks to the master task
-            for chunk in &chunks {
-                master_chunks.push(Arc::clone(chunk));
-            }
-            log::info!("Added {} chunk tasks to master task for download {}", chunks.len(), task.url);
-        }
-    }
-
-    // Set start time for estimation if not already set
-    if let Ok(mut start_time) = task.start_time.lock() {
-        if start_time.is_none() {
-            *start_time = Some(std::time::Instant::now());
-        }
-    }
-
-    let download_start = std::time::Instant::now();
-    let mut final_downloaded = download_content(&mut response, existing_bytes, task)?;
-    let total_duration = download_start.elapsed().as_millis() as u64;
-
-    // Calculate network bytes transferred (excluding resumed bytes)
-    let network_bytes = task.get_network_bytes();
-
-    // Log comprehensive download performance (only for actual downloads with bytes > 0)
-    if network_bytes > 0 {
-        if let Err(e) = append_download_log(
-            &resolved_url,
-            task.chunk_offset.load(Ordering::Relaxed),
-            network_bytes,
-            total_duration,
-            true,
-        ) {
-            log::warn!("Failed to log download completion: {}", e);
-        }
-    }
-
-    // If this is a master task with chunks, wait for all chunks to complete
+    // Master task post-processing
     if task.is_master_task() {
+        // Wait for all chunks to complete and merge them
         log::debug!("Master task waiting for chunks to complete");
         wait_for_chunks_and_merge(task)?;
 
-        // After all chunks have been merged into the master .part file, the on-disk size
-        // now represents the *entire* download rather than just the bytes fetched by
-        // this thread. Re-read the file metadata so that our final size check uses the
-        // correct value and does not trigger a false size-mismatch error.
-        match std::fs::metadata(part_path) {
-            Ok(meta) => {
-                final_downloaded = meta.len();
-                log::debug!("After merging chunks, total downloaded size is {} bytes for {}", final_downloaded, part_path.display());
-            }
-            Err(e) => {
-                log::warn!("Failed to stat merged file {}: {}", part_path.display(), e);
-            }
-        }
+        // Verify file size if known
+        let file_size_val = task.file_size.load(Ordering::Relaxed);
+        let expected_size = if file_size_val > 0 { Some(file_size_val) } else { None };
+        verify_downloaded_file_size(&task.chunk_path, expected_size)?;
+
+        // Finalize download atomically
+        atomic_file_completion(&task.chunk_path, &task.final_path)?;
+
+        log::info!("download_file completed: {}", task.get_resolved_url());
     }
-
-    let file_size_val = task.file_size.load(Ordering::Relaxed);
-    if file_size_val > 0 {
-        validate_download_size(final_downloaded, file_size_val, part_path)?;
-    } else {
-        // Check if this is due to compression
-        if let Some(content_encoding) = response.headers().get("content-encoding") {
-            if let Ok(encoding) = content_encoding.to_str() {
-                log::debug!("Skipping download size validation: content compressed with '{}', final size unknown", encoding);
-            } else {
-                log::debug!("Skipping download size validation: content encoded but encoding unreadable");
-            }
-        } else {
-            log::debug!("Skipping download size validation: file size unknown (no Content-Length header)");
-        }
-    }
-
-    // Extract and store metadata in the task for later use
-    let last_modified = response.headers().get("last-modified")
-        .and_then(|s| s.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    let etag = parse_etag(&response).unwrap_or_default();
-
-    // Verify file size
-    let file_size_val = task.file_size.load(Ordering::Relaxed);
-    let expected_size = if file_size_val > 0 { Some(file_size_val) } else { None };
-    verify_file_size(part_path, expected_size, url)?;
-
-    // Finalize download atomically
-    atomic_file_completion(part_path, &task.final_path)?;
-
-    // Set metadata (timestamp and ETag) for the final file
-    set_file_metadata(&last_modified, &etag, &task.final_path, task);
-
-    log::info!("download_file completed: {}", &resolved_url);
 
     Ok(())
 }
@@ -1957,32 +1784,54 @@ fn handle_resume_logic(
     }
 }
 
-/// Download the actual content from the response to the file
-fn download_content(
-    response: &mut http::Response<ureq::Body>,
-    mut existing_bytes: u64,
+/// Unified content download function that handles both master and chunk tasks
+///
+/// This function replaces both download_content() and download_chunk_content()
+/// by using task.is_master_task() to handle master-specific logic
+fn download_chunk_content(
+    mut response: http::Response<ureq::Body>,
     task: &DownloadTask,
 ) -> Result<u64> {
     let part_path = &task.chunk_path;
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
+    let data_channel = if task.is_master_task() {
+        match task.data_channel.lock() {
+            Ok(dc) => dc.clone(),
+            Err(_) => None,
+        }
+    } else {
+        None // Chunk tasks don't use data channels
     };
 
-    // Open the file in append mode to resume partial downloads
+    // Validate response for chunk tasks
+    if task.is_chunk_task() && response.status().as_u16() != 206 {
+        return Err(eyre!("Expected 206 Partial Content for chunk download, got {}", response.status()));
+    }
+
+    // Check if we need to append to an existing file
+    let existing_bytes = if part_path.exists() {
+        fs::metadata(part_path)
+            .map(|m| m.len() as u64)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
-        .append(true)
-        .open(part_path).map_err(|e| eyre!("Failed to open file '{}' for writing (existing_bytes={}): {}", part_path.display(), existing_bytes, e))?;
+        .append(existing_bytes > 0) // Append if file exists with content
+        .truncate(existing_bytes == 0) // Only truncate if file is empty or doesn't exist
+        .open(part_path)
+        .map_err(|e| eyre!("Failed to open file '{}': {}", part_path.display(), e))?;
 
     let mut reader = response.body_mut().as_reader();
     let mut buffer = vec![0; 8192];
     let mut last_update = std::time::Instant::now();
     let mut last_ondemand_check = std::time::Instant::now();
 
-    // Track network bytes separately from total downloaded bytes
-    let mut network_bytes = 0u64; // Bytes actually received from network
+    // Track bytes separately
+    let mut total_downloaded = existing_bytes; // Total bytes in file (reused + network)
+    let mut network_bytes = 0u64; // Only bytes received from network
 
     // For master tasks, limit download to chunk size if chunking is active
     let is_master = task.is_master_task();
@@ -1992,36 +1841,74 @@ fn download_content(
             Ok(0) => break, // EOF reached
             Ok(n) => n,
             Err(e) => {
-                let error_msg = format!("Read error at {} bytes: {}", existing_bytes,
-                    task.resolved_url.lock().map(|r| r.clone()).unwrap_or_else(|_| task.url.clone()));
-                task.set_message(error_msg.clone());
-                return Err(eyre!("Failed to read from response (existing_bytes={}, buffer_size={}): {}", existing_bytes, buffer.len(), e));
+                if is_master {
+                    let error_msg = format!("Read error at {} bytes: {}", total_downloaded,
+                        task.resolved_url.lock().map(|r| r.clone()).unwrap_or_else(|_| task.url.clone()));
+                    task.set_message(error_msg.clone());
+                }
+                return Err(eyre!("Failed to read from response (total_downloaded={}, buffer_size={}): {}", total_downloaded, buffer.len(), e));
             }
         };
 
-        if is_master && task.chunk_size.load(Ordering::Relaxed) > 0 {
-            let boundary = task.chunk_offset.load(Ordering::Relaxed) + task.chunk_size.load(Ordering::Relaxed);
-            if existing_bytes >= boundary {
-                log::debug!("Master task reached chunk boundary at {} bytes, stopping", existing_bytes);
+        // Handle chunk size limits for both master and chunk tasks
+        let chunk_size_val = task.chunk_size.load(Ordering::Relaxed);
+        let bytes_to_write = if chunk_size_val > 0 {
+            let boundary = if is_master {
+                task.chunk_offset.load(Ordering::Relaxed) + chunk_size_val
+            } else {
+                chunk_size_val // For chunk tasks, chunk_size is the limit
+            };
+
+            if total_downloaded >= boundary {
+                if is_master {
+                    log::debug!("Master task reached chunk boundary at {} bytes, stopping", total_downloaded);
+                } else {
+                    log::debug!("Chunk task completed at {} bytes", total_downloaded);
+                }
                 break;
             }
 
-            // Adjust bytes to read if we're approaching the limit
-            let bytes_to_write = if existing_bytes + bytes_read as u64 > boundary {
-                (boundary - existing_bytes) as usize
+            // Adjust bytes to write if we're approaching the limit
+            if total_downloaded + bytes_read as u64 > boundary {
+                (boundary - total_downloaded) as usize
             } else {
                 bytes_read
-            };
+            }
+        } else {
+            bytes_read
+        };
 
+        // For chunk tasks, ensure we don't exceed the expected size
+        if !is_master && chunk_size_val > 0 {
+            let remaining = chunk_size_val.saturating_sub(total_downloaded);
+            if remaining == 0 {
+                log::warn!("Chunk task received {} surplus bytes, discarding", bytes_read);
+                break;
+            }
+            let write_len = std::cmp::min(bytes_to_write, remaining as usize);
+
+            file.write_all(&buffer[..write_len])
+                .map_err(|e| eyre!("Failed to write {} bytes to chunk file '{}': {}", write_len, part_path.display(), e))?;
+
+            total_downloaded += write_len as u64;
+            network_bytes += write_len as u64;
+
+            if write_len < bytes_read {
+                if total_downloaded > chunk_size_val {
+                    log::warn!("Chunk {} exceeded expected size by {} bytes; extra data ignored",
+                              part_path.display(), total_downloaded - chunk_size_val);
+                }
+                break;
+            }
+        } else {
+            // Master task or no size limit
             file.write_all(&buffer[..bytes_to_write])
-                .map_err(|e| eyre!("Failed to write {} bytes to file '{}' (existing_bytes={}): {}", bytes_to_write, part_path.display(), existing_bytes, e))?;
+                .map_err(|e| eyre!("Failed to write {} bytes to file '{}': {}", bytes_to_write, part_path.display(), e))?;
 
-            existing_bytes += bytes_to_write as u64;
+            total_downloaded += bytes_to_write as u64;
             network_bytes += bytes_to_write as u64;
 
-            // Store only network bytes in received_bytes
-            task.received_bytes.store(network_bytes, Ordering::Relaxed);
-
+            // Send data to channel for master tasks
             if let Some(channel) = &data_channel {
                 if let Err(_) = channel.send(buffer[..bytes_to_write].to_vec()) {
                     // Channel was closed, but we continue downloading
@@ -2029,38 +1916,26 @@ fn download_content(
             }
 
             if bytes_to_write < bytes_read {
-                // Reached chunk boundary
+                // Reached chunk boundary for master task
                 break;
             }
-        } else {
-            file.write_all(&buffer[..bytes_read])
-                .map_err(|e| eyre!("Failed to write {} bytes to file '{}' (existing_bytes={}): {}", bytes_read, part_path.display(), existing_bytes, e))?;
-
-            existing_bytes += bytes_read as u64;
-            network_bytes += bytes_read as u64;
-
-            // Store only network bytes in received_bytes
-            task.received_bytes.store(network_bytes, Ordering::Relaxed);
-
-            if let Some(channel) = &data_channel {
-                if let Err(_) = channel.send(buffer[..bytes_read].to_vec()) {
-                    // Channel was closed, but we continue downloading
-                }
-            }
         }
+
+        // Store only network bytes in received_bytes
+        task.received_bytes.store(network_bytes, Ordering::Relaxed);
 
         // Update progress bar more frequently for master tasks
         let now = std::time::Instant::now();
         if now.duration_since(last_update) > Duration::from_millis(500) {
-            if task.is_master_task() {
+            if is_master {
                 // For master tasks, show total progress across all chunks (reused + network bytes)
                 let (total_received, downloading_chunks) = task.get_total_progress_bytes();
                 task.set_position(total_received);
 
                 // Update progress bar message with chunk count if there are downloading chunks
                 let resolved_url = task.resolved_url.lock()
-            .map(|r| r.clone())
-            .unwrap_or_else(|_| task.url.clone());
+                    .map(|r| r.clone())
+                    .unwrap_or_else(|_| task.url.clone());
                 if downloading_chunks == 0 {
                     task.set_message(resolved_url);
                 } else {
@@ -2068,31 +1943,33 @@ fn download_content(
                 }
             } else {
                 // For chunk tasks, show total downloaded (reused + network bytes)
-                task.set_position(existing_bytes);
+                task.set_position(total_downloaded);
             }
             last_update = now;
         }
 
-        // Check for on-demand chunking opportunity
+        // Check for on-demand chunking opportunity (master tasks only)
         if is_master && task.chunk_size.load(Ordering::Relaxed) == 0 &&
             now.duration_since(last_ondemand_check) > Duration::from_secs(1) &&
             DOWNLOAD_MANAGER.current_task_count.load(Ordering::Relaxed) <= DOWNLOAD_MANAGER.nr_parallel / 2 {
 
-            check_for_ondemand_chunking_opportunity(task, existing_bytes);
-
+            check_for_ondemand_chunking_opportunity(task, total_downloaded);
             last_ondemand_check = now;
         }
     }
 
     // Final progress update
-    if task.is_master_task() {
+    if is_master {
         let (total_received, _downloading_chunks) = task.get_total_progress_bytes();
         task.set_position(total_received);
     } else {
-        task.set_position(existing_bytes);
+        task.set_position(total_downloaded);
     }
 
-    Ok(existing_bytes)
+    log::debug!("download_content completed: {} total bytes ({} network bytes) written to {}",
+               total_downloaded, network_bytes, part_path.display());
+
+    Ok(total_downloaded)
 }
 
 /// Validate that the downloaded size matches the expected Content-Length
@@ -2508,49 +2385,62 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
 }
 
 
-/// Download a specific chunk of a file
+/// Unified download task function that handles both master and chunk tasks
+///
+/// This function replaces the original download logic by using task.is_master_task()
+/// to handle master-specific logic while sharing common download functionality.
 fn download_chunk_task(
     task: &DownloadTask,
-    resolved_url: &str,
 ) -> Result<()> {
-    let url = resolved_url;
+    let url = &task.url;
     let chunk_path = &task.chunk_path;
 
-    // Track mirror usage for chunk with RAII guard
-    let _mirror_guard = MirrorUsageGuard::new(url);
+    // Determine if we need Range support based on task characteristics
+    let need_range = task.chunk_offset.load(Ordering::Relaxed) > 0 ||
+                     task.chunk_size.load(Ordering::Relaxed) > 0 ||
+                     task.is_chunk_task();
+
+    // Resolve mirror for this attempt with appropriate Range requirements
+    let (resolved_url, _final_path) = resolve_mirror_in_url(url, &task.output_dir, need_range)?;
+
+    // Update resolved URL in task
+    if let Ok(mut resolved) = task.resolved_url.lock() {
+        *resolved = resolved_url.clone();
+    }
+
+    // Track mirror usage with RAII guard
+    let _mirror_guard = MirrorUsageGuard::new(&resolved_url);
+
     let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
     let chunk_size = task.chunk_size.load(Ordering::Relaxed);
 
-    log::debug!("Starting chunk download: {} bytes at offset {} for {}",
-               chunk_size, chunk_offset, url);
+    if task.is_master_task() {
+        log::debug!("Starting master download for {}", url);
+        task.set_message(resolved_url.clone());
+    } else {
+        log::debug!("Starting chunk download: {} bytes at offset {} for {}",
+                   chunk_size, chunk_offset, url);
+    }
 
-    // Check if chunk file already exists
-    let mut adjusted_offset = chunk_offset;
+    // Check if file already exists and handle resumption
+    let existing_bytes = get_existing_file_size(chunk_path)?;
 
-    if let Ok(metadata) = fs::metadata(chunk_path) {
-        let existing_size = metadata.len() as u64;
+    // For chunk tasks, check if already complete
+    if task.is_chunk_task() && chunk_size > 0 && existing_bytes >= chunk_size {
+        log::debug!("Chunk file already exists and is complete: {}", chunk_path.display());
+        task.resumed_bytes.store(chunk_size, Ordering::Relaxed);
+        task.received_bytes.store(0, Ordering::Relaxed);
+        update_download_status(task, DownloadStatus::Completed)?;
+        return Ok(());
+    }
 
-        // If the file is complete, we're done
-        if existing_size >= chunk_size {
-            log::debug!("Chunk file already exists and is complete: {}", chunk_path.display());
-            // Set resumed_bytes to the full chunk size since we're reusing the entire file
-            task.resumed_bytes.store(chunk_size, Ordering::Relaxed);
-            task.received_bytes.store(0, Ordering::Relaxed); // No network bytes needed
-
-            // Mark task as completed
-            update_download_status(task, DownloadStatus::Completed)?;
-            return Ok(());
+    // Set up offset and resumed bytes
+    if existing_bytes > 0 {
+        if task.is_master_task() {
+            task.chunk_offset.store(existing_bytes, Ordering::Relaxed);
         }
-
-        // If the file is partially downloaded, adjust the offset and size
-        if existing_size > 0 {
-            adjusted_offset = chunk_offset + existing_size;
-            log::debug!("Resuming chunk download from offset {} ({} bytes already downloaded)",
-                      adjusted_offset, existing_size);
-            // Set resumed_bytes to existing bytes, received_bytes will track new network bytes
-            task.resumed_bytes.store(existing_size, Ordering::Relaxed);
-            task.received_bytes.store(0, Ordering::Relaxed); // Reset network bytes
-        }
+        task.resumed_bytes.store(existing_bytes, Ordering::Relaxed);
+        log::debug!("Resuming download from {} bytes for {}", existing_bytes, url);
     }
 
     // Create directories if needed
@@ -2558,20 +2448,35 @@ fn download_chunk_task(
         fs::create_dir_all(parent)?;
     }
 
-    // Prepare the download request with Range header
-    let end_offset = chunk_offset + chunk_size - 1; // Keep the original end offset
-    let range_header = format!("bytes={}-{}", adjusted_offset, end_offset);
-
-    let chunk_request_start = std::time::Instant::now();
+    // Create HTTP request
+    let request_start = std::time::Instant::now();
     let client = task.get_client()?;
-    let response = client.get(url)
-        .header("Range", &range_header)
-        .config()
-        .max_redirects(3)
-        .build()
+
+    let mut request = client.get(&resolved_url);
+
+    // Add Range header if needed (for resumption or chunking)
+    if existing_bytes > 0 || task.is_chunk_task() {
+        let start_offset = if task.is_chunk_task() {
+            chunk_offset + existing_bytes
+        } else {
+            existing_bytes
+        };
+
+        let range_header = if task.is_chunk_task() && chunk_size > 0 {
+            format!("bytes={}-{}", start_offset, chunk_offset + chunk_size - 1)
+        } else {
+            format!("bytes={}-", start_offset)
+        };
+
+        request = request.header("Range", &range_header);
+        log::debug!("Using Range header: {}", range_header);
+    }
+
+    // Make the HTTP request
+    let response = request
         .call()
         .map_err(|e| {
-            // Log specific HTTP error
+            // Log HTTP errors
             let http_event = match e {
                 ureq::Error::StatusCode(code) => {
                     if code == 404 {
@@ -2580,145 +2485,123 @@ fn download_chunk_task(
                         HttpEvent::HttpError(code)
                     }
                 }
-                ureq::Error::Io(_) => {
-                    HttpEvent::NetError(e.to_string())
-                }
-                _ => {
-                    HttpEvent::NetError(e.to_string())
-                }
+                ureq::Error::Io(_) => HttpEvent::NetError(e.to_string()),
+                _ => HttpEvent::NetError(e.to_string()),
             };
-            if let Err(log_err) = append_http_log(url, http_event) {
+            if let Err(log_err) = append_http_log(&resolved_url, http_event) {
                 log::warn!("Failed to log HTTP error: {}", log_err);
             }
-            eyre!("Failed to make chunk request for {}: {}", url, e)
-        })?;
-    let chunk_latency = chunk_request_start.elapsed().as_millis() as u64;
 
-    // Log chunk request latency
-    if let Err(e) = append_http_log(url, HttpEvent::Latency(chunk_latency)) {
-        log::warn!("Failed to log chunk request latency: {}", e);
+            eyre!("Failed to make request for {}: {}", resolved_url, e)
+        })?;
+
+    let request_latency = request_start.elapsed().as_millis() as u64;
+
+    // Log request latency
+    if let Err(e) = append_http_log(&resolved_url, HttpEvent::Latency(request_latency)) {
+        log::warn!("Failed to log request latency: {}", e);
     }
 
-    // Prevent data curruption for servers not support Range header:
-    // 1) Chunk offset: 62914560 (should contain bytes 62914560-63963135)
-    // 2) Server ignores Range, sends: bytes 0-2600000 (entire file from start)
-    // 3) Result: Chunk file contains wrong data (bytes 0-1048576 instead of 62914560-63963135)
-    // 4) Final merged file: CORRUPTED
-    if response.status().as_u16() != 206 {
+    // Handle special cases for master tasks
+    if task.is_master_task() {
+        // Check for unchanged file case
+        if let Some(status_line) = response.headers().get("status") {
+            if let Ok(status_str) = status_line.to_str() {
+                if status_str.contains("304") || status_str.contains("unchanged") {
+                    // File hasn't changed, just ensure final file exists
+                    if !task.final_path.exists() && chunk_path.exists() {
+                        atomic_file_completion(chunk_path, &task.final_path)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        // Validate response and handle resume logic for master tasks
+        validate_response_content_type(&response, &resolved_url, task)?;
+
+        if existing_bytes > 0 && response.status().as_u16() != 206 {
+            // Resume failed, restart from beginning
+            if chunk_path.exists() {
+                fs::remove_file(chunk_path)?;
+            }
+            task.chunk_offset.store(0, Ordering::Relaxed);
+            task.resumed_bytes.store(0, Ordering::Relaxed);
+            log::debug!("Server doesn't support resume, restarting download");
+            return download_chunk_task(task); // Recursive call without range
+        }
+
+        // Setup file size and progress tracking for master tasks
+        if task.file_size.load(Ordering::Relaxed) == 0 {
+            if let Some(content_length) = parse_content_length(&response) {
+                let total_size = content_length + existing_bytes;
+                task.file_size.store(total_size, Ordering::Relaxed);
+                log::debug!("Content-Length header found, file size = {}", total_size);
+            }
+        }
+
+        let file_size_val = task.file_size.load(Ordering::Relaxed);
+        if file_size_val > 0 {
+            task.set_length(file_size_val);
+        }
+        task.set_position(existing_bytes);
+
+        // Set start time for estimation
+        if let Ok(mut start_time) = task.start_time.lock() {
+            if start_time.is_none() {
+                *start_time = Some(std::time::Instant::now());
+            }
+        }
+    } else {
+        // For chunk tasks, validate we got partial content
         if response.status().as_u16() == 200 {
-            // Server returned 200 instead of 206 - this means it's ignoring Range header
-            // and sending entire file from byte 0, which would corrupt our chunk
-            if let Err(e) = append_http_log(url, HttpEvent::NoRange) {
+            // Server ignoring Range header - would corrupt chunk
+            if let Err(e) = append_http_log(&resolved_url, HttpEvent::NoRange) {
                 log::warn!("Failed to log chunk range error: {}", e);
             }
-            return Err(eyre!("Server returned 200 instead of 206 for range request - would send entire file and corrupt chunk"));
+            return Err(eyre!("Server returned 200 instead of 206 for range request - would corrupt chunk"));
         }
-        return Err(eyre!("Server returned {} for range request", response.status()));
+        if response.status().as_u16() != 206 {
+            return Err(eyre!("Server returned {} for range request", response.status()));
+        }
     }
 
-    // Download the chunk content
-    let chunk_download_start = std::time::Instant::now();
-    download_chunk_content(response, chunk_path, task)?;
-    let chunk_download_duration = chunk_download_start.elapsed().as_millis() as u64;
+    // Handle metadata for master tasks before downloading
+    if task.is_master_task() {
+        handle_response_metadata(&response, task);
+    }
 
-    // Log chunk download completion (only for actual downloads with bytes > 0)
-    let received_bytes = task.received_bytes.load(Ordering::Relaxed);
-    if received_bytes > 0 {
+    // Download the content using unified function
+    let download_start = std::time::Instant::now();
+    let final_downloaded = download_chunk_content(response, task)?;
+    let download_duration = download_start.elapsed().as_millis() as u64;
+
+    // Log download completion
+    let network_bytes = task.received_bytes.load(Ordering::Relaxed);
+    if network_bytes > 0 {
         if let Err(e) = append_download_log(
-            url,
-            task.chunk_offset.load(Ordering::Relaxed), // Record the starting offset for this chunk
-            received_bytes,
-            chunk_download_duration + chunk_latency, // Total time including latency
+            &resolved_url,
+            task.chunk_offset.load(Ordering::Relaxed),
+            network_bytes,
+            download_duration + request_latency,
             true,
         ) {
-            log::warn!("Failed to log chunk download completion: {}", e);
+            log::warn!("Failed to log download completion: {}", e);
         }
     }
 
-    log::debug!("Completed chunk download: {} bytes at offset {} for {}",
-               chunk_size, chunk_offset, url);
-
-    // Mark task as completed
-    update_download_status(task, DownloadStatus::Completed)?;
-
-    Ok(())
-}
-
-/// Download content for a chunk task
-fn download_chunk_content(
-    mut response: http::Response<ureq::Body>,
-    chunk_path: &Path,
-    task: &DownloadTask,
-) -> Result<()> {
-    // Validate that we received a proper partial content response for chunk downloads
-    if task.is_chunk_task() && response.status().as_u16() != 206 {
-        return Err(eyre!("Expected 206 Partial Content for chunk download, got {}", response.status()));
-    }
-    // Check if we need to append to an existing file
-    let existing_bytes = if chunk_path.exists() {
-        fs::metadata(chunk_path)
-            .map(|m| m.len() as u64)
-            .unwrap_or(0)
+    if task.is_chunk_task() {
+        log::debug!("Completed chunk download: {} bytes at offset {} for {}",
+                   chunk_size, chunk_offset, url);
+        update_download_status(task, DownloadStatus::Completed)?;
     } else {
-        0
-    };
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(existing_bytes > 0) // Append if file exists with content
-        .truncate(existing_bytes == 0) // Only truncate if file is empty or doesn't exist
-        .open(chunk_path)
-        .map_err(|e| eyre!("Failed to open chunk file '{}': {}", chunk_path.display(), e))?;
-
-    let mut reader = response.body_mut().as_reader();
-    let mut buffer = vec![0; 8192];
-    let mut total_downloaded = existing_bytes; // Total bytes in file (reused + network)
-    let mut network_bytes = 0u64; // Only bytes received from network
-
-    loop {
-        let bytes_read = reader.read(&mut buffer)
-            .map_err(|e| eyre!("Failed to read chunk data: {}", e))?;
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        // Ensure we never write past the expected chunk boundary
-        let chunk_size_val = task.chunk_size.load(Ordering::Relaxed);
-        let remaining = chunk_size_val.saturating_sub(total_downloaded);
-        if remaining == 0 {
-            // Discard any extra bytes from the server
-            log::warn!("download_chunk_content: received {} surplus bytes for chunk {}, discarding", bytes_read, chunk_path.display());
-            break;
-        }
-
-        let write_len = std::cmp::min(bytes_read as u64, remaining) as usize;
-
-        file.write_all(&buffer[..write_len])
-            .map_err(|e| eyre!("Failed to write {} bytes to chunk file '{}': {}",
-                               write_len, chunk_path.display(), e))?;
-
-        total_downloaded += write_len as u64;
-        network_bytes += write_len as u64;
-
-        // Store only network bytes in received_bytes
-        task.received_bytes.store(network_bytes, Ordering::Relaxed);
-
-        // If we have completed the chunk, stop reading and discard the rest (if any)
-        if total_downloaded >= task.chunk_size.load(Ordering::Relaxed) {
-            if total_downloaded > task.chunk_size.load(Ordering::Relaxed) {
-                log::warn!("download_chunk_content: chunk {} exceeded expected size by {} bytes; extra data ignored", chunk_path.display(), total_downloaded - task.chunk_size.load(Ordering::Relaxed));
-            }
-            break;
-        }
+        log::debug!("Completed master download: {} bytes for {}", final_downloaded, url);
     }
-
-    log::debug!("download_chunk_content completed: {} total bytes ({} network bytes) written to {}",
-               total_downloaded, network_bytes, chunk_path.display());
 
     Ok(())
 }
+
+
 
 /// Wait for chunks to complete and stream their data to the data channel one by one
 ///
@@ -3209,4 +3092,52 @@ fn recover_chunked_download(task: &DownloadTask) -> Result<Vec<PathBuf>> {
     });
 
     Ok(chunk_files)
+}
+
+/// Extract and set file metadata (timestamp and ETag) from response headers for master tasks
+fn handle_response_metadata(response: &http::Response<ureq::Body>, task: &DownloadTask) {
+    if !task.is_master_task() {
+        return; // Only master tasks handle metadata
+    }
+
+    // Extract metadata from response headers
+    let last_modified = response.headers().get("last-modified")
+        .and_then(|s| s.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let etag = response.headers().get("etag")
+        .and_then(|s| s.to_str().ok())
+        .map(|s| s.trim_matches('"').to_string())
+        .unwrap_or_default();
+
+    // Set metadata for the final file after download completion
+    if !last_modified.is_empty() {
+        if let Ok(timestamp) = time::OffsetDateTime::parse(&last_modified, &time::format_description::well_known::Rfc2822) {
+            let system_time = filetime::FileTime::from_system_time(timestamp.into());
+            if let Err(e) = filetime::set_file_mtime(&task.final_path, system_time) {
+                log::warn!("Failed to set mtime for {}: {}", task.final_path.display(), e);
+            }
+        }
+    }
+
+    // Skip saving etag for immutable files since their content won't change over time
+    if !etag.is_empty() && !task.is_immutable_file {
+        let etag_path = task.final_path.with_extension("etag");
+        if let Err(e) = std::fs::write(&etag_path, &etag) {
+            log::warn!("Failed to save ETag for {}: {}", task.final_path.display(), e);
+        }
+    }
+}
+
+/// Verify that the downloaded file size matches expectations
+fn verify_downloaded_file_size(part_path: &Path, expected_size: Option<u64>) -> Result<()> {
+    if let Some(expected) = expected_size {
+        let actual_size = fs::metadata(part_path)?.len();
+        if actual_size != expected {
+            return Err(eyre!("Downloaded file size ({}) doesn't match expected size ({}) for {}",
+                            actual_size, expected, part_path.display()));
+        }
+    }
+    Ok(())
 }
