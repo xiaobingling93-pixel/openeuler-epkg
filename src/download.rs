@@ -47,6 +47,9 @@ pub struct DownloadTask {
     pub received_bytes:       AtomicU64,                                  // Bytes actually received from network
     pub resumed_bytes:        AtomicU64,                                  // Bytes reused from local partial files
 
+    // Ensure we only stream the pre-existing local file once per overall download attempt
+    pub has_sent_existing:    AtomicBool,
+
     // Progress bar for this download task
     pub progress_bar:         Mutex<Option<ProgressBar>>,                 // will never change
 }
@@ -103,6 +106,7 @@ impl DownloadTask {
             start_time:        Mutex::new(None),
             received_bytes:    AtomicU64::new(0),
             resumed_bytes:     AtomicU64::new(0),
+            has_sent_existing: AtomicBool::new(false),
             progress_bar:      Mutex::new(None),
         }
     }
@@ -217,6 +221,7 @@ impl DownloadTask {
             start_time:           Mutex::new(None),
             received_bytes:       AtomicU64::new(0),
             resumed_bytes:        AtomicU64::new(0),
+            has_sent_existing:    AtomicBool::new(false),
             progress_bar:         Mutex::new(None),
         })
     }
@@ -1099,12 +1104,8 @@ fn check_existing_immutable_file(task: &DownloadTask) -> Result<Option<()>> {
                       final_path.display(), actual_size);
 
             // Send file content to channel if needed for hash verification
-            if let Ok(data_channel_guard) = task.data_channel.lock() {
-                if let Some(ref data_channel) = *data_channel_guard {
-                    send_file_to_channel(final_path, data_channel)
-                        .with_context(|| format!("Failed to send existing file to channel: {}", final_path.display()))?;
-                }
-            }
+            send_file_to_channel(task)
+                .with_context(|| format!("Failed to send existing file to channel: {}", final_path.display()))?;
 
             // Mark task as completed
             update_download_status(task, DownloadStatus::Completed)?;
@@ -1376,101 +1377,65 @@ fn download_file_with_retries(
 }
 
 pub fn send_file_to_channel(
-    part_path: &Path,
-    data_channel: &Sender<Vec<u8>>,
+    task: &DownloadTask,
 ) -> Result<()> {
+    // Only master tasks should send data to channel
+    if !task.is_master_task() {
+        return Err(eyre!("Should not call send_file_to_channel() for chunk task {:?}", task));
+    }
+
+    // Get data channel from task
+    let data_channel = match task.get_data_channel() {
+        Some(channel) => channel,
+        None => return Ok(()), // No channel to send to
+    };
+
+    // Ensure we only stream the pre-existing file once per download_file_with_retries() lifetime
+    if task.has_sent_existing.swap(true, Ordering::SeqCst) {
+        return Err(eyre!("Should not call send_file_to_channel() TWICE for task {:?}", task));
+        // log::trace!("Existing file already streamed once – skipping second send for {}", task.chunk_path.display());
+    }
+
+    let part_path = &task.chunk_path;
+
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
     // "Decompression error: stream/file format not recognized"
-    log::debug!("Sending file to channel: {}", part_path.display());
+    send_chunk_to_channel(&task.chunk_path, &data_channel)
+}
 
-    // Check if file exists and get its size
-    let file_metadata = match std::fs::metadata(part_path) {
-        Ok(metadata) => {
-            let size = metadata.len();
-            log::debug!("File size: {} bytes", size);
-            if size == 0 {
-                log::warn!("File is empty: {}", part_path.display());
-            }
-            metadata
-        },
-        Err(e) => {
-            let err_msg = format!("Failed to get metadata for file {}: {}", part_path.display(), e);
-            log::error!("{}", err_msg);
-            return Err(eyre!(err_msg));
-        }
-    };
+/// Send a chunk file to the data channel (for streaming fresh chunk data)
+/// This bypasses the master task and has_sent_existing guards
+fn send_chunk_to_channel(
+    part_path: &Path,
+    data_channel: &Sender<Vec<u8>>,
+) -> Result<()> {
+    log::debug!("Sending chunk file to channel: {}", part_path.display());
 
-    // Open the file
-    let mut file = match std::fs::File::open(part_path) {
-        Ok(file) => file,
-        Err(e) => {
-            let err_msg = format!("Failed to open file {}: {}", part_path.display(), e);
-            log::error!("{}", err_msg);
-            return Err(eyre!(err_msg));
-        }
-    };
-
-    // Use a reasonably sized buffer for reading chunks
-    // 1MB is a good balance between memory usage and number of channel sends
-    const CHUNK_SIZE: usize = 64 * 1024; // 64KB chunks
-    let mut buffer = vec![0; CHUNK_SIZE];
-    let mut total_bytes_read = 0;
+    let mut file = map_io_error(File::open(part_path), "open file for channel", part_path)?;
+    let mut buffer = vec![0; 64 * 1024]; // 64KB buffer
     let mut chunks_sent = 0;
 
     loop {
-        // Read a chunk from the file
-        match file.read(&mut buffer) {
-            Ok(0) => {
-                // End of file
-                log::debug!("Reached end of file after reading {} bytes in {} chunks",
-                          total_bytes_read, chunks_sent);
-                break;
-            },
-            Ok(bytes_read) => {
-                total_bytes_read += bytes_read;
-                chunks_sent += 1;
+        let bytes_read = map_io_error(file.read(&mut buffer), "read file for channel", part_path)?;
+        if bytes_read == 0 {
+            break; // EOF
+        }
 
-                // Create a new buffer with just the bytes we read
-                let chunk = buffer[..bytes_read].to_vec();
-
-                // Send the chunk through the channel
-                match data_channel.send(chunk) {
-                    Ok(_) => {
-                        if chunks_sent % 10 == 0 || bytes_read < CHUNK_SIZE {
-                            log::trace!("Sent chunk {} ({} bytes, total {} bytes) for {}",
-                                      chunks_sent, bytes_read, total_bytes_read, part_path.display());
-                        }
-                    },
-                    Err(e) => {
-                        let err_msg = format!("Failed to send chunk {} to channel: {}", chunks_sent, e);
-                        log::error!("{}", err_msg);
-                        return Err(eyre!(err_msg));
-                    }
-                }
-
-                // If we read less than the buffer size, we've reached the end
-                if bytes_read < CHUNK_SIZE {
-                    log::debug!("Reached end of file (last chunk was smaller than buffer)");
-                    break;
-                }
-            },
+        chunks_sent += 1;
+        match data_channel.send(buffer[..bytes_read].to_vec()) {
+            Ok(_) => {
+                log::trace!("Sent chunk {} ({} bytes) from {}", chunks_sent, bytes_read, part_path.display());
+            }
             Err(e) => {
-                let err_msg = format!("Error reading chunk from file {}: {}", part_path.display(), e);
-                log::error!("{}", err_msg);
-                return Err(eyre!(err_msg));
+                // Treat closed receiver channel as a non-fatal condition for chunks too
+                log::warn!("Channel closed while sending chunk {} from {}: {}", chunks_sent, part_path.display(), e);
+                break;
             }
         }
     }
 
-    // Verify we read the expected number of bytes
-    if total_bytes_read != file_metadata.len() as usize {
-        log::warn!("Read {} bytes but file size is {} bytes",
-                 total_bytes_read, file_metadata.len());
-    }
-
-    log::debug!("Successfully sent file data to channel in {} chunks: {}",
-              chunks_sent, part_path.display());
+    log::debug!("Finished sending {} chunks from {}", chunks_sent, part_path.display());
     Ok(())
 }
 
@@ -1508,11 +1473,9 @@ fn download_file(
                 Ok(dc) => dc.clone(),
                 Err(_) => None,
             };
-            if let Some(channel) = data_channel {
-                send_file_to_channel(&task.chunk_path, &channel).map_err(|e|
-                    eyre!("Failed to send file '{}' to channel: {}", task.chunk_path.display(), e)
-                )?;
-            }
+            send_file_to_channel(task).map_err(|e|
+                eyre!("Failed to send file '{}' to channel: {}", task.chunk_path.display(), e)
+            )?;
         }
     }
 
@@ -1774,9 +1737,7 @@ fn handle_416_range_error(
         CacheDecision::UseCache { reason } => {
             log::debug!("Using cached file: {}", reason);
             task.set_message(format!("Remote file unchanged ({}), skipping download {}", reason, part_path.display()));
-            if let Some(channel) = &data_channel {
-                send_file_to_channel(part_path, channel).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
-            }
+            send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
             return Err(eyre!("Download skipped - file unchanged"));
         }
         CacheDecision::RedownloadDueTo { reason } => {
@@ -2599,7 +2560,8 @@ fn process_completed_chunk(
         // If we have a data channel, stream the chunk data
         if let Some(ref channel) = data_channel {
             log::debug!("Streaming chunk {} data from {}", chunk_index, chunk_task.chunk_path.display());
-            send_file_to_channel(&chunk_task.chunk_path, channel)?;
+            // For chunk streaming, we bypass the guards since this is fresh data being streamed
+            send_chunk_to_channel(&chunk_task.chunk_path, channel)?;
         }
 
         // Concatenate this chunk to the master file
@@ -3459,10 +3421,8 @@ fn handle_304_not_modified_response(
         Ok(dc) => dc.clone(),
         Err(_) => None,
     };
-    if let Some(channel) = data_channel {
-        send_file_to_channel(&part_path, &channel)
-            .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
-    }
+    send_file_to_channel(task)
+        .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
 
     // Log this as a successful conditional request
     if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
