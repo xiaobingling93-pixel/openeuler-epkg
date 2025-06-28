@@ -22,7 +22,6 @@ use crate::mirror::{append_download_log, append_http_log, HttpEvent, MirrorUsage
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use filetime::set_file_mtime;
 
-
 #[derive(Debug)]
 pub struct DownloadTask {
     pub url:                  String,
@@ -70,7 +69,6 @@ pub fn update_download_status(task: &DownloadTask, new_status: DownloadStatus) -
     *status = new_status;
     Ok(())
 }
-
 
 impl DownloadTask {
     pub fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
@@ -909,14 +907,6 @@ enum ResponseAction {
     CompleteTask,
 }
 
-/// Download operation result with clear semantics instead of mixed error types
-#[derive(Debug)]
-enum DownloadResult {
-    Success,
-    Skipped { reason: String },
-    Failed { error: DownloadError },
-}
-
 /// Cache decision logic to replace complex nested conditionals
 #[derive(Debug)]
 enum CacheDecision {
@@ -935,9 +925,6 @@ impl std::fmt::Display for FatalError {
 }
 
 impl std::error::Error for FatalError {}
-
-/// Helper function to extract distro and format info from URL for mirror selection
-
 
 /*
  * ============================================================================
@@ -1195,8 +1182,6 @@ fn verify_file_size(part_path: &Path, expected_size: Option<u64>, url: &str) -> 
  * increasingly intelligent decisions over time.
  */
 
-
-
 /// Downloads a file from a URL to the output directory.
 /// Uses the final_path that was calculated when the task was created.
 ///
@@ -1335,12 +1320,10 @@ fn download_file_with_retries(
     let max_retries = task.max_retries;
     let data_channel = task.get_data_channel();
 
-    log::debug!("download_file_with_retries starting for {}, has_channel: {}", url, data_channel.is_some());
     let mut retries = 0;
 
     loop {
         log::debug!("download_file_with_retries calling download_file for {}, attempt {}", url, retries + 1);
-        log::debug!("About to call download_file with data_channel.is_some() = {}", data_channel.is_some());
 
         let download_result = download_file(task);
         let resolved_url = task.get_resolved_url();
@@ -1551,13 +1534,14 @@ fn download_file(
         atomic_file_completion(&task.chunk_path, &task.final_path)?;
 
         // Apply metadata (timestamp and ETag) to the final file
-        if let Some(etag) = load_etag(&task.chunk_path.with_extension("etag")) {
-            // Move ETag to final location and set metadata
+        let etag_path = task.chunk_path.with_extension("etag");
+        if let Some(etag) = load_etag(&etag_path) {
+            // Set metadata on the final file
             set_file_metadata("", &etag, &task.final_path, task);
 
             // Move ETag file to final location
             let final_etag_path = task.final_path.with_extension("etag");
-            if let Err(e) = std::fs::rename(task.chunk_path.with_extension("etag"), &final_etag_path) {
+            if let Err(e) = std::fs::rename(&etag_path, &final_etag_path) {
                 log::warn!("Failed to move ETag file to final location: {}", e);
             }
         }
@@ -1844,29 +1828,6 @@ fn validate_response_content_type(
     Ok(())
 }
 
-/// Handle resume logic - check if server supports resuming and adjust downloaded bytes accordingly
-fn handle_resume_logic(
-    task: &DownloadTask,
-    existing_bytes: u64,
-    status: u16,
-) -> Result<u64> {
-    let part_path = &task.chunk_path;
-    let url = task.get_resolved_url();
-
-    if existing_bytes > 0 && status != 206 {
-        // Log that server doesn't support range requests
-        if let Err(e) = append_http_log(&url, HttpEvent::NoRange) {
-            log::warn!("Failed to log range support info: {}", e);
-        }
-
-        safe_remove_file(part_path, "part")?;
-        task.set_message(format!("Server cannot resume, restarting - {}", url));
-        Ok(0)
-    } else {
-        Ok(existing_bytes)
-    }
-}
-
 /// Unified content download function that handles both master and chunk tasks
 ///
 /// This function replaces both download_content() and download_chunk_content()
@@ -1914,7 +1875,6 @@ fn initialize_chunk_download_context(
 
     Ok(ChunkDownloadContext {
         data_channel,
-        is_master: task.is_master_task(),
         last_update: std::time::Instant::now(),
         last_ondemand_check: std::time::Instant::now(),
     })
@@ -2490,7 +2450,6 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
     Ok(chunk_tasks)
 }
 
-
 /// Unified download task function that handles both master and chunk tasks
 ///
 /// This function coordinates the download process by delegating to specialized functions.
@@ -2577,6 +2536,8 @@ fn process_download_response(
         if response_action == ResponseAction::CompleteTask {
             return Ok(()); // Early exit for completed downloads
         }
+        // Extract and store metadata for later use
+        handle_response_metadata(&response, task);
     } else {
         handle_chunk_task_response(&response, &context.resolved_url)?;
     }
@@ -3134,10 +3095,7 @@ fn handle_response_metadata(response: &http::Response<ureq::Body>, task: &Downlo
         .unwrap_or("")
         .to_string();
 
-    let etag = response.headers().get("etag")
-        .and_then(|s| s.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string())
-        .unwrap_or_default();
+    let etag = parse_etag(response).unwrap_or_default();
 
     // Set metadata for the final file after download completion
     if !last_modified.is_empty() {
@@ -3151,23 +3109,10 @@ fn handle_response_metadata(response: &http::Response<ureq::Body>, task: &Downlo
 
     // Skip saving etag for immutable files since their content won't change over time
     if !etag.is_empty() && !task.is_immutable_file {
-        let etag_path = task.final_path.with_extension("etag");
-        if let Err(e) = std::fs::write(&etag_path, &etag) {
+        if let Err(e) = save_etag(&task.final_path, &etag) {
             log::warn!("Failed to save ETag for {}: {}", task.final_path.display(), e);
         }
     }
-}
-
-/// Verify that the downloaded file size matches expectations
-fn verify_downloaded_file_size(part_path: &Path, expected_size: Option<u64>) -> Result<()> {
-    if let Some(expected) = expected_size {
-        let actual_size = fs::metadata(part_path)?.len();
-        if actual_size != expected {
-            return Err(eyre!("Downloaded file size ({}) doesn't match expected size ({}) for {}",
-                            actual_size, expected, part_path.display()));
-        }
-    }
-    Ok(())
 }
 
 /// Check if a chunk task is already complete and handle early completion
@@ -3193,71 +3138,6 @@ fn setup_resumption_state(task: &DownloadTask, existing_bytes: u64) {
         task.resumed_bytes.store(existing_bytes, Ordering::Relaxed);
         log::debug!("Resuming download from {} bytes for {}", existing_bytes, &task.url);
     }
-}
-
-/// Create and execute HTTP request with appropriate Range headers
-fn create_and_execute_http_request(
-    task: &DownloadTask,
-    client: &Agent,
-    resolved_url: &str,
-    existing_bytes: u64
-) -> Result<(http::Response<ureq::Body>, u64)> {
-    let mut request = client.get(resolved_url);
-
-    // Add Range header if needed (for resumption or chunking)
-    if existing_bytes > 0 || task.is_chunk_task() {
-        let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
-        let chunk_size = task.chunk_size.load(Ordering::Relaxed);
-
-        let start_offset = if task.is_chunk_task() {
-            chunk_offset + existing_bytes
-        } else {
-            existing_bytes
-        };
-
-        let range_header = if task.is_chunk_task() && chunk_size > 0 {
-            format!("bytes={}-{}", start_offset, chunk_offset + chunk_size - 1)
-        } else {
-            format!("bytes={}-", start_offset)
-        };
-
-        request = request.header("Range", &range_header);
-        log::debug!("Using Range header: {}", range_header);
-    }
-
-    // Execute the request with timing and error handling
-    let request_start = std::time::Instant::now();
-
-    let response = request
-        .call()
-        .map_err(|e| {
-            // Log HTTP errors
-            let http_event = match e {
-                ureq::Error::StatusCode(code) => {
-                    if code == 404 {
-                        HttpEvent::NoContent
-                    } else {
-                        HttpEvent::HttpError(code)
-                    }
-                }
-                ureq::Error::Io(_) => HttpEvent::NetError(e.to_string()),
-                _ => HttpEvent::NetError(e.to_string()),
-            };
-            if let Err(log_err) = append_http_log(resolved_url, http_event) {
-                log::warn!("Failed to log HTTP error: {}", log_err);
-            }
-
-            eyre!("Failed to make request for {}: {}", resolved_url, e)
-        })?;
-
-    let request_latency = request_start.elapsed().as_millis() as u64;
-
-    // Log request latency
-    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(request_latency)) {
-        log::warn!("Failed to log request latency: {}", e);
-    }
-
-    Ok((response, request_latency))
 }
 
 /// Handle master task specific response validation and setup
@@ -3603,7 +3483,6 @@ struct DownloadContext {
 /// Context for chunk download operations
 struct ChunkDownloadContext {
     data_channel: Option<Sender<Vec<u8>>>,
-    is_master: bool,
     last_update: std::time::Instant,
     last_ondemand_check: std::time::Instant,
 }
