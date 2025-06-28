@@ -1193,10 +1193,9 @@ fn download_task(
 ) -> Result<()> {
     let url = &task.url.clone();
     let final_path = &task.final_path.clone();
-    let data_channel = task.get_data_channel();
     let expected_size = task.file_size.load(Ordering::Relaxed);
 
-    log::debug!("download_task starting for {}, has_channel: {}, expected_size: {:?}", url, data_channel.is_some(), expected_size);
+    log::debug!("download_task starting for {}, has_channel: {}, expected_size: {:?}", url, task.get_data_channel().is_some(), expected_size);
 
     // Handle local file URLs (file:// or starting with /)
     if url.starts_with("file://") || url.starts_with("/") {
@@ -1319,7 +1318,6 @@ fn download_file_with_retries(
 ) -> Result<()> {
     let url = &task.url;
     let max_retries = task.max_retries;
-    let data_channel = task.get_data_channel();
 
     let mut retries = 0;
 
@@ -1392,11 +1390,8 @@ pub fn send_file_to_channel(
 
     // Ensure we only stream the pre-existing file once per download_file_with_retries() lifetime
     if task.has_sent_existing.swap(true, Ordering::SeqCst) {
-        return Err(eyre!("Should not call send_file_to_channel() TWICE for task {:?}", task));
-        // log::trace!("Existing file already streamed once – skipping second send for {}", task.chunk_path.display());
+        log::debug!("Existing file already streamed once – skipping second send for {}", task.chunk_path.display());
     }
-
-    let part_path = &task.chunk_path;
 
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
@@ -1469,10 +1464,6 @@ fn download_file(
 
         // Step 4: Send existing file content to channel if resuming
         if existing_bytes > 0 {
-            let data_channel = match task.data_channel.lock() {
-                Ok(dc) => dc.clone(),
-                Err(_) => None,
-            };
             send_file_to_channel(task).map_err(|e|
                 eyre!("Failed to send file '{}' to channel: {}", task.chunk_path.display(), e)
             )?;
@@ -1700,8 +1691,7 @@ fn handle_416_range_error(
     task: &DownloadTask,
 ) -> Result<http::Response<ureq::Body>> {
     let url = task.get_resolved_url();
-    let part_path = &task.chunk_path;
-    let data_channel = task.get_data_channel();
+
 
     let downloaded = task.chunk_offset.load(Ordering::Relaxed); // Use task's chunk_offset instead of downloaded parameter
     // Send a request to check remote size and time, then compare with local
@@ -1725,7 +1715,7 @@ fn handle_416_range_error(
 
     let remote_timestamp_opt = parse_remote_timestamp(&remote_metadata);
 
-    let local_metadata = map_io_error(fs::metadata(part_path), "get local file metadata", part_path)?;
+    let local_metadata = map_io_error(fs::metadata(&task.chunk_path), "get local file metadata", &task.chunk_path)?;
     let local_size = local_metadata.len();
     let local_last_modified_sys_time = local_metadata.modified().map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
     let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
@@ -1736,7 +1726,7 @@ fn handle_416_range_error(
     match decision {
         CacheDecision::UseCache { reason } => {
             log::debug!("Using cached file: {}", reason);
-            task.set_message(format!("Remote file unchanged ({}), skipping download {}", reason, part_path.display()));
+            task.set_message(format!("Remote file unchanged ({}), skipping download {}", reason, task.chunk_path.display()));
             send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
             return Err(eyre!("Download skipped - file unchanged"));
         }
@@ -1744,7 +1734,7 @@ fn handle_416_range_error(
             let error_msg = format!("{}, restarting download from 0: {}", reason, url);
             log::debug!("{}", error_msg);
             task.set_message(error_msg.clone());
-            safe_remove_file(part_path, "part")?;
+            safe_remove_file(&task.chunk_path, "part")?;
             return Err(DownloadError::TimestampMismatch(error_msg).into());
         }
     }
@@ -3411,16 +3401,10 @@ fn handle_304_not_modified_response(
     resolved_url: &str,
     latency: u64,
 ) -> Result<http::Response<ureq::Body>> {
-    let part_path = &task.chunk_path;
-
     log::debug!("Received 304 Not Modified - file unchanged on server");
-    task.set_message(format!("File unchanged (ETag match), skipping download - {}", part_path.display()));
+    task.set_message(format!("File unchanged (ETag match), skipping download - {}", task.chunk_path.display()));
 
     // If the final file exists, send it to the channel if needed
-    let data_channel = match task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
     send_file_to_channel(task)
         .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
 
