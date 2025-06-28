@@ -38,11 +38,18 @@ pub struct DownloadTask {
     pub attempt_number:       AtomicUsize,                                // Track which attempt number this is (0 = first attempt)
     pub is_immutable_file:    bool,                                       // True for files whose content won't change over time (filename == some id)
 
-    // New fields for chunking
+    // Chunking semantics rules:
+    // 1. chunk_offset - decided on initial allocation, won't change over time; 0 for master task
+    // 2. chunk_size - decided on initial allocation, won't change over time but may be lowered on ondemand chunking; equals file_size for master task without chunking
+    // 3. append_offset (used in functions) = chunk_offset + resumed_bytes, advances during network downloading
+    // 4. On success: resumed_bytes + received_bytes == chunk_size
+    // 5. When create_ondemand_chunks() creates new chunks, master task.chunk_size will be reduced to a lower boundary,
+    //    and process_chunk_download_stream() will use the latest chunk_size as boundary
+
     pub chunk_tasks:          Arc<Mutex<Vec<Arc<DownloadTask>>>>,
     pub chunk_path:           PathBuf,                                    // Full path to the chunk file (for master: .part, for chunks: .part-O{offset})
-    pub chunk_offset:         AtomicU64,                                  // Starting byte offset for this chunk
-    pub chunk_size:           AtomicU64,                                  // Size of this chunk in bytes
+    pub chunk_offset:         AtomicU64,                                  // Starting byte offset for this chunk (0 for master task, fixed on allocation)
+    pub chunk_size:           AtomicU64,                                  // Size of this chunk in bytes (fixed on allocation, equals file_size for master without chunking)
     pub start_time:           Mutex<Option<std::time::Instant>>,
     pub received_bytes:       AtomicU64,                                  // Bytes actually received from network
     pub resumed_bytes:        AtomicU64,                                  // Bytes reused from local partial files
@@ -1629,8 +1636,8 @@ fn execute_download_request(
 
     // Add ETag conditional headers for cache validation
     let part_path = &task.chunk_path;
-    let downloaded = task.chunk_offset.load(Ordering::Relaxed);
-    if downloaded == 0 && task.chunk_size.load(Ordering::Relaxed) == 0 {
+    let chunk_start_offset = task.chunk_offset.load(Ordering::Relaxed);
+    if chunk_start_offset == 0 && task.chunk_size.load(Ordering::Relaxed) == 0 {
         if part_path.exists() {
             if let Some(stored_etag) = load_etag(part_path) {
                 log::debug!("Adding If-None-Match header with ETag '{}' for conditional request", stored_etag);
@@ -1649,12 +1656,12 @@ fn execute_download_request(
         // The end of the requested range is always the base offset plus the chunk size minus
         // one, regardless of how many bytes we have already.
         let end = task.chunk_offset.load(Ordering::Relaxed) + chunk_size - 1;
-        log::debug!("Setting Range header: bytes={}-{}", downloaded, end);
-        request = request.header("Range", &format!("bytes={}-{}", downloaded, end));
-    } else if downloaded > 0 {
+        log::debug!("Setting Range header: bytes={}-{}", chunk_start_offset, end);
+        request = request.header("Range", &format!("bytes={}-{}", chunk_start_offset, end));
+    } else if chunk_start_offset > 0 {
         // Resume request from offset to end
-        log::debug!("Setting Range header: bytes={}-", downloaded);
-        request = request.header("Range", &format!("bytes={}-", downloaded));
+        log::debug!("Setting Range header: bytes={}-", chunk_start_offset);
+        request = request.header("Range", &format!("bytes={}-", chunk_start_offset));
     }
 
     // Execute the request and handle all possible outcomes
@@ -1783,9 +1790,9 @@ fn handle_416_range_error(
     // purposes). For the 416 handler we don't need the detailed resume logic used elsewhere –
     // we only care about the on-disk chunk size versus the server's size, so we just read the
     // current offset stored in the task.
-    let mut downloaded = task.chunk_offset.load(Ordering::Relaxed);
+    let mut chunk_start_offset = task.chunk_offset.load(Ordering::Relaxed);
     if task.is_chunk_task() && task.file_size.load(Ordering::Relaxed) > 0 {
-        downloaded += task.file_size.load(Ordering::Relaxed);
+        chunk_start_offset += task.file_size.load(Ordering::Relaxed);
     }
 
     // Send a request to check remote size and time, then compare with local
@@ -1805,7 +1812,7 @@ fn handle_416_range_error(
     let remote_size_opt = parse_content_length(&remote_metadata);
     let remote_size = remote_size_opt.unwrap_or(0);
     log::debug!("download_file remote_size: {} (Content-Length present: {}), local_size: {}",
-               remote_size, remote_size_opt.is_some(), downloaded);
+               remote_size, remote_size_opt.is_some(), chunk_start_offset);
 
     let remote_timestamp_opt = parse_remote_timestamp(&remote_metadata);
 
@@ -1891,7 +1898,7 @@ fn download_chunk_content(
     let (mut file, existing_bytes) = setup_download_file(task)?;
 
     // Execute the main download stream processing
-    let total_downloaded = process_chunk_download_stream(
+    let chunk_append_offset = process_chunk_download_stream(
         &mut response,
         &mut file,
         task,
@@ -1900,7 +1907,7 @@ fn download_chunk_content(
     )?;
 
     // Finalize download with progress updates and logging
-    finalize_chunk_download(task, total_downloaded, existing_bytes)
+    finalize_chunk_download(task, chunk_append_offset, existing_bytes)
 }
 
 /// Initialize download context and validate response for chunk downloads
@@ -1939,14 +1946,14 @@ fn process_chunk_download_stream(
 ) -> Result<u64> {
     let mut reader = response.body_mut().as_reader();
     let mut buffer = vec![0; 8192];
-    let mut total_downloaded = existing_bytes;
+    let mut chunk_append_offset = existing_bytes;
     let mut network_bytes = 0u64;
     let mut last_update = download_context.last_update;
     let mut last_ondemand_check = download_context.last_ondemand_check;
 
     loop {
         // Read data from network stream
-        let bytes_read = read_chunk_from_stream(&mut reader, &mut buffer, task, total_downloaded)?;
+        let bytes_read = read_chunk_from_stream(&mut reader, &mut buffer, task, chunk_append_offset)?;
 
         if bytes_read == 0 {
             break; // EOF reached
@@ -1958,7 +1965,7 @@ fn process_chunk_download_stream(
             &buffer,
             bytes_read,
             task,
-            total_downloaded,
+            chunk_append_offset,
         )?;
 
         if written_bytes == 0 {
@@ -1966,7 +1973,7 @@ fn process_chunk_download_stream(
         }
 
         // Update download counters
-        total_downloaded += written_bytes as u64;
+        chunk_append_offset += written_bytes as u64;
         network_bytes += written_bytes as u64;
 
         // Handle data channel and boundary checks
@@ -1984,10 +1991,10 @@ fn process_chunk_download_stream(
         }
 
         // Perform periodic updates
-        perform_chunk_periodic_updates(task, total_downloaded, &mut last_update, &mut last_ondemand_check);
+        perform_chunk_periodic_updates(task, chunk_append_offset, &mut last_update, &mut last_ondemand_check);
     }
 
-    Ok(total_downloaded)
+    Ok(chunk_append_offset)
 }
 
 /// Read chunk data from network stream with error handling
@@ -1996,18 +2003,18 @@ fn read_chunk_from_stream(
     reader: &mut dyn std::io::Read,
     buffer: &mut [u8],
     task: &DownloadTask,
-    total_downloaded: u64,
+    chunk_append_offset: u64,
 ) -> Result<usize> {
     match reader.read(buffer) {
         Ok(0) => Ok(0), // EOF reached
         Ok(n) => Ok(n),
         Err(e) => {
             if task.is_master_task() {
-                let error_msg = format!("Read error at {} bytes: {}", total_downloaded,
+                let error_msg = format!("Read error at {} bytes: {}", chunk_append_offset,
                     task.resolved_url.lock().map(|r| r.clone()).unwrap_or_else(|_| task.url.clone()));
                 task.set_message(error_msg);
             }
-            Err(eyre!("Failed to read from response (total_downloaded={}, buffer_size={}): {}", total_downloaded, buffer.len(), e))
+            Err(eyre!("Failed to read from response (chunk_append_offset={}, buffer_size={}): {}", chunk_append_offset, buffer.len(), e))
         }
     }
 }
@@ -2019,13 +2026,13 @@ fn process_chunk_data_write(
     buffer: &[u8],
     bytes_read: usize,
     task: &DownloadTask,
-    total_downloaded: u64,
+    chunk_append_offset: u64,
 ) -> Result<usize> {
     // Calculate bytes to write based on chunk boundaries
-    let bytes_to_write = calculate_write_bytes(task, bytes_read, total_downloaded);
+    let bytes_to_write = calculate_write_bytes(task, bytes_read, chunk_append_offset);
 
     // Write data to file with boundary checks
-    write_chunk_data(file, buffer, bytes_to_write, task, total_downloaded)
+    write_chunk_data(file, buffer, bytes_to_write, task, chunk_append_offset)
 }
 
 /// Handle data channel communication and progress tracking
@@ -2053,35 +2060,35 @@ fn handle_chunk_data_processing(
 /// Level 6: Update Management - handles timed progress and chunking updates
 fn perform_chunk_periodic_updates(
     task: &DownloadTask,
-    total_downloaded: u64,
+    chunk_append_offset: u64,
     last_update: &mut std::time::Instant,
     last_ondemand_check: &mut std::time::Instant,
 ) {
-    update_download_progress(task, total_downloaded, last_update);
-    check_ondemand_chunking(task, total_downloaded, last_ondemand_check);
+    update_download_progress(task, chunk_append_offset, last_update);
+    check_ondemand_chunking(task, chunk_append_offset, last_ondemand_check);
 }
 
 /// Finalize chunk download with progress updates and completion logging
 /// Level 5: Download Finalization - completes download with final updates
 fn finalize_chunk_download(
     task: &DownloadTask,
-    total_downloaded: u64,
+    chunk_append_offset: u64,
     existing_bytes: u64,
 ) -> Result<u64> {
-    let network_bytes = total_downloaded - existing_bytes;
+    let network_bytes = chunk_append_offset - existing_bytes;
 
     // Final progress update
     if task.is_master_task() {
         let (total_received, _downloading_chunks) = task.get_total_progress_bytes();
         task.set_position(total_received);
     } else {
-        task.set_position(total_downloaded);
+        task.set_position(chunk_append_offset);
     }
 
     log::debug!("download_content completed: {} total bytes ({} network bytes) written to {}",
-               total_downloaded, network_bytes, task.chunk_path.display());
+               chunk_append_offset, network_bytes, task.chunk_path.display());
 
-    Ok(total_downloaded)
+    Ok(chunk_append_offset)
 }
 
 /// Validate that the downloaded size matches the expected Content-Length
@@ -2441,40 +2448,40 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
         return Ok(Vec::new());
     };
 
-    let downloaded = task.chunk_offset.load(Ordering::Relaxed);
+    let chunk_start_offset = task.chunk_offset.load(Ordering::Relaxed);
 
     // Don't chunk small files or chunk tasks themselves
-    if task.is_chunk_task() || file_size_val < downloaded + MIN_FILE_SIZE_FOR_CHUNKING {
+    if task.is_chunk_task() || file_size_val < chunk_start_offset + MIN_FILE_SIZE_FOR_CHUNKING {
         log::debug!("Skipping chunking: is_chunk_task={}, size={} bytes, min_required={} bytes",
-                  task.is_chunk_task(), file_size_val, downloaded + MIN_FILE_SIZE_FOR_CHUNKING);
+                  task.is_chunk_task(), file_size_val, chunk_start_offset + MIN_FILE_SIZE_FOR_CHUNKING);
         return Ok(Vec::new());
     }
 
-    log::debug!("Using known size {} bytes to create chunks (downloaded: {} bytes)", file_size_val, downloaded);
+    log::debug!("Using known size {} bytes to create chunks (chunk_start_offset: {} bytes)", file_size_val, chunk_start_offset);
 
-    log::debug!("Creating chunks for {} byte file with {} bytes already downloaded",
-              file_size_val, downloaded);
+    log::debug!("Creating chunks for {} byte file with {} bytes chunk_start_offset",
+              file_size_val, chunk_start_offset);
 
-    // Calculate the next chunk boundary after the already downloaded bytes. If we are
+    // Calculate the next chunk boundary after the chunk start offset. If we are
     // exactly on a 1 MiB boundary we need to move to the _next_ boundary, otherwise we
-    // would produce a zero-length master chunk (next_boundary == downloaded).
-    let next_boundary = if downloaded == 0 {
+    // would produce a zero-length master chunk (next_boundary == chunk_start_offset).
+    let next_boundary = if chunk_start_offset == 0 {
         MIN_CHUNK_SIZE
-    } else if (downloaded & MIN_CHUNK_SIZE_MASK) == 0 {
-        downloaded + MIN_CHUNK_SIZE
+    } else if (chunk_start_offset & MIN_CHUNK_SIZE_MASK) == 0 {
+        chunk_start_offset + MIN_CHUNK_SIZE
     } else {
         // Round up to the next 1 MiB boundary
-        (downloaded + MIN_CHUNK_SIZE_MASK) & !MIN_CHUNK_SIZE_MASK
+        (chunk_start_offset + MIN_CHUNK_SIZE_MASK) & !MIN_CHUNK_SIZE_MASK
     };
 
     // Master task will handle from current offset to next chunk boundary
-    let master_chunk_size = std::cmp::min(next_boundary - downloaded, file_size_val - downloaded);
+    let master_chunk_size = std::cmp::min(next_boundary - chunk_start_offset, file_size_val - chunk_start_offset);
 
     // Update master task's chunk information
     task.chunk_size.store(master_chunk_size, Ordering::Relaxed);
 
     log::debug!("Master task will handle {} bytes starting from offset {}",
-              master_chunk_size, downloaded);
+              master_chunk_size, chunk_start_offset);
 
     // Starting offset for additional chunks is the next boundary
     let mut offset = next_boundary;
@@ -2489,8 +2496,8 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
     }
 
     if chunk_tasks.is_empty() {
-        log::debug!("No additional chunks needed for {} byte file with {} bytes already downloaded",
-                 file_size_val, downloaded);
+        log::debug!("No additional chunks needed for {} byte file with {} bytes chunk_start_offset",
+                 file_size_val, chunk_start_offset);
     } else {
         log::debug!("Created {} chunk tasks for {} byte file", chunk_tasks.len(), file_size_val);
     }
@@ -3432,7 +3439,7 @@ fn setup_download_file(task: &DownloadTask) -> Result<(File, u64)> {
 fn calculate_write_bytes(
     task: &DownloadTask,
     bytes_read: usize,
-    total_downloaded: u64
+    chunk_append_offset: u64
 ) -> usize {
     let chunk_size_val = task.chunk_size.load(Ordering::Relaxed);
 
@@ -3443,18 +3450,18 @@ fn calculate_write_bytes(
             chunk_size_val // For chunk tasks, chunk_size is the limit
         };
 
-        if total_downloaded >= boundary {
+        if chunk_append_offset >= boundary {
             if task.is_master_task() {
-                log::debug!("Master task reached chunk boundary at {} bytes, stopping", total_downloaded);
+                log::debug!("Master task reached chunk boundary at {} bytes, stopping", chunk_append_offset);
             } else {
-                log::debug!("Chunk task completed at {} bytes", total_downloaded);
+                log::debug!("Chunk task completed at {} bytes", chunk_append_offset);
             }
             return 0; // Signal to stop
         }
 
         // Adjust bytes to write if we're approaching the limit
-        if total_downloaded + bytes_read as u64 > boundary {
-            (boundary - total_downloaded) as usize
+        if chunk_append_offset + bytes_read as u64 > boundary {
+            (boundary - chunk_append_offset) as usize
         } else {
             bytes_read
         }
@@ -3469,12 +3476,12 @@ fn write_chunk_data(
     buffer: &[u8],
     bytes_to_write: usize,
     task: &DownloadTask,
-    total_downloaded: u64
+    chunk_append_offset: u64
 ) -> Result<usize> {
     if !task.is_master_task() {
         let chunk_size_val = task.chunk_size.load(Ordering::Relaxed);
         if chunk_size_val > 0 {
-            let remaining = chunk_size_val.saturating_sub(total_downloaded);
+            let remaining = chunk_size_val.saturating_sub(chunk_append_offset);
             if remaining == 0 {
                 log::warn!("Chunk task received {} surplus bytes, discarding", bytes_to_write);
                 return Ok(0); // Signal to stop
@@ -3485,9 +3492,9 @@ fn write_chunk_data(
                 .map_err(|e| eyre!("Failed to write {} bytes to chunk file '{}': {}",
                                   write_len, task.chunk_path.display(), e))?;
 
-            if write_len < bytes_to_write && total_downloaded + write_len as u64 > chunk_size_val {
+            if write_len < bytes_to_write && chunk_append_offset + write_len as u64 > chunk_size_val {
                 log::warn!("Chunk {} exceeded expected size by {} bytes; extra data ignored",
-                          task.chunk_path.display(), (total_downloaded + write_len as u64) - chunk_size_val);
+                          task.chunk_path.display(), (chunk_append_offset + write_len as u64) - chunk_size_val);
             }
 
             return Ok(write_len);
@@ -3505,7 +3512,7 @@ fn write_chunk_data(
 /// Update progress tracking for download tasks
 fn update_download_progress(
     task: &DownloadTask,
-    total_downloaded: u64,
+    chunk_append_offset: u64,
     last_update: &mut std::time::Instant
 ) {
     let now = std::time::Instant::now();
@@ -3522,8 +3529,8 @@ fn update_download_progress(
             let message = format_progress_message(&resolved_url, downloading_chunks);
             task.set_message(message);
         } else {
-            // For chunk tasks, show total downloaded (reused + network bytes)
-            task.set_position(total_downloaded);
+            // For chunk tasks, show chunk append offset (reused + network bytes)
+            task.set_position(chunk_append_offset);
         }
         *last_update = now;
     }
@@ -3532,7 +3539,7 @@ fn update_download_progress(
 /// Check for on-demand chunking opportunities (master tasks only)
 fn check_ondemand_chunking(
     task: &DownloadTask,
-    total_downloaded: u64,
+    chunk_append_offset: u64,
     last_ondemand_check: &mut std::time::Instant
 ) {
     let now = std::time::Instant::now();
@@ -3541,7 +3548,7 @@ fn check_ondemand_chunking(
        now.duration_since(*last_ondemand_check) > Duration::from_secs(1) &&
        DOWNLOAD_MANAGER.current_task_count.load(Ordering::Relaxed) <= DOWNLOAD_MANAGER.nr_parallel / 2 {
 
-        check_for_ondemand_chunking_opportunity(task, total_downloaded);
+        check_for_ondemand_chunking_opportunity(task, chunk_append_offset);
         *last_ondemand_check = now;
     }
 }
