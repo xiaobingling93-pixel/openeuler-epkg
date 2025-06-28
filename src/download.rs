@@ -764,15 +764,39 @@ impl DownloadManager {
 
                 let chunk_result = download_chunk_task(&chunk_clone);
 
-                if let Err(e) = chunk_result {
-                    log::debug!(
-                        "Chunk task failed for {} at offset {}: {}",
-                        chunk_clone.url, chunk_clone.chunk_offset.load(Ordering::Relaxed), e
-                    );
+                match chunk_result {
+                    DownloadResult::Success { bytes_transferred } => {
+                        log::debug!(
+                            "Chunk for {} at offset {} completed successfully: {} bytes",
+                            chunk_clone.url, chunk_clone.chunk_offset.load(Ordering::Relaxed), bytes_transferred
+                        );
 
-                    // Mark chunk as failed
-                    if let Ok(mut status) = chunk_clone.status.lock() {
-                        *status = DownloadStatus::Failed(format!("{}", e));
+                        // Mark chunk as completed
+                        if let Ok(mut status) = chunk_clone.status.lock() {
+                            *status = DownloadStatus::Completed;
+                        }
+                    },
+                    DownloadResult::Skipped { reason } => {
+                        log::debug!(
+                            "Chunk for {} at offset {} was skipped: {}",
+                            chunk_clone.url, chunk_clone.chunk_offset.load(Ordering::Relaxed), reason
+                        );
+
+                        // Mark chunk as completed
+                        if let Ok(mut status) = chunk_clone.status.lock() {
+                            *status = DownloadStatus::Completed;
+                        }
+                    },
+                    DownloadResult::Failed { error } => {
+                        log::debug!(
+                            "Chunk task failed for {} at offset {}: {}",
+                            chunk_clone.url, chunk_clone.chunk_offset.load(Ordering::Relaxed), error
+                        );
+
+                        // Mark chunk as failed
+                        if let Ok(mut status) = chunk_clone.status.lock() {
+                            *status = DownloadStatus::Failed(format!("{}", error));
+                        }
                     }
                 }
             });
@@ -877,26 +901,63 @@ impl DownloadManager {
 //   - No async runtime overhead
 //   - Efficient resource usage
 
-#[derive(Debug)]
-enum DownloadError {
-    Fatal(String),
-    Timeout(String),
-    TimestampMismatch(String),
-    NetworkError(String),
+/// Download operation result with clear semantics instead of mixed error types
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum DownloadResult {
+    /// Download completed successfully (either from network or local file)
+    Success { bytes_transferred: u64 },
+    /// Download was skipped because file already exists or is up-to-date
+    Skipped { reason: String },
+    /// Download failed with a specific error
+    Failed { error: DownloadError },
+}
+
+/// Specific error types for download operations
+#[derive(Debug, Clone)]
+pub enum DownloadError {
+    /// Fatal HTTP errors (4xx) that shouldn't be retried
+    Fatal { code: u16, message: String },
+    /// Network connectivity or timeout issues
+    Network { details: String },
+    /// File system errors (permissions, disk space, etc.)
+    FileSystem { operation: String, path: String, details: String },
+    /// Content validation failed (size mismatch, corrupted data, etc.)
+    ContentValidation { expected: String, actual: String },
+    /// Mirror selection or resolution failed
+    MirrorResolution { details: String },
+    /// Server returned unexpected response
+    UnexpectedResponse { code: u16, details: String },
+    /// Chunk was already complete and was skipped
+    AlreadyComplete { bytes: u64 },
 }
 
 impl std::fmt::Display for DownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DownloadError::Fatal(msg) => write!(f, "Fatal: {}", msg),
-            DownloadError::Timeout(msg) => write!(f, "Timeout: {}", msg),
-            DownloadError::TimestampMismatch(msg) => write!(f, "Timestamp mismatch: {}", msg),
-            DownloadError::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            DownloadError::Fatal { code, message } => write!(f, "Fatal error (HTTP {}): {}", code, message),
+            DownloadError::Network { details } => write!(f, "Network error: {}", details),
+            DownloadError::FileSystem { operation, path, details } => write!(f, "File system error during {} at {}: {}", operation, path, details),
+            DownloadError::ContentValidation { expected, actual } => write!(f, "Content validation failed: expected {}, got {}", expected, actual),
+            DownloadError::MirrorResolution { details } => write!(f, "Mirror resolution failed: {}", details),
+            DownloadError::UnexpectedResponse { code, details } => {
+                write!(f, "Unexpected HTTP response {}: {}", code, details)
+            },
+            DownloadError::AlreadyComplete { bytes } => {
+                write!(f, "Chunk already complete with {} bytes", bytes)
+            },
         }
     }
 }
 
 impl std::error::Error for DownloadError {}
+
+/// Context information for a download operation
+#[derive(Debug)]
+pub struct DownloadContext {
+    pub resolved_url: String,
+    pub existing_bytes: u64,
+}
 
 /// Result type for processing operations to indicate whether to continue or complete
 #[derive(Debug, PartialEq)]
@@ -1144,6 +1205,7 @@ fn setup_progress_bar(multi_progress: &MultiProgress, url: &str) -> Result<Progr
 }
 
 /// Verify downloaded file size against expected size
+#[allow(dead_code)]
 fn verify_file_size(part_path: &Path, expected_size: Option<u64>, url: &str) -> Result<()> {
     if let Some(expected) = expected_size {
         if let Ok(metadata) = fs::metadata(part_path) {
@@ -1337,17 +1399,27 @@ fn download_file_with_retries(
                 // Check if this is one of our custom download errors to avoid logging stack traces
                 if let Some(download_err) = e.downcast_ref::<DownloadError>() {
                     match download_err {
-                        DownloadError::Fatal(msg) => {
-                            log::debug!("download_file_with_retries got fatal error for {}: {}", resolved_url, msg);
+                        DownloadError::Fatal { code, message } => {
+                            log::debug!("download_file_with_retries got fatal error {} for {}: {}", code, resolved_url, message);
                         },
-                        DownloadError::Timeout(msg) => {
-                            log::debug!("download_file_with_retries got timeout error for {}: {}", resolved_url, msg);
+                        DownloadError::Network { details } => {
+                            log::debug!("download_file_with_retries got network error for {}: {}", resolved_url, details);
                         },
-                        DownloadError::TimestampMismatch(msg) => {
-                            log::debug!("download_file_with_retries got timestamp mismatch for {}: {}", resolved_url, msg);
+                        DownloadError::FileSystem { operation, path, details } => {
+                            log::debug!("download_file_with_retries got filesystem error during {} on {} for {}: {}", operation, path, resolved_url, details);
                         },
-                        DownloadError::NetworkError(msg) => {
-                            log::debug!("download_file_with_retries got network error for {}: {}", resolved_url, msg);
+                        DownloadError::ContentValidation { expected, actual } => {
+                            log::debug!("download_file_with_retries got content validation error for {}: expected {}, got {}", resolved_url, expected, actual);
+                        },
+                        DownloadError::MirrorResolution { details } => {
+                            log::debug!("download_file_with_retries got mirror resolution error for {}: {}", resolved_url, details);
+                        },
+                        DownloadError::UnexpectedResponse { code, details } => {
+                            log::debug!("download_file_with_retries got unexpected response {} for {}: {}", code, resolved_url, details);
+                        },
+                        DownloadError::AlreadyComplete { bytes } => {
+                            log::debug!("download_file_with_retries got already complete response for {}: {} bytes", resolved_url, bytes);
+                            return Ok(());
                         },
                     }
                 } else {
@@ -1471,7 +1543,17 @@ fn download_file(
     }
 
     // Use the unified download_chunk_task for both master and chunk tasks
-    download_chunk_task(task)?;
+    match download_chunk_task(task) {
+        DownloadResult::Success { bytes_transferred } => {
+            log::debug!("Task downloaded successfully: {} bytes", bytes_transferred);
+        },
+        DownloadResult::Skipped { reason } => {
+            log::debug!("Task was skipped: {}", reason);
+        },
+        DownloadResult::Failed { error } => {
+            return Err(eyre!("Task failed: {}", error));
+        },
+    }
 
     // Master task post-processing
     if task.is_master_task() {
@@ -1644,7 +1726,7 @@ fn handle_network_io_error(
     log_http_event_safe(resolved_url, HttpEvent::NetError(error_msg.clone()));
 
     task.set_message(error_msg.clone());
-    Err(DownloadError::NetworkError(error_msg).into())
+    Err(DownloadError::Network { details: error_msg }.into())
 }
 
 /// Handle general request errors (timeouts, DNS failures, etc.)
@@ -1664,9 +1746,9 @@ fn handle_general_request_error(
 
     // Classify error type based on error message
     if error_str.contains("timeout") {
-        Err(DownloadError::Timeout(error_msg).into())
+        Err(DownloadError::Network { details: error_msg }.into())
     } else {
-        Err(DownloadError::NetworkError(error_msg).into())
+        Err(DownloadError::Network { details: error_msg }.into())
     }
 }
 
@@ -1737,7 +1819,10 @@ fn handle_416_range_error(
             log::debug!("{}", error_msg);
             task.set_message(error_msg.clone());
             safe_remove_file(&task.chunk_path, "part")?;
-            return Err(DownloadError::TimestampMismatch(error_msg).into());
+            return Err(DownloadError::ContentValidation {
+                expected: "timestamp match".to_string(),
+                actual: error_msg
+            }.into());
         }
     }
 }
@@ -1750,10 +1835,10 @@ fn handle_non_416_http_error(code: u16, url: &str, task: &DownloadTask) -> Resul
     if code >= 400 && code < 500 {
         // For client errors (like 403, 404), create a simple DownloadError without verbose backtrace
         log::debug!("Client error {} for {}", code, url);
-        Err(DownloadError::Fatal(error_msg).into())
+        Err(DownloadError::Fatal { code, message: error_msg }.into())
     } else {
         log::debug!("Server error {} for {}", code, url);
-        Err(DownloadError::NetworkError(format!("HTTP error: {}", error_msg)).into())
+        Err(DownloadError::UnexpectedResponse { code, details: format!("HTTP error: {}", error_msg) }.into())
     }
 }
 
@@ -2407,17 +2492,58 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
 ///
 /// This function coordinates the download process by delegating to specialized functions.
 /// Level 3: Download Strategy - coordinates download execution
-fn download_chunk_task(task: &DownloadTask) -> Result<()> {
+fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
     // Phase 1: Setup and validation
-    let download_context = prepare_download_context(task)?;
+    let download_context = match prepare_download_context(task) {
+        Ok(context) => context,
+        Err(e) => {
+            // Check if this is an "already complete" case (success)
+            if let Some(download_err) = e.downcast_ref::<DownloadError>() {
+                if let DownloadError::AlreadyComplete { bytes } = download_err {
+                    return DownloadResult::Success { bytes_transferred: *bytes };
+                }
+            }
+
+            // Convert to DownloadError for retry logic
+            let download_error = if let Some(download_err) = e.downcast_ref::<DownloadError>() {
+                download_err.clone()
+            } else {
+                DownloadError::FileSystem {
+                    operation: "prepare download context".to_string(),
+                    path: task.chunk_path.display().to_string(),
+                    details: format!("{}", e),
+                }
+            };
+
+            return DownloadResult::Failed { error: download_error };
+        }
+    };
+
+    // Track mirror usage with RAII guard
+    let _mirror_guard = MirrorUsageGuard::new(&download_context.resolved_url);
 
     // Phase 2: Execute HTTP request
-    let response = execute_download_request(task, &download_context.resolved_url, download_context.existing_bytes)?;
+    let response = match execute_download_request(task, &download_context.resolved_url, download_context.existing_bytes) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let download_error = DownloadError::Network { details: format!("{}", e) };
+
+            return DownloadResult::Failed { error: download_error };
+        }
+    };
 
     // Phase 3: Process response and download content
-    process_download_response(task, response, &download_context)?;
+    match process_download_response(task, response, &download_context) {
+        Ok(bytes) => DownloadResult::Success { bytes_transferred: bytes },
+        Err(e) => {
+            let download_error = DownloadError::ContentValidation {
+                expected: "successful download".to_string(),
+                actual: format!("{}", e),
+            };
 
-    Ok(())
+            return DownloadResult::Failed { error: download_error };
+        }
+    }
 }
 
 /// Prepare download context and validate readiness
@@ -2432,47 +2558,60 @@ fn prepare_download_context(task: &DownloadTask) -> Result<DownloadContext> {
                      task.is_chunk_task();
 
     // Resolve mirror for this attempt with appropriate Range requirements
-    let (resolved_url, _final_path) = resolve_mirror_in_url(url, &task.output_dir, need_range)?;
+    let (resolved_url, _final_path) = match resolve_mirror_in_url(url, &task.output_dir, need_range) {
+        Ok(result) => result,
+        Err(e) => return Err(DownloadError::MirrorResolution {
+            details: format!("{}", e)
+        }.into()),
+    };
 
     // Update resolved URL in task
     if let Ok(mut resolved) = task.resolved_url.lock() {
         *resolved = resolved_url.clone();
     }
 
-    // Track mirror usage with RAII guard
-    let _mirror_guard = MirrorUsageGuard::new(&resolved_url);
-
-    let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
-    let chunk_size = task.chunk_size.load(Ordering::Relaxed);
-
-    if task.is_master_task() {
-        log::debug!("Starting master download for {}", url);
-        task.set_message(resolved_url.clone());
-    } else {
-        log::debug!("Starting chunk download: {} bytes at offset {} for {}",
-                   chunk_size, chunk_offset, url);
-    }
-
-    // Check if file already exists and handle resumption
-    let existing_bytes = get_existing_file_size(chunk_path)?;
+    // Check existing file size for resumption
+    let existing_bytes = match get_existing_file_size(chunk_path) {
+        Ok(bytes) => bytes,
+        Err(e) => return Err(DownloadError::FileSystem {
+            operation: "check existing file size".to_string(),
+            path: chunk_path.display().to_string(),
+            details: format!("{}", e),
+        }.into()),
+    };
 
     // Check if chunk task is already complete
-    if check_chunk_completion(task, existing_bytes)? {
-        return Err(eyre!("Chunk already complete")); // Early exit for completed chunks
+    match check_chunk_completion(task, existing_bytes) {
+        Ok(true) => {
+            log::debug!("Chunk already complete with {} bytes, skipping download", existing_bytes);
+            return Err(DownloadError::AlreadyComplete { bytes: existing_bytes }.into());
+        },
+        Ok(false) => {
+            // Continue with download preparation
+        },
+        Err(e) => return Err(DownloadError::FileSystem {
+            operation: "check chunk completion".to_string(),
+            path: chunk_path.display().to_string(),
+            details: format!("{}", e),
+        }.into()),
     }
 
-    // Setup resumption state
     setup_resumption_state(task, existing_bytes);
 
-    // Create directories if needed
+    // Ensure parent directory exists
     if let Some(parent) = chunk_path.parent() {
-        fs::create_dir_all(parent)?;
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Err(DownloadError::FileSystem {
+                operation: "create directory".to_string(),
+                path: parent.display().to_string(),
+                details: format!("{}", e),
+            }.into());
+        }
     }
 
     Ok(DownloadContext {
         resolved_url,
         existing_bytes,
-        _mirror_guard,
     })
 }
 
@@ -2482,12 +2621,12 @@ fn process_download_response(
     task: &DownloadTask,
     response: http::Response<ureq::Body>,
     context: &DownloadContext
-) -> Result<()> {
+) -> Result<u64> {
     // Handle task-specific response validation and metadata
     if task.is_master_task() {
         let response_action = handle_master_task_response(task, &response, &context.resolved_url, context.existing_bytes)?;
         if response_action == ResponseAction::CompleteTask {
-            return Ok(()); // Early exit for completed downloads
+            return Ok(0); // Early exit for completed downloads
         }
         // Extract and store metadata for later use
         handle_response_metadata(&response, task);
@@ -2511,7 +2650,7 @@ fn process_download_response(
     // Log download completion
     log_download_completion(task, &context.resolved_url, 0, download_duration);
 
-    Ok(())
+    Ok(final_downloaded)
 }
 
 /// Wait for chunks to complete and stream their data to the data channel one by one
@@ -3416,14 +3555,6 @@ fn handle_304_not_modified_response(
     }
 
     Err(eyre!("Download skipped - file unchanged (ETag match)"))
-}
-
-/// Context information for a download operation
-#[allow(dead_code)]
-struct DownloadContext {
-    resolved_url: String,
-    existing_bytes: u64,
-    _mirror_guard: MirrorUsageGuard,
 }
 
 /// Context for chunk download operations
