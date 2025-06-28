@@ -1479,10 +1479,12 @@ fn download_file(
         log::debug!("Master task waiting for chunks to complete");
         wait_for_chunks_and_merge(task)?;
 
-        // Verify file size if known
+        // Validate download size after all chunks are merged
         let file_size_val = task.file_size.load(Ordering::Relaxed);
-        let expected_size = if file_size_val > 0 { Some(file_size_val) } else { None };
-        verify_file_size(&task.chunk_path, expected_size, &task.get_resolved_url())?;
+        if file_size_val > 0 {
+            let final_size = get_existing_file_size(&task.chunk_path)?;
+            validate_download_size(final_size, file_size_val, &task.chunk_path)?;
+        }
 
         // Finalize download atomically
         atomic_file_completion(&task.chunk_path, &task.final_path)?;
@@ -2498,12 +2500,12 @@ fn process_download_response(
     let final_downloaded = download_chunk_content(response, task)?;
     let download_duration = download_start.elapsed().as_millis() as u64;
 
-    // Validate download size for master tasks
-    if task.is_master_task() {
-        let expected_size = task.file_size.load(Ordering::Relaxed);
-        if expected_size > 0 {
-            validate_download_size(final_downloaded, expected_size, &task.chunk_path)?;
-        }
+    // Validate individual chunk size if this is a chunk task or master task with chunk_size set
+    let expected_chunk_size = task.chunk_size.load(Ordering::Relaxed);
+    if expected_chunk_size > 0 {
+        // For chunk tasks and master tasks with chunking, validate against the expected chunk size
+        let actual_size = final_downloaded - context.existing_bytes;
+        validate_download_size(actual_size, expected_chunk_size, &task.chunk_path)?;
     }
 
     // Log download completion
