@@ -25,31 +25,31 @@ use filetime::set_file_mtime;
 
 #[derive(Debug)]
 pub struct DownloadTask {
-    pub url: String,
-    pub resolved_url: Mutex<String>,
+    pub url:                  String,
+    pub resolved_url:         Mutex<String>,
     #[allow(dead_code)]
-    pub output_dir: PathBuf,
-    pub max_retries: usize,
-    pub client: Arc<Mutex<Option<Agent>>>, // HTTP client created on-demand
-    pub data_channel: Arc<Mutex<Option<Sender<Vec<u8>>>>>,  // will never change, but need take()
-                                                            // to avoid blocking the consumer side
-    pub status: Arc<Mutex<DownloadStatus>>,
-    pub final_path: PathBuf, // Store the final download path
-    pub file_size: AtomicU64, // Expected file size for prioritization and verification (0 = unknown)
-    pub attempt_number: AtomicUsize, // Track which attempt number this is (0 = first attempt)
-    pub is_immutable_file: bool, // True for files whose content won't change over time (filename == some id)
+    pub output_dir:           PathBuf,
+    pub max_retries:          usize,
+    pub client:               Arc<Mutex<Option<Agent>>>,                  // HTTP client created on-demand
+    pub data_channel:         Arc<Mutex<Option<Sender<Vec<u8>>>>>,        // will never change, but need take()
+                                                                          // to avoid blocking the consumer side
+    pub status:               Arc<Mutex<DownloadStatus>>,
+    pub final_path:           PathBuf,                                    // Store the final download path
+    pub file_size:            AtomicU64,                                  // Expected file size for prioritization and verification (0 = unknown)
+    pub attempt_number:       AtomicUsize,                                // Track which attempt number this is (0 = first attempt)
+    pub is_immutable_file:    bool,                                       // True for files whose content won't change over time (filename == some id)
 
     // New fields for chunking
-    pub chunk_tasks: Arc<Mutex<Vec<Arc<DownloadTask>>>>,
-    pub chunk_path: PathBuf, // Full path to the chunk file (for master: .part, for chunks: .part-O{offset})
-    pub chunk_offset: AtomicU64, // Starting byte offset for this chunk
-    pub chunk_size: AtomicU64, // Size of this chunk in bytes
-    pub start_time: Mutex<Option<std::time::Instant>>,
-    pub received_bytes: AtomicU64, // Bytes actually received from network
-    pub resumed_bytes: AtomicU64, // Bytes reused from local partial files
+    pub chunk_tasks:          Arc<Mutex<Vec<Arc<DownloadTask>>>>,
+    pub chunk_path:           PathBuf,                                    // Full path to the chunk file (for master: .part, for chunks: .part-O{offset})
+    pub chunk_offset:         AtomicU64,                                  // Starting byte offset for this chunk
+    pub chunk_size:           AtomicU64,                                  // Size of this chunk in bytes
+    pub start_time:           Mutex<Option<std::time::Instant>>,
+    pub received_bytes:       AtomicU64,                                  // Bytes actually received from network
+    pub resumed_bytes:        AtomicU64,                                  // Bytes reused from local partial files
 
     // Progress bar for this download task
-    pub progress_bar: Mutex<Option<ProgressBar>>,           // will never change
+    pub progress_bar:         Mutex<Option<ProgressBar>>,                 // will never change
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +72,6 @@ pub fn update_download_status(task: &DownloadTask, new_status: DownloadStatus) -
 }
 
 
-
 impl DownloadTask {
     pub fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
         Self::with_size(url, output_dir, max_retries, None)
@@ -85,35 +84,28 @@ impl DownloadTask {
 
         // Determine if this is an immutable file based on the file path
         let file_path = final_path.to_string_lossy();
-        let is_immutable_file = file_path.ends_with(".deb") ||
-                               file_path.ends_with(".rpm") ||
-                               file_path.ends_with(".apk") ||
-                               file_path.ends_with(".conda") ||
-                               file_path.contains("/by-hash/") ||
-                               file_path.ends_with(".gz") ||
-                               file_path.ends_with(".xz") ||
-                               file_path.ends_with(".zst");
+        let is_immutable_file = is_immutable_file(&file_path);
 
         Self {
-            url: url.clone(),
-            resolved_url: Mutex::new(url), // Initialize resolved_url with the original url
+            url:               url.clone(),
+            resolved_url:      Mutex::new(url),             // Initialize resolved_url with the original url
             output_dir,
             max_retries,
-            client: Arc::new(Mutex::new(None)), // Initialize with no client
-            data_channel: Arc::new(Mutex::new(None)),
-            status: Arc::new(Mutex::new(DownloadStatus::Pending)),
+            client:            Arc::new(Mutex::new(None)),  // Initialize with no client
+            data_channel:      Arc::new(Mutex::new(None)),
+            status:            Arc::new(Mutex::new(DownloadStatus::Pending)),
             final_path,
-            file_size: AtomicU64::new(file_size.unwrap_or(0)),
-            attempt_number: AtomicUsize::new(0), // Initialize to 0 (first attempt)
+            file_size:         AtomicU64::new(file_size.unwrap_or(0)),
+            attempt_number:    AtomicUsize::new(0),         // Initialize to 0 (first attempt)
             is_immutable_file,
-            chunk_tasks: Arc::new(Mutex::new(Vec::new())),
+            chunk_tasks:       Arc::new(Mutex::new(Vec::new())),
             chunk_path,
-            chunk_offset: AtomicU64::new(0),
-            chunk_size: AtomicU64::new(0),
-            start_time: Mutex::new(None),
-            received_bytes: AtomicU64::new(0),
-            resumed_bytes: AtomicU64::new(0),
-            progress_bar: Mutex::new(None),
+            chunk_offset:      AtomicU64::new(0),
+            chunk_size:        AtomicU64::new(0),
+            start_time:        Mutex::new(None),
+            received_bytes:    AtomicU64::new(0),
+            resumed_bytes:     AtomicU64::new(0),
+            progress_bar:      Mutex::new(None),
         }
     }
 
@@ -208,26 +200,26 @@ impl DownloadTask {
         let chunk_path = format!("{}-O{}", self.chunk_path.to_string_lossy(), offset);
 
         Arc::new(DownloadTask {
-            url: self.url.clone(),
-            resolved_url: Mutex::new(self.get_resolved_url()), // Use helper method
-            output_dir: self.output_dir.clone(),
-            max_retries: self.max_retries,
-            client: Arc::new(Mutex::new(None)), // Initialize with no client
-            data_channel: Arc::new(Mutex::new(None)), // Chunks don't need data channels
-            status: Arc::new(Mutex::new(DownloadStatus::Pending)),
-            final_path: self.final_path.clone(),
-            file_size: AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
-            attempt_number: AtomicUsize::new(0), // Initialize to 0 (first attempt)
-            is_immutable_file: self.is_immutable_file, // Copy immutable file flag
+            url:                  self.url.clone(),
+            resolved_url:         Mutex::new(self.get_resolved_url()),  // Use helper method
+            output_dir:           self.output_dir.clone(),
+            max_retries:          self.max_retries,
+            client:               Arc::new(Mutex::new(None)),           // Initialize with no client
+            data_channel:         Arc::new(Mutex::new(None)),           // Chunks don't need data channels
+            status:               Arc::new(Mutex::new(DownloadStatus::Pending)),
+            final_path:           self.final_path.clone(),
+            file_size:            AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
+            attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
+            is_immutable_file:    self.is_immutable_file,               // Copy immutable file flag
 
-            chunk_tasks: Arc::new(Mutex::new(Vec::new())),
-            chunk_path: PathBuf::from(chunk_path),
-            chunk_offset: AtomicU64::new(offset),
-            chunk_size: AtomicU64::new(size), // <-- set correct chunk size here
-            start_time: Mutex::new(None),
-            received_bytes: AtomicU64::new(0),
-            resumed_bytes: AtomicU64::new(0),
-            progress_bar: Mutex::new(None),
+            chunk_tasks:          Arc::new(Mutex::new(Vec::new())),
+            chunk_path:           PathBuf::from(chunk_path),
+            chunk_offset:         AtomicU64::new(offset),
+            chunk_size:           AtomicU64::new(size),                 // <-- set correct chunk size here
+            start_time:           Mutex::new(None),
+            received_bytes:       AtomicU64::new(0),
+            resumed_bytes:        AtomicU64::new(0),
+            progress_bar:         Mutex::new(None),
         })
     }
 
@@ -334,11 +326,11 @@ impl DownloadManager {
 
         Ok(Self {
             multi_progress,
-            tasks: Arc::new(Mutex::new(HashMap::new())),
+            tasks:              Arc::new(Mutex::new(HashMap::new())),
             nr_parallel,
-            task_handles: Arc::new(Mutex::new(Vec::new())),
-            chunk_handles: Arc::new(Mutex::new(Vec::new())),
-            is_processing: Arc::new(AtomicBool::new(false)),
+            task_handles:       Arc::new(Mutex::new(Vec::new())),
+            chunk_handles:      Arc::new(Mutex::new(Vec::new())),
+            is_processing:      Arc::new(AtomicBool::new(false)),
             current_task_count: Arc::new(AtomicUsize::new(0)),
         })
     }
@@ -415,12 +407,12 @@ impl DownloadManager {
     /// Spawn the main processing thread that coordinates all download activities
     /// Level 2: Thread Management - handles the main processing lifecycle
     fn spawn_main_processing_thread(&self) {
-        let tasks = Arc::clone(&self.tasks);
-        let multi_progress = self.multi_progress.clone();
-        let is_processing = Arc::clone(&self.is_processing);
-        let task_handles = Arc::clone(&self.task_handles);
-        let chunk_handles = Arc::clone(&self.chunk_handles);
-        let nr_parallel = self.nr_parallel;
+        let tasks                  = Arc::clone(&self.tasks);
+        let multi_progress         = self.multi_progress.clone();
+        let is_processing          = Arc::clone(&self.is_processing);
+        let task_handles           = Arc::clone(&self.task_handles);
+        let chunk_handles          = Arc::clone(&self.chunk_handles);
+        let nr_parallel            = self.nr_parallel;
         let current_task_count_arc = Arc::clone(&self.current_task_count);
 
         thread::spawn(move || {
@@ -667,8 +659,10 @@ impl DownloadManager {
             return;
         }
 
-        log::debug!("pending_chunks={} max_threads={} active_chunks={} to_spawn={}",
-            pending_chunks.len(), max_chunk_threads, current_chunk_count, threads_to_spawn);
+        log::debug!(
+            "pending_chunks={} max_threads={} active_chunks={} to_spawn={}",
+            pending_chunks.len(), max_chunk_threads, current_chunk_count, threads_to_spawn
+        );
 
         Self::spawn_chunk_threads(&pending_chunks, threads_to_spawn, chunk_handles);
     }
@@ -719,8 +713,10 @@ impl DownloadManager {
         collected.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         if !collected.is_empty() {
-            log::debug!("master_tasks={} chunk_tasks={} pending_chunks={}",
-                       nr_master, nr_chunks, collected.len());
+            log::debug!(
+                "master_tasks={} chunk_tasks={} pending_chunks={}",
+                nr_master, nr_chunks, collected.len()
+            );
         }
 
         collected
@@ -766,8 +762,10 @@ impl DownloadManager {
                 let chunk_result = download_chunk_task(&chunk_clone);
 
                 if let Err(e) = chunk_result {
-                    log::debug!("Chunk task failed for {} at offset {}: {}",
-                               chunk_clone.url, chunk_clone.chunk_offset.load(Ordering::Relaxed), e);
+                    log::debug!(
+                        "Chunk task failed for {} at offset {}: {}",
+                        chunk_clone.url, chunk_clone.chunk_offset.load(Ordering::Relaxed), e
+                    );
 
                     // Mark chunk as failed
                     if let Ok(mut status) = chunk_clone.status.lock() {
@@ -970,9 +968,6 @@ impl std::error::Error for FatalError {}
  * the resolution logic significantly.
  */
 
-/// Resolve mirror placeholder in URL with smart mirror selection
-///
-/// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
 fn resolve_mirror_in_url(url: &str, output_dir: &Path, need_range: bool) -> Result<(String, PathBuf)> {
     if !url.contains("$mirror") {
         return Ok((url.to_string(), Mirrors::resolve_mirror_path(&url, output_dir)));
@@ -1072,6 +1067,22 @@ pub fn download_urls(
     } else {
         Ok(Vec::new()) // Return empty vec in async mode since tasks are managed by DownloadManager
     }
+}
+
+/// Resolve mirror placeholder in URL with smart mirror selection
+///
+/// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
+/// Determine if a file is immutable based on its file path
+/// Immutable files are those whose content won't change over time
+fn is_immutable_file(file_path: &str) -> bool {
+    file_path.ends_with(".deb") ||
+    file_path.ends_with(".rpm") ||
+    file_path.ends_with(".apk") ||
+    file_path.ends_with(".conda") ||
+    file_path.contains("/by-hash/") ||
+    file_path.ends_with(".gz") ||
+    file_path.ends_with(".xz") ||
+    file_path.ends_with(".zst")
 }
 
 /// Checks if an immutable file exists with matching size and can be considered already downloaded
@@ -2112,14 +2123,16 @@ fn parse_content_length(response: &http::Response<ureq::Body>) -> Option<u64> {
             let encoding_lower = encoding.to_lowercase();
             if encoding_lower.contains("gzip") ||
                encoding_lower.contains("deflate") ||
-               encoding_lower.contains("br") ||
                encoding_lower.contains("compress") ||
+               encoding_lower.contains("br") ||
                encoding_lower.contains("xz") {
-                log::debug!("Content is compressed with '{}', Content-Length ({}) refers to compressed size, not final size",
-                           encoding,
-                           response.headers().get("content-length")
-                               .and_then(|v| v.to_str().ok())
-                               .unwrap_or("unknown"));
+                   log::debug!(
+                       "Content is compressed with '{}', Content-Length ({}) refers to compressed size, not final size",
+                       encoding,
+                       response.headers().get("content-length")
+                           .and_then(|v| v.to_str().ok())
+                           .unwrap_or("unknown")
+                   );
                 return None;
             }
         }
@@ -2587,10 +2600,6 @@ fn process_download_response(
     Ok(())
 }
 
-
-
-
-
 /// Wait for chunks to complete and stream their data to the data channel one by one
 ///
 /// CRITICAL STREAMING REQUIREMENT:
@@ -2928,8 +2937,10 @@ fn create_ondemand_chunks(master_task: &DownloadTask, existing_bytes: u64, remai
     // Update master task's chunk information
     master_task.chunk_size.store(master_chunk_size, Ordering::Relaxed);
 
-    log::debug!("Modified master task to handle {} bytes from offset {} to boundary {}",
-               master_chunk_size, existing_bytes, next_boundary);
+    log::debug!(
+        "Modified master task to handle {} bytes from offset {} to boundary {}",
+        master_chunk_size, existing_bytes, next_boundary
+    );
 
     // Create additional 256KB chunks from next boundary to end of file
     let mut chunk_tasks = Vec::new();
@@ -2948,8 +2959,10 @@ fn create_ondemand_chunks(master_task: &DownloadTask, existing_bytes: u64, remai
             chunks.push(Arc::clone(chunk_task));
         }
 
-        log::info!("Created {} on-demand chunks (256KB each) for {} bytes remaining, master covers {}→{} bytes",
-                  chunk_tasks.len(), remaining_size, existing_bytes, next_boundary);
+        log::info!(
+            "Created {} on-demand chunks (256KB each) for {} bytes remaining, master covers {}→{} bytes",
+            chunk_tasks.len(), remaining_size, existing_bytes, next_boundary
+        );
     } else {
         return Err(eyre!("Failed to lock master task's chunk list"));
     }
