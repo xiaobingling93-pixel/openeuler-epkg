@@ -1519,7 +1519,25 @@ fn parse_and_distribute_log_entries(
             }
         }
 
-        // Find the mirror this log entry belongs to
+        // Find the mirror this log entry belongs to and update its online status
+        //
+        // Mirror online status logic:
+        // 1. Mark mirror as online (no_online = false) on any successful download with throughput data
+        // 2. Mark mirror as offline (no_online = true) only when:
+        //    - Network/HTTP errors occur AND no historical throughput data exists
+        //    - This prevents mirrors with past performance data from being incorrectly marked offline
+        //      due to temporary network issues or isolated errors
+        //
+        // Example of mirrors that should remain available despite errors:
+        // Rank |  URL                                   | Score |  Usage   |  Throughputs (KB/s)              |  Latencies (ms)              | Status Flags
+        // -----|----------------------------------------|-------|----------|----------------------------------|------------------------------|---------------------------
+        // === Unavailable Mirrors ===
+        //   1  | mirrors.zju.edu.cn                     |  3345 |  0< 0< 0 | [101, 178, 147KB/s]              | [1404, 1513, 1135ms]         | NoOnline
+        //   2  | mirrors.ustc.edu.cn                    |  1746 |  0< 0< 0 | [109, 61, 31KB/s]                | [2733, 363, 2485ms]          | NoOnline
+        //
+        // Problem in a corner case: if a site happen to be offline at first access, then the log
+        // file will have http error and no throughput data, that site will be excluded until the
+        // log file expired after months.
         let site = url2site(&url);
         if let Some(mirror) = mirrors.get_mut(&site) {
             // Update mirror attributes based on the log entry
@@ -1527,6 +1545,7 @@ fn parse_and_distribute_log_entries(
                 // This is a download log entry
                 mirror.record_performance(throughput_bps as u32, 0);
                 mirror.calculate_performance_score();
+                mirror.no_online = false;
             } else if let Some(latency) = latency_ms {
                 // This is a latency event
                 mirror.record_performance(0, latency as u32);
@@ -1535,8 +1554,9 @@ fn parse_and_distribute_log_entries(
                 // Server doesn't support range requests (permanent attribute)
                 mirror.no_range = true;
             } else if net_error.is_some() || http_error.is_some() {
-                // Network error or server error
-                mirror.no_online = true;
+                if mirror.throughputs.is_empty() {
+                    mirror.no_online = true;
+                }
             }
         }
     }
