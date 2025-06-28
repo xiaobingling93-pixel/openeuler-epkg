@@ -1646,7 +1646,9 @@ fn execute_download_request(
     // Add Range headers for partial content requests
     let chunk_size = task.chunk_size.load(Ordering::Relaxed);
     if chunk_size > 0 {
-        let end = downloaded + chunk_size - 1;
+        // The end of the requested range is always the base offset plus the chunk size minus
+        // one, regardless of how many bytes we have already.
+        let end = task.chunk_offset.load(Ordering::Relaxed) + chunk_size - 1;
         log::debug!("Setting Range header: bytes={}-{}", downloaded, end);
         request = request.header("Range", &format!("bytes={}-{}", downloaded, end));
     } else if downloaded > 0 {
@@ -1776,8 +1778,16 @@ fn handle_416_range_error(
 ) -> Result<http::Response<ureq::Body>> {
     let url = task.get_resolved_url();
 
+    let part_path = &task.chunk_path;
+    // Determine how many bytes we already have of this resource (for logging / comparison
+    // purposes). For the 416 handler we don't need the detailed resume logic used elsewhere –
+    // we only care about the on-disk chunk size versus the server's size, so we just read the
+    // current offset stored in the task.
+    let mut downloaded = task.chunk_offset.load(Ordering::Relaxed);
+    if task.is_chunk_task() && task.file_size.load(Ordering::Relaxed) > 0 {
+        downloaded += task.file_size.load(Ordering::Relaxed);
+    }
 
-    let downloaded = task.chunk_offset.load(Ordering::Relaxed); // Use task's chunk_offset instead of downloaded parameter
     // Send a request to check remote size and time, then compare with local
     let metadata_request_start = std::time::Instant::now();
             let client = task.get_client()?;
