@@ -59,6 +59,9 @@ pub struct DownloadTask {
 
     // Progress bar for this download task
     pub progress_bar:         Mutex<Option<ProgressBar>>,                 // will never change
+
+    // Chunk status for reliable state management - avoids race conditions in chunking decisions
+    pub chunk_status:         Arc<Mutex<ChunkStatus>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +70,23 @@ pub enum DownloadStatus {
     Downloading,
     Completed,
     Failed(String),
+}
+
+/// Chunk status enumeration for reliable chunking state management
+///
+/// This enum tracks the chunking lifecycle to avoid race conditions:
+/// - NoChunk: Task has no chunks and is not being considered for chunking
+/// - NeedOndemandChunk: Task has been selected by the global scheduler for ondemand chunking
+/// - HasOndemandChunk: Task has ondemand chunks created (chunk_tasks not empty, created during download)
+/// - HasBeforehandChunk: Task has beforehand chunks created (chunk_tasks not empty, created before download)
+///
+/// The latter two values imply that task.chunk_tasks is not empty
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChunkStatus {
+    NoChunk,
+    NeedOndemandChunk,
+    HasOndemandChunk,
+    HasBeforehandChunk,
 }
 
 /// Helper function to update a download task's status
@@ -115,6 +135,7 @@ impl DownloadTask {
             resumed_bytes:     AtomicU64::new(0),
             has_sent_existing: AtomicBool::new(false),
             progress_bar:      Mutex::new(None),
+            chunk_status:      Arc::new(Mutex::new(ChunkStatus::NoChunk)),
         }
     }
 
@@ -156,6 +177,21 @@ impl DownloadTask {
     #[allow(dead_code)]
     pub fn reset_attempt(&self) {
         self.attempt_number.store(0, Ordering::SeqCst);
+    }
+
+    /// Get the current chunk status
+    pub fn get_chunk_status(&self) -> ChunkStatus {
+        self.chunk_status.lock()
+            .unwrap_or_else(|e| panic!("Failed to lock chunk status mutex: {}", e))
+            .clone()
+    }
+
+    /// Set the chunk status
+    pub fn set_chunk_status(&self, status: ChunkStatus) -> Result<()> {
+        let mut chunk_status = self.chunk_status.lock()
+            .map_err(|e| eyre!("Failed to lock chunk status mutex: {}", e))?;
+        *chunk_status = status;
+        Ok(())
     }
 
     /// Get the resolved URL, falling back to the original URL if resolution failed
@@ -230,6 +266,7 @@ impl DownloadTask {
             resumed_bytes:        AtomicU64::new(0),
             has_sent_existing:    AtomicBool::new(false),
             progress_bar:         Mutex::new(None),
+            chunk_status:         Arc::new(Mutex::new(ChunkStatus::NoChunk)),
         })
     }
 
@@ -666,6 +703,9 @@ impl DownloadManager {
         );
 
         if threads_to_spawn <= 0 {
+            if pending_chunks.is_empty() {
+                Self::run_global_ondemand_scheduler(tasks);
+            }
             return;
         }
 
@@ -694,42 +734,179 @@ impl DownloadManager {
         ) * 2
     }
 
-    /// Collect all pending chunk tasks from all download tasks
+    /// Helper function to iterate through all task levels using 3-level architecture
+    ///
+    /// Calls the provided closure for each task found across all 3 levels:
+    /// - Level 1: Master tasks
+    /// - Level 2: L2 tasks (beforehand or ondemand tasks from master_task.chunk_tasks)
+    /// - Level 3: L3 tasks (ondemand tasks from l2_task.chunk_tasks)
+    fn iterate_3level_tasks<F>(
+        tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>,
+        mut callback: F
+    )
+    where F: FnMut(&Arc<DownloadTask>, usize) // (task, level)
+    {
+        let tasks_guard = match tasks.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        // Level 1: Master tasks
+        for (_url, master_task) in tasks_guard.iter() {
+            if !master_task.is_master_task() {
+                log::warn!("Level-1 task is not master_task: {:?}", master_task);
+            }
+
+            callback(master_task, 1);
+
+            // Level 2: L2 tasks (chunk tasks from master)
+            let chunks = match master_task.chunk_tasks.lock() {
+                Ok(chunks) => chunks,
+                Err(_) => continue,
+            };
+
+            for l2_task in chunks.iter() {
+                // l2_task is beforehand task or ondemand task
+                callback(l2_task, 2);
+
+                // Level 3: L3 tasks (chunk tasks from l2_task)
+                let l3_chunks = match l2_task.chunk_tasks.lock() {
+                    Ok(chunks) => chunks,
+                    Err(_) => continue,
+                };
+
+                for l3_task in l3_chunks.iter() {
+                    // l3_task is ondemand task
+                    callback(l3_task, 3);
+                }
+            }
+        }
+    }
+
+    /// Collect all pending chunk tasks from all download tasks using the 3-level architecture
     fn collect_pending_chunks(
         tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>
     ) -> Vec<(f64, Arc<DownloadTask>)> {
-        let mut nr_master = 0;
-        let mut nr_chunks = 0;
         let mut collected = Vec::new();
 
-        if let Ok(tasks_guard) = tasks.lock() {
-            for (_url, download_task) in tasks_guard.iter() {
-                if let Ok(chunks) = download_task.chunk_tasks.lock() {
-                    nr_master = nr_master + 1;
-                    for chunk in chunks.iter() {
-                        nr_chunks = nr_chunks + 1;
-                        if matches!(chunk.get_status(), DownloadStatus::Pending) {
-                            let chunk_offset = chunk.chunk_offset.load(Ordering::Relaxed);
-                            let file_size = chunk.file_size.load(Ordering::Relaxed);
-                            let priority = if file_size > 0 { chunk_offset as f64 / file_size as f64 } else { 0.0 };
-                            collected.push((priority, Arc::clone(chunk)));
-                        }
+        Self::iterate_3level_tasks(tasks, |task, _level| {
+            // The callback now handles status checking itself
+            if matches!(task.get_status(), DownloadStatus::Pending) {
+                let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
+                let file_size = task.file_size.load(Ordering::Relaxed);
+                let priority = if file_size > 0 {
+                    chunk_offset as f64 / file_size as f64
+                } else {
+                    0.0
+                };
+                collected.push((priority, Arc::clone(task)));
+            }
+        });
+
+        // Sort chunks by priority (chunk_offset / file_size - lower offset = higher priority)
+        collected.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        if !collected.is_empty() {
+            log::debug!(
+                "3-level chunking: pending_chunks={}",
+                collected.len()
+            );
+        }
+
+        collected
+    }
+
+    /// Global ondemand scheduler - selects candidates in 2 dimensions
+    ///
+    /// Selects up to 2 candidates for ondemand chunking:
+    /// 1. Task with lowest offset (earliest chunk)
+    /// 2. Task with slowest single ETA (if > global ETA)
+    ///
+    /// This approach ensures we optimize both sequential access and parallelism.
+    fn run_global_ondemand_scheduler(tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>) {
+        let mut lowest_task_for_ondemand_chunking: Option<Arc<DownloadTask>> = None;
+        let mut lowest_offset = u64::MAX;
+
+        let mut slowest_task_for_ondemand_chunking: Option<Arc<DownloadTask>> = None;
+        let mut slowest_eta = Duration::from_secs(0);
+
+        // Calculate global ETA once for comparison
+        let global_eta = calculate_global_eta(tasks);
+
+        // Use the 3-level iterator to find candidates
+        DownloadManager::iterate_3level_tasks(tasks, |task, _level| {
+            // Only consider downloading tasks
+            if !matches!(task.get_status(), DownloadStatus::Downloading) {
+                return;
+            }
+
+            // Check if this task is eligible for ondemand chunking
+            if !may_ondemand_chunking(task) {
+                return;
+            }
+
+            let (total_progress, _) = task.get_total_progress_bytes();
+            let single_eta = calculate_single_task_eta(task);
+
+            // Dimension 1: Track task with lowest offset (earliest chunk)
+            if total_progress < lowest_offset {
+                lowest_offset = total_progress;
+                lowest_task_for_ondemand_chunking = Some(Arc::clone(task));
+            }
+
+            // Dimension 2: Track task with largest single ETA
+            if single_eta > slowest_eta {
+                slowest_eta = single_eta;
+                slowest_task_for_ondemand_chunking = Some(Arc::clone(task));
+            }
+        });
+
+        // Apply scheduling decisions
+        let mut candidates_selected = 0;
+
+        // Set lowest offset task for ondemand chunking
+        if let Some(ref task) = lowest_task_for_ondemand_chunking {
+            if let Err(e) = task.set_chunk_status(ChunkStatus::NeedOndemandChunk) {
+                log::warn!("Failed to set NeedOndemandChunk status for lowest offset task: {}", e);
+            } else {
+                log::info!(
+                    "Global scheduler selected lowest offset task {} at offset {} for ondemand chunking",
+                    task.url, lowest_offset
+                );
+                candidates_selected += 1;
+            }
+        }
+
+        // Set slowest ETA task for ondemand chunking (if ETA > global ETA)
+        if let Some(ref task) = slowest_task_for_ondemand_chunking {
+            if slowest_eta > global_eta && slowest_eta.as_secs() > 30 {
+                // Avoid duplicate selection (same task selected for both dimensions)
+                let already_selected = if let Some(ref lowest_task) = lowest_task_for_ondemand_chunking {
+                    Arc::ptr_eq(task, lowest_task)
+                } else {
+                    false
+                };
+
+                if !already_selected {
+                    if let Err(e) = task.set_chunk_status(ChunkStatus::NeedOndemandChunk) {
+                        log::warn!("Failed to set NeedOndemandChunk status for slowest ETA task: {}", e);
+                    } else {
+                        log::info!(
+                            "Global scheduler selected slowest ETA task {} (ETA:{:.1}s > global:{:.1}s) for ondemand chunking",
+                            task.url, slowest_eta.as_secs_f64(), global_eta.as_secs_f64()
+                        );
+                        candidates_selected += 1;
                     }
                 }
             }
         }
 
-        // Sort chunks by priority (chunk_offset / size)
-        collected.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        if !collected.is_empty() {
+        if candidates_selected > 0 {
             log::debug!(
-                "master_tasks={} chunk_tasks={} pending_chunks={}",
-                nr_master, nr_chunks, collected.len()
+                "Global ondemand scheduler: selected {} candidates (lowest_offset={}, slowest_eta={:.1}s, global_eta={:.1}s)",
+                candidates_selected, lowest_offset, slowest_eta.as_secs_f64(), global_eta.as_secs_f64()
             );
         }
-
-        collected
     }
 
     /// Spawn chunk download threads for the given pending chunks
@@ -1785,7 +1962,7 @@ fn handle_416_range_error(
 ) -> Result<http::Response<ureq::Body>> {
     let url = task.get_resolved_url();
 
-    let part_path = &task.chunk_path;
+    let _part_path = &task.chunk_path;
     // Determine how many bytes we already have of this resource (for logging / comparison
     // purposes). For the 416 handler we don't need the detailed resume logic used elsewhere –
     // we only care about the on-disk chunk size versus the server's size, so we just read the
@@ -2500,6 +2677,13 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
                  file_size_val, chunk_start_offset);
     } else {
         log::debug!("Created {} chunk tasks for {} byte file", chunk_tasks.len(), file_size_val);
+
+        // Set chunk status to HasBeforehandChunk since these chunks were created before download
+        if let Err(e) = task.set_chunk_status(ChunkStatus::HasBeforehandChunk) {
+            log::warn!("Failed to set chunk status to HasBeforehandChunk: {}", e);
+        } else {
+            log::debug!("Set chunk status to HasBeforehandChunk for {} chunks", chunk_tasks.len());
+        }
     }
 
     Ok(chunk_tasks)
@@ -2904,8 +3088,8 @@ fn append_file_to_file(source_path: &Path, target_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Estimate remaining download time for on-demand chunking
-fn estimate_remaining_time(task: &DownloadTask) -> Duration {
+/// Calculate ETA for a single task based on its current progress and download rate
+fn calculate_single_task_eta(task: &DownloadTask) -> Duration {
     let start_time = {
         if let Ok(start_guard) = task.start_time.lock() {
             start_guard.clone()
@@ -2918,7 +3102,11 @@ fn estimate_remaining_time(task: &DownloadTask) -> Duration {
         let elapsed = start.elapsed();
         // Use only network received bytes for accurate rate calculation
         let network_downloaded = task.get_network_bytes();
-        let total_size = if task.chunk_size.load(Ordering::Relaxed) > 0 { task.chunk_size.load(Ordering::Relaxed) } else { task.file_size.load(Ordering::Relaxed) };
+        let total_size = if task.chunk_size.load(Ordering::Relaxed) > 0 {
+            task.chunk_size.load(Ordering::Relaxed)
+        } else {
+            task.file_size.load(Ordering::Relaxed)
+        };
         let (total_downloaded, _) = task.get_total_progress_bytes(); // includes reused bytes
 
         if network_downloaded > 0 && total_downloaded < total_size {
@@ -2932,37 +3120,188 @@ fn estimate_remaining_time(task: &DownloadTask) -> Duration {
     Duration::from_secs(0)
 }
 
-/// Check if on-demand chunking should be performed and create chunks if appropriate
-///
-/// This function encapsulates the logic for determining whether a download task
-/// should be split into multiple chunks for parallel downloading. It checks:
-///
-/// 1. If the file size is known and large enough for chunking
-/// 2. If the estimated remaining download time is significant (>5s)
-/// 3. If there's enough remaining data to justify creating at least 2 chunks
-///
-/// The function is called periodically during download with a rate-limiting delay
-/// to prevent excessive chunking decisions based on unstable early measurements.
-fn check_for_ondemand_chunking_opportunity(task: &DownloadTask, existing_bytes: u64) {
-    // Only proceed if we know the file size
-    let file_size_val = task.file_size.load(Ordering::Relaxed);
-    if file_size_val > 0 {
-        if file_size_val < MIN_FILE_SIZE_FOR_CHUNKING {
-            let estimated_time = estimate_remaining_time(task);
-            let remaining_size = file_size_val - existing_bytes;
+/// Helper to accumulate ETA statistics for a single task
+/// Returns (total_remaining_bytes, total_rate, debug_stat_option)
+fn accumulate_task_eta_stats(
+    task: &DownloadTask,
+    task_prefix: &str,
+) -> (u64, f64, Option<String>) {
+    let task_eta = calculate_single_task_eta(task);
+    let task_eta_secs = task_eta.as_secs_f64();
 
-            // Check conditions for on-demand chunking
-            if estimated_time > Duration::from_secs(5) && remaining_size >= 2 * ONDEMAND_CHUNK_SIZE {
-                log::debug!("On-demand chunking opportunity: estimated {}s remaining, {} bytes left",
-                           estimated_time.as_secs(), remaining_size);
+    if task_eta_secs > 0.0 {
+        let (total_progress, _) = task.get_total_progress_bytes();
+        let total_size = if task.is_master_task() {
+            task.file_size.load(Ordering::Relaxed)
+        } else {
+            task.chunk_size.load(Ordering::Relaxed)
+        };
+        let network_bytes = task.get_network_bytes();
 
-                // Create on-demand chunks for remaining data
-                if let Ok(chunk_count) = create_ondemand_chunks(task, existing_bytes, remaining_size) {
-                    log::info!("Created {} on-demand chunks for {} bytes remaining", chunk_count, remaining_size);
-                }
-            }
+        if total_size > 0 && network_bytes > 0 {
+            let rate = network_bytes as f64 / task_eta_secs;
+            let remaining = total_size.saturating_sub(total_progress);
+
+            let debug_stat = if task.is_master_task() {
+                format!(
+                    "{}[{}]: {:.1}MB/{:.1}MB @{:.1}KB/s ETA:{:.1}s",
+                    task_prefix,
+                    task.url.chars().take(20).collect::<String>(),
+                    total_progress as f64 / (1024.0 * 1024.0),
+                    total_size as f64 / (1024.0 * 1024.0),
+                    rate / 1024.0,
+                    task_eta_secs
+                )
+            } else {
+                format!(
+                    "{}[O{}]: {:.1}KB/{:.1}KB @{:.1}KB/s ETA:{:.1}s",
+                    task_prefix,
+                    task.chunk_offset.load(Ordering::Relaxed) / 1024,
+                    total_progress as f64 / 1024.0,
+                    total_size as f64 / 1024.0,
+                    rate / 1024.0,
+                    task_eta_secs
+                )
+            };
+
+            return (remaining, rate, Some(debug_stat));
         }
     }
+
+    (0, 0.0, None)
+}
+
+
+
+/// Calculate global ETA for all downloading tasks across the 3-level architecture
+///
+/// This provides an estimate for completing all currently active downloads
+/// by aggregating progress across master tasks and their chunk tasks.
+/// Reuses calculate_single_task_eta() for consistency and adds debug information.
+fn calculate_global_eta(tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>) -> Duration {
+    let mut total_remaining_bytes = 0u64;
+    let mut total_rate = 0.0f64;
+    let mut active_downloads = 0usize;
+
+    // Debug stats collection
+    let mut debug_stats = Vec::new();
+    let mut master_count = 0usize;
+    let mut l2_chunk_count = 0usize;
+    let mut l3_chunk_count = 0usize;
+    let mut slowest_task_eta = Duration::from_secs(0);
+    let mut fastest_task_eta = Duration::from_secs(u64::MAX);
+
+    // Single pass: iterate and collect ETA data
+    DownloadManager::iterate_3level_tasks(tasks, |task, level| {
+        // Only consider downloading tasks
+        if !matches!(task.get_status(), DownloadStatus::Downloading) {
+            return;
+        }
+
+        let task_prefix = match level {
+            1 => {
+                master_count += 1;
+                "M"
+            },
+            2 => {
+                l2_chunk_count += 1;
+                "L2"
+            },
+            3 => {
+                l3_chunk_count += 1;
+                "L3"
+            },
+            _ => "U"
+        };
+
+        let (remaining, rate, debug_stat) = accumulate_task_eta_stats(task, task_prefix);
+
+        if remaining > 0 && rate > 0.0 {
+            total_remaining_bytes += remaining;
+            total_rate += rate;
+            active_downloads += 1;
+
+            // Update debug stats
+            let task_eta = calculate_single_task_eta(task);
+            if task_eta > slowest_task_eta {
+                slowest_task_eta = task_eta;
+            }
+            if task_eta < fastest_task_eta {
+                fastest_task_eta = task_eta;
+            }
+
+            if let Some(stat) = debug_stat {
+                debug_stats.push(stat);
+            }
+        }
+    });
+
+    let global_eta = if total_rate > 0.0 && active_downloads > 0 {
+        let estimated_seconds = total_remaining_bytes as f64 / total_rate;
+        Duration::from_secs_f64(estimated_seconds)
+    } else {
+        Duration::from_secs(0)
+    };
+
+    // Log comprehensive debug information for performance analysis
+    if active_downloads > 0 {
+        log::debug!(
+            "Global ETA calculation: {:.1}s for {:.1}MB remaining across {} active downloads",
+            global_eta.as_secs_f64(),
+            total_remaining_bytes as f64 / (1024.0 * 1024.0),
+            active_downloads
+        );
+        log::debug!(
+            "Download types: {} masters, {} L2 chunks, {} L3 chunks",
+            master_count, l2_chunk_count, l3_chunk_count
+        );
+        log::debug!(
+            "ETA range: fastest={:.1}s, slowest={:.1}s, global={:.1}s, aggregate_rate={:.1}KB/s",
+            if fastest_task_eta.as_secs() == u64::MAX { 0.0 } else { fastest_task_eta.as_secs_f64() },
+            slowest_task_eta.as_secs_f64(),
+            global_eta.as_secs_f64(),
+            total_rate / 1024.0
+        );
+
+        // Log individual task stats (limited to prevent spam)
+        for (i, stat) in debug_stats.iter().take(10).enumerate() {
+            log::debug!("Task {}: {}", i + 1, stat);
+        }
+        if debug_stats.len() > 10 {
+            log::debug!("... and {} more tasks", debug_stats.len() - 10);
+        }
+    }
+
+    global_eta
+}
+
+/// Check if a task may be suitable for ondemand chunking
+///
+/// This function encapsulates the logic for determining whether a download task
+/// could be a candidate for ondemand chunking. It checks:
+///
+/// 1. If the chunk status is NoChunk or NeedOndemandChunk
+/// 2. If the remaining size is at least 2 * ONDEMAND_CHUNK_SIZE (512KB)
+///
+/// The actual chunking decision and creation is handled by the global scheduler
+/// in collect_pending_chunks() to avoid race conditions.
+fn may_ondemand_chunking(task: &DownloadTask) -> bool {
+    let chunk_status = task.get_chunk_status();
+    if !matches!(chunk_status, ChunkStatus::NoChunk | ChunkStatus::NeedOndemandChunk) {
+        return false;
+    }
+
+    // Check if there's enough remaining data to make chunking worthwhile
+    let file_size = task.file_size.load(Ordering::Relaxed);
+    if file_size == 0 {
+        return false; // Unknown file size
+    }
+
+    let (total_progress, _) = task.get_total_progress_bytes();
+    let remaining_size = file_size.saturating_sub(total_progress);
+
+    // Only consider for chunking if we have at least 2 chunks worth of data remaining
+    remaining_size >= 2 * ONDEMAND_CHUNK_SIZE
 }
 
 /// Create on-demand chunk tasks during download
@@ -3536,20 +3875,44 @@ fn update_download_progress(
     }
 }
 
-/// Check for on-demand chunking opportunities (master tasks only)
+/// Check for on-demand chunking execution (master tasks only)
+///
+/// This function checks if the task has been marked for ondemand chunking by the global
+/// scheduler and executes the chunking if needed. It no longer makes chunking decisions
+/// but instead responds to the NeedOndemandChunk status set by collect_pending_chunks().
 fn check_ondemand_chunking(
     task: &DownloadTask,
     chunk_append_offset: u64,
-    last_ondemand_check: &mut std::time::Instant
+    _last_ondemand_check: &mut std::time::Instant
 ) {
-    let now = std::time::Instant::now();
-    if task.is_master_task() &&
-       task.chunk_size.load(Ordering::Relaxed) == 0 &&
-       now.duration_since(*last_ondemand_check) > Duration::from_secs(1) &&
-       DOWNLOAD_MANAGER.current_task_count.load(Ordering::Relaxed) <= DOWNLOAD_MANAGER.nr_parallel / 2 {
+    // Early return if not flagged for ondemand chunking
+    if task.get_chunk_status() != ChunkStatus::NeedOndemandChunk {
+        return;
+    }
 
-        check_for_ondemand_chunking_opportunity(task, chunk_append_offset);
-        *last_ondemand_check = now;
+    let file_size_val = task.file_size.load(Ordering::Relaxed);
+    // Early return if file size is invalid
+    if file_size_val <= 0 {
+        return;
+    }
+
+    let remaining_size = file_size_val - chunk_append_offset;
+
+    // Create on-demand chunks for remaining data
+    match create_ondemand_chunks(task, chunk_append_offset, remaining_size) {
+        Ok(chunk_count) => {
+            log::info!("Created {} on-demand chunks for {} bytes remaining", chunk_count, remaining_size);
+            // Mark as having ondemand chunks
+            if let Err(e) = task.set_chunk_status(ChunkStatus::HasOndemandChunk) {
+                log::warn!("Failed to set chunk status to HasOndemandChunk: {}", e);
+            }
+        }
+        Err(_) => {
+            log::warn!("Failed to create ondemand chunks, resetting status to NoChunk");
+            if let Err(e) = task.set_chunk_status(ChunkStatus::NoChunk) {
+                log::warn!("Failed to reset chunk status: {}", e);
+            }
+        }
     }
 }
 
