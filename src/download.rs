@@ -216,8 +216,9 @@ impl DownloadTask {
             // Create client with proxy configuration from config
             let mut config_builder = Agent::config_builder()
                 .user_agent("curl/8.13.0")
-                .timeout_connect(Some(Duration::from_secs(5)))
-                .timeout_recv_response(Some(Duration::from_secs(9)));
+                // Use more conservative network timeouts to avoid premature failures on slow mirrors
+                .timeout_connect(Some(Duration::from_secs(15)))  // was 5s
+                .timeout_recv_response(Some(Duration::from_secs(60)));  // was 9s
 
             let proxy_config = &crate::models::config().common.proxy;
             if !proxy_config.is_empty() {
@@ -1940,6 +1941,35 @@ fn log_http_status_error(resolved_url: &str, code: u16) {
 }
 
 /// Handle 416 Range Not Satisfiable error with full access to required context
+// ### HTTP Standards & Headers
+// #### `Range` (Request Header)
+// - Requests a specific part of a resource:
+//   ```http
+//   Range: bytes=0-499
+//   ```
+// - Server responds with:
+//   - `206 Partial Content` (success) + `Content-Range`.
+//   - `416 Range Not Satisfiable` (invalid range).
+//
+// #### `Accept-Ranges` (Response Header)
+// - Indicates if the server supports range requests:
+//   ```http
+//   Accept-Ranges: bytes
+//   ```
+//   (or `none` if unsupported).
+//
+// ### Example Flow
+// 1. Client requests a range:
+//    ```http
+//    GET /largefile.zip HTTP/1.1
+//    Range: bytes=0-999
+//    ```
+// 2. Server responds:
+//    ```http
+//    HTTP/1.1 206 Partial Content
+//    Content-Range: bytes 0-999/5000
+//    Content-Length: 1000
+//    [...data...]
 fn handle_416_range_error(
     task: &DownloadTask,
 ) -> Result<http::Response<ureq::Body>> {
@@ -2674,9 +2704,9 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
 /// This function coordinates the download process by delegating to specialized functions.
 /// Level 3: Download Strategy - coordinates download execution
 fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
-    // Phase 1: Setup and validation
-    let download_context = match prepare_download_context(task) {
-        Ok(context) => context,
+    // Phase 1: Setup and validation (split into concrete steps)
+    let (existing_bytes, is_complete) = match check_existing_file_and_completion(task) {
+        Ok(res) => res,
         Err(e) => {
             // Check if this is an "already complete" case (success)
             if let Some(download_err) = e.downcast_ref::<DownloadError>() {
@@ -2684,44 +2714,69 @@ fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
                     return DownloadResult::Success { bytes_transferred: *bytes };
                 }
             }
-
-            // Convert to DownloadError for retry logic
             let download_error = if let Some(download_err) = e.downcast_ref::<DownloadError>() {
                 download_err.clone()
             } else {
                 DownloadError::FileSystem {
-                    operation: "prepare download context".to_string(),
+                    operation: "check existing file and completion".to_string(),
                     path: task.chunk_path.display().to_string(),
                     details: format!("{}", e),
                 }
             };
-
             return DownloadResult::Failed { error: download_error };
         }
     };
+    if is_complete {
+        return DownloadResult::Success { bytes_transferred: existing_bytes };
+    }
+
+    let need_range = should_download_range(task, existing_bytes);
+    let resolved_url = match resolve_mirror_and_update_task(task, need_range) {
+        Ok(url) => url,
+        Err(e) => {
+            let download_error = if let Some(download_err) = e.downcast_ref::<DownloadError>() {
+                download_err.clone()
+            } else {
+                DownloadError::MirrorResolution {
+                    details: format!("{}", e)
+                }
+            };
+            return DownloadResult::Failed { error: download_error };
+        }
+    };
+    if let Err(e) = ensure_chunk_directory_exists(task) {
+        let download_error = if let Some(download_err) = e.downcast_ref::<DownloadError>() {
+            download_err.clone()
+        } else {
+            DownloadError::FileSystem {
+                operation: "ensure chunk directory exists".to_string(),
+                path: task.chunk_path.display().to_string(),
+                details: format!("{}", e),
+            }
+        };
+        return DownloadResult::Failed { error: download_error };
+    }
 
     // Track mirror usage with RAII guard
-    let _mirror_guard = MirrorUsageGuard::new(&download_context.resolved_url);
+    let _mirror_guard = MirrorUsageGuard::new(&resolved_url);
 
     // Phase 2: Execute HTTP request
-    let response = match execute_download_request(task, &download_context.resolved_url, download_context.existing_bytes) {
+    let response = match execute_download_request(task, &resolved_url, existing_bytes) {
         Ok(resp) => resp,
         Err(e) => {
             let download_error = DownloadError::Network { details: format!("{}", e) };
-
             return DownloadResult::Failed { error: download_error };
         }
     };
 
     // Phase 3: Process response and download content
-    match process_download_response(task, response, &download_context) {
+    match process_download_response(task, response, &DownloadContext { resolved_url, existing_bytes }) {
         Ok(bytes) => DownloadResult::Success { bytes_transferred: bytes },
         Err(e) => {
             let download_error = DownloadError::ContentValidation {
                 expected: "successful download".to_string(),
                 actual: format!("{}", e),
             };
-
             return DownloadResult::Failed { error: download_error };
         }
     }
@@ -3359,9 +3414,21 @@ fn create_ondemand_chunks(master_task: &DownloadTask, chunk_append_offset: u64, 
 // PROCESS COORDINATION
 // ============================================================================
 
-/// Create a PID file for download coordination
+/// Create a PID file for download coordination and clean up stale PID files
 fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
     let pid_file = final_path.with_extension("download.pid");
+
+    // Check for existing downloads and clean up stale PID files
+    if pid_file.exists() {
+        if is_pid_file_active(&pid_file) {
+            return Err(eyre!("Another download process is already active for: {}", final_path.display()));
+        } else {
+            // Clean up stale PID file
+            log::info!("Cleaning up stale PID file: {}", pid_file.display());
+            cleanup_pid_file(&pid_file)?;
+        }
+    }
+
     let pid = std::process::id();
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3915,4 +3982,78 @@ struct ChunkDownloadContext {
     data_channel: Option<Sender<Vec<u8>>>,
     last_update: std::time::Instant,
     last_ondemand_check: std::time::Instant,
+}
+
+/// Check existing file size and validate chunk completion
+/// Returns existing bytes and whether the chunk is already complete
+fn check_existing_file_and_completion(task: &DownloadTask) -> Result<(u64, bool)> {
+    let chunk_path = &task.chunk_path;
+
+    // Check existing file size for resumption
+    let existing_bytes = match get_existing_file_size(chunk_path) {
+        Ok(bytes) => bytes,
+        Err(e) => return Err(DownloadError::FileSystem {
+            operation: "check existing file size".to_string(),
+            path: chunk_path.display().to_string(),
+            details: format!("{}", e),
+        }.into()),
+    };
+    setup_resumption_state(task, existing_bytes);
+
+    // Check if chunk task is already complete
+    match check_chunk_completion(task, existing_bytes) {
+        Ok(true) => {
+            log::debug!("Chunk already complete with {} bytes, skipping download", existing_bytes);
+            Ok((existing_bytes, true))
+        },
+        Ok(false) => Ok((existing_bytes, false)),
+        Err(e) => Err(DownloadError::FileSystem {
+            operation: "check chunk completion".to_string(),
+            path: chunk_path.display().to_string(),
+            details: format!("{}", e),
+        }.into()),
+    }
+}
+
+// Determine if we need Range support based on task characteristics
+fn should_download_range(task: &DownloadTask, existing_bytes: u64) -> bool {
+    task.resumed_bytes.load(Ordering::Relaxed) > 0 ||
+    task.chunk_size.load(Ordering::Relaxed) != task.file_size.load(Ordering::Relaxed) ||
+    task.is_chunk_task()
+}
+
+/// Resolve mirror URL and update task with resolved URL
+fn resolve_mirror_and_update_task(task: &DownloadTask, need_range: bool) -> Result<String> {
+    let url = &task.url;
+
+    // Resolve mirror for this attempt with appropriate Range requirements
+    let (resolved_url, _final_path) = match resolve_mirror_in_url(url, &task.output_dir, need_range) {
+        Ok(result) => result,
+        Err(e) => return Err(DownloadError::MirrorResolution {
+            details: format!("{}", e)
+        }.into()),
+    };
+
+    // Update resolved URL in task
+    if let Ok(mut resolved) = task.resolved_url.lock() {
+        *resolved = resolved_url.clone();
+    }
+
+    Ok(resolved_url)
+}
+
+/// Ensure parent directory exists for the chunk file
+fn ensure_chunk_directory_exists(task: &DownloadTask) -> Result<()> {
+    let chunk_path = &task.chunk_path;
+
+    if let Some(parent) = chunk_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Err(DownloadError::FileSystem {
+                operation: "create directory".to_string(),
+                path: parent.display().to_string(),
+                details: format!("{}", e),
+            }.into());
+        }
+    }
+    Ok(())
 }
