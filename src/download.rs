@@ -1789,6 +1789,12 @@ fn execute_download_request(
     resolved_url: &str,
     existing_bytes: u64,
 ) -> Result<http::Response<ureq::Body>> {
+    // For non-immutable files with existing local content, validate cache freshness
+    // BEFORE sending range requests to prevent data corruption from mixed old+new content
+    if !task.is_immutable_file && existing_bytes > 0 {
+        validate_cache_before_range_request(task, resolved_url)?;
+    }
+
     // Build HTTP request with appropriate headers
     let client = task.get_client()?;
     let mut request = client.get(resolved_url.replace("///", "/"));
@@ -3723,6 +3729,94 @@ fn log_download_completion(
             true,
         ) {
             log::warn!("Failed to log download completion: {}", e);
+        }
+    }
+}
+
+/// Validate cache freshness before sending range requests for non-immutable files
+///
+/// This prevents data corruption scenarios where:
+/// 1. Local file exists with old content
+/// 2. Remote file has grown larger
+/// 3. Range request succeeds and appends new content to old content
+/// 4. Result is corrupted mixed old+new file content
+///
+/// Uses ETag, Last-Modified, and Content-Length headers for validation.
+fn validate_cache_before_range_request(
+    task: &DownloadTask,
+    resolved_url: &str,
+) -> Result<()> {
+    log::debug!("Non-immutable file with existing content detected, validating cache freshness before range request");
+
+    // Determine which local file to check: prefer chunk_path, fall back to final_path
+    let local_path = &task.chunk_path;
+    if !local_path.exists() {
+        return Ok(()); // No local file to validate
+    }
+
+    let client = task.get_client()?;
+    let mut request = client.get(resolved_url.replace("///", "/"))
+        .config()
+        .max_redirects(3);
+
+    // Add ETag conditional header if available
+    let etag_path = local_path.with_extension("etag");
+    if let Some(stored_etag) = load_etag(&etag_path) {
+        log::debug!("Adding If-None-Match header with ETag '{}' for cache validation", stored_etag);
+        request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
+    }
+
+    let validation_response = request
+        .build()
+        .call()
+        .with_context(|| format!("Failed to validate cache freshness for {}", resolved_url))?;
+
+    // Handle 304 Not Modified response
+    if validation_response.status().as_u16() == 304 {
+        log::debug!("Cache validation passed: ETag matches (304 Not Modified)");
+        task.set_message("Remote file unchanged (ETag match), skipping download".to_string());
+        send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+        return Err(eyre!("Download skipped - file unchanged"));
+    }
+
+    // Parse response metadata for size/timestamp comparison
+    let remote_size_opt = parse_content_length(&validation_response);
+    let remote_size = remote_size_opt.unwrap_or(0);
+    let remote_timestamp_opt = parse_remote_timestamp(&validation_response);
+
+    // Get local file metadata
+    let local_metadata = map_io_error(fs::metadata(local_path), "get local file metadata", local_path)?;
+    let local_size = local_metadata.len();
+    let local_last_modified_sys_time = local_metadata.modified()
+        .map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
+    let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
+
+    // Make cache decision based on size/timestamp
+    let decision = should_redownload(remote_timestamp_opt, remote_size, local_size, local_last_modified);
+
+    match decision {
+        CacheDecision::UseCache { reason } => {
+            log::debug!("Cache validation passed: {}", reason);
+            task.set_message(format!("Remote file unchanged ({}), skipping download", reason));
+            send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
+            Err(eyre!("Download skipped - file unchanged"))
+        }
+        CacheDecision::RedownloadDueTo { reason } => {
+            log::debug!("Cache validation failed: {}, removing stale local files", reason);
+            task.set_message(format!("Remote file changed ({}), restarting download", reason));
+
+            // Remove stale files and reset resume state
+            safe_remove_file(&task.chunk_path, "part")?;
+            if task.final_path.exists() {
+                safe_remove_file(&task.final_path, "final")?;
+            }
+
+            // Remove stale ETag file
+            let _ = std::fs::remove_file(&etag_path);
+
+            task.resumed_bytes.store(0, Ordering::Relaxed);
+
+            Ok(()) // Continue with fresh download
         }
     }
 }
