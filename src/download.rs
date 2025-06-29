@@ -129,7 +129,7 @@ impl DownloadTask {
             chunk_tasks:       Arc::new(Mutex::new(Vec::new())),
             chunk_path,
             chunk_offset:      AtomicU64::new(0),
-            chunk_size:        AtomicU64::new(0),
+            chunk_size:        AtomicU64::new(file_size.unwrap_or(0)),
             start_time:        Mutex::new(None),
             received_bytes:    AtomicU64::new(0),
             resumed_bytes:     AtomicU64::new(0),
@@ -246,7 +246,7 @@ impl DownloadTask {
 
         Arc::new(DownloadTask {
             url:                  self.url.clone(),
-            resolved_url:         Mutex::new(self.get_resolved_url()),  // Use helper method
+            resolved_url:         Mutex::new(self.get_resolved_url()),
             output_dir:           self.output_dir.clone(),
             max_retries:          self.max_retries,
             client:               Arc::new(Mutex::new(None)),           // Initialize with no client
@@ -260,7 +260,7 @@ impl DownloadTask {
             chunk_tasks:          Arc::new(Mutex::new(Vec::new())),
             chunk_path:           PathBuf::from(chunk_path),
             chunk_offset:         AtomicU64::new(offset),
-            chunk_size:           AtomicU64::new(size),                 // <-- set correct chunk size here
+            chunk_size:           AtomicU64::new(size),
             start_time:           Mutex::new(None),
             received_bytes:       AtomicU64::new(0),
             resumed_bytes:        AtomicU64::new(0),
@@ -274,6 +274,13 @@ impl DownloadTask {
     pub fn final_append_offset(&self) -> u64 {
         let offset = self.chunk_offset.load(Ordering::Relaxed);
         offset + self.progress()
+    }
+
+    #[allow(dead_code)]
+    pub fn download_start_offset(&self) -> u64 {
+        let offset = self.chunk_offset.load(Ordering::Relaxed);
+        let reused = self.resumed_bytes.load(Ordering::Relaxed);
+        offset + reused
     }
 
     pub fn progress(&self) -> u64 {
@@ -859,7 +866,7 @@ impl DownloadManager {
 
             let single_eta = calculate_single_task_eta(task);
 
-            if single_eta > slowest_eta {
+            if slowest_eta < single_eta {
                 slowest_eta = single_eta;
                 slowest_task_for_ondemand_chunking = Some(Arc::clone(task));
             }
@@ -1677,7 +1684,6 @@ fn download_file(
 
         // Step 1: Get existing file size
         let existing_bytes = get_existing_file_size(&task.chunk_path)?;
-        task.chunk_offset.store(existing_bytes, Ordering::Relaxed);
 
         // Step 2: Try to create chunks before HTTP request
         let chunks = create_chunk_tasks(task)?;
@@ -1788,8 +1794,24 @@ fn execute_download_request(
 
     // Add ETag conditional headers for cache validation
     let part_path = &task.chunk_path;
-    let chunk_start_offset = task.chunk_offset.load(Ordering::Relaxed);
-    if chunk_start_offset == 0 && task.chunk_size.load(Ordering::Relaxed) == 0 {
+    let file_size = task.file_size.load(Ordering::Relaxed);
+    let chunk_size = task.chunk_size.load(Ordering::Relaxed);
+    let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
+
+    // Add Range headers for partial content requests
+    let resumed_bytes = task.resumed_bytes.load(Ordering::Relaxed);
+    if chunk_offset > 0 {
+        // The end of the requested range is always the base offset plus the chunk size minus
+        // one, regardless of how many bytes we have already.
+        let end = chunk_offset + chunk_size - 1;
+        log::debug!("Setting Range header: bytes={}-{}", chunk_offset + resumed_bytes, end);
+        request = request.header("Range", &format!("bytes={}-{}", chunk_offset + resumed_bytes, end));
+    } else if chunk_offset == 0 && resumed_bytes > 0 && chunk_size == file_size {
+        // Resume request from offset to end
+        log::debug!("Setting Range header: bytes={}-", resumed_bytes);
+        request = request.header("Range", &format!("bytes={}-", resumed_bytes));
+    } else if chunk_offset == 0 && chunk_size == file_size {
+        // is master task w/o chunking
         if part_path.exists() {
             if let Some(stored_etag) = load_etag(part_path) {
                 log::debug!("Adding If-None-Match header with ETag '{}' for conditional request", stored_etag);
@@ -1800,20 +1822,6 @@ fn execute_download_request(
             let etag_path = part_path.with_extension("etag");
             let _ = std::fs::remove_file(&etag_path);
         }
-    }
-
-    // Add Range headers for partial content requests
-    let chunk_size = task.chunk_size.load(Ordering::Relaxed);
-    if chunk_size > 0 {
-        // The end of the requested range is always the base offset plus the chunk size minus
-        // one, regardless of how many bytes we have already.
-        let end = task.chunk_offset.load(Ordering::Relaxed) + chunk_size - 1;
-        log::debug!("Setting Range header: bytes={}-{}", chunk_start_offset, end);
-        request = request.header("Range", &format!("bytes={}-{}", chunk_start_offset, end));
-    } else if chunk_start_offset > 0 {
-        // Resume request from offset to end
-        log::debug!("Setting Range header: bytes={}-", chunk_start_offset);
-        request = request.header("Range", &format!("bytes={}-", chunk_start_offset));
     }
 
     // Execute the request and handle all possible outcomes
@@ -1937,16 +1945,6 @@ fn handle_416_range_error(
 ) -> Result<http::Response<ureq::Body>> {
     let url = task.get_resolved_url();
 
-    let _part_path = &task.chunk_path;
-    // Determine how many bytes we already have of this resource (for logging / comparison
-    // purposes). For the 416 handler we don't need the detailed resume logic used elsewhere –
-    // we only care about the on-disk chunk size versus the server's size, so we just read the
-    // current offset stored in the task.
-    let mut chunk_start_offset = task.chunk_offset.load(Ordering::Relaxed);
-    if task.is_chunk_task() && task.file_size.load(Ordering::Relaxed) > 0 {
-        chunk_start_offset += task.file_size.load(Ordering::Relaxed);
-    }
-
     // Send a request to check remote size and time, then compare with local
     let metadata_request_start = std::time::Instant::now();
             let client = task.get_client()?;
@@ -1964,7 +1962,7 @@ fn handle_416_range_error(
     let remote_size_opt = parse_content_length(&remote_metadata);
     let remote_size = remote_size_opt.unwrap_or(0);
     log::debug!("download_file remote_size: {} (Content-Length present: {}), local_size: {}",
-               remote_size, remote_size_opt.is_some(), chunk_start_offset);
+               remote_size, remote_size_opt.is_some(), task.file_size.load(Ordering::Relaxed));
 
     let remote_timestamp_opt = parse_remote_timestamp(&remote_metadata);
 
@@ -2238,8 +2236,8 @@ fn finalize_chunk_download(
 
     // Final progress update
     if task.is_master_task() {
-        let (total_received, _downloading_chunks) = task.get_total_progress_bytes();
-        task.set_position(total_received);
+        let (total_progress, _downloading_chunks) = task.get_total_progress_bytes();
+        task.set_position(total_progress);
     } else {
         task.set_position(chunk_append_offset);
     }
@@ -2607,40 +2605,40 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
         return Ok(Vec::new());
     };
 
-    let chunk_start_offset = task.chunk_offset.load(Ordering::Relaxed);
+    let resumed = task.resumed_bytes.load(Ordering::Relaxed);
 
     // Don't chunk small files or chunk tasks themselves
-    if task.is_chunk_task() || file_size_val < chunk_start_offset + MIN_FILE_SIZE_FOR_CHUNKING {
+    if task.is_chunk_task() || file_size_val < resumed + MIN_FILE_SIZE_FOR_CHUNKING {
         log::debug!("Skipping chunking: is_chunk_task={}, size={} bytes, min_required={} bytes",
-                  task.is_chunk_task(), file_size_val, chunk_start_offset + MIN_FILE_SIZE_FOR_CHUNKING);
+                  task.is_chunk_task(), file_size_val, resumed + MIN_FILE_SIZE_FOR_CHUNKING);
         return Ok(Vec::new());
     }
 
-    log::debug!("Using known size {} bytes to create chunks (chunk_start_offset: {} bytes)", file_size_val, chunk_start_offset);
+    log::debug!("Using known size {} bytes to create chunks (resumed: {} bytes)", file_size_val, resumed);
 
-    log::debug!("Creating chunks for {} byte file with {} bytes chunk_start_offset",
-              file_size_val, chunk_start_offset);
+    log::debug!("Creating chunks for {} byte file with {} bytes resumed",
+              file_size_val, resumed);
 
     // Calculate the next chunk boundary after the chunk start offset. If we are
     // exactly on a 1 MiB boundary we need to move to the _next_ boundary, otherwise we
-    // would produce a zero-length master chunk (next_boundary == chunk_start_offset).
-    let next_boundary = if chunk_start_offset == 0 {
+    // would produce a zero-length master chunk (next_boundary == resumed).
+    let next_boundary = if resumed == 0 {
         MIN_CHUNK_SIZE
-    } else if (chunk_start_offset & MIN_CHUNK_SIZE_MASK) == 0 {
-        chunk_start_offset + MIN_CHUNK_SIZE
+    } else if (resumed & MIN_CHUNK_SIZE_MASK) == 0 {
+        resumed + MIN_CHUNK_SIZE
     } else {
         // Round up to the next 1 MiB boundary
-        (chunk_start_offset + MIN_CHUNK_SIZE_MASK) & !MIN_CHUNK_SIZE_MASK
+        (resumed + MIN_CHUNK_SIZE_MASK) & !MIN_CHUNK_SIZE_MASK
     };
 
     // Master task will handle from current offset to next chunk boundary
-    let master_chunk_size = std::cmp::min(next_boundary - chunk_start_offset, file_size_val - chunk_start_offset);
+    let master_chunk_size = std::cmp::min(next_boundary - resumed, file_size_val - resumed);
 
     // Update master task's chunk information
     task.chunk_size.store(master_chunk_size, Ordering::Relaxed);
 
     log::debug!("Master task will handle {} bytes starting from offset {}",
-              master_chunk_size, chunk_start_offset);
+              master_chunk_size, resumed);
 
     // Starting offset for additional chunks is the next boundary
     let mut offset = next_boundary;
@@ -2655,8 +2653,8 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<Vec<Arc<DownloadTask>>> {
     }
 
     if chunk_tasks.is_empty() {
-        log::debug!("No additional chunks needed for {} byte file with {} bytes chunk_start_offset",
-                 file_size_val, chunk_start_offset);
+        log::debug!("No additional chunks needed for {} byte file with {} bytes resumed",
+                 file_size_val, resumed);
     } else {
         log::debug!("Created {} chunk tasks for {} byte file", chunk_tasks.len(), file_size_val);
 
@@ -2735,24 +2733,6 @@ fn prepare_download_context(task: &DownloadTask) -> Result<DownloadContext> {
     let url = &task.url;
     let chunk_path = &task.chunk_path;
 
-    // Determine if we need Range support based on task characteristics
-    let need_range = task.chunk_offset.load(Ordering::Relaxed) > 0 ||
-                     task.chunk_size.load(Ordering::Relaxed) > 0 ||
-                     task.is_chunk_task();
-
-    // Resolve mirror for this attempt with appropriate Range requirements
-    let (resolved_url, _final_path) = match resolve_mirror_in_url(url, &task.output_dir, need_range) {
-        Ok(result) => result,
-        Err(e) => return Err(DownloadError::MirrorResolution {
-            details: format!("{}", e)
-        }.into()),
-    };
-
-    // Update resolved URL in task
-    if let Ok(mut resolved) = task.resolved_url.lock() {
-        *resolved = resolved_url.clone();
-    }
-
     // Check existing file size for resumption
     let existing_bytes = match get_existing_file_size(chunk_path) {
         Ok(bytes) => bytes,
@@ -2780,6 +2760,24 @@ fn prepare_download_context(task: &DownloadTask) -> Result<DownloadContext> {
     }
 
     setup_resumption_state(task, existing_bytes);
+
+    // Determine if we need Range support based on task characteristics
+    let need_range = task.resumed_bytes.load(Ordering::Relaxed) > 0 ||
+                     task.chunk_size.load(Ordering::Relaxed) != task.file_size.load(Ordering::Relaxed) ||
+                     task.is_chunk_task();
+
+    // Resolve mirror for this attempt with appropriate Range requirements
+    let (resolved_url, _final_path) = match resolve_mirror_in_url(url, &task.output_dir, need_range) {
+        Ok(result) => result,
+        Err(e) => return Err(DownloadError::MirrorResolution {
+            details: format!("{}", e)
+        }.into()),
+    };
+
+    // Update resolved URL in task
+    if let Ok(mut resolved) = task.resolved_url.lock() {
+        *resolved = resolved_url.clone();
+    }
 
     // Ensure parent directory exists
     if let Some(parent) = chunk_path.parent() {
@@ -2826,8 +2824,7 @@ fn process_download_response(
     let expected_chunk_size = task.chunk_size.load(Ordering::Relaxed);
     if expected_chunk_size > 0 {
         // For chunk tasks and master tasks with chunking, validate against the expected chunk size
-        let actual_size = final_downloaded - context.existing_bytes;
-        validate_download_size(actual_size, expected_chunk_size, &task.chunk_path)?;
+        validate_download_size(final_downloaded, expected_chunk_size, &task.chunk_path)?;
     }
 
     // Log download completion
@@ -3084,11 +3081,7 @@ fn calculate_single_task_eta(task: &DownloadTask) -> Duration {
         let elapsed = start.elapsed();
         // Use only network received bytes for accurate rate calculation
         let network_downloaded = task.get_network_bytes();
-        let total_size = if task.chunk_size.load(Ordering::Relaxed) > 0 {
-            task.chunk_size.load(Ordering::Relaxed)
-        } else {
-            task.file_size.load(Ordering::Relaxed)
-        };
+        let total_size = task.chunk_size.load(Ordering::Relaxed);
         let (total_downloaded, _) = task.get_total_progress_bytes(); // includes reused bytes
 
         if network_downloaded > 0 && total_downloaded < total_size {
@@ -3104,7 +3097,7 @@ fn calculate_single_task_eta(task: &DownloadTask) -> Duration {
 
 /// Helper to accumulate ETA statistics for a single task
 /// Returns (total_remaining_bytes, total_rate, debug_stat_option)
-fn accumulate_task_eta_stats(
+fn single_task_eta_stats(
     task: &DownloadTask,
     task_prefix: &str,
 ) -> (u64, f64, Option<String>) {
@@ -3196,7 +3189,7 @@ fn calculate_global_eta(tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>) 
             _ => "U"
         };
 
-        let (remaining, rate, debug_stat) = accumulate_task_eta_stats(task, task_prefix);
+        let (remaining, rate, debug_stat) = single_task_eta_stats(task, task_prefix);
 
         if remaining > 0 && rate > 0.0 {
             total_remaining_bytes += remaining;
@@ -3306,30 +3299,32 @@ fn may_ondemand_chunking(task: &DownloadTask) -> bool {
 // Step 1: Modify master task to cover existing_bytes → next_boundary
 // Step 2: Create 256KB chunks from next_boundary → end
 // Step 3: Add all chunks to master task atomically
-fn create_ondemand_chunks(master_task: &DownloadTask, existing_bytes: u64, remaining_size: u64) -> Result<usize> {
+fn create_ondemand_chunks(master_task: &DownloadTask, chunk_append_offset: u64, remaining_size: u64) -> Result<usize> {
     // Calculate the next 256KB boundary after current position.
-    // If we are already aligned to a boundary (i.e. existing_bytes is an exact multiple
+    // If we are already aligned to a boundary (i.e. chunk_append_offset is an exact multiple
     // of ONDEMAND_CHUNK_SIZE) we must advance by one full chunk; otherwise `next_boundary`
-    // would equal `existing_bytes`, producing a zero-length master chunk and triggering
+    // would equal `chunk_append_offset`, producing a zero-length master chunk and triggering
     // errors later when `create_chunk_tasks` is called again.
 
-    let next_boundary = if (existing_bytes & ONDEMAND_CHUNK_SIZE_MASK) == 0 {
-        existing_bytes + ONDEMAND_CHUNK_SIZE
+    let chunk_offset = master_task.chunk_offset.load(Ordering::Relaxed);
+    let final_append_offset = chunk_append_offset + chunk_offset;
+    let next_boundary = if (final_append_offset & ONDEMAND_CHUNK_SIZE_MASK) == 0 {
+        final_append_offset + ONDEMAND_CHUNK_SIZE
     } else {
-        (existing_bytes + ONDEMAND_CHUNK_SIZE_MASK) & !ONDEMAND_CHUNK_SIZE_MASK
+        (final_append_offset + ONDEMAND_CHUNK_SIZE_MASK) & !ONDEMAND_CHUNK_SIZE_MASK
     };
 
-    let total_size = existing_bytes + remaining_size;
+    let total_size = final_append_offset + remaining_size;
 
     // Modify master task to cover from current position to next 256KB boundary
-    let master_chunk_size = std::cmp::min(next_boundary - master_task.chunk_offset.load(Ordering::Relaxed), remaining_size);
+    let master_chunk_size = std::cmp::min(next_boundary - chunk_offset, remaining_size);
 
     // Update master task's chunk information
     master_task.chunk_size.store(master_chunk_size, Ordering::Relaxed);
 
     log::debug!(
-        "Modified master task to handle {} bytes from offset {} to boundary {}",
-        master_chunk_size, existing_bytes, next_boundary
+        "Modified master task at offset {} to boundary {}",
+        chunk_offset, next_boundary
     );
 
     // Create additional 256KB chunks from next boundary to end of file
@@ -3351,7 +3346,7 @@ fn create_ondemand_chunks(master_task: &DownloadTask, existing_bytes: u64, remai
 
         log::info!(
             "Created {} on-demand chunks (256KB each) for {} bytes remaining, master covers {}→{} bytes",
-            chunk_tasks.len(), remaining_size, existing_bytes, next_boundary
+            chunk_tasks.len(), remaining_size, chunk_offset, next_boundary
         );
     } else {
         return Err(eyre!("Failed to lock master task's chunk list"));
@@ -3561,9 +3556,6 @@ fn check_chunk_completion(task: &DownloadTask, existing_bytes: u64) -> Result<bo
 /// Setup resumption state for a download task
 fn setup_resumption_state(task: &DownloadTask, existing_bytes: u64) {
     if existing_bytes > 0 {
-        if task.is_master_task() {
-            task.chunk_offset.store(existing_bytes, Ordering::Relaxed);
-        }
         task.resumed_bytes.store(existing_bytes, Ordering::Relaxed);
         log::debug!("Resuming download from {} bytes for {}", existing_bytes, &task.url);
     }
@@ -3597,7 +3589,6 @@ fn handle_master_task_response(
         if task.chunk_path.exists() {
             fs::remove_file(&task.chunk_path)?;
         }
-        task.chunk_offset.store(0, Ordering::Relaxed);
         task.resumed_bytes.store(0, Ordering::Relaxed);
         log::debug!("Server doesn't support resume, restarting download");
         return Err(eyre!("Resume failed, need to restart download"));
@@ -3608,6 +3599,7 @@ fn handle_master_task_response(
         if let Some(content_length) = parse_content_length(response) {
             let total_size = content_length + existing_bytes;
             task.file_size.store(total_size, Ordering::Relaxed);
+            task.chunk_size.store(total_size, Ordering::Relaxed);
             log::debug!("Content-Length header found, file size = {}", total_size);
         }
     }
@@ -3876,7 +3868,7 @@ fn check_ondemand_chunking(
         return;
     }
 
-    let remaining_size = file_size_val - chunk_append_offset;
+    let remaining_size = task.remaining();
 
     // Create on-demand chunks for remaining data
     match create_ondemand_chunks(task, chunk_append_offset, remaining_size) {
