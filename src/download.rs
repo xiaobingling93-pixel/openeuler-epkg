@@ -2015,7 +2015,10 @@ fn handle_416_range_error(
             let error_msg = format!("{}, restarting download from 0: {}", reason, url);
             log::debug!("{}", error_msg);
             task.set_message(error_msg.clone());
+            // Remove stale partial file and reset resume state so that the next
+            // attempt doesn't send an out-of-range Range request.
             safe_remove_file(&task.chunk_path, "part")?;
+            task.resumed_bytes.store(0, Ordering::Relaxed);
             return Err(DownloadError::ContentValidation {
                 expected: "timestamp match".to_string(),
                 actual: error_msg
