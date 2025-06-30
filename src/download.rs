@@ -1717,6 +1717,7 @@ pub fn send_file_to_channel(
     // Ensure we only stream the pre-existing file once per download_file_with_retries() lifetime
     if task.has_sent_existing.swap(true, Ordering::SeqCst) {
         log::debug!("Existing file already streamed once – skipping second send for {}", task.chunk_path.display());
+        return Ok(());
     }
 
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
