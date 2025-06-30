@@ -62,6 +62,10 @@ pub struct DownloadTask {
 
     // Chunk status for reliable state management - avoids race conditions in chunking decisions
     pub chunk_status:         Arc<Mutex<ChunkStatus>>,
+
+    // ETA calculation atomic fields
+    pub throughput_bps:       AtomicU64,                                  // Current throughput in bytes per second
+    pub eta:                  AtomicU64,                                  // Estimated time to completion in seconds
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +140,8 @@ impl DownloadTask {
             has_sent_existing: AtomicBool::new(false),
             progress_bar:      Mutex::new(None),
             chunk_status:      Arc::new(Mutex::new(ChunkStatus::NoChunk)),
+            throughput_bps:    AtomicU64::new(0),
+            eta:               AtomicU64::new(0),
         }
     }
 
@@ -268,6 +274,8 @@ impl DownloadTask {
             has_sent_existing:    AtomicBool::new(false),
             progress_bar:         Mutex::new(None),
             chunk_status:         Arc::new(Mutex::new(ChunkStatus::NoChunk)),
+            throughput_bps:       AtomicU64::new(0),
+            eta:                  AtomicU64::new(0),
         })
     }
 
@@ -392,6 +400,25 @@ pub struct DownloadManager {
     chunk_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
     is_processing: Arc<AtomicBool>,
     current_task_count: Arc<AtomicUsize>,
+
+    // ETA and download statistics - replaced atomically
+    stats: Arc<Mutex<DownloadManagerStats>>,
+}
+
+/// Download manager statistics - replaced atomically as a whole
+#[derive(Debug, Clone, Default)]
+struct DownloadManagerStats {
+    global_eta: u64,                // Global ETA in seconds
+    slowest_task_eta: u64,          // Slowest task ETA in seconds
+    fastest_task_eta: u64,          // Fastest task ETA in seconds
+    total_remaining_bytes: u64,     // Total bytes remaining across all downloads
+    total_rate_bps: u64,            // Total download rate in bytes per second
+    active_tasks: usize,            // Number of actively downloading tasks
+    pending_tasks: usize,           // Number of pending tasks
+    complete_tasks: usize,          // Number of completed tasks
+    master_tasks: usize,            // Number of master tasks
+    l2_chunk_tasks: usize,          // Number of L2 chunk tasks
+    l3_chunk_tasks: usize,          // Number of L3 chunk tasks
 }
 
 impl DownloadManager {
@@ -402,12 +429,13 @@ impl DownloadManager {
 
         Ok(Self {
             multi_progress,
-            tasks:              Arc::new(Mutex::new(HashMap::new())),
+            tasks:                Arc::new(Mutex::new(HashMap::new())),
             nr_parallel,
-            task_handles:       Arc::new(Mutex::new(Vec::new())),
-            chunk_handles:      Arc::new(Mutex::new(Vec::new())),
-            is_processing:      Arc::new(AtomicBool::new(false)),
-            current_task_count: Arc::new(AtomicUsize::new(0)),
+            task_handles:         Arc::new(Mutex::new(Vec::new())),
+            chunk_handles:        Arc::new(Mutex::new(Vec::new())),
+            is_processing:        Arc::new(AtomicBool::new(false)),
+            current_task_count:   Arc::new(AtomicUsize::new(0)),
+            stats:                Arc::new(Mutex::new(DownloadManagerStats::default())),
         })
     }
 
@@ -706,7 +734,7 @@ impl DownloadManager {
     fn start_chunks_processing(
         tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>,
         chunk_handles: &Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
-        nr_parallel: usize
+        nr_parallel: usize,
     ) {
         let max_chunk_threads = Self::calculate_max_chunk_threads(nr_parallel);
 
@@ -733,7 +761,7 @@ impl DownloadManager {
 
         if threads_to_spawn <= 0 {
             if pending_chunks.is_empty() {
-                Self::run_global_ondemand_scheduler(tasks);
+                Self::run_global_ondemand_scheduler();
             }
             return;
         }
@@ -845,47 +873,53 @@ impl DownloadManager {
         collected
     }
 
-    /// Global ondemand scheduler - selects task with slowest single ETA (if > global ETA)
-    fn run_global_ondemand_scheduler(tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>) {
+    /// Global ondemand scheduler - collects stats and selects task with slowest single ETA for chunking
+    fn run_global_ondemand_scheduler() {
         let mut slowest_task_for_ondemand_chunking: Option<Arc<DownloadTask>> = None;
-        let mut slowest_eta = Duration::from_secs(0);
+        let mut slowest_eta_for_ondemand: u64 = 0;
 
-        // Calculate global ETA once for comparison
-        let global_eta = calculate_global_eta(tasks);
+        // Create new stats instance locally
+        let mut new_stats = DownloadManagerStats::default();
+        new_stats.fastest_task_eta = u64::MAX; // Initialize to max value
+        let mut debug_stats = Vec::new();
 
-        // Use the 3-level iterator to find candidates
-        DownloadManager::iterate_3level_tasks(tasks, |task, _level| {
-            // Only consider downloading tasks
+        // Single pass: collect stats and find ondemand candidates
+        DownloadManager::iterate_3level_tasks(&DOWNLOAD_MANAGER.tasks, |task, level| {
+            // Collect stats for this task
+            collect_task_eta_stats(task, level, &mut new_stats, &mut debug_stats);
+
+            // Check for ondemand chunking candidates (only downloading tasks)
             if !matches!(task.get_status(), DownloadStatus::Downloading) {
                 return;
             }
 
-            // Check if this task is eligible for ondemand chunking
             if !may_ondemand_chunking(task) {
                 return;
             }
 
-            let single_eta = calculate_single_task_eta(task);
-
-            if slowest_eta < single_eta {
-                slowest_eta = single_eta;
+            let single_eta = task.eta.load(Ordering::Relaxed);
+            if slowest_eta_for_ondemand < single_eta {
+                slowest_eta_for_ondemand = single_eta;
                 slowest_task_for_ondemand_chunking = Some(Arc::clone(task));
             }
         });
 
+        // Update and log stats
+        let global_eta = update_and_log_stats(new_stats, &debug_stats);
+
         // Set slowest ETA task for ondemand chunking (if ETA > global ETA)
         if let Some(ref task) = slowest_task_for_ondemand_chunking {
-            if slowest_eta > global_eta && slowest_eta.as_secs() > 30 {
+            if slowest_eta_for_ondemand > global_eta && slowest_eta_for_ondemand > 30 {
                 if let Err(e) = task.set_chunk_status(ChunkStatus::NeedOndemandChunk) {
                     log::warn!("Failed to set NeedOndemandChunk status for slowest ETA task: {}", e);
                 } else {
                     log::info!(
                         "Global scheduler selected slowest ETA task {} (ETA:{:.1}s > global:{:.1}s) for ondemand chunking",
-                        task.url, slowest_eta.as_secs_f64(), global_eta.as_secs_f64()
+                        task.url, slowest_eta_for_ondemand as f64, global_eta as f64
                     );
                     log::debug!(
                         "Global ondemand scheduler: selected slowest_eta={:.1}s, global_eta={:.1}s",
-                        slowest_eta.as_secs_f64(), global_eta.as_secs_f64()
+                        slowest_eta_for_ondemand as f64, global_eta as f64
                     );
                 }
             }
@@ -2739,7 +2773,7 @@ fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
         return DownloadResult::Success { bytes_transferred: existing_bytes };
     }
 
-    let need_range = should_download_range(task, existing_bytes);
+    let need_range = should_download_range(task);
     let resolved_url = match resolve_mirror_and_update_task(task, need_range) {
         Ok(url) => url,
         Err(e) => {
@@ -2789,75 +2823,6 @@ fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
             return DownloadResult::Failed { error: download_error };
         }
     }
-}
-
-/// Prepare download context and validate readiness
-/// Level 4: Setup Operations - handles download preparation
-fn prepare_download_context(task: &DownloadTask) -> Result<DownloadContext> {
-    let url = &task.url;
-    let chunk_path = &task.chunk_path;
-
-    // Check existing file size for resumption
-    let existing_bytes = match get_existing_file_size(chunk_path) {
-        Ok(bytes) => bytes,
-        Err(e) => return Err(DownloadError::FileSystem {
-            operation: "check existing file size".to_string(),
-            path: chunk_path.display().to_string(),
-            details: format!("{}", e),
-        }.into()),
-    };
-
-    // Check if chunk task is already complete
-    match check_chunk_completion(task, existing_bytes) {
-        Ok(true) => {
-            log::debug!("Chunk already complete with {} bytes, skipping download", existing_bytes);
-            return Err(DownloadError::AlreadyComplete { bytes: existing_bytes }.into());
-        },
-        Ok(false) => {
-            // Continue with download preparation
-        },
-        Err(e) => return Err(DownloadError::FileSystem {
-            operation: "check chunk completion".to_string(),
-            path: chunk_path.display().to_string(),
-            details: format!("{}", e),
-        }.into()),
-    }
-
-    setup_resumption_state(task, existing_bytes);
-
-    // Determine if we need Range support based on task characteristics
-    let need_range = task.resumed_bytes.load(Ordering::Relaxed) > 0 ||
-                     task.chunk_size.load(Ordering::Relaxed) != task.file_size.load(Ordering::Relaxed) ||
-                     task.is_chunk_task();
-
-    // Resolve mirror for this attempt with appropriate Range requirements
-    let (resolved_url, _final_path) = match resolve_mirror_in_url(url, &task.output_dir, need_range) {
-        Ok(result) => result,
-        Err(e) => return Err(DownloadError::MirrorResolution {
-            details: format!("{}", e)
-        }.into()),
-    };
-
-    // Update resolved URL in task
-    if let Ok(mut resolved) = task.resolved_url.lock() {
-        *resolved = resolved_url.clone();
-    }
-
-    // Ensure parent directory exists
-    if let Some(parent) = chunk_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            return Err(DownloadError::FileSystem {
-                operation: "create directory".to_string(),
-                path: parent.display().to_string(),
-                details: format!("{}", e),
-            }.into());
-        }
-    }
-
-    Ok(DownloadContext {
-        resolved_url,
-        existing_bytes,
-    })
 }
 
 /// Process HTTP response and execute content download
@@ -3132,30 +3097,42 @@ fn append_file_to_file(source_path: &Path, target_path: &Path) -> Result<()> {
 }
 
 /// Calculate ETA for a single task based on its current progress and download rate
+/// Does not cover child chunks - calculates only for this task alone
 fn calculate_single_task_eta(task: &DownloadTask) -> Duration {
     let start_time = {
         if let Ok(start_guard) = task.start_time.lock() {
             start_guard.clone()
         } else {
+            // Store zero values in atomic fields
+            task.throughput_bps.store(0, Ordering::Relaxed);
+            task.eta.store(0, Ordering::Relaxed);
             return Duration::from_secs(0);
         }
     };
 
     if let Some(start) = start_time {
         let elapsed = start.elapsed();
-        // Use only network received bytes for accurate rate calculation
-        let network_downloaded = task.get_network_bytes();
+        // Use only this task's network received bytes (not child chunks)
+        let network_downloaded = task.received_bytes.load(Ordering::Relaxed);
         let total_size = task.chunk_size.load(Ordering::Relaxed);
-        let (total_downloaded, _) = task.get_total_progress_bytes(); // includes reused bytes
+        let total_downloaded = task.progress(); // Only this task's progress (received + resumed)
 
         if network_downloaded > 0 && total_downloaded < total_size {
             let rate = network_downloaded as f64 / elapsed.as_secs_f64();
             let remaining_bytes = total_size - total_downloaded;
             let estimated_seconds = remaining_bytes as f64 / rate;
+
+            // Update atomic fields
+            task.throughput_bps.store(rate as u64, Ordering::Relaxed);
+            task.eta.store(estimated_seconds as u64, Ordering::Relaxed);
+
             return Duration::from_secs_f64(estimated_seconds);
         }
     }
 
+    // Store zero values in atomic fields
+    task.throughput_bps.store(0, Ordering::Relaxed);
+    task.eta.store(0, Ordering::Relaxed);
     Duration::from_secs(0)
 }
 
@@ -3212,94 +3189,133 @@ fn single_task_eta_stats(
 
 
 
-/// Calculate global ETA for all downloading tasks across the 3-level architecture
-///
-/// This provides an estimate for completing all currently active downloads
-/// by aggregating progress across master tasks and their chunk tasks.
-/// Reuses calculate_single_task_eta() for consistency and adds debug information.
-fn calculate_global_eta(tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>) -> Duration {
-    let mut total_remaining_bytes = 0u64;
-    let mut total_rate = 0.0f64;
-    let mut active_downloads = 0usize;
+/// Collect ETA statistics for a single task and update accumulators
+fn collect_task_eta_stats(
+    task: &DownloadTask,
+    level: usize,
+    stats: &mut DownloadManagerStats,
+    debug_stats: &mut Vec<String>,
+) {
+    // Count task types by status
+    match task.get_status() {
+        DownloadStatus::Pending => stats.pending_tasks += 1,
+        DownloadStatus::Completed => stats.complete_tasks += 1,
+        DownloadStatus::Downloading => {
+            // Will be processed below for ETA calculation
+        },
+        DownloadStatus::Failed(_) => return,
+    }
 
-    // Debug stats collection
-    let mut debug_stats = Vec::new();
-    let mut master_count = 0usize;
-    let mut l2_chunk_count = 0usize;
-    let mut l3_chunk_count = 0usize;
-    let mut slowest_task_eta = Duration::from_secs(0);
-    let mut fastest_task_eta = Duration::from_secs(u64::MAX);
+    // Only consider downloading tasks for ETA stats
+    if !matches!(task.get_status(), DownloadStatus::Downloading) {
+        return;
+    }
 
-    // Single pass: iterate and collect ETA data
-    DownloadManager::iterate_3level_tasks(tasks, |task, level| {
-        // Only consider downloading tasks
-        if !matches!(task.get_status(), DownloadStatus::Downloading) {
-            return;
-        }
+    // Count by task level
+    match level {
+        1 => stats.master_tasks += 1,
+        2 => stats.l2_chunk_tasks += 1,
+        3 => stats.l3_chunk_tasks += 1,
+        _ => {},
+    }
 
-        let task_prefix = match level {
-            1 => {
-                master_count += 1;
-                "M"
-            },
-            2 => {
-                l2_chunk_count += 1;
-                "L2"
-            },
-            3 => {
-                l3_chunk_count += 1;
-                "L3"
-            },
-            _ => "U"
-        };
-
-        let (remaining, rate, debug_stat) = single_task_eta_stats(task, task_prefix);
-
-        if remaining > 0 && rate > 0.0 {
-            total_remaining_bytes += remaining;
-            total_rate += rate;
-            active_downloads += 1;
-
-            // Update debug stats
-            let task_eta = calculate_single_task_eta(task);
-            if task_eta > slowest_task_eta {
-                slowest_task_eta = task_eta;
-            }
-            if task_eta < fastest_task_eta {
-                fastest_task_eta = task_eta;
-            }
-
-            if let Some(stat) = debug_stat {
-                debug_stats.push(stat);
-            }
-        }
-    });
-
-    let global_eta = if total_rate > 0.0 && active_downloads > 0 {
-        let estimated_seconds = total_remaining_bytes as f64 / total_rate;
-        Duration::from_secs_f64(estimated_seconds)
-    } else {
-        Duration::from_secs(0)
+    let task_prefix = match level {
+        1 => "M",
+        2 => "L2",
+        3 => "L3",
+        _ => "U"
     };
 
-    // Log comprehensive debug information for performance analysis
-    if active_downloads > 0 {
+    let (remaining, rate, debug_stat) = single_task_eta_stats(task, task_prefix);
+
+    if remaining > 0 && rate > 0.0 {
+        stats.total_remaining_bytes += remaining;
+        stats.total_rate_bps += rate as u64; // Convert f64 to u64 here
+        stats.active_tasks += 1;
+
+        // Update ETA extremes (convert Duration to u64 seconds)
+        let task_eta = calculate_single_task_eta(task);
+        let task_eta_secs = task_eta.as_secs();
+
+        if task_eta_secs > stats.slowest_task_eta {
+            stats.slowest_task_eta = task_eta_secs;
+        }
+        if task_eta_secs < stats.fastest_task_eta {
+            stats.fastest_task_eta = task_eta_secs;
+        }
+
+        // Update task's individual ETA fields
+        task.eta.store(task_eta_secs, Ordering::Relaxed);
+        task.throughput_bps.store(rate as u64, Ordering::Relaxed);
+
+        if let Some(stat) = debug_stat {
+            debug_stats.push(stat);
+        }
+    }
+}
+
+/// Update download manager stats and log global ETA
+fn update_and_log_stats(
+    mut new_stats: DownloadManagerStats,
+    debug_stats: &[String],
+) -> u64 {
+    // Calculate global ETA and finalize stats
+    let global_eta = if new_stats.total_rate_bps > 0 && new_stats.active_tasks > 0 {
+        (new_stats.total_remaining_bytes as f64 / new_stats.total_rate_bps as f64) as u64
+    } else {
+        0
+    };
+    new_stats.global_eta = global_eta;
+    new_stats.fastest_task_eta = if new_stats.fastest_task_eta == u64::MAX {
+        0
+    } else {
+        new_stats.fastest_task_eta
+    };
+
+    // Update stats atomically
+    if let Ok(mut stats_guard) = DOWNLOAD_MANAGER.stats.lock() {
+        *stats_guard = new_stats.clone();
+    }
+
+    log_global_eta_debug(&new_stats, global_eta, debug_stats);
+
+    global_eta
+}
+
+/// Log global ETA debug information
+fn log_global_eta_debug(
+    stats: &DownloadManagerStats,
+    global_eta: u64,
+    debug_stats: &[String],
+) {
+    // Rate-limit logging to once per second
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static LAST_LOG_TIME: AtomicU64 = AtomicU64::new(0);
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let last_log_time = LAST_LOG_TIME.load(Ordering::Relaxed);
+    if current_time > last_log_time {
+        LAST_LOG_TIME.store(current_time, Ordering::Relaxed);
+    } else {
+        return;
+    }
+    if stats.active_tasks > 0 {
         log::debug!(
             "Global ETA calculation: {:.1}s for {:.1}MB remaining across {} active downloads",
-            global_eta.as_secs_f64(),
-            total_remaining_bytes as f64 / (1024.0 * 1024.0),
-            active_downloads
+            global_eta as f64,
+            stats.total_remaining_bytes as f64 / (1024.0 * 1024.0),
+            stats.active_tasks
         );
         log::debug!(
             "Download types: {} masters, {} L2 chunks, {} L3 chunks",
-            master_count, l2_chunk_count, l3_chunk_count
+            stats.master_tasks, stats.l2_chunk_tasks, stats.l3_chunk_tasks
         );
         log::debug!(
             "ETA range: fastest={:.1}s, slowest={:.1}s, global={:.1}s, aggregate_rate={:.1}KB/s",
-            if fastest_task_eta.as_secs() == u64::MAX { 0.0 } else { fastest_task_eta.as_secs_f64() },
-            slowest_task_eta.as_secs_f64(),
-            global_eta.as_secs_f64(),
-            total_rate / 1024.0
+            stats.fastest_task_eta as f64,
+            stats.slowest_task_eta as f64,
+            global_eta as f64,
+            stats.total_rate_bps as f64 / 1024.0
         );
 
         // Log individual task stats (limited to prevent spam)
@@ -3310,8 +3326,6 @@ fn calculate_global_eta(tasks: &Arc<Mutex<HashMap<String, Arc<DownloadTask>>>>) 
             log::debug!("... and {} more tasks", debug_stats.len() - 10);
         }
     }
-
-    global_eta
 }
 
 /// Check if a task may be suitable for ondemand chunking
@@ -3757,7 +3771,8 @@ fn validate_cache_before_range_request(
     let client = task.get_client()?;
     let mut request = client.get(resolved_url.replace("///", "/"))
         .config()
-        .max_redirects(3);
+        .max_redirects(3)
+        .build();
 
     // Add ETag conditional header if available
     let etag_path = local_path.with_extension("etag");
@@ -3767,7 +3782,6 @@ fn validate_cache_before_range_request(
     }
 
     let validation_response = request
-        .build()
         .call()
         .with_context(|| format!("Failed to validate cache freshness for {}", resolved_url))?;
 
@@ -4113,7 +4127,7 @@ fn check_existing_file_and_completion(task: &DownloadTask) -> Result<(u64, bool)
 }
 
 // Determine if we need Range support based on task characteristics
-fn should_download_range(task: &DownloadTask, existing_bytes: u64) -> bool {
+fn should_download_range(task: &DownloadTask) -> bool {
     task.resumed_bytes.load(Ordering::Relaxed) > 0 ||
     task.chunk_size.load(Ordering::Relaxed) != task.file_size.load(Ordering::Relaxed) ||
     task.is_chunk_task()
