@@ -36,7 +36,13 @@ pub struct DownloadTask {
     pub final_path:           PathBuf,                                    // Store the final download path
     pub file_size:            AtomicU64,                                  // Expected file size for prioritization and verification (0 = unknown)
     pub attempt_number:       AtomicUsize,                                // Track which attempt number this is (0 = first attempt)
-    pub is_immutable_file:    bool,                                       // True for files whose content won't change over time (filename == some id)
+    // An immutable file means the remote file either remains static or will only be appended to over time.
+    // This implies that:
+    // - Any locally downloaded data is always valid as a prefix.
+    // - If local_size == remote_size, the file is complete.
+    // - If local_size < remote_size, a partial (range) download can complete it.
+    // - If local_size > remote_size, the local file is considered corrupt and must be re-downloaded.
+    pub is_immutable_file:    bool,
 
     // Metadata from response headers, stored for later application
     pub last_modified_header: Mutex<Option<String>>,
@@ -1186,6 +1192,7 @@ enum ResponseAction {
 #[derive(Debug)]
 enum CacheDecision {
     UseCache { reason: String },
+    AppendDownload { reason: String },
     RedownloadDueTo { reason: String },
 }
 
@@ -2040,14 +2047,21 @@ fn handle_416_range_error(
     let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
 
     // Use clean cache decision logic instead of complex nested conditionals
-    let decision = should_redownload(remote_timestamp_opt, remote_size, local_size, local_last_modified);
+    let decision = should_redownload(task.is_immutable_file, remote_timestamp_opt, remote_size, local_size, local_last_modified);
 
     match decision {
         CacheDecision::UseCache { reason } => {
-            log::debug!("Using cached file: {}", reason);
+            log::debug!("Using cached file after 416 error: {}", reason);
             task.set_message(format!("Remote file unchanged ({}), skipping download {}", reason, task.chunk_path.display()));
             send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
-            return Err(eyre!("Download skipped - file unchanged"));
+            // Return a non-fatal error to stop this attempt but allow the task to be marked as complete.
+            return Err(DownloadError::AlreadyComplete { bytes: local_size }.into());
+        }
+        CacheDecision::AppendDownload { reason } => {
+            log::debug!("Resuming download after spurious 416: {}", reason);
+            task.set_message(format!("Resuming download after spurious 416 ({})", reason));
+            // Return a non-fatal error to trigger a retry by the download loop.
+            return Err(DownloadError::Network { details: "Spurious 416 error, retrying".to_string() }.into());
         }
         CacheDecision::RedownloadDueTo { reason } => {
             let error_msg = format!("{}, restarting download from 0: {}", reason, url);
@@ -2058,7 +2072,7 @@ fn handle_416_range_error(
             safe_remove_file(&task.chunk_path, "part")?;
             task.resumed_bytes.store(0, Ordering::Relaxed);
             return Err(DownloadError::ContentValidation {
-                expected: "timestamp match".to_string(),
+                expected: "valid file state".to_string(),
                 actual: error_msg
             }.into());
         }
@@ -3790,7 +3804,7 @@ fn validate_cache_before_range_request(
     let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
 
     // Make cache decision based on size/timestamp
-    let decision = should_redownload(remote_timestamp_opt, remote_size, local_size, local_last_modified);
+    let decision = should_redownload(task.is_immutable_file, remote_timestamp_opt, remote_size, local_size, local_last_modified);
 
     match decision {
         CacheDecision::UseCache { reason } => {
@@ -3798,6 +3812,11 @@ fn validate_cache_before_range_request(
             task.set_message(format!("Remote file unchanged ({}), skipping download", reason));
             send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
             Err(eyre!("Download skipped - file unchanged"))
+        }
+        CacheDecision::AppendDownload { reason } => {
+            log::debug!("Resuming download: {}", reason);
+            task.set_message(format!("Resuming download ({})", reason));
+            Ok(()) // Continue with download
         }
         CacheDecision::RedownloadDueTo { reason } => {
             log::debug!("Cache validation failed: {}, removing stale local files", reason);
@@ -3810,6 +3829,7 @@ fn validate_cache_before_range_request(
             }
 
             // Remove stale ETag file
+            let etag_path = task.chunk_path.with_extension("etag");
             let _ = std::fs::remove_file(&etag_path);
 
             task.resumed_bytes.store(0, Ordering::Relaxed);
@@ -3821,12 +3841,24 @@ fn validate_cache_before_range_request(
 
 /// Clean cache decision logic replacing complex nested conditionals
 fn should_redownload(
+    is_immutable: bool,
     remote_ts: Option<OffsetDateTime>,
     remote_size: u64,
     local_size: u64,
-    local_ts: OffsetDateTime
+    local_ts: OffsetDateTime,
 ) -> CacheDecision {
     use std::time::Duration;
+
+    if is_immutable {
+        if local_size == remote_size {
+            return CacheDecision::UseCache { reason: "Immutable file size matches".to_string() };
+        }
+        if local_size < remote_size {
+            return CacheDecision::AppendDownload { reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size) };
+        }
+        // local_size > remote_size is a corruption case
+        return CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size) };
+    }
 
     match remote_ts {
         Some(ts) if remote_size == local_size && (ts - local_ts).unsigned_abs() <= Duration::from_secs(2) => {
