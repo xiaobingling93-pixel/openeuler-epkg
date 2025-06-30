@@ -3883,9 +3883,30 @@ fn should_redownload(
     }
 
     match remote_ts {
-        Some(ts) if remote_size == local_size && (ts - local_ts).unsigned_abs() <= Duration::from_secs(2) => {
-            CacheDecision::UseCache {
-                reason: format!("Size and timestamp match (remote: {}, local: {})", ts, local_ts)
+        Some(ts) if remote_size == local_size => {
+            let time_diff = (ts - local_ts).unsigned_abs();
+
+            // If local time is more recent than remote time, assume local file is newer
+            if local_ts > ts {
+                CacheDecision::UseCache {
+                    reason: format!("Local file is newer than remote (local: {}, remote: {})", local_ts, ts)
+                }
+            }
+            // If timestamps are within 10 minutes of each other, consider them the same
+            else if time_diff <= Duration::from_secs(600) {
+                CacheDecision::UseCache {
+                    reason: format!("Size and timestamp match within 10min tolerance (remote: {}, local: {})", ts, local_ts)
+                }
+            }
+            else {
+                let mut reasons = Vec::new();
+                if remote_size != local_size {
+                    reasons.push(format!("size mismatch: remote {}, local {}", remote_size, local_size));
+                }
+                if time_diff > Duration::from_secs(600) {
+                    reasons.push(format!("timestamp mismatch (tolerance: 10min): remote {}, local {}", ts, local_ts));
+                }
+                CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") }
             }
         }
         Some(ts) => {
@@ -3893,8 +3914,9 @@ fn should_redownload(
             if remote_size != local_size {
                 reasons.push(format!("size mismatch: remote {}, local {}", remote_size, local_size));
             }
-            if ts != local_ts {
-                reasons.push(format!("timestamp mismatch: remote {}, local {}", ts, local_ts));
+            let time_diff = (ts - local_ts).unsigned_abs();
+            if time_diff > Duration::from_secs(600) {
+                reasons.push(format!("timestamp mismatch (tolerance: 10min): remote {}, local {}", ts, local_ts));
             }
             CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") }
         }
