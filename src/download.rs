@@ -22,6 +22,38 @@ use crate::mirror::{append_download_log, append_http_log, HttpEvent, MirrorUsage
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 
 
+impl DownloadTask {
+    /// Returns the path to the ETag file, which is based on the final file path.
+    pub fn etag_path(&self) -> PathBuf {
+        self.final_path.with_extension("etag")
+    }
+
+    /// Saves the ETag to a file named after the download's final path with a .etag extension.
+    pub fn save_etag(&self, etag: &str) -> Result<()> {
+        let etag_path = self.etag_path();
+        std::fs::write(&etag_path, etag)
+            .with_context(|| format!("Failed to save ETag to {}", etag_path.display()))?;
+        log::debug!("Saved ETag '{}' to {}", etag, etag_path.display());
+        Ok(())
+    }
+
+    /// Loads an ETag from a sidecar file.
+    ///
+    /// Checks for an ETag file next to the final path.
+    /// Returns the stored ETag if a sidecar file exists and is readable.
+    pub fn load_etag(&self) -> Option<String> {
+        let etag_path = self.etag_path();
+        if let Ok(etag) = std::fs::read_to_string(&etag_path) {
+            let trimmed_etag = etag.trim().to_string();
+            if !trimmed_etag.is_empty() {
+                log::debug!("Loaded ETag '{}' from {}", trimmed_etag, etag_path.display());
+                return Some(trimmed_etag);
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug)]
 pub struct DownloadTask {
     pub url:                  String,
@@ -1859,14 +1891,12 @@ fn execute_download_request(
     } else if chunk_offset == 0 && chunk_size == file_size {
         // is master task w/o chunking
         if part_path.exists() {
-            if let Some(stored_etag) = load_etag(part_path) {
+            if let Some(stored_etag) = task.load_etag() {
                 log::debug!("Adding If-None-Match header with ETag '{}' for conditional request", stored_etag);
                 request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
             }
         } else {
             log::debug!("Local file {} doesn't exist, skipping ETag header", part_path.display());
-            let etag_path = part_path.with_extension("etag");
-            let _ = std::fs::remove_file(&etag_path);
         }
     }
 
@@ -2468,45 +2498,9 @@ fn parse_etag(response: &http::Response<ureq::Body>) -> Option<String> {
     }
 }
 
-/// Save ETag to a sidecar file alongside the downloaded file
-///
-/// For a file like "package.rpm", this creates "package.rpm.etag" containing the ETag
-fn save_etag(file_path: &Path, etag: &str) -> Result<()> {
-    let mut etag_path_os = file_path.as_os_str().to_owned();
-    etag_path_os.push(".etag");
-    let etag_path = std::path::PathBuf::from(etag_path_os);
-
-    std::fs::write(&etag_path, etag)
-        .with_context(|| format!("Failed to save ETag to {}", etag_path.display()))?;
-
-    log::debug!("Saved ETag '{}' to {}", etag, etag_path.display());
-    Ok(())
-}
-
-/// Load ETag from a sidecar file
-///
-/// Returns the stored ETag if the sidecar file exists and is readable
-fn load_etag(file_path: &Path) -> Option<String> {
-    let mut etag_path_os = file_path.as_os_str().to_owned();
-    etag_path_os.push(".etag");
-    let etag_path = std::path::PathBuf::from(etag_path_os);
-
-    match std::fs::read_to_string(&etag_path) {
-        Ok(etag) => {
-            let trimmed_etag = etag.trim().to_string();
-            if trimmed_etag.is_empty() {
-                None
-            } else {
-                log::debug!("Loaded ETag '{}' from {}", trimmed_etag, etag_path.display());
-                Some(trimmed_etag)
-            }
-        }
-        Err(_) => {
-            log::debug!("No ETag file found at {}", etag_path.display());
-            None
-        }
-    }
-}
+// ============================================================================
+// PACKAGE MANAGER DOWNLOAD INTEGRATION
+// ============================================================================
 
 impl PackageManager {
     /// Submit download tasks for packages without waiting for completion
@@ -3620,7 +3614,7 @@ fn apply_stored_metadata(task: &DownloadTask) {
     if let Some(etag) = &*task.etag_header.lock().unwrap() {
         // Skip saving etag for immutable files since their content won't change over time
         if !task.is_immutable_file {
-            if let Err(e) = save_etag(&task.final_path, etag) {
+            if let Err(e) = task.save_etag(etag) {
                 log::warn!("Failed to save ETag for {}: {}", task.final_path.display(), e);
             }
         }
@@ -3773,8 +3767,7 @@ fn validate_cache_before_range_request(
         .build();
 
     // Add ETag conditional header if available
-    let etag_path = local_path.with_extension("etag");
-    if let Some(stored_etag) = load_etag(&etag_path) {
+    if let Some(stored_etag) = task.load_etag() {
         log::debug!("Adding If-None-Match header with ETag '{}' for cache validation", stored_etag);
         request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
     }
@@ -3829,8 +3822,7 @@ fn validate_cache_before_range_request(
             }
 
             // Remove stale ETag file
-            let etag_path = task.chunk_path.with_extension("etag");
-            let _ = std::fs::remove_file(&etag_path);
+            let _ = std::fs::remove_file(&task.etag_path());
 
             task.resumed_bytes.store(0, Ordering::Relaxed);
 
