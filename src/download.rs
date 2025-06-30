@@ -1720,10 +1720,17 @@ pub fn send_file_to_channel(
         return Ok(());
     }
 
+    // Try final_path first, then chunk_path - use the first existing one
+    let file_path = if task.final_path.exists() {
+        &task.final_path
+    } else {
+        &task.chunk_path
+    };
+
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
     // "Decompression error: stream/file format not recognized"
-    send_chunk_to_channel(&task.chunk_path, &data_channel)
+    send_chunk_to_channel(file_path, &data_channel)
 }
 
 /// Send a chunk file to the data channel (for streaming fresh chunk data)
