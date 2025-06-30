@@ -1,20 +1,19 @@
 use serde::{Deserialize, Serialize};
-use crate::models::channel_config;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::Path;
 use std::path::PathBuf;
-use crate::dirs::get_epkg_manager_path;
-use crate::models::dirs;
-use color_eyre::eyre::{Context, Result, eyre, bail};
 use std::fs;
-use crate::location;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use time::{OffsetDateTime, UtcOffset};
 use time::macros::format_description;
-// Removed unused serde imports
-// Removed chrono dependency
+use color_eyre::eyre::{Context, Result, eyre, bail};
+use crate::location;
+use crate::models::dirs;
+use crate::models::channel_config;
+use crate::dirs::get_epkg_manager_path;
+
 
 /// Convert Unix timestamp to formatted datetime string using time crate
 fn format_timestamp_to_local_datetime(timestamp: u64) -> String {
@@ -129,6 +128,7 @@ pub enum HttpEvent {
     NoContent,          // Content not available (404)
     NetError(String),   // Network error
     HttpError(u16),     // HTTP error code
+    TooManyRequests(u32),    // Specific event for 429 errors with connection count
 }
 
 // Performance log entry structure (simplified - removed latency_ms, error_type, supports_range, content_available)
@@ -151,8 +151,9 @@ pub struct HttpLog {
     pub event: HttpEvent,    // Event type
 }
 
-// Mirror configuration with compact field names - now includes usage tracking
-#[derive(Debug, Deserialize, Serialize)]
+/// Represents a mirror's static configuration.
+/// This data is loaded from mirrors.json and is generally not modified at runtime.
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Mirror {
     #[serde(default)]
     #[serde(skip_serializing)]
@@ -178,47 +179,35 @@ pub struct Mirror {
     pub bandwidth: Option<u32>,
     #[serde(rename = "i2", default, deserialize_with = "crate::mirror::bool_from_number")]
     pub internet2: bool,
-    #[serde(default)]
-    pub score: u64,
-    #[serde(default)]
-    pub throughputs: Vec<u32>,  // historical download speeds in bytes/sec
-    #[serde(default)]
-    pub latencies: Vec<u32>,    // historical latencies in milliseconds
-    #[serde(default)]
-    pub no_range: bool,         // whether server supports Range requests
-    #[serde(default)]
-    pub no_online: bool,        // whether server is in service
-    #[serde(default)]
-    pub no_content: bool,       // whether server has the files we requested in current run
-    #[serde(default)]
-    #[serde(skip_serializing)]
-    pub adaptive_max_concurrent: usize,  // cached value of adaptive max concurrent limit
-
-    // Usage tracking fields (merged from MirrorUsage)
-    #[serde(skip_serializing)]
-    #[serde(skip_deserializing)]
-    pub active_downloads: AtomicUsize,
-    #[serde(skip_serializing)]
-    #[serde(skip_deserializing)]
-    pub total_uses: AtomicU64,
-    #[serde(skip_serializing)]
-    #[serde(skip_deserializing)]
-    pub last_used: AtomicU64, // Unix timestamp
+    #[serde(skip_serializing, skip_deserializing)]
+    pub stats: MirrorStats,
 }
 
-// Implement Clone manually since AtomicUsize/AtomicU64 don't implement Clone
-impl Clone for Mirror {
+/// Holds all dynamic, statistical, and state-related data for a mirror.
+/// This data is loaded from logs and updated during runtime.
+#[derive(Debug, Default)]
+pub struct MirrorStats {
+    pub score: u64,
+    pub throughputs: Vec<u32>,  // historical download speeds in bytes/sec
+    pub latencies: Vec<u32>,    // historical latencies in milliseconds
+    pub no_range: bool,         // whether server supports Range requests
+    pub no_online: bool,        // whether server is in service
+    pub no_content: bool,       // whether server has the files we requested in current run
+    pub adaptive_max_concurrent: usize,  // cached value of adaptive max concurrent limit
+    pub active_downloads: AtomicUsize,
+    pub total_uses: AtomicU64,
+    pub last_used: AtomicU64, // Unix timestamp
+    pub max_parallel_conns: Option<u32>, // Learned limit from 429 errors
+    pub http_errors: HashMap<u16, u32>,
+    pub other_errors: u32,
+    pub last_success: Option<u64>,
+    pub last_check: Option<u64>,
+}
+
+// Manual Clone implementation for MirrorStats due to Atomic types.
+impl Clone for MirrorStats {
     fn clone(&self) -> Self {
         Self {
-            url: self.url.clone(),
-            distros: self.distros.clone(),
-            distro_dirs: self.distro_dirs.clone(),
-            ls_dirs: self.ls_dirs.clone(),
-            top_level: self.top_level,
-            country_code: self.country_code.clone(),
-            protocols: self.protocols,
-            bandwidth: self.bandwidth,
-            internet2: self.internet2,
             score: self.score,
             throughputs: self.throughputs.clone(),
             latencies: self.latencies.clone(),
@@ -229,33 +218,11 @@ impl Clone for Mirror {
             active_downloads: AtomicUsize::new(self.active_downloads.load(Ordering::Relaxed)),
             total_uses: AtomicU64::new(self.total_uses.load(Ordering::Relaxed)),
             last_used: AtomicU64::new(self.last_used.load(Ordering::Relaxed)),
-        }
-    }
-}
-
-// Implement Default for Mirror
-impl Default for Mirror {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            distros: Vec::new(),
-            distro_dirs: Vec::new(),
-            ls_dirs: Vec::new(),
-            top_level: false,
-            country_code: None,
-            protocols: 0,
-            bandwidth: None,
-            internet2: false,
-            score: 0,
-            throughputs: Vec::new(),
-            latencies: Vec::new(),
-            no_range: false,
-            no_online: false,
-            no_content: false,
-            adaptive_max_concurrent: 0,
-            active_downloads: AtomicUsize::new(0),
-            total_uses: AtomicU64::new(0),
-            last_used: AtomicU64::new(0),
+            max_parallel_conns: self.max_parallel_conns,
+            http_errors: self.http_errors.clone(),
+            other_errors: self.other_errors,
+            last_success: self.last_success,
+            last_check: self.last_check,
         }
     }
 }
@@ -289,17 +256,17 @@ impl Mirror {
 
         // Add new throughput if non-zero
         if throughput > 0 {
-            self.throughputs.push(throughput);
-            if self.throughputs.len() > MAX_HISTORY {
-                self.throughputs.remove(0);
+            self.stats.throughputs.push(throughput);
+            if self.stats.throughputs.len() > MAX_HISTORY {
+                self.stats.throughputs.remove(0);
             }
         }
 
         // Add new latency if non-zero
         if latency > 0 {
-            self.latencies.push(latency);
-            if self.latencies.len() > MAX_HISTORY {
-                self.latencies.remove(0);
+            self.stats.latencies.push(latency);
+            if self.stats.latencies.len() > MAX_HISTORY {
+                self.stats.latencies.remove(0);
             }
         }
     }
@@ -307,15 +274,15 @@ impl Mirror {
     // Helper method to calculate weighted average throughput
     // Newer measurements have higher weights: sum(i * self.throughputs[i]) / sum(i)
     pub fn avg_throughput(&self) -> Option<u32> {
-        if self.throughputs.is_empty() {
+        if self.stats.throughputs.is_empty() {
             None
         } else {
             // Calculate sum of weights (1 + 2 + ... + n)
-            let n = self.throughputs.len();
+            let n = self.stats.throughputs.len();
             let sum_weights = (n * (n + 1)) / 2;
 
             // Calculate weighted sum: 1*throughputs[0] + 2*throughputs[1] + ... + n*throughputs[n-1]
-            let weighted_sum: u64 = self.throughputs.iter().enumerate()
+            let weighted_sum: u64 = self.stats.throughputs.iter().enumerate()
                 .map(|(i, &t)| (i + 1) as u64 * t as u64)
                 .sum();
 
@@ -325,11 +292,11 @@ impl Mirror {
 
     // Helper method to calculate median latency
     pub fn avg_latency(&self) -> Option<u32> {
-        if self.latencies.is_empty() {
+        if self.stats.latencies.is_empty() {
             None
         } else {
             // Create a sorted copy of latencies
-            let mut sorted = self.latencies.clone();
+            let mut sorted = self.stats.latencies.clone();
             sorted.sort();
 
             // Get the middle value (median)
@@ -393,10 +360,10 @@ impl Mirror {
         let latency_penalty = (avg_latency).min(500).max(10); // Cap in 10-500 ms
         let performance_score = throughput_score / latency_penalty;
         if performance_score > 0 {
-            self.score = performance_score;
+            self.stats.score = performance_score;
         }
 
-        self.score
+        self.stats.score
     }
 }
 
@@ -591,7 +558,22 @@ pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<St
     let all_mirrors = convert_mirror_data_structure(all_mirrors_raw);
 
     // Apply distro filtering if requested
-    apply_distro_filtering(all_mirrors, distro_filter)
+    let mut filtered_mirrors = apply_distro_filtering(all_mirrors, distro_filter)?;
+
+    // Initialize performance scores for all mirrors to ensure they have valid stats
+    for mirror in filtered_mirrors.values_mut() {
+        // Calculate initial performance score if not already set
+        if mirror.stats.score == 0 {
+            mirror.calculate_performance_score();
+        }
+
+        // Ensure adaptive_max_concurrent has a reasonable default
+        if mirror.stats.adaptive_max_concurrent == 0 {
+            mirror.stats.adaptive_max_concurrent = 1;
+        }
+    }
+
+    Ok(filtered_mirrors)
 }
 
 /// Check if a mirror is suitable for the given distro, considering architecture-specific rules
@@ -805,6 +787,7 @@ fn append_http_log_to_file(http_log: &HttpLog) -> Result<()> {
         HttpEvent::NoContent => "no_content=1".to_string(),
         HttpEvent::NetError(err) => format!("net_error={}", err),
         HttpEvent::HttpError(code) => format!("http_error={}", code),
+        HttpEvent::TooManyRequests(count) => format!("too_many_requests={}", count),
     };
 
     let log_line = format!("{} {} {}\n",
@@ -839,34 +822,104 @@ fn update_mirror_performance(log_entry: &PerformanceLog) -> Result<()> {
     Ok(())
 }
 
+/*
+ * ============================================================================
+ * MAX_PARALLEL_CONNS MANAGEMENT FLOW
+ * ============================================================================
+ *
+ * This system implements adaptive connection limiting to prevent HTTP 429
+ * "Too Many Requests" errors by learning from server responses and adjusting
+ * per-site connection limits accordingly.
+ *
+ * FLOW OVERVIEW:
+ *
+ * 1. **Initial State**: All mirrors start with max_parallel_conns = None
+ *    (no learned limit, use adaptive_max_concurrent instead)
+ *
+ * 2. **HTTP 429 Detection**: When a download receives HTTP 429:
+ *    - The active connection count is captured from mirror.stats.active_downloads
+ *    - HttpEvent::TooManyRequests(conn_count) is logged to file
+ *    - update_mirror_http_event() is called immediately
+ *
+ * 3. **Limit Calculation**: In update_mirror_http_event():
+ *    - new_limit = min(conn_count - 1, old_limit)
+ *    - This ensures we never exceed the limit that caused 429
+ *    - The limit can only decrease, never increase
+ *
+ * 4. **Persistent Storage**: The limit is saved to log files as:
+ *    - Format: "too_many_requests=5" (where 5 is the connection count)
+ *    - parse_and_distribute_log_entries() reads this on startup
+ *    - Applies the same min(conn_count-1, old_limit) logic
+ *
+ * 5. **Mirror Selection**: select_best_mirror() respects both limits:
+ *    - adaptive_max_concurrent (calculated from performance)
+ *    - max_parallel_conns (learned from 429 errors)
+ *    - Uses the more restrictive of the two
+ *
+ * 6. **Automatic Recovery**: The system automatically:
+ *    - Skips mirrors that are at their learned limits
+ *    - Distributes load to other available mirrors
+ *    - Prevents repeated 429 errors from the same mirror
+ *
+ * BENEFITS:
+ * - Prevents cascading 429 errors across multiple downloads
+ * - Maintains optimal performance while respecting server limits
+ * - Provides persistent learning across application restarts
+ * - Enables graceful degradation when servers have strict limits
+ *
+ * EXAMPLE SCENARIO:
+ * - Mirror A has 5 active connections and receives 429
+ * - System learns: max_parallel_conns = 4 (5-1)
+ * - Future downloads to Mirror A are limited to 4 concurrent connections
+ * - If Mirror A receives another 429 with 4 connections, limit becomes 3
+ * - System automatically distributes excess load to other mirrors
+ */
+
 /// Update in-memory mirror data based on HTTP events
 fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
     let site = url2site(&http_log.url);
 
     if let Ok(mut mirrors_guard) = MIRRORS.lock() {
         if let Some(mirror) = mirrors_guard.mirrors.get_mut(&site) {
+            let stats = &mut mirror.stats;
+            stats.last_check = Some(http_log.timestamp);
+
             match &http_log.event {
                 HttpEvent::Latency(ms) => {
-                    // Update latency data
-                    mirror.record_performance(0, *ms as u32);
-                    mirror.calculate_performance_score();
+                    stats.latencies.push(*ms as u32);
                 },
                 HttpEvent::NoRange => {
-                    mirror.no_range = true;
+                    stats.no_range = true;
                 },
                 HttpEvent::NoContent => {
-                    mirror.no_content = true;
+                    stats.no_content = true;
                 },
                 HttpEvent::NetError(_) => {
-                    mirror.no_online = true;
+                    stats.no_online = true;
                 },
                 HttpEvent::HttpError(code) => {
                     if *code == 404 {
-                        mirror.no_content = true;
+                        stats.no_content = true;
                     } else if *code >= 500 {
-                        mirror.no_online = true;
+                        stats.no_online = true;
                     }
+                    *stats.http_errors.entry(*code).or_insert(0) += 1;
                 },
+                HttpEvent::TooManyRequests(conn_count_val) => {
+                    let conn_count = conn_count_val.clone();
+                    // Handle TooManyRequests event: set max_parallel_conns to min(conn_count-1, old_value)
+                    let new_limit = if conn_count > 1 { conn_count - 1 } else { 1 };
+                    let final_limit = if let Some(old_limit) = stats.max_parallel_conns {
+                        new_limit.min(old_limit)
+                    } else {
+                        new_limit
+                    };
+                    stats.max_parallel_conns = Some(final_limit);
+                    log::warn!("Learned new connection limit for {}: {} (from {} connections)",
+                              mirror.url, final_limit, conn_count);
+                    // Also record the 429 error in stats
+                    *stats.http_errors.entry(429).or_insert(0) += 1;
+                }
             }
         }
     }
@@ -965,12 +1018,12 @@ impl Mirrors {
         self.available_mirrors = self.mirrors.iter()
             .filter_map(|(site, mirror)| {
                 // Exclude mirrors with no_content or no_online
-                if mirror.no_content || mirror.no_online {
+                if mirror.stats.no_content || mirror.stats.no_online {
                     return None;
                 }
 
                 // If need_range is true, exclude mirrors with no_range=true
-                if need_range && mirror.no_range {
+                if need_range && mirror.stats.no_range {
                     return None;
                 }
 
@@ -990,8 +1043,8 @@ impl Mirrors {
 
         // Sort available mirrors by score (descending)
         self.available_mirrors.sort_by(|a, b| {
-            let score_a = self.mirrors.get(a).map(|m| m.score).unwrap_or(0);
-            let score_b = self.mirrors.get(b).map(|m| m.score).unwrap_or(0);
+            let score_a = self.mirrors.get(a).map(|m| m.stats.score).unwrap_or(0);
+            let score_b = self.mirrors.get(b).map(|m| m.stats.score).unwrap_or(0);
             score_b.cmp(&score_a)
         });
     }
@@ -1000,7 +1053,7 @@ impl Mirrors {
     fn calculate_mirror_stats(&mut self) {
         // Calculate total active downloads across all mirrors
         let total_downloads: usize = self.mirrors.values()
-            .map(|mirror| mirror.active_downloads.load(Ordering::Relaxed))
+            .map(|mirror| mirror.stats.active_downloads.load(Ordering::Relaxed))
             .sum();
 
         let total_mirrors = self.available_mirrors.len();
@@ -1021,8 +1074,15 @@ impl Mirrors {
                 let adaptive_max_concurrent = ((base_limit as f64) * scale_factor).ceil() as usize;
                 let adaptive_max_concurrent = adaptive_max_concurrent.max(1); // Ensure at least 1
 
+                // Respect the learned max_parallel_conns limit from 429 errors
+                let final_limit = if let Some(learned_limit) = mirror.stats.max_parallel_conns {
+                    adaptive_max_concurrent.min(learned_limit as usize)
+                } else {
+                    adaptive_max_concurrent
+                };
+
                 // Update the adaptive_max_concurrent field directly
-                mirror.adaptive_max_concurrent = adaptive_max_concurrent;
+                mirror.stats.adaptive_max_concurrent = final_limit;
             }
         }
     }
@@ -1033,16 +1093,25 @@ impl Mirrors {
             return Err(eyre!("No mirrors with valid distro directories found"));
         }
 
-        // Filter out mirrors that are at their adaptive concurrent limit
+        // Filter out mirrors that are at their concurrent limits
         let mirrors_under_thresh: Vec<_> = self.available_mirrors.iter()
             .filter_map(|site| {
                 self.mirrors.get(site).map(|mirror| {
-                    let current_usage = mirror.active_downloads.load(Ordering::Relaxed);
-                    if current_usage < mirror.adaptive_max_concurrent {
-                        Some((site, mirror))
-                    } else {
-                        None
+                    let current_usage = mirror.stats.active_downloads.load(Ordering::Relaxed);
+
+                    // Check against adaptive_max_concurrent limit
+                    if current_usage >= mirror.stats.adaptive_max_concurrent {
+                        return None;
                     }
+
+                    // Also check against learned max_parallel_conns limit if available
+                    if let Some(learned_limit) = mirror.stats.max_parallel_conns {
+                        if current_usage >= learned_limit as usize {
+                            return None;
+                        }
+                    }
+
+                    Some((site, mirror))
                 }).flatten()
             })
             .collect();
@@ -1056,12 +1125,15 @@ impl Mirrors {
         }
 
         let (_selected_site, selected_mirror) = mirrors_under_thresh[0];
-        let current_usage = selected_mirror.active_downloads.load(Ordering::Relaxed);
+        let current_usage = selected_mirror.stats.active_downloads.load(Ordering::Relaxed);
+        let adaptive_limit = selected_mirror.stats.adaptive_max_concurrent;
+        let learned_limit = selected_mirror.stats.max_parallel_conns;
 
-        log::debug!("Selected mirror: {} (usage: {}/{})",
+        log::debug!("Selected mirror: {} (usage: {}/{} adaptive, learned limit: {:?})",
             selected_mirror.url,
             current_usage,
-            selected_mirror.adaptive_max_concurrent
+            adaptive_limit,
+            learned_limit
         );
 
         Ok(selected_mirror)
@@ -1171,9 +1243,9 @@ impl Mirrors {
     pub fn increment_mirror_usage(&mut self, mirror_url: &str) {
         let site = url2site(mirror_url);
         if let Some(mirror) = self.mirrors.get_mut(&site) {
-            mirror.active_downloads.fetch_add(1, Ordering::Relaxed);
-            mirror.total_uses.fetch_add(1, Ordering::Relaxed);
-            mirror.last_used.store(
+            mirror.stats.active_downloads.fetch_add(1, Ordering::Relaxed);
+            mirror.stats.total_uses.fetch_add(1, Ordering::Relaxed);
+            mirror.stats.last_used.store(
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
                 Ordering::Relaxed
             );
@@ -1184,7 +1256,7 @@ impl Mirrors {
     pub fn decrement_mirror_usage(&mut self, mirror_url: &str) {
         let site = url2site(mirror_url);
         if let Some(mirror) = self.mirrors.get_mut(&site) {
-            mirror.active_downloads.fetch_sub(1, Ordering::Relaxed);
+            mirror.stats.active_downloads.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -1193,9 +1265,9 @@ impl Mirrors {
     pub fn get_usage_stats(&self) -> HashMap<String, (usize, u64, u64)> {
         self.mirrors.iter()
             .map(|(url, mirror)| {
-                let active = mirror.active_downloads.load(Ordering::Relaxed);
-                let total = mirror.total_uses.load(Ordering::Relaxed);
-                let last_used = mirror.last_used.load(Ordering::Relaxed);
+                let active = mirror.stats.active_downloads.load(Ordering::Relaxed);
+                let total = mirror.stats.total_uses.load(Ordering::Relaxed);
+                let last_used = mirror.stats.last_used.load(Ordering::Relaxed);
                 (url.clone(), (active, total, last_used))
             })
             .collect()
@@ -1227,7 +1299,7 @@ impl Mirrors {
         let nr_has_log = self.available_mirrors.iter()
             .filter(|site| {
                 self.mirrors.get(*site)
-                    .map(|mirror| !mirror.throughputs.is_empty())
+                    .map(|mirror| !mirror.stats.throughputs.is_empty())
                     .unwrap_or(false)
             })
             .count();
@@ -1245,7 +1317,7 @@ impl Mirrors {
             let mut empty_count = 0;
             self.available_mirrors.retain(|site| {
                 if let Some(mirror) = self.mirrors.get(site) {
-                    if mirror.throughputs.is_empty() {
+                    if mirror.stats.throughputs.is_empty() {
                         empty_count += 1;
                         if empty_count > max_empty_throughputs {
                             return false;  // Filter out this mirror
@@ -1297,8 +1369,8 @@ impl Drop for MirrorUsageGuard {
 /// Show performance stats for a single mirror
 fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
     // Show last 3 throughputs and latencies
-    let recent_throughputs: Vec<u32> = mirror.throughputs.iter().rev().take(3).copied().collect();
-    let recent_latencies: Vec<u32> = mirror.latencies.iter().rev().take(3).copied().collect();
+    let recent_throughputs: Vec<u32> = mirror.stats.throughputs.iter().rev().take(3).copied().collect();
+    let recent_latencies: Vec<u32> = mirror.stats.latencies.iter().rev().take(3).copied().collect();
 
     let throughput_str = if recent_throughputs.is_empty() {
         "[none]".to_string()
@@ -1320,13 +1392,13 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
 
     // Build status flags string - removed is_available check
     let mut status_flags = Vec::new();
-    if mirror.no_range {
+    if mirror.stats.no_range {
         status_flags.push("NoRange");
     }
-    if mirror.no_content {
+    if mirror.stats.no_content {
         status_flags.push("NoContent");
     }
-    if mirror.no_online {
+    if mirror.stats.no_online {
         status_flags.push("NoOnline");
     }
     let status_str = status_flags.join(", ");
@@ -1336,10 +1408,10 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
         rank,
         // Truncate long URLs for alignment
         if site.len() > 38 { site[..35].to_string() + "..." } else { site.to_string() },
-        mirror.score,
-        mirror.active_downloads.load(Ordering::Relaxed),
-        mirror.adaptive_max_concurrent,
-        mirror.total_uses.load(Ordering::Relaxed),
+        mirror.stats.score,
+        mirror.stats.active_downloads.load(Ordering::Relaxed),
+        mirror.stats.adaptive_max_concurrent,
+        mirror.stats.total_uses.load(Ordering::Relaxed),
         // Limit throughput string length for alignment
         if throughput_str.len() > 28 { throughput_str[..26].to_string() + ".." } else { throughput_str },
         latency_str,
@@ -1491,6 +1563,7 @@ fn parse_and_distribute_log_entries(
         let mut no_range = None;
         let mut net_error = None;
         let mut http_error = None;
+        let mut too_many_requests: Option<u32> = None;
 
         // Split the line into tokens
         let tokens: Vec<&str> = line.split_whitespace().collect();
@@ -1513,6 +1586,7 @@ fn parse_and_distribute_log_entries(
                     "no_range" => no_range = Some(value == "1" || value == "true"),
                     "net_error" => net_error = Some(value.to_string()),
                     "http_error" => http_error = Some(value.parse().unwrap_or(0)),
+                    "too_many_requests" => too_many_requests = value.parse().ok(),
                     "dur" => {}, // Duration field, ignored for now
                     _ => {} // Ignore unknown keys for forward compatibility
                 }
@@ -1545,18 +1619,32 @@ fn parse_and_distribute_log_entries(
                 // This is a download log entry
                 mirror.record_performance(throughput_bps as u32, 0);
                 mirror.calculate_performance_score();
-                mirror.no_online = false;
+                mirror.stats.no_online = false;
             } else if let Some(latency) = latency_ms {
                 // This is a latency event
                 mirror.record_performance(0, latency as u32);
                 mirror.calculate_performance_score();
             } else if let Some(true) = no_range {
                 // Server doesn't support range requests (permanent attribute)
-                mirror.no_range = true;
+                mirror.stats.no_range = true;
             } else if net_error.is_some() || http_error.is_some() {
-                if mirror.throughputs.is_empty() {
-                    mirror.no_online = true;
+                if mirror.stats.throughputs.is_empty() {
+                    mirror.stats.no_online = true;
                 }
+            } else if let Some(conn_count_val) = too_many_requests {
+                let conn_count = conn_count_val;
+                // Handle TooManyRequests event: set max_parallel_conns to min(conn_count-1, old_value)
+                let new_limit = if conn_count > 1 { conn_count - 1 } else { 1 };
+                let final_limit = if let Some(old_limit) = mirror.stats.max_parallel_conns {
+                    new_limit.min(old_limit)
+                } else {
+                    new_limit
+                };
+                mirror.stats.max_parallel_conns = Some(final_limit);
+                log::warn!("Learned new connection limit for {}: {} (from {} connections)",
+                          mirror.url, final_limit, conn_count);
+                // Also record the 429 error in stats
+                *mirror.stats.http_errors.entry(429).or_insert(0) += 1;
             }
         }
     }

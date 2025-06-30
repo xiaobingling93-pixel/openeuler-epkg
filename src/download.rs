@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -11,6 +10,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::collections::HashMap;
 
 use color_eyre::{eyre::eyre, eyre::WrapErr, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -1165,6 +1165,8 @@ pub enum DownloadResult {
 pub enum DownloadError {
     /// Fatal HTTP errors (4xx) that shouldn't be retried
     Fatal { code: u16, message: String },
+    /// The server responded with HTTP 429 Too Many Requests
+    TooManyRequests,
     /// Network connectivity or timeout issues
     Network { details: String },
     /// File system errors (permissions, disk space, etc.)
@@ -1183,6 +1185,7 @@ impl std::fmt::Display for DownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DownloadError::Fatal { code, message } => write!(f, "Fatal error (HTTP {}): {}", code, message),
+            DownloadError::TooManyRequests => write!(f, "Too many requests (HTTP 429)"),
             DownloadError::Network { details } => write!(f, "Network error: {}", details),
             DownloadError::FileSystem { operation, path, details } => write!(f, "File system error during {} at {}: {}", operation, path, details),
             DownloadError::ContentValidation { expected, actual } => write!(f, "Content validation failed: expected {}, got {}", expected, actual),
@@ -1669,6 +1672,9 @@ fn download_file_with_retries(
                             log::debug!("download_file_with_retries got already complete response for {}: {} bytes", resolved_url, bytes);
                             return Ok(());
                         },
+                        DownloadError::TooManyRequests => {
+                            log::debug!("download_file_with_retries got too many requests error for {}", resolved_url);
+                        },
                     }
                 } else {
                     log::debug!("download_file_with_retries got error for {}: {}", resolved_url, e);
@@ -2113,6 +2119,11 @@ fn handle_416_range_error(
 fn handle_non_416_http_error(code: u16, url: &str, task: &DownloadTask) -> Result<http::Response<ureq::Body>> {
     let error_msg = format!("HTTP {}", code);
     task.set_message(format!("{} - {}", error_msg, url));
+
+    if code == 429 {
+        log::debug!("Received HTTP 429 Too Many Requests for {}", url);
+        return Err(DownloadError::TooManyRequests.into());
+    }
 
     if code >= 400 && code < 500 {
         // For client errors (like 403, 404), create a simple DownloadError without verbose backtrace
@@ -2791,6 +2802,25 @@ fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
     let response = match execute_download_request(task, &resolved_url, existing_bytes) {
         Ok(resp) => resp,
         Err(e) => {
+            if let Some(download_err) = e.downcast_ref::<DownloadError>() {
+                if let DownloadError::TooManyRequests = download_err {
+                    // Get the active connection count for this mirror
+                    let active_conns = {
+                        let site = crate::mirror::url2site(&resolved_url);
+                        if let Ok(mirrors_guard) = crate::mirror::MIRRORS.lock() {
+                            mirrors_guard.mirrors.get(&site)
+                                .map(|mirror| mirror.stats.active_downloads.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    };
+
+                    // The error is HTTP 429, log it with connection count and fail the task to trigger a retry
+                    log_http_event_safe(&resolved_url, HttpEvent::TooManyRequests(active_conns as u32));
+                    return DownloadResult::Failed { error: download_err.clone() };
+                }
+            }
             let download_error = DownloadError::Network { details: format!("{}", e) };
             return DownloadResult::Failed { error: download_error };
         }
