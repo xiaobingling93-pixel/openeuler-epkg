@@ -123,24 +123,23 @@ static STATS_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 // HTTP event types for non-download operations
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum HttpEvent {
-    Latency(u64),       // ms
-    NoRange,            // Server doesn't support range requests
-    NoContent,          // Content not available (404)
-    NetError(String),   // Network error
-    HttpError(u16),     // HTTP error code
-    TooManyRequests(u32),    // Specific event for 429 errors with connection count
+    Latency(u64),               // ms
+    NoRange,                    // Server doesn't support range requests
+    NetError(String),           // Network error
+    HttpStatus(u16),            // HTTP response code
+    TooManyRequests(u32),       // Specific event for 429 errors with connection count
 }
 
 // Performance log entry structure (simplified - removed latency_ms, error_type, supports_range, content_available)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PerformanceLog {
-    pub timestamp: u64,      // Unix timestamp
-    pub url: String,         // The actual URL used for download
-    pub offset: u64,         // Starting offset for chunk tasks
+    pub timestamp: u64,         // Unix timestamp
+    pub url: String,            // The actual URL used for download
+    pub offset: u64,            // Starting offset for chunk tasks
     pub bytes_transferred: u64, // Actual bytes transferred from network
-    pub duration_ms: u64,    // Total duration including latency
-    pub throughput_bps: u64, // Calculated: bytes_transferred * 1000 / duration_ms
-    pub success: bool,       // Whether the operation succeeded
+    pub duration_ms: u64,       // Total duration including latency
+    pub throughput_bps: u64,    // Calculated: bytes_transferred * 1000 / duration_ms
+    pub success: bool,          // Whether the operation succeeded
 }
 
 // HTTP log entry structure for non-download events
@@ -784,9 +783,8 @@ fn append_http_log_to_file(http_log: &HttpLog) -> Result<()> {
     let event_str = match &http_log.event {
         HttpEvent::Latency(ms) => format!("latency={}", ms),
         HttpEvent::NoRange => "no_range=1".to_string(),
-        HttpEvent::NoContent => "no_content=1".to_string(),
         HttpEvent::NetError(err) => format!("net_error={}", err),
-        HttpEvent::HttpError(code) => format!("http_error={}", code),
+        HttpEvent::HttpStatus(code) => format!("http_status={}", code),
         HttpEvent::TooManyRequests(count) => format!("too_many_requests={}", count),
     };
 
@@ -891,16 +889,13 @@ fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
                 HttpEvent::NoRange => {
                     stats.no_range = true;
                 },
-                HttpEvent::NoContent => {
-                    stats.no_content = true;
-                },
                 HttpEvent::NetError(_) => {
                     stats.no_online = true;
                 },
-                HttpEvent::HttpError(code) => {
+                HttpEvent::HttpStatus(code) => {
                     if *code == 404 {
                         stats.no_content = true;
-                    } else if *code >= 500 {
+                    } else if *code == 403 || *code >= 500 {
                         stats.no_online = true;
                     }
                     *stats.http_errors.entry(*code).or_insert(0) += 1;
@@ -1562,7 +1557,7 @@ fn parse_and_distribute_log_entries(
         let mut latency_ms = None;
         let mut no_range = None;
         let mut net_error = None;
-        let mut http_error = None;
+        let mut http_status = None;
         let mut too_many_requests: Option<u32> = None;
 
         // Split the line into tokens
@@ -1585,7 +1580,7 @@ fn parse_and_distribute_log_entries(
                     "lat" | "latency" => latency_ms = Some(value.parse().unwrap_or(0)),
                     "no_range" => no_range = Some(value == "1" || value == "true"),
                     "net_error" => net_error = Some(value.to_string()),
-                    "http_error" => http_error = Some(value.parse().unwrap_or(0)),
+                    "http_status" => http_status = Some(value.parse().unwrap_or(0)),
                     "too_many_requests" => too_many_requests = value.parse().ok(),
                     "dur" => {}, // Duration field, ignored for now
                     _ => {} // Ignore unknown keys for forward compatibility
@@ -1627,9 +1622,17 @@ fn parse_and_distribute_log_entries(
             } else if let Some(true) = no_range {
                 // Server doesn't support range requests (permanent attribute)
                 mirror.stats.no_range = true;
-            } else if net_error.is_some() || http_error.is_some() {
+            } else if net_error.is_some() {
                 if mirror.stats.throughputs.is_empty() {
                     mirror.stats.no_online = true;
+                }
+            } else if let Some(code) = http_status {
+                if code == 403 || code >= 500 {
+                    if mirror.stats.throughputs.is_empty() {
+                        mirror.stats.no_online = true;
+                    }
+                    // DO NOT set no_content on 404 history logs: it may well be temp
+                    // issue due to rsync delays, or error in a different distro/version
                 }
             } else if let Some(conn_count_val) = too_many_requests {
                 let conn_count = conn_count_val;

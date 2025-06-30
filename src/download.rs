@@ -1916,9 +1916,13 @@ fn execute_download_request(
 
     // Execute the request and handle all possible outcomes
     let request_start = std::time::Instant::now();
-    match request.call() {
-        Ok(response) => handle_successful_response(response, task, resolved_url, request_start),
-        Err(ureq::Error::StatusCode(code)) => handle_http_status_error(code, task, resolved_url, existing_bytes, request_start),
+    let call_result = request.call();
+    let latency = request_start.elapsed().as_millis() as u64;
+    log_http_event_safe(resolved_url, HttpEvent::Latency(latency));
+
+    match call_result {
+        Ok(response) => handle_successful_response(response, task),
+        Err(ureq::Error::StatusCode(code)) => handle_http_status_error(code, task, resolved_url, existing_bytes),
         Err(ureq::Error::Io(e)) => handle_network_io_error(e, task, resolved_url),
         Err(e) => handle_general_request_error(e, task, resolved_url),
     }
@@ -1929,18 +1933,11 @@ fn execute_download_request(
 fn handle_successful_response(
     response: http::Response<ureq::Body>,
     task: &DownloadTask,
-    resolved_url: &str,
-    request_start: std::time::Instant,
 ) -> Result<http::Response<ureq::Body>> {
-    let latency = request_start.elapsed().as_millis() as u64;
-
     // Handle 304 Not Modified responses for ETag conditional requests
     if response.status().as_u16() == 304 {
-        return handle_304_not_modified_response(task, resolved_url, latency);
+        return handle_304_not_modified_response(task);
     }
-
-    // Log latency info for successful requests
-    log_http_event_safe(resolved_url, HttpEvent::Latency(latency));
 
     Ok(response)
 }
@@ -1952,22 +1949,17 @@ fn handle_http_status_error(
     task: &DownloadTask,
     resolved_url: &str,
     existing_bytes: u64,
-    request_start: std::time::Instant,
 ) -> Result<http::Response<ureq::Body>> {
-    let latency = request_start.elapsed().as_millis() as u64;
     log::debug!("HTTP error code {}", code);
 
     // Log latency even for errors
-    log_http_request_metrics(resolved_url, latency);
+    log_http_event_safe(resolved_url, HttpEvent::HttpStatus(code));
 
     // Handle specific HTTP status codes
     if code == 416 && existing_bytes > 0 {
         log::debug!("Handling HTTP 416 with existing_bytes={}", existing_bytes);
         return handle_416_range_error(task);
     }
-
-    // Log the specific HTTP error type
-    log_http_status_error(resolved_url, code);
 
     handle_non_416_http_error(code, resolved_url, task)
 }
@@ -1979,11 +1971,9 @@ fn handle_network_io_error(
     task: &DownloadTask,
     resolved_url: &str,
 ) -> Result<http::Response<ureq::Body>> {
+    log_http_event_safe(resolved_url, HttpEvent::NetError(e.to_string()));
+
     let error_msg = format!("Network error: {} - {}", e, resolved_url);
-
-    // Log network error
-    log_http_event_safe(resolved_url, HttpEvent::NetError(error_msg.clone()));
-
     task.set_message(error_msg.clone());
     Err(DownloadError::Network { details: error_msg }.into())
 }
@@ -1999,7 +1989,7 @@ fn handle_general_request_error(
     let error_msg = format!("Error downloading: {} - {}", error_str, resolved_url);
 
     // Log general error as network error
-    log_http_event_safe(resolved_url, HttpEvent::NetError(error_msg.clone()));
+    log_http_event_safe(resolved_url, HttpEvent::NetError(error_str.clone()));
 
     task.set_message(error_msg.clone());
 
@@ -2009,24 +1999,6 @@ fn handle_general_request_error(
     } else {
         Err(DownloadError::Network { details: error_msg }.into())
     }
-}
-
-/// Log HTTP request metrics for performance tracking
-/// Level 7: Logging - handles HTTP metrics logging
-fn log_http_request_metrics(resolved_url: &str, latency: u64) {
-    log_http_event_safe(resolved_url, HttpEvent::Latency(latency));
-}
-
-/// Log specific HTTP status errors for monitoring
-/// Level 7: Logging - handles HTTP status error logging
-fn log_http_status_error(resolved_url: &str, code: u16) {
-    let http_event = if code == 404 {
-        HttpEvent::NoContent
-    } else {
-        HttpEvent::HttpError(code)
-    };
-
-    log_http_event_safe(resolved_url, http_event);
 }
 
 /// Handle 416 Range Not Satisfiable error with full access to required context
@@ -4152,8 +4124,6 @@ fn check_ondemand_chunking(
 /// Handle 304 Not Modified response
 fn handle_304_not_modified_response(
     task: &DownloadTask,
-    resolved_url: &str,
-    latency: u64,
 ) -> Result<http::Response<ureq::Body>> {
     log::debug!("Received 304 Not Modified - file unchanged on server");
     task.set_message(format!("File unchanged (ETag match), skipping download - {}", task.chunk_path.display()));
@@ -4164,11 +4134,6 @@ fn handle_304_not_modified_response(
     // If the final file exists, send it to the channel if needed
     send_file_to_channel(task)
         .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
-
-    // Log this as a successful conditional request
-    if let Err(e) = append_http_log(resolved_url, HttpEvent::Latency(latency)) {
-        log::warn!("Failed to log 304 latency: {}", e);
-    }
 
     Err(DownloadError::AlreadyComplete { bytes: local_size }.into())
 }
