@@ -2804,22 +2804,32 @@ fn download_chunk_task(task: &DownloadTask) -> DownloadResult {
         Ok(resp) => resp,
         Err(e) => {
             if let Some(download_err) = e.downcast_ref::<DownloadError>() {
-                if let DownloadError::TooManyRequests = download_err {
-                    // Get the active connection count for this mirror
-                    let active_conns = {
-                        let site = crate::mirror::url2site(&resolved_url);
-                        if let Ok(mirrors_guard) = crate::mirror::MIRRORS.lock() {
-                            mirrors_guard.mirrors.get(&site)
-                                .map(|mirror| mirror.stats.active_downloads.load(std::sync::atomic::Ordering::Relaxed))
-                                .unwrap_or(0)
-                        } else {
-                            0
-                        }
-                    };
+                match download_err {
+                    DownloadError::TooManyRequests => {
+                        // Get the active connection count for this mirror
+                        let active_conns = {
+                            let site = crate::mirror::url2site(&resolved_url);
+                            if let Ok(mirrors_guard) = crate::mirror::MIRRORS.lock() {
+                                mirrors_guard.mirrors.get(&site)
+                                    .map(|mirror| mirror.stats.active_downloads.load(std::sync::atomic::Ordering::Relaxed))
+                                    .unwrap_or(0)
+                            } else {
+                                0
+                            }
+                        };
 
-                    // The error is HTTP 429, log it with connection count and fail the task to trigger a retry
-                    log_http_event_safe(&resolved_url, HttpEvent::TooManyRequests(active_conns as u32));
-                    return DownloadResult::Failed { error: download_err.clone() };
+                        // The error is HTTP 429, log it with connection count and fail the task to trigger a retry
+                        log_http_event_safe(&resolved_url, HttpEvent::TooManyRequests(active_conns as u32));
+                        return DownloadResult::Failed { error: download_err.clone() };
+                    },
+                    DownloadError::AlreadyComplete { bytes } => {
+                        // The download is already complete, return success
+                        return DownloadResult::Success { bytes_transferred: *bytes };
+                    },
+                    _ => {
+                        // For other download errors, return them as-is
+                        return DownloadResult::Failed { error: download_err.clone() };
+                    }
                 }
             }
             let download_error = DownloadError::Network { details: format!("{}", e) };
@@ -3811,8 +3821,12 @@ fn validate_cache_before_range_request(
     if validation_response.status().as_u16() == 304 {
         log::debug!("Cache validation passed: ETag matches (304 Not Modified)");
         task.set_message("Remote file unchanged (ETag match), skipping download".to_string());
+
+        // Get local file size for the AlreadyComplete error
+        let local_size = get_existing_file_size(local_path).unwrap_or(0);
+
         send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
-        return Err(eyre!("Download skipped - file unchanged"));
+        return Err(DownloadError::AlreadyComplete { bytes: local_size }.into());
     }
 
     // Parse response metadata for size/timestamp comparison
@@ -3835,7 +3849,7 @@ fn validate_cache_before_range_request(
             log::debug!("Cache validation passed: {}", reason);
             task.set_message(format!("Remote file unchanged ({}), skipping download", reason));
             send_file_to_channel(task).map_err(|e| eyre!("Failed to send file to channel: {}", e))?;
-            Err(eyre!("Download skipped - file unchanged"))
+            Err(DownloadError::AlreadyComplete { bytes: local_size }.into())
         }
         CacheDecision::AppendDownload { reason } => {
             log::debug!("Resuming download: {}", reason);
@@ -4137,6 +4151,9 @@ fn handle_304_not_modified_response(
     log::debug!("Received 304 Not Modified - file unchanged on server");
     task.set_message(format!("File unchanged (ETag match), skipping download - {}", task.chunk_path.display()));
 
+    // Get local file size for the AlreadyComplete error
+    let local_size = get_existing_file_size(&task.chunk_path).unwrap_or(0);
+
     // If the final file exists, send it to the channel if needed
     send_file_to_channel(task)
         .map_err(|e| eyre!("Failed to send cached file to channel: {}", e))?;
@@ -4146,7 +4163,7 @@ fn handle_304_not_modified_response(
         log::warn!("Failed to log 304 latency: {}", e);
     }
 
-    Err(eyre!("Download skipped - file unchanged (ETag match)"))
+    Err(DownloadError::AlreadyComplete { bytes: local_size }.into())
 }
 
 /// Context for chunk download operations
