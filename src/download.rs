@@ -20,7 +20,7 @@ use crate::dirs;
 use crate::models::*;
 use crate::mirror::{append_download_log, append_http_log, HttpEvent, MirrorUsageGuard, MIRRORS, Mirrors};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
-use filetime::set_file_mtime;
+
 
 #[derive(Debug)]
 pub struct DownloadTask {
@@ -37,6 +37,10 @@ pub struct DownloadTask {
     pub file_size:            AtomicU64,                                  // Expected file size for prioritization and verification (0 = unknown)
     pub attempt_number:       AtomicUsize,                                // Track which attempt number this is (0 = first attempt)
     pub is_immutable_file:    bool,                                       // True for files whose content won't change over time (filename == some id)
+
+    // Metadata from response headers, stored for later application
+    pub last_modified_header: Mutex<Option<String>>,
+    pub etag_header:          Mutex<Option<String>>,
 
     // Chunking semantics rules:
     // 1. chunk_offset - decided on initial allocation, won't change over time; 0 for master task
@@ -130,6 +134,8 @@ impl DownloadTask {
             file_size:         AtomicU64::new(file_size.unwrap_or(0)),
             attempt_number:    AtomicUsize::new(0),         // Initialize to 0 (first attempt)
             is_immutable_file,
+            last_modified_header: Mutex::new(None),
+            etag_header:          Mutex::new(None),
             chunk_tasks:       Arc::new(Mutex::new(Vec::new())),
             chunk_path,
             chunk_offset:      AtomicU64::new(0),
@@ -263,6 +269,8 @@ impl DownloadTask {
             file_size:            AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
             attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
             is_immutable_file:    self.is_immutable_file,               // Copy immutable file flag
+            last_modified_header: Mutex::new(None),
+            etag_header:          Mutex::new(None),
 
             chunk_tasks:          Arc::new(Mutex::new(Vec::new())),
             chunk_path:           PathBuf::from(chunk_path),
@@ -1771,18 +1779,8 @@ fn download_file(
         // Finalize download atomically
         atomic_file_completion(&task.chunk_path, &task.final_path)?;
 
-        // Apply metadata (timestamp and ETag) to the final file
-        let etag_path = task.chunk_path.with_extension("etag");
-        if let Some(etag) = load_etag(&etag_path) {
-            // Set metadata on the final file
-            set_file_metadata("", &etag, &task.final_path, task);
-
-            // Move ETag file to final location
-            let final_etag_path = task.final_path.with_extension("etag");
-            if let Err(e) = std::fs::rename(&etag_path, &final_etag_path) {
-                log::warn!("Failed to move ETag file to final location: {}", e);
-            }
-        }
+        // Apply stored metadata now that the file is in its final location
+        apply_stored_metadata(task);
 
         log::info!("download_file completed: {}", task.get_resolved_url());
     }
@@ -2329,28 +2327,6 @@ fn validate_download_size(downloaded: u64, total_size: u64, part_path: &Path) ->
     Ok(())
 }
 
-/// Set file metadata (timestamp and ETag) from response headers
-fn set_file_metadata(last_modified: &str, etag: &str, final_path: &Path, task: &DownloadTask) {
-    // Set timestamp if available
-    if !last_modified.is_empty() {
-        if let Ok(timestamp) = OffsetDateTime::parse(last_modified, &Rfc2822) {
-            let system_time = filetime::FileTime::from_system_time(timestamp.into());
-            if let Err(e) = set_file_mtime(final_path, system_time) {
-                log::warn!("Failed to set mtime for {}: {}", final_path.display(), e);
-            }
-        } else {
-            log::warn!("Failed to parse timestamp header value '{}' for mtime", last_modified);
-        }
-    }
-
-    // Skip saving etag for immutable files since their content won't change over time
-    if !etag.is_empty() && !task.is_immutable_file {
-        if let Err(e) = save_etag(final_path, etag) {
-            log::warn!("Failed to save ETag for {}: {}", final_path.display(), e);
-        }
-    }
-}
-
 /// Parse Content-Length header from response
 ///
 /// This function tries multiple approaches to extract the content size:
@@ -2482,9 +2458,9 @@ fn parse_etag(response: &http::Response<ureq::Body>) -> Option<String> {
 ///
 /// For a file like "package.rpm", this creates "package.rpm.etag" containing the ETag
 fn save_etag(file_path: &Path, etag: &str) -> Result<()> {
-    let etag_path = file_path.with_extension(
-        format!("{}.etag", file_path.extension().and_then(|s| s.to_str()).unwrap_or(""))
-    );
+    let mut etag_path_os = file_path.as_os_str().to_owned();
+    etag_path_os.push(".etag");
+    let etag_path = std::path::PathBuf::from(etag_path_os);
 
     std::fs::write(&etag_path, etag)
         .with_context(|| format!("Failed to save ETag to {}", etag_path.display()))?;
@@ -2497,9 +2473,9 @@ fn save_etag(file_path: &Path, etag: &str) -> Result<()> {
 ///
 /// Returns the stored ETag if the sidecar file exists and is readable
 fn load_etag(file_path: &Path) -> Option<String> {
-    let etag_path = file_path.with_extension(
-        format!("{}.etag", file_path.extension().and_then(|s| s.to_str()).unwrap_or(""))
-    );
+    let mut etag_path_os = file_path.as_os_str().to_owned();
+    etag_path_os.push(".etag");
+    let etag_path = std::path::PathBuf::from(etag_path_os);
 
     match std::fs::read_to_string(&etag_path) {
         Ok(etag) => {
@@ -2839,7 +2815,7 @@ fn process_download_response(
             return Ok(0); // Early exit for completed downloads
         }
         // Extract and store metadata for later use
-        handle_response_metadata(&response, task);
+        extract_and_store_metadata(&response, task);
     } else {
         handle_chunk_task_response(&response, &context.resolved_url)?;
     }
@@ -3597,23 +3573,28 @@ fn recover_chunked_download(task: &DownloadTask) -> Result<Vec<PathBuf>> {
     Ok(chunk_files)
 }
 
-/// Extract and set file metadata (timestamp and ETag) from response headers for master tasks
-fn handle_response_metadata(response: &http::Response<ureq::Body>, task: &DownloadTask) {
+/// Extract and store metadata from response headers for later application
+fn extract_and_store_metadata(response: &http::Response<ureq::Body>, task: &DownloadTask) {
     if !task.is_master_task() {
-        return; // Only master tasks handle metadata
+        return; // Only master tasks handle metadata.
     }
 
-    // Extract metadata from response headers
-    let last_modified = response.headers().get("last-modified")
-        .and_then(|s| s.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    // Extract Last-Modified header
+    if let Some(last_modified) = response.headers().get("last-modified").and_then(|s| s.to_str().ok()) {
+        *task.last_modified_header.lock().unwrap() = Some(last_modified.to_string());
+    }
 
-    let etag = parse_etag(response).unwrap_or_default();
+    // Extract ETag header
+    if let Some(etag) = parse_etag(response) {
+        *task.etag_header.lock().unwrap() = Some(etag);
+    }
+}
 
-    // Set metadata for the final file after download completion
-    if !last_modified.is_empty() {
-        if let Ok(timestamp) = time::OffsetDateTime::parse(&last_modified, &time::format_description::well_known::Rfc2822) {
+/// Apply stored metadata (timestamp and ETag) to the final downloaded file
+fn apply_stored_metadata(task: &DownloadTask) {
+    // Apply Last-Modified timestamp
+    if let Some(last_modified) = &*task.last_modified_header.lock().unwrap() {
+        if let Ok(timestamp) = time::OffsetDateTime::parse(last_modified, &time::format_description::well_known::Rfc2822) {
             let system_time = filetime::FileTime::from_system_time(timestamp.into());
             if let Err(e) = filetime::set_file_mtime(&task.final_path, system_time) {
                 log::warn!("Failed to set mtime for {}: {}", task.final_path.display(), e);
@@ -3621,10 +3602,13 @@ fn handle_response_metadata(response: &http::Response<ureq::Body>, task: &Downlo
         }
     }
 
-    // Skip saving etag for immutable files since their content won't change over time
-    if !etag.is_empty() && !task.is_immutable_file {
-        if let Err(e) = save_etag(&task.final_path, &etag) {
-            log::warn!("Failed to save ETag for {}: {}", task.final_path.display(), e);
+    // Apply ETag
+    if let Some(etag) = &*task.etag_header.lock().unwrap() {
+        // Skip saving etag for immutable files since their content won't change over time
+        if !task.is_immutable_file {
+            if let Err(e) = save_etag(&task.final_path, etag) {
+                log::warn!("Failed to save ETag for {}: {}", task.final_path.display(), e);
+            }
         }
     }
 }
