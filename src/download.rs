@@ -11,11 +11,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use color_eyre::{eyre::eyre, eyre::WrapErr, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::Agent;
 use ureq::http;
+use serde::{Serialize, Deserialize};
 use crate::dirs;
 use crate::models::*;
 use crate::mirror::{append_download_log, append_http_log, HttpEvent, MirrorUsageGuard, MIRRORS, Mirrors};
@@ -68,6 +70,7 @@ pub struct DownloadTask {
     pub final_path:           PathBuf,                                    // Store the final download path
     pub file_size:            AtomicU64,                                  // Expected file size for prioritization and verification (0 = unknown)
     pub attempt_number:       AtomicUsize,                                // Track which attempt number this is (0 = first attempt)
+
     // An immutable file means the remote file either remains static or will only be appended to over time.
     // This implies that:
     // - Any locally downloaded data is always valid as a prefix.
@@ -75,6 +78,9 @@ pub struct DownloadTask {
     // - If local_size < remote_size, a partial (range) download can complete it.
     // - If local_size > remote_size, the local file is considered corrupt and must be re-downloaded.
     pub is_immutable_file:    bool,
+
+    // NEW: File type classification for integrity handling
+    pub file_type:            FileType,
 
     // Metadata from response headers, stored for later application
     pub last_modified_header: Mutex<Option<String>>,
@@ -135,6 +141,70 @@ pub enum ChunkStatus {
     HasBeforehandChunk,
 }
 
+// =======================================
+// Data Integrity System - Data Structures
+// =======================================
+
+/// File type classification for appropriate integrity handling
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FileType {
+    Immutable,    // .deb, .rpm, .apk, by-hash files
+    Mutable,      // Release, repomd.xml, APKINDEX.tar.gz
+    AppendOnly,   // Future extension
+}
+
+/// Result of existing file validation
+#[derive(Debug)]
+pub enum ValidationResult {
+    SkipDownload(String),
+    ResumeFromPartial,
+    StartFresh,
+    CorruptionDetected,
+}
+
+/// Server metadata for consistency validation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerMetadata {
+    pub content_length: Option<u64>,
+    pub last_modified: Option<String>,
+    pub etag: Option<String>,
+    pub timestamp: u64,
+}
+
+impl ServerMetadata {
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        self.etag != other.etag ||
+        self.last_modified != other.last_modified ||
+        self.content_length != other.content_length
+    }
+}
+
+/// .pget-status file format for download state persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PgetStatus {
+    pub url: String,
+    pub file_type: FileType,
+    pub metadata: ServerMetadata,
+    pub timestamp: u64,
+}
+
+/// Error for metadata conflicts between chunks and master
+#[derive(Debug)]
+pub struct MetadataMismatchError {
+    pub message: String,
+    pub chunk_metadata: ServerMetadata,
+    pub master_metadata: ServerMetadata,
+}
+
+impl std::error::Error for MetadataMismatchError {}
+impl std::fmt::Display for MetadataMismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+// ============================================================================
+
 /// Helper function to update a download task's status
 ///
 /// This function handles the common pattern of updating a task's status
@@ -158,7 +228,14 @@ impl DownloadTask {
 
         // Determine if this is an immutable file based on the file path
         let file_path = final_path.to_string_lossy();
-        let is_immutable_file = is_immutable_file(&file_path);
+        let is_immutable_file = file_size.is_some() && is_immutable_filename(&file_path);
+
+        // Classify file type for integrity handling
+        let file_type = if is_immutable_filename(&file_path) {
+            FileType::Immutable
+        } else {
+            FileType::Mutable  // Default to safest option
+        };
 
         Self {
             url:               url.clone(),
@@ -172,6 +249,7 @@ impl DownloadTask {
             file_size:         AtomicU64::new(file_size.unwrap_or(0)),
             attempt_number:    AtomicUsize::new(0),         // Initialize to 0 (first attempt)
             is_immutable_file,
+            file_type,
             last_modified_header: Mutex::new(None),
             etag_header:          Mutex::new(None),
             chunk_tasks:       Arc::new(Mutex::new(Vec::new())),
@@ -202,7 +280,7 @@ impl DownloadTask {
 
     /// Check if this is a master task (has chunk tasks)
     pub fn is_master_task(&self) -> bool {
-        !self.is_chunk_task()
+        self.chunk_path.to_string_lossy().ends_with(".part")
     }
 
     /// Check if this is a chunk task (has non-zero offset or is explicitly a chunk)
@@ -307,6 +385,7 @@ impl DownloadTask {
             file_size:            AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
             attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
             is_immutable_file:    self.is_immutable_file,               // Copy immutable file flag
+            file_type:            self.file_type.clone(),               // Copy file type classification
             last_modified_header: Mutex::new(None),
             etag_header:          Mutex::new(None),
 
@@ -1378,10 +1457,11 @@ pub fn download_urls(
 /// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
 /// Determine if a file is immutable based on its file path
 /// Immutable files are those whose content won't change over time
-fn is_immutable_file(file_path: &str) -> bool {
+fn is_immutable_filename(file_path: &str) -> bool {
     file_path.ends_with(".deb") ||
     file_path.ends_with(".rpm") ||
     file_path.ends_with(".apk") ||
+    file_path.ends_with(".epkg") ||
     file_path.ends_with(".conda") ||
     file_path.contains("/by-hash/") ||
     file_path.ends_with(".gz") ||

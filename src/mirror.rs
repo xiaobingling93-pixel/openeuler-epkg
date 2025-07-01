@@ -128,6 +128,7 @@ pub enum HttpEvent {
     NetError(String),           // Network error
     HttpStatus(u16),            // HTTP response code
     TooManyRequests(u32),       // Specific event for 429 errors with connection count
+    OldContent,                 // Server has old/inconsistent content (for integrity system)
 }
 
 // Performance log entry structure (simplified - removed latency_ms, error_type, supports_range, content_available)
@@ -192,6 +193,7 @@ pub struct MirrorStats {
     pub no_range: bool,         // whether server supports Range requests
     pub no_online: bool,        // whether server is in service
     pub no_content: bool,       // whether server has the files we requested in current run
+    pub old_content: bool,      // whether server has old/inconsistent content (integrity system)
     pub adaptive_max_concurrent: usize,  // cached value of adaptive max concurrent limit
     pub active_downloads: AtomicUsize,
     pub total_uses: AtomicU64,
@@ -213,6 +215,7 @@ impl Clone for MirrorStats {
             no_range: self.no_range,
             no_online: self.no_online,
             no_content: self.no_content,
+            old_content: self.old_content,
             adaptive_max_concurrent: self.adaptive_max_concurrent,
             active_downloads: AtomicUsize::new(self.active_downloads.load(Ordering::Relaxed)),
             total_uses: AtomicU64::new(self.total_uses.load(Ordering::Relaxed)),
@@ -786,6 +789,7 @@ fn append_http_log_to_file(http_log: &HttpLog) -> Result<()> {
         HttpEvent::NetError(err) => format!("net_error={}", err),
         HttpEvent::HttpStatus(code) => format!("http_status={}", code),
         HttpEvent::TooManyRequests(count) => format!("too_many_requests={}", count),
+        HttpEvent::OldContent => "old_content=1".to_string(),
     };
 
     let log_line = format!("{} {} {}\n",
@@ -914,6 +918,11 @@ fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
                               mirror.url, final_limit, conn_count);
                     // Also record the 429 error in stats
                     *stats.http_errors.entry(429).or_insert(0) += 1;
+                },
+                HttpEvent::OldContent => {
+                    // Mark mirror as having old/inconsistent content for integrity system
+                    stats.old_content = true;
+                    log::warn!("Mirror {} marked as having old/inconsistent content", mirror.url);
                 }
             }
         }
@@ -1012,8 +1021,8 @@ impl Mirrors {
     fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str) {
         self.available_mirrors = self.mirrors.iter()
             .filter_map(|(site, mirror)| {
-                // Exclude mirrors with no_content or no_online
-                if mirror.stats.no_content || mirror.stats.no_online {
+                // Exclude mirrors with no_content, old_content, or no_online
+                if mirror.stats.no_content || mirror.stats.old_content || mirror.stats.no_online {
                     return None;
                 }
 
@@ -1393,6 +1402,9 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
     if mirror.stats.no_content {
         status_flags.push("NoContent");
     }
+    if mirror.stats.old_content {
+        status_flags.push("OldContent");
+    }
     if mirror.stats.no_online {
         status_flags.push("NoOnline");
     }
@@ -1559,6 +1571,7 @@ fn parse_and_distribute_log_entries(
         let mut net_error = None;
         let mut http_status = None;
         let mut too_many_requests: Option<u32> = None;
+        let mut old_content = None;
 
         // Split the line into tokens
         let tokens: Vec<&str> = line.split_whitespace().collect();
@@ -1582,6 +1595,7 @@ fn parse_and_distribute_log_entries(
                     "net_error" => net_error = Some(value.to_string()),
                     "http_status" => http_status = Some(value.parse().unwrap_or(0)),
                     "too_many_requests" => too_many_requests = value.parse().ok(),
+                    "old_content" => old_content = Some(value == "1" || value == "true"),
                     "dur" => {}, // Duration field, ignored for now
                     _ => {} // Ignore unknown keys for forward compatibility
                 }
@@ -1648,6 +1662,10 @@ fn parse_and_distribute_log_entries(
                           mirror.url, final_limit, conn_count);
                 // Also record the 429 error in stats
                 *mirror.stats.http_errors.entry(429).or_insert(0) += 1;
+            } else if let Some(true) = old_content {
+                // Handle OldContent event: mark mirror as having old/inconsistent content
+                mirror.stats.old_content = true;
+                log::warn!("Mirror {} marked as having old/inconsistent content (from log)", mirror.url);
             }
         }
     }
