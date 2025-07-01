@@ -32,6 +32,31 @@ The **Chunked Download System** transforms our single-threaded download mechanis
 
 ---
 
+## Chunking Architecture
+
+The system uses a 3-level chunking architecture:
+
+1. **Level 1 (L1)**: Master tasks - handle the main download and coordinate chunks
+2. **Level 2 (L2)**: Beforehand chunks - created before HTTP request for large files
+3. **Level 3 (L3)**: On-demand chunks - created during download for slow transfers
+
+### Chunking Constants
+- `MIN_FILE_SIZE_FOR_CHUNKING`: 3MB - minimum file size to trigger chunking
+- `PGET_CHUNK_SIZE`: 1MB - size of beforehand chunks
+- `ONDEMAND_CHUNK_SIZE`: 256KB - size of on-demand chunks
+
+### Chunk File Naming
+- Master task: `filename.part`
+- Chunk tasks: `filename.part-O{offset}`
+
+This architecture enables:
+- Parallel downloads for large files
+- Resume capability from partial downloads
+- Real-time streaming of completed chunks
+- Automatic retry and recovery mechanisms
+
+---
+
 ## 🏗️ System Architecture Overview
 
 ```mermaid

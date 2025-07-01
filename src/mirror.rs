@@ -440,12 +440,12 @@ fn merge_single_manual_mirror(
         if !manual_mirror.distro_dirs.is_empty() {
             existing_mirror.distro_dirs = manual_mirror.distro_dirs;
         }
-        log::debug!("Merged manual mirror data for {}", url);
+        log::trace!("Merged manual mirror data for {}", url);
     } else {
         // Add new manual mirror
         manual_mirror.url = url.clone();
         all_mirrors_raw.insert(url.clone(), manual_mirror);
-        log::debug!("Added new manual mirror: {}", url);
+        log::trace!("Added new manual mirror: {}", url);
     }
 }
 
@@ -914,15 +914,15 @@ fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
                         new_limit
                     };
                     stats.max_parallel_conns = Some(final_limit);
-                    log::warn!("Learned new connection limit for {}: {} (from {} connections)",
-                              mirror.url, final_limit, conn_count);
+                    log::debug!("Learned new connection limit for {}: {} (from {} connections) when requesting {}",
+                              mirror.url, final_limit, conn_count, http_log.url);
                     // Also record the 429 error in stats
                     *stats.http_errors.entry(429).or_insert(0) += 1;
                 },
                 HttpEvent::OldContent => {
                     // Mark mirror as having old/inconsistent content for integrity system
                     stats.old_content = true;
-                    log::warn!("Mirror {} marked as having old/inconsistent content", mirror.url);
+                    log::debug!("Mirror {} marked as having old/inconsistent content", mirror.url);
                 }
             }
         }
@@ -1395,18 +1395,22 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
     };
 
     // Build status flags string - removed is_available check
-    let mut status_flags = Vec::new();
+    let mut status_flags: Vec<String> = Vec::new();
     if mirror.stats.no_range {
-        status_flags.push("NoRange");
+        status_flags.push("NoRange".to_string());
     }
     if mirror.stats.no_content {
-        status_flags.push("NoContent");
+        status_flags.push("NoContent".to_string());
     }
     if mirror.stats.old_content {
-        status_flags.push("OldContent");
+        status_flags.push("OldContent".to_string());
     }
     if mirror.stats.no_online {
-        status_flags.push("NoOnline");
+        status_flags.push("NoOnline".to_string());
+    }
+    // Show learned maximum parallel connections if present
+    if let Some(limit) = mirror.stats.max_parallel_conns {
+        status_flags.push(format!("Limit={}", limit));
     }
     let status_str = status_flags.join(", ");
 
@@ -1658,14 +1662,14 @@ fn parse_and_distribute_log_entries(
                     new_limit
                 };
                 mirror.stats.max_parallel_conns = Some(final_limit);
-                log::warn!("Learned new connection limit for {}: {} (from {} connections)",
-                          mirror.url, final_limit, conn_count);
+                log::trace!("Learned new connection limit for {}: {} (from {} connections) when requesting {}",
+                          mirror.url, final_limit, conn_count, url);
                 // Also record the 429 error in stats
                 *mirror.stats.http_errors.entry(429).or_insert(0) += 1;
             } else if let Some(true) = old_content {
                 // Handle OldContent event: mark mirror as having old/inconsistent content
                 mirror.stats.old_content = true;
-                log::warn!("Mirror {} marked as having old/inconsistent content (from log)", mirror.url);
+                log::trace!("Mirror {} marked as having old/inconsistent content (from log)", mirror.url);
             }
         }
     }

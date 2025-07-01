@@ -142,6 +142,8 @@ fn setup_ctrlc() {
             println!("\nCould not access mirror statistics (lock contention)");
         }
 
+        crate::download::DOWNLOAD_MANAGER.dump_all_tasks();
+
         // Get information about all threads
         print_all_thread_backtraces();
 

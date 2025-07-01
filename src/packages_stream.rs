@@ -405,7 +405,7 @@ impl PackagesStreamline {
                 if error_string.contains("corrupt xz stream") && self.output_offset > 0 && self.partial_line.is_empty() {
                     // Ubuntu Packages.xz will trigger this corrupt xz stream on EOF, in which case
                     // we already have complete packages.txt output, in this case the error can be ignored
-                    log::warn!("Detected corrupt xz stream and we likely have complete output, stopping processing");
+                    log::debug!("Detected false corrupt xz stream and we likely have complete output, stopping processing");
                     return Ok(false);
                 }
 
