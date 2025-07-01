@@ -11,13 +11,14 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::collections::HashMap;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use color_eyre::{eyre::eyre, eyre::WrapErr, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ureq::Agent;
 use ureq::http;
 use serde::{Serialize, Deserialize};
+use serde_json;
 use crate::dirs;
 use crate::models::*;
 use crate::mirror::{append_download_log, append_http_log, HttpEvent, MirrorUsageGuard, MIRRORS, Mirrors};
@@ -25,6 +26,11 @@ use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 
 
 impl DownloadTask {
+    /// Returns the path to the .pget-status file, which is based on the final file path.
+    pub fn pget_status_path(&self) -> PathBuf {
+        self.final_path.with_extension("pget-status")
+    }
+
     /// Returns the path to the ETag file, which is based on the final file path.
     pub fn etag_path(&self) -> PathBuf {
         self.final_path.with_extension("etag")
@@ -79,7 +85,7 @@ pub struct DownloadTask {
     // - If local_size > remote_size, the local file is considered corrupt and must be re-downloaded.
     pub is_immutable_file:    bool,
 
-    // NEW: File type classification for integrity handling
+    // File type classification for integrity handling
     pub file_type:            FileType,
 
     // Metadata from response headers, stored for later application
@@ -226,16 +232,9 @@ impl DownloadTask {
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = final_path.with_extension("part");
 
-        // Determine if this is an immutable file based on the file path
-        let file_path = final_path.to_string_lossy();
-        let is_immutable_file = file_size.is_some() && is_immutable_filename(&file_path);
-
-        // Classify file type for integrity handling
-        let file_type = if is_immutable_filename(&file_path) {
-            FileType::Immutable
-        } else {
-            FileType::Mutable  // Default to safest option
-        };
+        // Use new classification system
+        let file_type = classify_file_type(&final_path, file_size);
+        let is_immutable_file = matches!(file_type, FileType::Immutable);
 
         Self {
             url:               url.clone(),
@@ -1452,62 +1451,6 @@ pub fn download_urls(
     }
 }
 
-/// Resolve mirror placeholder in URL with smart mirror selection
-///
-/// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
-/// Determine if a file is immutable based on its file path
-/// Immutable files are those whose content won't change over time
-fn is_immutable_filename(file_path: &str) -> bool {
-    file_path.ends_with(".deb") ||
-    file_path.ends_with(".rpm") ||
-    file_path.ends_with(".apk") ||
-    file_path.ends_with(".epkg") ||
-    file_path.ends_with(".conda") ||
-    file_path.contains("/by-hash/") ||
-    file_path.ends_with(".gz") ||
-    file_path.ends_with(".xz") ||
-    file_path.ends_with(".zst")
-}
-
-/// Checks if an immutable file exists with matching size and can be considered already downloaded
-/// Immutable files are files whose content won't change over time (filename == some id),
-/// so as long as our local size == remote size, we can trust it's the same content.
-fn check_existing_immutable_file(task: &DownloadTask) -> Result<Option<()>> {
-    let final_path = &task.final_path;
-
-    // Early return if file doesn't exist or we don't know the expected size
-    if !final_path.exists() {
-        return Ok(None);
-    }
-
-    let file_size_val = task.file_size.load(Ordering::Relaxed); if file_size_val == 0 {
-        return Ok(None);
-    };
-
-    // Only check immutable files
-    if !task.is_immutable_file {
-        return Ok(None);
-    }
-
-    if let Ok(metadata) = fs::metadata(final_path) {
-        let actual_size = metadata.len();
-        if actual_size == file_size_val {
-            log::info!("Immutable file {} already exists with correct size {}, treating as already downloaded",
-                      final_path.display(), actual_size);
-
-            // Send file content to channel if needed for hash verification
-            send_file_to_channel(task)
-                .with_context(|| format!("Failed to send existing file to channel: {}", final_path.display()))?;
-
-            // Mark task as completed
-            update_download_status(task, DownloadStatus::Completed)?;
-            return Ok(Some(()));
-        }
-    }
-
-    Ok(None)
-}
-
 /// Prepare the download environment (rename existing file, create directories)
 fn prepare_download_environment(final_path: &Path, part_path: &Path) -> Result<()> {
     if final_path.exists() {
@@ -1603,10 +1546,26 @@ fn download_task(
 
     let part_path = final_path.with_extension("part");
 
-    // Check if we can skip download for existing package files
-    if let Some(()) = check_existing_immutable_file(task)? {
-        cleanup_pid_file(&pid_file)?;
-        return Ok(());
+    // Validate existing files and determine appropriate download action
+    match validate_existing_files(task)? {
+        ValidationResult::SkipDownload(reason) => {
+            log::info!("Skipping download: {}", reason);
+            cleanup_pid_file(&pid_file)?;
+            return Ok(());
+        }
+        ValidationResult::CorruptionDetected => {
+            log::warn!("Corruption detected, handling...");
+            handle_corruption_detection(task)?;
+            // Continue with fresh download
+        }
+        ValidationResult::ResumeFromPartial => {
+            log::info!("Resuming from partial file");
+            // Continue with existing partial file
+        }
+        ValidationResult::StartFresh => {
+            log::info!("Starting fresh download");
+            // Continue with fresh download
+        }
     }
 
     // Try to recover from previous chunked downloads
@@ -4296,5 +4255,284 @@ fn ensure_chunk_directory_exists(task: &DownloadTask) -> Result<()> {
             }.into());
         }
     }
+    Ok(())
+}
+
+// ===========================
+// File Validation Logic
+// ===========================
+
+/// Resolve mirror placeholder in URL with smart mirror selection
+///
+/// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
+/// Determine if a file is immutable based on its file path
+/// Immutable files are those whose content won't change over time
+fn is_immutable_filename(file_path: &str) -> bool {
+    file_path.ends_with(".deb") ||
+    file_path.ends_with(".rpm") ||
+    file_path.ends_with(".apk") ||
+    file_path.ends_with(".epkg") ||
+    file_path.ends_with(".conda") ||
+    file_path.contains("/by-hash/") ||
+    file_path.ends_with(".gz") ||
+    file_path.ends_with(".xz") ||
+    file_path.ends_with(".zst")
+}
+
+/// Classify file type for integrity handling based on filename and path
+fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType {
+    let path_str = final_path.to_string_lossy();
+
+    // Immutable files (packages) - require known size
+    if file_size.is_some() && is_immutable_filename(&path_str) {
+        return FileType::Immutable;
+    }
+
+    // Append-only files (future extension)
+    // return FileType::AppendOnly;
+
+    // Default to mutable for safety (all repository metadata files)
+    FileType::Mutable
+}
+
+/// Validate existing files and determine appropriate download action
+fn validate_existing_files(task: &DownloadTask) -> Result<ValidationResult> {
+    let final_path = &task.final_path;
+    let file_type = &task.file_type;
+    let expected_size = task.file_size.load(Ordering::Relaxed);
+
+    // Early return if file doesn't exist
+    if !final_path.exists() {
+        return Ok(ValidationResult::StartFresh);
+    }
+
+    // Get local file metadata
+    let local_metadata = match fs::metadata(final_path) {
+        Ok(meta) => meta,
+        Err(e) => {
+            log::warn!("Failed to read local file metadata for {}: {}", final_path.display(), e);
+            return Ok(ValidationResult::StartFresh);
+        }
+    };
+
+    let local_size = local_metadata.len();
+
+    match file_type {
+        FileType::Immutable | FileType::AppendOnly => {
+            // For immutable and append-only files, we can trust size-based validation
+            if expected_size > 0 {
+                handle_size_based_validation(task, local_size, expected_size, file_type)
+            } else {
+                // No expected size available - treat as mutable for safety
+                log::info!("{} file {} exists but no expected size available, treating as mutable",
+                          match file_type {
+                              FileType::Immutable => "Immutable",
+                              FileType::AppendOnly => "Append-only",
+                              _ => unreachable!()
+                          },
+                          final_path.display());
+                Ok(ValidationResult::StartFresh)
+            }
+        }
+
+        FileType::Mutable => {
+            // For mutable files, we need to check server metadata
+            // This will be handled by download_file_with_integrity() which gets server metadata first
+            log::info!("Mutable file {} exists, will validate against server metadata",
+                      final_path.display());
+            Ok(ValidationResult::StartFresh)
+        }
+    }
+}
+
+/// Handle size-based validation for immutable and append-only files
+fn handle_size_based_validation(
+    task: &DownloadTask,
+    local_size: u64,
+    expected_size: u64,
+    file_type: &FileType,
+) -> Result<ValidationResult> {
+    let final_path = &task.final_path;
+
+    match file_type {
+        FileType::Immutable => {
+            if local_size == expected_size {
+                log::info!("Immutable file {} already exists with correct size {}, treating as already downloaded",
+                          final_path.display(), local_size);
+
+                // Send file content to channel if needed for hash verification
+                send_file_to_channel(task)
+                    .with_context(|| format!("Failed to send existing file to channel: {}", final_path.display()))?;
+
+                // Mark task as completed
+                update_download_status(task, DownloadStatus::Completed)?;
+                return Ok(ValidationResult::SkipDownload("File exists with correct size".to_string()));
+            } else if local_size > expected_size {
+                log::warn!("Immutable file {} has larger size than expected ({} > {}), file may be corrupt",
+                          final_path.display(), local_size, expected_size);
+                return Ok(ValidationResult::CorruptionDetected);
+            } else {
+                // local_size < expected_size - can resume from partial
+                log::info!("Immutable file {} exists but incomplete ({} < {}), will resume download",
+                          final_path.display(), local_size, expected_size);
+                return Ok(ValidationResult::ResumeFromPartial);
+            }
+        }
+
+        FileType::AppendOnly => {
+            if local_size >= expected_size {
+                log::info!("Append-only file {} already exists with sufficient size ({} >= {}), treating as complete",
+                          final_path.display(), local_size, expected_size);
+
+                // Send file content to channel if needed
+                send_file_to_channel(task)
+                    .with_context(|| format!("Failed to send existing file to channel: {}", final_path.display()))?;
+
+                update_download_status(task, DownloadStatus::Completed)?;
+                return Ok(ValidationResult::SkipDownload("File exists with sufficient size".to_string()));
+            } else {
+                // local_size < expected_size - can resume from partial
+                log::info!("Append-only file {} exists but incomplete ({} < {}), will resume download",
+                          final_path.display(), local_size, expected_size);
+                return Ok(ValidationResult::ResumeFromPartial);
+            }
+        }
+
+        _ => unreachable!("This function only handles Immutable and AppendOnly file types")
+    }
+}
+
+/// Get server metadata from HTTP response headers
+fn extract_server_metadata(response: &http::Response<ureq::Body>) -> ServerMetadata {
+    let content_length = parse_content_length(response);
+    let last_modified = response.headers().get("last-modified").map(|s| s.to_str().unwrap_or("").to_string());
+    let etag = parse_etag(response);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    ServerMetadata {
+        content_length,
+        last_modified,
+        etag,
+        timestamp,
+    }
+}
+
+/// Load .pget-status file if it exists
+fn load_pget_status(task: &DownloadTask) -> Result<Option<PgetStatus>> {
+    let status_path = task.pget_status_path();
+
+    if !status_path.exists() {
+        return Ok(None);
+    }
+
+    match fs::read_to_string(&status_path) {
+        Ok(content) => {
+            match serde_json::from_str::<PgetStatus>(&content) {
+                Ok(status) => Ok(Some(status)),
+                Err(e) => {
+                    log::warn!("Failed to parse .pget-status file {}: {}", status_path.display(), e);
+                    Ok(None)
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to read .pget-status file {}: {}", status_path.display(), e);
+            Ok(None)
+        }
+    }
+}
+
+/// Save .pget-status file with current metadata
+fn save_pget_status(task: &DownloadTask, metadata: &ServerMetadata) -> Result<()> {
+    let status_path = task.pget_status_path();
+
+    let pget_status = PgetStatus {
+        url: task.url.clone(),
+        file_type: task.file_type.clone(),
+        metadata: metadata.clone(),
+        timestamp: metadata.timestamp,
+    };
+
+    let json_content = serde_json::to_string_pretty(&pget_status)
+        .with_context(|| "Failed to serialize PgetStatus to JSON")?;
+
+    fs::write(&status_path, json_content)
+        .with_context(|| format!("Failed to write .pget-status file: {}", status_path.display()))?;
+
+    Ok(())
+}
+
+/// Validate chunk metadata against master metadata for consistency
+fn validate_chunk_metadata(chunk_metadata: &ServerMetadata, master_metadata: &ServerMetadata) -> Result<()> {
+    if chunk_metadata.conflicts_with(master_metadata) {
+        let error = MetadataMismatchError {
+            message: "Chunk metadata conflicts with master metadata".to_string(),
+            chunk_metadata: chunk_metadata.clone(),
+            master_metadata: master_metadata.clone(),
+        };
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+/// Handle corruption detection by renaming corrupted files
+fn handle_corruption_detection(task: &DownloadTask) -> Result<()> {
+    let final_path = &task.final_path;
+    let corrupted_path = final_path.with_extension("bad");
+
+    if final_path.exists() {
+        fs::rename(final_path, &corrupted_path)
+            .with_context(|| format!("Failed to rename corrupted file {} to {}",
+                                   final_path.display(), corrupted_path.display()))?;
+
+        log::warn!("Corrupted file {} renamed to {}", final_path.display(), corrupted_path.display());
+    }
+
+    // Clean up all related files
+    cleanup_related_part_files(task)?;
+
+    Ok(())
+}
+
+fn cleanup_pget_status_file(task: &DownloadTask) -> Result<()> {
+    let status_path = task.pget_status_path();
+    if status_path.exists() {
+        fs::remove_file(&status_path)?;
+    }
+    Ok(())
+}
+
+fn cleanup_related_part_files(task: &DownloadTask) -> Result<()> {
+    let part_path = &task.chunk_path;
+
+    // Remove .part file
+    if part_path.exists() {
+        fs::remove_file(part_path)?;
+    }
+
+    // Remove .pget-status file
+    cleanup_pget_status_file(task)?;
+
+    // Remove any chunk files (.part-O*) by globbing filesystem
+    if let Some(parent) = part_path.parent() {
+        let chunk_prefix = part_path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| format!("{}-O", s))
+            .unwrap_or_default();
+
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.starts_with(&chunk_prefix) {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
