@@ -79,17 +79,13 @@ impl PackageManager {
         let elf_loader_path = dirs.epkg_cache.join(format!("{}-{}", elf_loader, arch));
         let elf_loader_sha = dirs.epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch));
 
-        // Check if running from git repo
-        let current_exe = std::env::current_exe()
-            .context("Failed to get current executable path")?;
-        let repo_root = current_exe.parent().unwrap().parent().unwrap().parent().unwrap();
-        let git_dir = repo_root.join(".git");
         let mut need_download_epkg_manager: bool = false;
 
         // Collect urls for downloading in parallel
         let mut urls = Vec::new();
 
-        if git_dir.exists() {
+        let repo_root = find_repo_root()?;
+        if is_valid_local_repo(&repo_root) {
             // Create symlink directly to git working directory
             let env_opt = env_root.join("opt");
             let epkg_manager_dir = env_opt.join("epkg-manager");
@@ -106,8 +102,10 @@ impl PackageManager {
         }
 
         // Check for local elf-loader
-        let local_loader = repo_root.parent().unwrap()
-            .join("elf-loader/src/loader");
+        let local_loader = match repo_root.parent() {
+            Some(parent) => parent.join("elf-loader/src/loader"),
+            None => repo_root.join("elf-loader/src/loader"),
+        };
 
         if local_loader.exists() {
             fs::copy(&local_loader, &elf_loader_path)
@@ -285,4 +283,38 @@ impl PackageManager {
 
         Ok(())
     }
+}
+
+fn find_repo_root() -> Result<std::path::PathBuf> {
+    // Check if running from git repo
+    let current_exe = std::env::current_exe()
+        .context("Failed to get current executable path")?;
+
+    let repo_root = if let Some(mut path) = current_exe.parent() {
+        // Look for .git directory in current directory or up to 3 levels up
+        for _ in 0..4 {
+            let git_dir = path.join(".git");
+            if git_dir.exists() {
+                break;
+            }
+            if let Some(parent) = path.parent() {
+                path = parent;
+            } else {
+                // Reached root directory without finding .git
+                break;
+            }
+        }
+        path.to_path_buf()
+    } else {
+        // If current_exe has no parent, use the current directory
+        std::env::current_dir()
+            .context("Failed to get current directory")?
+    };
+
+    Ok(repo_root)
+}
+
+fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
+    repo_root.join(".git").exists() &&
+    repo_root.join("lib/epkg-rc.sh").exists()
 }
