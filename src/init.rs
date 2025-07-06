@@ -15,6 +15,14 @@ use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
 
+fn print_banner() {
+    println!(r#"         ____  _  ______   "#);
+    println!(r#"   ____ |  _ \| |/ / ___|  "#);
+    println!(r#"  ( ___)| |_) | ' / |  _   "#);
+    println!(r#"   )__) |  __/| . \ |_| |  "#);
+    println!(r#"  (____)|_|   |_|\_\____|  "#);
+}
+
 impl PackageManager {
 
     #[allow(dead_code)]
@@ -51,12 +59,10 @@ impl PackageManager {
 
     pub fn install_epkg(&mut self) -> Result<()> {
         // Set up installation paths
-        fs::create_dir_all(&dirs().epkg_cache)
-            .context("Failed to create cache directory")?;
-        fs::create_dir_all(&dirs().epkg_downloads_cache)
-            .context("Failed to create downloads directory")?;
-        fs::create_dir_all(&dirs().epkg_channel_cache)
-            .context("Failed to create channel directory")?;
+        fs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))
+            .context("Failed to create epkg downloads directory")?;
+
+        print_banner();
 
         // Set up common environment
         self.setup_common_environment()?;
@@ -76,9 +82,10 @@ impl PackageManager {
         let epkg_url = "https://repo.oepkgs.net/openeuler/epkg/rootfs/";
         let epkg_manager_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
         let elf_loader = "elf-loader";
-        let epkg_manager_tar = dirs.epkg_cache.join(format!("{}.tar.gz", epkg_version));
-        let elf_loader_path = dirs.epkg_cache.join(format!("{}-{}", elf_loader, arch));
-        let elf_loader_sha = dirs.epkg_cache.join(format!("{}-{}.sha256", elf_loader, arch));
+        let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
+        let epkg_manager_tar = epkg_download_dir.join(format!("{}.tar.gz", epkg_version));
+        let elf_loader_path = epkg_download_dir.join(format!("{}-{}", elf_loader, arch));
+        let elf_loader_sha = epkg_download_dir.join(format!("{}-{}.sha256", elf_loader, arch));
 
         let mut need_download_epkg_manager: bool = false;
 
@@ -125,7 +132,9 @@ impl PackageManager {
             return Ok(());
         }
 
-        download_urls(urls, &dirs.epkg_cache, 6, false)
+        // Download to the new epkg subdirectory within downloads cache
+        let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
+        download_urls(urls, &epkg_download_dir, 6, false)
             .context("Failed to download required files")?;
 
         // Verify checksums
@@ -162,7 +171,7 @@ impl PackageManager {
         let env_opt = env_root.join("opt");
         let epkg_manager_dir = env_opt.join("epkg-manager");
         let epkg_extracted_dir = format!("epkg-{}", epkg_version);
-        let epkg_manager_tar = dirs().epkg_cache.join(format!("{}.tar.gz", epkg_version));
+        let epkg_manager_tar = dirs().epkg_downloads_cache.join("epkg").join(format!("{}.tar.gz", epkg_version));
 
         if epkg_manager_dir.exists() {
             return Ok(());
@@ -206,7 +215,7 @@ impl PackageManager {
         ).context("Failed to copy epkg binary")?;
 
         fs::copy(
-            &dirs().epkg_cache.join(format!("elf-loader-{}", arch)),
+            &dirs().epkg_downloads_cache.join("epkg").join(format!("elf-loader-{}", arch)),
             &usr_bin.join("elf-loader")
         ).context("Failed to copy elf-loader binary")?;
 

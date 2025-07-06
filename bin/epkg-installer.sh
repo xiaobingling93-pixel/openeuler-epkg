@@ -6,16 +6,7 @@
 ARCH=$(uname -m)
 EPKG_URL="https://repo.oepkgs.net/openeuler/epkg/rootfs/"
 EPKG_STATIC="epkg"
-EPKG_CACHE="$HOME/.cache/epkg"
-
-print_banner() {
-    echo " _______ .______    __  ___   ______  "
-    echo "|   ____||   _  \  |  |/  /  /  ____| "
-    echo "|  |__   |  |_)  | |  '  /  |  |  __  "
-    echo "|   __|  |   ___/  |    <   |  | |_ | "
-    echo "|  |____ |  |      |  .  \  |  |__| | "
-    echo "|_______|| _|      |__|\__\  \______| "
-}
+EPKG_CACHE="$HOME/.cache/epkg/downloads/epkg"
 
 print_step() {
     echo ">> $1"
@@ -41,7 +32,7 @@ check_architecture() {
 }
 
 setup_environment() {
-    # Create cache directory
+    # Create cache directory structure
     mkdir -p "$EPKG_CACHE" || exit
 }
 
@@ -118,7 +109,6 @@ print_completion() {
 # Main execution flow
 main() {
     check_architecture
-    print_banner
     setup_environment
     download_files
     initialize_epkg

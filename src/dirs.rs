@@ -45,7 +45,6 @@ impl EPKGDirs {
             public_envs: user_pubenvs,
             epkg_store: store_root,
             epkg_cache: cache_root.clone(),
-            epkg_channel_cache: cache_root.join("channel"),
             epkg_downloads_cache: cache_root.join("downloads"),
         })
     }
