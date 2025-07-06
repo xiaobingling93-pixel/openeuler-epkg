@@ -47,7 +47,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
 use std::sync::Arc;
-use std::backtrace::Backtrace;
+
 use std::panic;
 
 use time::OffsetDateTime;
@@ -65,7 +65,11 @@ use regex::bytes::RegexBuilder;
 use list::ListScope;
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+    color_eyre::config::HookBuilder::default()
+        .display_env_section(false)                 // Don't show environment variables by default
+        .display_location_section(true)             // Show file:line:column
+        .theme(color_eyre::config::Theme::dark())   // Use dark theme for better contrast
+        .install()?;
     setup_logging();
     setup_ctrlc();
 
@@ -125,7 +129,10 @@ fn setup_ctrlc() {
 
     // Set up Ctrl-C handler with better debugging info
     ctrlc::set_handler(move || {
-        println!("\nReceived Ctrl-C! Collecting thread backtraces...");
+        println!("\nReceived Ctrl-C! Cancelling downloads and collecting thread backtraces...");
+
+        // Cancel all pending downloads first
+        crate::download::cancel_downloads();
 
         // Print current command and process info
         let args: Vec<String> = std::env::args().collect();
@@ -159,17 +166,6 @@ fn setup_ctrlc() {
         println!("\nExiting due to Ctrl-C...");
         std::process::exit(130); // Standard exit code for SIGINT
     }).expect("Failed to set Ctrl-C handler");
-
-
-    // Also set panic handler to show backtraces
-    panic::set_hook(Box::new(|panic_info| {
-        println!("Panic occurred:");
-        if let Some(location) = panic_info.location() {
-            println!("Panic location: {}", location);
-        }
-        println!("{:?}", Backtrace::capture());
-    }));
-
 }
 
 fn print_all_thread_backtraces() {

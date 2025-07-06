@@ -608,6 +608,9 @@ pub struct DownloadManager {
 
     // ETA and download statistics - replaced atomically
     stats: Arc<Mutex<DownloadManagerStats>>,
+
+    // Cancellation flag for graceful shutdown
+    cancelled: Arc<AtomicBool>,
 }
 
 /// Download manager statistics - replaced atomically as a whole
@@ -641,6 +644,7 @@ impl DownloadManager {
             is_processing:        Arc::new(AtomicBool::new(false)),
             current_task_count:   Arc::new(AtomicUsize::new(0)),
             stats:                Arc::new(Mutex::new(DownloadManagerStats::default())),
+            cancelled:            Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -655,6 +659,11 @@ impl DownloadManager {
 
     pub fn wait_for_task(&self, task_url: String) -> Result<DownloadStatus> {
         loop {
+            // Check for cancellation first
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(eyre!("Download cancelled by user"));
+            }
+
             let tasks = self.tasks.lock()
                 .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
             if let Some(task) = tasks.get(&task_url) {
@@ -679,6 +688,11 @@ impl DownloadManager {
         }
 
         loop {
+            // Check for cancellation first
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(eyre!("Download cancelled by user"));
+            }
+
             let tasks = self.tasks.lock()
                 .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
 
@@ -723,6 +737,7 @@ impl DownloadManager {
         let chunk_handles          = Arc::clone(&self.chunk_handles);
         let nr_parallel            = self.nr_parallel;
         let current_task_count_arc = Arc::clone(&self.current_task_count);
+        let cancelled              = Arc::clone(&self.cancelled);
 
         thread::spawn(move || {
             Self::run_main_processing_loop(
@@ -733,6 +748,7 @@ impl DownloadManager {
                 chunk_handles,
                 nr_parallel,
                 current_task_count_arc,
+                cancelled,
             );
         });
     }
@@ -747,8 +763,16 @@ impl DownloadManager {
         chunk_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
         nr_parallel: usize,
         current_task_count_arc: Arc<AtomicUsize>,
+        cancelled: Arc<AtomicBool>,
     ) {
         loop {
+            // Check for cancellation
+            if cancelled.load(Ordering::Relaxed) {
+                log::info!("Main processing loop cancelled, stopping");
+                is_processing.store(false, Ordering::Relaxed);
+                break;
+            }
+
             // Clean up finished threads
             Self::cleanup_finished_handles(&task_handles);
             Self::cleanup_finished_handles(&chunk_handles);
@@ -1211,6 +1235,10 @@ impl DownloadManager {
     #[allow(dead_code)]
     pub fn wait_for_all_tasks(&self) -> Result<()> {
         while self.is_processing.load(Ordering::Relaxed) {
+            // Check for cancellation
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(eyre!("Download cancelled by user"));
+            }
             thread::sleep(Duration::from_millis(100));
         }
 
@@ -1253,6 +1281,18 @@ impl DownloadManager {
     pub fn dump_all_tasks(&self) {
         self.dump_download_manager_stats();
         self.dump_task_tree();
+    }
+
+    /// Cancel all pending downloads and stop processing
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        self.is_processing.store(false, Ordering::Relaxed);
+    }
+
+    /// Check if downloads have been cancelled
+    #[allow(dead_code)]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
     }
 
     /// Dump DownloadManagerStats information
@@ -1575,6 +1615,11 @@ pub fn submit_download_task(task: DownloadTask) -> Result<()> {
 /// Wait for any of the specified download tasks to complete
 pub fn wait_for_any_download_task(task_urls: &[String]) -> Result<Option<String>> {
     DOWNLOAD_MANAGER.wait_for_any_task(task_urls)
+}
+
+/// Cancel all pending downloads
+pub fn cancel_downloads() {
+    DOWNLOAD_MANAGER.cancel();
 }
 
 pub fn download_urls(
