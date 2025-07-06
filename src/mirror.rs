@@ -183,6 +183,8 @@ pub struct Mirror {
     pub shared_usage: Arc<SharedUsageStats>, // Mirror usage tracking
     #[serde(skip_serializing, skip_deserializing)]
     pub stats: MirrorStats,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub is_near: bool,  // true if mirror is in the same country as user
 }
 
 /// Shared usage statistics that need to be synchronized across Mirror clones
@@ -204,7 +206,6 @@ pub struct MirrorStats {
     pub no_online: bool,        // whether server is in service
     pub no_content: bool,       // whether server has the files we requested in current run
     pub old_content: bool,      // whether server has old/inconsistent content (integrity system)
-    pub adaptive_max_concurrent: usize,  // cached value of adaptive max concurrent limit
     pub max_parallel_conns: Option<u32>, // Learned limit from 429 errors
     pub http_errors: HashMap<u16, u32>,
     pub other_errors: u32,
@@ -223,7 +224,6 @@ impl Default for MirrorStats {
             no_online: false,
             no_content: false,
             old_content: false,
-            adaptive_max_concurrent: 0,
             max_parallel_conns: None,
             http_errors: HashMap::new(),
             other_errors: 0,
@@ -244,7 +244,6 @@ impl Clone for MirrorStats {
             no_online: self.no_online,
             no_content: self.no_content,
             old_content: self.old_content,
-            adaptive_max_concurrent: self.adaptive_max_concurrent,
             max_parallel_conns: self.max_parallel_conns,
             http_errors: self.http_errors.clone(),
             other_errors: self.other_errors,
@@ -269,6 +268,7 @@ impl Default for Mirror {
             internet2: false,
             shared_usage: Arc::new(SharedUsageStats::default()),
             stats: MirrorStats::default(),
+            is_near: false,
         }
     }
 }
@@ -288,6 +288,7 @@ impl Clone for Mirror {
             internet2: self.internet2,
             shared_usage: Arc::clone(&self.shared_usage), // Share the same usage counters
             stats: self.stats.clone(),
+            is_near: self.is_near,
         }
     }
 }
@@ -469,6 +470,7 @@ impl Mirror {
 pub struct Mirrors {
     pub mirrors: HashMap<String, Mirror>, // key: mirror site (without protocol scheme)
     pub available_mirrors: Vec<String>, // Site names of available mirrors (sorted by score)
+    pub pget_limit: usize, // Current pget limit for parallel downloads
 }
 
 /*
@@ -513,6 +515,7 @@ pub static MIRRORS: LazyLock<Mutex<Mirrors>> = LazyLock::new(|| {
     Mutex::new(Mirrors {
         mirrors: HashMap::new(),
         available_mirrors: Vec::new(),
+        pget_limit: 1,
     })
 });
 
@@ -664,11 +667,6 @@ pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<St
         // Calculate initial performance score if not already set
         if mirror.stats.score == 0 {
             mirror.calculate_performance_score();
-        }
-
-        // Ensure adaptive_max_concurrent has a reasonable default
-        if mirror.stats.adaptive_max_concurrent == 0 {
-            mirror.stats.adaptive_max_concurrent = 1;
         }
     }
 
@@ -1092,6 +1090,7 @@ impl Mirrors {
             // Copy the initialized data to self
             self.mirrors = initialized_mirrors.mirrors;
             self.available_mirrors = initialized_mirrors.available_mirrors;
+            self.pget_limit = initialized_mirrors.pget_limit;
         }
 
         let distro = &channel_config().distro;
@@ -1111,8 +1110,7 @@ impl Mirrors {
             }
         }
 
-        // Calculate adaptive concurrent limits and update mirrors directly
-        self.calculate_mirror_stats();
+        // (Removed calculate_mirror_stats function call)
 
         if should_dump && log::log_enabled!(log::Level::Debug) {
             dump_mirror_performance_stats(&self, false);
@@ -1164,94 +1162,79 @@ impl Mirrors {
         });
     }
 
-    /// Calculate adaptive concurrent limits and update mirrors directly
-    fn calculate_mirror_stats(&mut self) {
-        // Calculate total active downloads across all mirrors
-        let total_downloads: u64 = self.mirrors.values()
-            .map(|mirror| mirror.shared_usage.active_downloads.load(Ordering::Relaxed) as u64)
-            .sum();
-
-        let total_mirrors = self.available_mirrors.len();
-
-        // Scale based on total downloads vs total capacity
-        let total_base_capacity: u64 = (total_mirrors as u64) * (total_mirrors as u64 + 1) / 2; // 1+2+3+...+N = N*(N+1)/2
-        let scale_factor = (total_downloads as f64) / (total_base_capacity as f64);
-
-        log::debug!("Total downloads/mirrors: {}/{}, scale factor: {:.2}", total_downloads, total_mirrors, scale_factor);
-
-        // Calculate and assign adaptive max_concurrent for each mirror
-        for (i, site) in self.available_mirrors.iter().rev().enumerate() {
-            if let Some(mirror) = self.mirrors.get_mut(site) {
-                // Calculate adaptive max_concurrent for this mirror
-                // Mirror index starts from 1, so max_concurrent = [1, 2, 3, ..., N]
-                let base_limit = i + 1;
-
-                let adaptive_max_concurrent = ((base_limit as f64) * scale_factor).ceil() as usize;
-                let adaptive_max_concurrent = adaptive_max_concurrent.max(1); // Ensure at least 1
-
-                // Respect the learned max_parallel_conns limit from 429 errors
-                let final_limit = if let Some(learned_limit) = mirror.stats.max_parallel_conns {
-                    adaptive_max_concurrent.min(learned_limit as usize)
-                } else {
-                    adaptive_max_concurrent
-                };
-
-                // Update the adaptive_max_concurrent field directly
-                mirror.stats.adaptive_max_concurrent = final_limit;
-            }
-        }
-    }
-
     /// Select the best available mirror from available mirrors list
-    fn select_best_mirror(&self) -> Result<&Mirror> {
+    fn select_best_mirror(&mut self) -> Result<&Mirror> {
         if self.available_mirrors.is_empty() {
             return Err(eyre!("No mirrors with valid distro directories found"));
         }
 
-        // Filter out mirrors that are at their concurrent limits
-        let mirrors_under_thresh: Vec<_> = self.available_mirrors.iter()
-            .filter_map(|site| {
-                self.mirrors.get(site).map(|mirror| {
-                    let current_usage = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
+        // Find the minimum limit that has available mirrors
+        let mut current_limit = self.pget_limit;
+        let (selected_site, successful_limit) = loop {
+            if let Some(site) = self.find_first_site_under_thresh(current_limit) {
+                break (site.to_string(), current_limit);
+            }
 
-                    // Check against adaptive_max_concurrent limit
-                    if current_usage >= mirror.stats.adaptive_max_concurrent {
-                        return None;
-                    }
+            // If no mirrors found under threshold, increment limit and try again
+            current_limit += 1;
+            
+            // Prevent infinite loop - if we've tried beyond reasonable limits, 
+            // just return the highest scoring mirror
+            if current_limit > 10 {
+                log::warn!("WARNING: pget_limit exceeded 10, selecting highest scoring mirror");
+                let call_count = STATS_CALL_COUNT.load(Ordering::Relaxed);
+                let rand_site = self.available_mirrors[call_count as usize % self.available_mirrors.len()].clone();
+                break (rand_site, current_limit);
+            }
+        };
 
-                    // Also check against learned max_parallel_conns limit if available
-                    if let Some(learned_limit) = mirror.stats.max_parallel_conns {
-                        if current_usage >= learned_limit as usize {
-                            return None;
-                        }
-                    }
+        // Update pget_limit after all borrowing is done
+        self.pget_limit = successful_limit;
 
-                    Some((site, mirror))
-                }).flatten()
-            })
-            .collect();
+        // Now get the mirror reference safely
+        let mirror = self.mirrors.get(&selected_site).unwrap();
+        let current_usage = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
+        let learned_limit = mirror.stats.max_parallel_conns;
 
-        if mirrors_under_thresh.is_empty() {
-            log::warn!("WARNING: ALL mirrors at capacity, selecting highest scoring one");
-            // All mirrors are at capacity, return the highest scoring one anyway
-            let call_count = STATS_CALL_COUNT.load(Ordering::Relaxed);
-            let rand_site = &self.available_mirrors[call_count as usize % self.available_mirrors.len()];
-            return Ok(self.mirrors.get(rand_site).unwrap());
-        }
-
-        let (_selected_site, selected_mirror) = mirrors_under_thresh[0];
-        let current_usage = selected_mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
-        let adaptive_limit = selected_mirror.stats.adaptive_max_concurrent;
-        let learned_limit = selected_mirror.stats.max_parallel_conns;
-
-        log::debug!("Selected mirror: {} (usage: {}/{} adaptive, learned limit: {:?})",
-            selected_mirror.url,
+        log::debug!("Selected mirror: {} (usage: {}/{} learned limit: {:?} pget_limit: {})",
+            mirror.url,
             current_usage,
-            adaptive_limit,
-            learned_limit
+            mirror.stats.max_parallel_conns.unwrap_or(0),
+            learned_limit,
+            self.pget_limit
         );
 
-        Ok(selected_mirror)
+        Ok(mirror)
+    }
+
+    /// Find the first site under the given connection limit threshold
+    fn find_first_site_under_thresh(&self, limit: usize) -> Option<&str> {
+        for site in &self.available_mirrors {
+            if let Some(mirror) = self.mirrors.get(site) {
+                let current_usage = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
+
+                // Adjust limit based on whether the site is near or not
+                let my_limit = if !mirror.is_near {
+                    limit / 2
+                } else {
+                    limit
+                };
+
+                // Check if this mirror is under the adjusted limit
+                if current_usage < my_limit {
+                    // Also check against learned max_parallel_conns limit if available
+                    if let Some(learned_limit) = mirror.stats.max_parallel_conns {
+                        if current_usage < learned_limit as usize {
+                            return Some(site);
+                        }
+                    } else {
+                        // No learned limit, so just use the adjusted limit
+                        return Some(site);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Find the best matching distro directory for a mirror
@@ -1479,6 +1462,12 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
     if let Some(limit) = mirror.stats.max_parallel_conns {
         status_flags.push(format!("Limit={}", limit));
     }
+    // Show country code for non-near sites
+    if !mirror.is_near {
+        if let Some(ref country_code) = mirror.country_code {
+            status_flags.push(format!("cc={}", country_code));
+        }
+    }
     let status_str = status_flags.join(", ");
 
     println!(
@@ -1488,7 +1477,7 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
         if site.len() > 38 { site[..35].to_string() + "..." } else { site.to_string() },
         mirror.stats.score,
         mirror.shared_usage.active_downloads.load(Ordering::Relaxed),
-        mirror.stats.adaptive_max_concurrent,
+        mirror.stats.max_parallel_conns.unwrap_or(0),
         mirror.shared_usage.total_uses.load(Ordering::Relaxed),
         // Limit throughput string length for alignment
         if throughput_str.len() > 28 { throughput_str[..26].to_string() + ".." } else { throughput_str },
@@ -1537,36 +1526,48 @@ pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
 
 /// Apply country code filtering to mirrors
 fn apply_country_code_filtering(mirrors: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
-    let world_mirrors = mirrors.clone();
-
     // Apply country code filtering if we have a user country code
     // Don't block on country code detection - proceed if it fails or times out
     match location::get_country_code() {
         Ok(user_country_code) => {
             log::debug!("Filtering mirrors by country code: {}", user_country_code);
 
-            // Filter mirrors by country code
-            let country_filtered: HashMap<String, Mirror> = mirrors.into_iter()
-                .filter(|(_, mirror)| {
-                    mirror.country_code.as_deref() == Some(user_country_code.as_str())
-                })
-                .collect();
+            // Create new HashMap and copy local country sites to it, setting is_near to true
+            let mut local_mirrors = HashMap::new();
+            let mut other_mirrors = HashMap::new();
+            
+            for (site, mut mirror) in mirrors {
+                if mirror.country_code.as_deref() == Some(user_country_code.as_str()) {
+                    mirror.is_near = true;
+                    local_mirrors.insert(site, mirror);
+                } else {
+                    mirror.is_near = false;
+                    other_mirrors.insert(site, mirror);
+                }
+            }
 
-            log::debug!("Found {} mirrors matching country code {}", country_filtered.len(), user_country_code);
+            log::debug!("Found {} mirrors matching country code {}", local_mirrors.len(), user_country_code);
 
             // If we have more than 2 mirrors with matching country code, use them
-             if country_filtered.len() > 2 {
-                 country_filtered
-             } else {
-                 // Fall back to all mirrors for the distro (not None)
-                 log::debug!("Only {} mirrors found for country {}, falling back to all distro mirrors",
-                            country_filtered.len(), user_country_code);
-                 world_mirrors
-             }
+            if local_mirrors.len() > 2 {
+                local_mirrors
+            } else {
+                // Fall back to all mirrors for the distro, with is_near set appropriately
+                log::debug!("Only {} mirrors found for country {}, falling back to all distro mirrors",
+                           local_mirrors.len(), user_country_code);
+                local_mirrors.extend(other_mirrors);
+                local_mirrors
+            }
         }
         Err(e) => {
             log::debug!("Failed to get country code: {}, using all distro mirrors", e);
-            mirrors
+            // Set all mirrors as not near
+            mirrors.into_iter()
+                .map(|(site, mut mirror)| {
+                    mirror.is_near = false;
+                    (site, mirror)
+                })
+                .collect()
         }
     }
 }
@@ -1592,6 +1593,7 @@ fn initialize_mirrors() -> Result<Mirrors> {
     let mirrors = Mirrors {
         mirrors: loaded_mirrors,
         available_mirrors: Vec::new(), // Will be populated by update_available_mirrors() when needed
+        pget_limit: 1,
     };
 
     if log::log_enabled!(log::Level::Debug) {
