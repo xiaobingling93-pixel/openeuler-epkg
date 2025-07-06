@@ -43,7 +43,7 @@ use ureq::http;
 
 use crate::dirs;
 use crate::models::*;
-use crate::mirror::{append_download_log, append_http_log, url2site, HttpEvent, MirrorUsageGuard, MIRRORS, Mirrors};
+use crate::mirror::{append_download_log, append_http_log, url2site, HttpEvent, MIRRORS, Mirrors};
 
 
 impl DownloadTask {
@@ -124,6 +124,9 @@ pub struct DownloadTask {
     pub final_path:           PathBuf,                                    // Store the final download path
     pub file_size:            AtomicU64,                                  // Expected file size for prioritization and verification (0 = unknown)
     pub attempt_number:       AtomicUsize,                                // Track which attempt number this is (0 = first attempt)
+
+    // Mirror usage tracking - stores the selected mirror for this task
+    pub mirror_inuse:         Arc<Mutex<Option<crate::mirror::Mirror>>>,  // Selected mirror for usage tracking
 
     // File type classification for integrity and metadata handling
     pub file_type:            FileType,
@@ -337,6 +340,7 @@ impl DownloadTask {
             eta:               AtomicU64::new(0),
             duration_ms:       AtomicU64::new(0),
             range_request:     Mutex::new(RangeRequest::None),
+            mirror_inuse:      Arc::new(Mutex::new(None)),
         }
     }
 
@@ -457,6 +461,7 @@ impl DownloadTask {
             final_path:           self.final_path.clone(),
             file_size:            AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
             attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
+            mirror_inuse:         Arc::new(Mutex::new(None)),           // No mirror selected yet for chunk tasks
             file_type:            self.file_type.clone(),               // Copy file type classification
             master_metadata:      Mutex::new(self.master_metadata.lock().unwrap().clone()),  // Each chunk's HTTP response must align with master_metadata
             chunk_tasks:          Arc::new(Mutex::new(Vec::new())),
@@ -1183,20 +1188,6 @@ impl DownloadManager {
                 continue; // Skip spawning thread if we cannot update status
             }
 
-            // Resolve mirror URL before spawning thread to ensure consistency
-            let (resolved_url, _final_path) = match resolve_mirror_in_url(&chunk_clone.url, &chunk_clone.output_dir, true) {
-                Ok((resolved_url, final_path)) => (resolved_url, final_path),
-                Err(e) => {
-                    log::error!("Failed to resolve mirror for chunk {}: {}", chunk_clone.url, e);
-                    continue; // Skip this chunk if mirror resolution fails
-                }
-            };
-
-            // Update resolved_url using mutex
-            if let Ok(mut resolved) = chunk_clone.resolved_url.lock() {
-                *resolved = resolved_url.clone();
-            }
-
             let handle = thread::spawn(move || {
 
                 match download_chunk_task(&chunk_clone) {
@@ -1550,40 +1541,6 @@ enum CacheDecision {
  * the selection chain. This eliminates heuristic parsing and simplifies
  * the resolution logic significantly.
  */
-
-fn resolve_mirror_in_url(url: &str, output_dir: &Path, need_range: bool) -> Result<(String, PathBuf)> {
-    if !url.contains("$mirror") {
-        return Ok((url.to_string(), Mirrors::resolve_mirror_path(&url, output_dir)));
-    }
-
-    let mut mirrors = MIRRORS.lock()
-        .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
-
-    let (selected_mirror_url, selected_mirror_top_level, final_distro_dir) = {
-        // Use adaptive mirror selection with load balancing
-        // The selection algorithm automatically handles concurrent limits per mirror
-        let selected_mirror = mirrors.select_mirror_with_usage_tracking(need_range)?;
-
-        // Get distro directory for the selected mirror
-        let distro = &crate::models::channel_config().distro;
-        let arch = &crate::models::channel_config().arch;
-
-        let distro_dir = crate::mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch);
-        let final_distro_dir = if distro_dir.is_empty() { distro.to_string() } else { distro_dir };
-
-        (selected_mirror.url.clone(), selected_mirror.top_level, final_distro_dir)
-    };
-
-    let url_formatted = mirrors.format_mirror_url(&selected_mirror_url, selected_mirror_top_level, &final_distro_dir)?;
-
-    let resolved_url = url.replace("$mirror", &url_formatted);
-
-    let final_path = Mirrors::resolve_mirror_path(&url, output_dir);
-
-    log::debug!("resolve_mirror_in_url: need_range={} {} -> {}", need_range, resolved_url, final_path.display());
-
-    Ok((resolved_url, final_path))
-}
 
 /*
  * ============================================================================
@@ -2209,7 +2166,7 @@ fn handle_http_status_error(
             let site = crate::mirror::url2site(&resolved_url);
             if let Ok(mirrors_guard) = crate::mirror::MIRRORS.lock() {
                 mirrors_guard.mirrors.get(&site)
-                    .map(|mirror| mirror.stats.active_downloads.load(std::sync::atomic::Ordering::Relaxed))
+                    .map(|mirror| mirror.shared_usage.active_downloads.load(std::sync::atomic::Ordering::Relaxed))
                     .unwrap_or(0)
             } else {
                 0
@@ -3137,8 +3094,14 @@ fn download_chunk_task(task: &DownloadTask) -> Result<()> {
     }
 
     let resolved_url = resolve_mirror_and_update_task(task)?;
-    // Track mirror usage with RAII guard
-    let _mirror_guard = MirrorUsageGuard::new(&resolved_url);
+
+    // Extract and hold the Mirror as RAII guard for automatic usage tracking
+    // This will automatically call stop_usage_tracking() when the function ends
+    let _mirror_guard = {
+        let mut mirror_guard = task.mirror_inuse.lock()
+            .map_err(|e| eyre!("Failed to lock mirror mutex: {}", e))?;
+        mirror_guard.take() // Take ownership of the Mirror if present, will be dropped when function ends
+    };
 
     // Phase 2: Execute HTTP request
     let mut response = execute_download_request(task, &resolved_url, existing_bytes)?;
@@ -4536,18 +4499,49 @@ fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)> {
 
 
 
-/// Resolve mirror URL and update task with resolved URL
+/// Resolve mirror URL and update task with resolved URL and mirror
 fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
     let url = &task.url;
     let need_range = task.get_range_request() != RangeRequest::None;
 
-    // Resolve mirror for this attempt with appropriate Range requirements
-    let (resolved_url, _final_path) = match resolve_mirror_in_url(url, &task.output_dir, need_range) {
-        Ok(result) => result,
-        Err(e) => return Err(DownloadError::MirrorResolution {
-            details: format!("{}", e)
-        }.into()),
+    // If URL doesn't contain $mirror, just update resolved URL
+    if !url.contains("$mirror") {
+        if let Ok(mut resolved) = task.resolved_url.lock() {
+            *resolved = url.to_string();
+        }
+        return Ok(url.to_string());
+    }
+
+    // Select mirror with usage tracking
+    let selected_mirror = {
+        let mut mirrors = MIRRORS.lock()
+            .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
+
+        mirrors.select_mirror_with_usage_tracking(need_range)
+            .map_err(|e| DownloadError::MirrorResolution {
+                details: format!("{}", e)
+            })?
     };
+
+    // Get distro directory for the selected mirror
+    let distro = &crate::models::channel_config().distro;
+    let arch = &crate::models::channel_config().arch;
+    let distro_dir = crate::mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch);
+    let final_distro_dir = if distro_dir.is_empty() { distro.to_string() } else { distro_dir };
+
+    // Format mirror URL
+    let url_formatted = {
+        let mirrors = MIRRORS.lock()
+            .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
+        mirrors.format_mirror_url(&selected_mirror.url, selected_mirror.top_level, &final_distro_dir)?
+    };
+
+    let resolved_url = url.replace("$mirror", &url_formatted);
+
+    // Store the selected mirror in the task
+    if let Ok(mut mirror_guard) = task.mirror_inuse.lock() {
+        *mirror_guard = Some(selected_mirror);
+    }
 
     // Update resolved URL in task
     if let Ok(mut resolved) = task.resolved_url.lock() {

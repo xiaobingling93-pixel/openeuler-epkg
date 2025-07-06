@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::Path;
 use std::path::PathBuf;
@@ -153,7 +153,7 @@ pub struct HttpLog {
 
 /// Represents a mirror's static configuration.
 /// This data is loaded from mirrors.json and is generally not modified at runtime.
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Mirror {
     #[serde(default)]
     #[serde(skip_serializing)]
@@ -180,12 +180,22 @@ pub struct Mirror {
     #[serde(rename = "i2", default, deserialize_with = "crate::mirror::bool_from_number")]
     pub internet2: bool,
     #[serde(skip_serializing, skip_deserializing)]
+    pub shared_usage: Arc<SharedUsageStats>, // Mirror usage tracking
+    #[serde(skip_serializing, skip_deserializing)]
     pub stats: MirrorStats,
+}
+
+/// Shared usage statistics that need to be synchronized across Mirror clones
+#[derive(Debug, Default)]
+pub struct SharedUsageStats {
+    pub active_downloads: AtomicUsize,
+    pub total_uses: AtomicU64,
+    pub last_used: AtomicU64, // Unix timestamp
 }
 
 /// Holds all dynamic, statistical, and state-related data for a mirror.
 /// This data is loaded from logs and updated during runtime.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MirrorStats {
     pub score: u64,
     pub throughputs: Vec<u32>,  // historical download speeds in bytes/sec
@@ -195,14 +205,32 @@ pub struct MirrorStats {
     pub no_content: bool,       // whether server has the files we requested in current run
     pub old_content: bool,      // whether server has old/inconsistent content (integrity system)
     pub adaptive_max_concurrent: usize,  // cached value of adaptive max concurrent limit
-    pub active_downloads: AtomicUsize,
-    pub total_uses: AtomicU64,
-    pub last_used: AtomicU64, // Unix timestamp
     pub max_parallel_conns: Option<u32>, // Learned limit from 429 errors
     pub http_errors: HashMap<u16, u32>,
     pub other_errors: u32,
     pub last_success: Option<u64>,
     pub last_check: Option<u64>,
+}
+
+// Manual Default implementation for MirrorStats
+impl Default for MirrorStats {
+    fn default() -> Self {
+        Self {
+            score: 0,
+            throughputs: Vec::new(),
+            latencies: Vec::new(),
+            no_range: false,
+            no_online: false,
+            no_content: false,
+            old_content: false,
+            adaptive_max_concurrent: 0,
+            max_parallel_conns: None,
+            http_errors: HashMap::new(),
+            other_errors: 0,
+            last_success: None,
+            last_check: None,
+        }
+    }
 }
 
 // Manual Clone implementation for MirrorStats due to Atomic types.
@@ -217,15 +245,57 @@ impl Clone for MirrorStats {
             no_content: self.no_content,
             old_content: self.old_content,
             adaptive_max_concurrent: self.adaptive_max_concurrent,
-            active_downloads: AtomicUsize::new(self.active_downloads.load(Ordering::Relaxed)),
-            total_uses: AtomicU64::new(self.total_uses.load(Ordering::Relaxed)),
-            last_used: AtomicU64::new(self.last_used.load(Ordering::Relaxed)),
             max_parallel_conns: self.max_parallel_conns,
             http_errors: self.http_errors.clone(),
             other_errors: self.other_errors,
             last_success: self.last_success,
             last_check: self.last_check,
         }
+    }
+}
+
+// Default implementation for Mirror
+impl Default for Mirror {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            distros: Vec::new(),
+            distro_dirs: Vec::new(),
+            ls_dirs: Vec::new(),
+            top_level: false,
+            country_code: None,
+            protocols: 0,
+            bandwidth: None,
+            internet2: false,
+            shared_usage: Arc::new(SharedUsageStats::default()),
+            stats: MirrorStats::default(),
+        }
+    }
+}
+
+// Manual Clone implementation for Mirror to properly share usage tracking
+impl Clone for Mirror {
+    fn clone(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+            distros: self.distros.clone(),
+            distro_dirs: self.distro_dirs.clone(),
+            ls_dirs: self.ls_dirs.clone(),
+            top_level: self.top_level,
+            country_code: self.country_code.clone(),
+            protocols: self.protocols,
+            bandwidth: self.bandwidth,
+            internet2: self.internet2,
+            shared_usage: Arc::clone(&self.shared_usage), // Share the same usage counters
+            stats: self.stats.clone(),
+        }
+    }
+}
+
+impl Drop for Mirror {
+    fn drop(&mut self) {
+        // Automatically stop usage tracking when Mirror is dropped
+        self.stop_usage_tracking();
     }
 }
 
@@ -311,6 +381,21 @@ impl Mirror {
                 Some(sorted[mid])
             }
         }
+    }
+
+    /// Start tracking usage for this mirror
+    pub fn start_usage_tracking(&mut self) {
+        self.shared_usage.active_downloads.fetch_add(1, Ordering::Relaxed);
+        self.shared_usage.total_uses.fetch_add(1, Ordering::Relaxed);
+        self.shared_usage.last_used.store(
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+            Ordering::Relaxed
+        );
+    }
+
+    /// Stop tracking usage for this mirror
+    pub fn stop_usage_tracking(&mut self) {
+        self.shared_usage.active_downloads.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Calculate weighted performance score for mirror selection optimization
@@ -429,16 +514,16 @@ fn merge_single_manual_mirror(
         // Merge manual mirror data with existing mirror
         // Manual mirror data takes precedence for key fields
         if !manual_mirror.country_code.is_none() {
-            existing_mirror.country_code = manual_mirror.country_code;
+            existing_mirror.country_code = manual_mirror.country_code.clone();
         }
         if !manual_mirror.ls_dirs.is_empty() {
-            existing_mirror.ls_dirs = manual_mirror.ls_dirs;
+            existing_mirror.ls_dirs = manual_mirror.ls_dirs.clone();
         }
         if !manual_mirror.distros.is_empty() {
-            existing_mirror.distros = manual_mirror.distros;
+            existing_mirror.distros = manual_mirror.distros.clone();
         }
         if !manual_mirror.distro_dirs.is_empty() {
-            existing_mirror.distro_dirs = manual_mirror.distro_dirs;
+            existing_mirror.distro_dirs = manual_mirror.distro_dirs.clone();
         }
         log::trace!("Merged manual mirror data for {}", url);
     } else {
@@ -984,11 +1069,10 @@ pub fn url2site(url: &str) -> String {
 
 impl Mirrors {
 
-    /// Select mirror with adaptive usage tracking and load balancing
+    /// Select mirror with automatic usage tracking
     ///
-    /// This is the core mirror selection algorithm that balances performance,
-    /// availability, and load distribution using adaptive max_concurrent limits
-    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool) -> Result<&Mirror> {
+    /// Returns a Mirror that automatically tracks usage when selected and dropped
+    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool) -> Result<Mirror> {
         let distro = &channel_config().distro;
         let arch = &channel_config().arch;
         let call_count = STATS_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1014,7 +1098,13 @@ impl Mirrors {
         }
 
         // Select the best available mirror
-        self.select_best_mirror()
+        let selected_mirror = self.select_best_mirror()?;
+        let mut mirror_clone = selected_mirror.clone();
+
+        // Start usage tracking - since stats is Arc<MirrorStats>, this affects the shared stats
+        mirror_clone.start_usage_tracking();
+
+        Ok(mirror_clone)
     }
 
     /// Filter mirrors based on availability and requirements and update available_mirrors
@@ -1057,7 +1147,7 @@ impl Mirrors {
     fn calculate_mirror_stats(&mut self) {
         // Calculate total active downloads across all mirrors
         let total_downloads: usize = self.mirrors.values()
-            .map(|mirror| mirror.stats.active_downloads.load(Ordering::Relaxed))
+            .map(|mirror| mirror.shared_usage.active_downloads.load(Ordering::Relaxed))
             .sum();
 
         let total_mirrors = self.available_mirrors.len();
@@ -1101,7 +1191,7 @@ impl Mirrors {
         let mirrors_under_thresh: Vec<_> = self.available_mirrors.iter()
             .filter_map(|site| {
                 self.mirrors.get(site).map(|mirror| {
-                    let current_usage = mirror.stats.active_downloads.load(Ordering::Relaxed);
+                    let current_usage = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
 
                     // Check against adaptive_max_concurrent limit
                     if current_usage >= mirror.stats.adaptive_max_concurrent {
@@ -1129,7 +1219,7 @@ impl Mirrors {
         }
 
         let (_selected_site, selected_mirror) = mirrors_under_thresh[0];
-        let current_usage = selected_mirror.stats.active_downloads.load(Ordering::Relaxed);
+        let current_usage = selected_mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
         let adaptive_limit = selected_mirror.stats.adaptive_max_concurrent;
         let learned_limit = selected_mirror.stats.max_parallel_conns;
 
@@ -1243,35 +1333,16 @@ impl Mirrors {
         final_path
     }
 
-    /// Increment active usage counter for a mirror
-    pub fn increment_mirror_usage(&mut self, mirror_url: &str) {
-        let site = url2site(mirror_url);
-        if let Some(mirror) = self.mirrors.get_mut(&site) {
-            mirror.stats.active_downloads.fetch_add(1, Ordering::Relaxed);
-            mirror.stats.total_uses.fetch_add(1, Ordering::Relaxed);
-            mirror.stats.last_used.store(
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
-                Ordering::Relaxed
-            );
-        }
-    }
 
-    /// Decrement active usage counter for a mirror
-    pub fn decrement_mirror_usage(&mut self, mirror_url: &str) {
-        let site = url2site(mirror_url);
-        if let Some(mirror) = self.mirrors.get_mut(&site) {
-            mirror.stats.active_downloads.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
 
     /// Get current usage statistics for debugging
     #[allow(dead_code)]
     pub fn get_usage_stats(&self) -> HashMap<String, (usize, u64, u64)> {
         self.mirrors.iter()
             .map(|(url, mirror)| {
-                let active = mirror.stats.active_downloads.load(Ordering::Relaxed);
-                let total = mirror.stats.total_uses.load(Ordering::Relaxed);
-                let last_used = mirror.stats.last_used.load(Ordering::Relaxed);
+                let active = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
+                let total = mirror.shared_usage.total_uses.load(Ordering::Relaxed);
+                let last_used = mirror.shared_usage.last_used.load(Ordering::Relaxed);
                 (url.clone(), (active, total, last_used))
             })
             .collect()
@@ -1332,43 +1403,9 @@ impl Mirrors {
             });
         }
     }
+
 }
 
-/// Helper function to track mirror usage (called from download code)
-pub fn track_mirror_usage_start(url: &str) {
-    if let Ok(mut mirrors) = MIRRORS.lock() {
-        mirrors.increment_mirror_usage(url);
-    }
-}
-
-/// Helper function to track mirror usage end (called from download code)
-pub fn track_mirror_usage_end(url: &str) {
-    if let Ok(mut mirrors) = MIRRORS.lock() {
-        mirrors.decrement_mirror_usage(url);
-    }
-}
-
-/// RAII guard that tracks mirror usage and automatically calls end when dropped
-pub struct MirrorUsageGuard {
-    url: String,
-}
-
-impl MirrorUsageGuard {
-    pub fn new(url: &str) -> Self {
-        let site = url2site(url);
-        track_mirror_usage_start(&site);
-        Self {
-            url: url.to_string(),
-        }
-    }
-}
-
-impl Drop for MirrorUsageGuard {
-    fn drop(&mut self) {
-        let site = url2site(&self.url);
-        track_mirror_usage_end(&site);
-    }
-}
 
 /// Show performance stats for a single mirror
 fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
@@ -1420,9 +1457,9 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
         // Truncate long URLs for alignment
         if site.len() > 38 { site[..35].to_string() + "..." } else { site.to_string() },
         mirror.stats.score,
-        mirror.stats.active_downloads.load(Ordering::Relaxed),
+        mirror.shared_usage.active_downloads.load(Ordering::Relaxed),
         mirror.stats.adaptive_max_concurrent,
-        mirror.stats.total_uses.load(Ordering::Relaxed),
+        mirror.shared_usage.total_uses.load(Ordering::Relaxed),
         // Limit throughput string length for alignment
         if throughput_str.len() > 28 { throughput_str[..26].to_string() + ".." } else { throughput_str },
         latency_str,
