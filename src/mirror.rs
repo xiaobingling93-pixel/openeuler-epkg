@@ -395,7 +395,19 @@ impl Mirror {
 
     /// Stop tracking usage for this mirror
     pub fn stop_usage_tracking(&mut self) {
-        self.shared_usage.active_downloads.fetch_sub(1, Ordering::Relaxed);
+        // Prevent underflow by checking current value before subtracting
+        let current = self.shared_usage.active_downloads.load(Ordering::Relaxed);
+        if current > 0 {
+            self.shared_usage.active_downloads.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Reset usage tracking counters (useful for debugging corrupted counters)
+    #[allow(dead_code)]
+    pub fn reset_usage_tracking(&mut self) {
+        self.shared_usage.active_downloads.store(0, Ordering::Relaxed);
+        self.shared_usage.total_uses.store(0, Ordering::Relaxed);
+        self.shared_usage.last_used.store(0, Ordering::Relaxed);
     }
 
     /// Calculate weighted performance score for mirror selection optimization
@@ -1155,14 +1167,14 @@ impl Mirrors {
     /// Calculate adaptive concurrent limits and update mirrors directly
     fn calculate_mirror_stats(&mut self) {
         // Calculate total active downloads across all mirrors
-        let total_downloads: usize = self.mirrors.values()
-            .map(|mirror| mirror.shared_usage.active_downloads.load(Ordering::Relaxed))
+        let total_downloads: u64 = self.mirrors.values()
+            .map(|mirror| mirror.shared_usage.active_downloads.load(Ordering::Relaxed) as u64)
             .sum();
 
         let total_mirrors = self.available_mirrors.len();
 
         // Scale based on total downloads vs total capacity
-        let total_base_capacity: usize = total_mirrors * (total_mirrors + 1) / 2; // 1+2+3+...+N = N*(N+1)/2
+        let total_base_capacity: u64 = (total_mirrors as u64) * (total_mirrors as u64 + 1) / 2; // 1+2+3+...+N = N*(N+1)/2
         let scale_factor = (total_downloads as f64) / (total_base_capacity as f64);
 
         log::debug!("Total downloads/mirrors: {}/{}, scale factor: {:.2}", total_downloads, total_mirrors, scale_factor);
@@ -1355,6 +1367,15 @@ impl Mirrors {
                 (url.clone(), (active, total, last_used))
             })
             .collect()
+    }
+
+    /// Reset all mirror usage tracking counters (useful for debugging corrupted counters)
+    #[allow(dead_code)]
+    pub fn reset_all_usage_tracking(&mut self) {
+        for mirror in self.mirrors.values_mut() {
+            mirror.reset_usage_tracking();
+        }
+        log::info!("Reset usage tracking counters for all mirrors");
     }
 
     /*
