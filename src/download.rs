@@ -49,12 +49,12 @@ use crate::mirror::{append_download_log, append_http_log, url2site, HttpEvent, M
 impl DownloadTask {
     /// Returns the path to the .pget-status file, which is based on the final file path.
     pub fn pget_status_path(&self) -> PathBuf {
-        self.final_path.with_extension("pget-status")
+        append_suffix(&self.final_path, "pget-status")
     }
 
     /// Returns the path to the ETag file, which is based on the final file path.
     pub fn etag_path(&self) -> PathBuf {
-        self.final_path.with_extension("etag")
+        append_suffix(&self.final_path, "etag")
     }
 
     /// Saves the ETag to a file named after the download's final path with a .etag extension.
@@ -305,7 +305,7 @@ impl DownloadTask {
     pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, file_size: Option<u64>) -> Self {
         let final_path = Mirrors::resolve_mirror_path(&url, &output_dir);
         // Initialize chunk_path to the standard .part file for master tasks
-        let chunk_path = final_path.with_extension("part");
+        let chunk_path = append_suffix(&final_path, "part");
 
         // Classify file type for integrity and metadata handling
         let file_type = classify_file_type(&final_path, file_size);
@@ -3858,9 +3858,24 @@ fn create_ondemand_chunks(task: &DownloadTask, chunk_append_offset: u64, remaini
 // PROCESS COORDINATION
 // ============================================================================
 
+/// General helper function to append a suffix to a path instead of using with_extension
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{}", path.display(), suffix))
+}
+
+/// Helper function to generate PID file path for a given final path
+fn get_pid_file_path(final_path: &Path) -> PathBuf {
+    append_suffix(final_path, "download.pid")
+}
+
+/// Helper function to generate temporary PID file path for a given final path
+fn get_temp_pid_file_path(final_path: &Path) -> PathBuf {
+    append_suffix(final_path, "download.pid.tmp")
+}
+
 /// Create a PID file for download coordination and clean up stale PID files
 fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
-    let pid_file = final_path.with_extension("download.pid");
+    let pid_file = get_pid_file_path(final_path);
 
     // Check for existing downloads and clean up stale PID files
     check_and_cleanup_existing_downloads(final_path)?;
@@ -3880,7 +3895,7 @@ fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
     let pid_content = format!("pid={}\ntime={}\n", pid, timestamp);
 
     // Try to create the PID file atomically
-    let temp_pid_file = pid_file.with_extension("download.pid.tmp");
+    let temp_pid_file = get_temp_pid_file_path(final_path);
     fs::write(&temp_pid_file, pid_content)?;
 
     // Atomic rename
@@ -3952,7 +3967,7 @@ fn cleanup_pid_file(pid_file: &Path) -> Result<()> {
 
 /// Check for existing downloads and clean up stale PID files
 fn check_and_cleanup_existing_downloads(final_path: &Path) -> Result<()> {
-    let pid_file = final_path.with_extension("download.pid");
+    let pid_file = get_pid_file_path(final_path);
 
     if pid_file.exists() {
         if is_pid_file_active(&pid_file) {
@@ -4777,7 +4792,7 @@ fn save_pget_status(task: &DownloadTask, metadata: &ServerMetadata) -> Result<()
 /// Handle corruption detection by renaming corrupted files
 fn handle_corruption_detection(task: &DownloadTask) -> Result<()> {
     let final_path = &task.final_path;
-    let corrupted_path = final_path.with_extension("bad");
+    let corrupted_path = append_suffix(final_path, "bad");
 
     if final_path.exists() {
         fs::rename(final_path, &corrupted_path)
