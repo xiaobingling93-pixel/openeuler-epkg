@@ -498,9 +498,9 @@ pub struct Mirrors {
  */
 
 pub static MIRRORS: LazyLock<Mutex<Mirrors>> = LazyLock::new(|| {
-    initialize_mirrors().unwrap_or_else(|e| {
-        eprintln!("Failed to initialize mirrors: {}", e);
-        std::process::exit(1);
+    Mutex::new(Mirrors {
+        mirrors: HashMap::new(),
+        available_mirrors: Vec::new(),
     })
 });
 
@@ -1073,6 +1073,15 @@ impl Mirrors {
     ///
     /// Returns a Mirror that automatically tracks usage when selected and dropped
     pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool) -> Result<Mirror> {
+        // Initialize mirrors if not already done
+        if self.mirrors.is_empty() {
+            let initialized_mirrors = initialize_mirrors()?;
+
+            // Copy the initialized data to self
+            self.mirrors = initialized_mirrors.mirrors;
+            self.available_mirrors = initialized_mirrors.available_mirrors;
+        }
+
         let distro = &channel_config().distro;
         let arch = &channel_config().arch;
         let call_count = STATS_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1542,7 +1551,7 @@ fn apply_country_code_filtering(mirrors: HashMap<String, Mirror>) -> HashMap<Str
 }
 
 /// Initialize mirrors with distro and country code filtering
-fn initialize_mirrors() -> Result<Mutex<Mirrors>> {
+fn initialize_mirrors() -> Result<Mirrors> {
     let mirrors = match load_mirrors_for_distro(Some(&channel_config().distro)) {
         Ok(m) if !m.is_empty() => apply_country_code_filtering(m),
         Ok(_) | Err(_) => {
@@ -1567,7 +1576,7 @@ fn initialize_mirrors() -> Result<Mutex<Mirrors>> {
     if log::log_enabled!(log::Level::Debug) {
         dump_mirror_performance_stats(&mirrors, true);
     }
-    Ok(Mutex::new(mirrors))
+    Ok(mirrors)
 }
 
 /// Load performance logs from recent log files at once
