@@ -203,6 +203,7 @@ pub struct MirrorStats {
     pub score: u64,
     pub throughputs: Vec<u32>,  // historical download speeds in bytes/sec
     pub latencies: Vec<u32>,    // historical latencies in milliseconds
+    pub avg_throughput: Option<u32>, // cached average throughput for filtering
     pub no_range: bool,         // whether server supports Range requests
     pub no_online: bool,        // whether server is in service
     pub no_content: bool,       // whether server has the files we requested in current run
@@ -221,6 +222,7 @@ impl Default for MirrorStats {
             score: 0,
             throughputs: Vec::new(),
             latencies: Vec::new(),
+            avg_throughput: None,
             no_range: false,
             no_online: false,
             no_content: false,
@@ -241,6 +243,7 @@ impl Clone for MirrorStats {
             score: self.score,
             throughputs: self.throughputs.clone(),
             latencies: self.latencies.clone(),
+            avg_throughput: self.avg_throughput,
             no_range: self.no_range,
             no_online: self.no_online,
             no_content: self.no_content,
@@ -347,6 +350,38 @@ impl Mirror {
 
     // Helper method to calculate weighted average throughput
     // Newer measurements have higher weights: sum(i * self.throughputs[i]) / sum(i)
+    //
+    // History data variation could be 10x, so
+    // - meaningless using log data for ETA estimation => course 1M beforehand chunking would be suitable
+    // - quickly switch to new data for ETA and score calculation => better estimation for ondemand chunking
+    //   (but still not good enough to qualify an ETA based global planner)
+    //
+    //  History data at different time: 10x variation in throughputs!
+    //  Rank |  URL                   | Score |  Throughputs (KB/s)     |  Latencies (ms)
+    //  -----|------------------------|-------|-------------------------|----------------------
+    //    1  | repo.huaweicloud.com   | 13039 | [1294, 945, 1274KB/s]   | [190, 553, 247ms]
+    //    2  | repo.huaweicloud.com   |  6783 | [345, 308, 394KB/s]     | [1185, 1154, 1009ms]
+    //    2  | repo.huaweicloud.com   | 10985 | [463, 1078, 333KB/s]    | [665, 972, 728ms]
+    //    8  | repo.huaweicloud.com   |  3855 | [81, 47, 126KB/s]       | [738, 2287, 1319ms]
+    //
+    //  History data at same time: throughputs could still have 3-5x variation!
+    //  https://mirrors.tuna.tsinghua.edu.cn/ubuntu///dists/noble-updates/by-hash/SHA256/d8c255df1be42d64603734262d5a7833ef4fb8b2a59d0abfb13b093fdb1c6d2d
+    //  2025-07-05.16:47:24 offset=10485760 bytes=1048576 dur=3534 tput=303831 ok=1
+    //  2025-07-05.16:47:26 offset=11534336 bytes=1048576 dur=1087 tput=987802 ok=1
+    //  2025-07-05.16:47:28 offset=13631488 bytes=1048576 dur=1227 tput=875095 ok=1
+    //  2025-07-05.16:47:30 offset=14680064 bytes=1048576 dur=1772 tput=605949 ok=1
+    //  2025-07-05.16:47:32 offset=19922944 bytes=1048576 dur=895 tput=1199711 ok=1
+    //  2025-07-05.16:47:37 offset=20971520 bytes=1048576 dur=3877 tput=276951 ok=1
+    //  2025-07-05.16:47:39 offset=22020096 bytes=1048576 dur=1029 tput=1043480 ok=1
+    //  2025-07-05.16:47:40 offset=25165824 bytes=1048576 dur=828 tput=1296789 ok=1
+    //  2025-07-05.16:47:42 offset=26214400 bytes=1048576 dur=930 tput=1154561 ok=1
+    //  2025-07-05.16:47:48 offset=31457280 bytes=1048576 dur=4794 tput=223976 ok=1
+    //  2025-07-05.16:47:51 offset=37748736 bytes=1048576 dur=1900 tput=565127 ok=1
+    //  2025-07-05.16:47:58 offset=38797312 bytes=1048576 dur=5030 tput=213467 ok=1
+    //  2025-07-05.16:48:01 offset=46137344 bytes=1048576 dur=1608 tput=667749 ok=1
+    //  2025-07-05.16:48:03 offset=48234496 bytes=1048576 dur=1585 tput=677439 ok=1
+    //  2025-07-05.16:48:05 offset=49283072 bytes=1048576 dur=1059 tput=1013920 ok=1
+    //  2025-07-05.16:48:10 offset=51380224 bytes=1048576 dur=4856 tput=221116 ok=1
     pub fn avg_throughput(&self) -> Option<u32> {
         if self.stats.throughputs.is_empty() {
             None
@@ -444,6 +479,9 @@ impl Mirror {
         let avg_latency = self.avg_latency().unwrap_or(100) as u64;
         let avg_throughput = self.avg_throughput().unwrap_or(
                             self.bandwidth.unwrap_or(512) * (1024*1024/8/1024)) as u64; // Mbps => B/s; the last /1024 is total_site_bw => my_connection_throughput
+
+        // Store the average throughput for filtering
+        self.stats.avg_throughput = Some(avg_throughput as u32);
 
         // Score based on throughput (higher is better) and latency (lower is better)
         let mut throughput_score = (avg_throughput).min(100_000_000).max(1000); // Cap in [1KB/s, 100MB/s]
@@ -1152,14 +1190,75 @@ impl Mirrors {
             })
             .collect();
 
-        // Apply throughput-based filtering
-        self.apply_throughput_based_filtering();
+
+        // Apply performance-based filtering during initialization
+        self.filter_mirrors_by_performance();
 
         // Sort available mirrors by score (descending)
         self.available_mirrors.sort_by(|a, b| {
             let score_a = self.mirrors.get(a).map(|m| m.stats.score).unwrap_or(0);
             let score_b = self.mirrors.get(b).map(|m| m.stats.score).unwrap_or(0);
             score_b.cmp(&score_a)
+        });
+    }
+
+    /*
+     * PERFORMANCE-BASED MIRROR FILTERING
+     *
+     * This filter implements performance-based mirror selection by:
+     *
+     * 1. Collecting mirrors with throughput data (logs)
+     * 2. Calculating the median throughput (mid_throughput)
+     * 3. Filtering out mirrors whose avg_throughput < mid_throughput / (1 + MAX_PGET_LIMIT - pget_limit)
+     *
+     * Since pget_limit grows over time, we gradually filter out more and more slow mirrors.
+     * - The newly collected throughput data can be more accuracte than history data;
+     * - The more closer to the end, the more important we select high speed mirrors,
+     *   because the overall ETA is determined by the slowest task
+     */
+    fn filter_mirrors_by_performance(&mut self) {
+        // Get mirrors with throughput data
+        let mirrors_with_throughputs: Vec<&str> = self.available_mirrors.iter()
+            .filter(|site| {
+                self.mirrors.get(*site)
+                    .map(|mirror| mirror.stats.avg_throughput.is_some())
+                    .unwrap_or(false)
+            })
+            .map(|site| site.as_str())
+            .collect();
+
+        // If we don't have enough mirrors with throughput data, skip filtering
+        if mirrors_with_throughputs.len() < 3 {
+            return;
+        }
+
+        // Calculate median throughput (mid_throughput)
+        let mut throughputs: Vec<u32> = mirrors_with_throughputs.iter()
+            .filter_map(|site| {
+                self.mirrors.get(*site)
+                    .and_then(|mirror| mirror.stats.avg_throughput)
+            })
+            .collect();
+
+        throughputs.sort();
+        let mid_throughput = throughputs[throughputs.len() / 2];
+
+        // Calculate threshold based on current pget_limit
+        let threshold = mid_throughput / (1 + MAX_PGET_LIMIT as u32 - self.pget_limit as u32);
+
+        // Filter out mirrors below the threshold
+        self.available_mirrors.retain(|site| {
+            if let Some(mirror) = self.mirrors.get(site) {
+                if let Some(avg_throughput) = mirror.stats.avg_throughput {
+                    // Keep mirrors with throughput above threshold
+                    avg_throughput >= threshold
+                } else {
+                    // Keep mirrors without throughput data (for exploration)
+                    true
+                }
+            } else {
+                true
+            }
         });
     }
 
@@ -1360,54 +1459,6 @@ impl Mirrors {
             mirror.reset_usage_tracking();
         }
         log::info!("Reset usage tracking counters for all mirrors");
-    }
-
-    /*
-     * THROUGHPUT-BASED MIRROR EXPLORATION FILTERING
-     *
-     * This filter implements adaptive exploration of new mirrors based on how many
-     * mirrors already have performance history (throughput data). The goal is to:
-     *
-     * 1. Prioritize mirrors with known performance data for reliability
-     * 2. Allow controlled exploration of new mirrors without performance history
-     * 3. Reduce exploration as more mirrors with data become available
-     *
-     * This ensures we gradually shift from exploration to exploitation as we
-     * gather more mirror performance data over time.
-     */
-    fn apply_throughput_based_filtering(&mut self) {
-        let nr_has_log = self.available_mirrors.iter()
-            .filter(|site| {
-                self.mirrors.get(*site)
-                    .map(|mirror| !mirror.stats.throughputs.is_empty())
-                    .unwrap_or(false)
-            })
-            .count();
-
-        let max_empty_throughputs = if nr_has_log > 9 {
-            // slow exploration when we have plenty of known sites
-            nr_has_log / 8
-        } else if nr_has_log <= 3 {
-            // skip filter by empty throughputs (aggressive exploration when we lack data)
-            self.available_mirrors.len()
-        } else {
-            11 - nr_has_log
-        };
-
-        if max_empty_throughputs < self.available_mirrors.len() {
-            let mut empty_count = 0;
-            self.available_mirrors.retain(|site| {
-                if let Some(mirror) = self.mirrors.get(site) {
-                    if mirror.stats.throughputs.is_empty() {
-                        empty_count += 1;
-                        if empty_count > max_empty_throughputs {
-                            return false;  // Filter out this mirror
-                        }
-                    }
-                }
-                true  // Keep this mirror
-            });
-        }
     }
 
 }
@@ -1628,6 +1679,49 @@ fn apply_country_code_filtering(mirrors: HashMap<String, Mirror>) -> HashMap<Str
     }
 }
 
+/// Filter mirrors by exploration criteria (removes mirrors without throughput data)
+/*
+ * MIRROR EXPLORATION FILTERING
+ *
+ * This filter implements adaptive exploration of new mirrors based on how many
+ * mirrors already have performance history (throughput data). The goal is to:
+ *
+ * 1. Prioritize mirrors with known performance data for reliability
+ * 2. Allow controlled exploration of new mirrors without performance history
+ * 3. Reduce exploration as more mirrors with data become available
+ *
+ * This ensures we gradually shift from exploration to exploitation as we
+ * gather more mirror performance data over time.
+ */
+fn filter_mirrors_by_exploration(mirrors: &mut HashMap<String, Mirror>) {
+    let nr_has_log = mirrors.values()
+        .filter(|mirror| !mirror.stats.throughputs.is_empty())
+        .count();
+
+    let max_empty_throughputs = if nr_has_log > 9 {
+        // slow exploration when we have plenty of known sites
+        nr_has_log / 8
+    } else if nr_has_log <= 3 {
+        // skip filter by empty throughputs (aggressive exploration when we lack data)
+        mirrors.len()
+    } else {
+        11 - nr_has_log
+    };
+
+    if max_empty_throughputs < mirrors.len() {
+        let mut empty_count = 0;
+        mirrors.retain(|_, mirror| {
+            if mirror.stats.throughputs.is_empty() {
+                empty_count += 1;
+                if empty_count > max_empty_throughputs {
+                    return false;  // Filter out this mirror
+                }
+            }
+            true  // Keep this mirror
+        });
+    }
+}
+
 /// Initialize mirrors with distro and country code filtering
 fn initialize_mirrors() -> Result<Mirrors> {
     let mirrors = match load_mirrors_for_distro(Some(&channel_config().distro)) {
@@ -1645,6 +1739,9 @@ fn initialize_mirrors() -> Result<Mirrors> {
     for mirror in loaded_mirrors.values_mut() {
         mirror.calculate_performance_score();
     }
+
+    // Explore some new sites in each epkg invocation
+    filter_mirrors_by_exploration(&mut loaded_mirrors);
 
     let mirrors = Mirrors {
         mirrors: loaded_mirrors,
@@ -1851,4 +1948,3 @@ where
 
     deserializer.deserialize_any(BoolVisitor)
 }
-
