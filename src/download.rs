@@ -4708,12 +4708,19 @@ fn recover_parto_files(task: &DownloadTask) -> Result<ValidationResult> {
     // Mutable files have no expected_size beforehand
     if task.file_type == FileType::Mutable {
         if let Some(pget_status) = load_pget_status(task)? {
-            let server_metadata = fetch_server_metadata(task, &pget_status.url)?;
-            // Check part files consistency using final_path since it's per-file not per-chunk info
-            if !server_metadata.matches_with(&pget_status.metadata) {
-                log::warn!("Server metadata conflicts with existing part files");
-            } else {
-                expected_size = server_metadata.remote_size.unwrap_or(0);
+            match fetch_server_metadata(task, &pget_status.url) {
+                Ok(server_metadata) => {
+                    // Check part files consistency using final_path since it's per-file not per-chunk info
+                    if !server_metadata.matches_with(&pget_status.metadata) {
+                        log::warn!("Server metadata conflicts with existing part files");
+                    } else {
+                        expected_size = server_metadata.remote_size.unwrap_or(0);
+                    }
+                }
+                Err(e) => {
+                    log::debug!("Failed to fetch server metadata for {}: {}", pget_status.url, e);
+                    log::debug!("Will start fresh download due to metadata fetch failure");
+                }
             }
         }
     }
@@ -4808,6 +4815,15 @@ fn load_pget_status(task: &DownloadTask) -> Result<Option<PgetStatus>> {
 fn save_pget_status(task: &DownloadTask, metadata: &ServerMetadata) -> Result<()> {
     // Only few Mutable files need .pget-status validation
     if task.file_type != FileType::Mutable {
+        return Ok(());
+    }
+
+    // Check if metadata has valid information before saving
+    // Skip saving if all metadata fields are empty/null
+    if metadata.remote_size.is_none() &&
+       metadata.last_modified.is_none() &&
+       metadata.etag.is_none() {
+        log::debug!("Skipping pget-status save for {} - no valid metadata available", task.url);
         return Ok(());
     }
 
