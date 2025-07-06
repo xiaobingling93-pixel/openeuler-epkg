@@ -14,6 +14,7 @@ use crate::models::dirs;
 use crate::models::channel_config;
 use crate::dirs::get_epkg_manager_path;
 
+const MAX_PGET_LIMIT:usize = 5;
 
 /// Convert Unix timestamp to formatted datetime string using time crate
 fn format_timestamp_to_local_datetime(timestamp: u64) -> String {
@@ -468,9 +469,9 @@ impl Mirror {
 }
 
 pub struct Mirrors {
-    pub mirrors: HashMap<String, Mirror>, // key: mirror site (without protocol scheme)
-    pub available_mirrors: Vec<String>, // Site names of available mirrors (sorted by score)
-    pub pget_limit: usize, // Current pget limit for parallel downloads
+    pub mirrors: HashMap<String, Mirror>,   // key: mirror site (without protocol scheme)
+    pub available_mirrors: Vec<String>,     // Site names of available mirrors (sorted by score)
+    pub pget_limit: usize,                  // Current pget limit for parallel downloads
 }
 
 /*
@@ -1177,11 +1178,11 @@ impl Mirrors {
 
             // If no mirrors found under threshold, increment limit and try again
             current_limit += 1;
-            
-            // Prevent infinite loop - if we've tried beyond reasonable limits, 
+
+            // Prevent infinite loop - if we've tried beyond reasonable limits,
             // just return the highest scoring mirror
-            if current_limit > 10 {
-                log::warn!("WARNING: pget_limit exceeded 10, selecting highest scoring mirror");
+            if current_limit > MAX_PGET_LIMIT {
+                log::warn!("WARNING: pget_limit exceeded {}, selecting highest scoring mirror", MAX_PGET_LIMIT);
                 let call_count = STATS_CALL_COUNT.load(Ordering::Relaxed);
                 let rand_site = self.available_mirrors[call_count as usize % self.available_mirrors.len()].clone();
                 break (rand_site, current_limit);
@@ -1371,15 +1372,6 @@ impl Mirrors {
      * 2. Allow controlled exploration of new mirrors without performance history
      * 3. Reduce exploration as more mirrors with data become available
      *
-     * Logic:
-     * - Count mirrors with throughput data (nr_has_log)
-     * - If nr_has_log > 10: Keep at most 1 mirror with empty throughputs
-     *   (minimal exploration when we have plenty of data)
-     * - If nr_has_log <= 1: No filtering by throughputs
-     *   (aggressive exploration when we lack data)
-     * - Otherwise: Keep at most (11 - nr_has_log) mirrors with empty throughputs
-     *   (balanced exploration that decreases as data increases)
-     *
      * This ensures we gradually shift from exploration to exploitation as we
      * gather more mirror performance data over time.
      */
@@ -1392,13 +1384,14 @@ impl Mirrors {
             })
             .count();
 
-        let max_empty_throughputs = if nr_has_log > 10 {
-            1  // keep at most 1 mirror with empty throughputs
-        } else if nr_has_log <= 1 {
-            // do not filter by empty throughputs
+        let max_empty_throughputs = if nr_has_log > 9 {
+            // slow exploration when we have plenty of known sites
+            nr_has_log / 8
+        } else if nr_has_log <= 3 {
+            // skip filter by empty throughputs (aggressive exploration when we lack data)
             self.available_mirrors.len()
         } else {
-            11 - nr_has_log  // keep at most (11 - nr_has_log) mirrors with empty throughputs
+            11 - nr_has_log
         };
 
         if max_empty_throughputs < self.available_mirrors.len() {
@@ -1524,6 +1517,59 @@ pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
     println!("=== End Mirror Stats ===");
 }
 
+/// EU country codes list
+const EU_COUNTRY_CODES: &[&str] = &[
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE"
+];
+
+/// Check if a country code is in the EU
+fn is_eu_country(country_code: &str) -> bool {
+    EU_COUNTRY_CODES.contains(&country_code)
+}
+
+/// Apply EU-specific filtering logic
+fn apply_eu_filtering(mut local_mirrors: HashMap<String, Mirror>, eu_mirrors: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
+    // For EU countries, always use local_mirrors + eu_mirrors
+    log::debug!("EU country detected - using local mirrors ({}) + EU mirrors ({})",
+                local_mirrors.len(), eu_mirrors.len());
+
+    local_mirrors.extend(eu_mirrors);
+    local_mirrors
+}
+
+/// Apply general fallback logic for non-EU countries
+fn apply_general_fallback(mut local_mirrors: HashMap<String, Mirror>, other_mirrors: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
+    let local_count = local_mirrors.len();
+
+    if local_count >= 10 {
+        // Use only local mirrors if we have enough
+        log::debug!("Using only local mirrors ({} mirrors, should be sufficient)", local_count);
+        local_mirrors
+    } else {
+        // Take up to 90 from other_mirrors to supplement local mirrors
+        let needed_from_other = 90.min(other_mirrors.len());
+
+        // Sort other_mirrors by score (descending) before selecting
+        let mut sorted_other: Vec<_> = other_mirrors.into_iter().collect();
+        sorted_other.sort_by(|(_, a), (_, b)| b.stats.score.cmp(&a.stats.score));
+
+        let mut selected_other = HashMap::new();
+
+        // Take the top mirrors by score
+        for (site, mirror) in sorted_other.into_iter().take(needed_from_other) {
+            selected_other.insert(site, mirror);
+        }
+
+        log::debug!("Using local mirrors ({}) + {} world wide mirrors",
+                    local_count, selected_other.len());
+
+        local_mirrors.extend(selected_other);
+        local_mirrors
+    }
+}
+
 /// Apply country code filtering to mirrors
 fn apply_country_code_filtering(mirrors: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
     // Apply country code filtering if we have a user country code
@@ -1532,31 +1578,41 @@ fn apply_country_code_filtering(mirrors: HashMap<String, Mirror>) -> HashMap<Str
         Ok(user_country_code) => {
             log::debug!("Filtering mirrors by country code: {}", user_country_code);
 
-            // Create new HashMap and copy local country sites to it, setting is_near to true
+            // Create separate HashMaps for different mirror categories
             let mut local_mirrors = HashMap::new();
+            let mut eu_mirrors = HashMap::new();
             let mut other_mirrors = HashMap::new();
-            
+
             for (site, mut mirror) in mirrors {
                 if mirror.country_code.as_deref() == Some(user_country_code.as_str()) {
+                    // Local country mirrors
                     mirror.is_near = true;
                     local_mirrors.insert(site, mirror);
+                } else if let Some(ref country_code) = mirror.country_code {
+                    if is_eu_country(country_code) {
+                        // EU mirrors (but not local)
+                        mirror.is_near = false;
+                        eu_mirrors.insert(site, mirror);
+                    } else {
+                        // Other non-EU mirrors
+                        mirror.is_near = false;
+                        other_mirrors.insert(site, mirror);
+                    }
                 } else {
+                    // Mirrors without country code
                     mirror.is_near = false;
                     other_mirrors.insert(site, mirror);
                 }
             }
 
-            log::debug!("Found {} mirrors matching country code {}", local_mirrors.len(), user_country_code);
+            log::debug!("Found {} local mirrors, {} EU mirrors, {} other mirrors for country {}",
+                       local_mirrors.len(), eu_mirrors.len(), other_mirrors.len(), user_country_code);
 
-            // If we have more than 2 mirrors with matching country code, use them
-            if local_mirrors.len() > 2 {
-                local_mirrors
+            // Apply appropriate filtering strategy
+            if is_eu_country(&user_country_code) {
+                apply_eu_filtering(local_mirrors, eu_mirrors)
             } else {
-                // Fall back to all mirrors for the distro, with is_near set appropriately
-                log::debug!("Only {} mirrors found for country {}, falling back to all distro mirrors",
-                           local_mirrors.len(), user_country_code);
-                local_mirrors.extend(other_mirrors);
-                local_mirrors
+                apply_general_fallback(local_mirrors, other_mirrors)
             }
         }
         Err(e) => {
