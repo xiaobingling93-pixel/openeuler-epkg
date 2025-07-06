@@ -13,6 +13,7 @@ use crate::dirs::{find_env_root, get_env_root};
 use crate::models::dirs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
+use std::path::PathBuf;
 
 impl PackageManager {
 
@@ -225,7 +226,86 @@ impl PackageManager {
         fs::set_permissions(&usr_bin.join("elf-loader"), fs::Permissions::from_mode(0o755))
             .context(format!("Failed to set permissions (mode 755) on elf-loader binary at {}", usr_bin.join("elf-loader").display()))?;
 
+        // Create symlink to epkg binary in the first valid PATH component
+        self.create_epkg_symlink(&usr_bin.join("epkg"))
+            .context("Failed to create epkg symlink in PATH")?;
+
         Ok(())
+    }
+
+    /// Create a symlink to the epkg binary in the first valid PATH component
+    ///
+    /// Validates PATH components according to the following rules:
+    /// - Skip /.epkg/ directories
+    /// - Use /home/... directories
+    /// - Use /usr/local/bin directory
+    /// - Skip others
+    fn create_epkg_symlink(&self, epkg_binary_path: &Path) -> Result<()> {
+        let path_var = env::var("PATH")
+            .unwrap_or_else(|_| "".to_string());
+
+        for path_component in path_var.split(':') {
+            if path_component.is_empty() {
+                continue;
+            }
+
+            // Skip paths containing /.epkg/
+            if path_component.contains("/.epkg/") {
+                continue;
+            }
+
+            // Check if this is a valid path component
+            if self.is_valid_path_component(path_component) {
+                let target_dir = PathBuf::from(path_component);
+
+                // Create the target directory if it doesn't exist
+                if !target_dir.exists() {
+                    fs::create_dir_all(&target_dir)
+                        .context(format!("Failed to create target directory {}", target_dir.display()))?;
+                }
+
+                let symlink_path = target_dir.join("epkg");
+
+                // Remove existing symlink or file if it exists
+                if symlink_path.exists() {
+                    fs::remove_file(&symlink_path)
+                        .context(format!("Failed to remove existing file/symlink at {}", symlink_path.display()))?;
+                }
+
+                // Create the symlink
+                symlink(epkg_binary_path, &symlink_path)
+                    .context(format!("Failed to create symlink from {} to {}",
+                        epkg_binary_path.display(), symlink_path.display()))?;
+
+                println!("Created epkg symlink at {}", symlink_path.display());
+                return Ok(());
+            }
+        }
+
+        // If no valid path component found, log a warning but don't fail
+        log::warn!("No valid PATH component found for creating epkg symlink. PATH: {}", path_var);
+        Ok(())
+    }
+
+    /// Check if a PATH component is valid for creating the epkg symlink
+    fn is_valid_path_component(&self, path_component: &str) -> bool {
+        // Must be an absolute path
+        if !path_component.starts_with('/') {
+            return false;
+        }
+
+        // Use /home/... directories
+        if path_component.starts_with("/home/") {
+            return true;
+        }
+
+        // Use /usr/local/... directories
+        if path_component.starts_with("/usr/local/bin") {
+            return true;
+        }
+
+        // Skip others
+        false
     }
 
     fn update_shell_rc(&mut self) -> Result<()> {
