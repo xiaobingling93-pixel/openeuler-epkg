@@ -680,19 +680,25 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 
     if needs_update {
         log::info!("Library cache needs updating, running ldconfig");
-        let run_options = crate::run::RunOptions {
-            mount_dirs: Vec::new(),
-            user: None,
-            command: "ldconfig".to_string(),
-            args: Vec::new(),
-            env_vars: std::collections::HashMap::new(),
-        };
 
-        // Find ldconfig in the environment
-        let ldconfig_path = crate::run::find_command_in_env_path("ldconfig", env_root)?;
+        // Check if ldconfig exists in the environment before trying to run it
+        match crate::run::find_command_in_env_path("ldconfig", env_root) {
+            Ok(ldconfig_path) => {
+                let run_options = crate::run::RunOptions {
+                    mount_dirs: Vec::new(),
+                    user: None,
+                    command: "ldconfig".to_string(),
+                    args: Vec::new(),
+                    env_vars: std::collections::HashMap::new(),
+                };
 
-        // Execute ldconfig
-        crate::run::fork_and_execute(env_root, &run_options, &ldconfig_path)?;
+                // Execute ldconfig
+                crate::run::fork_and_execute(env_root, &run_options, &ldconfig_path)?;
+            }
+            Err(_) => {
+                log::warn!("ldconfig command not found in environment, skipping library cache update");
+            }
+        }
     } else {
         log::debug!("Library cache is up to date, skipping ldconfig");
     }
