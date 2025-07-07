@@ -1190,7 +1190,9 @@ impl DownloadManager {
 
         // Set slowest ETA task for ondemand chunking (if ETA > global ETA)
         if let Some(ref task) = slowest_task_for_ondemand_chunking {
-            if slowest_eta_for_ondemand > global_ideal_eta && slowest_eta_for_ondemand > MIN_ETA_THRESHOLD_SECONDS {
+            if slowest_eta_for_ondemand >= global_ideal_eta   // >= handles single-large-file case
+               && slowest_eta_for_ondemand > MIN_ETA_THRESHOLD_SECONDS
+            {
                 if let Err(e) = task.set_chunk_status(ChunkStatus::NeedOndemandChunk) {
                     log::warn!("Failed to set NeedOndemandChunk status for slowest ETA task: {}", e);
                 } else {
