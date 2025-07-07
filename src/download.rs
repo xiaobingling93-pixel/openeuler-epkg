@@ -1228,8 +1228,8 @@ impl DownloadManager {
                 match download_chunk_task(&chunk_clone) {
                     Ok(()) => {
                         log::debug!(
-                            "Chunk for {} at offset {} completed successfully",
-                            chunk_clone.get_resolved_url(), chunk_clone.chunk_offset.load(Ordering::Relaxed)
+                            "Chunk for {} at offset {} completed successfully (path: {})",
+                            chunk_clone.get_resolved_url(), chunk_clone.chunk_offset.load(Ordering::Relaxed), chunk_clone.chunk_path.display()
                         );
 
                         // Mark chunk as completed
@@ -1238,9 +1238,9 @@ impl DownloadManager {
                         }
                     },
                     Err(e) => {
-                        log::debug!(
-                            "Chunk task failed for {} at offset {}: {}",
-                            chunk_clone.get_resolved_url(), chunk_clone.chunk_offset.load(Ordering::Relaxed), e
+                        log::warn!(
+                            "Chunk task failed for {} at offset {} (path: {}): {}",
+                            chunk_clone.get_resolved_url(), chunk_clone.chunk_offset.load(Ordering::Relaxed), chunk_clone.chunk_path.display(), e
                         );
 
                         // Mark chunk as failed
@@ -2036,34 +2036,30 @@ fn download_file(
     task: &DownloadTask,
 ) -> Result<()> {
     let url = &task.url;
-    log::debug!("download_file starting for {}", url);
+    log::debug!("download_file starting for {} (chunk_path={})", url, task.chunk_path.display());
 
     // Try to create beforehand chunks
     create_chunk_tasks(task)?;
 
-    // Set up range request type before downloading
-    task.setup_download_range();
-
-    // Use the unified download_chunk_task for both master and chunk tasks
     download_chunk_task(task)?;
 
     // Wait for all chunks to complete and merge them
     wait_for_chunks_and_merge(task)?;
 
-    log::debug!("download_file calling finalize_file for {}", url);
+    log::debug!("download_file calling finalize_file for {} (chunk_path={})", url, task.chunk_path.display());
     finalize_file(task)?;
-    log::info!("download_file completed: {}", task.get_resolved_url());
+    log::info!("download_file completed: {} (chunk_path={})", task.get_resolved_url(), task.chunk_path.display());
     Ok(())
 }
 
 /// Get the size of an existing partial file, or 0 if it doesn't exist
 fn get_existing_file_size(part_path: &Path) -> Result<u64> {
     if part_path.exists() {
-        log::debug!("download_file part file exists, getting metadata");
+        log::debug!("download_file part file exists, getting metadata for {}", part_path.display());
         match fs::metadata(part_path) {
             Ok(metadata) => {
                 let size = metadata.len();
-                log::debug!("download_file found existing part file with {} bytes", size);
+                log::debug!("download_file found existing part file with {} bytes: {}", size, part_path.display());
                 Ok(size)
             },
             Err(e) => {
@@ -2072,7 +2068,7 @@ fn get_existing_file_size(part_path: &Path) -> Result<u64> {
             }
         }
     } else {
-        log::debug!("download_file no existing part file found");
+        log::debug!("download_file no existing part file found: {}", part_path.display());
         Ok(0)
     }
 }
@@ -2107,28 +2103,28 @@ fn execute_download_request(
             let end = chunk_offset + chunk_size - 1;
             let start = chunk_offset + resumed_bytes;
             if start >= end {
-                log::warn!("Invalid range detected: start={} >= end={} for {} (chunk_offset={}, chunk_size={}, resumed_bytes={}, file_size={})",
-                          start, end, resolved_url, chunk_offset, chunk_size, resumed_bytes, file_size);
+                log::warn!("Invalid range detected: start={} >= end={} for {} (chunk_offset={}, chunk_size={}, resumed_bytes={}, file_size={}, chunk_path={})",
+                          start, end, resolved_url, chunk_offset, chunk_size, resumed_bytes, file_size, part_path.display());
                 return Err(eyre!("Invalid range calculation: start > end"));
             }
-            log::debug!("Setting Range header: bytes={}-{} (chunk_offset={}, chunk_size={}, resumed_bytes={})",
-                       start, end, chunk_offset, chunk_size, resumed_bytes);
+            log::debug!("Setting Range header: bytes={}-{} (chunk_offset={}, chunk_size={}, resumed_bytes={}, chunk_path={})",
+                       start, end, chunk_offset, chunk_size, resumed_bytes, part_path.display());
             request = request.header("Range", &format!("bytes={}-{}", start, end));
         }
         RangeRequest::Resume => {
             if resumed_bytes >= file_size && file_size > 0 {
-                log::warn!("Invalid range detected: resumed_bytes={} >= file_size={} for {} (chunk_offset={}, chunk_size={})",
-                          resumed_bytes, file_size, resolved_url, chunk_offset, chunk_size);
+                log::warn!("Invalid range detected: resumed_bytes={} >= file_size={} for {} (chunk_offset={}, chunk_size={}, chunk_path={})",
+                          resumed_bytes, file_size, resolved_url, chunk_offset, chunk_size, part_path.display());
                 return Err(eyre!("Invalid range calculation: resumed_bytes >= file_size"));
             }
-            log::debug!("Setting Range header: bytes={}- (resume from existing bytes)", resumed_bytes);
+            log::debug!("Setting Range header: bytes={}- (resume from existing bytes, chunk_path={})", resumed_bytes, part_path.display());
             request = request.header("Range", &format!("bytes={}-", resumed_bytes));
         }
         RangeRequest::None => {
             // is master task w/o chunking
             if part_path.exists() {
                 if let Some(stored_etag) = task.load_etag() {
-                    log::debug!("Adding If-None-Match header with ETag '{}' for conditional request", stored_etag);
+                    log::debug!("Adding If-None-Match header with ETag '{}' for conditional request (chunk_path={})", stored_etag, part_path.display());
                     request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
                 }
             } else {
@@ -2188,7 +2184,7 @@ fn handle_http_status_error(
     resolved_url: &str,
     _existing_bytes: u64,
 ) -> Result<http::Response<ureq::Body>> {
-    log::debug!("HTTP error code {}", code);
+    log::debug!("HTTP error code {} for chunk_path={}", code, task.chunk_path.display());
 
     // Log latency even for errors
     log_http_event_safe(resolved_url, HttpEvent::HttpStatus(code));
@@ -2209,7 +2205,7 @@ fn handle_http_status_error(
             }
         };
 
-        log::debug!("Received HTTP 429 Too Many Requests ({} active connections) for {}", active_conns, resolved_url);
+        log::debug!("Received HTTP 429 Too Many Requests ({} active connections) for {} (chunk_path={})", active_conns, resolved_url, task.chunk_path.display());
 
         // Log the TooManyRequests event with the connection count
         log_http_event_safe(&resolved_url, HttpEvent::TooManyRequests(active_conns as u32));
@@ -2224,7 +2220,7 @@ fn handle_http_status_error(
         let resumed_bytes = task.resumed_bytes.load(Ordering::Relaxed);
         let file_size = task.file_size.load(Ordering::Relaxed);
 
-        log::warn!("HTTP 416 Range Not Satisfiable for {} - Range calculation details:", resolved_url);
+        log::warn!("HTTP 416 Range Not Satisfiable for {} (chunk_path={}) - Range calculation details:", resolved_url, task.chunk_path.display());
         log::warn!("  chunk_offset={}, chunk_size={}, resumed_bytes={}, file_size={}",
                   chunk_offset, chunk_size, resumed_bytes, file_size);
 
@@ -2245,10 +2241,10 @@ fn handle_http_status_error(
         Err(DownloadError::UnexpectedResponse { code, details: format!("HTTP 416 Range Not Satisfiable: {}", error_msg) }.into())
     } else if code >= HTTP_CLIENT_ERROR_START && code < HTTP_SERVER_ERROR_START {
         // For client errors (like 403, 404), create a simple DownloadError without verbose backtrace
-        log::debug!("Client error {} for {}", code, resolved_url);
+        log::debug!("Client error {} for {} (chunk_path={})", code, resolved_url, task.chunk_path.display());
         Err(DownloadError::Fatal { code, message: error_msg }.into())
     } else {
-        log::debug!("Server error {} for {}", code, resolved_url);
+        log::debug!("Server error {} for {} (chunk_path={})", code, resolved_url, task.chunk_path.display());
         Err(DownloadError::UnexpectedResponse { code, details: format!("HTTP error: {}", error_msg) }.into())
     }
 }
@@ -2261,6 +2257,8 @@ fn handle_network_io_error(
     resolved_url: &str,
 ) -> Result<http::Response<ureq::Body>> {
     log_http_event_safe(resolved_url, HttpEvent::NetError(e.to_string()));
+
+    log::debug!("Network I/O error for {} (chunk_path={}): {}", resolved_url, task.chunk_path.display(), e);
 
     let error_msg = format!("Network error: {} - {}", e, resolved_url);
     task.set_message(error_msg.clone());
@@ -2280,6 +2278,8 @@ fn handle_general_request_error(
     // Log general error as network error
     log_http_event_safe(resolved_url, HttpEvent::NetError(error_str.clone()));
 
+    log::debug!("General request error for {} (chunk_path={}): {}", resolved_url, task.chunk_path.display(), error_str);
+
     task.set_message(error_msg.clone());
 
     Err(DownloadError::Network { details: error_msg }.into())
@@ -2291,6 +2291,7 @@ fn validate_response_content_type(
     url: &str,
     task: &DownloadTask,
 ) -> Result<()> {
+    log::debug!("Validating response content type for {} (chunk_path={})", url, task.chunk_path.display());
     if let Some(content_type) = response.headers().get("content-type").and_then(|v| v.to_str().ok()) {
         if content_type.contains("text/html") {
             // Check if content is encoded (compressed) - this often indicates legitimate content
@@ -3113,9 +3114,16 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
 /// This function coordinates the download process by delegating to specialized functions.
 /// Level 3: Download Strategy - coordinates download execution
 fn download_chunk_task(task: &DownloadTask) -> Result<()> {
-    log::debug!("download_chunk_task starting for {}", task.chunk_path.display());
+    let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
+    let chunk_size = task.chunk_size.load(Ordering::Relaxed);
+    log::debug!("download_chunk_task starting for {} (offset: {}, size: {})",
+               task.chunk_path.display(), chunk_offset, chunk_size);
 
     // Phase 1: Setup and validation (split into concrete steps)
+    task.setup_download_range();
+    log::debug!("download_chunk_task: range_request set to {:?} for {}",
+               task.get_range_request(), task.chunk_path.display());
+
     let (existing_bytes, is_complete) = check_existing_partfile(task)?;
     if is_complete {
         return Ok(());
@@ -3151,7 +3159,10 @@ fn download_chunk_task(task: &DownloadTask) -> Result<()> {
     let expected_chunk_size = task.chunk_size.load(Ordering::Relaxed);
     if expected_chunk_size > 0 {
         // For chunk tasks and master tasks with chunking, validate against the expected chunk size
+        log::debug!("download_chunk_task: Validating chunk size for {} - downloaded: {}, expected: {}",
+                   task.chunk_path.display(), chunk_append_offset, expected_chunk_size);
         validate_download_size(chunk_append_offset, expected_chunk_size, &task.chunk_path)?;
+        log::debug!("download_chunk_task: Size validation passed for {}", task.chunk_path.display());
     }
 
     // Log download completion
@@ -3175,6 +3186,9 @@ fn process_download_response(
     }
 
     let metadata = extract_server_metadata(task, response);
+
+    log::debug!("process_download_response for {} chunk: {}, metadata: remote_size={:?}, etag={:?}, last_modified={:?}, response: {:?}",
+               resolved_url, task.chunk_path.display(), metadata.remote_size, metadata.etag, metadata.last_modified, response);
 
     // Store/validate metadata for consistency
     if task.is_master_task() {
@@ -3205,10 +3219,16 @@ fn process_download_response(
         }
     }
 
-    if task.get_range_request() != RangeRequest::None {
+    let range_request_type = task.get_range_request();
+    log::debug!("process_download_response: range_request={:?}, response_status={}, chunk_path={}",
+               range_request_type, response.status(), task.chunk_path.display());
+
+    if range_request_type != RangeRequest::None {
         // For chunk tasks, validate we got partial content
         if response.status() == 200 {
             // Server ignoring Range header - would corrupt chunk
+            log::error!("CORRUPTION PREVENTED: Server returned HTTP 200 instead of 206 for range request to {} (chunk: {})",
+                       resolved_url, task.chunk_path.display());
             if let Err(e) = append_http_log(resolved_url, HttpEvent::NoRange) {
                 log::warn!("Failed to log chunk range error: {}", e);
             }
@@ -3221,9 +3241,11 @@ fn process_download_response(
                 fs::remove_file(&task.chunk_path)?;
             }
             task.resumed_bytes.store(0, Ordering::Relaxed);
-            log::debug!("Server doesn't support resume, restarting download");
+            log::debug!("Server doesn't support resume, restarting download for {}", task.chunk_path.display());
             return Err(eyre!("Server returned {} for range request", response.status()));
         }
+    } else {
+        log::debug!("process_download_response: No range request validation needed for {}", task.chunk_path.display());
     }
 
     // Validate response and handle resume logic for master tasks
@@ -3235,7 +3257,7 @@ fn process_download_response(
             if let Some(remote_size) = get_remote_size(task, response) {
                 task.file_size.store(remote_size, Ordering::Relaxed);
                 task.chunk_size.store(remote_size, Ordering::Relaxed);
-                log::debug!("Remote size determined: {}", remote_size);
+                log::debug!("Remote size determined: {} for {}", remote_size, task.chunk_path.display());
             }
         }
 
@@ -3252,8 +3274,8 @@ fn process_download_response(
             *start_time = Some(std::time::Instant::now());
         } else {
             // This could happen in retries
-            log::debug!("Clearing start_time for chunk {} at offset {}: {:?}",
-                task.chunk_path.display(), task.chunk_offset.load(Ordering::Relaxed), start_time);
+            log::debug!("Clearing start_time for chunk {} at offset {}: {:?} (chunk_path={})",
+                task.chunk_path.display(), task.chunk_offset.load(Ordering::Relaxed), start_time, task.chunk_path.display());
             task.received_bytes.store(0, Ordering::Relaxed);
             task.duration_ms.store(0, Ordering::Relaxed);
         }
@@ -3293,7 +3315,9 @@ fn merge_completed_chunk(
     chunk_index: i32
 ) -> Result<()> {
     let chunk_offset = chunk_task.chunk_offset.load(Ordering::Relaxed);
-    log::debug!("Chunk {} at offset {} completed", chunk_index, chunk_offset);
+    let chunk_size = chunk_task.chunk_size.load(Ordering::Relaxed);
+    log::debug!("merge_completed_chunk: Chunk {} at offset {} completed (size: {} bytes, path: {}, url: {})",
+               chunk_index, chunk_offset, chunk_size, chunk_task.chunk_path.display(), chunk_task.get_resolved_url());
 
     // Process the completed chunk immediately (STREAMING)
     if chunk_task.chunk_path.exists() {
@@ -3315,18 +3339,19 @@ fn merge_completed_chunk(
         if target_offset < master_current_size {
             // This chunk's data is already present – likely from an earlier attempt.
             log::debug!(
-                "Skipping merge of chunk {}: offset {} already within master size {}",
-                chunk_index, target_offset, master_current_size
+                "Skipping merge of chunk {} ({}): offset {} already within master size {} (master: {})",
+                chunk_index, chunk_task.chunk_path.display(), target_offset, master_current_size, master_task.chunk_path.display()
             );
         } else if target_offset == master_current_size {
             // Safe to append – the chunk starts exactly where the current file ends.
             if let Err(e) = append_file_to_file(&chunk_task.chunk_path, &master_task.chunk_path) {
                 log::warn!(
-                    "Failed to append chunk {} to target file at offset {}: {}",
-                    chunk_index, target_offset, e
+                    "Failed to append chunk {} ({}) to target file ({}) at offset {}: {}",
+                    chunk_index, chunk_task.chunk_path.display(), master_task.chunk_path.display(), target_offset, e
                 );
             } else {
-                log::debug!("Appended chunk {} to target file", chunk_index);
+                log::debug!("Appended chunk {} ({}) to target file ({})",
+                           chunk_index, chunk_task.chunk_path.display(), master_task.chunk_path.display());
 
                 // Extend master task boundary so merge validation stays consistent.
                 let appended_size = chunk_task.chunk_size.load(Ordering::Relaxed);
@@ -3335,8 +3360,8 @@ fn merge_completed_chunk(
         } else {
             // target_offset > master_current_size → gap should never happen; log an error.
             log::error!(
-                "Gap detected when merging chunk {}: master size {} < chunk offset {}",
-                chunk_index, master_current_size, target_offset
+                "Gap detected when merging chunk {} ({}): master size {} < chunk offset {} (master: {})",
+                chunk_index, chunk_task.chunk_path.display(), master_current_size, target_offset, master_task.chunk_path.display()
             );
         }
 
@@ -4992,7 +5017,7 @@ fn validate_chunk_merge_integrity(
     let expected_after = current_offset + chunk_size;
     let file_size_after = fs::metadata(&master_task.chunk_path)
         .map(|m| m.len())
-        .unwrap();
+        .unwrap_or(0);
     if file_size_after != expected_after {
         log::error!(
             "validate_chunk_merge_integrity: target file size after merge {} != expected {} (offset {} + size {}) for {}",
