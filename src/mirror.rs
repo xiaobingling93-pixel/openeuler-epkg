@@ -1176,7 +1176,14 @@ impl Mirrors {
         let mid_throughput = throughputs[throughputs.len() / 2];
 
         // Calculate threshold based on current pget_limit
-        let threshold = mid_throughput / (1 + MAX_PGET_LIMIT as u32 - self.pget_limit as u32);
+        // Ensure we never divide by zero – self.pget_limit can temporarily exceed MAX_PGET_LIMIT
+        let denom_raw = 1 + MAX_PGET_LIMIT as u32 - self.pget_limit as u32;
+        let denom = std::cmp::max(denom_raw, 1); // clamp to >=1
+        let threshold = if denom > 0 {
+            mid_throughput / denom
+        } else {
+            mid_throughput
+        };
 
         // Filter out mirrors below the threshold
         self.available_mirrors.retain(|site| {
@@ -1265,25 +1272,11 @@ impl Mirrors {
         for site in &self.available_mirrors {
             if let Some(mirror) = self.mirrors.get(site) {
                 let current_usage = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
+                let effective_limit = calculate_effective_limit(mirror, limit);
 
-                // Adjust limit based on whether the site is near or not
-                let my_limit = if !mirror.is_near {
-                    limit / 2
-                } else {
-                    limit
-                };
-
-                // Check if this mirror is under the adjusted limit
-                if current_usage < my_limit {
-                    // Also check against learned max_parallel_conns limit if available
-                    if let Some(learned_limit) = mirror.stats.max_parallel_conns {
-                        if current_usage < learned_limit as usize {
-                            return Some(site);
-                        }
-                    } else {
-                        // No learned limit, so just use the adjusted limit
-                        return Some(site);
-                    }
+                // Check if this mirror is under the effective limit
+                if current_usage < effective_limit {
+                    return Some(site);
                 }
             }
         }
@@ -1417,8 +1410,33 @@ impl Mirrors {
 }
 
 
+/// Calculate effective connection limit for a mirror based on pget_limit and whether it's near
+fn calculate_effective_limit(mirror: &Mirror, pget_limit: usize) -> usize {
+    // Base limit:
+    // - For *near* (same-country) mirrors we allow the full current `pget_limit`.
+    // - For *remote* mirrors we intentionally start with **half** the limit.
+    //   When `pget_limit == 1` that becomes **0**, which deliberately excludes
+    //   remote mirrors from the very first selection scan.  As `pget_limit`
+    //   rises with traffic pressure those mirrors will gradually become
+    //   eligible (0 -> 1 -> 2 ...).
+    let base_limit = if mirror.is_near {
+        pget_limit
+    } else {
+        pget_limit / 2
+    };
+
+    // Honour any learned per-mirror limit (from previous 429 errors); if none
+    // exists use the base limit calculated above.  A value of 0 means the
+    // mirror is currently not eligible, so cannot apply min() on it.
+    if let Some(per_mirror_limit) = mirror.stats.max_parallel_conns {
+        std::cmp::min(per_mirror_limit as usize, base_limit)
+    } else {
+        base_limit
+    }
+}
+
 /// Show performance stats for a single mirror
-fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
+fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror, pget_limit: usize) {
     // Show last 3 throughputs and latencies
     let recent_throughputs: Vec<u32> = mirror.stats.throughputs.iter().rev().take(3).copied().collect();
     let recent_latencies: Vec<u32> = mirror.stats.latencies.iter().rev().take(3).copied().collect();
@@ -1474,7 +1492,7 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror) {
         if site.len() > 38 { site[..35].to_string() + "..." } else { site.to_string() },
         mirror.stats.score,
         mirror.shared_usage.active_downloads.load(Ordering::Relaxed),
-        mirror.stats.max_parallel_conns.unwrap_or(0),
+        calculate_effective_limit(mirror, pget_limit),
         mirror.shared_usage.total_uses.load(Ordering::Relaxed),
         // Limit throughput string length for alignment
         if throughput_str.len() > 28 { throughput_str[..26].to_string() + ".." } else { throughput_str },
@@ -1495,7 +1513,7 @@ pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
     // Show available mirrors first
     for (i, site) in mirrors.available_mirrors.iter().enumerate().take(max_avail) {
         if let Some(mirror) = mirrors.mirrors.get(site) {
-            show_one_mirror(i + 1, site, mirror);
+            show_one_mirror(i + 1, site, mirror, mirrors.pget_limit);
         }
     }
 
@@ -1508,7 +1526,7 @@ pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
         for (site, mirror) in &mirrors.mirrors {
             if !mirrors.available_mirrors.contains(site) {
                 unavailable_count += 1;
-                show_one_mirror(unavailable_count, site, mirror);
+                show_one_mirror(unavailable_count, site, mirror, mirrors.pget_limit);
             }
         }
 
