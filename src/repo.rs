@@ -617,10 +617,10 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
 pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     if revise.is_packages {
         match revise.format {
-            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise),
-            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise),
-            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise),
-            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise),
+            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location)),
+            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location)),
+            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location)),
+            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location)),
             _ => Err(eyre::eyre!("Unsupported package format: {:?}", revise.format))
         }
     } else {

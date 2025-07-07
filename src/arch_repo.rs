@@ -51,6 +51,9 @@ lazy_static! {
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
     log::debug!("Starting to process Arch packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
+    // Validate download path
+    validate_download_path(revise)?;
+
     // Initialize files
     let filelists_path = repo_dir.join("filelists.txt.zst");
     if filelists_path.exists() {
@@ -62,12 +65,17 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         .map_err(|e| eyre::eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
 
     // Create streaming reader from receiver with hash validation
+    log::debug!("Creating ReceiverHasher with hash='{}', size={}", revise.hash, revise.size);
     let receiver_reader = packages_stream::ReceiverHasher::new_with_size(
         data_rx,
         revise.hash.clone(),
-        revise.size.try_into().unwrap()
+        revise.size.try_into().map_err(|e| eyre::eyre!("Failed to convert size {} to u64: {}", revise.size, e))?
     );
+
+    log::debug!("Creating gzip decoder for {}", revise.location);
     let gz_decoder = GzDecoder::new(receiver_reader);
+
+    log::debug!("Creating tar archive for {}", revise.location);
     let mut archive = Archive::new(gz_decoder);
     archive.set_ignore_zeros(true);
 
@@ -81,14 +89,104 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     let mut filelists_encoder = ZstdEncoder::new(filelists_file_handle, 3)?; // compression level 3
 
+    // Process tar entries
     let mut packages: std::collections::HashMap<String, PackageFiles> = std::collections::HashMap::new();
+    process_tar_entries(&mut archive, &mut packages, &mut filelists_encoder, &mut derived_files, revise)?;
 
-    // Process tar entries as they stream in
+    // Process any remaining incomplete packages (desc only)
+    for (package_name, package_files) in packages {
+        if package_files.desc.is_some() {
+            process_complete_package(&package_files, &mut filelists_encoder, &mut derived_files)
+                .map_err(|e| eyre::eyre!("Failed to process remaining package {}: {}", package_name, e))?;
+            log::debug!("Processed remaining package: {}", package_name);
+        }
+    }
+
+    // Finalize processing
+    finalize_processing(filelists_encoder, &mut derived_files, repo_dir, revise)
+}
+
+/// Validate download path for already downloaded files
+fn validate_download_path(revise: &RepoReleaseItem) -> Result<()> {
+    // Check if the download path exists and is readable (for already downloaded files)
+    if !revise.need_download && revise.need_convert {
+        log::debug!("Processing already downloaded file: {}", revise.download_path.display());
+        if !revise.download_path.exists() {
+            return Err(eyre::eyre!("Downloaded file does not exist: {}", revise.download_path.display()));
+        }
+
+        let metadata = std::fs::metadata(&revise.download_path)
+            .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", revise.download_path.display(), e))?;
+
+        if metadata.len() == 0 {
+            return Err(eyre::eyre!("Downloaded file is empty: {}", revise.download_path.display()));
+        }
+
+        log::debug!("Downloaded file size: {} bytes", metadata.len());
+    }
+
+    Ok(())
+}
+
+/// Process tar entries
+///
+/// This function does more than just extract tar entries - it performs intelligent
+/// package processing by:
+///
+/// 1. **Path filtering**: Only processes entries matching "package-name/desc" or
+///    "package-name/files" patterns. Example tar file contents: one dir and 1-2 files per package
+///        ...
+///        drwxr-xr-x polyzen/users      0 2025-04-15 04:26 alsa-lib-1.2.14-1/
+///        -rw-r--r-- polyzen/users    703 2025-04-15 04:26 alsa-lib-1.2.14-1/desc
+///        -rw-r--r-- polyzen/users   4862 2025-04-15 04:26 alsa-lib-1.2.14-1/files
+///        drwxr-xr-x polyzen/users      0 2024-07-12 06:19 alsa-oss-1.1.8-6/
+///        -rw-r--r-- polyzen/users    702 2024-07-12 06:19 alsa-oss-1.1.8-6/desc
+///        -rw-r--r-- polyzen/users    320 2024-07-12 06:19 alsa-oss-1.1.8-6/files
+///        ...
+/// 2. **Content extraction**: Reads the full content of desc and files entries
+/// 3. **Package accumulation**: Collects desc and files content for each package
+///    in a HashMap, handling packages that may have their entries split across
+///    multiple tar entries
+/// 4. **Immediate processing**: As soon as both desc and files are available for
+///    a package, it immediately processes the complete package (converts to
+///    packages.txt format and extracts file lists), then removes it from memory
+///    to optimize memory usage during streaming
+/// 5. **Error resilience**: Continues processing even if individual entries fail,
+///    logging errors but not stopping the entire process
+///
+/// This streaming approach allows processing large repository archives without
+/// loading everything into memory at once.
+fn process_tar_entries(
+    archive: &mut Archive<GzDecoder<packages_stream::ReceiverHasher>>,
+    packages: &mut std::collections::HashMap<String, PackageFiles>,
+    filelists_encoder: &mut ZstdEncoder<std::fs::File>,
+    derived_files: &mut packages_stream::PackagesStreamline,
+    revise: &RepoReleaseItem
+) -> Result<()> {
     let mut entry_count = 0;
-    for entry_result in archive.entries()? {
+    log::debug!("Starting to process tar entries for {}", revise.location);
+
+    let entries = archive.entries()
+        .map_err(|e| eyre::eyre!("Failed to create tar entries iterator for {}: {}", revise.location, e))?;
+
+    for entry_result in entries {
         entry_count += 1;
-        let mut entry = entry_result?;
-        let path = entry.path()?.display().to_string();
+        let mut entry = match entry_result {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::error!("Failed to read tar entry #{} for {}: {}", entry_count, revise.location, e);
+                return Err(eyre::eyre!("Failed to read tar entry #{} for {}: {}", entry_count, revise.location, e));
+            }
+        };
+
+        let path = match entry.path() {
+            Ok(path) => path.display().to_string(),
+            Err(e) => {
+                log::error!("Failed to get path for tar entry #{} for {}: {}", entry_count, revise.location, e);
+                return Err(eyre::eyre!("Failed to get path for tar entry #{} for {}: {}", entry_count, revise.location, e));
+            }
+        };
+
         log::trace!("Processing tar entry #{}: {}", entry_count, path);
 
         // Parse path: package-name/desc or package-name/files
@@ -128,9 +226,12 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
                 if package_files.desc.is_some() && package_files.files.is_some() {
                     let complete_package = packages.remove(&package_name).unwrap();
                     log::trace!("Processing complete package: {}", package_name);
-                    match process_complete_package(&complete_package, &mut filelists_encoder, &mut derived_files) {
+                    match process_complete_package(&complete_package, filelists_encoder, derived_files) {
                         Ok(_) => log::trace!("Successfully processed complete package: {}", package_name),
-                        Err(e) => log::error!("Failed to process complete package {}: {}", package_name, e),
+                        Err(e) => {
+                            log::error!("Failed to process complete package {}: {}", package_name, e);
+                            return Err(eyre::eyre!("Failed to process package {}: {}", package_name, e));
+                        }
                     }
                 }
             }
@@ -140,15 +241,36 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     }
 
     log::info!("Processed {} total tar entries", entry_count);
+    Ok(())
+}
 
-    // Process any remaining incomplete packages (desc only)
-    for (package_name, package_files) in packages {
-        if package_files.desc.is_some() {
-            process_complete_package(&package_files, &mut filelists_encoder, &mut derived_files)?;
-            log::debug!("Processed complete package: {}", package_name);
-        }
-    }
-
+/// Finalize processing
+///
+/// This function completes the package processing pipeline and generates final outputs:
+///
+/// **What it does:**
+/// 1. **Last package indexing**: Ensures any remaining package in the pipeline gets
+///    properly indexed and written to packages.txt
+/// 2. **Compression finalization**: Closes the zstd encoder, finalizing the compressed
+///    filelists.txt.zst file
+/// 3. **Hash calculation**: Computes SHA-256 hash of the final filelists.txt.zst file
+///    for integrity verification
+/// 4. **Metadata generation**: Creates and writes filelists metadata file containing
+///    hash and other repository metadata
+/// 5. **Pipeline completion**: Calls the derived_files.on_finish() to complete the
+///    packages.txt processing and cleanup
+///
+/// **Outputs generated:**
+/// - `packages.txt.zst`: Compressed package metadata in standard repository format
+/// - `filelists.txt.zst`: Compressed file listings for all packages
+///
+/// **Returns:** FileInfo containing details about the processed repository files
+fn finalize_processing(
+    filelists_encoder: ZstdEncoder<std::fs::File>,
+    derived_files: &mut packages_stream::PackagesStreamline,
+    repo_dir: &PathBuf,
+    revise: &RepoReleaseItem
+) -> Result<FileInfo> {
     // Ensure the last package gets indexed
     if !derived_files.current_pkgname.is_empty() {
         log::debug!("Finalizing last package: {}", derived_files.current_pkgname);
@@ -158,17 +280,20 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     log::debug!("Finalizing processing for {}", revise.location);
 
     // Finish compression and get the file handle back
-    filelists_encoder.finish()?;
+    filelists_encoder.finish()
+        .map_err(|e| eyre::eyre!("Failed to finish filelists compression: {}", e))?;
 
     // Calculate SHA-256 hash of the filelists file
     let filelists_path = repo_dir.join("filelists.txt.zst");
-    let filelists_content = fs::read(&filelists_path)?;
+    let filelists_content = fs::read(&filelists_path)
+        .map_err(|e| eyre::eyre!("Failed to read filelists file for hash calculation: {}", e))?;
     let mut hasher = Sha256::new();
     hasher.update(&filelists_content);
     let calculated_hash = hex::encode(hasher.finalize());
 
     // Generate and write metadata for filelists
-    repo::generate_and_write_filelists_metadata(&filelists_path, calculated_hash)?;
+    repo::generate_and_write_filelists_metadata(&filelists_path, calculated_hash)
+        .map_err(|e| eyre::eyre!("Failed to generate filelists metadata: {}", e))?;
 
     // Finalize processing
     derived_files.on_finish(revise)
