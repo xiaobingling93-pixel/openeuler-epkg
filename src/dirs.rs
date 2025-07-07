@@ -1,5 +1,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use crate::models::*;
 use crate::repo::RepoRevise;
@@ -208,7 +211,40 @@ fn get_xdg_cache() -> Result<PathBuf> {
     }
 }
 
+/// Check if a shell binary is installed and executable
+fn is_shell_installed(shell_name: &str) -> bool {
+    // Common locations where shell binaries are typically installed
+    let shell_paths = [
+        format!("/bin/{}", shell_name),
+        format!("/usr/bin/{}", shell_name),
+        format!("/usr/local/bin/{}", shell_name),
+    ];
+
+    for path in &shell_paths {
+        if let Ok(metadata) = fs::metadata(path) {
+            // Check if the file is executable
+            #[cfg(unix)]
+            {
+                if metadata.permissions().mode() & 0o111 != 0 {
+                    return true;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix systems, just check if the file exists
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn determine_rc_and_script_for_shell(shell_name: &str, home_dir: &Path) -> Option<ShellRcInfo> {
+    // First check if the shell binary is actually installed
+    if !is_shell_installed(shell_name) {
+        return None; // Shell is not installed, don't update its config
+    }
+
     let (rc_file_sub_path, script_name_str) = match shell_name {
         "bash" => (".bashrc", "epkg-rc.sh"),
         "zsh" => (".zshrc", "epkg-rc.sh"),
