@@ -45,6 +45,36 @@ use crate::dirs;
 use crate::models::*;
 use crate::mirror::{append_download_log, append_http_log, url2site, HttpEvent, MIRRORS, Mirrors};
 
+/// Constants for chunking configuration
+// Using power of 2 for efficient bit operations
+const PGET_CHUNK_SIZE: u64 = 1 << 20;                       // 1MB chunks
+const PGET_CHUNK_MASK: u64 = PGET_CHUNK_SIZE - 1;           // Mask for modulo operations
+const MIN_FILE_SIZE_FOR_CHUNKING: u64 = 3 * 1024 * 1024;    // 3MB
+
+const ONDEMAND_CHUNK_SIZE: u64 = 256 * 1024;                // 256KB chunks
+const ONDEMAND_CHUNK_SIZE_MASK: u64 = ONDEMAND_CHUNK_SIZE - 1;
+
+// Chunking threshold constants
+const CHUNK_MERGE_THRESHOLD: u64 = PGET_CHUNK_SIZE / 8;     // Threshold for merging small chunks
+
+// Threading and scheduling constants
+const MAX_CHUNK_THREADS_MULTIPLIER: usize = 8;              // Maximum chunk threads as multiple of parallel downloads
+const CHUNK_PARALLEL_MULTIPLIER: usize = 2;                 // Thread spawn multiplier for parallel chunk tasks
+const WAIT_TASK_DURATION_MS: u64 = 100;                     // Wait for task and thread coordination
+const CHUNK_SLEEP_DURATION_MS: u64 = 500;                   // Chunk task wait for merge and error recovery
+
+// ETA and timing constants
+const MIN_ETA_THRESHOLD_SECONDS: u64 = 5;                   // Minimum ETA threshold for ondemand chunking
+const TIMESTAMP_TOLERANCE_SECONDS: u64 = 600;               // 10 minutes tolerance for timestamp comparison
+const PROGRESS_UPDATE_INTERVAL_MS: u64 = 500;               // Progress update interval
+
+// Display and logging constants
+const MAX_DISPLAY_STATS: usize = 30;                        // Maximum items to display in logs
+const PROGRESS_BAR_WIDTH: usize = 10;                       // Progress bar width in characters
+
+// HTTP status code constants
+const HTTP_CLIENT_ERROR_START: u16 = 400;                   // Start of 4xx client errors
+const HTTP_SERVER_ERROR_START: u16 = 500;                   // Start of 5xx server errors
 
 impl DownloadTask {
     /// Returns the path to the .pget-status file, which is based on the final file path.
@@ -263,7 +293,7 @@ impl ServerMetadata {
             } else {
                 other.timestamp - self.timestamp
             };
-            time_diff <= 600 // 600 seconds = 10 minutes
+            time_diff <= TIMESTAMP_TOLERANCE_SECONDS // 600 seconds = 10 minutes
         } else {
             true // If either timestamp is 0, consider it a match
         };
@@ -621,7 +651,7 @@ pub struct DownloadManager {
 /// Download manager statistics - replaced atomically as a whole
 #[derive(Debug, Clone, Default)]
 struct DownloadManagerStats {
-    global_eta: u64,                // Global ETA in seconds
+    global_ideal_eta: u64,          // Global ideal ETA in seconds
     slowest_task_eta: u64,          // Slowest task ETA in seconds
     fastest_task_eta: u64,          // Fastest task ETA in seconds
     total_remaining_bytes: u64,     // Total bytes remaining across all downloads
@@ -682,7 +712,7 @@ impl DownloadManager {
                 return Err(eyre!("Task with URL {} not found", task_url));
             }
             drop(tasks);
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(WAIT_TASK_DURATION_MS));
         }
     }
 
@@ -717,7 +747,7 @@ impl DownloadManager {
             }
 
             drop(tasks);
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(WAIT_TASK_DURATION_MS));
         }
     }
 
@@ -797,7 +827,7 @@ impl DownloadManager {
                 ProcessingResult::Continue => {
                     // Start chunk processing for existing tasks
                     Self::start_chunks_processing(&tasks, &chunk_handles, nr_parallel);
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(WAIT_TASK_DURATION_MS));
                 }
             }
         }
@@ -1032,8 +1062,8 @@ impl DownloadManager {
 
         std::cmp::max(
             nr_parallel,
-            std::cmp::min(nr_parallel * 8, available_mirrors_count)
-        ) * 2
+            std::cmp::min(nr_parallel * MAX_CHUNK_THREADS_MULTIPLIER, available_mirrors_count)
+        ) * CHUNK_PARALLEL_MULTIPLIER
     }
 
     /// Helper function to iterate through all task levels using 3-level architecture
@@ -1150,22 +1180,22 @@ impl DownloadManager {
         });
 
         // Update and log stats
-        let global_eta = update_global_stats(new_stats.clone(), &debug_stats);
-        dump_global_stats_ratelimit(&new_stats, global_eta, &debug_stats);
+        let global_ideal_eta = update_global_stats(new_stats.clone(), &debug_stats);
+        dump_global_stats_ratelimit(&new_stats, global_ideal_eta, &debug_stats);
 
         // Set slowest ETA task for ondemand chunking (if ETA > global ETA)
         if let Some(ref task) = slowest_task_for_ondemand_chunking {
-            if slowest_eta_for_ondemand > global_eta && slowest_eta_for_ondemand > 30 {
+            if slowest_eta_for_ondemand > global_ideal_eta && slowest_eta_for_ondemand > MIN_ETA_THRESHOLD_SECONDS {
                 if let Err(e) = task.set_chunk_status(ChunkStatus::NeedOndemandChunk) {
                     log::warn!("Failed to set NeedOndemandChunk status for slowest ETA task: {}", e);
                 } else {
                     log::info!(
                         "Global scheduler selected slowest ETA task {} (ETA:{:.1}s > global:{:.1}s) for ondemand chunking",
-                        task.url, slowest_eta_for_ondemand as f64, global_eta as f64
+                        task.url, slowest_eta_for_ondemand as f64, global_ideal_eta as f64
                     );
                     log::debug!(
-                        "Global ondemand scheduler: selected slowest_eta={:.1}s, global_eta={:.1}s",
-                        slowest_eta_for_ondemand as f64, global_eta as f64
+                        "Global ondemand scheduler: selected slowest_eta={:.1}s, global_ideal_eta={:.1}s",
+                        slowest_eta_for_ondemand as f64, global_ideal_eta as f64
                     );
                 }
             }
@@ -1290,7 +1320,7 @@ impl DownloadManager {
     fn dump_download_manager_stats(&self) {
         println!("=== DownloadManagerStats ===");
         if let Ok(stats) = self.stats.lock() {
-            println!("Global ETA: {}s", stats.global_eta);
+            println!("Global ideal ETA: {}s", stats.global_ideal_eta);
             println!("Slowest task ETA: {}s", stats.slowest_task_eta);
             println!("Fastest task ETA: {}s", stats.fastest_task_eta);
             println!("Total remaining bytes: {} ({:.1}MB)",
@@ -1618,7 +1648,7 @@ pub fn download_urls(
 fn setup_progress_bar(task: &DownloadTask, multi_progress: &MultiProgress, url: &str) -> Result<()> {
     let pb = multi_progress.add(ProgressBar::new(0));
     pb.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:10}] {bytes_per_sec:12} ({eta}) {msg}")
+        .template(&format!("[{{elapsed_precise}}] [{{bar:{}}}] {{bytes_per_sec:12}} ({{eta}}) {{msg}}", PROGRESS_BAR_WIDTH))
         .map_err(|e| eyre!("Failed to parse HTTP response: {}", e))?
         .progress_chars("=> "));
     pb.set_message(url.to_string());
@@ -2207,7 +2237,7 @@ fn handle_http_status_error(
         // For 416 errors, we should try a different mirror or restart the download
         log::warn!("HTTP 416 error indicates invalid range request - will retry with different mirror or restart");
         Err(DownloadError::UnexpectedResponse { code, details: format!("HTTP 416 Range Not Satisfiable: {}", error_msg) }.into())
-    } else if code >= 400 && code < 500 {
+    } else if code >= HTTP_CLIENT_ERROR_START && code < HTTP_SERVER_ERROR_START {
         // For client errors (like 403, 404), create a simple DownloadError without verbose backtrace
         log::debug!("Client error {} for {}", code, resolved_url);
         Err(DownloadError::Fatal { code, message: error_msg }.into())
@@ -2676,14 +2706,6 @@ impl PackageManager {
 // ============================================================================
 // CHUNKED DOWNLOAD IMPLEMENTATION
 // ============================================================================
-/// Constants for chunking configuration
-// Using power of 2 for efficient bit operations
-const PGET_CHUNK_SIZE: u64 = 1 << 20;                       // 1MB chunks
-const PGET_CHUNK_MASK: u64 = PGET_CHUNK_SIZE - 1;           // Mask for modulo operations
-const MIN_FILE_SIZE_FOR_CHUNKING: u64 = 3 * 1024 * 1024;    // 3MB
-
-const ONDEMAND_CHUNK_SIZE: u64 = 256 * 1024;                // 256KB chunks
-const ONDEMAND_CHUNK_SIZE_MASK: u64 = ONDEMAND_CHUNK_SIZE - 1;
 
 /// Create and setup chunk tasks for large files
 ///
@@ -2780,7 +2802,7 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
     let last_chunk_size = remaining_bytes % PGET_CHUNK_SIZE;
 
     // If the last chunk would be too small, merge it with the previous chunk
-    let (full_chunks, last_chunk_size) = if last_chunk_size > 0 && last_chunk_size < PGET_CHUNK_SIZE / 8 {
+    let (full_chunks, last_chunk_size) = if last_chunk_size > 0 && last_chunk_size < CHUNK_MERGE_THRESHOLD {
         if full_chunks > 0 {
             // Merge the small last chunk with the last full chunk
             (full_chunks - 1, PGET_CHUNK_SIZE + last_chunk_size)
@@ -3493,7 +3515,7 @@ fn process_chunks_at_level(
                 if handle_failed_chunk(chunk, parent_task, chunk_index, err) {
                     // Chunk will be retried - don't remove it
                     // Sleep to allow retry to happen
-                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    std::thread::sleep(std::time::Duration::from_millis(CHUNK_SLEEP_DURATION_MS));
                 } else {
                     // Max retries exceeded - record failure and remove chunk
                     *any_fail = true;
@@ -3514,7 +3536,7 @@ fn process_chunks_at_level(
                 update_chunk_progress(chunk, master_task);
 
                 // Sleep WITHOUT holding any locks
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(std::time::Duration::from_millis(CHUNK_SLEEP_DURATION_MS));
             }
         }
     }
@@ -3681,12 +3703,12 @@ fn update_global_stats(
     _debug_stats: &[String],
 ) -> u64 {
     // Calculate global ETA and finalize stats
-    let global_eta = if new_stats.total_rate_bps > 0 && new_stats.active_tasks > 0 {
+    let global_ideal_eta = if new_stats.total_rate_bps > 0 && new_stats.active_tasks > 0 {
         (new_stats.total_remaining_bytes as f64 / new_stats.total_rate_bps as f64) as u64
     } else {
         0
     };
-    new_stats.global_eta = global_eta;
+    new_stats.global_ideal_eta = global_ideal_eta;
     new_stats.fastest_task_eta = if new_stats.fastest_task_eta == u64::MAX {
         0
     } else {
@@ -3698,13 +3720,13 @@ fn update_global_stats(
         *stats_guard = new_stats.clone();
     }
 
-    global_eta
+    global_ideal_eta
 }
 
 // Rate-limit to once per second
 fn dump_global_stats_ratelimit(
     stats: &DownloadManagerStats,
-    global_eta: u64,
+    global_ideal_eta: u64,
     debug_stats: &[String],
 ) {
     if !log::log_enabled!(log::Level::Debug) {
@@ -3719,14 +3741,14 @@ fn dump_global_stats_ratelimit(
 
     if current_time > last_log_time {
         LAST_LOG_TIME.store(current_time, Ordering::Relaxed);
-        dump_global_stats(stats, global_eta, debug_stats);
+        dump_global_stats(stats, global_ideal_eta, debug_stats);
     }
 }
 
 /// Log global ETA debug information
 fn dump_global_stats(
     stats: &DownloadManagerStats,
-    global_eta: u64,
+    global_ideal_eta: u64,
     debug_stats: &[String],
 ) {
     if stats.active_tasks == 0 {
@@ -3735,7 +3757,7 @@ fn dump_global_stats(
 
     println!(
         "Global ETA calculation: {:.1}s for {:.1}MB remaining across {} active downloads",
-        global_eta as f64,
+        global_ideal_eta as f64,
         stats.total_remaining_bytes as f64 / (1024.0 * 1024.0),
         stats.active_tasks
     );
@@ -3747,11 +3769,11 @@ fn dump_global_stats(
         "ETA range: fastest={:.1}s, slowest={:.1}s, global={:.1}s, aggregate_rate={:.1}KB/s",
         stats.fastest_task_eta as f64,
         stats.slowest_task_eta as f64,
-        global_eta as f64,
+        global_ideal_eta as f64,
         stats.total_rate_bps as f64 / 1024.0
     );
 
-    let max_show_items = 30;
+    let max_show_items = MAX_DISPLAY_STATS;
     // Log individual task stats (limited to prevent spam)
     for (i, stat) in debug_stats.iter().take(max_show_items).enumerate() {
         println!("Task {}: {}", i + 1, stat);
@@ -4404,7 +4426,7 @@ fn update_download_progress(
     last_update: &mut std::time::Instant
 ) {
     let now = std::time::Instant::now();
-    if now.duration_since(*last_update) > Duration::from_millis(500) {
+    if now.duration_since(*last_update) > Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
         if task.is_master_task() {
             // For master tasks, show total progress across all chunks (reused + network bytes)
             let (total_received, total_reused, downloading_chunks) = task.get_total_progress_bytes();

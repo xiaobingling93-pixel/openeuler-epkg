@@ -16,100 +16,6 @@ use crate::dirs::get_epkg_manager_path;
 
 const MAX_PGET_LIMIT:usize = 5;
 
-/// Convert Unix timestamp to formatted datetime string using time crate
-fn format_timestamp_to_local_datetime(timestamp: u64) -> String {
-    // Convert timestamp to OffsetDateTime in UTC first
-    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
-        Ok(utc_datetime) => {
-            // Try to get local offset and convert to local time
-            let local_datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
-                utc_datetime.to_offset(local_offset)
-            } else {
-                // Fallback to UTC if we can't get local offset (e.g., in multi-threaded environment)
-                utc_datetime
-            };
-
-            // Use the same format as in history.rs for consistency
-            local_datetime.format(&format_description!("[year]-[month]-[day].[hour repr:24]:[minute]:[second]"))
-                .unwrap_or_else(|_| format!("{}", timestamp))
-        },
-        Err(_) => format!("{}", timestamp), // Fallback to timestamp if conversion fails
-    }
-}
-
-/// Generate log file name from timestamp using proper date formatting
-fn generate_log_file_name(timestamp: u64) -> String {
-    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
-        Ok(utc_datetime) => {
-            // Try to get local offset and convert to local time, fallback to UTC
-            let datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
-                utc_datetime.to_offset(local_offset)
-            } else {
-                // Fallback to UTC if we can't get local offset
-                utc_datetime
-            };
-
-            // Use YYYY-MM format for monthly log rotation
-            datetime.format(&format_description!("[year]-[month padding:zero]"))
-                .map(|date_str| format!("mirror-{}.log", date_str))
-                .unwrap_or_else(|_| {
-                    // Final fallback - use UTC formatting directly
-                    utc_datetime.format(&format_description!("[year]-[month padding:zero]"))
-                        .map(|date_str| format!("mirror-{}.log", date_str))
-                        .unwrap_or_else(|_| format!("mirror-{}.log", timestamp))
-                })
-        },
-        Err(_) => {
-            // Last resort fallback if timestamp conversion completely fails
-            format!("mirror-{}.log", timestamp)
-        }
-    }
-}
-
-/// Generate a list of month strings for the last N months using proper date formatting
-fn generate_recent_month_strings(timestamp: u64, months_back: usize) -> Vec<String> {
-    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
-        Ok(utc_datetime) => {
-            // Try to get local offset and convert to local time, fallback to UTC
-            let current_datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
-                utc_datetime.to_offset(local_offset)
-            } else {
-                // Fallback to UTC if we can't get local offset
-                utc_datetime
-            };
-
-            let mut month_strings = Vec::new();
-
-            for i in 0..months_back {
-                // Calculate the date for i months ago (approximate with 30 days per month)
-                let days_to_subtract = i as i64 * 30;
-                let target_date = if let Some(target) = current_datetime.checked_sub(time::Duration::days(days_to_subtract)) {
-                    target
-                } else {
-                    // Try UTC fallback if local time calculation fails
-                    if let Some(target) = utc_datetime.checked_sub(time::Duration::days(days_to_subtract)) {
-                        target
-                    } else {
-                        continue;
-                    }
-                };
-
-                if let Ok(month_str) = target_date.format(&format_description!("[year]-[month padding:zero]")) {
-                    month_strings.push(month_str);
-                }
-            }
-
-            month_strings
-        },
-        Err(_) => {
-            // Last resort fallback if timestamp conversion completely fails
-            vec![format!("{}", timestamp / (24 * 3600 * 30))] // Very rough month approximation
-        }
-    }
-}
-
-
-
 // Add at the top level with other constants
 #[allow(dead_code)]
 pub const PROTO_HTTP: u8 = 1;   // 0b001
@@ -117,6 +23,32 @@ pub const PROTO_HTTP: u8 = 1;   // 0b001
 pub const PROTO_HTTPS: u8 = 2;  // 0b010
 #[allow(dead_code)]
 pub const PROTO_RSYNC: u8 = 4;  // 0b100
+
+// Performance scoring constants
+pub const DEFAULT_LATENCY_MS: u32 = 100;                    // Default Mirror latency (when no log available)
+pub const DEFAULT_BANDWIDTH_MBPS: u32 = 128;                // Default Mirror total bandwidth (not per-connection throughput)
+pub const MIN_THROUGHPUT_BPS: u32 = 1000;                   // Minimum throughput for scoring (1 KB/s)
+pub const MAX_THROUGHPUT_BPS: u32 = 10_000_000;             // Maximum throughput for scoring (10 MB/s)
+pub const COUNTRY_BONUS_MULTIPLIER: u32 = 8;                // Multiplier for same-country mirrors
+pub const MIN_LATENCY_MS: u32 = 10;                         // Minimum latency for scoring
+pub const MAX_LATENCY_MS: u32 = 500;                        // Maximum latency for scoring
+
+// Time constants
+pub const DAYS_PER_MONTH: i64 = 30;                         // Approximate days per month for log rotation
+pub const SECONDS_PER_DAY: u64 = 24 * 3600;                 // Seconds in a day
+pub const SECONDS_PER_MONTH: u64 = SECONDS_PER_DAY * DAYS_PER_MONTH as u64; // Approximate seconds per month
+
+// HTTP status code constants
+pub const HTTP_FORBIDDEN: u16 = 403;                        // HTTP 403 Forbidden
+pub const HTTP_SERVER_ERROR_START: u16 = 500;               // Start of 5xx server errors
+
+// Display and filtering constants
+pub const MAX_DISPLAY_MIRRORS: usize = 100;                 // Maximum mirrors to display in stats
+pub const DEFAULT_DISPLAY_MIRRORS: usize = 10;              // Default mirrors to display in stats
+pub const MIN_MIRRORS_FOR_FILTERING: usize = 3;             // Minimum mirrors needed for performance filtering
+pub const RATIO_MIRRORS_FOR_EXPLORATION: usize = 8;         // Power-of-2 divider to explore no-log mirrors at each epkg invocation
+pub const ENOUGH_LOCAL_MIRRORS: usize = 10;                 // Enough local mirrors to stop including more world wide ones
+pub const INCLUDE_WORLD_MIRRORS: usize = 90;                // Pull in some world wide mirrors on too few local mirrors
 
 // Static variable to track how many times mirror performance stats function was called
 static STATS_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -476,27 +408,27 @@ impl Mirror {
     ///
     /// **Returns:** Calculated score (higher values indicate better mirrors)
     pub fn calculate_performance_score(&mut self) -> u64 {
-        let avg_latency = self.avg_latency().unwrap_or(100) as u64;
+        let avg_latency = self.avg_latency().unwrap_or(DEFAULT_LATENCY_MS) as u64;
         let avg_throughput = self.avg_throughput().unwrap_or(
-                            self.bandwidth.unwrap_or(512) * (1024*1024/8/1024)) as u64; // Mbps => B/s; the last /1024 is total_site_bw => my_connection_throughput
+                            self.bandwidth.unwrap_or(DEFAULT_BANDWIDTH_MBPS) * (1024*1024/8/1024)) as u64; // Mbps => B/s; the last /1024 is total_site_bw => my_connection_throughput
 
         // Store the average throughput for filtering
         self.stats.avg_throughput = Some(avg_throughput as u32);
 
         // Score based on throughput (higher is better) and latency (lower is better)
-        let mut throughput_score = (avg_throughput).min(100_000_000).max(1000); // Cap in [1KB/s, 100MB/s]
+        let mut throughput_score = (avg_throughput).min(MAX_THROUGHPUT_BPS as u64).max(MIN_THROUGHPUT_BPS as u64); // Cap in [1KB/s, 10MB/s]
 
         // Apply country bonus
         // Highly prefer mirrors in same country
         if let Ok(user_country_code) = location::get_country_code() {
             if self.country_code.as_deref() == Some(user_country_code.as_str()) {
-                throughput_score *= 8; // Country bonus
+                throughput_score *= COUNTRY_BONUS_MULTIPLIER as u64; // Country bonus
             }
         }
 
         // real tests in CN show there may be 2-3 times difference in same country
         // so divide it twice to prefer the near sites
-        let latency_penalty = (avg_latency).min(500).max(10); // Cap in 10-500 ms
+        let latency_penalty = (avg_latency).min(MAX_LATENCY_MS as u64).max(MIN_LATENCY_MS as u64); // Cap in 10-500 ms
         let performance_score = throughput_score / latency_penalty;
         if performance_score > 0 {
             self.stats.score = performance_score;
@@ -1033,7 +965,7 @@ fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
                 HttpEvent::HttpStatus(code) => {
                     if *code == 404 {
                         stats.no_content = true;
-                    } else if *code == 403 || *code >= 500 {
+                    } else if *code == HTTP_FORBIDDEN || *code >= HTTP_SERVER_ERROR_START {
                         stats.no_online = true;
                     }
                     *stats.http_errors.entry(*code).or_insert(0) += 1;
@@ -1228,7 +1160,7 @@ impl Mirrors {
             .collect();
 
         // If we don't have enough mirrors with throughput data, skip filtering
-        if mirrors_with_throughputs.len() < 3 {
+        if mirrors_with_throughputs.len() < MIN_MIRRORS_FOR_FILTERING {
             return;
         }
 
@@ -1262,7 +1194,28 @@ impl Mirrors {
         });
     }
 
-    /// Select the best available mirror from available mirrors list
+    /// Select the best available mirror using adaptive connection limiting
+    ///
+    /// This function implements an intelligent mirror selection strategy that balances
+    /// load distribution with performance optimization:
+    ///
+    /// **Adaptive Connection Limiting:**
+    /// - Starts with `pget_limit=1` to give all mirrors equal opportunity
+    /// - Gradually increases the limit as parallel tasks grow
+    /// - Fast mirrors complete downloads sooner and become available for reuse
+    /// - This creates a natural preference for high-performing mirrors
+    ///
+    /// **Load Distribution:**
+    /// - Mirrors are selected based on current connection usage vs. limits
+    /// - Respects both adaptive limits and learned limits from HTTP 429 errors
+    /// - Non-local mirrors get half the connection limit of local mirrors
+    /// - Prevents overloading any single mirror
+    ///
+    /// **Performance Optimization:**
+    /// - Mirrors are pre-sorted by performance score (highest first)
+    /// - Fast mirrors naturally receive more traffic due to faster completion
+    /// - Slower mirrors at the end of the list get fewer opportunities
+    /// - Falls back to round-robin selection if all limits are exceeded
     fn select_best_mirror(&mut self) -> Result<&Mirror> {
         if self.available_mirrors.is_empty() {
             return Err(eyre!("No mirrors with valid distro directories found"));
@@ -1537,7 +1490,7 @@ pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
     println!("Rank |  URL                                   | Score |  Usage   |  Throughputs (KB/s)              |  Latencies (ms)              | Status Flags");
     println!("-----|----------------------------------------|-------|----------|----------------------------------|------------------------------|---------------------------");
 
-    let max_avail = if show_all { 100 } else { 10 };
+    let max_avail = if show_all { MAX_DISPLAY_MIRRORS } else { DEFAULT_DISPLAY_MIRRORS };
 
     // Show available mirrors first
     for (i, site) in mirrors.available_mirrors.iter().enumerate().take(max_avail) {
@@ -1594,13 +1547,13 @@ fn apply_eu_filtering(mut local_mirrors: HashMap<String, Mirror>, eu_mirrors: Ha
 fn apply_general_fallback(mut local_mirrors: HashMap<String, Mirror>, other_mirrors: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
     let local_count = local_mirrors.len();
 
-    if local_count >= 10 {
+    if local_count >= ENOUGH_LOCAL_MIRRORS {
         // Use only local mirrors if we have enough
         log::debug!("Using only local mirrors ({} mirrors, should be sufficient)", local_count);
         local_mirrors
     } else {
-        // Take up to 90 from other_mirrors to supplement local mirrors
-        let needed_from_other = 90.min(other_mirrors.len());
+        // Take up to INCLUDE_WORLD_MIRRORS from other_mirrors to supplement local mirrors
+        let needed_from_other = INCLUDE_WORLD_MIRRORS.min(other_mirrors.len());
 
         // Sort other_mirrors by score (descending) before selecting
         let mut sorted_other: Vec<_> = other_mirrors.into_iter().collect();
@@ -1698,14 +1651,14 @@ fn filter_mirrors_by_exploration(mirrors: &mut HashMap<String, Mirror>) {
         .filter(|mirror| !mirror.stats.throughputs.is_empty())
         .count();
 
-    let max_empty_throughputs = if nr_has_log > 9 {
+    let max_empty_throughputs = if nr_has_log > RATIO_MIRRORS_FOR_EXPLORATION + 1 {
         // slow exploration when we have plenty of known sites
-        nr_has_log / 8
+        nr_has_log / RATIO_MIRRORS_FOR_EXPLORATION
     } else if nr_has_log <= 3 {
         // skip filter by empty throughputs (aggressive exploration when we lack data)
         mirrors.len()
     } else {
-        11 - nr_has_log
+        RATIO_MIRRORS_FOR_EXPLORATION + 2 - nr_has_log
     };
 
     if max_empty_throughputs < mirrors.len() {
@@ -1867,7 +1820,7 @@ fn parse_and_distribute_log_entries(
                     mirror.stats.no_online = true;
                 }
             } else if let Some(code) = http_status {
-                if code == 403 || code >= 500 {
+                if code == HTTP_FORBIDDEN || code >= HTTP_SERVER_ERROR_START {
                     if mirror.stats.throughputs.is_empty() {
                         mirror.stats.no_online = true;
                     }
@@ -1898,6 +1851,99 @@ fn parse_and_distribute_log_entries(
 
     Ok(())
 }
+
+/// Convert Unix timestamp to formatted datetime string using time crate
+fn format_timestamp_to_local_datetime(timestamp: u64) -> String {
+    // Convert timestamp to OffsetDateTime in UTC first
+    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
+        Ok(utc_datetime) => {
+            // Try to get local offset and convert to local time
+            let local_datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
+                utc_datetime.to_offset(local_offset)
+            } else {
+                // Fallback to UTC if we can't get local offset (e.g., in multi-threaded environment)
+                utc_datetime
+            };
+
+            // Use the same format as in history.rs for consistency
+            local_datetime.format(&format_description!("[year]-[month]-[day].[hour repr:24]:[minute]:[second]"))
+                .unwrap_or_else(|_| format!("{}", timestamp))
+        },
+        Err(_) => format!("{}", timestamp), // Fallback to timestamp if conversion fails
+    }
+}
+
+/// Generate log file name from timestamp using proper date formatting
+fn generate_log_file_name(timestamp: u64) -> String {
+    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
+        Ok(utc_datetime) => {
+            // Try to get local offset and convert to local time, fallback to UTC
+            let datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
+                utc_datetime.to_offset(local_offset)
+            } else {
+                // Fallback to UTC if we can't get local offset
+                utc_datetime
+            };
+
+            // Use YYYY-MM format for monthly log rotation
+            datetime.format(&format_description!("[year]-[month padding:zero]"))
+                .map(|date_str| format!("mirror-{}.log", date_str))
+                .unwrap_or_else(|_| {
+                    // Final fallback - use UTC formatting directly
+                    utc_datetime.format(&format_description!("[year]-[month padding:zero]"))
+                        .map(|date_str| format!("mirror-{}.log", date_str))
+                        .unwrap_or_else(|_| format!("mirror-{}.log", timestamp))
+                })
+        },
+        Err(_) => {
+            // Last resort fallback if timestamp conversion completely fails
+            format!("mirror-{}.log", timestamp)
+        }
+    }
+}
+
+/// Generate a list of month strings for the last N months using proper date formatting
+fn generate_recent_month_strings(timestamp: u64, months_back: usize) -> Vec<String> {
+    match OffsetDateTime::from_unix_timestamp(timestamp as i64) {
+        Ok(utc_datetime) => {
+            // Try to get local offset and convert to local time, fallback to UTC
+            let current_datetime = if let Ok(local_offset) = UtcOffset::current_local_offset() {
+                utc_datetime.to_offset(local_offset)
+            } else {
+                // Fallback to UTC if we can't get local offset
+                utc_datetime
+            };
+
+            let mut month_strings = Vec::new();
+
+            for i in 0..months_back {
+                // Calculate the date for i months ago (approximate with 30 days per month)
+                let days_to_subtract = i as i64 * DAYS_PER_MONTH;
+                let target_date = if let Some(target) = current_datetime.checked_sub(time::Duration::days(days_to_subtract)) {
+                    target
+                } else {
+                    // Try UTC fallback if local time calculation fails
+                    if let Some(target) = utc_datetime.checked_sub(time::Duration::days(days_to_subtract)) {
+                        target
+                    } else {
+                        continue;
+                    }
+                };
+
+                if let Ok(month_str) = target_date.format(&format_description!("[year]-[month padding:zero]")) {
+                    month_strings.push(month_str);
+                }
+            }
+
+            month_strings
+        },
+        Err(_) => {
+            // Last resort fallback if timestamp conversion completely fails
+            vec![format!("{}", timestamp / SECONDS_PER_MONTH)] // Very rough month approximation
+        }
+    }
+}
+
 
 // Helper to deserialize bools that may be represented as 0/1 numbers in JSON
 pub fn bool_from_number<'de, D>(deserializer: D) -> Result<bool, D::Error>
