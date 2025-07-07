@@ -547,7 +547,8 @@ impl PackageManager {
         };
 
         // Create symlink in appropriate directory
-        let ebin_path = Path::new(&env_config.env_root).join("usr/ebin");
+        let env_root = get_env_root(name.to_string())?;
+        let ebin_path = env_root.join("usr/ebin");
         let symlink_path = if priority >= 0 {
             fs::create_dir_all(&prepend_dir)?;
             prepend_dir.join(format!("{}-{}", priority, name))
