@@ -46,11 +46,37 @@ pub(crate) struct ComparisonResult {
 }
 
 fn are_files_equal(path1: &Path, path2: &Path) -> Result<bool> {
-    let f1 = File::open(path1).wrap_err_with(|| format!("Failed to open file for comparison: {}", path1.display()))?;
-    let f2 = File::open(path2).wrap_err_with(|| format!("Failed to open file for comparison: {}", path2.display()))?;
+    let f1 = match File::open(path1) {
+        Ok(f) => f,
+        Err(e) => {
+            // Log the error but don't fail the entire comparison for permission issues
+            log::warn!("Failed to open file for comparison: {} (error: {})", path1.display(), e);
+            return Ok(false);
+        }
+    };
+    let f2 = match File::open(path2) {
+        Ok(f) => f,
+        Err(e) => {
+            // Log the error but don't fail the entire comparison for permission issues
+            log::warn!("Failed to open file for comparison: {} (error: {})", path2.display(), e);
+            return Ok(false);
+        }
+    };
 
-    let meta1: StdMetadata = f1.metadata().wrap_err_with(|| format!("Failed to get metadata for: {}", path1.display()))?;
-    let meta2: StdMetadata = f2.metadata().wrap_err_with(|| format!("Failed to get metadata for: {}", path2.display()))?;
+    let meta1: StdMetadata = match f1.metadata() {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Failed to get metadata for: {} (error: {})", path1.display(), e);
+            return Ok(false);
+        }
+    };
+    let meta2: StdMetadata = match f2.metadata() {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Failed to get metadata for: {} (error: {})", path2.display(), e);
+            return Ok(false);
+        }
+    };
 
     if meta1.len() != meta2.len() {
         return Ok(false);
@@ -68,8 +94,20 @@ fn are_files_equal(path1: &Path, path2: &Path) -> Result<bool> {
     let mut buf2 = [0; 8192];
 
     loop {
-        let n1 = reader1.read(&mut buf1).wrap_err_with(|| format!("Failed to read from: {}", path1.display()))?;
-        let n2 = reader2.read(&mut buf2).wrap_err_with(|| format!("Failed to read from: {}", path2.display()))?;
+        let n1 = match reader1.read(&mut buf1) {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("Failed to read from: {} (error: {})", path1.display(), e);
+                return Ok(false);
+            }
+        };
+        let n2 = match reader2.read(&mut buf2) {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("Failed to read from: {} (error: {})", path2.display(), e);
+                return Ok(false);
+            }
+        };
 
         if n1 == 0 && n2 == 0 { // Both EOF
             return Ok(true);
