@@ -61,6 +61,9 @@ impl ReceiverHasher {
     }
 
     pub fn new_with_size(receiver: Receiver<Vec<u8>>, expected_hash: String, expected_size: u64) -> Self {
+        let effective_size = if expected_size > 0 { Some(expected_size) } else { None };
+        log::debug!("ReceiverHasher::new_with_size: expected_size={}, effective_size={:?}", expected_size, effective_size);
+
         Self {
             receiver,
             current_chunk: Vec::new(),
@@ -68,7 +71,7 @@ impl ReceiverHasher {
             hasher: Sha256::new(),
             sha256sum: String::new(),
             expected_hash: Some(expected_hash),
-            expected_size: Some(expected_size),
+            expected_size: effective_size,
             total_bytes_received: 0,
             total_bytes_sent: 0,
             hash_validated: false,

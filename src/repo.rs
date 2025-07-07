@@ -508,7 +508,8 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     log::debug!("process_data for {:?}", revise);
     // Process data blocks as they arrive
     process_data(data_rx, repo_dir, revise)
-        .with_context(|| format!("Failed to process data for item: {}", revise.location))
+        .with_context(|| format!("Failed to process data for item: {} (format: {:?}, size: {}, hash: {})",
+            revise.location, revise.format, revise.size, revise.hash))
 }
 
 pub fn create_load_repoindex(
@@ -624,6 +625,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
         }
     } else {
         process_filelists_content(data_rx, repo_dir, revise)
+            .with_context(|| format!("Failed to process filelists content for {}", revise.location))
     }
 }
 
