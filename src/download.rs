@@ -2045,6 +2045,7 @@ fn download_file(
     // Wait for all chunks to complete and merge them
     wait_for_chunks_and_merge(task)?;
 
+    log::debug!("download_file calling finalize_file for {}", url);
     finalize_file(task)?;
     log::info!("download_file completed: {}", task.get_resolved_url());
     Ok(())
@@ -4071,6 +4072,20 @@ fn recover_chunks_for_parto_files(
 
 /// Apply stored metadata (timestamp and ETag) to the final downloaded file
 fn finalize_file(task: &DownloadTask) -> Result<()> {
+    log::debug!("finalize_file starting for {} -> {}", task.chunk_path.display(), task.final_path.display());
+
+    // Check if the chunk file exists before attempting to rename
+    if !task.chunk_path.exists() {
+        return Err(eyre!("Chunk file does not exist: {}", task.chunk_path.display()));
+    }
+
+    // Check if the final path already exists and remove it if it does
+    if task.final_path.exists() {
+        log::debug!("Final path already exists, removing: {}", task.final_path.display());
+        fs::remove_file(&task.final_path)
+            .with_context(|| format!("Failed to remove existing final file: {}", task.final_path.display()))?;
+    }
+
     if let Ok(metadata_guard) = task.master_metadata.lock() {
         if let Some(metadata) = &*metadata_guard {
             // Apply Last-Modified timestamp from master_metadata
@@ -4094,7 +4109,13 @@ fn finalize_file(task: &DownloadTask) -> Result<()> {
         }
     }
 
-    fs::rename(&task.chunk_path, &task.final_path)?;
+    // Perform the atomic rename operation
+    log::debug!("Renaming {} to {}", task.chunk_path.display(), task.final_path.display());
+    fs::rename(&task.chunk_path, &task.final_path)
+        .with_context(|| format!("Failed to rename chunk file {} to final file {}",
+                                task.chunk_path.display(), task.final_path.display()))?;
+
+    log::debug!("Successfully finalized file: {}", task.final_path.display());
     Ok(())
 }
 
