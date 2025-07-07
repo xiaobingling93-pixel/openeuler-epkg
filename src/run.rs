@@ -287,14 +287,33 @@ pub fn mount_env_dirs(env_root: &Path) -> Result<()> {
      *
      * Note: Uses MS_BIND instead of MS_MOVE for reliability across different filesystem setups
      */
-    let opt_epkg_path = Path::new("/opt/epkg");
-    let opt_real_path = env_root.join("opt_real");
-    if opt_epkg_path.exists() {
-        // Create opt_real directory in the environment root
-        std::fs::create_dir_all(&opt_real_path)
-            .wrap_err("Failed to create opt_real directory")?;
+    let opt_real_path = if env_root.starts_with("/opt/epkg") {
+        /*
+         * Use a path outside /opt/epkg to avoid circular dependency
+         *
+         * We must NOT place the opt_real backup inside the public environment tree (/opt/epkg/...),
+         * because if we do, bind-mounting /opt/epkg into a subdirectory of itself creates a recursive
+         * mount loop, leading to ELOOP (Too many levels of symbolic links) errors when resolving paths.
+         *
+         * To avoid this, if the current env_root is a public environment (i.e., starts with /opt/epkg),
+         * we use the corresponding private environment root for the backup. This ensures the backup is
+         * outside the tree being bind-mounted, breaking the loop. For private environments, we can safely
+         * use env_root.join("opt_real") as before.
+         */
+        let env_name = config().common.env.clone();
+        let private_env_root = dirs().private_envs.join(&env_name);
+        private_env_root.join("opt_real")
+    } else {
+        env_root.join("opt_real")
+    };
+    std::fs::create_dir_all(&opt_real_path)
+        .wrap_err("Failed to create opt_real directory")?;
 
-        // Bind mount /opt/epkg to $env_root/opt_real
+    let opt_epkg_path = Path::new("/opt/epkg");
+    if opt_epkg_path.exists() {
+        // For root, will bind mount /opt/epkg to
+        // /root/.epkg/envs/main/opt_real, instead of
+        // /opt/epkg/envs/root/main/opt_real
         debug!("Bind mounting /opt/epkg mount to {}", opt_real_path.display());
         mount(
             Some(opt_epkg_path),
