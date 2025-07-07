@@ -97,12 +97,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                         // Set file permissions - preserve original permissions from RPM
                         #[cfg(unix)]
                         {
-                            // Use original permissions from RPM, only ensure minimum read for owner if needed
-                            let mode = if permissions & 0o600 != 0o600 {
-                                permissions | 0o600  // Add owner rw if not present
-                            } else {
-                                permissions  // Use original permissions as-is
-                            };
+                            let mode = permissions | 0o600;  // Always ensure owner has rw
                             fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
                                 .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
                         }
@@ -114,12 +109,9 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
 
                         #[cfg(unix)]
                         {
-                            // Use original permissions from RPM, only ensure minimum access for owner if needed
-                            let mode = if permissions & 0o700 != 0o700 {
-                                permissions | 0o700  // Add owner rwx if not fully present
-                            } else {
-                                permissions  // Use original permissions as-is
-                            };
+                            // Ensure directories are writable by owner so they can be removed later
+                            // This prevents issues with read-only directories like /usr/lib (dr-xr-xr-x)
+                            let mode = permissions | 0o700;  // Always ensure owner has rwx
                             fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
                                 .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                         }
