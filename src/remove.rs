@@ -19,15 +19,16 @@ impl PackageManager {
             log::warn!("Package FS root {} does not exist for package directory {}. Assuming no files to unlink.", fs_dir.display(), pkg_store_path.display());
             return Ok(());
         }
-        let fs_files = list_package_files(fs_dir.to_str().unwrap_or_else(|| panic!("Invalid path for fs_dir: {}", fs_dir.display())))?;
+        let fs_files = crate::utils::list_package_files_with_info(fs_dir.to_str().unwrap_or_else(|| panic!("Invalid path for fs_dir: {}", fs_dir.display())))?;
         log::debug!("Unlinking package from {} to {} ({} files)", pkg_store_path.display(), env_root.display(), fs_files.len());
-        for fs_file in fs_files {
+        for fs_file_info in fs_files {
+            let fs_file = &fs_file_info.path;
             let fhs_file = fs_file.strip_prefix(&fs_dir)
                 .map_err(|e| eyre::eyre!("Failed to strip prefix from path: {}", e))?;
             let target_path = env_root.join(fhs_file);
 
             // Skip dir
-            if target_path.is_dir() {
+            if fs_file_info.is_dir() {
                 continue;
             }
 

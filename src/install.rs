@@ -1,17 +1,16 @@
 use std::fs;
-use std::path::Path;
-use color_eyre::eyre::eyre;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
-use std::os::unix::fs::PermissionsExt;
-use color_eyre::eyre::{self, Result, Context};
-use crate::models::*;
+use color_eyre::eyre::{self, Result, WrapErr};
+use color_eyre::eyre::eyre;
 use crate::utils::*;
+use crate::models::*;
 use crate::dirs::find_env_root;
 use crate::package;
 use crate::download::wait_for_any_download_task;
 use std::io::Write;
+use regex;
 
 #[derive(Debug, Default)]
 pub struct InstallationPlan {
@@ -155,8 +154,9 @@ fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     Ok(())
 }
 
-fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Result<()> {
-    for fs_file in fs_files {
+fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::MtreeFileInfo]) -> Result<()> {
+    for fs_file_info in fs_files {
+        let fs_file = &fs_file_info.path;
         let fhs_file = fs_file.strip_prefix(store_fs_dir)
             .with_context(|| format!("Failed to strip prefix {} from {}", store_fs_dir.display(), fs_file.display()))?;
         let target_path = env_root.join(fhs_file);
@@ -167,7 +167,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
                 .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
         }
 
-        if fs_file.is_dir() {
+        if fs_file_info.is_dir() {
             // Check if target path exists and is not a directory
             if target_path.exists() && !target_path.is_dir() {
                 // Remove the non-directory file first
@@ -180,7 +180,8 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[PathBuf]) -> Res
         }
 
         if fs::symlink_metadata(&target_path).is_ok() {
-            log::info!("Warning: File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
+            // On upgrade, it's normal to overwrite old files from previous version
+            log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
             // Check if target path is a directory and handle accordingly
             if target_path.is_dir() {
                 fs::remove_dir_all(&target_path)
@@ -256,10 +257,11 @@ fn normalize_join(base: &Path, subpath: &Path) -> PathBuf {
     components.iter().collect()
 }
 
-fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+fn create_ebin_wrappers(env_root: &Path, fs_files: &[crate::utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
     let mut created_ebin_paths: Vec<PathBuf> = Vec::new();
     log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
-    for fs_file in fs_files {
+    for fs_file_info in fs_files {
+        let fs_file = &fs_file_info.path;
         let path_str = fs_file.to_string_lossy();
 
         if !path_str.contains("/bin/") && !path_str.contains("/sbin/") && !path_str.contains("/libexec/") {
@@ -272,10 +274,11 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[PathBuf]) -> Result<Vec<Pat
         }
 
         // Skip if not executable or is directory
-        let metadata = fs::symlink_metadata(fs_file)
-            .with_context(|| format!("Failed to get metadata for {} for create_ebin_wrappers", fs_file.display()))?;
-        let mode = metadata.permissions().mode();
-        if mode & 0o111 == 0 || metadata.is_dir() {
+        if fs_file_info.is_dir() {
+            continue;
+        }
+        let mode = fs_file_info.mode.unwrap_or(0o644);
+        if mode & 0o111 == 0 {
             continue;
         }
 
@@ -757,7 +760,7 @@ impl PackageManager {
 
     // link files from env_root to store_fs_dir
     pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
-        let fs_files = list_package_files(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
+        let fs_files = crate::utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
             .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
         mirror_dir(env_root, store_fs_dir, &fs_files)
             .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), env_root.display()))?;
@@ -769,7 +772,7 @@ impl PackageManager {
     // Returns a list of relative paths to the created ebin wrappers (relative to env_root).
     pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
         log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
-        let fs_files = list_package_files(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
+        let fs_files = crate::utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
         let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;
         log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
         let mut relative_ebin_links: Vec<String> = Vec::new();

@@ -29,6 +29,45 @@ pub enum FileType {
     Others,
 }
 
+#[derive(Debug, Clone)]
+pub struct MtreeFileInfo {
+    pub path: PathBuf,
+    pub file_type: MtreeFileType,
+    pub mode: Option<u32>,
+    #[allow(dead_code)]
+    pub sha256: Option<String>,
+    #[allow(dead_code)]
+    pub link_target: Option<String>,
+    #[allow(dead_code)]
+    pub uname: Option<String>,
+    #[allow(dead_code)]
+    pub gname: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MtreeFileType {
+    File,
+    Dir,
+    Link,
+    Unknown,
+}
+
+impl MtreeFileInfo {
+    pub fn is_dir(&self) -> bool {
+        self.file_type == MtreeFileType::Dir
+    }
+
+    #[allow(dead_code)]
+    pub fn is_file(&self) -> bool {
+        self.file_type == MtreeFileType::File
+    }
+
+    #[allow(dead_code)]
+    pub fn is_link(&self) -> bool {
+        self.file_type == MtreeFileType::Link
+    }
+}
+
 impl FileType {
     #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
@@ -51,25 +90,155 @@ pub fn is_setuid() -> bool {
     true
 }
 
-// List package/fs files
+// List package/fs files - improved version that reads from filelist.txt
 pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
+    // For backwards compatibility, still return Vec<PathBuf>
+    let file_infos = list_package_files_with_info(package_fs_dir)?;
+    Ok(file_infos.into_iter().map(|info| info.path).collect())
+}
+
+// New function that reads from filelist.txt and provides type information
+pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo>> {
+    let package_fs_path = Path::new(package_fs_dir);
+    let store_dir = package_fs_path.parent()
+        .ok_or_else(|| eyre::eyre!("Cannot get parent directory of {}", package_fs_dir))?;
+    let filelist_path = store_dir.join("info/filelist.txt");
+
+    // If filelist.txt doesn't exist, fall back to filesystem walking
+    if !filelist_path.exists() {
+        log::debug!("filelist.txt not found at {}, falling back to filesystem walking", filelist_path.display());
+        return list_package_files_fallback(package_fs_dir);
+    }
+
+    // Read and parse filelist.txt
+    let content = fs::read_to_string(&filelist_path)
+        .wrap_err_with(|| format!("Failed to read filelist.txt from {}", filelist_path.display()))?;
+
+    let mut file_infos = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match parse_mtree_line(line, package_fs_path) {
+            Ok(Some(file_info)) => file_infos.push(file_info),
+            Ok(None) => continue, // Skip this line
+            Err(e) => {
+                log::debug!("Failed to parse mtree line '{}': {}", line, e);
+                continue; // Skip malformed lines
+            }
+        }
+    }
+
+    Ok(file_infos)
+}
+
+// Parse a single mtree format line
+fn parse_mtree_line(line: &str, package_fs_path: &Path) -> Result<Option<MtreeFileInfo>> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.is_empty() {
+        return Ok(None);
+    }
+
+    let relative_path = parts[0];
+    let full_path = package_fs_path.join(relative_path);
+
+    let mut file_type = MtreeFileType::Unknown;
+    let mut mode = None;
+    let mut sha256 = None;
+    let mut link_target = None;
+    let mut uname = None;
+    let mut gname = None;
+
+    // Parse key=value pairs
+    for part in &parts[1..] {
+        if let Some((key, value)) = part.split_once('=') {
+            match key {
+                "type" => {
+                    file_type = match value {
+                        "file" => MtreeFileType::File,
+                        "dir" => MtreeFileType::Dir,
+                        "link" => MtreeFileType::Link,
+                        _ => MtreeFileType::Unknown,
+                    };
+                }
+                "mode" => {
+                    mode = u32::from_str_radix(value, 8).ok();
+                }
+                "sha256" => {
+                    sha256 = Some(value.to_string());
+                }
+                "link" => {
+                    link_target = Some(value.to_string());
+                }
+                "uname" => {
+                    uname = Some(value.to_string());
+                }
+                "gname" => {
+                    gname = Some(value.to_string());
+                }
+                _ => {
+                    // Skip unknown attributes
+                }
+            }
+        }
+    }
+
+    Ok(Some(MtreeFileInfo {
+        path: full_path,
+        file_type,
+        mode,
+        sha256,
+        link_target,
+        uname,
+        gname,
+    }))
+}
+
+// Fallback to filesystem walking if filelist.txt doesn't exist
+fn list_package_files_fallback(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo>> {
     let dir = Path::new(package_fs_dir);
-    let mut paths = Vec::new();
+    let mut file_infos = Vec::new();
 
     for entry in fs::read_dir(dir).unwrap() {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
 
-        if file_type.is_dir() {
-            paths.push(path.clone());
-            paths.extend(list_package_files(path.to_str().unwrap())?);
+        let mtree_type = if file_type.is_dir() {
+            MtreeFileType::Dir
+        } else if file_type.is_symlink() {
+            MtreeFileType::Link
         } else {
-            paths.push(path.clone());
+            MtreeFileType::File
+        };
+
+        let metadata = fs::symlink_metadata(&path)?;
+        let mode = Some(metadata.permissions().mode());
+        let link_target = if file_type.is_symlink() {
+            fs::read_link(&path).ok().map(|p| p.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        file_infos.push(MtreeFileInfo {
+            path: path.clone(),
+            file_type: mtree_type,
+            mode,
+            sha256: None,
+            link_target,
+            uname: None,
+            gname: None,
+        });
+
+        if file_type.is_dir() {
+            file_infos.extend(list_package_files_fallback(path.to_str().unwrap())?);
         }
     }
 
-    Ok(paths)
+    Ok(file_infos)
 }
 
 // Get file type
@@ -105,7 +274,7 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     if _bytes_read == 0 {
         return Ok((FileType::Others, String::new()));
     }
- 
+
     // Check if file starts with shebang
     if first_line.starts_with("#!") {
         let script_line0 = first_line.trim_end().to_string();
@@ -346,12 +515,12 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
 }
 
 /// Decompress a file based on its extension
-/// 
+///
 /// # Arguments
 /// * `input_path` - Path to the compressed input file
 /// * `output_path` - Path where the decompressed file should be written
 /// * `extension` - The file extension (e.g. "gz", "xz", "zst")
-/// 
+///
 /// # Returns
 /// * `Result<()>` - Ok if decompression was successful, Err otherwise
 #[allow(dead_code)]
