@@ -1238,7 +1238,7 @@ impl DownloadManager {
                         }
                     },
                     Err(e) => {
-                        log::warn!(
+                        log::debug!(
                             "Chunk task failed for {} at offset {} (path: {}): {}",
                             chunk_clone.get_resolved_url(), chunk_clone.chunk_offset.load(Ordering::Relaxed), chunk_clone.chunk_path.display(), e
                         );
@@ -1869,16 +1869,16 @@ fn download_file_with_retries(
             return Ok(());
         }
         ValidationResult::ResumeFromPartial => {
-            log::info!("Resuming from partial file");
+            log::info!("Resuming from partial file at {}", task.chunk_path.display());
             // Continue with existing partial file
         }
         ValidationResult::CorruptionDetected => {
-            log::warn!("Corruption detected, handling...");
+            log::warn!("Corruption detected in {}, handling...", task.chunk_path.display());
             handle_corruption_detection(task)?;
             // Continue with fresh download
         }
         ValidationResult::StartFresh => {
-            log::info!("Starting fresh download");
+            log::info!("Starting fresh download for {}", task.get_resolved_url());
             // Continue with fresh download
         }
     }
@@ -1886,7 +1886,7 @@ fn download_file_with_retries(
     // Recover any existing part files for resumption
     match recover_parto_files(task)? {
         ValidationResult::ResumeFromPartial => {
-            log::info!("Recovered partial files for resumption");
+            log::info!("Recovered partial files for resumption at {}", task.chunk_path.display());
         }
         _ => {
             // No recovery needed or recovery failed
@@ -1894,7 +1894,7 @@ fn download_file_with_retries(
     }
 
     loop {
-        log::debug!("download_file_with_retries calling download_file for {}, attempt {}", url, retries + 1);
+        log::debug!("download_file_with_retries calling download_file for {} (saving to {}), attempt {}", url, task.chunk_path.display(), retries + 1);
 
         let download_result = download_file(task);
         let resolved_url = task.get_resolved_url();
@@ -1910,14 +1910,14 @@ fn download_file_with_retries(
                 if let Some(download_err) = e.downcast_ref::<DownloadError>() {
                     match download_err {
                         DownloadError::Fatal { code, message } => {
-                            log::debug!("download_file_with_retries got fatal error {} for {}: {}", code, resolved_url, message);
+                            log::debug!("download_file_with_retries got fatal error {} for {} (saving to {}): {}", code, resolved_url, task.chunk_path.display(), message);
                         },
                         DownloadError::Network { details } => {
-                            log::debug!("download_file_with_retries got network error for {}: {}", resolved_url, details);
+                            log::debug!("download_file_with_retries got network error for {} (saving to {}): {}", resolved_url, task.chunk_path.display(), details);
                         },
                         // File system errors are now handled as io::Error
                         DownloadError::ContentValidation { expected, actual } => {
-                            log::debug!("download_file_with_retries got content validation error for {}: expected {}, got {}", resolved_url, expected, actual);
+                            log::debug!("download_file_with_retries got content validation error for {} (saving to {}): expected {}, got {}", resolved_url, task.chunk_path.display(), expected, actual);
                         },
                         DownloadError::MirrorResolution { details } => {
                             log::debug!("download_file_with_retries got mirror resolution error for {}: {}", resolved_url, details);
@@ -2745,7 +2745,7 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
     // Don't chunk if we don't know the file size
     let file_size_val = task.file_size.load(Ordering::Relaxed);
     if file_size_val == 0 {
-        log::debug!("Skip create chunks: file size unknown (no Content-Length header)");
+        log::debug!("Skip create chunks for {}: file size unknown (no Content-Length header)", task.chunk_path.display());
         return Ok(());
     };
 
@@ -2754,7 +2754,7 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
 
     // Don't chunk small files or chunk tasks themselves
     if task.is_chunk_task() || file_size_val < resumed + MIN_FILE_SIZE_FOR_CHUNKING {
-        log::debug!("Skipping chunking: is_chunk_task={}, size={} bytes, min_required={} bytes",
+        log::debug!("Skipping chunking for {}: is_chunk_task={}, size={} bytes, min_required={} bytes", task.chunk_path.display(),
                   task.is_chunk_task(), file_size_val, resumed + MIN_FILE_SIZE_FOR_CHUNKING);
         return Ok(());
     }
@@ -4109,6 +4109,23 @@ fn finalize_file(task: &DownloadTask) -> Result<()> {
         return Err(eyre!("Chunk file does not exist: {}", task.chunk_path.display()));
     }
 
+    // Validate that the completed download size matches the expected file size.
+    // This prevents prematurely finalising a partially downloaded or oversized file.
+    let expected_size = task.chunk_size.load(Ordering::Relaxed);
+    if expected_size > 0 {
+        let actual_size = fs::metadata(&task.chunk_path)?.len();
+        if actual_size != expected_size {
+            log::error!(
+                "finalize_file: size mismatch for {} – actual {} bytes, expected {} bytes",
+                task.chunk_path.display(), actual_size, expected_size
+            );
+            return Err(eyre!(
+                "Downloaded file size {} does not match expected {} for {}",
+                actual_size, expected_size, task.chunk_path.display()
+            ));
+        }
+    }
+
     // Check if the final path already exists and remove it if it does
     if task.final_path.exists() {
         log::debug!("Final path already exists, removing: {}", task.final_path.display());
@@ -4153,17 +4170,32 @@ fn finalize_file(task: &DownloadTask) -> Result<()> {
 fn check_chunk_completion(task: &DownloadTask, existing_bytes: u64) -> Result<bool> {
     let chunk_size = task.chunk_size.load(Ordering::Relaxed);
 
-    if chunk_size > 0 && existing_bytes >= chunk_size {
+    // A chunk is considered complete only when the on-disk size exactly matches the
+    // expected chunk size. "Bigger than expected" indicates corruption and must not
+    // be silently accepted.
+    if chunk_size > 0 && existing_bytes == chunk_size {
         if task.is_chunk_task() {
             log::debug!("Chunk file already exists and is complete: {}", task.chunk_path.display());
         } else {
-            log::debug!("Master chunk already complete (local {} >= expected {}) for {}", existing_bytes, chunk_size, task.url);
+            log::debug!("Master chunk already complete (local {} == expected {}) for {}", existing_bytes, chunk_size, task.url);
         }
 
         // Mark bytes as reused and status as completed
         task.resumed_bytes.store(chunk_size, Ordering::Relaxed);
         task.received_bytes.store(0, Ordering::Relaxed);
         return Ok(true);
+    }
+
+    // Detect oversized files eagerly so they can be redownloaded instead of propagated
+    if chunk_size > 0 && existing_bytes > chunk_size {
+        log::error!(
+            "Existing chunk file {} is larger than expected ({} > {}) – treating as corruption",
+            task.chunk_path.display(), existing_bytes, chunk_size
+        );
+        return Err(eyre!(
+            "Corrupted chunk file: size {} exceeds expected {} for {}",
+            existing_bytes, chunk_size, task.chunk_path.display()
+        ));
     }
     Ok(false) // Task is not complete
 }
