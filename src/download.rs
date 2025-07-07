@@ -1122,7 +1122,12 @@ impl DownloadManager {
         let mut collected = Vec::new();
 
         Self::iterate_3level_tasks(tasks, |task, _level| {
-            // The callback now handles status checking itself
+            // Skip master tasks (.part) – we only want real chunk tasks (".part-O{offset}")
+            if !task.is_chunk_task() {
+                return;
+            }
+
+            // Collect tasks that are still pending
             if matches!(task.get_status(), DownloadStatus::Pending) {
                 let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
                 let file_size = task.file_size.load(Ordering::Relaxed);
