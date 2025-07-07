@@ -491,6 +491,24 @@ pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir:
             if are_identical_after_filtering {
                 log::info!("Verification successful: epkg extraction matches official extraction for {}.", rpm_file_path.display());
                 log::debug!("Removing successfully verified official extraction directory: {}", official_outdir_path.display());
+
+                // Fix directory permissions before removal to avoid "Permission denied" errors
+                let output = Command::new("find")
+                    .arg(&official_outdir_path)
+                    .arg("-type")
+                    .arg("d")
+                    .arg("-exec")
+                    .arg("chmod")
+                    .arg("u+rwx")
+                    .arg("{}")
+                    .arg(";")
+                    .output()
+                    .wrap_err_with(|| format!("Failed to run find command on {}", official_outdir_path.display()))?;
+
+                if !output.status.success() {
+                    log::warn!("Failed to set permissions on some files: {}", String::from_utf8_lossy(&output.stderr));
+                }
+
                 if let Err(e) = fs::remove_dir_all(&official_outdir_path) {
                     log::warn!("Failed to remove official extraction directory {}: {}. Manual cleanup may be required.", official_outdir_path.display(), e);
                 }
