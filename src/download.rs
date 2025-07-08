@@ -4205,6 +4205,24 @@ fn check_chunk_completion(task: &DownloadTask, existing_bytes: u64) -> Result<bo
             "Existing chunk file {} is larger than expected ({} > {}) – treating as corruption",
             task.chunk_path.display(), existing_bytes, chunk_size
         );
+        // Cleanup corrupted chunk file immediately, so that the next retry starts with a pristine
+        // chunk file and does not pick up invalid bytes that could cause persistent size mismatches.
+        if task.chunk_path.exists() {
+            match fs::remove_file(&task.chunk_path) {
+                Ok(_) => log::debug!(
+                    "check_chunk_completion: removed corrupt chunk file {} after size check",
+                    task.chunk_path.display()
+                ),
+                Err(e) => log::warn!(
+                    "check_chunk_completion: failed to remove corrupt chunk file {}: {}",
+                    task.chunk_path.display(),
+                    e
+                ),
+            }
+            // Reset progress counters so resumed/received math is correct on retry
+            task.resumed_bytes.store(0, Ordering::Relaxed);
+            task.received_bytes.store(0, Ordering::Relaxed);
+        }
         return Err(eyre!(
             "Corrupted chunk file: size {} exceeds expected {} for {}",
             existing_bytes, chunk_size, task.chunk_path.display()
