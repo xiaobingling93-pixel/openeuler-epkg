@@ -53,7 +53,10 @@ impl PackageManager {
         self.create_environment("main")?;
         self.register_environment("main")?;
 
-        println!("Notice: For changes to take effect, close and re-open your current shell.");
+        // Update shell configuration
+        self.update_shell_rc()?;
+
+        println!("Notice: for changes to take effect, close and re-open your current shell.");
         Ok(())
     }
 
@@ -66,9 +69,6 @@ impl PackageManager {
 
         // Set up common environment
         self.setup_common_environment()?;
-
-        // Update shell configuration
-        self.update_shell_rc()?;
 
         Ok(())
     }
@@ -177,7 +177,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        println!("Extracting epkg manager from {}", epkg_manager_tar.display());
+        println!("Extracting epkg manager to: {}", env_opt.display());
 
         // Create opt directory if it doesn't exist
         fs::create_dir_all(&env_opt)
@@ -193,7 +193,7 @@ impl PackageManager {
         }
 
         if let Err(e) = symlink(&epkg_extracted_dir, &epkg_manager_dir) {
-            eprintln!("Warning: Failed to create symlink from epkg-manager to {}: {}",
+            eprintln!("[WARN] Failed to create symlink from epkg-manager to {}: {}",
                      epkg_extracted_dir, e);
         }
 
@@ -282,11 +282,11 @@ impl PackageManager {
                 }
 
                 // Create the symlink
+                println!("Creating symlink: {} -> {}", symlink_path.display(), epkg_binary_path.display());
                 symlink(epkg_binary_path, &symlink_path)
                     .context(format!("Failed to create symlink from {} to {}",
                         epkg_binary_path.display(), symlink_path.display()))?;
 
-                println!("Created epkg symlink at {}", symlink_path.display());
                 return Ok(());
             }
         }
@@ -349,6 +349,8 @@ impl PackageManager {
 
             // Only append if epkg begin line doesn't exist
             if !existing_content.contains("# epkg begin") {
+                println!("Updating shell RC file: {}", shell_rc_info.rc_file_path);
+
                 let mut file = OpenOptions::new()
                     .append(true)
                     .create(true) // Create if it doesn't exist
@@ -363,8 +365,6 @@ impl PackageManager {
 
                 file.write_all(rc_content.as_bytes())
                     .with_context(|| format!("Failed to write to shell rc file: {}", shell_rc_info.rc_file_path))?;
-
-                println!("Updated shell configuration file: {}", shell_rc_info.rc_file_path);
             } else {
                 println!("epkg configuration already present in {}. Skipping.", shell_rc_info.rc_file_path);
             }

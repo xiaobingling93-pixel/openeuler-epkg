@@ -271,6 +271,7 @@ impl PackageManager {
         if env_channel_yaml.exists() {
             return Err(eyre::eyre!("Environment already exists at path: '{}'", env_base.display()));
         }
+        println!("Creating environment '{}' in {}", name, env_root.display());
         fs::create_dir_all(env_root.join("etc/epkg"))?;
 
         // Initialize channel and environment config
@@ -339,7 +340,6 @@ impl PackageManager {
             self.record_history(&gen_1_dir, "create", Vec::new(), Vec::new())?;
         }
 
-        println!("Environment '{}' has been created in {}", name, env_root.display());
         Ok(())
     }
 
@@ -546,6 +546,8 @@ impl PackageManager {
             }
         };
 
+        println!("# Registering environment '{}' with priority {}", name, priority);
+
         // Create symlink in appropriate directory
         let env_root = get_env_root(name.to_string())?;
         let ebin_path = env_root.join("usr/ebin");
@@ -572,7 +574,6 @@ impl PackageManager {
         crate::io::serialize_env_config(env_config)?;
 
         self.update_path()?;
-        println!("# Environment '{}' has been registered with priority {}.", name, priority);
         Ok(())
     }
 

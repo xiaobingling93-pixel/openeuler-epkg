@@ -284,22 +284,22 @@ pub fn get_shell_rc() -> Result<Vec<ShellRcInfo>> {
                 } else {
                     // SHELL var specified a shell, but it was unsupported or its rc file didn't exist.
                     // Print warning and proceed to fallback scan.
-                    eprintln!(
-                        "Warning: SHELL variable is '{}'. Could not derive a valid, existing rc file from it (either unsupported shell type or its specific rc file was not found). Falling back to scanning for common rc files.",
+                    println!(
+                        "Notice: SHELL variable is '{}'. Could not derive a valid, existing rc file from it (either unsupported shell type or its specific rc file was not found). Falling back to scanning for common rc files.",
                         shell_env_var
                     );
                 }
             } else {
                 // SHELL var path was invalid. Print warning and proceed to fallback scan.
-                eprintln!(
-                    "Warning: SHELL variable ('{}') has an invalid path. Could not extract filename. Falling back to scanning for common rc files.",
+                println!(
+                    "Notice: SHELL variable ('{}') has an invalid path. Could not extract filename. Falling back to scanning for common rc files.",
                     shell_env_var
                 );
             }
         }
         Err(_) => {
             // SHELL var not set. Print warning and proceed to fallback scan.
-            eprintln!("Warning: SHELL environment variable not set. Attempting to detect common shell configuration files.");
+            println!("Notice: SHELL environment variable not set. Attempting to detect common shell configuration files.");
         }
     }
 
