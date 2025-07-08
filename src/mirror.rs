@@ -1177,7 +1177,11 @@ impl Mirrors {
 
         // Calculate threshold based on current pget_limit
         // Ensure we never divide by zero – self.pget_limit can temporarily exceed MAX_PGET_LIMIT
-        let denom_raw = 1 + MAX_PGET_LIMIT as u32 - self.pget_limit as u32;
+        let denom_raw = if self.pget_limit <= MAX_PGET_LIMIT {
+            1 + MAX_PGET_LIMIT as u32 - self.pget_limit as u32
+        } else {
+            1 // When pget_limit exceeds MAX_PGET_LIMIT, use minimum denominator
+        };
         let denom = std::cmp::max(denom_raw, 1); // clamp to >=1
         let threshold = if denom > 0 {
             mid_throughput / denom
