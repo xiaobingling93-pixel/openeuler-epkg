@@ -8,6 +8,56 @@ EPKG_URL="https://repo.oepkgs.net/openeuler/epkg/rootfs/"
 EPKG_STATIC="epkg"
 EPKG_CACHE="$HOME/.cache/epkg/downloads/epkg"
 
+# Default values
+CHANNEL=""
+STORE_MODE="auto"
+
+# Parse command line arguments
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -c|--channel)
+                if [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+                    print_error "Option $1 requires an argument"
+                fi
+                CHANNEL="$2"
+                shift 2
+                ;;
+            --store)
+                if [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+                    print_error "Option $1 requires an argument"
+                fi
+                case "$2" in
+                    shared|private|auto)
+                        STORE_MODE="$2"
+                        ;;
+                    *)
+                        print_error "Invalid store mode: $2. Must be one of: shared, private, auto"
+                        ;;
+                esac
+                shift 2
+                ;;
+            -h|--help)
+                echo "Usage: $0 [OPTIONS]"
+                echo
+                echo "Options:"
+                echo "  -c, --channel CHANNEL   Set the channel for the main environment"
+                echo "  --store MODE            Store mode: shared, private, or auto (default: auto)"
+                echo "  -h, --help              Show this help message"
+                echo
+                echo "Examples:"
+                echo "  $0 --channel alpine:3.21"
+                echo "  $0 --store shared"
+                echo "  $0 --channel debian:trixie --store private"
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                ;;
+        esac
+    done
+}
+
 print_step() {
     echo ">> $1"
 }
@@ -77,9 +127,15 @@ download_files() {
 }
 
 initialize_epkg() {
-    local store_mode="auto"
+    # Build the init command with options
+    local init_cmd="$EPKG_PATH init --store=$STORE_MODE"
 
-    # Set store mode based on user
+    # Add channel option if specified
+    if [ -n "$CHANNEL" ]; then
+        init_cmd="$init_cmd --channel=$CHANNEL"
+    fi
+
+    # Set store mode based on user (for display purposes)
     echo
     if [ "$USER" = "root" ] || [ "$LOGNAME" = "root" ] || [ "$(id -u)" = "0" ]; then
         print_info "Installation mode: shared (system-wide)"
@@ -87,8 +143,14 @@ initialize_epkg() {
         print_info "Installation mode: private (user-local)"
     fi
 
+    # Show what we're doing
+    if [ -n "$CHANNEL" ]; then
+        print_info "Initializing epkg with channel: $CHANNEL"
+    fi
+    print_info "Store mode: $STORE_MODE"
+
     # Initialize epkg
-    "$EPKG_PATH" init --store=$store_mode || exit
+    $init_cmd || exit
 }
 
 print_completion() {
@@ -108,6 +170,7 @@ print_completion() {
 
 # Main execution flow
 main() {
+    parse_args "$@"
     check_architecture
     setup_environment
     download_files
@@ -115,6 +178,6 @@ main() {
     print_completion
 }
 
-main
+main "$@"
 
 # vim: sw=4 ts=4 et
