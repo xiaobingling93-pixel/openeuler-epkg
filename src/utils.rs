@@ -7,7 +7,6 @@ use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
 use sha2::{Sha256, Digest};
-use std::fs::File;
 use tar::Archive;
 use flate2::read::GzDecoder;
 use liblzma;
@@ -292,7 +291,7 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
 }
 
 pub fn compute_file_sha256(file_path: &str) -> Result<String> {
-    let file = File::open(file_path)?;
+    let file = fs::File::open(file_path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buffer = [0; 4096];
@@ -554,6 +553,54 @@ pub fn decompress_file(input_path: &Path, output_path: &Path, extension: &str) -
     }
 
     Ok(())
+}
+
+/// Rename a file by appending .bad to its name
+///
+/// This will:
+/// 1. Remove any existing .bad file with the same name
+/// 2. Rename the file to have a .bad extension
+///
+/// # Arguments
+/// * `file_path` - Path to the file to be marked as bad
+///
+/// # Returns
+/// * `Ok(PathBuf)` - The new path of the file
+/// * `Err` - If renaming fails
+pub fn mark_file_bad<P: AsRef<Path>>(file_path: P) -> Result<PathBuf> {
+    let file_path = file_path.as_ref();
+    let bad_path = append_suffix(file_path, "bad");
+    let part_path = append_suffix(file_path, "part");
+
+    // Remove existing .part file
+    if part_path.exists() {
+        std::fs::remove_file(&part_path)
+            .with_context(|| format!("Failed to remove existing bad file: {}", part_path.display()))?;
+    }
+
+    if !file_path.exists() {
+        return Err(eyre::eyre!("File not exist: {}", file_path.display()));
+    }
+
+    // Remove existing .bad file
+    if bad_path.exists() {
+        std::fs::remove_file(&bad_path)
+            .with_context(|| format!("Failed to remove existing bad file: {}", bad_path.display()))?;
+    }
+
+    // Rename the file
+    std::fs::rename(file_path, &bad_path)
+        .with_context(|| format!("Failed to rename {} to {}", file_path.display(), bad_path.display()))?;
+
+    eprintln!("Renamed corrupted file {} to {}", file_path.display(), bad_path.display());
+    eprintln!("Please retry, the file should be auto redownloaded.");
+
+    Ok(bad_path)
+}
+
+/// General helper function to append a suffix to a path instead of using with_extension
+pub fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{}", path.display(), suffix))
 }
 
 pub fn user_prompt_and_confirm() -> Result<bool> {

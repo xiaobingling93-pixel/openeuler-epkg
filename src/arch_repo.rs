@@ -16,6 +16,7 @@ use crate::models::*;
 use crate::repo::RepoReleaseItem;
 use crate::packages_stream;
 use crate::repo;
+use crate::utils;
 
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
@@ -161,7 +162,7 @@ fn process_tar_entries(
     packages: &mut std::collections::HashMap<String, PackageFiles>,
     filelists_encoder: &mut ZstdEncoder<std::fs::File>,
     derived_files: &mut packages_stream::PackagesStreamline,
-    revise: &RepoReleaseItem
+    revise: &RepoReleaseItem,
 ) -> Result<()> {
     let mut entry_count = 0;
     log::debug!("Starting to process tar entries for {}", revise.location);
@@ -169,13 +170,17 @@ fn process_tar_entries(
     let entries = archive.entries()
         .map_err(|e| eyre::eyre!("Failed to create tar entries iterator for {}: {}", revise.location, e))?;
 
+    let full_path = &revise.download_path;
+
     for entry_result in entries {
         entry_count += 1;
         let mut entry = match entry_result {
             Ok(entry) => entry,
             Err(e) => {
                 log::error!("Failed to read tar entry #{} for {}: {}", entry_count, revise.location, e);
-                return Err(eyre::eyre!("Failed to read tar entry #{} for {}: {}", entry_count, revise.location, e));
+                utils::mark_file_bad(&full_path)?;
+                return Err(eyre::eyre!("Failed to read tar entry #{} for {}: {} (file marked as .bad)",
+                    entry_count, revise.location, e));
             }
         };
 
@@ -183,7 +188,9 @@ fn process_tar_entries(
             Ok(path) => path.display().to_string(),
             Err(e) => {
                 log::error!("Failed to get path for tar entry #{} for {}: {}", entry_count, revise.location, e);
-                return Err(eyre::eyre!("Failed to get path for tar entry #{} for {}: {}", entry_count, revise.location, e));
+                utils::mark_file_bad(&full_path)?;
+                return Err(eyre::eyre!("Failed to get path for tar entry #{} for {}: {} (file marked as .bad)",
+                    entry_count, revise.location, e));
             }
         };
 
@@ -207,7 +214,13 @@ fn process_tar_entries(
                         log::trace!("Read {} bytes from {}/{}", content.len(), package_name, file_type);
                     }
                     Err(e) => {
-                        log::error!("Failed to read content from {}/{}: {}", package_name, file_type, e);
+                        log::error!("Failed to read content from {}/{}: {}", package_name, file_type, e.to_string());
+                        // If it's a corrupt deflate stream, mark the entire file as bad
+                        if e.to_string().contains("corrupt deflate stream") {
+                            utils::mark_file_bad(&full_path)?;
+                            return Err(eyre::eyre!("Corrupt deflate stream detected in {}/{} for {}: {} (file marked as .bad)",
+                                package_name, file_type, revise.location, e));
+                        }
                         continue;
                     }
                 }

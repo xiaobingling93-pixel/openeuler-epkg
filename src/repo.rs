@@ -455,7 +455,7 @@ fn process_revises_parallel(
                 match download_and_process_item(&revise, &repo_dir) {
                     Ok(_) => true,
                     Err(e) => {
-                        log::error!("Failed to download and process item {}: {}", revise.location, e);
+                        log::error!("Failed to download and process item {}: {:#}", revise.location, e);
                         false
                     }
                 }
@@ -475,7 +475,7 @@ fn process_revises_parallel(
         }
 
         if let Err(e) = create_load_repoindex(&repo_clone, no_revises, &repo_dir, release_items_clone2) {
-            log::error!("Failed to save repo index json: {}", e);
+            log::error!("Failed to save repo index json: {:#}", e);
             if let Err(send_err) = result_tx.send(false) {
                 log::error!("Failed to send error status on channel: {}", send_err);
             }

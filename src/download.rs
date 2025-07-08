@@ -43,7 +43,8 @@ use ureq::http;
 
 use crate::dirs;
 use crate::models::*;
-use crate::mirror::{append_download_log, append_http_log, url2site, HttpEvent, MIRRORS, Mirrors};
+use crate::mirror;
+use crate::utils;
 
 /// Constants for chunking configuration
 // Using power of 2 for efficient bit operations
@@ -79,12 +80,12 @@ const HTTP_SERVER_ERROR_START: u16 = 500;                   // Start of 5xx serv
 impl DownloadTask {
     /// Returns the path to the .pget-status file, which is based on the final file path.
     pub fn pget_status_path(&self) -> PathBuf {
-        append_suffix(&self.final_path, "pget-status")
+        utils::append_suffix(&self.final_path, "pget-status")
     }
 
     /// Returns the path to the ETag file, which is based on the final file path.
     pub fn etag_path(&self) -> PathBuf {
-        append_suffix(&self.final_path, "etag")
+        utils::append_suffix(&self.final_path, "etag")
     }
 
     /// Saves the ETag to a file named after the download's final path with a .etag extension.
@@ -336,9 +337,9 @@ impl DownloadTask {
     }
 
     pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, file_size: Option<u64>) -> Self {
-        let final_path = Mirrors::resolve_mirror_path(&url, &output_dir);
+        let final_path = mirror::Mirrors::resolve_mirror_path(&url, &output_dir);
         // Initialize chunk_path to the standard .part file for master tasks
-        let chunk_path = append_suffix(&final_path, "part");
+        let chunk_path = utils::append_suffix(&final_path, "part");
 
         // Classify file type for integrity and metadata handling
         let file_type = classify_file_type(&final_path, file_size);
@@ -455,7 +456,7 @@ impl DownloadTask {
                 .timeout_connect(Some(Duration::from_secs(15)))  // was 5s
                 .timeout_recv_response(Some(Duration::from_secs(60)));  // was 9s
 
-            let proxy_config = &crate::models::config().common.proxy;
+            let proxy_config = &config().common.proxy;
             if !proxy_config.is_empty() {
                 match ureq::Proxy::new(proxy_config) {
                     Ok(p) => {
@@ -1053,7 +1054,7 @@ impl DownloadManager {
 
         // Get available mirrors count
         let available_mirrors_count = {
-            if let Ok(mirrors) = MIRRORS.lock() {
+            if let Ok(mirrors) = mirror::MIRRORS.lock() {
                 mirrors.available_mirrors.len()
             } else {
                 1
@@ -1241,7 +1242,7 @@ impl DownloadManager {
                     },
                     Err(e) => {
                         log::debug!(
-                            "Chunk task failed for {} at offset {} (path: {}): {}",
+                            "Chunk task failed for {} at offset {} (path: {}): {:#}",
                             chunk_clone.get_resolved_url(), chunk_clone.chunk_offset.load(Ordering::Relaxed), chunk_clone.chunk_path.display(), e
                         );
 
@@ -1428,7 +1429,7 @@ fn format_task_line(task: &Arc<DownloadTask>, level: usize) -> String {
     }
     if level >= 2 {
         if !resolved_url.is_empty() {
-            let site = url2site(&resolved_url);
+            let site = mirror::url2site(&resolved_url);
             fields.push(format!("site={}", site));
         }
     }
@@ -2139,7 +2140,7 @@ fn execute_download_request(
     let request_start = std::time::Instant::now();
     let call_result = request.call();
     let latency = request_start.elapsed().as_millis() as u64;
-    log_http_event_safe(resolved_url, HttpEvent::Latency(latency));
+    log_http_event_safe(resolved_url, mirror::HttpEvent::Latency(latency));
 
     match call_result {
         Ok(response) => Ok(response),
@@ -2189,7 +2190,7 @@ fn handle_http_status_error(
     log::debug!("HTTP error code {} for chunk_path={}", code, task.chunk_path.display());
 
     // Log latency even for errors
-    log_http_event_safe(resolved_url, HttpEvent::HttpStatus(code));
+    log_http_event_safe(resolved_url, mirror::HttpEvent::HttpStatus(code));
 
     let error_msg = format!("HTTP {}", code);
     task.set_message(format!("{} - {}", error_msg, resolved_url));
@@ -2197,8 +2198,8 @@ fn handle_http_status_error(
     if code == 429 {
         // Get the active connection count for this mirror **before** logging for better diagnostics
         let active_conns = {
-            let site = crate::mirror::url2site(&resolved_url);
-            if let Ok(mirrors_guard) = crate::mirror::MIRRORS.lock() {
+            let site = mirror::url2site(&resolved_url);
+            if let Ok(mirrors_guard) = mirror::MIRRORS.lock() {
                 mirrors_guard.mirrors.get(&site)
                     .map(|mirror| mirror.shared_usage.active_downloads.load(std::sync::atomic::Ordering::Relaxed))
                     .unwrap_or(0)
@@ -2210,7 +2211,7 @@ fn handle_http_status_error(
         log::debug!("Received HTTP 429 Too Many Requests ({} active connections) for {} (chunk_path={})", active_conns, resolved_url, task.chunk_path.display());
 
         // Log the TooManyRequests event with the connection count
-        log_http_event_safe(&resolved_url, HttpEvent::TooManyRequests(active_conns as u32));
+        log_http_event_safe(&resolved_url, mirror::HttpEvent::TooManyRequests(active_conns as u32));
 
         return Err(DownloadError::TooManyRequests.into());
     }
@@ -2258,7 +2259,7 @@ fn handle_network_io_error(
     task: &DownloadTask,
     resolved_url: &str,
 ) -> Result<http::Response<ureq::Body>> {
-    log_http_event_safe(resolved_url, HttpEvent::NetError(e.to_string()));
+    log_http_event_safe(resolved_url, mirror::HttpEvent::NetError(e.to_string()));
 
     log::debug!("Network I/O error for {} (chunk_path={}): {}", resolved_url, task.chunk_path.display(), e);
 
@@ -2278,7 +2279,7 @@ fn handle_general_request_error(
     let error_msg = format!("Error downloading: {} - {}", error_str, resolved_url);
 
     // Log general error as network error
-    log_http_event_safe(resolved_url, HttpEvent::NetError(error_str.clone()));
+    log_http_event_safe(resolved_url, mirror::HttpEvent::NetError(error_str.clone()));
 
     log::debug!("General request error for {} (chunk_path={}): {}", resolved_url, task.chunk_path.display(), error_str);
 
@@ -2668,7 +2669,7 @@ impl PackageManager {
             Ok(dest_path.to_string_lossy().to_string())
         } else {
             // Remote file - use the URL to cache path conversion
-            let cache_path = crate::mirror::Mirrors::url_to_cache_path(&url)
+            let cache_path = mirror::Mirrors::url_to_cache_path(&url)
                 .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?;
             Ok(cache_path.to_string_lossy().to_string())
         }
@@ -2691,7 +2692,7 @@ impl PackageManager {
                 package.location
             );
             urls.push(url.clone());
-            let cache_path = crate::mirror::Mirrors::url_to_cache_path(&url)
+            let cache_path = mirror::Mirrors::url_to_cache_path(&url)
                 .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?
                 .to_string_lossy().to_string();
             local_files.push(cache_path);
@@ -3231,7 +3232,7 @@ fn process_download_response(
             // Server ignoring Range header - would corrupt chunk
             log::error!("CORRUPTION PREVENTED: Server returned HTTP 200 instead of 206 for range request to {} (chunk: {})",
                        resolved_url, task.chunk_path.display());
-            if let Err(e) = append_http_log(resolved_url, HttpEvent::NoRange) {
+            if let Err(e) = mirror::append_http_log(resolved_url, mirror::HttpEvent::NoRange) {
                 log::warn!("Failed to log chunk range error: {}", e);
             }
             return Err(eyre!("Server returned 200 instead of 206 for range request - would corrupt chunk"));
@@ -3921,19 +3922,14 @@ fn create_ondemand_chunks(task: &DownloadTask, chunk_append_offset: u64, remaini
 // PROCESS COORDINATION
 // ============================================================================
 
-/// General helper function to append a suffix to a path instead of using with_extension
-fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
-    PathBuf::from(format!("{}.{}", path.display(), suffix))
-}
-
 /// Helper function to generate PID file path for a given final path
 fn get_pid_file_path(final_path: &Path) -> PathBuf {
-    append_suffix(final_path, "download.pid")
+    utils::append_suffix(final_path, "download.pid")
 }
 
 /// Helper function to generate temporary PID file path for a given final path
 fn get_temp_pid_file_path(final_path: &Path) -> PathBuf {
-    append_suffix(final_path, "download.pid.tmp")
+    utils::append_suffix(final_path, "download.pid.tmp")
 }
 
 /// Create a PID file for download coordination and clean up stale PID files
@@ -4222,7 +4218,7 @@ fn log_download_completion(
     let network_bytes = task.received_bytes.load(Ordering::Relaxed);
     if network_bytes > 0 {
         let duration_ms = task.duration_ms.load(Ordering::Relaxed);
-        if let Err(e) = append_download_log(
+        if let Err(e) = mirror::append_download_log(
             resolved_url,
             task.chunk_offset.load(Ordering::Relaxed),
             network_bytes,
@@ -4369,8 +4365,8 @@ fn safe_remove_file(path: &Path, context: &str) -> Result<()> {
 }
 
 /// Helper to safely log HTTP events with error handling
-fn log_http_event_safe(url: &str, event: HttpEvent) {
-    if let Err(e) = append_http_log(url, event) {
+fn log_http_event_safe(url: &str, event: mirror::HttpEvent) {
+    if let Err(e) = mirror::append_http_log(url, event) {
         log::warn!("Failed to log HTTP event for {}: {}", url, e);
     }
 }
@@ -4621,7 +4617,7 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
 
     // Select mirror with usage tracking
     let selected_mirror = {
-        let mut mirrors = MIRRORS.lock()
+        let mut mirrors = mirror::MIRRORS.lock()
             .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
 
         mirrors.select_mirror_with_usage_tracking(need_range)
@@ -4631,14 +4627,14 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
     };
 
     // Get distro directory for the selected mirror
-    let distro = &crate::models::channel_config().distro;
-    let arch = &crate::models::channel_config().arch;
-    let distro_dir = crate::mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch);
+    let distro = &channel_config().distro;
+    let arch = &channel_config().arch;
+    let distro_dir = mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch);
     let final_distro_dir = if distro_dir.is_empty() { distro.to_string() } else { distro_dir };
 
     // Format mirror URL
     let url_formatted = {
-        let mirrors = MIRRORS.lock()
+        let mirrors = mirror::MIRRORS.lock()
             .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
         mirrors.format_mirror_url(&selected_mirror.url, selected_mirror.top_level, &final_distro_dir)?
     };
@@ -4862,7 +4858,7 @@ fn fetch_server_metadata(task: &DownloadTask, url: &str) -> Result<ServerMetadat
         .with_context(|| format!("Failed to make HEAD request to {}", url))?;
 
     let latency = request_start.elapsed().as_millis() as u64;
-    log_http_event_safe(url, HttpEvent::Latency(latency));
+    log_http_event_safe(url, mirror::HttpEvent::Latency(latency));
 
     if let Ok(mut guard) = task.range_request.lock() {
         *guard = RangeRequest::None;  // reset for correct get_remote_size()
@@ -4953,20 +4949,8 @@ fn save_pget_status(task: &DownloadTask, metadata: &ServerMetadata) -> Result<()
 
 /// Handle corruption detection by renaming corrupted files
 fn handle_corruption_detection(task: &DownloadTask) -> Result<()> {
-    let final_path = &task.final_path;
-    let corrupted_path = append_suffix(final_path, "bad");
-
-    if final_path.exists() {
-        fs::rename(final_path, &corrupted_path)
-            .with_context(|| format!("Failed to rename corrupted file {} to {}",
-                                   final_path.display(), corrupted_path.display()))?;
-
-        log::warn!("Corrupted file {} renamed to {}", final_path.display(), corrupted_path.display());
-    }
-
-    // Clean up all related files
+    utils::mark_file_bad(&task.final_path)?;
     cleanup_related_part_files(task)?;
-
     Ok(())
 }
 
