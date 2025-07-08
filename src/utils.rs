@@ -12,6 +12,7 @@ use flate2::read::GzDecoder;
 use liblzma;
 use zstd;
 use std::os::unix::fs::PermissionsExt; // For checking execute permissions
+use std::os::unix::fs::symlink;
 use nix::unistd;
 use crate::models;
 
@@ -619,4 +620,23 @@ pub fn user_prompt_and_confirm() -> Result<bool> {
         return Ok(false);
     }
     Ok(true)
+}
+
+pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path: Q) -> Result<()> {
+    let file_path = file_path.as_ref();
+    let symlink_path = symlink_path.as_ref();
+
+    // Remove existing symlink or file if it exists
+    if symlink_path.exists() {
+        fs::remove_file(symlink_path)
+            .with_context(|| format!("Failed to remove existing file/symlink at {}", symlink_path.display()))?;
+    }
+
+    // Create the symlink
+    log::debug!("Creating symlink: {} -> {}", symlink_path.display(), file_path.display());
+    symlink(file_path, symlink_path)
+        .with_context(|| format!("Failed to create symlink from {} to {}",
+            file_path.display(), symlink_path.display()))?;
+
+    Ok(())
 }

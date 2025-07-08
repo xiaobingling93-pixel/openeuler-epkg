@@ -336,12 +336,12 @@ fn get_username() -> Result<String> {
 
     // Try to get username from HOME path
     let home = get_home()?;
-        let path = PathBuf::from(home);
-        if let Some(username) = path.file_name().and_then(|n| n.to_str()) {
-            if !username.is_empty() {
-                return Ok(username.to_string());
-            }
+    let path = PathBuf::from(home);
+    if let Some(username) = path.file_name().and_then(|n| n.to_str()) {
+        if !username.is_empty() {
+            return Ok(username.to_string());
         }
+    }
 
     // If all else fails, return a descriptive error
     Err(eyre::eyre!("Could not determine username. Please ensure either USER or USERNAME environment variables are set. This is required to set up the public environments directory."))

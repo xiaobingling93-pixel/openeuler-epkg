@@ -236,85 +236,67 @@ impl PackageManager {
             .context(format!("Failed to set permissions (mode 755) on elf-loader binary at {}", usr_bin.join("elf-loader").display()))?;
 
         // Create symlink to epkg binary in the first valid PATH component
-        self.create_epkg_symlink(&usr_bin.join("epkg"))
+        self.create_epkg_symlink(env_root, &usr_bin.join("epkg"))
             .context("Failed to create epkg symlink in PATH")?;
 
         Ok(())
     }
 
-    /// Create a symlink to the epkg binary in the first valid PATH component
+    /// Create symlinks to the epkg binary for user convenience and system-wide access.
     ///
-    /// Validates PATH components according to the following rules:
-    /// - Skip /.epkg/ directories
-    /// - Use /home/... directories
-    /// - Use /usr/local/bin directory
-    /// - Skip others
-    fn create_epkg_symlink(&self, epkg_binary_path: &Path) -> Result<()> {
+    /// This function ensures that the 'epkg' binary is easily accessible from the command line by creating symlinks in multiple locations:
+    ///
+    /// 1. Always creates a symlink in the main environment's 'usr/ebin' directory:
+    ///    - This directory is prepended to the user's PATH by default, ensuring 'epkg' is available in new shells.
+    ///    - This provides a reliable entry point for the binary.
+    ///
+    /// 2. Best-effort symlink in $HOME/bin (if present in PATH):
+    ///    - If the user's PATH contains $HOME/bin, a symlink is created there.
+    ///    - This allows immediate access to 'epkg' in the current shell session without requiring a shell restart.
+    ///    - Only attempts to create $HOME/bin if it does not already exist.
+    ///
+    /// 3. Best-effort symlink in /usr/local/bin (if running as root):
+    ///    - If the process is running as root and /usr/local/bin exists, a symlink is created there.
+    ///    - This makes 'epkg' available system-wide for all users.
+    ///    - Does not attempt to create /usr/local/bin if it does not exist.
+    fn create_epkg_symlink(&self, env_root: &Path, epkg_binary_path: &Path) -> Result<()> {
+        let main_ebin = env_root.join("main/usr/ebin");
+
+        fs::create_dir_all(&main_ebin)
+            .context(format!("Failed to create usr/ebin directory at {}", main_ebin.display()))?;
+
+        println!("Creating symlink: {}/epkg -> {}", main_ebin.display(), epkg_binary_path.display());
+        utils::force_symlink(epkg_binary_path, &main_ebin.join("epkg"))
+            .context(format!("Failed to create symlink from {} to {}",
+                epkg_binary_path.display(), main_ebin.join("epkg").display()))?;
+
+        // Try to create symlink in $HOME/bin if it's in PATH
+        let home = crate::dirs::get_home().wrap_err("Failed to get HOME directory")?;
+        let home_bin = PathBuf::from(&home).join("bin");
         let path_var = env::var("PATH")
             .unwrap_or_else(|_| "".to_string());
 
-        for path_component in path_var.split(':') {
-            if path_component.is_empty() {
-                continue;
-            }
-
-            // Skip paths containing /.epkg/
-            if path_component.contains("/.epkg/") {
-                continue;
-            }
-
-            // Check if this is a valid path component
-            if self.is_valid_path_component(path_component) {
-                let target_dir = PathBuf::from(path_component);
-
-                // Create the target directory if it doesn't exist
-                if !target_dir.exists() {
-                    fs::create_dir_all(&target_dir)
-                        .context(format!("Failed to create target directory {}", target_dir.display()))?;
+        if path_var.contains(home_bin.to_string_lossy().as_ref()) {
+            if home_bin.exists() {
+                println!("Creating symlink: {}/epkg -> {}", home_bin.display(), epkg_binary_path.display());
+                if let Err(e) = utils::force_symlink(epkg_binary_path, &home_bin.join("epkg")) {
+                    log::warn!("Failed to create epkg symlink in {}: {}", home_bin.display(), e);
                 }
-
-                let symlink_path = target_dir.join("epkg");
-
-                // Remove existing symlink or file if it exists
-                if symlink_path.exists() {
-                    fs::remove_file(&symlink_path)
-                        .context(format!("Failed to remove existing file/symlink at {}", symlink_path.display()))?;
-                }
-
-                // Create the symlink
-                println!("Creating symlink: {} -> {}", symlink_path.display(), epkg_binary_path.display());
-                symlink(epkg_binary_path, &symlink_path)
-                    .context(format!("Failed to create symlink from {} to {}",
-                        epkg_binary_path.display(), symlink_path.display()))?;
-
-                return Ok(());
             }
         }
 
-        // If no valid path component found, log a warning but don't fail
-        log::warn!("No valid PATH component found for creating epkg symlink. PATH: {}", path_var);
+        // Try to create symlink in /usr/local/bin if running as root
+        if utils::is_running_as_root() {
+            let usr_local_bin = PathBuf::from("/usr/local/bin");
+            if usr_local_bin.exists() {
+                println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
+                if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
+                    log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
+                }
+            }
+        }
+
         Ok(())
-    }
-
-    /// Check if a PATH component is valid for creating the epkg symlink
-    fn is_valid_path_component(&self, path_component: &str) -> bool {
-        // Must be an absolute path
-        if !path_component.starts_with('/') {
-            return false;
-        }
-
-        // Use /home/... directories
-        if path_component.starts_with("/home/") {
-            return true;
-        }
-
-        // Use /usr/local/... directories
-        if path_component.starts_with("/usr/local/bin") {
-            return true;
-        }
-
-        // Skip others
-        false
     }
 
     fn update_shell_rc(&mut self) -> Result<()> {
