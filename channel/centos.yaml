@@ -19,12 +19,14 @@ distro_dirs:
 # Basic repo structure (example, might need adjustment based on actual CentOS structure)
 # This part is not directly used by fetch_new_mirrors.py for URL stripping.
 versions:
+  - "10-stream"
   - "9-stream"
   - "8-stream"
+  - "8"
   - "7"
 repos:
   baseos:
-    index_url: $mirror/$version/BaseOS/$arch/os/repodata/repomd.xml
-    # Example: http://mirror.centos.org/centos/9-stream/BaseOS/x86_64/os/repodata/repomd.xml
   appstream:
-    index_url: $mirror/$version/AppStream/$arch/os/repodata/repomd.xml
+
+# Example: https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/repodata/repomd.xml
+index_url: $mirror/$version/$repo/$arch/os/repodata/repomd.xml

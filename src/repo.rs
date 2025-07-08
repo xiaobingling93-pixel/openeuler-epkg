@@ -802,9 +802,13 @@ pub fn list_repos() -> Result<()> {
             continue;
         }
 
-        let channel_config: ChannelConfig = serde_yaml::from_str(
-            &fs::read_to_string(&path)?
-        )?;
+        let yaml_content = fs::read_to_string(&path)?;
+        let channel_config: ChannelConfig = match serde_yaml::from_str(&yaml_content) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                return Err(eyre::eyre!("Failed to parse YAML file '{}': {}", path.display(), e));
+            }
+        };
 
         for (repo_name, repo_config) in &channel_config.repos {
             // Skip disabled repos
