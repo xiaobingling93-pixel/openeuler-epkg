@@ -2784,15 +2784,26 @@ fn create_chunk_tasks(task: &DownloadTask) -> Result<()> {
         return Err(eyre!("Next boundary calculation resulted in invalid value - this indicates a bug in chunk calculation"));
     }
 
-    // Master task will handle from current offset to next chunk boundary
-    let master_chunk_size = std::cmp::min(next_boundary - resumed, file_size_val - resumed);
+    // Decide whether we actually need chunking. If the whole file fits into the range
+    // up to `next_boundary`, chunking is unnecessary – let the master task handle it.
+    if file_size_val <= next_boundary {
+        log::debug!(
+            "File size ({}) ≤ next boundary ({}); skipping chunk creation for {}",
+            file_size_val,
+            next_boundary,
+            task.url
+        );
 
-    // Validate master chunk size calculation to prevent 416 errors
-    if master_chunk_size == 0 {
-        log::error!("Master chunk size calculation resulted in 0: next_boundary={}, resumed={}, file_size_val={} for {}",
-                   next_boundary, resumed, file_size_val, task.url);
-        return Err(eyre!("Master chunk size calculation resulted in 0 - this indicates a bug in chunk calculation"));
+        // Master task covers the whole file (chunk_size equals total file size)
+        task.chunk_size.store(file_size_val, Ordering::Relaxed);
+        return Ok(());
     }
+
+    // Master task will handle from current offset (0) to `next_boundary`
+    let master_chunk_size = next_boundary;
+
+    // Sanity-check the calculation
+    debug_assert!(master_chunk_size > resumed);
 
     // Update master task's chunk information
     task.chunk_size.store(master_chunk_size, Ordering::Relaxed);
