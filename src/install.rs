@@ -852,14 +852,25 @@ impl PackageManager {
 
         let mut initial_packages_info = self.resolve_package_info(package_specs.clone(), package_format);
 
+        // Filter out packages that are already installed
         let current_installed_from_request: Vec<String> = initial_packages_info
             .keys()
             .filter(|name| original_installed_packages.contains_key(*name))
             .cloned()
             .collect();
+
         if !current_installed_from_request.is_empty() {
             println!("Packages already installed: {}", current_installed_from_request.join(" "));
-            return Ok(());
+
+            // Remove already installed packages from the initial packages info
+            for pkgkey in &current_installed_from_request {
+                initial_packages_info.remove(pkgkey);
+            }
+
+            // If all requested packages are already installed, exit early
+            if initial_packages_info.is_empty() {
+                return Ok(());
+            }
         }
 
         self.collect_essential_packages(&mut initial_packages_info)?;
