@@ -12,6 +12,7 @@ use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn};
 use crate::models::*;
+use crate::utils::safe_mkdir_p;
 
 
 #[derive(Debug, Clone)]
@@ -306,8 +307,10 @@ pub fn mount_env_dirs(env_root: &Path) -> Result<()> {
     } else {
         env_root.join("opt_real")
     };
-    std::fs::create_dir_all(&opt_real_path)
-        .wrap_err("Failed to create opt_real directory")?;
+
+    // Safely create the opt_real directory, handling any existing files
+    safe_mkdir_p(&opt_real_path)
+        .map_err(|e| eyre::eyre!("Failed to create opt_real directory '{}': {}", opt_real_path.display(), e))?;
 
     let opt_epkg_path = Path::new("/opt/epkg");
     if opt_epkg_path.exists() {

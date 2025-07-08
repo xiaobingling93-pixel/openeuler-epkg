@@ -640,3 +640,73 @@ pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path:
 
     Ok(())
 }
+
+/// Safely create a directory, handling cases where a file with the same name already exists
+///
+/// This function will:
+/// 1. Check if the path already exists
+/// 2. If it's a file, remove it first
+/// 3. If it's a directory, return success
+/// 4. If it's something else (symlink, etc.), remove it first
+/// 5. Create the directory with all parent directories
+pub fn safe_mkdir_p(path: &Path) -> Result<()> {
+    // Check if path already exists and handle it appropriately
+    if path.exists() {
+        let metadata = fs::metadata(path)
+            .map_err(|e| eyre::eyre!("Failed to get metadata for existing path '{}': {}", path.display(), e))?;
+
+        if metadata.is_file() {
+            log::debug!("Path exists as a file, removing it: {}", path.display());
+            remove_any_existing_file(path)?;
+        } else if metadata.is_dir() {
+            log::debug!("Path exists as a directory: {}", path.display());
+            // Directory already exists, we can proceed
+            return Ok(());
+        } else {
+            log::debug!("Path exists as something else (symlink, etc.), removing it: {}", path.display());
+            remove_any_existing_file(path)?;
+        }
+    }
+
+    // Create the directory with all parent directories
+    fs::create_dir_all(path)
+        .map_err(|e| {
+            let context = match e.kind() {
+                io::ErrorKind::PermissionDenied => {
+                    format!("Permission denied - check if you have write access to {}",
+                           path.parent().unwrap_or_else(|| Path::new("")).display())
+                }
+                io::ErrorKind::NotFound => {
+                    format!("Parent directory not found - check if {} exists",
+                           path.parent().unwrap_or_else(|| Path::new("")).display())
+                }
+                io::ErrorKind::AlreadyExists => {
+                    "Directory already exists".to_string()
+                }
+                _ => format!("Unknown error: {}", e)
+            };
+            eyre::eyre!("Failed to create directory '{}': {}\nContext: {}", path.display(), e, context)
+        })?;
+
+    Ok(())
+}
+
+/// Remove any existing file, symlink, or other non-directory at the given path
+///
+/// This function will attempt to remove the file regardless of its type
+/// (regular file, symlink, etc.) but will not remove directories.
+pub fn remove_any_existing_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        let metadata = fs::metadata(path)
+            .map_err(|e| eyre::eyre!("Failed to get metadata for path '{}': {}", path.display(), e))?;
+
+        if metadata.is_dir() {
+            return Err(eyre::eyre!("Cannot remove directory '{}' with remove_any_existing_file()", path.display()));
+        }
+
+        fs::remove_file(path)
+            .map_err(|e| eyre::eyre!("Failed to remove existing file at path '{}': {}", path.display(), e))?;
+    }
+
+    Ok(())
+}
