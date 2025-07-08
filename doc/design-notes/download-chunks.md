@@ -1,30 +1,32 @@
 # 🚀 Chunked Download System Design Document
 
-> *"Download fast, download smart, download everywhere"* - A comprehensive guide to our parallel download architecture
+> *"Download fast, download smart, download everywhere"* - A comprehensive guide to our LFTP-like parallel download architecture
 
 ## 📋 Table of Contents
 
 1. [Executive Summary](#executive-summary)
-2. [System Architecture Overview](#system-architecture-overview)
-3. [Core Components Deep Dive](#core-components-deep-dive)
-4. [Data Flow & State Management](#data-flow--state-management)
-5. [Chunking Strategy & Algorithms](#chunking-strategy--algorithms)
-6. [Process Coordination & Recovery](#process-coordination--recovery)
-7. [Performance Analysis & Gains](#performance-analysis--gains)
-8. [Edge Cases & Error Handling](#edge-cases--error-handling)
-9. [Future Enhancements](#future-enhancements)
+2. [3-Level Task Hierarchy Architecture](#3-level-task-hierarchy-architecture)
+3. [System Architecture Overview](#system-architecture-overview)
+4. [Core Components Deep Dive](#core-components-deep-dive)
+5. [Data Flow & State Management](#data-flow--state-management)
+6. [Chunking Strategy & Algorithms](#chunking-strategy--algorithms)
+7. [Process Coordination & Recovery](#process-coordination--recovery)
+8. [Performance Analysis & Gains](#performance-analysis--gains)
+9. [Edge Cases & Error Handling](#edge-cases--error-handling)
+10. [Future Enhancements](#future-enhancements)
 
 ---
 
 ## 🎯 Executive Summary
 
-The **Chunked Download System** transforms our single-threaded download mechanism into a sophisticated, multi-threaded powerhouse that can **download large files up to 3-5x faster** through intelligent parallel processing. This system introduces revolutionary features like dynamic chunking, crash recovery, and real-time streaming while maintaining backward compatibility.
+The **Chunked Download System** transforms our single-threaded download mechanism into a sophisticated, multi-threaded powerhouse that can **download large files up to 3-5x faster** through intelligent parallel processing. This system introduces revolutionary features like 3-level task hierarchy, dynamic chunking, crash recovery, and real-time streaming while maintaining backward compatibility.
 
 ### 🌟 Key Innovations
 
 | Feature | Before | After | Impact |
 |---------|--------|-------|---------|
 | **Parallel Downloads** | Single thread per file | Master + N chunk threads | 3-5x speed improvement |
+| **Task Hierarchy** | Flat structure | 3-level tree (Master → Chunks → Sub-chunks) | Complex coordination |
 | **Resume Capability** | Basic byte-range resume | Chunk-level resume with recovery | 99% crash resilience |
 | **Memory Efficiency** | Load entire file in memory | Stream chunks as they complete | 80% memory reduction |
 | **Process Coordination** | No coordination | PID-based locking | Zero conflicts |
@@ -32,112 +34,352 @@ The **Chunked Download System** transforms our single-threaded download mechanis
 
 ---
 
-## Chunking Architecture
+## 🏗️ 3-Level Task Hierarchy Architecture
 
-The system uses a 3-level chunking architecture:
+### 📊 Hierarchy Overview
 
-1. **Level 1 (L1)**: Master tasks - handle the main download and coordinate chunks
-2. **Level 2 (L2)**: Beforehand chunks - created before HTTP request for large files
-3. **Level 3 (L3)**: On-demand chunks - created during download for slow transfers
+The system implements a sophisticated 3-level tree structure where each level serves specific purposes:
 
-### Chunking Constants
-- `MIN_FILE_SIZE_FOR_CHUNKING`: 3MB - minimum file size to trigger chunking
-- `PGET_CHUNK_SIZE`: 1MB - size of beforehand chunks
-- `ONDEMAND_CHUNK_SIZE`: 256KB - size of on-demand chunks
+```mermaid
+graph TD
+    subgraph "DOWNLOAD_MANAGER.tasks (Level 0 - Root)"
+        DM["Download Manager<br/>HashMap&lt;String, Arc&lt;DownloadTask&gt;&gt;"]
+    end
 
-### Chunk File Naming
-- Master task: `filename.part`
-- Chunk tasks: `filename.part-O{offset}`
+    subgraph "Level 1: Master Tasks"
+        MT1["Master Task A<br/>chunk_offset: 0<br/>chunk_size: 5MB<br/>file.part"]
+        MT2["Master Task B<br/>chunk_offset: 0<br/>chunk_size: 8MB<br/>file2.part"]
+        MT3["Master Task C<br/>chunk_offset: 0<br/>chunk_size: 3MB<br/>file3.part"]
+    end
 
-This architecture enables:
-- Parallel downloads for large files
-- Resume capability from partial downloads
-- Real-time streaming of completed chunks
-- Automatic retry and recovery mechanisms
+    subgraph "Level 2: Chunk Tasks"
+        L2A1["Chunk A1<br/>offset: 1MB, size: 1MB<br/>beforehand/recovery/ondemand"]
+        L2A2["Chunk A2<br/>offset: 2MB, size: 1MB<br/>beforehand/recovery/ondemand"]
+        L2A3["Chunk A3<br/>offset: 3MB, size: 1MB<br/>beforehand/recovery/ondemand"]
+        L2A4["Chunk A4<br/>offset: 4MB, size: 1MB<br/>ondemand only"]
+    end
+
+    subgraph "Level 3: Sub-chunk Tasks (ONDEMAND ONLY)"
+        L3A31["Sub A3.1<br/>offset: 3.0MB<br/>size: 256KB"]
+        L3A32["Sub A3.2<br/>offset: 3.25MB<br/>size: 256KB"]
+        L3A33["Sub A3.3<br/>offset: 3.5MB<br/>size: 256KB"]
+        L3A34["Sub A3.4<br/>offset: 3.75MB<br/>size: 256KB"]
+    end
+
+    DM --> MT1
+    DM --> MT2
+    DM --> MT3
+
+    MT1 --> L2A1
+    MT1 --> L2A2
+    MT1 --> L2A3
+    MT1 --> L2A4
+
+    L2A3 --> L3A31
+    L2A3 --> L3A32
+    L2A3 --> L3A33
+    L2A3 --> L3A34
+
+    style MT1 fill:#e1f5fe
+    style L2A3 fill:#fff3e0
+    style L3A31 fill:#e8f5e8
+    style DM fill:#f3e5f5
+```
+
+### 🔗 Critical Hierarchy Invariants
+
+The system maintains strict mathematical relationships between hierarchy levels:
+
+#### 1. **Up-Down Level Continuity**
+```
+parent_task.chunk_offset + parent_task.chunk_size == parent_task.chunk_tasks[0].chunk_offset
+```
+
+**Examples:**
+- Master Task A (0 → 1MB) connects to Chunk A1 (1MB → 2MB)
+- Chunk A3 (3MB → 4MB) connects to Sub-chunk A3.1 (3MB → 3.25MB)
+
+#### 2. **Same Level Sibling Continuity**
+```
+chunk_tasks[i].chunk_offset + chunk_tasks[i].chunk_size == chunk_tasks[i+1].chunk_offset
+```
+
+**Examples:**
+- Chunk A1 (1MB → 2MB) → Chunk A2 (2MB → 3MB) → Chunk A3 (3MB → 4MB)
+- Sub-chunk A3.1 (3MB → 3.25MB) → Sub-chunk A3.2 (3.25MB → 3.5MB)
+
+#### 3. **Next Sibling Boundary**
+```
+parent_task's next sibling chunk_offset == parent_task.chunk_tasks.last().chunk_offset + chunk_size
+```
+
+**Examples:**
+- Master Task A ends where Chunk A4 ends (5MB), Master Task B starts at different file
+- Chunk A3 ends where Sub-chunk A3.4 ends (4MB), Chunk A4 starts at 4MB
+
+#### 4. **Level-Specific Chunk Types**
+- **2-Level**: Can be beforehand, recovery, or ondemand chunks
+- **3-Level**: ONLY ondemand chunks (created during slow downloads)
+
+### 🎯 Precise Task Hierarchy Definition
+
+#### **Task Structure Notation**
+```
+DOWNLOAD_MANAGER.tasks: A, B, C, ...; one master per file
+L1 task (master): A
+L2 task (beforehand/recovery/ondemand): A1, A2
+L3 task (ondemand): A1.1, A1.2, A1.3, A2.1
+
+UPPERCASE = task
+lowercase = data range
+A = <Tuple(chunk_offset,chunk_size)=a, chunk_tasks=Vec<A1, A2, A3>>
+A1 = <Tuple(chunk_offset,chunk_size)=a1, chunk_tasks=Vec<A1.1, A1.2, A1.3>>
+A1.1 = <Tuple(chunk_offset,chunk_size)=a1.1, chunk_tasks=Vec<>>
+```
+
+#### **Sequential Linear File Coverage**
+The entire file is covered by sequential, non-overlapping blocks:
+
+```
+File blocks: [a               ][a1  ][a1.1][a1.2][a1.3][a2  ][a2.1][a2.2][a2.3][a3               ][a4               ]
+             |--------------------------------->whole file byte space---------------------------------------------->|
+```
+
+**Example: 8MB file with 3-level chunking**
+```
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                        8MB File (8,388,608 bytes)                                                 │
+├─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────────┤
+│     a       │     a1      │   a1.1      │   a1.2      │   a1.3      │     a2      │   a2.1      │       a3        │
+│  0→1MB      │  1MB→2MB    │ 2MB→2.25MB  │2.25→2.5MB   │ 2.5→2.75MB  │  3MB→4MB    │ 4MB→4.25MB  │    5MB→8MB      │
+│  Master     │  Chunk      │ Sub-chunk   │ Sub-chunk   │ Sub-chunk   │  Chunk      │ Sub-chunk   │     Chunk       │
+│  Task A     │  Task A1    │ Task A1.1   │ Task A1.2   │ Task A1.3   │  Task A2    │ Task A2.1   │   Task A3       │
+└─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────────┘
+```
+
+**Key Properties:**
+- **Continuity**: Each block starts exactly where the previous ends
+- **Completeness**: All blocks together cover the entire file
+- **Non-overlap**: No byte is downloaded by multiple tasks
+- **Hierarchy**: Parent tasks contain child tasks as subsets
+
+### 📁 File Layout and Byte Ranges
+
+```
+File: example.deb (5MB total)
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+ Byte 0           1MB                                                     2MB              3MB              4MB              5MB
+  │                │                                                       │                │                │                │
+  ▼                ▼                                                       ▼                ▼                ▼                ▼
+  ┌────────────────┬───────────────────────────────────────────────────────┬────────────────┬────────────────┬────────────────┐
+  │  MASTER TASK   │  CHUNK TASK 1                                         │  CHUNK TASK 2  │  CHUNK TASK 3  │  CHUNK TASK 4  │
+  │   Range:       │   Range:                                              │   Range:       │   Range:       │   Range:       │
+  │   0 → 1MB      │   1MB → 2MB                                           │   2MB → 3MB    │   3MB → 4MB    │   4MB → 5MB    │
+  │                │                                                       │                │                │                │
+  │  File:         │  File:                                                │  File:         │  File:         │  File:         │
+  │  example.part  │  example.part-                                        │  example.part- │  example.part- │  example.part- │
+  │                │  O1048576                                             │  O2097152      │  O3145728      │  O4194304      │
+  └────────────────┴───────────────────────────────────────────────────────┴────────────────┴────────────────┴────────────────┘
+                   │
+                   ▼ (Shrink+Split on 3-level ondemand chunking)
+                   ┌─────────────┬─────────────┬─────────────┬─────────────┐
+                   │ Shrinked A1 │ Sub A1.1    │ Sub A1.2    │ Sub A1.3    │
+                   │ 1.0→1.25MB  │ 1.25→1.5MB  │ 1.5→1.75MB  │ 1.75→4.0MB  │
+                   │ 256KB       │ 256KB       │ 256KB       │ 256KB       │
+                   └─────────────┴─────────────┴─────────────┴─────────────┘
+```
 
 ---
 
 ## 🏗️ System Architecture Overview
 
+### 🎭 Complete System Flow
+
 ```mermaid
-graph TB
+graph TD
     subgraph "Download Manager Layer"
-        DM[DownloadManager]
-        TH[Task Handles Pool]
-        CH[Chunk Handles Pool]
+        DM["Download Manager<br/>Main Pool: nr_parallel threads<br/>Chunk Pool: 2x nr_parallel threads"]
     end
 
-    subgraph "Task Coordination Layer"
-        MT[Master Task]
-        CT1[Chunk Task 1]
-        CT2[Chunk Task 2]
-        CT3[Chunk Task N]
-        PID[PID File Lock]
+    subgraph "Master Task Lifecycle"
+        MT["Master Task<br/>offset: 0, size: file_size<br/>path: file.part"]
+
+        MT --> BC["Beforehand Chunking<br/>Files > 3MB<br/>1MB chunks"]
+        MT --> OC["Ondemand Chunking<br/>Slow downloads<br/>256KB chunks"]
+        MT --> RC["Recovery Chunking<br/>From existing part files"]
+
+        BC --> CH1["Chunk Task 1<br/>1MB at offset 1MB"]
+        BC --> CH2["Chunk Task 2<br/>1MB at offset 2MB"]
+        BC --> CHN["Chunk Task N<br/>1MB at offset NMB"]
+
+        OC --> OCH1["Ondemand Chunk 1<br/>256KB chunks"]
+        OC --> OCH2["Ondemand Chunk 2<br/>256KB chunks"]
+
+        RC --> RCH1["Recovered Chunk 1"]
+        RC --> RCH2["Recovered Chunk 2"]
     end
 
-    subgraph "Network Layer"
-        HTTP[HTTP Client]
-        RR[Range Requests]
-        CON[Connection Pool]
+    subgraph "3-Level Ondemand Sub-chunking"
+        CHN --> SUBCH1["Sub-chunk N.1<br/>256KB at offset X"]
+        CHN --> SUBCH2["Sub-chunk N.2<br/>256KB at offset Y"]
+        CHN --> SUBCH3["Sub-chunk N.3<br/>256KB at offset Z"]
     end
 
-    subgraph "Storage Layer"
-        MF[Master File .part]
-        CF1[Chunk File .part-O1M]
-        CF2[Chunk File .part-O2M]
-        CF3[Chunk File .part-O3M]
-        FF[Final File]
+    subgraph "Download Process"
+        CH1 --> D1["Download to<br/>.part-O1048576"]
+        CH2 --> D2["Download to<br/>.part-O2097152"]
+        CHN --> DN["Download to<br/>.part-ONxxxxxx"]
+
+        SUBCH1 --> SD1["Download to<br/>.part-OSUBxxxxx"]
+        SUBCH2 --> SD2["Download to<br/>.part-OSUByyyyy"]
+        SUBCH3 --> SD3["Download to<br/>.part-OSUBzzzzz"]
+
+        D1 --> M["Merge Process<br/>Sequential by offset"]
+        D2 --> M
+        DN --> M
+        SD1 --> M
+        SD2 --> M
+        SD3 --> M
+
+        M --> MF["Master .part file<br/>Streaming to channel"]
+        MF --> FF["Final file<br/>Atomic rename"]
     end
 
-    DM --> MT
-    DM --> TH
-    DM --> CH
-    MT --> CT1
-    MT --> CT2
-    MT --> CT3
-    MT --> PID
+    subgraph "Byte Tracking"
+        BT["chunk_offset: Fixed at allocation<br/>resumed_bytes: From existing files<br/>received_bytes: From network<br/>append_offset: offset + resumed"]
+    end
 
-    CT1 --> HTTP
-    CT2 --> HTTP
-    CT3 --> HTTP
-    HTTP --> RR
-    RR --> CON
+    subgraph "Progress Monitoring"
+        MT --> PB["Progress Bar<br/>Aggregate across chunks"]
+        CH1 --> PB
+        CH2 --> PB
+        CHN --> PB
+        SUBCH1 --> PB
+        SUBCH2 --> PB
+        SUBCH3 --> PB
 
-    MT --> MF
-    CT1 --> CF1
-    CT2 --> CF2
-    CT3 --> CF3
+        PB --> ETA["ETA Calculation<br/>Throughput based<br/>Bottleneck analysis"]
+    end
 
-    CF1 --> FF
-    CF2 --> FF
-    CF3 --> FF
-    MF --> FF
+    subgraph "Failure Handling"
+        D1 --> R1["Retry Logic<br/>Independent retry"]
+        D2 --> R2["Retry Logic<br/>Independent retry"]
+        DN --> RN["Retry Logic<br/>Independent retry"]
+        SD1 --> RS1["Sub-chunk Retry"]
+        SD2 --> RS2["Sub-chunk Retry"]
+        SD3 --> RS3["Sub-chunk Retry"]
+
+        R1 --> F["Fail Download<br/>After max retries"]
+        R2 --> F
+        RN --> F
+        RS1 --> F
+        RS2 --> F
+        RS3 --> F
+    end
+
+    subgraph "Data Streaming"
+        MF --> DC["Data Channel<br/>Sequential streaming"]
+        DC --> APP["Application<br/>Real-time consumption"]
+    end
 
     style MT fill:#e1f5fe
     style DM fill:#f3e5f5
-    style HTTP fill:#e8f5e8
-    style FF fill:#fff3e0
+    style BT fill:#fff3e0
+    style DC fill:#e8f5e8
+    style F fill:#ffebee
+    style CHN fill:#fff3e0
+    style SUBCH1 fill:#e8f5e8
 ```
 
-### 🎭 Actor Responsibilities
+### 🎮 Thread Pool Architecture
 
-#### 🎮 Download Manager
-- **Thread Pool Management**: Maintains separate pools for task threads and chunk threads
-- **Load Balancing**: Distributes work across available threads (up to `nr_parallel * 2` chunk threads)
-- **Lifecycle Management**: Spawns, monitors, and cleans up finished threads
-- **Priority Scheduling**: Prioritizes large files first for optimal resource utilization
+The system uses a dual-pool architecture to optimize resource utilization:
 
-#### 👑 Master Task
-- **Chunk Orchestration**: Creates and manages chunk tasks for large files (>=3MB)
-- **Progress Aggregation**: Combines progress from all chunks for unified reporting
-- **Data Streaming**: Coordinates real-time streaming of completed chunks
-- **Failure Recovery**: Handles chunk failures and coordinates retries
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                     │
+│   ┌─────────────────────────────────────────┐              ┌─────────────────────────────────────────────────────┐  │
+│   │           MAIN TASK POOL                │              │                CHUNK TASK POOL                      │  │
+│   │          (nr_parallel threads)          │              │             (2 * nr_parallel threads)               │  │
+│   │                                         │              │                                                     │  │
+│   │  ┌─────────────┐  ┌─────────────┐       │              │  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐         │  │
+│   │  │  Master 1   │  │  Master 2   │ ...   │              │  │Chunk 1│  │Chunk 2│  │Chunk 3│  │Chunk 4│   ...   │  │
+│   │  │   Task      │  │   Task      │       │              │  │ Task  │  │ Task  │  │ Task  │  │ Task  │         │  │
+│   │  └─────────────┘  └─────────────┘       │              │  └───────┘  └───────┘  └───────┘  └───────┘         │  │
+│   └─────────────────────────────────────────┘              └─────────────────────────────────────────────────────┘  │
+│                                                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-#### ⚡ Chunk Task
-- **Range Download**: Downloads specific byte ranges using HTTP Range requests
-- **Local Resume**: Resumes from partial chunk files if interrupted
-- **Status Reporting**: Reports progress and completion to master task
-- **Self-Healing**: Retries failed downloads with exponential backoff
+**Design Rationale:**
+- **Main Pool**: Respects user-configured parallelism for master tasks
+- **Chunk Pool**: Allows higher parallelism (2x) for chunk downloads
+- **Independent Pools**: Prevents chunk tasks from starving main task scheduling
+- **Dynamic Scaling**: Automatic cleanup of finished threads
+
+---
+
+## 📊 Chunking Architecture
+
+### 🎯 Chunking Constants & Thresholds
+
+```rust
+const MIN_FILE_SIZE_FOR_CHUNKING: u64 = 3 * 1024 * 1024;    // 3MB
+const MIN_CHUNK_SIZE: u64 = 1 << 20;                        // 1MB chunks
+const ONDEMAND_CHUNK_SIZE: u64 = 256 * 1024;                // 256KB chunks
+```
+
+### 🚀 Three Chunking Strategies
+
+#### 1. **Beforehand Chunking** (before HTTP request)
+- **Trigger**: File size known and >3MB
+- **Chunk Size**: 1MB
+- **Timing**: Created before HTTP request
+- **Use Case**: Large files with known sizes
+- **ChunkStatus**: `HasBeforehandChunk`
+
+#### 2. **Ondemand Chunking** (during download)
+- **Trigger**: Download is slow (>5s remaining)
+- **Chunk Size**: 256KB
+- **Timing**: Created during download
+- **Use Case**: Slow downloads that need acceleration
+- **ChunkStatus**: `HasOndemandChunk`
+
+#### 3. **Recovery Chunking** (from partial files)
+- **Trigger**: Existing `.part-O{offset}` files detected
+- **Chunk Size**: Based on existing file sizes
+- **Timing**: Created at startup
+- **Use Case**: Resuming interrupted downloads
+- **ChunkStatus**: `HasBeforehandChunk` (recovered)
+
+### 🔄 Chunk Creation Flow
+
+```mermaid
+flowchart TD
+    Start([Download Starts]) --> SizeCheck{File Size Known?}
+
+    SizeCheck -->|Yes, >3MB| BeforehandChunk[Create 1MB Beforehand Chunks]
+    SizeCheck -->|No/Small| SingleDownload[Single Thread Download]
+
+    BeforehandChunk --> StartDownload[Start Download]
+    SingleDownload --> Monitor{Monitor Speed}
+
+    StartDownload --> Monitor
+    Monitor -->|>5s remaining| OndemandChunk[Create 256KB Ondemand Chunks]
+    Monitor -->|Fast enough| Continue[Continue Download]
+
+    OndemandChunk --> Level3{Create Sub-chunks?}
+    Level3 -->|Yes, if chunk also slow| SubChunk[Create 256KB Sub-chunks]
+    Level3 -->|No| Continue
+
+    SubChunk --> Continue
+    Continue --> Complete([Download Complete])
+
+    style BeforehandChunk fill:#e1f5fe
+    style OndemandChunk fill:#fff3e0
+    style SubChunk fill:#e8f5e8
+```
 
 ---
 
@@ -147,50 +389,87 @@ graph TB
 
 ```rust
 pub struct DownloadTask {
-    // Core fields (unchanged)
+    // === CORE IDENTIFICATION ===
     pub url: String,
+    pub resolved_url: Mutex<String>,
     pub output_dir: PathBuf,
-    pub max_retries: usize,
     pub final_path: PathBuf,
+    pub max_retries: usize,
 
-    // Enhanced sizing (u32 → u64 for large files)
-    pub size: Option<u64>,
+    // === 3-LEVEL HIERARCHY MANAGEMENT ===
+    pub chunk_tasks: Arc<Mutex<Vec<Arc<DownloadTask>>>>,  // Child chunks (Level 2 or 3)
+    pub chunk_path: PathBuf,                              // .part or .part-O{offset}
+    pub chunk_offset: AtomicU64,                          // Fixed at allocation (0 for master)
+    pub chunk_size: AtomicU64,                            // Fixed at allocation (may be reduced by ondemand)
 
-    // 🆕 Chunking Infrastructure
-    pub chunk_tasks: Arc<Mutex<Vec<Arc<DownloadTask>>>>,  // Child chunks
-    pub chunk_path: PathBuf,        // .part or .part-O{offset}
-    pub chunk_offset: u64,          // Byte offset for this chunk
-    pub chunk_size: u64,            // Size of this chunk
+    // === BYTE TRACKING SEMANTICS ===
+    pub file_size: AtomicU64,                             // Expected total file size
+    pub resumed_bytes: AtomicU64,                         // Bytes from existing partial files
+    pub received_bytes: AtomicU64,                        // Bytes from network this session
 
-    // 🆕 Progress Tracking
-    pub received_bytes: Arc<AtomicU64>,  // Network bytes received
-    pub resumed_bytes: Arc<AtomicU64>,    // Bytes from local resumed files
-    pub start_time: Arc<Mutex<Option<Instant>>>,
+    // === PROGRESS & PERFORMANCE ===
+    pub start_time: Mutex<Option<Instant>>,
+    pub duration_ms: AtomicU64,
+    pub throughput_bps: AtomicU64,
+    pub eta: AtomicU64,
 
-    // 🆕 Retry Coordination
-    pub attempt_number: Arc<AtomicUsize>,  // Current attempt (0-based)
+    // === STATE MANAGEMENT ===
+    pub status: Arc<Mutex<DownloadStatus>>,
+    pub chunk_status: Arc<Mutex<ChunkStatus>>,
+    pub attempt_number: AtomicUsize,
+    pub range_request: Mutex<RangeRequest>,
+
+    // === STREAMING & COORDINATION ===
+    pub data_channel: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
+    pub has_sent_existing: AtomicBool,
+    pub progress_bar: Mutex<Option<ProgressBar>>,
+
+    // === METADATA & INTEGRITY ===
+    pub file_type: FileType,
+    pub master_metadata: Mutex<Option<ServerMetadata>>,
+    pub mirror_inuse: Arc<Mutex<Option<Mirror>>>,
+    pub client: Arc<Mutex<Option<Agent>>>,
 }
 ```
 
-### 🎯 Key Design Decisions
+### 🎯 Key Byte Offset Semantics
 
-#### 1. **Master-Chunk Architecture**
-**Why this design?**
-- **Simplicity**: Master task handles coordination, chunks focus on downloading
-- **Scalability**: Easy to add/remove chunks dynamically
-- **Fault Tolerance**: Chunk failures don't crash the entire download
+The system maintains strict mathematical relationships for byte tracking:
 
-#### 2. **Separate Byte Counters**
-**Why split `received_bytes` and `resumed_bytes`?**
-- **Accurate Rate Calculation**: Only network bytes count for speed estimation
-- **Progress Transparency**: Users see total progress but accurate ETAs
-- **Resume Intelligence**: System knows what was actually downloaded vs reused
+```rust
+// CRITICAL INVARIANTS:
+// 1. chunk_offset:        Fixed at allocation, never changes, 0 for master task
+// 2. chunk_size:          Fixed at allocation, may be reduced by ondemand chunking
+// 3. append_offset:       chunk_offset + resumed_bytes, advances during download
+// 4. final_append_offset: chunk_offset + resumed_bytes + received_bytes (end position)
+// 5. Progress equation:   resumed_bytes + received_bytes == chunk_size (on completion)
 
-#### 3. **Atomic Progress Updates**
-**Why use `AtomicU64` instead of `Mutex<u64>`?**
-- **Performance**: 10-100x faster for frequent updates
-- **Lock-Free**: No contention between chunk threads
-- **Memory Ordering**: `Relaxed` ordering sufficient for progress counters
+let append_offset = task.chunk_offset + task.resumed_bytes;
+let total_progress = task.resumed_bytes + task.received_bytes;
+```
+
+### 🔄 HTTP Range Request Generation
+
+```rust
+// Master task resuming:  "Range: bytes=400000-"         (from append_offset to end)
+// Chunk task complete:   "Range: bytes=1048576-2097151" (exact chunk boundaries)
+// Chunk task resuming:   "Range: bytes=1500000-2097151" (from append_offset to chunk end)
+
+fn generate_range_header(task: &DownloadTask) -> String {
+    let offset = task.chunk_offset;
+    let size = task.chunk_size;
+    let resumed = task.resumed_bytes;
+
+    let start = offset + resumed;
+
+    if size > 0 && !task.is_master_task() {
+        let end = offset + size - 1;  // HTTP ranges are inclusive
+        format!("bytes={}-{}", start, end)
+    } else {
+        format!("bytes={}-", start)  // Resume to end
+    }
+}
+```
 
 ---
 

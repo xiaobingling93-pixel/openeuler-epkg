@@ -141,6 +141,290 @@ impl DownloadTask {
     }
 }
 
+// ============================================================================
+// DOWNLOAD TASK CHUNKING ARCHITECTURE DOCUMENTATION
+// ============================================================================
+/*
+ * ╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+ * ║                                                                                                                                          ║
+ * ║                                                CHUNKED DOWNLOAD SYSTEM ARCHITECTURE                                                      ║
+ * ║                                                                                                                                          ║
+ * ║  This system implements LFTP-like parallel chunked downloading with master-child task coordination,                                      ║
+ * ║  intelligent resumption, and real-time streaming capabilities.                                                                           ║
+ * ║                                                                                                                                          ║
+ * ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                  3-LEVEL TASK HIERARCHY AND RELATIONSHIPS                                                │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  ROOT SOURCE: DOWNLOAD_MANAGER.tasks (HashMap<String, Arc<DownloadTask>>)
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ *  ┌───────────────────────────────────────────────────────────────────────────────┐
+ *  │                         LEVEL 1: MASTER TASKS                                 │
+ *  │                    (Stored in DOWNLOAD_MANAGER.tasks)                         │
+ *  │                                                                               │
+ *  │  ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐│
+ *  │  │   Master Task A     │    │   Master Task B     │    │   Master Task C     ││
+ *  │  │  • chunk_offset: 0  │    │  • chunk_offset: 0  │    │  • chunk_offset: 0  ││
+ *  │  │  • chunk_size: 1MB  │    │  • chunk_size: 1MB  │    │  • chunk_size: 1MB  ││
+ *  │  │  • file_size: 5MB   │    │  • file_size: 8MB   │    │  • file_size:  3MB  ││
+ *  │  │  • file.part        │    │  • file2.part       │    │  • file3.part       ││
+ *  │  └─────────────────────┘    └─────────────────────┘    └─────────────────────┘│
+ *  └───────────────────────────────────────────────────────────────────────────────┘
+ *                        │                            ▼                           ▼
+ *                        │ A.chunk_tasks<A1, A2, A3, A4>
+ *                        ▼
+ *                     ┌───────────────────────────────────────────────────────────────────────────────┐
+ *                     │                         LEVEL 2: CHUNK TASKS                                  │
+ *                     │                   (Stored in parent_task.chunk_tasks)                         │
+ *                     │                                                                               │
+ *                     │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌───────────┐ │
+ *                     │  │  Chunk A1       │  │  Chunk A2       │  │  Chunk A3       │  │  Chunk A4 │ │
+ *                     │  │ offset: 1MB     │  │ offset: 2MB     │  │ offset: 3MB     │  │offset:4MB │ │
+ *                     │  │ size: 1MB       │  │ size: 1MB       │  │ size: 1MB       │  │size: 1MB  │ │
+ *                     │  │ .part-O1048576  │  │ .part-O2097152  │  │ .part-O3145728  │  │.part-O... │ │
+ *                     │  │ (beforehand/    │  │ (beforehand/    │  │ (beforehand/    │  │(ondemand) │ │
+ *                     │  │  recovery/      │  │  recovery/      │  │  recovery/      │  │           │ │
+ *                     │  │  ondemand)      │  │  ondemand)      │  │  ondemand)      │  │           │ │
+ *                     │  └─────────────────┘  └─────────────────┘  └─────────────────┘  └───────────┘ │
+ *                     └───────────────────────────────────────────────────────────────────────────────┘
+ *                                             │ Shrink + Split on OnDemand Chunking
+ *                                             ▼
+ *                                             ┌─────────────────┐┌─────────────────────────────────────────────────────────┐
+ *                                             │ Shrinked A2     ││              LEVEL 3: SUB-CHUNK TASKS                   │
+ *                                             │ offset: 2.0MB   ││         (Stored in level2_chunk.chunk_tasks)            │
+ *                                             │ size: 256KB     ││               *** ONDEMAND CHUNKS ONLY ***              │
+ *                                             │ .part-O2097152  ││                                                         │
+ *                                             │ (ondemand only) ││ ┌─────────────────┐  ┌─────────────────┐  ┌───────────┐ │
+ *                                             └─────────────────┘│ │ Sub-chunk A2.1  │  │ Sub-chunk A2.2  │  │Sub-chunk  │ │
+ *                                                                │ │ offset: 2.25MB  │  │ offset: 2.5MB   │  │A2.3       │ │
+ *                                                                │ │ size: 256KB     │  │ size: 256KB     │  │offset:... │ │
+ *                                                                │ │ .part-O2359296  │  │ .part-O2621440  │  │size:256KB │ │
+ *                                                                │ │ (ondemand only) │  │ (ondemand only) │  │.part-O... │ │
+ *                                                                │ └─────────────────┘  └─────────────────┘  └───────────┘ │
+ *                                                                └─────────────────────────────────────────────────────────┘
+ *
+ *
+ *  CRITICAL HIERARCHY INVARIANTS:
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ *  1. UP-DOWN LEVEL CONTINUITY:
+ *     parent_task.chunk_offset + parent_task.chunk_size == parent_task.chunk_tasks[0].chunk_offset
+ *
+ *     Example: Master Task A (0 → 1MB) connects to Chunk A1 (1MB → 2MB) (w/o ondemand chunking)
+ *              Chunk A3 (3MB → 3.25MB) connects to Sub-chunk A3.1 (3.25MB → 3.5MB) (w/ ondemand chunking)
+ *
+ *  2. SAME LEVEL SIBLING CONTINUITY:
+ *     chunk_tasks[i].chunk_offset + chunk_tasks[i].chunk_size == chunk_tasks[i+1].chunk_offset
+ *
+ *     Example: Chunk A1 (1MB → 2MB) → Chunk A2 (2MB → 3MB) → Chunk A3 (3MB → 3.25MB)
+ *              Sub-chunk A3.1 (3.25MB → 3.5MB) → Sub-chunk A3.2 (3.5MB → 3.75MB)
+ *
+ *  3. NEXT SIBLING BOUNDARY:
+ *     parent_task's next sibling chunk_offset == parent_task.chunk_tasks.last().chunk_offset + chunk_size
+ *
+ *     Example: Chunk A4 starts where Sub-chunk A3.3 ends (4MB)
+ *
+ *  4. LEVEL-SPECIFIC CHUNK TYPES:
+ *     • 2-Level: Can be beforehand, recovery, or ondemand chunks
+ *     • 3-Level: ONLY ondemand chunks (created during slow downloads)
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                          FILE LAYOUT AND BYTE RANGES                                                     │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  File: example.deb (5MB total)
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ *   Byte 0           1MB              2MB              3MB              4MB              5MB
+ *    │                │                │                │                │                │
+ *    ▼                ▼                ▼                ▼                ▼                ▼
+ *    ┌────────────────┬────────────────┬────────────────┬────────────────┬────────────────┐
+ *    │  MASTER TASK   │  CHUNK TASK 1  │  CHUNK TASK 2  │  CHUNK TASK 3  │  CHUNK TASK 4  │
+ *    │   Range:       │   Range:       │   Range:       │   Range:       │   Range:       │
+ *    │   0 → 1MB      │   1MB → 2MB    │   2MB → 3MB    │   3MB → 4MB    │   4MB → 5MB    │
+ *    │                │                │                │                │                │
+ *    │  File:         │  File:         │  File:         │  File:         │  File:         │
+ *    │  example.part  │  example.part- │  example.part- │  example.part- │  example.part- │
+ *    │                │  O1048576      │  O2097152      │  O3145728      │  O4194304      │
+ *    └────────────────┴────────────────┴────────────────┴────────────────┴────────────────┘
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                         CHUNK CREATION STRATEGIES                                                        │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  1. BEFOREHAND CHUNKING (before HTTP request):
+ *     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *     • Triggered when task.size is known (>3MB)
+ *     • Creates 1MB chunks immediately
+ *     • Master handles first chunk (0 → 1MB)
+ *     • Additional chunks created for remaining data
+ *     • ChunkStatus: HasBeforehandChunk
+ *
+ *  2. ONDEMAND CHUNKING (during download):
+ *     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *     • Triggered when download is slow (>5s remaining)
+ *     • Creates 256KB chunks for remaining data
+ *     • Master task range is reduced to next boundary
+ *     • ChunkStatus: HasOndemandChunk
+ *
+ *  3. RECOVERY CHUNKING (from partial files):
+ *     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *     • Detects existing .part-O{offset} files
+ *     • Recreates chunk tasks based on file offsets
+ *     • Validates chunk boundaries and integrity
+ *     • ChunkStatus: HasBeforehandChunk (recovered)
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                           BYTE OFFSET SEMANTICS                                                          │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  CRITICAL INVARIANTS:
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ *  1. chunk_offset:        Fixed at allocation, never changes, 0 for master task
+ *  2. chunk_size:          Fixed at allocation, may be reduced by ondemand chunking
+ *  3. append_offset:       chunk_offset + resumed_bytes, advances during download
+ *  4. final_append_offset: chunk_offset + resumed_bytes + received_bytes (end position)
+ *  5. Progress equation:   resumed_bytes + received_bytes == chunk_size (on completion)
+ *
+ *  BYTE TRACKING:
+ *  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  • resumed_bytes:  Bytes reused from existing partial files (not downloaded from network)
+ *  • received_bytes: Bytes actually received from network during this session
+ *  • total_bytes:    resumed_bytes + received_bytes (total progress for this chunk)
+ *
+ *  HTTP RANGE REQUESTS:
+ *  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  • Master task resuming:  "Range: bytes=400000-"         (from append_offset to end)
+ *  • Chunk task complete:   "Range: bytes=1048576-2097151" (exact chunk boundaries)
+ *  • Chunk task resuming:   "Range: bytes=1500000-2097151" (from append_offset to chunk end)
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                     STREAMING AND MERGE COORDINATION                                                     │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  STREAMING REQUIREMENTS:
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *  • Data must be streamed to data_channel in sequential order (by offset)
+ *  • Chunks complete out-of-order but must be processed in-order
+ *  • Master task streams data while chunks are still downloading
+ *  • Non-blocking progress updates during merge operations
+ *
+ *  MERGE PROCESS:
+ *  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *    ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ *    │  1. Master task completes first chunk (0 → 1MB) and streams to channel immediately                                                    │
+ *    │  2. Wait for chunk tasks to complete in offset order (1MB → 2MB, then 2MB → 3MB, etc.)                                                │
+ *    │  3. As each chunk completes, append its data to master .part file and stream to channel                                               │
+ *    │  4. Perform boundary validation (ensure chunk N ends exactly where chunk N+1 begins)                                                  │
+ *    │  5. Clean up individual chunk files after successful merge                                                                            │
+ *    │  6. Atomically rename .part file to final destination                                                                                 │
+ *    └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                        FAILURE HANDLING AND RETRY LOGIC                                                  │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  CHUNK FAILURE SCENARIOS:
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *  • Individual chunk failures don't immediately fail the entire download
+ *  • Failed chunks are retried independently with exponential backoff
+ *  • Master task continues downloading while chunks retry in background
+ *  • Only when all retries are exhausted does the overall download fail
+ *
+ *  CORRUPTION DETECTION:
+ *  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  • Chunk boundary validation ensures no gaps or overlaps
+ *  • File size validation against Content-Length headers
+ *  • Existing partial file validation against expected sizes
+ *  • Automatic cleanup of corrupted chunk files
+ *
+ *  RECOVERY MECHANISMS:
+ *  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  • Resume from existing .part files (master and chunks)
+ *  • Reconstruct chunk tasks from existing .part-O{offset} files
+ *  • Graceful degradation to single-threaded download if chunking fails
+ *  • Process coordination via PID files to prevent conflicts
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                         THREAD POOL ARCHITECTURE                                                         │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  THREAD MANAGEMENT:
+ *  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *  • Main Task Pool:  Limited to nr_parallel (respects user-configured parallelism)
+ *  • Chunk Task Pool: Limited to 2 * nr_parallel (allows higher chunk parallelism)
+ *  • Automatic cleanup of finished threads
+ *  • Graceful shutdown with cancellation support
+ *
+ *    ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ *    │                                                                                                                                                          │
+ *    │   ┌─────────────────────────────────────────┐    ┌───────────────────────────────────────────────────────────────────────────────────────────────────┐   │
+ *    │   │           MAIN TASK POOL                │    │                                      CHUNK TASK POOL                                              │   │
+ *    │   │          (nr_parallel threads)          │    │                                   (2 * nr_parallel threads)                                       │   │
+ *    │   │                                         │    │                                                                                                   │   │
+ *    │   │  ┌─────────────┐  ┌─────────────┐       │    │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │   │
+ *    │   │  │  Master 1   │  │  Master 2   │ ...   │    │  │   Chunk 1   │  │   Chunk 2   │  │   Chunk 3   │  │   Chunk 4   │  │   Chunk 5   │    ...       │   │
+ *    │   │  │   Task      │  │   Task      │       │    │  │    Task     │  │    Task     │  │    Task     │  │    Task     │  │    Task     │              │   │
+ *    │   │  └─────────────┘  └─────────────┘       │    │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘              │   │
+ *    │   └─────────────────────────────────────────┘    └───────────────────────────────────────────────────────────────────────────────────────────────────┘   │
+ *    │                                                                                                                                                          │
+ *    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                                                                          │
+ * │                                                      PERFORMANCE AND MONITORING                                                          │
+ * │                                                                                                                                          │
+ * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ *  ETA CALCULATION:
+ *  ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *  • Individual task ETAs based on throughput and remaining bytes
+ *  • Global ETA considers slowest task (bottleneck analysis)
+ *  • Real-time updates with rate limiting to prevent UI spam
+ *  • Automatic throughput calculation from network bytes only
+ *
+ *  PROGRESS REPORTING:
+ *  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  • Master task shows aggregate progress across all chunks
+ *  • Individual chunk progress tracked separately
+ *  • Non-blocking progress updates during merge operations
+ *  • Visual progress bars with detailed chunk status
+ *
+ *  STATISTICS COLLECTION:
+ *  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  • Network bytes vs resumed bytes tracking
+ *  • Download duration and throughput metrics
+ *  • Retry count and failure rate monitoring
+ *  • Chunk efficiency and parallelism effectiveness
+ *
+ */
+
 #[derive(Debug)]
 pub struct DownloadTask {
     pub url:                  String,
