@@ -31,37 +31,37 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
             // Parent process: wait for child to complete
-            debug!("Parent process waiting for child {}", child);
+            debug!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
 
             match nix::sys::wait::waitpid(child, None) {
                 Ok(wait_status) => {
                     use nix::sys::wait::WaitStatus;
                     match wait_status {
                         WaitStatus::Exited(_, exit_code) => {
-                            debug!("Child process exited with code {}", exit_code);
+                            debug!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
                             if exit_code != 0 {
-                                // Instead of terminating epkg, return an error
-                                return Err(eyre::eyre!("Command failed with exit code {}", exit_code));
+                                // Instead of returning an error, just exit with the same code
+                                std::process::exit(exit_code);
                             }
                         }
                         WaitStatus::Signaled(_, signal, _) => {
-                            debug!("Child process killed by signal {:?}", signal);
+                            debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
                             return Err(eyre::eyre!("Command killed by signal {:?}", signal));
                         }
                         _ => {
-                            debug!("Child process ended with status: {:?}", wait_status);
+                            debug!("Child process ended with status: {:?} (cmd: {})", wait_status, cmd_path.display());
                             return Err(eyre::eyre!("Command ended with unexpected status: {:?}", wait_status));
                         }
                     }
                 }
                 Err(e) => {
-                    return Err(eyre::eyre!("Failed to wait for child process: {}", e));
+                    return Err(eyre::eyre!("Failed to wait for child process (cmd: {}): {}", cmd_path.display(), e));
                 }
             }
         }
         Ok(nix::unistd::ForkResult::Child) => {
             // Child process: set up namespaces and execute command
-            debug!("Child process starting namespace setup");
+            debug!("Child process starting namespace setup (cmd: {})", cmd_path.display());
 
             // Set up namespace and bind mounts
             if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
