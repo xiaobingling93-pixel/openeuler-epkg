@@ -9,6 +9,8 @@ use ureq;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::net::Ipv4Addr;
+use std::process;
+use std::io::Write;
 
 #[derive(Deserialize)]
 struct IpInfo {
@@ -148,10 +150,31 @@ fn save_country_code_cache(country_code: &str, lan_hash: &str) -> Result<()> {
     let json = serde_json::to_string_pretty(&cache)
         .context("Failed to serialize cache data")?;
 
-    fs::write(&cache_file, json)
-        .with_context(|| format!("Failed to write cache file: {}", cache_file.display()))?;
+    // Write to a temp file first
+    let pid = process::id();
+    let tmp_path = cache_file.with_extension(format!("json.tmp.{}", pid));
+    {
+        let mut f = fs::File::create(&tmp_path)
+            .with_context(|| format!("Failed to create temp cache file: {}", tmp_path.display()))?;
+        f.write_all(json.as_bytes())
+            .with_context(|| format!("Failed to write to temp cache file: {}", tmp_path.display()))?;
+        f.sync_all().ok();
+    }
 
-    Ok(())
+    // Atomically move temp file to final location
+    match fs::rename(&tmp_path, &cache_file) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another process won the race, treat as success
+            fs::remove_file(&tmp_path)?;
+            Ok(())
+        }
+        Err(e) => {
+            // Clean up temp file on error
+            let _ = fs::remove_file(&tmp_path);
+            Err(e).with_context(|| format!("Failed to atomically move temp cache file to {}", cache_file.display()))
+        }
+    }
 }
 
 pub fn get_country_code_from_ip() -> Result<String> {

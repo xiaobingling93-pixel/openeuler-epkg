@@ -14,6 +14,7 @@ use crate::models::dirs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
+use nix::unistd::{fork, ForkResult};
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -21,6 +22,35 @@ fn print_banner() {
     println!(r#"  ( ___)| |_) | ' / |  _   "#);
     println!(r#"   )__) |  __/| . \ |_| |  "#);
     println!(r#"  (____)|_|   |_|\_\____|  "#);
+}
+
+/// Pre-populate the country cache in a background process to speed up later epkg install invocations.
+/// This function forks a child process that runs independently and won't be affected by main process exit.
+///
+/// Behavior when main thread exits:
+/// - The child process continues running independently in the background
+/// - The cache population will complete even if the main process exits
+/// - The child process will automatically clean up when it finishes
+/// - This ensures the cache is properly populated for future epkg operations
+fn pre_populate_country_cache() {
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child, .. }) => {
+            // Parent process: continue with installation, don't wait for child
+            log::debug!("Started background process (PID: {}) to pre-populate country cache", child);
+        }
+        Ok(ForkResult::Child) => {
+            // Child process: populate cache and exit
+            if let Err(e) = crate::location::get_country_code_from_ip() {
+                log::debug!("Failed to pre-populate country cache: {}", e);
+            } else {
+                log::debug!("Successfully pre-populated country cache");
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            log::warn!("Failed to fork background process for cache population: {}", e);
+        }
+    }
 }
 
 impl PackageManager {
@@ -66,6 +96,9 @@ impl PackageManager {
             .context("Failed to create epkg downloads directory")?;
 
         print_banner();
+
+        // Pre-populate country cache in background thread to speed up later invocations
+        pre_populate_country_cache();
 
         // Set up common environment
         self.setup_common_environment()?;
