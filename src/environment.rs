@@ -303,7 +303,22 @@ impl PackageManager {
                 return Err(eyre::eyre!("Channel not found: '{}'", channel));
             }
 
-            fs::copy(src_channel_yaml, &env_channel_yaml)?;
+            // Copy the source channel config and apply version override if specified
+            let mut channel_config: ChannelConfig = {
+                let contents = fs::read_to_string(&src_channel_yaml)
+                    .with_context(|| format!("Failed to read channel config: {}", src_channel_yaml.display()))?;
+                serde_yaml::from_str(&contents)
+                    .with_context(|| format!("Failed to parse channel config: {}", src_channel_yaml.display()))?
+            };
+
+            // If channel contains a version suffix (e.g., "alpine:3.21"), extract and set the version
+            if let Some(version) = channel.split(':').nth(1) {
+                channel_config.version = version.to_string();
+            }
+
+            // Save the modified channel config
+            let channel_yaml = serde_yaml::to_string(&channel_config)?;
+            fs::write(&env_channel_yaml, channel_yaml)?;
 
             EnvConfig::default()
         };
