@@ -3324,7 +3324,11 @@ fn merge_completed_chunk(
 
     // Process the completed chunk immediately (STREAMING)
     if chunk_task.chunk_path.exists() {
-        validate_chunk_file_boundaries(&chunk_task, 0)?;
+        // Re-read the actual file length to ensure perfect consistency.
+        let actual_size = fs::metadata(&chunk_task.chunk_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        validate_chunk_file_boundaries(&chunk_task, actual_size)?;
 
         // If we have a data channel, stream the chunk data
         if let Some(ref channel) = data_channel {
