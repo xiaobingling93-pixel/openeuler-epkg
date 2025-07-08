@@ -1,5 +1,5 @@
 format: rpm
-distro: centos
+distro: centos/cloud
 distro_dirs:
 - mirror.centos.org
 - mirror.stream.centos.org
@@ -8,7 +8,6 @@ distro_dirs:
 - centos
 - centos-vault
 - centos-stream
-repo_type: cloud
 versions:
 - "9"
 - "8"

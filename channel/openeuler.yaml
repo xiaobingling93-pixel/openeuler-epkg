@@ -27,7 +27,6 @@ versions: # LTS versions are marked with -lts suffix
 - 20.03-lts-sp1
 - 20.03-lts 20.03
 repos:
-  OS:
   update:
   everything:
   EPOL/main:

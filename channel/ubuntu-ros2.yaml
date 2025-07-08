@@ -1,12 +1,11 @@
 format: deb
-distro: ubuntu
+distro: ubuntu/ros2
 distro_dirs:
 - packages.ros.org
 - ros.org
 - ros
 - ros2
 - packages-ros
-repo_type: ros2
 versions:
 - noble   24.04
 - jammy   22.04

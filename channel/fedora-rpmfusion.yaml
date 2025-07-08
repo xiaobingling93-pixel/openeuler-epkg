@@ -1,5 +1,5 @@
 format: rpm
-distro: fedora
+distro: fedora/rpmfusion
 distro_dirs:
 - download1.rpmfusion.org
 - dl.fedoraproject.org
@@ -7,7 +7,6 @@ distro_dirs:
 - mirrors.rpmfusion.org
 - rpmfusion.org
 - rpmfusion
-repo_type: rpmfusion
 versions:
 - "42"
 - "41"

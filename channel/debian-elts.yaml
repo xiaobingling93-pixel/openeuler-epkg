@@ -1,5 +1,5 @@
 format: deb
-distro: debian-elts
+distro: debian/elts
 distro_dirs:
 - ftp.debian.org
 - deb.freexian.com

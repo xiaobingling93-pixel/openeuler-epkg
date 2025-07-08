@@ -792,9 +792,8 @@ pub fn list_repos() -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", "-".repeat(100));
-    println!("{:<30} | {:<15} | {}", "channel", "repo", "url");
-    println!("{}", "-".repeat(100));
+    // Collect all entries first
+    let mut entries: Vec<(String, String, String, String)> = Vec::new();
 
     for entry in fs::read_dir(&manager_channel_dir)? {
         let path = entry?.path();
@@ -810,31 +809,69 @@ pub fn list_repos() -> Result<()> {
             }
         };
 
+        // Get default version (first version from versions array, or single version field)
+        let default_version = if !channel_config.versions.is_empty() {
+            &channel_config.versions[0]
+        } else {
+            &channel_config.version
+        };
+
+        // Extract first numeric version from the version string
+        let clean_version = default_version
+            .split_whitespace()
+            .find(|s| s.chars().next().map_or(false, |c| c.is_ascii_digit()))
+            .unwrap_or(default_version);
+
+        // Collect all enabled repos for this channel
+        let mut enabled_repos: Vec<String> = Vec::new();
         for (repo_name, repo_config) in &channel_config.repos {
-            // Skip disabled repos
-            if !repo_config.enabled {
-                continue;
+            if repo_config.enabled {
+                enabled_repos.push(repo_name.clone());
             }
-
-            // Use configured URL or construct default URL
-            let repo_url = match &repo_config.index_url {
-                Some(url) => url.clone(),
-                None => format!(
-                    "{}/{}/{}",
-                    channel_config.index_url.clone(),
-                    &repo_name,
-                    config().common.arch,
-                )
-            };
-
-            println!("{:<30} | {:<15} | {}",
-                channel_config.distro,
-                repo_name,
-                repo_url
-            );
         }
+
+        if enabled_repos.is_empty() {
+            continue;
+        }
+
+        // Join repos with commas
+        let repos_str = enabled_repos.join(",");
+        let index_url = channel_config.index_url.clone();
+
+        // Filter out non-x86_64 architectures if URL contains x86_64
+        if config().common.arch != "x86_64" && index_url.contains("x86_64") {
+            continue;
+        }
+
+        // Truncate URL if it's too long to prevent wrapping
+        let max_url_length = 80;
+        let display_url = if index_url.len() > max_url_length {
+            format!("{}...", &index_url[..max_url_length-3])
+        } else {
+            index_url.clone()
+        };
+
+        entries.push((
+            channel_config.distro.clone(),
+            clean_version.to_string(),
+            repos_str,
+            display_url
+        ));
     }
 
-    println!("{}", "-".repeat(100));
+    // Sort entries by channel name
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Print header
+    println!("{}", "-".repeat(140));
+    println!("{:<20} | {:<15} | {:<45} | {}", "channel", "default version", "repos", "index_url");
+    println!("{}", "-".repeat(140));
+
+    // Print sorted entries
+    for (channel, version, repos, url) in entries {
+        println!("{:<20} | {:<15} | {:<45} | {}", channel, version, repos, url);
+    }
+
+    println!("{}", "-".repeat(140));
     Ok(())
 }

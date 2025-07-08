@@ -1,12 +1,11 @@
 format: pacman
-distro: archlinux
+distro: archlinux/arch4edu
 distro_dirs:
 - ftp.archlinux.org
 - mirrors.tuna.tsinghua.edu.cn/arch4edu
 - arch4edu.keybase.pub
 - archlinux.cs.nctu.edu.tw/arch4edu
 - arch4edu
-repo_type: arch4edu
 versions:
 - "latest"
 repos:

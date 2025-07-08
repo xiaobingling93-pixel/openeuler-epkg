@@ -8,11 +8,9 @@ versions:
 - "latest"
 repos:
   cachyos:
-  cachyos-core-v3:
-  cachyos-extra-v3:
-  cachyos-kde:
-index_url: $mirror/$repo/x86_64_v3/$repo.db.tar.xz
+index_url: $mirror/$repo/x86_64/$repo.db.tar.zst
 
 # Example URLs:
+# https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos.db.tar.zst
 # https://mirror.cachyos.org/repo/x86_64_v3/cachyos/cachyos.db.tar.xz
 # https://mirror.cachyos.org/repo/x86_64_v3/cachyos-core-v3/cachyos-core-v3.db.tar.xz
