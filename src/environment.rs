@@ -231,7 +231,9 @@ impl PackageManager {
             _ => {
                 // Default behavior for other formats
                 fs::create_dir_all(env_root.join("usr/lib64"))?;
+                fs::create_dir_all(env_root.join("usr/lib32"))?;
                 symlink("usr/lib64", env_root.join("lib64"))?;
+                symlink("usr/lib32", env_root.join("lib32"))?;
             }
         }
 
