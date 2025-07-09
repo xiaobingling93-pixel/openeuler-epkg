@@ -1172,6 +1172,16 @@ impl PackageManager {
         // Create the pattern for searching and store it in options
         options.u8_pattern = options.pattern.as_bytes().to_vec();
 
+        // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
+        // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
+        // with relative filelist entries like usr/bin/ls
+        if (options.format == crate::models::PackageFormat::Deb ||
+            options.format == crate::models::PackageFormat::Pacman) &&
+           !options.u8_pattern.is_empty() &&
+           options.u8_pattern[0] == b'/' {
+            options.u8_pattern.remove(0);
+        }
+
         search::search_repo_cache(&mut options)?;
         Ok(())
     }

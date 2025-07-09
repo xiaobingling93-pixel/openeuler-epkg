@@ -532,10 +532,55 @@ fn process_simple_line(
             }
         };
 
-        // If we have a match, print the result
-        let indeed_match = check_match_path(path, options);
+        // PATH MATCHING REQUIREMENTS:
+        //
+        // 1. DISTRO FILELIST FORMATS:
+        //    - Debian/Arch: relative paths (usr/bin/ls, usr/lib/libc.so)
+        //    - RPM: absolute paths (/usr/bin/ls, /usr/lib/libc.so)
+        //    - User shall not care differences among distros
+        //
+        // 2. USER PATTERN EXPECTATIONS:
+        //    - /usr/bin/ls should match usr/bin/ls (Debian/Arch) AND /usr/bin/ls (RPM)
+        //    - usr/bin/ls should match usr/bin/ls (Debian/Arch) AND /usr/bin/ls (RPM)
+        //    - /bin/ls should match usr/bin/ls (Debian/Arch) AND /bin/ls (RPM)
+        //    - bin/ls should match usr/bin/ls (Debian/Arch) AND /bin/ls (RPM)
+        //
+        // 3. PATH SEPARATOR SEMANTICS:
+        //    - Leading / provides clear path boundary: /bin/ip won't match sbin/ip
+        //    - Without leading /, bin/ip could match sbin/ip (unexpected!)
+        //    - Users expect copy/pasted '/usr/bin/ls' to just work w/o hand removing leading /
+        //
+        // 4. MATCHING STRATEGY:
+        //    - For user patterns starting with /: normalize filelist path to absolute
+        //    - For user patterns NOT starting with /: try both relative and absolute
+        //    - This ensures /usr/bin/ls works everywhere, while bin/ls is flexible
+        //
+        // 5. EXAMPLES:
+        //    User pattern: /usr/bin/ls
+        //    - Debian filelist: usr/bin/ls -> normalize to /usr/bin/ls -> MATCH
+        //    - RPM filelist: /usr/bin/ls -> use as-is -> MATCH
+        //
+        //    User pattern: usr/bin/ls
+        //    - Debian filelist: usr/bin/ls -> try as-is -> MATCH
+        //    - RPM filelist: /usr/bin/ls -> try as-is -> NO MATCH, try relative -> MATCH
+        //
+        //    User pattern: bin/ls
+        //    - Debian filelist: usr/bin/ls -> try as-is -> NO MATCH, try relative -> MATCH
+        //    - RPM filelist: /usr/bin/ls -> try as-is -> NO MATCH, try relative -> MATCH
+        //
+        // 6. CAVEATS:
+        //    - Must handle both relative and absolute filelist paths
+        //    - Must preserve user's intent for path boundaries
+        //    - Must work with copy/paste from system commands
+        //    - Must not create false matches (sbin/ip when searching /bin/ip)
+
+        // Both Debian/Archlinux strip leading '/' from path, so add it back before comparing
+        let mut abs_path_vec = Vec::with_capacity(1 + path.len());
+        abs_path_vec.push(b'/');
+        abs_path_vec.extend_from_slice(path);
+        let indeed_match = check_match_path(&abs_path_vec, options);
         if indeed_match {
-            print_path(pkgname, path, options);
+            print_path(pkgname, &abs_path_vec, options);
         }
     }
 
