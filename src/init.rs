@@ -143,10 +143,7 @@ impl PackageManager {
         }
 
         // Check for local elf-loader
-        let local_loader = match repo_root.parent() {
-            Some(parent) => parent.join("elf-loader/src/loader"),
-            None => repo_root.join("elf-loader/src/loader"),
-        };
+        let local_loader = repo_root.join("elf-loader/src/loader");
 
         if local_loader.exists() {
             fs::copy(&local_loader, &elf_loader_path)

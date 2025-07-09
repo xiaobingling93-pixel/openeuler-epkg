@@ -44,6 +44,9 @@ endif
 	rustup target add $(RUST_TARGET_AARCH64)
 	rustup target add $(RUST_TARGET_RISCV64)
 	rustup target add $(RUST_TARGET_LOONGARCH64)
+	git clone https://gitee.com/wu_fengguang/rpm-rs
+	git clone https://gitee.com/openeuler/elf-loader
+	cd elf-loader/src && make install-depends
 	@echo "Installation complete!"
 
 # Build release binaries for all architectures
