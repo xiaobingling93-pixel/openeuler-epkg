@@ -707,6 +707,52 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 }
 
 impl PackageManager {
+    /// Replace symlinks with their target file content
+    fn replace_symlinks_with_content(&self, env_root: &Path) -> Result<()> {
+        let symlink_replace_list = [
+            // Fixes:
+            //      /usr/share/debconf/confmodule: line 28: /usr/lib/cdebconf/debconf: No such file or directory
+            // Root cause: that script relies on this being normal file
+            //      elif [ -x /usr/share/debconf/frontend ] && \
+            //           [ ! -h /usr/share/debconf/frontend ]; then
+            //              _DEBCONF_IMPL=debconf
+            "/usr/share/debconf/frontend",
+        ];
+
+        for symlink_path in &symlink_replace_list {
+            let full_symlink_path = env_root.join(
+                symlink_path.strip_prefix("/")
+                .unwrap_or(symlink_path)  // Fallback to original if no prefix
+            );
+
+            if full_symlink_path.exists() && full_symlink_path.is_symlink() {
+                // Read the symlink target
+                let target_path = std::fs::read_link(&full_symlink_path)?;
+
+                // Remove the symlink
+                std::fs::remove_file(&full_symlink_path)?;
+
+                // Try to hardlink the target file to the symlink location, fall back to copy
+                if let Err(_) = std::fs::hard_link(&target_path, &full_symlink_path) {
+                    // If hardlink fails, copy the file
+                    std::fs::copy(&target_path, &full_symlink_path)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Fix up environment links and remove system directories
+    fn fixup_env_links(&self, env_root: &Path) -> Result<()> {
+        // Remove systemd system directory
+        let _ = std::fs::remove_dir(env_root.join("run/systemd/system"));
+
+        // Replace symlinks with their target file content
+        self.replace_symlinks_with_content(env_root)?;
+
+        Ok(())
+    }
+
     fn prepare_installation_plan(
         &self,
         all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
@@ -1070,7 +1116,7 @@ impl PackageManager {
             &env_root,
         )?;
 
-        let _ = std::fs::remove_dir("/run/systemd/system");
+        self.fixup_env_links(&env_root)?;
 
         let channel_config = crate::models::channel_config();
         let package_format = channel_config.format;
