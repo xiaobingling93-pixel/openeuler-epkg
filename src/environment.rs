@@ -251,7 +251,7 @@ impl PackageManager {
     }
 
     pub fn new_env_base(&self, name: &str) -> PathBuf {
-        if config().env.public {
+        if config().env.public && name != "main" {
             dirs().public_envs.join(name)
         } else {
             dirs().private_envs.join(name)
@@ -330,6 +330,13 @@ impl PackageManager {
         env_config.public = config().env.public;
         env_config.register_to_path = false;
         env_config.register_priority = 0;
+
+        // 'main' is the default environment for many actions, so enforce it be private,
+        // to avoid careless daily installs be exposed to others.
+        if env_config.public && name == "main" {
+            println!("Notice: environment 'main' is always created private");
+            env_config.public = false;
+        }
 
         // Get packages before saving config (since env_config will be moved)
         let packages_to_install = env_config.packages.clone();

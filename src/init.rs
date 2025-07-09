@@ -55,26 +55,31 @@ fn pre_populate_country_cache() {
 
 impl PackageManager {
 
-    #[allow(dead_code)]
-    pub fn check_init(&mut self) -> Result<()> {
-        if find_env_root("main").is_none() {
-            self.init()?;
+    // After root run `epkg init --store=shared`, /usr/local/bin/epkg will be created and exposed
+    // to normal users. Then everyone can run "epkg install". To make it user friendly, here we'll
+    // auto trigger light_init() seemlessly at first invocation.
+    pub fn try_light_init(&mut self) -> Result<()> {
+        if matches!(config().subcommand,
+              EpkgCommand::Unpack
+            | EpkgCommand::Convert
+            | EpkgCommand::Hash
+            | EpkgCommand::Repo
+            | EpkgCommand::Init
+            | EpkgCommand::None
+        ) {
+            return Ok(());
         }
+
+        if find_env_root("main").is_some() {
+            return Ok(());
+        }
+
+        self.light_init()?;
 
         Ok(())
     }
 
-    pub fn init(&mut self) -> Result<()> {
-        if find_env_root("common").is_none() {
-            self.install_epkg()?;
-        }
-
-        // Check if already initialized
-        if find_env_root("main").is_some() {
-            eprintln!("epkg was already initialized for current user");
-            return Ok(());
-        }
-
+    fn light_init(&mut self) -> Result<()> {
         // Create necessary directories
         fs::create_dir_all(&dirs().home_config.join("path.d"))
             .context("Failed to create path.d directory in home config")?;
@@ -87,6 +92,21 @@ impl PackageManager {
         self.update_shell_rc()?;
 
         println!("Notice: for changes to take effect, close and re-open your current shell.");
+        Ok(())
+    }
+
+    pub fn command_init(&mut self) -> Result<()> {
+        if find_env_root("common").is_none() {
+            self.install_epkg()?;
+        }
+
+        // Check if already initialized
+        if find_env_root("main").is_some() {
+            eprintln!("epkg was already initialized for current user");
+            return Ok(());
+        }
+
+        self.light_init()?;
         Ok(())
     }
 

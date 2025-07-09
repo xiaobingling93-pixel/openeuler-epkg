@@ -77,9 +77,11 @@ fn main() -> Result<()> {
     log::trace!("Application starting with config: {:#?}", config());
 
     let mut package_manager: PackageManager = Default::default();
+    package_manager.try_light_init()?;
+
     let matches = &CLAP_MATCHES;
     match matches.subcommand() {
-        Some(("init",       sub_matches))  =>  package_manager.command_init(sub_matches)?,
+        Some(("init",      _sub_matches))  =>  package_manager.command_init()?,
         Some(("env",        sub_matches))  =>  package_manager.command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  package_manager.command_list(sub_matches)?,
         Some(("info",       sub_matches))  =>  package_manager.command_info(sub_matches)?,
@@ -813,10 +815,6 @@ fn parse_options_search(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatche
 
 // Command handlers
 impl PackageManager {
-
-    fn command_init(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.init()
-    }
 
     fn command_env(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         match sub_matches.subcommand() {
