@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr};
 use color_eyre::eyre::eyre;
-use crate::utils::*;
 use crate::models::*;
-use crate::dirs::find_env_root;
+use crate::dirs;
+use crate::utils;
+use crate::utils::FileType;
 use crate::package;
-use crate::download::wait_for_any_download_task;
+use crate::download;
 use std::io::Write;
 use regex;
 
@@ -39,7 +40,7 @@ fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInf
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     // Get common environment root path
-    let common_env_root = find_env_root("common")
+    let common_env_root = dirs::find_env_root("common")
         .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
 
     // Path to elf-loader in common environment
@@ -161,12 +162,6 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
             .with_context(|| format!("Failed to strip prefix {} from {}", store_fs_dir.display(), fs_file.display()))?;
         let target_path = env_root.join(fhs_file);
 
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
-        }
-
         if fs_file_info.is_dir() {
             // Check if target path exists and is not a directory
             if target_path.exists() && !target_path.is_dir() {
@@ -179,33 +174,92 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
             continue;
         }
 
-        if fs::symlink_metadata(&target_path).is_ok() {
-            // On upgrade, it's normal to overwrite old files from previous version
-            log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
-            // Check if target path is a directory and handle accordingly
-            if target_path.is_dir() {
-                fs::remove_dir_all(&target_path)
-                    .with_context(|| format!("Failed to remove directory {} for mirror_dir", target_path.display()))?;
-            } else {
-                fs::remove_file(&target_path)
-                    .with_context(|| format!("Failed to remove file {} for mirror_dir", target_path.display()))?;
-            }
-        }
+        // Create parent directory if it doesn't exist
+        // No longer necessary, since filelist.txt always show dir before files under it
+        // if let Some(parent) = target_path.parent() {
+        //     fs::create_dir_all(parent)
+        //         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+        // }
 
-        let metadata = fs::symlink_metadata(fs_file)
-            .with_context(|| format!("Failed to get metadata for {} for mirror_dir", fs_file.display()))?;
-        if metadata.file_type().is_symlink() {
-            shortcut_symlink(store_fs_dir, fs_file, &target_path)
-                .with_context(|| format!("Failed to shortcut_symlink from {} to {}", fs_file.display(), target_path.display()))?;
+        if fs_file_info.is_link() {
+            mirror_symlink_file(store_fs_dir, fs_file, &target_path, fhs_file)
+                .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))?;
         } else {
-            if fhs_file.starts_with("etc/") {
-                fs::copy(fs_file, &target_path)
-                    .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
-            } else {
-                symlink(fs_file, &target_path)
-                    .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
-            }
+            mirror_regular_file(fs_file, &target_path, fhs_file)
+                .with_context(|| format!("Failed to handle regular file {}", fs_file.display()))?;
         }
+    }
+    Ok(())
+}
+
+/// Handle symlink files in mirror_dir function
+///
+/// This function processes symlinks that may point to either files or directories.
+/// For top-level directory symlinks (sbin, bin, lib, lib64, lib32), it skips them
+/// as they are handled by the environment setup process.
+/// For other symlinks pointing to files, it creates a shortcut symlink.
+///
+/// Examples:
+/// - sbin -> usr/sbin (top-level dir symlink): skipped (handled by env setup)
+/// - bin -> usr/bin (top-level dir symlink): skipped (handled by env setup)
+/// - python3 -> python3.11 (file symlink): creates shortcut symlink
+/// - /usr/bin/python3 -> /usr/bin/python3.11 (absolute file symlink): creates shortcut symlink
+///
+/// Parameters:
+/// - store_fs_dir: Base directory of the package store
+/// - fs_file: Path to the symlink in the store
+/// - target_path: Where to create the symlink in the environment
+/// - _env_root: Root of the environment (unused in current implementation)
+fn mirror_symlink_file(store_fs_dir: &Path, fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
+    // Skip symlinks for top-level directories: sbin, bin, lib, lib64, lib32
+    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32") {
+        return Ok(());
+    }
+
+    utils::remove_any_existing_file(target_path)?;
+
+    // Handle regular symlink (not pointing to directory)
+    shortcut_symlink(store_fs_dir, fs_file, target_path)
+        .with_context(|| format!("Failed to shortcut_symlink from {} to {}", fs_file.display(), target_path.display()))?;
+    Ok(())
+}
+
+/// Handle regular files in mirror_dir function
+///
+/// This function processes regular files (not symlinks or directories).
+/// For files in /etc/, it copies the file content.
+/// For other files, it creates a symlink to the store location.
+///
+/// Examples:
+/// - /etc/resolv.conf: copied to environment (preserves content)
+/// - /usr/bin/python3.11: symlinked to store location
+/// - /usr/lib/libpython3.11.so: symlinked to store location
+///
+/// Parameters:
+/// - fs_file: Path to the file in the store
+/// - target_path: Where to create the file/symlink in the environment
+/// - fhs_file: Relative path from store_fs_dir (used to determine if file is in /etc/)
+fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
+    // Remove any existing file/dirs
+    if fs::symlink_metadata(target_path).is_ok() {
+        // On upgrade, it's normal to overwrite old files from previous version
+        log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
+        // Check if target path is a directory and handle accordingly
+        if target_path.is_dir() {
+            fs::remove_dir_all(target_path)
+                .with_context(|| format!("Failed to remove directory {} for mirror_dir", target_path.display()))?;
+        } else {
+            fs::remove_file(target_path)
+                .with_context(|| format!("Failed to remove file {} for mirror_dir", target_path.display()))?;
+        }
+    }
+
+    if fhs_file.starts_with("etc/") {
+        fs::copy(fs_file, target_path)
+            .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
+    } else {
+        symlink(fs_file, target_path)
+            .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
     }
     Ok(())
 }
@@ -292,7 +346,7 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[crate::utils::MtreeFileInfo
 }
 
 fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<Option<PathBuf>> {
-    let (file_type, first_line) = get_file_type(fs_file)
+    let (file_type, first_line) = utils::get_file_type(fs_file)
         .with_context(|| format!("Failed to determine file type for {}", fs_file.display()))?;
     let basename = fs_file.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file.display()))?;
@@ -847,7 +901,7 @@ impl PackageManager {
 
     // link files from env_root to store_fs_dir
     pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
-        let fs_files = crate::utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
+        let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
             .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
         mirror_dir(env_root, store_fs_dir, &fs_files)
             .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), env_root.display()))?;
@@ -859,7 +913,7 @@ impl PackageManager {
     // Returns a list of relative paths to the created ebin wrappers (relative to env_root).
     pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
         log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
-        let fs_files = crate::utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
+        let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
         let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;
         log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
         let mut relative_ebin_links: Vec<String> = Vec::new();
@@ -1118,7 +1172,7 @@ impl PackageManager {
             return Ok(false);
         }
 
-        user_prompt_and_confirm()
+        utils::user_prompt_and_confirm()
     }
 
     fn execute_installation_plan(
@@ -1277,7 +1331,7 @@ impl PackageManager {
         // Process packages as downloads complete
         while !pending_urls.is_empty() {
             // Wait for any download to complete
-            if let Some(completed_url) = wait_for_any_download_task(&pending_urls)? {
+            if let Some(completed_url) = download::wait_for_any_download_task(&pending_urls)? {
                 // Get the package key for this completed URL
                 let completed_pkgkey = url_to_pkgkey.get(&completed_url).cloned();
 
@@ -1484,9 +1538,9 @@ impl PackageManager {
         let old_store_fs_dir = store_root.join(&old_package_info.pkgline).join("fs");
         let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
 
-        let old_files = list_package_files(old_store_fs_dir.to_str()
+        let old_files = utils::list_package_files(old_store_fs_dir.to_str()
             .ok_or_else(|| eyre::eyre!("Invalid old package fs path"))?)?;
-        let new_files = list_package_files(new_store_fs_dir.to_str()
+        let new_files = utils::list_package_files(new_store_fs_dir.to_str()
             .ok_or_else(|| eyre::eyre!("Invalid new package fs path"))?)?;
 
         // Convert to sets of relative paths for comparison
