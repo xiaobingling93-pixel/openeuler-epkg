@@ -695,17 +695,27 @@ pub fn safe_mkdir_p(path: &Path) -> Result<()> {
 ///
 /// This function will attempt to remove the file regardless of its type
 /// (regular file, symlink, etc.) but will not remove directories.
+/// Handles dead symlinks by using symlink_metadata instead of path.exists().
 pub fn remove_any_existing_file(path: &Path) -> Result<()> {
-    if path.exists() {
-        let metadata = fs::metadata(path)
-            .map_err(|e| eyre::eyre!("Failed to get metadata for path '{}': {}", path.display(), e))?;
+    // Use symlink_metadata to handle dead symlinks properly
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.is_dir() {
+                return Err(eyre::eyre!("Cannot remove directory '{}' with remove_any_existing_file()", path.display()));
+            }
 
-        if metadata.is_dir() {
-            return Err(eyre::eyre!("Cannot remove directory '{}' with remove_any_existing_file()", path.display()));
+            fs::remove_file(path)
+                .map_err(|e| eyre::eyre!("Failed to remove existing file at path '{}': {}", path.display(), e))?;
         }
-
-        fs::remove_file(path)
-            .map_err(|e| eyre::eyre!("Failed to remove existing file at path '{}': {}", path.display(), e))?;
+        Err(e) => {
+            // If symlink_metadata fails, the path doesn't exist (not even as a dead symlink)
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // Path doesn't exist, nothing to remove
+                return Ok(());
+            } else {
+                return Err(eyre::eyre!("Failed to get metadata for path '{}': {}", path.display(), e));
+            }
+        }
     }
 
     Ok(())
