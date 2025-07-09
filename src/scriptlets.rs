@@ -198,6 +198,10 @@ fn setup_deb_env_vars(
     // Set DPKG_MAINTSCRIPT_PACKAGE_REFCOUNT
     // For now, we'll set it to 1 as a default value
     env_vars.insert("DPKG_MAINTSCRIPT_PACKAGE_REFCOUNT".to_string(), "1".to_string());
+    
+    // Suppress debconf interactive prompts and warnings
+    env_vars.insert("DEBIAN_FRONTEND".to_string(), "noninteractive".to_string());
+    env_vars.insert("DEBCONF_NONINTERACTIVE_SEEN".to_string(), "true".to_string());
 
     // Set DPKG_MAINTSCRIPT_DEBUG if RUST_DEBUG is defined
     if std::env::var("RUST_DEBUG").is_ok() {
