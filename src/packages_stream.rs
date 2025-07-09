@@ -287,8 +287,8 @@ impl PackagesStreamline {
         self.current_pkgname.push_str(value);
     }
 
-    pub fn on_essential(&mut self) {
-        self.essential_pkgnames.insert(self.current_pkgname.clone());
+    pub fn on_essential(&mut self, pkgname: String) {
+        self.essential_pkgnames.insert(pkgname);
     }
 
     pub fn on_provides(&mut self, provides: Vec<&str>) {

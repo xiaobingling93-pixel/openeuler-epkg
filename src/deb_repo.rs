@@ -316,6 +316,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     }
 
     log::debug!("Finalizing processing for {}", revise.location);
+    derived_files.on_essential("mawk".to_string());
     derived_files.on_finish(revise)
         .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
 }
@@ -345,7 +346,7 @@ fn process_line(line: &str,
                 // Start tracking the new package
                 derived_files.on_new_pkgname(value);
             } else if key == "Essential" && value.trim().eq_ignore_ascii_case("yes") {
-                derived_files.on_essential();
+                derived_files.on_essential(derived_files.current_pkgname.clone());
                 derived_files.output.push_str("\npriority: essential");
             } else if key == "Important" && value.trim().eq_ignore_ascii_case("yes") {
                 derived_files.output.push_str("\npriority: important");
