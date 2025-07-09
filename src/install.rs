@@ -742,6 +742,38 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Create common symlinks for shell and utilities if they don't exist
+    fn create_common_symlinks(&self, env_root: &Path) -> Result<()> {
+        // List of symlinks to create: [(symlink, [possible_targets])]
+        let symlinks = [
+            ("bin/sh", ["bash", "dash"]),
+            ("usr/bin/awk", ["mawk", "gawk"]),
+        ];
+
+        for (link_name, possible_targets) in &symlinks {
+            let link_path = env_root.join(link_name);
+
+            // Skip if symlink already exists
+            if link_path.exists() {
+                continue;
+            }
+
+            // Try each possible target until we find one that exists
+            for target in possible_targets.iter() {
+                let target_path = Path::new("/").join(link_name).parent().unwrap().join(target);
+                if target_path.exists() {
+                    if let Some(parent) = link_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    symlink(target_path, &link_path)
+                        .with_context(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Fix up environment links and remove system directories
     fn fixup_env_links(&self, env_root: &Path) -> Result<()> {
         // Remove systemd system directory
@@ -749,6 +781,9 @@ impl PackageManager {
 
         // Replace symlinks with their target file content
         self.replace_symlinks_with_content(env_root)?;
+
+        // Create common symlinks for shells and utilities
+        self.create_common_symlinks(env_root)?;
 
         Ok(())
     }
