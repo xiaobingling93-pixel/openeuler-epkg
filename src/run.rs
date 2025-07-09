@@ -12,8 +12,7 @@ use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn};
 use crate::models::*;
-use crate::utils::safe_mkdir_p;
-
+use crate::utils;
 
 #[derive(Debug, Clone)]
 pub struct RunOptions {
@@ -137,7 +136,7 @@ pub fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptions) -> 
     create_namespaces(euid, uid, gid, &run_options.user)?;
 
     // Set up bind mounts for the environment
-    mount_env_dirs(env_root)?;
+    mount_env_dirs(uid, env_root)?;
 
     // Mount additional directories if specified
     for mount_dir in &run_options.mount_dirs {
@@ -262,10 +261,18 @@ pub fn mount_make_rprivate() -> Result<()> {
 }
 
 /// Mount environment directories
-pub fn mount_env_dirs(env_root: &Path) -> Result<()> {
+pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     mount_env_dir(env_root, "/usr")?;
     mount_env_dir(env_root, "/etc")?;
     mount_env_dir(env_root, "/var")?;
+
+    // "DPKG_MAINTSCRIPT_PACKAGE": "base-files"
+    // "DPKG_MAINTSCRIPT_NAME": "postinst"
+    // Triggered error when trying to create .profile and .bashrc for root:
+    //      cp: cannot stat '/root/.profile': Permission denied
+    if !uid.is_root() {
+        mount_env_dir(env_root, "/root")?;
+    }
 
     /*
      * Special handling for /opt/epkg mount isolation:
@@ -309,7 +316,7 @@ pub fn mount_env_dirs(env_root: &Path) -> Result<()> {
     };
 
     // Safely create the opt_real directory, handling any existing files
-    safe_mkdir_p(&opt_real_path)
+    utils::safe_mkdir_p(&opt_real_path)
         .map_err(|e| eyre::eyre!("Failed to create opt_real directory '{}': {}", opt_real_path.display(), e))?;
 
     let opt_epkg_path = Path::new("/opt/epkg");

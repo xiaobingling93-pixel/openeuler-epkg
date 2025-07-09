@@ -203,6 +203,7 @@ impl PackageManager {
 
         // Create base directories
         fs::create_dir_all(&gen_1_dir)?;
+        fs::create_dir_all(env_root.join("root"))?;
         fs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
                                                         // won't go to PATH
         fs::create_dir_all(env_root.join("usr/ebin"))?;
