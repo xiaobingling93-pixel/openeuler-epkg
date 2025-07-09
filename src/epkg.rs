@@ -7,6 +7,9 @@ use crate::store::untar_zst;
 use std::fs::{File, OpenOptions};
 use tar::Builder;
 use zstd::stream::write::Encoder;
+use walkdir::WalkDir;
+use std::fs;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
 
 /// Legacy function for unpacking .epkg files (original implementation)
@@ -56,21 +59,102 @@ pub fn compress_packages(store_dir: &std::path::PathBuf, out_dir: &str, origin_u
     Ok(())
 }
 
+// Requirements:
+// 1) preserve dead symlink
+// 2) preserve reproducibility
+// - ordered file list
+// - default zstd compression level
+// - 0 uid/gid (special file's ownership shall be specified in some config file)
+// - 0 timestamp
 pub fn compress_folder_to_epkg(
     source_dir: &Path,
     output_file: &str,
 ) -> Result<()> {
-    // 创建输出文件
     let output = File::create(output_file)?;
-
-    // 创建 zstd 编码器
     let encoder = Encoder::new(output, 3)?;
-
-    // 创建 tar 构建器
     let mut tar_builder = Builder::new(encoder.auto_finish());
 
-    // 添加目录到 tar
-    tar_builder.append_dir_all(".", Path::new(source_dir))?;
+    // Manual walk to preserve dead symlinks - collect and sort for reproducibility
+    let mut entries: Vec<_> = WalkDir::new(source_dir)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Sort entries by path for reproducible output
+    entries.sort_by(|a, b| a.path().cmp(b.path()));
+
+    for entry in entries {
+        let path = entry.path();
+        let rel_path = path.strip_prefix(source_dir)?;
+
+        // Skip the root directory itself (empty path)
+        if rel_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        if entry.file_type().is_symlink() {
+            // Get symlink target (even if dead)
+            let target = fs::read_link(path)?;
+            // Forcefully add the symlink to the tar, even if target doesn't exist
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o755);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            tar_builder.append_link(&mut header, rel_path, &target)?;
+        } else if entry.file_type().is_file() {
+            let metadata = fs::metadata(path)?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_size(metadata.len());
+            header.set_mode(metadata.permissions().mode());
+            header.set_mtime(0);
+            header.set_uid(0);
+            header.set_gid(0);
+            tar_builder.append_data(&mut header, rel_path, &mut File::open(path)?)?;
+        } else if entry.file_type().is_dir() {
+            let metadata = fs::metadata(path)?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            header.set_mode(metadata.permissions().mode());
+            header.set_mtime(0);
+            header.set_uid(0);
+            header.set_gid(0);
+            tar_builder.append_data(&mut header, rel_path, std::io::empty())?;
+        } else {
+            // Handle special file types (character devices, block devices, fifos, sockets)
+            let metadata = fs::metadata(path)?;
+            let mut header = tar::Header::new_gnu();
+
+            if metadata.file_type().is_char_device() {
+                header.set_entry_type(tar::EntryType::Char);
+                header.set_device_major((metadata.rdev() >> 8) as u32)?;
+                header.set_device_minor((metadata.rdev() & 0xff) as u32)?;
+            } else if metadata.file_type().is_block_device() {
+                header.set_entry_type(tar::EntryType::Block);
+                header.set_device_major((metadata.rdev() >> 8) as u32)?;
+                header.set_device_minor((metadata.rdev() & 0xff) as u32)?;
+            } else if metadata.file_type().is_fifo() {
+                header.set_entry_type(tar::EntryType::Fifo);
+            } else if metadata.file_type().is_socket() {
+                // Sockets cannot be archived, skip them
+                continue;
+            } else {
+                // Unknown file type, skip
+                continue;
+            }
+
+            header.set_size(0);
+            header.set_mode(metadata.permissions().mode());
+            header.set_mtime(0);
+            header.set_uid(0);
+            header.set_gid(0);
+
+            tar_builder.append_data(&mut header, rel_path, std::io::empty())?;
+        }
+    }
 
     // 完成 tar 构建
     tar_builder.finish()?;
