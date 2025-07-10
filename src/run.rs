@@ -280,6 +280,7 @@ pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     mount_env_dir(env_root, "/usr")?;
     mount_env_dir(env_root, "/etc")?;
     mount_env_dir(env_root, "/var")?;
+    mount_env_dir(env_root, "/run")?;   // fatal: could not open lock file /run/adduser!
 
     // "DPKG_MAINTSCRIPT_PACKAGE": "base-files"
     // "DPKG_MAINTSCRIPT_NAME": "postinst"
