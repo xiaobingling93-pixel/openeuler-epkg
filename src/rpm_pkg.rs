@@ -353,9 +353,19 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_
 
     // Extract basic metadata fields
     raw_fields.push(("name".to_string(), metadata.get_name().unwrap_or("unknown").to_string()));
-    raw_fields.push(("version".to_string(), format!("{}-{}",
-        metadata.get_version().unwrap_or("unknown"),
-        metadata.get_release().unwrap_or("unknown"))));
+
+    // Format version with epoch if present
+    let version = metadata.get_version().unwrap_or("unknown");
+    let release = metadata.get_release().unwrap_or("unknown");
+    let epoch = metadata.get_epoch().unwrap_or(0);
+
+    let version_str = if epoch == 0 {
+        format!("{}-{}", version, release)
+    } else {
+        format!("{}:{}-{}", epoch, version, release)
+    };
+    raw_fields.push(("version".to_string(), version_str));
+
     raw_fields.push(("arch".to_string(), metadata.get_arch().unwrap_or("unknown").to_string()));
 
     if let Ok(summary) = metadata.get_summary() {
