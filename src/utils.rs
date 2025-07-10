@@ -100,6 +100,19 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 // New function that reads from filelist.txt and provides type information
 pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo>> {
     let package_fs_path = Path::new(package_fs_dir);
+
+    // Check if the package_fs_dir itself exists first
+    if !package_fs_path.exists() {
+        log::warn!("Package filesystem directory does not exist: {}", package_fs_dir);
+        return Err(eyre::eyre!("Package filesystem directory does not exist: {}", package_fs_dir));
+    }
+
+    // Check if it's actually a directory
+    if !package_fs_path.is_dir() {
+        log::warn!("Package filesystem path is not a directory: {}", package_fs_dir);
+        return Err(eyre::eyre!("Package filesystem path is not a directory: {}", package_fs_dir));
+    }
+
     let store_dir = package_fs_path.parent()
         .ok_or_else(|| eyre::eyre!("Cannot get parent directory of {}", package_fs_dir))?;
     let filelist_path = store_dir.join("info/filelist.txt");
@@ -202,7 +215,20 @@ fn list_package_files_fallback(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo
     let dir = Path::new(package_fs_dir);
     let mut file_infos = Vec::new();
 
-    for entry in fs::read_dir(dir).unwrap() {
+    // Check if directory exists before trying to read it
+    if !dir.exists() {
+        log::warn!("Directory does not exist during fallback: {}", dir.display());
+        return Err(eyre::eyre!("Directory does not exist: {}", dir.display()));
+    }
+
+    // Check if it's actually a directory
+    if !dir.is_dir() {
+        log::warn!("Path is not a directory during fallback: {}", dir.display());
+        return Err(eyre::eyre!("Path is not a directory: {}", dir.display()));
+    }
+
+    for entry in fs::read_dir(dir)
+        .wrap_err_with(|| format!("Failed to read directory: {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -234,7 +260,9 @@ fn list_package_files_fallback(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo
         });
 
         if file_type.is_dir() {
-            file_infos.extend(list_package_files_fallback(path.to_str().unwrap())?);
+            let path_str = path.to_str()
+                .ok_or_else(|| eyre::eyre!("Path contains invalid UTF-8: {}", path.display()))?;
+            file_infos.extend(list_package_files_fallback(path_str)?);
         }
     }
 
@@ -344,7 +372,9 @@ pub fn verify_sha256sum(checksum_file: &Path) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("Invalid checksum file format"))?;
 
     // Compute actual checksum
-    let actual_checksum = compute_file_sha256(file_path.to_str().unwrap())?;
+    let file_path_str = file_path.to_str()
+        .ok_or_else(|| eyre::eyre!("File path contains invalid UTF-8: {}", file_path.display()))?;
+    let actual_checksum = compute_file_sha256(file_path_str)?;
 
     // Compare checksums
     if actual_checksum != expected_checksum {

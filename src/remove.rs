@@ -19,7 +19,9 @@ impl PackageManager {
             log::warn!("Package FS root {} does not exist for package directory {}. Assuming no files to unlink.", fs_dir.display(), pkg_store_path.display());
             return Ok(());
         }
-        let fs_files = crate::utils::list_package_files_with_info(fs_dir.to_str().unwrap_or_else(|| panic!("Invalid path for fs_dir: {}", fs_dir.display())))?;
+        let fs_dir_str = fs_dir.to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid path for fs_dir: {}", fs_dir.display()))?;
+        let fs_files = crate::utils::list_package_files_with_info(fs_dir_str)?;
         log::debug!("Unlinking package from {} to {} ({} files)", pkg_store_path.display(), env_root.display(), fs_files.len());
         for fs_file_info in fs_files {
             let fs_file = &fs_file_info.path;
