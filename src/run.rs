@@ -22,6 +22,7 @@ pub struct RunOptions {
     pub command: String,
     pub args: Vec<String>,
     pub env_vars: std::collections::HashMap<String, String>,
+    pub no_exit: bool,
 }
 
 /// Fork a new process and execute command with namespace isolation
@@ -40,8 +41,12 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
                         WaitStatus::Exited(_, exit_code) => {
                             debug!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
                             if exit_code != 0 {
-                                // Instead of returning an error, just exit with the same code
-                                std::process::exit(exit_code);
+                                if run_options.no_exit {
+                                    warn!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
+                                } else {
+                                    // Instead of returning an error, just exit with the same code
+                                    std::process::exit(exit_code);
+                                }
                             }
                         }
                         WaitStatus::Signaled(_, signal, _) => {
@@ -762,6 +767,7 @@ impl PackageManager {
             command,
             args,
             env_vars: std::collections::HashMap::new(),
+            no_exit: false,
         })
     }
 

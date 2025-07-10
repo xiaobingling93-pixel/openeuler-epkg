@@ -329,6 +329,7 @@ pub fn run_scriptlet(
                     command: interpreter.to_string(),
                     args: script_args,
                     env_vars,
+                    no_exit: true,           // Don't exit on scriptlet failures, just warn
                 };
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation
