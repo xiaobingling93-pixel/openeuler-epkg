@@ -73,6 +73,11 @@ fn main() -> Result<()> {
     setup_logging();
     setup_ctrlc();
 
+    // Gracefully exit instead of panic with BACKTRACE on `epkg info bash | head`
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     // 第一次访问会触发命令行解析和配置初始化
     log::trace!("Application starting with config: {:#?}", config());
 
