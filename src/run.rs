@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::os::fd::{AsRawFd, OwnedFd};
 
 use nix::unistd::{Uid, Gid, getuid, getgid, geteuid};
 
@@ -163,7 +164,34 @@ pub fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String
 
     debug!("Creating namespaces with flags: {:?}", clone_flags);
 
-    // Die on error like C version
+    // Handle user mapping if we need to create user namespace
+    if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+        // Fork a child process to handle newuidmap/newgidmap execution
+        let (child_pid, sync_fd) = fork_idmap_child(uid, gid, opt_user)?;
+
+        // Die on error like C version
+        unshare_with_error_handling(clone_flags)?;
+
+        debug!("Successfully created namespaces");
+
+        // Signal child to proceed with ID mapping
+        sync_with_idmap_child(child_pid, sync_fd)?;
+    } else {
+        // Die on error like C version
+        unshare_with_error_handling(clone_flags)?;
+
+        debug!("Successfully created namespaces");
+    }
+
+    if !clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+        mount_make_rprivate()?;
+    }
+
+    Ok(())
+}
+
+/// Execute unshare with comprehensive error handling
+fn unshare_with_error_handling(clone_flags: CloneFlags) -> Result<()> {
     unshare(clone_flags)
         .map_err(|e| {
             // Provide user-friendly error message
@@ -187,20 +215,7 @@ pub fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String
                 _ => "Unknown error creating namespaces"
             };
             eyre::eyre!("unshare failed: {}\n{}", e, context)
-        })?;
-
-    debug!("Successfully created namespaces");
-
-    if !clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
-        mount_make_rprivate()?;
-    }
-
-    // Handle user mapping if we created user namespace
-    if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
-        map_user(uid, gid, opt_user)?;
-    }
-
-    Ok(())
+        })
 }
 
 /// Check if user namespaces are supported on this system
@@ -397,22 +412,163 @@ pub fn mount_additional_dir(env_root: &Path, mount_dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Handle user ID mapping for unprivileged namespaces
-pub fn map_user(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<()> {
-    // In user namespaces, we typically map ourselves to become root inside the namespace
-    // This gives us the privileges needed for bind mounting
-    // Format: "inside_id outside_id count"
-    let uid_map = format!("0 {} 1", uid.as_raw());
-    let gid_map = format!("0 {} 1", gid.as_raw());
+/// Get current username
+fn get_current_username() -> Result<String> {
+    let uid = getuid();
 
-    debug!("Setting up user namespace mapping: uid_map='{}', gid_map='{}'", uid_map, gid_map);
+    // Try to get username from environment first
+    if let Ok(username) = env::var("USER") {
+        if !username.is_empty() {
+            return Ok(username);
+        }
+    }
 
-    // Write user mapping files in the correct order
-    write_id_map("/proc/self/setgroups", "deny")?;
-    write_id_map("/proc/self/uid_map", &uid_map)?;
-    write_id_map("/proc/self/gid_map", &gid_map)?;
+    // Fallback to looking up by UID
+    let user = nix::unistd::User::from_uid(uid)
+        .map_err(|e| eyre::eyre!("Failed to get user info for UID {}: {}", uid.as_raw(), e))?
+        .ok_or_else(|| eyre::eyre!("No user found for UID {}", uid.as_raw()))?;
 
-    // Set environment variables if user was specified
+    Ok(user.name)
+}
+
+/// Read subuid/subgid ranges for a user
+fn read_subid_ranges(username: &str, subid_file: &str) -> Result<Vec<(u32, u32)>> {
+    let content = fs::read_to_string(subid_file)
+        .map_err(|e| eyre::eyre!("Failed to read {}: {}", subid_file, e))?;
+
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() == 3 && parts[0] == username {
+            let start = parts[1].parse::<u32>()
+                .map_err(|e| eyre::eyre!("Invalid start ID in {}: {}", subid_file, e))?;
+            let count = parts[2].parse::<u32>()
+                .map_err(|e| eyre::eyre!("Invalid count in {}: {}", subid_file, e))?;
+            return Ok(vec![(start, count)]);
+        }
+    }
+
+    Err(eyre::eyre!("No subid ranges found for user {} in {}", username, subid_file))
+}
+
+/// Synchronization byte used for parent-child communication
+const PIPE_SYNC_BYTE: u8 = 0x69;
+
+/// Fork a child process to handle ID mapping with newuidmap/newgidmap
+fn fork_idmap_child(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<(nix::unistd::Pid, OwnedFd)> {
+    let (read_fd, write_fd) = nix::unistd::pipe()
+        .map_err(|e| eyre::eyre!("Failed to create pipe: {}", e))?;
+
+    match unsafe { nix::unistd::fork() } {
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
+            drop(read_fd); // Close read end in parent
+            debug!("Forked ID mapping child process: {}", child);
+            Ok((child, write_fd))
+        }
+        Ok(nix::unistd::ForkResult::Child) => {
+            drop(write_fd); // Close write end in child
+            // Wait for parent to signal us to proceed
+            let mut buffer = [0u8; 1];
+            match nix::unistd::read(&read_fd, &mut buffer) {
+                Ok(1) => {
+                    if buffer[0] == PIPE_SYNC_BYTE {
+                        debug!("Child received sync signal, proceeding with ID mapping");
+                        execute_idmap_for_parent(uid, gid, opt_user)?;
+                        std::process::exit(0);
+                    } else {
+                        eprintln!("Invalid sync byte received");
+                        std::process::exit(1);
+                    }
+                }
+                Ok(n) => {
+                    eprintln!("Unexpected read size: {}", n);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Failed to read sync signal: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            return Err(eyre::eyre!("Failed to fork ID mapping child: {}", e));
+        }
+    }
+}
+
+/// Signal the ID mapping child to proceed
+fn sync_with_idmap_child(child_pid: nix::unistd::Pid, sync_fd: OwnedFd) -> Result<()> {
+    let fd = sync_fd.as_raw_fd();
+    let sync_byte = [PIPE_SYNC_BYTE];
+    let result = unsafe {
+        libc::write(fd, sync_byte.as_ptr() as *const libc::c_void, sync_byte.len())
+    };
+    if result < 0 {
+        return Err(eyre::eyre!("Failed to send sync signal to child: {}", std::io::Error::last_os_error()));
+    } else if result != 1 {
+        return Err(eyre::eyre!("Unexpected write size: {}", result));
+    }
+    debug!("Sent sync signal to child");
+    // OwnedFd will close fd when dropped
+    drop(sync_fd);
+    match nix::sys::wait::waitpid(child_pid, None) {
+        Ok(wait_status) => {
+            use nix::sys::wait::WaitStatus;
+            match wait_status {
+                WaitStatus::Exited(_, exit_code) => {
+                    if exit_code != 0 {
+                        return Err(eyre::eyre!("ID mapping child failed with exit code {}", exit_code));
+                    }
+                    debug!("ID mapping child completed successfully");
+                }
+                WaitStatus::Signaled(_, signal, _) => {
+                    return Err(eyre::eyre!("ID mapping child killed by signal {:?}", signal));
+                }
+                _ => {
+                    return Err(eyre::eyre!("ID mapping child ended with unexpected status: {:?}", wait_status));
+                }
+            }
+        }
+        Err(e) => {
+            return Err(eyre::eyre!("Failed to wait for ID mapping child: {}", e));
+        }
+    }
+    Ok(())
+}
+
+/// Execute ID mapping for the parent process using newuidmap/newgidmap
+fn execute_idmap_for_parent(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<()> {
+    let parent_pid = nix::unistd::getppid();
+    let username = get_current_username()?;
+    let uid_raw = uid.as_raw();
+    let gid_raw = gid.as_raw();
+
+    debug!("Executing ID mapping for parent PID {} (user: {}, UID: {}, GID: {})",
+           parent_pid, username, uid_raw, gid_raw);
+
+    // Check if newuidmap and newgidmap commands are available
+    let has_newuidmap = utils::command_exists("newuidmap");
+    let has_newgidmap = utils::command_exists("newgidmap");
+
+    debug!("UID mapping tools: newuidmap={}, newgidmap={}", has_newuidmap, has_newgidmap);
+
+    if has_newuidmap && has_newgidmap {
+        // Try Podman's approach with newuidmap/newgidmap
+        match execute_newidmap_for_parent(parent_pid, uid_raw, gid_raw, &username) {
+            Ok(()) => {
+                debug!("Successfully used newuidmap/newgidmap for UID/GID mapping");
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("newuidmap/newgidmap failed: {}, falling back to simple mapping", e);
+                execute_simple_idmap_for_parent(parent_pid, uid_raw, gid_raw)?;
+            }
+        }
+    } else {
+        // Fallback to simple mapping
+        execute_simple_idmap_for_parent(parent_pid, uid_raw, gid_raw)?;
+    }
+
+    // Set environment variables if user was specified (this will be inherited by the parent)
     if let Some(user_spec) = opt_user {
         if let Ok(_parsed_uid) = user_spec.parse::<u32>() {
             // For numeric UIDs, we don't change environment variables
@@ -426,9 +582,86 @@ pub fn map_user(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Write to ID mapping files
-pub fn write_id_map(path: &str, content: &str) -> Result<()> {
-    fs::write(path, content)
+/// Execute newuidmap/newgidmap for the parent process
+fn execute_newidmap_for_parent(parent_pid: nix::unistd::Pid, uid_raw: u32, gid_raw: u32, username: &str) -> Result<()> {
+    // Read subuid and subgid ranges
+    let subuid_ranges = read_subid_ranges(username, "/etc/subuid")?;
+    let subgid_ranges = read_subid_ranges(username, "/etc/subgid")?;
+
+    debug!("Subuid ranges: {:?}", subuid_ranges);
+    debug!("Subgid ranges: {:?}", subgid_ranges);
+
+    // Write setgroups deny first
+    write_id_map_for_pid(parent_pid, "/proc/{}/setgroups", "deny")?;
+
+    // Set up UID mapping using newuidmap
+    execute_newidmap_for_pid("newuidmap", parent_pid, uid_raw, &subuid_ranges)?;
+
+    // Set up GID mapping using newgidmap
+    execute_newidmap_for_pid("newgidmap", parent_pid, gid_raw, &subgid_ranges)?;
+
+    debug!("Successfully mapped UID/GID ranges using newuidmap/newgidmap");
+    Ok(())
+}
+
+/// Execute newuidmap or newgidmap command for a specific PID
+fn execute_newidmap_for_pid(cmd: &str, target_pid: nix::unistd::Pid, current_id: u32, ranges: &[(u32, u32)]) -> Result<()> {
+    let mut args = vec![
+        cmd.to_string(),
+        target_pid.as_raw().to_string(), // target PID (parent)
+    ];
+
+    // Map root (0) to current user/group
+    args.push("0".to_string());
+    args.push(current_id.to_string());
+    args.push("1".to_string());
+
+    // Map additional ranges starting from 1
+    for (start, count) in ranges {
+        if *count > 1 {
+            args.push("1".to_string());
+            args.push(start.to_string());
+            args.push(count.to_string());
+            break; // Use first range for now
+        }
+    }
+
+    debug!("Executing {} with args: {:?}", cmd, args);
+    let status = std::process::Command::new(&args[0])
+        .args(&args[1..])
+        .status()
+        .map_err(|e| eyre::eyre!("Failed to execute {}: {}", cmd, e))?;
+
+    if !status.success() {
+        return Err(eyre::eyre!("{} failed with status: {}", cmd, status));
+    }
+
+    Ok(())
+}
+
+/// Execute simple ID mapping for the parent process
+fn execute_simple_idmap_for_parent(parent_pid: nix::unistd::Pid, uid_raw: u32, gid_raw: u32) -> Result<()> {
+    // In user namespaces, we typically map ourselves to become root inside the namespace
+    // This gives us the privileges needed for bind mounting
+    // Format: "inside_id outside_id count"
+    let uid_map = format!("0 {} 1", uid_raw);
+    let gid_map = format!("0 {} 1", gid_raw);
+
+    debug!("Setting up simple user namespace mapping for PID {}: uid_map='{}', gid_map='{}'",
+           parent_pid, uid_map, gid_map);
+
+    // Write user mapping files in the correct order
+    write_id_map_for_pid(parent_pid, "/proc/{}/setgroups", "deny")?;
+    write_id_map_for_pid(parent_pid, "/proc/{}/uid_map", &uid_map)?;
+    write_id_map_for_pid(parent_pid, "/proc/{}/gid_map", &gid_map)?;
+
+    Ok(())
+}
+
+/// Write to ID mapping files for a specific PID
+fn write_id_map_for_pid(pid: nix::unistd::Pid, path_template: &str, content: &str) -> Result<()> {
+    let path = path_template.replace("{}", &pid.as_raw().to_string());
+    fs::write(&path, content)
         .map_err(|e| eyre::eyre!("Failed to write to {}: {}", path, e))?;
     Ok(())
 }

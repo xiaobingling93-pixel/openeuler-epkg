@@ -480,7 +480,6 @@ pub fn is_running_as_root() -> bool {
     unistd::geteuid().is_root()
 }
 
-#[cfg(debug_assertions)]
 pub fn command_exists(command_name: &str) -> bool {
     find_command_in_paths(command_name).is_some()
 }
@@ -488,7 +487,6 @@ pub fn command_exists(command_name: &str) -> bool {
 
 /// Searches for an executable command in a predefined list of common paths.
 /// Returns the full path to the command if found and executable, otherwise None.
-#[cfg(debug_assertions)]
 pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
     let common_paths = [
         "/usr/local/sbin",
