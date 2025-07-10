@@ -182,7 +182,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
         // }
 
         if fs_file_info.is_link() {
-            mirror_symlink_file(store_fs_dir, fs_file, &target_path, fhs_file)
+            mirror_symlink_file(fs_file, &target_path, fhs_file)
                 .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))?;
         } else {
             mirror_regular_file(fs_file, &target_path, fhs_file)
@@ -206,11 +206,9 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
 /// - /usr/bin/python3 -> /usr/bin/python3.11 (absolute file symlink): creates shortcut symlink
 ///
 /// Parameters:
-/// - store_fs_dir: Base directory of the package store
 /// - fs_file: Path to the symlink in the store
 /// - target_path: Where to create the symlink in the environment
-/// - _env_root: Root of the environment (unused in current implementation)
-fn mirror_symlink_file(store_fs_dir: &Path, fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
+fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
     // Skip symlinks for top-level directories: sbin, bin, lib, lib64, lib32
     if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32") {
         return Ok(());
@@ -219,7 +217,7 @@ fn mirror_symlink_file(store_fs_dir: &Path, fs_file: &Path, target_path: &Path, 
     utils::remove_any_existing_file(target_path)?;
 
     // Handle regular symlink (not pointing to directory)
-    shortcut_symlink(store_fs_dir, fs_file, target_path)
+    shortcut_symlink(fs_file, target_path)
         .with_context(|| format!("Failed to shortcut_symlink from {} to {}", fs_file.display(), target_path.display()))?;
     Ok(())
 }
@@ -264,20 +262,20 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
     Ok(())
 }
 
-// like symlink() but removes one level of indirection
-fn shortcut_symlink(store_fs_dir: &Path, fs_file: &Path, target_path: &Path) -> Result<()> {
+// Like symlink() but try to remove one level of indirection
+fn shortcut_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
     if let Ok(link_target) = fs::read_link(fs_file) {
-        // Handle different types of symlinks:
-        // 1. Absolute paths: e.g. /usr/bin/python3 -> /usr/bin/python3.11
-        //    Join with store_fs_dir to make it relative to the package root
-        // 2. Parent-relative paths: e.g. ../bin/pidof -> /usr/bin/pidof
-        //    Use normalize_join to resolve the ../ components against store_fs_dir
-        // 3. Sibling-relative paths: e.g. python3 -> python3.11
-        //    Join with the parent directory of the source file
-        let new_link_target = if link_target.is_absolute() {
-            // For absolute paths like /usr/bin/python3.11, make them relative to store_fs_dir
-            // Note: Using Path.join() here would incorrectly handle absolute paths by discarding the base path
-            PathBuf::from(format!("{}/{}", store_fs_dir.display(), link_target.display()))
+        let new_link_target = if link_target.is_absolute() || !link_target.exists() {
+            // This prevents
+            //      /usr/bin/python3 -> /home/wfg/.epkg/store/lsl4sc64f2ccp62cxfquizdaj5k4fpcu__python3-minimal__3.13.3-1__amd64/fs/usr/bin/python3.13
+            // in case
+            //      /home/wfg/.epkg/store/lsl4sc64f2ccp62cxfquizdaj5k4fpcu__python3-minimal__3.13.3-1__amd64/fs/usr/bin/python3 -> python3.13
+            //
+            // Prevents
+            //      /home/wfg/.epkg/envs/main/bin/sh -> /home/wfg/.epkg/store/g53cxe55pxbwqgq2k2nk7owjnv7zmlsj__busybox-binsh__1.37.0-r18__noarch/fs//bin/busybox
+            // in case /bin/busybox happen to exist in host os but not in env:
+            //      /home/wfg/.epkg/store/g53cxe55pxbwqgq2k2nk7owjnv7zmlsj__busybox-binsh__1.37.0-r18__noarch/fs//bin/sh -> /bin/busybox
+            link_target
         } else if link_target.starts_with("../") {
             // For parent-relative paths like ../bin/pidof, normalize against fs_file
             normalize_join(fs_file.parent().ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", fs_file.display()))?,
