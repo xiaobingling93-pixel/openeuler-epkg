@@ -1266,7 +1266,19 @@ impl PackageManager {
             if !completed_packages.contains_key(pkgkey) && package_info_from_args.ebin_exposure {
                 appbin_count += 1;
                 appbin_packages.push(pkgkey.clone());
-                let store_fs_dir = store_root.join(package_info_from_args.pkgline.clone()).join("fs");
+
+                // For packages that are already installed, copy their pkgline from the existing installation
+                let pkgline = if package_info_from_args.pkgline.is_empty() {
+                    if let Some(existing_info) = self.installed_packages.get(pkgkey) {
+                        existing_info.pkgline.clone()
+                    } else {
+                        package_info_from_args.pkgline.clone()
+                    }
+                } else {
+                    package_info_from_args.pkgline.clone()
+                };
+
+                let store_fs_dir = store_root.join(pkgline).join("fs");
 
                 // Ensure package_info is in self.installed_packages *before* calling expose_package.
                 // This is crucial for the subsequent get_mut to find the package.

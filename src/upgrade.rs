@@ -34,6 +34,13 @@ impl PackageManager {
             }
 
             packages_to_expose_from_args = initial_packages_to_process.clone();
+
+            // For packages that are already installed, copy their pkgline from the existing installation
+            for (pkgkey, package_info) in &mut packages_to_expose_from_args {
+                if let Some(existing_info) = self.installed_packages.get(pkgkey) {
+                    package_info.pkgline = existing_info.pkgline.clone();
+                }
+            }
         }
 
         if !missing_items_log.is_empty() {
