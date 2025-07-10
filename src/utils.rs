@@ -685,14 +685,14 @@ pub fn safe_mkdir_p(path: &Path) -> Result<()> {
 
         if metadata.is_file() {
             log::debug!("Path exists as a file, removing it: {}", path.display());
-            remove_any_existing_file(path)?;
+            remove_any_existing_file(path, false)?;
         } else if metadata.is_dir() {
             log::debug!("Path exists as a directory: {}", path.display());
             // Directory already exists, we can proceed
             return Ok(());
         } else {
             log::debug!("Path exists as something else (symlink, etc.), removing it: {}", path.display());
-            remove_any_existing_file(path)?;
+            remove_any_existing_file(path, false)?;
         }
     }
 
@@ -719,21 +719,33 @@ pub fn safe_mkdir_p(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove any existing file, symlink, or other non-directory at the given path
+/// Remove any existing file, symlink, or directory at the given path
 ///
 /// This function will attempt to remove the file regardless of its type
-/// (regular file, symlink, etc.) but will not remove directories.
+/// (regular file, symlink, etc.) and optionally directories.
 /// Handles dead symlinks by using symlink_metadata instead of path.exists().
-pub fn remove_any_existing_file(path: &Path) -> Result<()> {
+///
+/// # Arguments
+/// * `path` - Path to the file/directory to remove
+/// * `rm_dir` - If true, remove directories; if false, return error for directories
+///
+/// # Returns
+/// * `Result<()>` - Ok if removal was successful, Err otherwise
+pub fn remove_any_existing_file(path: &Path, rm_dir: bool) -> Result<()> {
     // Use symlink_metadata to handle dead symlinks properly
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.is_dir() {
-                return Err(eyre::eyre!("Cannot remove directory '{}' with remove_any_existing_file()", path.display()));
+                if rm_dir {
+                    fs::remove_dir_all(path)
+                        .map_err(|e| eyre::eyre!("Failed to remove directory '{}': {}", path.display(), e))?;
+                } else {
+                    return Err(eyre::eyre!("Cannot remove directory '{}' with remove_any_existing_file()", path.display()));
+                }
+            } else {
+                fs::remove_file(path)
+                    .map_err(|e| eyre::eyre!("Failed to remove existing file at path '{}': {}", path.display(), e))?;
             }
-
-            fs::remove_file(path)
-                .map_err(|e| eyre::eyre!("Failed to remove existing file at path '{}': {}", path.display(), e))?;
         }
         Err(e) => {
             // If symlink_metadata fails, the path doesn't exist (not even as a dead symlink)

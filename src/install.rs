@@ -214,7 +214,7 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
         return Ok(());
     }
 
-    utils::remove_any_existing_file(target_path)?;
+    utils::remove_any_existing_file(target_path, true)?;
 
     // Handle regular symlink (not pointing to directory)
     shortcut_symlink(fs_file, target_path)
