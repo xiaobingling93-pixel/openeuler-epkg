@@ -3507,6 +3507,7 @@ fn process_download_response(
         if let Ok(master_metadata_guard) = task.master_metadata.lock() {
             if let Some(ref master_metadata) = *master_metadata_guard {
                 if !metadata.matches_with(master_metadata) {
+                    add_url_to_mirror_skip_list(task);
                     return Err(eyre!(
                             "Chunk metadata conflicts with master metadata. Chunk: {:?}, Master: {:?}",
                             metadata,
@@ -4937,7 +4938,7 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
         let mut mirrors = mirror::MIRRORS.lock()
             .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
 
-        mirrors.select_mirror_with_usage_tracking(need_range)
+        mirrors.select_mirror_with_usage_tracking(need_range, Some(&task.url))
             .map_err(|e| DownloadError::MirrorResolution {
                 details: format!("{}", e)
             })?
@@ -5700,4 +5701,26 @@ fn adjust_and_create_chunks(
     }
 
     add_chunk_tasks(master_task, chunk_tasks, ChunkStatus::HasBeforehandChunk)
+}
+
+fn add_url_to_mirror_skip_list(task: &DownloadTask) {
+    let mirror_url = {
+        if let Ok(mirror_guard) = task.mirror_inuse.lock() {
+            if let Some(ref mirror) = *mirror_guard {
+                Some(mirror::url2site(&mirror.url))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(site_key) = mirror_url {
+        let url = &task.url;
+        if let Ok(mut mirrors) = mirror::MIRRORS.lock() {
+            if let Some(mirror_in_collection) = mirrors.mirrors.get_mut(&site_key) {
+                mirror_in_collection.add_skip_url(url);
+            }
+        }
+    }
 }

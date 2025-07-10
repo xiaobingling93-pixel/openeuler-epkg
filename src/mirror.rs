@@ -118,6 +118,8 @@ pub struct Mirror {
     pub stats: MirrorStats,
     #[serde(skip_serializing, skip_deserializing)]
     pub is_near: bool,  // true if mirror is in the same country as user
+    #[serde(skip_serializing, skip_deserializing)]
+    pub skip_urls: std::collections::HashSet<String>, // Skip due to metadata conflicts with master task
 }
 
 /// Shared usage statistics that need to be synchronized across Mirror clones
@@ -205,6 +207,7 @@ impl Default for Mirror {
             shared_usage: Arc::new(SharedUsageStats::default()),
             stats: MirrorStats::default(),
             is_near: false,
+            skip_urls: std::collections::HashSet::new(),
         }
     }
 }
@@ -225,6 +228,7 @@ impl Clone for Mirror {
             shared_usage: Arc::clone(&self.shared_usage), // Share the same usage counters
             stats: self.stats.clone(),
             is_near: self.is_near,
+            skip_urls: self.skip_urls.clone(),
         }
     }
 }
@@ -377,6 +381,15 @@ impl Mirror {
         self.shared_usage.active_downloads.store(0, Ordering::Relaxed);
         self.shared_usage.total_uses.store(0, Ordering::Relaxed);
         self.shared_usage.last_used.store(0, Ordering::Relaxed);
+    }
+
+    pub fn add_skip_url(&mut self, url: &str) {
+        self.skip_urls.insert(url.to_string());
+        log::debug!("Added {} to skip_urls for mirror {}", url, self.url);
+    }
+
+    pub fn should_skip_url(&self, url: &str) -> bool {
+        self.skip_urls.contains(url)
     }
 
     /// Calculate weighted performance score for mirror selection optimization
@@ -1053,7 +1066,7 @@ impl Mirrors {
     /// Select mirror with automatic usage tracking
     ///
     /// Returns a Mirror that automatically tracks usage when selected and dropped
-    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool) -> Result<Mirror> {
+    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool, raw_url: Option<&str>) -> Result<Mirror> {
         // Initialize mirrors if not already done
         if self.mirrors.is_empty() {
             let initialized_mirrors = initialize_mirrors()?;
@@ -1070,7 +1083,7 @@ impl Mirrors {
         let should_dump = call_count % 2 == 1;
 
         // Update available mirrors based on filtering criteria
-        self.update_available_mirrors(need_range, distro, arch);
+        self.update_available_mirrors(need_range, distro, arch, raw_url);
 
         if self.available_mirrors.is_empty() {
             dump_mirror_performance_stats(&self, true);
@@ -1080,8 +1093,6 @@ impl Mirrors {
                 return Err(eyre!("No available mirrors found in pre-filtered set"));
             }
         }
-
-        // (Removed calculate_mirror_stats function call)
 
         if should_dump && log::log_enabled!(log::Level::Debug) {
             dump_mirror_performance_stats(&self, false);
@@ -1098,7 +1109,7 @@ impl Mirrors {
     }
 
     /// Filter mirrors based on availability and requirements and update available_mirrors
-    fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str) {
+    fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str, raw_url: Option<&str>) {
         self.available_mirrors = self.mirrors.iter()
             .filter_map(|(site, mirror)| {
                 // Exclude mirrors with no_content, old_content, or no_online
@@ -1109,6 +1120,14 @@ impl Mirrors {
                 // If need_range is true, exclude mirrors with no_range=true
                 if need_range && mirror.stats.no_range {
                     return None;
+                }
+
+                // Exclude mirrors that have metadata conflicts with master task
+                if let Some(url) = raw_url {
+                    if mirror.should_skip_url(url) {
+                        log::debug!("Skipping mirror {} for URL {} due to metadata conflicts", mirror.url, url);
+                        return None;
+                    }
                 }
 
                 // Check if this mirror can provide a valid distro directory
