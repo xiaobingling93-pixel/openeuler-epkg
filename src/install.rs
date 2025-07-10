@@ -800,6 +800,10 @@ impl PackageManager {
         let symlinks = [
             ("bin/sh", ["bash", "dash"]),
             ("usr/bin/awk", ["mawk", "gawk"]),
+
+            // These are optional and will fail due to no "dpkg -L" output
+            ("usr/local/bin/py3compile", ["/usr/bin/true", "/bin/true"]),
+            ("usr/local/bin/py3clean", ["/usr/bin/true", "/bin/true"]),
         ];
 
         for (link_name, possible_targets) in &symlinks {
@@ -828,7 +832,7 @@ impl PackageManager {
 
     /// Fix up environment links and remove system directories
     fn fixup_env_links(&self, env_root: &Path) -> Result<()> {
-        // Remove systemd system directory
+        // Prevent running and stalling on `systemctl --system daemon-reload`
         let _ = std::fs::remove_dir(env_root.join("run/systemd/system"));
 
         // Replace symlinks with their target file content
