@@ -297,9 +297,9 @@ Environment 't1' activated.
 --------------------------------------------------  t1 env history  --------------------------------------------------
 id  | timestamp                  | action     | new_packages | del_packages | command line
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
-1   | 2025-03-06 20:23:31 +08:00 | install    | 70           | 0            | /opt/epkg/users/public/envs/common/profile-current/usr/bin/epkg install tree
-2   | 2025-03-06 20:23:38 +08:00 | install    | 1            | 0            | /opt/epkg/users/public/envs/common/profile-current/usr/bin/epkg install htop
-3   | 2025-03-06 20:23:45 +08:00 | remove     | 0            | 1            | /opt/epkg/users/public/envs/common/profile-current/usr/bin/epkg remove htop
+1   | 2025-03-06 20:23:31 +08:00 | install    | 70           | 0            | /opt/epkg/users/public/envs/base/profile-current/usr/bin/epkg install tree
+2   | 2025-03-06 20:23:38 +08:00 | install    | 1            | 0            | /opt/epkg/users/public/envs/base/profile-current/usr/bin/epkg install htop
+3   | 2025-03-06 20:23:45 +08:00 | remove     | 0            | 1            | /opt/epkg/users/public/envs/base/profile-current/usr/bin/epkg remove htop
 ```
 
 ### 环境回退

@@ -110,10 +110,10 @@ fn push_env_var(script: &mut String, key: &str, new_value: Option<String>, origi
 
 impl PackageManager {
 
-    /// Get list of all environment names except 'common'
+    /// Get list of all environment names except 'base'
     ///
     /// This function lists all environment directories in both private and public
-    /// locations, excluding the special 'common' environment.
+    /// locations, excluding the special 'base' environment.
     ///
     /// Returns a Vec of (env_name, is_public, owner) tuples.
     pub fn get_all_env_names(&self) -> Result<Vec<(String, bool, String)>> {
@@ -125,7 +125,7 @@ impl PackageManager {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let name = entry.file_name().into_string().unwrap_or_default();
-                    if name != "common"  && !name.starts_with('.') {
+                    if name != BASE_ENV  && !name.starts_with('.') {
                         all_envs.push((name, false, current_user.clone()));
                     }
                 }
@@ -142,7 +142,7 @@ impl PackageManager {
                         for owner_entry in owner_entries {
                             if let Ok(owner_entry) = owner_entry {
                                 let name = owner_entry.file_name().into_string().unwrap_or_default();
-                                if name != "common" {
+                                if name != BASE_ENV {
                                     all_envs.push((name, true, owner.clone()));
                                 }
                             }
@@ -158,7 +158,7 @@ impl PackageManager {
     }
 
     pub fn list_environments(&self) -> Result<()> {
-        // Get all environments except common
+        // Get all environments except base
         let all_envs = self.get_all_env_names()?;
         let registered_envs: Vec<String> = self.get_registered_env_names()?;
 
@@ -254,7 +254,7 @@ impl PackageManager {
     }
 
     pub fn new_env_base(&self, name: &str) -> PathBuf {
-        if config().env.public && name != "main" {
+        if config().env.public && name != MAIN_ENV {
             dirs().public_envs.join(name)
         } else {
             dirs().private_envs.join(name)
@@ -296,7 +296,7 @@ impl PackageManager {
         } else {
             // Initialize channel from command line option or default
             let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
-            let epkg_src = get_epkg_manager_path()?;
+            let epkg_src = get_epkg_src_path()?;
             let mut src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", channel));
             if !src_channel_yaml.exists() {
                 let repo_name = channel.split(":").next().unwrap_or(&channel);
@@ -336,7 +336,7 @@ impl PackageManager {
 
         // 'main' is the default environment for many actions, so enforce it be private,
         // to avoid careless daily installs be exposed to others.
-        if env_config.public && name == "main" {
+        if env_config.public && name == MAIN_ENV {
             println!("Notice: environment 'main' is always created private");
             env_config.public = false;
         }
@@ -370,7 +370,7 @@ impl PackageManager {
 
     pub fn remove_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
-        if name == "common" || name == "main" {
+        if name == BASE_ENV || name == MAIN_ENV {
             return Err(eyre::eyre!("Environment cannot be removed: '{}'", name));
         }
 
@@ -412,8 +412,8 @@ impl PackageManager {
 
     pub fn activate_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
-        if name == "common" {
-            return Err(eyre::eyre!("Environment 'common' cannot be activated"));
+        if name == BASE_ENV {
+            return Err(eyre::eyre!("Environment 'base' cannot be activated"));
         }
 
         // Check if environment exists
@@ -541,8 +541,8 @@ impl PackageManager {
 
     pub fn register_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
-        if name == "common" {
-            return Err(eyre::eyre!("Environment 'common' cannot be registered"));
+        if name == BASE_ENV {
+            return Err(eyre::eyre!("Environment 'base' cannot be registered"));
         }
 
         let env_config = crate::models::env_config();

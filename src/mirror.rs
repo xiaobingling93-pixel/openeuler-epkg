@@ -12,7 +12,6 @@ use color_eyre::eyre::{Context, Result, eyre, bail};
 use crate::location;
 use crate::models::dirs;
 use crate::models::channel_config;
-use crate::dirs::get_epkg_manager_path;
 
 const MAX_PGET_LIMIT:usize = 5;
 
@@ -630,7 +629,7 @@ fn apply_distro_filtering(
 /// When distro_filter is None, loads all mirrors (used for initial bootstrap)
 /// When distro_filter is Some(distro), only loads mirrors supporting that distro
 pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<String, Mirror>> {
-    let manager_path = get_epkg_manager_path()?;
+    let manager_path = crate::dirs::get_epkg_src_path()?;
     let mirrors_file_path = manager_path.join("channel/mirrors.json");
     let manual_mirrors_file_path = manager_path.join("channel/manual-mirrors.json");
 

@@ -14,7 +14,7 @@ Attention: For changes to take effect, close and re-open your current shell.
 wfg@crystal ~/epkg% bash bin/epkg-installer.sh
 Attention: Execute by wfg, epkg will be installed in the /home/wfg/.epkg/, sure to continue? (y: continue, others: exit)
 y
-Attention: Directories /home/wfg/.cache/epkg and /home/wfg/.epkg/envs/common will be created.
+Attention: Directories /home/wfg/.cache/epkg and /home/wfg/.epkg/envs/base will be created.
 Attention: File /home/wfg/.zshrc will be modified.
 download epkg manager
 download static epkg binary
@@ -31,7 +31,7 @@ wfg@crystal ~/epkg% zsh
 Your ~/.bashrc or ~/.zshrc
 =>
 # grep -C1 epkg ~/.zshrc
-source $HOME/.epkg/envs/common/profile-current/opt/epkg-manager/lib/epkg-rc.sh
+source $HOME/.epkg/envs/base/profile-current/usr/src/epkg/lib/epkg-rc.sh
 =>
 1) set PATH
 PATH=$HOME/.epkg/envs/main/profile-current/usr/ebin:...
@@ -45,8 +45,8 @@ PATH=$HOME/.epkg/envs/main/profile-current/usr/ebin:...
 # epkg package manager env
 
 ```shell
-wfg@crystal ~% tree ~/.epkg/envs/common/profile-current/
-/home/wfg/.epkg/envs/common/profile-current/
+wfg@crystal ~% tree ~/.epkg/envs/base/profile-current/
+/home/wfg/.epkg/envs/base/profile-current/
 ├── bin -> usr/bin
 ├── etc
 │   ├── epkg
@@ -55,10 +55,10 @@ wfg@crystal ~% tree ~/.epkg/envs/common/profile-current/
 │   └── resolv.conf
 ├── installed-packages.json
 ├── lib -> usr/lib
-├── opt
-│   └── epkg-manager/lib
-│       └── epkg-rc.sh  # source from .bashrc / .zshrc
 └── usr
+    ├── src
+    │   └── epkg/lib
+    │       └── epkg-rc.sh  # source from .bashrc / .zshrc
     └── bin
         ├── elf-loader      # entry point for binary-converted epkg applications
         └── epkg            # static-compiled rust, called by epkg() in epkg-rc.sh

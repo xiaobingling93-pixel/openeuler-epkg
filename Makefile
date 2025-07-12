@@ -17,11 +17,11 @@ build:
 	@cargo build
 	@echo "Development build completed. Binary is in target/debug/$(BINARY_NAME)"
 	@# for quick develop-debug loop
-	@if [ -d "$$HOME/.epkg/envs/common/usr/bin" ]; then \
-		if [ ! -L "$$HOME/.epkg/envs/common/opt/epkg-manager" ] || [ "$$(readlink "$$HOME/.epkg/envs/common/opt/epkg-manager")" != "$$(pwd)" ]; then \
-			cp --update lib/epkg-rc.sh "$$HOME/.epkg/envs/common/opt/epkg-manager/lib/epkg-rc.sh"; \
+	@if [ -d "$$HOME/.epkg/envs/base/usr/bin" ]; then \
+		if [ ! -L "$$HOME/.epkg/envs/base/usr/src/epkg" ] || [ "$$(readlink "$$HOME/.epkg/envs/base/usr/src/epkg")" != "$$(pwd)" ]; then \
+			cp --update lib/epkg-rc.sh "$$HOME/.epkg/envs/base/usr/src/epkg/lib/epkg-rc.sh"; \
 		fi; \
-		cp --update target/debug/epkg "$$HOME/.epkg/envs/common/usr/bin/epkg"; \
+		cp --update target/debug/epkg "$$HOME/.epkg/envs/base/usr/bin/epkg"; \
 	fi
 
 # Install dependencies and set up Rust toolchain

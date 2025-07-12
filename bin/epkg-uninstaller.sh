@@ -25,7 +25,7 @@ case "$shell" in
 esac
 
 check_exec_user() {
-    if [[ -d "/opt/epkg/envs/root/common/" && "$(id -u)" != "0" ]]; then
+    if [[ -d "/opt/epkg/envs/root/base/" && "$(id -u)" != "0" ]]; then
         echo "Attention: Please use the root user to uninstall global mode epkg."
         return 1
     fi
@@ -73,7 +73,7 @@ clean_global_file() {
 check_exec_user || exit 1
 
 # step 1. clean files and context
-if test -d /opt/epkg/envs/root/common; then
+if test -d /opt/epkg/envs/root/base; then
     clean_global_file
 else
     clean_user_file $HOME

@@ -181,12 +181,12 @@ pub fn get_repo_dir(repo: &RepoRevise) -> Result<PathBuf> {
 }
 
 /// Find the first existing dir:
-/// - $HOME/.epkg/envs/common/opt/epkg-manager
-/// - /opt/epkg/envs/root/common/opt/epkg-manager
-pub fn get_epkg_manager_path() -> Result<PathBuf> {
-    let common_env_root = find_env_root("common")
-                .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
-    Ok(common_env_root.join("opt/epkg-manager"))
+/// - $HOME/.epkg/envs/base/usr/src/epkg
+/// - /opt/epkg/envs/root/base/usr/src/epkg
+pub fn get_epkg_src_path() -> Result<PathBuf> {
+    let base_env_root = find_env_root(BASE_ENV)
+                .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
+    Ok(base_env_root.join("usr/src/epkg"))
 }
 
 /// Get the path to an environment's configuration file

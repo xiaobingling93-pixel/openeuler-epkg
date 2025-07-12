@@ -54,7 +54,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::privdrop_on_suid;
-use crate::dirs::get_epkg_manager_path;
+use crate::dirs::get_epkg_src_path;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use clap::{arg, Command};
@@ -558,7 +558,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     )?;
 
     config.common.env = matches.get_one::<String>("env").map_or_else(
-        || env::var("EPKG_ACTIVE_ENV").map(|s| s.trim_end_matches(':').to_string()).unwrap_or_else(|_| "main".to_string()),
+        || env::var("EPKG_ACTIVE_ENV").map(|s| s.trim_end_matches(':').to_string()).unwrap_or_else(|_| MAIN_ENV.to_string()),
         |s| s.to_string()
     );
     if let Some(arch) = matches.get_one::<String>("arch") {
@@ -670,9 +670,9 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         eprintln!("version was configured to empty, using default version: {}", config.init.version);
     }
 
-    // compose options for creating "common" env, must be done here since
+    // compose options for creating BASE_ENV, must be done here since
     // config() content will freeze after first call, and some routines rely on it.
-    config.common.env = "common".to_string();
+    config.common.env = BASE_ENV.to_string();
     config.env.public = config.init.shared_store;
     if let Some(channel) = sub_matches.get_one::<String>("channel") {
         config.env.channel = Some(channel.to_string());
@@ -1050,9 +1050,9 @@ impl PackageManager {
         if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
             privdrop_on_suid();
 
-            let epkg_manager_path = get_epkg_manager_path()
-                .map_err(|_| eyre::eyre!("epkg-manager not installed"))?;
-            let build_script = epkg_manager_path.join("build/scripts/generic-build.sh");
+            let epkg_src_path = get_epkg_src_path()
+                .map_err(|_| eyre::eyre!("epkg not installed"))?;
+            let build_script = epkg_src_path.join("build/scripts/generic-build.sh");
             if !build_script.exists() {
                 return Err(eyre::eyre!("Build script not found"));
             }

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use crate::dirs::get_epkg_manager_path;
 use crate::models::dirs;
 use color_eyre::eyre::{Context, Result, eyre};
 use std::fs;
@@ -248,7 +247,7 @@ static TIMEZONE_COUNTRY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(|
 });
 
 fn load_timezone_country_mapping() -> Result<HashMap<String, String>> {
-    let file_path = get_epkg_manager_path()?.join("channel/cc-timezone.txt");
+    let file_path = crate::dirs::get_epkg_src_path()?.join("channel/cc-timezone.txt");
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 

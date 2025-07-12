@@ -39,12 +39,10 @@ fn print_packages_by_depend_depth(packages: &HashMap<String, InstalledPackageInf
 }
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
-    // Get common environment root path
-    let common_env_root = dirs::find_env_root("common")
-        .ok_or_else(|| eyre::eyre!("Common environment not found"))?;
+    let base_env_root = dirs::find_env_root(BASE_ENV)
+        .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
 
-    // Path to elf-loader in common environment
-    let elf_loader_path = common_env_root.join("usr/bin/elf-loader");
+    let elf_loader_path = base_env_root.join("usr/bin/elf-loader");
 
     // Create hardlink from elf-loader to target path (replace copy&replace)
     if target_path.exists() {

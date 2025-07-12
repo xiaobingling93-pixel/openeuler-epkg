@@ -70,7 +70,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        if find_env_root("main").is_some() {
+        if find_env_root(MAIN_ENV).is_some() {
             return Ok(());
         }
 
@@ -85,8 +85,8 @@ impl PackageManager {
             .context("Failed to create path.d directory in home config")?;
 
         // Create main environment
-        self.create_environment("main")?;
-        self.register_environment("main")?;
+        self.create_environment(MAIN_ENV)?;
+        self.register_environment(MAIN_ENV)?;
 
         // Update shell configuration
         self.update_shell_rc()?;
@@ -96,12 +96,12 @@ impl PackageManager {
     }
 
     pub fn command_init(&mut self) -> Result<()> {
-        if find_env_root("common").is_none() {
+        if find_env_root(BASE_ENV).is_none() {
             self.install_epkg()?;
         }
 
         // Check if already initialized
-        if find_env_root("main").is_some() {
+        if find_env_root(MAIN_ENV).is_some() {
             eprintln!("epkg was already initialized for current user");
             return Ok(());
         }
@@ -120,8 +120,7 @@ impl PackageManager {
         // Pre-populate country cache in background thread to speed up later invocations
         pre_populate_country_cache();
 
-        // Set up common environment
-        self.setup_common_environment()?;
+        self.setup_base_environment()?;
 
         Ok(())
     }
@@ -133,14 +132,14 @@ impl PackageManager {
 
         // Set up URLs and paths
         let epkg_url = "https://repo.oepkgs.net/openeuler/epkg/rootfs/";
-        let epkg_manager_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
+        let epkg_src_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
         let elf_loader = "elf-loader";
         let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
-        let epkg_manager_tar = epkg_download_dir.join(format!("{}.tar.gz", epkg_version));
+        let epkg_src_tar = epkg_download_dir.join(format!("{}.tar.gz", epkg_version));
         let elf_loader_path = epkg_download_dir.join(format!("{}-{}", elf_loader, arch));
         let elf_loader_sha = epkg_download_dir.join(format!("{}-{}.sha256", elf_loader, arch));
 
-        let mut need_download_epkg_manager: bool = false;
+        let mut need_download_epkg_src: bool = false;
 
         // Collect urls for downloading in parallel
         let mut urls = Vec::new();
@@ -148,18 +147,18 @@ impl PackageManager {
         let repo_root = find_repo_root()?;
         if is_valid_local_repo(&repo_root) {
             // Create symlink directly to git working directory
-            let env_opt = env_root.join("opt");
-            let epkg_manager_dir = env_opt.join("epkg-manager");
-            if !env_opt.exists() {
-                fs::create_dir_all(env_opt)
+            let usr_src = env_root.join("usr/src");
+            let epkg_src_dir = usr_src.join("epkg");
+            if !usr_src.exists() {
+                fs::create_dir_all(usr_src)
                     .context("Failed to create opt directory in environment")?;
-                symlink(repo_root.to_str().unwrap(), &epkg_manager_dir)?;
+                symlink(repo_root.to_str().unwrap(), &epkg_src_dir)?;
             }
-            println!("Using local git repository for epkg manager");
+            println!("Using local git repository for epkg source code");
         } else {
-            println!("Downloading epkg manager from {}", epkg_manager_url);
-            urls.push(epkg_manager_url.clone());
-            need_download_epkg_manager = true;
+            println!("Downloading epkg source code from {}", epkg_src_url);
+            urls.push(epkg_src_url.clone());
+            need_download_epkg_src = true;
         }
 
         // Check for local elf-loader
@@ -193,57 +192,57 @@ impl PackageManager {
                 .context("Failed to verify elf-loader checksum")?;
         }
 
-        if need_download_epkg_manager && !epkg_manager_tar.exists() {
-            return Err(eyre::eyre!("Failed to download epkg manager tar file from {}", epkg_manager_url));
+        if need_download_epkg_src && !epkg_src_tar.exists() {
+            return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", epkg_src_url));
         }
 
         Ok(())
     }
 
-    fn setup_common_environment(&mut self) -> Result<()> {
-        let common_env_root = self.new_env_base("common");
+    fn setup_base_environment(&mut self) -> Result<()> {
+        let base_env_root = self.new_env_base(BASE_ENV);
 
-        self.download_required_files(&common_env_root)
-            .context("Failed to download required files for common environment")?;
+        self.download_required_files(&base_env_root)
+            .context("Failed to download required files for base environment")?;
 
-        self.setup_epkg_manager(&common_env_root)?;
-        self.setup_common_binaries(&common_env_root)?;
+        self.setup_epkg_src(&base_env_root)?;
+        self.setup_common_binaries(&base_env_root)?;
 
-        self.create_environment("common")?;
+        self.create_environment(BASE_ENV)?;
 
         Ok(())
     }
 
-    fn setup_epkg_manager(&self, env_root: &Path) -> Result<()> {
+    fn setup_epkg_src(&self, env_root: &Path) -> Result<()> {
         let epkg_version = &config().init.version;
 
-        // Extract epkg-manager tar
-        let env_opt = env_root.join("opt");
-        let epkg_manager_dir = env_opt.join("epkg-manager");
+        // Extract epkg source code tar
+        let usr_src = env_root.join("usr/src");
+        let epkg_src_dir = usr_src.join("epkg");
         let epkg_extracted_dir = format!("epkg-{}", epkg_version);
-        let epkg_manager_tar = dirs().epkg_downloads_cache.join("epkg").join(format!("{}.tar.gz", epkg_version));
+        let epkg_src_tar = dirs().epkg_downloads_cache.join("epkg").join(format!("{}.tar.gz", epkg_version));
 
-        if epkg_manager_dir.exists() {
+        if epkg_src_dir.exists() {
             return Ok(());
         }
 
-        println!("Extracting epkg manager to: {}", env_opt.display());
+        println!("Extracting epkg source code to: {}", usr_src.display());
 
         // Create opt directory if it doesn't exist
-        fs::create_dir_all(&env_opt)
-            .context(format!("Failed to create opt directory at {}", env_opt.display()))?;
+        fs::create_dir_all(&usr_src)
+            .context(format!("Failed to create opt directory at {}", usr_src.display()))?;
 
         // Extract tar.gz file with error handling
-        utils::extract_tar_gz(&epkg_manager_tar, &env_opt)
-            .context("Failed to extract epkg manager tar file")?;
+        utils::extract_tar_gz(&epkg_src_tar, &usr_src)
+            .context("Failed to extract epkg source code tar file")?;
 
-        // Create a symlink from epkg-manager to epkg-master (or epkg-$version)
-        if epkg_manager_dir.exists() {
-            fs::remove_file(&epkg_manager_dir).ok();
+        // Create a symlink from epkg to epkg-master (or epkg-$version)
+        if epkg_src_dir.exists() {
+            fs::remove_file(&epkg_src_dir).ok();
         }
 
-        if let Err(e) = symlink(&epkg_extracted_dir, &epkg_manager_dir) {
-            eprintln!("[WARN] Failed to create symlink from epkg-manager to {}: {}",
+        if let Err(e) = symlink(&epkg_extracted_dir, &epkg_src_dir) {
+            eprintln!("[WARN] Failed to create symlink from epkg to {}: {}",
                      epkg_extracted_dir, e);
         }
 
@@ -257,7 +256,7 @@ impl PackageManager {
         fs::create_dir_all(&usr_bin)
             .context(format!("Failed to create usr/bin directory at {}", usr_bin.display()))?;
 
-        // Copy binaries (special handling for common environment)
+        // Copy binaries (special handling for base environment)
         fs::copy(
             std::env::current_exe()
                 .context("Failed to get current executable path")?,
@@ -358,13 +357,17 @@ impl PackageManager {
             return Ok(());
         }
 
-        let common_env_root = get_env_root("common".to_string())?;
+        let base_env_root = get_env_root(BASE_ENV.to_string())?;
 
         for shell_rc_info in shell_rc_infos {
-            let rc_content = format!(
-                "\n# epkg begin\nsource {}/opt/epkg-manager/lib/{}\n# epkg end\n",
-                common_env_root.display(),
-                shell_rc_info.source_script_name
+            let rc_content = format!(r#"
+# epkg begin
+epkg_rc='{base_path}/usr/src/epkg/lib/{script_name}'
+test -r "$epkg_rc" && . "$epkg_rc"
+# epkg end
+"#,
+                base_path = base_env_root.display(),
+                script_name = shell_rc_info.source_script_name
             );
 
             // Read existing content

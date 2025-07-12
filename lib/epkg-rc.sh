@@ -17,11 +17,11 @@
 #   [original PATH]
 
 epkg() {
-    local epkg_common_root="$HOME/.epkg/envs/common"
-    [ -d "$epkg_common_root" ] || epkg_common_root="/opt/epkg/envs/root/common"
-    [ -d "$epkg_common_root" ] || { echo "Cannot find common env, abort"; exit 1; }
+    local env_base_dir="$HOME/.epkg/envs/base"
+    [ -d "$env_base_dir" ] || env_base_dir="/opt/epkg/envs/root/base"
+    [ -d "$env_base_dir" ] || { echo "Cannot find base env, abort"; exit 1; }
 
-    local epkg_rust="$epkg_common_root/usr/bin/epkg"
+    local epkg_rust="$env_base_dir/usr/bin/epkg"
 
     # issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
     if [ -n "$EPKG_ACTIVE_ENV" ] && [ ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]; then

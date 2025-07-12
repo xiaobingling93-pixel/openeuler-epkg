@@ -168,8 +168,19 @@ print_completion() {
     print_info "  epkg --help            - Show detailed help"
 }
 
+check_duplicate_install()
+{
+    test -d $HOME/.epkg/envs/main && {
+        echo "epkg was already initialized for current user"
+        echo "TO upgrade epkg: epkg init --upgrade"
+        echo "TO uninstall epkg: epkg deinit"
+        exit 1
+    }
+}
+
 # Main execution flow
 main() {
+    check_duplicate_install
     parse_args "$@"
     check_architecture
     setup_environment

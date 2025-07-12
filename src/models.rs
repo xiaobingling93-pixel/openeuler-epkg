@@ -15,6 +15,9 @@ pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"debian";
 pub const DEFAULT_VERSION: &str = &"master"; // epkg init will download this version from gitee
 
+pub const BASE_ENV: &str = &"base"; // holds epkg, elf-loader, package-manager source files
+pub const MAIN_ENV: &str = &"main"; // the default env for most operations, must be private
+
 // Package format types
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub enum PackageFormat {
