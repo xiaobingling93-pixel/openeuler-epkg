@@ -14,6 +14,7 @@ mod store;
 mod utils;
 mod history;
 mod environment;
+mod deinit;
 mod init;
 mod path;
 mod repo;
@@ -86,6 +87,7 @@ fn main() -> Result<()> {
 
     let matches = &CLAP_MATCHES;
     match matches.subcommand() {
+        Some(("deinit",     sub_matches))  =>  package_manager.command_deinit(sub_matches)?,
         Some(("init",      _sub_matches))  =>  package_manager.command_init()?,
         Some(("env",        sub_matches))  =>  package_manager.command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  package_manager.command_list(sub_matches)?,
@@ -301,7 +303,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .arg(arg!(-C --config <FILE> "Configuration file to use").hide(true).global(true))
         .arg(arg!(-e --env <ENV> "Select the environment").hide(true).global(true))
         .arg(arg!(--arch <ARCH> "Select the CPU architecture").default_value(std::env::consts::ARCH).hide(true).global(true))
-        .arg(arg!(-d --"dry-run" "Simulated run without changing the system").hide(true).global(true))
+        .arg(arg!(--"dry-run" "Simulated run without changing the system").hide(true).global(true))
         .arg(arg!(--"download-only" "Download packages without installing").hide(true).global(true))
         .arg(arg!(-q --quiet "Suppress output").hide(true).global(true))
         .arg(arg!(-v --verbose "Verbose operation, show debug messages").hide(true).global(true))
@@ -320,7 +322,7 @@ OPTIONS:
   -C, --config <FILE>               Configuration file to use
   -e, --env <ENV>                   Select the environment
       --arch <ARCH>                 Select the CPU architecture
-  -d, --dry-run                     Simulated run without changing the system
+      --dry-run                     Simulated run without changing the system
       --download-only               Download packages without installing
   -q, --quiet                       Suppress output
   -v, --verbose                     Verbose operation, show debug messages
@@ -332,6 +334,15 @@ OPTIONS:
       --parallel-processing <BOOL>  Enable parallel processing for metadata updates (true/false) [possible values: true, false]
   -h, --help                        Print help
   -V, --version                     Print version")
+        .subcommand(
+            Command::new("deinit")
+                .about("Deinitialize epkg installation")
+                .arg(
+                    arg!(--scope <SCOPE> "Scope of deinitialization: 'personal' (current user only) or 'global' (all users)")
+                        .default_value("personal")
+                        .value_parser(["personal", "global"])
+                )
+        )
         .subcommand(
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
@@ -514,10 +525,10 @@ OPTIONS:
         .subcommand(
             Command::new("search")
                 .about("Search for packages and files")
-                .arg(arg!(--files "Search in file lists"))
-                .arg(arg!(--paths "Search in file paths"))
-                .arg(arg!(-x --regexp "Treat pattern as regular expression"))
-                .arg(arg!(-i --"ignore-case" "Perform case-insensitive matching"))
+                .arg(arg!(-f --files "Search in file names"))
+                .arg(arg!(-p --paths "Search in full paths"))
+                .arg(arg!(-r --regexp "Pattern is regular expression, refer to https://docs.rs/regex/latest/regex/#syntax"))
+                .arg(arg!(-i --"ignore-case" "Case-insensitive search"))
                 .arg(arg!(<PATTERN> "Pattern to search for"))
         )
         .get_matches()
@@ -630,6 +641,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
     }
 
     match matches.subcommand() {
+        Some(("deinit",     sub_matches))  =>  parse_options_deinit(&mut config, sub_matches).expect("Failed to parse deinit options"),
         Some(("init",       sub_matches))  =>  parse_options_init(&mut config, sub_matches).expect("Failed to parse init options"),
         Some(("env",        sub_matches))  =>  parse_options_env(&mut config, sub_matches).expect("Failed to parse env options"),
         Some(("list",       sub_matches))  =>  parse_options_list(&mut config, sub_matches).expect("Failed to parse list options"),
@@ -651,6 +663,25 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
     }
     log::debug!("Configuration: {:#?}", config);
     Ok(config)
+}
+
+fn parse_options_deinit(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(scope) = sub_matches.get_one::<String>("scope") {
+        match scope.as_str() {
+            "personal" => {
+                config.common.env = BASE_ENV.to_string();
+                config.init.shared_store = false;
+                config.env.public = false;
+            }
+            "global" => {
+                config.common.env = BASE_ENV.to_string();
+                config.init.shared_store = true;
+                config.env.public = true;
+            }
+            _ => return Err(eyre::eyre!("Invalid scope for deinitialization: {}", scope)),
+        }
+    }
+    Ok(())
 }
 
 fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
@@ -1188,6 +1219,13 @@ impl PackageManager {
         }
 
         search::search_repo_cache(&mut options)?;
+        Ok(())
+    }
+
+    fn command_deinit(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        if let Some(scope) = sub_matches.get_one::<String>("scope") {
+            deinit::deinit_epkg(scope)?;
+        }
         Ok(())
     }
 }

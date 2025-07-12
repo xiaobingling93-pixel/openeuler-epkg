@@ -428,6 +428,7 @@ pub struct RepoShard {
 pub enum EpkgCommand {
     #[default]
     None,
+    Deinit,
     Init,
     Env,
     List,
@@ -450,6 +451,7 @@ pub enum EpkgCommand {
 impl From<&str> for EpkgCommand {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
+            "deinit" => EpkgCommand::Deinit,
             "init" => EpkgCommand::Init,
             "env" => EpkgCommand::Env,
             "list" => EpkgCommand::List,

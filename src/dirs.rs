@@ -12,7 +12,6 @@ use color_eyre::eyre::{self, WrapErr};
 #[derive(Debug, Clone, PartialEq)] // Reverted derives
 pub struct ShellRcInfo {
     pub rc_file_path: String,
-    pub _shell_name: String,
     pub source_script_name: String,
 }
 
@@ -249,9 +248,9 @@ fn determine_rc_and_script_for_shell(shell_name: &str, home_dir: &Path) -> Optio
         "bash" => (".bashrc", "epkg-rc.sh"),
         "zsh" => (".zshrc", "epkg-rc.sh"),
         "ksh" => (".kshrc", "epkg-rc.sh"),
-        "fish" => (".config/fish/config.fish", "epkg-rc.sh"), // Assuming epkg-rc.sh is fish-compatible
         "csh" => (".cshrc", "epkg-rc.csh"),
         "tcsh" => (".tcshrc", "epkg-rc.csh"),
+        "fish" => (".config/fish/config.fish", "epkg-rc.sh"), // Assuming epkg-rc.sh is fish-compatible
         _ => return None, // Shell name not supported
     };
 
@@ -260,7 +259,6 @@ fn determine_rc_and_script_for_shell(shell_name: &str, home_dir: &Path) -> Optio
     if full_rc_path.exists() {
         Some(ShellRcInfo {
             rc_file_path: full_rc_path.to_string_lossy().into_owned(),
-            _shell_name: shell_name.to_string(), // Use the input shell_name
             source_script_name: script_name_str.to_string(),
         })
     } else {
