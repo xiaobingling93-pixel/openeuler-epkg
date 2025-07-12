@@ -353,6 +353,7 @@ OPTIONS:
                         .default_value("auto")
                         .value_parser(["shared", "private", "auto"]),
                 )
+                .arg(arg!(--upgrade "Upgrade epkg installation by re-downloading epkg files"))
         )
         .subcommand(
             Command::new("env")
@@ -700,6 +701,9 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         config.init.version = models::default_version();
         eprintln!("version was configured to empty, using default version: {}", config.init.version);
     }
+
+    // Set upgrade flag
+    config.init.upgrade = sub_matches.get_flag("upgrade");
 
     // compose options for creating BASE_ENV, must be done here since
     // config() content will freeze after first call, and some routines rely on it.

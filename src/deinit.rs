@@ -41,7 +41,7 @@ pub fn deinit_epkg(scope: &str) -> Result<()> {
 
 fn deinit_personal() -> Result<()> {
     let home_dir = get_home()?;
-    let mut plan = collect_user_personal_plan(&PathBuf::from(home_dir))?;
+    let mut plan = collect_user_personal_plan(&PathBuf::from(&home_dir))?;
 
     // Add $HOME/bin/epkg symlink to removal list
     let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");

@@ -631,6 +631,8 @@ pub struct InitOptions {
     pub shared_store: bool,
     #[serde(default = "default_version")]
     pub version: String,
+    #[serde(skip)]
+    pub upgrade: bool,
 }
 
 pub fn default_version() -> String {
