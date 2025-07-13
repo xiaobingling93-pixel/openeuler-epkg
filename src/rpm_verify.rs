@@ -6,11 +6,13 @@ use std::collections::HashMap;
 use std::fs::{self, File, Metadata as StdMetadata};
 use std::io::{BufReader, Read};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
+use libc;
 use log;
 use walkdir::{DirEntry, WalkDir};
 
@@ -386,14 +388,14 @@ fn handle_directory_mismatch(
         log::info!("Renamed epkg_extracted_fs_dir to {} for debug investigations", debug_dir.display());
     }
 
-    // 2. Rename official_outdir_path to epkg_extracted_fs_dir to use the good rpm2cpio output
+    // 2. Rename official_outdir_path to epkg_extracted_fs_dir to use the good rpm2archive output
     if let Err(e) = fs::rename(official_outdir_path, epkg_extracted_fs_dir) {
         log::error!("Failed to rename official extraction directory {} to {}: {}",
                    official_outdir_path.display(), epkg_extracted_fs_dir.display(), e);
         log::warn!("The official extraction directory {} has been preserved for manual inspection.", official_outdir_path.display());
         Ok(true) // Keep the temp directory since rename failed
     } else {
-        log::info!("Renamed official extraction directory {} to {} to use the good rpm2cpio output",
+        log::info!("Renamed official extraction directory {} to {} to use the good rpm2archive output",
                   official_outdir_path.display(), epkg_extracted_fs_dir.display());
         Ok(false) // Don't keep the temp directory since we've moved it successfully
     }
@@ -418,68 +420,89 @@ pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir:
         }
     }
 
-    if !utils::command_exists("rpm2cpio") {
-        log::warn!("Verification skipped: 'rpm2cpio' command not found in PATH.");
+    if !utils::command_exists("rpm2archive") {
+        log::warn!("Verification skipped: 'rpm2archive' command not found in PATH.");
         return Ok(());
     }
-    if !utils::command_exists("cpio") {
-        log::warn!("Verification skipped: 'cpio' command not found in PATH.");
+    if !utils::command_exists("tar") {
+        log::warn!("Verification skipped: 'tar' command not found in PATH.");
         return Ok(());
     }
-    log::debug!("rpm2cpio and cpio found.");
+    log::debug!("rpm2archive and tar found.");
 
     let official_outdir_path = epkg_extracted_fs_dir.parent()
         .ok_or_else(|| eyre!("Failed to get parent directory for epkg_extracted_fs_dir: {}", epkg_extracted_fs_dir.display()))?
-        .join("rpm2cpio");
+        .join("rpm2archive");
     std::fs::create_dir_all(&official_outdir_path)
         .wrap_err_with(|| format!("Failed to create directory for official RPM extraction: {}", official_outdir_path.display()))?;
 
     log::debug!("Official extraction directory: {}", official_outdir_path.display());
 
-    let mut rpm2cpio_cmd = Command::new("rpm2cpio")
+    let mut rpm2archive_cmd = Command::new("rpm2archive")
         .arg(rpm_file_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .wrap_err_with(|| format!("Failed to spawn rpm2cpio for {}", rpm_file_path.display()))?;
+        .wrap_err_with(|| format!("Failed to spawn rpm2archive for {}", rpm_file_path.display()))?;
 
-    let rpm2cpio_stdout = rpm2cpio_cmd.stdout.take().ok_or_else(|| eyre!("Failed to capture stdout from rpm2cpio"))?;
+    let rpm2archive_stdout = rpm2archive_cmd.stdout.take().ok_or_else(|| eyre!("Failed to capture stdout from rpm2archive"))?;
 
-    let cpio_cmd_output = Command::new("cpio")
-        .arg("-idm")
-        .arg("--no-absolute-filenames")
-        .stdin(rpm2cpio_stdout)
-        .current_dir(&official_outdir_path)
-        .output() // Use output() to get status, stdout, and stderr
-        .wrap_err("Failed to execute cpio command")?;
+    let tar_cmd = Command::new("tar")
+        .arg("-xzf")
+        .arg("-")
+        .arg("-C")
+        .arg(&official_outdir_path)
+        .stdin(rpm2archive_stdout)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .wrap_err("Failed to execute tar command")?;
 
-    // Wait for rpm2cpio to finish and get its output (especially stderr)
-    let rpm2cpio_output = rpm2cpio_cmd.wait_with_output().wrap_err("Failed to wait for rpm2cpio process")?;
+    // Wait for tar to finish first
+    let tar_output = tar_cmd.wait_with_output().wrap_err("Failed to wait for tar process")?;
 
-    if !cpio_cmd_output.status.success() {
-        let cpio_stderr_str = String::from_utf8_lossy(&cpio_cmd_output.stderr);
-        log::error!("cpio command failed with status: {}. Stderr:\n{}", cpio_cmd_output.status, cpio_stderr_str);
-        if !rpm2cpio_output.status.success() {
-            let rpm2cpio_stderr_str = String::from_utf8_lossy(&rpm2cpio_output.stderr);
-            log::error!("rpm2cpio also failed with status: {}. Stderr:\n{}", rpm2cpio_output.status, rpm2cpio_stderr_str);
+    // Then wait for rpm2archive to finish
+    let rpm2archive_output = rpm2archive_cmd.wait_with_output().wrap_err("Failed to wait for rpm2archive process")?;
+
+    if !tar_output.status.success() {
+        let tar_stderr_str = String::from_utf8_lossy(&tar_output.stderr);
+        log::error!("tar command failed with status: {}. Stderr:\n{}", tar_output.status, tar_stderr_str);
+        if !rpm2archive_output.status.success() {
+            let rpm2archive_stderr_str = String::from_utf8_lossy(&rpm2archive_output.stderr);
+            log::error!("rpm2archive also failed with status: {}. Stderr:\n{}", rpm2archive_output.status, rpm2archive_stderr_str);
         }
         // Preserve directory on failure
         return Err(eyre!(
-            "rpm2cpio | cpio pipeline failed. cpio exit: {}, rpm2cpio exit: {}. Official dir: {}",
-            cpio_cmd_output.status, rpm2cpio_output.status, official_outdir_path.display()
+            "rpm2archive | tar pipeline failed. tar exit: {}, rpm2archive exit: {}. Official dir: {}",
+            tar_output.status, rpm2archive_output.status, official_outdir_path.display()
         ));
     }
 
-    if !rpm2cpio_output.status.success() {
-        // cpio might succeed even if rpm2cpio had non-fatal errors (e.g., warnings to stderr)
-        let rpm2cpio_stderr_str = String::from_utf8_lossy(&rpm2cpio_output.stderr);
-        log::warn!(
-            "rpm2cpio command finished with non-success status: {} (but cpio succeeded). Stderr:\n{}",
-            rpm2cpio_output.status, rpm2cpio_stderr_str
-        );
+    if !rpm2archive_output.status.success() {
+        // tar might succeed even if rpm2archive had non-fatal errors (e.g., warnings to stderr)
+        let rpm2archive_stderr_str = String::from_utf8_lossy(&rpm2archive_output.stderr);
+
+        // Check if it's a SIGPIPE error, which is expected when tar finishes reading
+        if rpm2archive_output.status.signal() == Some(13) { // SIGPIPE = 13
+            log::debug!(
+                "rpm2archive received SIGPIPE (signal 13) - this is normal when tar finishes reading. Stderr:\n{}",
+                rpm2archive_stderr_str
+            );
+        } else if rpm2archive_stderr_str.contains("Write error") {
+            // This is expected when tar finishes reading before rpm2archive finishes writing
+            log::debug!(
+                "rpm2archive write error - this is normal when tar finishes reading first. Stderr:\n{}",
+                rpm2archive_stderr_str
+            );
+        } else {
+            log::warn!(
+                "rpm2archive command finished with non-success status: {} (but tar succeeded). Stderr:\n{}",
+                rpm2archive_output.status, rpm2archive_stderr_str
+            );
+        }
     }
 
-    log::debug!("Official extraction via rpm2cpio and cpio completed.");
+    log::debug!("Official extraction via rpm2archive and tar completed.");
     log::info!("Comparing epkg extraction at {} with official extraction at {}", epkg_extracted_fs_dir.display(), official_outdir_path.display());
 
     match compare_directories(&official_outdir_path, epkg_extracted_fs_dir) {
