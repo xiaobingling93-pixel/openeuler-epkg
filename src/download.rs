@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{Read, Write, Seek},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering},
@@ -11,7 +11,6 @@ use std::{
     thread,
     time::{SystemTime, UNIX_EPOCH, Duration},
     collections::HashMap,
-    io::Write,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1163,7 +1162,7 @@ impl DownloadManager {
 
         drop(tasks_guard);
 
-        log::debug!("Spawned {} new download threads", spawned_count);
+        log::trace!("Spawned {} new download threads", spawned_count);
         ProcessingResult::Continue
     }
 
@@ -1796,6 +1795,8 @@ pub enum DownloadError {
     UnexpectedResponse { code: u16, details: String },
     /// Chunk was already complete and was skipped
     AlreadyComplete,
+    /// Disk/IO errors that should not mark the mirror as bad
+    DiskError { details: String },
 }
 
 impl std::fmt::Display for DownloadError {
@@ -1812,6 +1813,9 @@ impl std::fmt::Display for DownloadError {
             },
             DownloadError::AlreadyComplete => {
                 write!(f, "Chunk already complete")
+            },
+            DownloadError::DiskError { details } => {
+                write!(f, "Disk/IO error: {}", details)
             },
         }
     }
@@ -2219,6 +2223,11 @@ fn download_file_with_retries(
                         DownloadError::TooManyRequests => {
                             log::debug!("download_file_with_retries got too many requests error for {}", resolved_url);
                         },
+                        DownloadError::DiskError { details } => {
+                            log::debug!("download_file_with_retries got disk error for {} (saving to {}): {}", resolved_url, task.chunk_path.display(), details);
+                            // Don't mark mirror as bad for disk errors - they're local issues
+                            return Err(e);
+                        },
                     }
                 } else {
                     log::debug!("download_file_with_retries got error for {}: {}", resolved_url, e);
@@ -2351,7 +2360,9 @@ fn get_existing_file_size(part_path: &Path) -> Result<u64> {
             },
             Err(e) => {
                 log::error!("download_file failed to get metadata for part file {}: {}", part_path.display(), e);
-                Err(eyre!("Failed to get metadata for part file {}: {}", part_path.display(), e))
+                Err(DownloadError::DiskError {
+                    details: format!("Failed to get metadata for part file {}: {}", part_path.display(), e)
+                }.into())
             }
         }
     } else {
@@ -2604,6 +2615,18 @@ fn process_chunk_download_stream(
     task: &DownloadTask,
     existing_bytes: u64,
 ) -> Result<u64> {
+    // Check if content is compressed - if so, we can't trust content-length for validation
+    let has_compression = is_content_compressed(response);
+
+    // Get expected response size from Content-Length header for validation
+    // Only use content-length for validation if there's no compression
+    let expected_response_size = if !has_compression {
+        parse_content_length(response)
+    } else {
+        log::debug!("Content-encoding detected, skipping content-length validation for {}", task.url);
+        None
+    };
+
     let mut reader = response.body_mut().as_reader();
     let mut buffer = vec![0; 8192];
     let mut chunk_append_offset = existing_bytes;
@@ -2613,13 +2636,26 @@ fn process_chunk_download_stream(
     let data_channel = task.get_data_channel();
 
     // Setup file for writing
-    let mut file = setup_download_file(task)?;
+    let mut file = setup_download_file(task, existing_bytes)?;
 
     loop {
         // Read data from network stream
         let bytes_read = read_chunk_from_stream(&mut reader, &mut buffer, task, chunk_append_offset)?;
 
         if bytes_read == 0 {
+            // EOF reached - validate against expected size if available
+            if let Some(expected_size) = expected_response_size {
+                if network_bytes < expected_size {
+                    log::error!(
+                        "Premature EOF: received {} bytes but expected {} bytes for {}",
+                        network_bytes, expected_size, task.chunk_path.display()
+                    );
+                    return Err(DownloadError::Network {
+                        details: format!("Premature EOF: received {} bytes but expected {} bytes for {}",
+                                       network_bytes, expected_size, task.chunk_path.display())
+                    }.into());
+                }
+            }
             break; // EOF reached
         }
 
@@ -2720,12 +2756,10 @@ fn validate_download_size(downloaded: u64, total_size: u64, part_path: &Path) ->
             total_size,
             part_path.display()
         );
-        return Err(eyre!(
-            "Download size mismatch: Downloaded size ({}) does not match expected size ({}) for {}",
-            downloaded,
-            total_size,
-            part_path.display()
-        ));
+        return Err(DownloadError::ContentValidation {
+            expected: format!("{} bytes", total_size),
+            actual: format!("{} bytes", downloaded)
+        }.into());
     }
     Ok(())
 }
@@ -2764,18 +2798,7 @@ fn get_remote_size(task: &DownloadTask, response: &http::Response<ureq::Body>) -
     }
 
     // Check if content is compressed - if so, Content-Length is unreliable for full file size
-    let is_compressed = response.headers().get("content-encoding")
-        .and_then(|v| v.to_str().ok())
-        .map(|encoding| {
-            let encoding_lower = encoding.to_lowercase();
-            encoding_lower.contains("gzip") ||
-            encoding_lower.contains("deflate") ||
-            encoding_lower.contains("compress") ||
-            encoding_lower.contains("zstd") ||
-            encoding_lower.contains("br") ||
-            encoding_lower.contains("xz")
-        })
-        .unwrap_or(false);
+    let is_compressed = is_content_compressed(response);
 
     if is_compressed {
         log::debug!(
@@ -2788,20 +2811,14 @@ fn get_remote_size(task: &DownloadTask, response: &http::Response<ureq::Body>) -
 
     // 2. Calculate total size from Content-Length + resumed bytes
     if task.get_range_request() != RangeRequest::Chunk && !is_compressed {
-        if let Some(content_length) = response.headers().get("content-length") {
-            if let Ok(s) = content_length.to_str() {
-                if let Ok(response_size) = s.parse::<u64>() {
-                    let resumed_bytes = task.resumed_bytes.load(Ordering::Relaxed);
-                    let total_size = resumed_bytes + response_size;
-                    log::debug!(
-                        "Range request: Content-Length {} + resumed_bytes {} = total size {}",
-                        response_size, resumed_bytes, total_size
-                    );
-                    return Some(total_size);
-                } else {
-                    log::warn!("Failed to parse Content-Length header value '{}': not a valid u64", s);
-                }
-            }
+        if let Some(response_size) = parse_content_length(response) {
+            let resumed_bytes = task.resumed_bytes.load(Ordering::Relaxed);
+            let total_size = resumed_bytes + response_size;
+            log::debug!(
+                "Range request: Content-Length {} + resumed_bytes {} = total size {}",
+                response_size, resumed_bytes, total_size
+            );
+            return Some(total_size);
         }
     }
 
@@ -2850,6 +2867,52 @@ fn parse_remote_timestamp(response: &http::Response<ureq::Body>) -> Option<Offse
                 }
             })
         })
+}
+
+/// Check if HTTP response content is compressed
+///
+/// Detects common compression types that make Content-Length unreliable:
+/// - gzip, deflate, compress (standard HTTP compression)
+/// - br (Brotli), zstd, xz (modern compression)
+/// - identity (explicitly uncompressed)
+///
+/// Returns true if content is compressed, false if uncompressed or unknown
+fn is_content_compressed(response: &http::Response<ureq::Body>) -> bool {
+    response.headers()
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|encoding| {
+            let encoding_lower = encoding.to_lowercase();
+            // Check for common compression types
+            encoding_lower.contains("gzip") ||
+            encoding_lower.contains("deflate") ||
+            encoding_lower.contains("compress") ||
+            encoding_lower.contains("br") ||
+            encoding_lower.contains("zstd") ||
+            encoding_lower.contains("xz") ||
+            // Some servers use non-standard compression names
+            encoding_lower.contains("bzip2") ||
+            encoding_lower.contains("lzma") ||
+            encoding_lower.contains("lz4")
+        })
+        .unwrap_or(false)
+}
+
+/// Get Content-Length from HTTP response headers
+///
+/// This function safely extracts and parses the Content-Length header.
+/// It handles various edge cases:
+/// - Missing Content-Length header
+/// - Invalid UTF-8 in header value
+/// - Non-numeric header value
+/// - Multiple Content-Length headers (uses first one)
+///
+/// Returns Some(size) if valid Content-Length found, None otherwise
+fn parse_content_length(response: &http::Response<ureq::Body>) -> Option<u64> {
+    response.headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 /// Parse ETag from response headers
@@ -4691,7 +4754,9 @@ fn log_http_event_safe(url: &str, event: mirror::HttpEvent) {
 
 /// Helper for consistent error mapping patterns
 fn map_io_error<T>(result: std::io::Result<T>, context: &str, path: &Path) -> Result<T> {
-    result.map_err(|e| eyre!("Failed to {} '{}': {} (line: {})", context, path.display(), e, line!()))
+    result.map_err(|e| DownloadError::DiskError {
+        details: format!("Failed to {} '{}': {} (line: {})", context, path.display(), e, line!())
+    }.into())
 }
 
 /// Helper function to log errors with optional backtrace
@@ -4718,29 +4783,37 @@ fn format_progress_message(resolved_url: &str, downloading_chunks: usize) -> Str
 }
 
 /// Setup file for download content writing
-fn setup_download_file(task: &DownloadTask) -> Result<File> {
+fn setup_download_file(task: &DownloadTask, existing_bytes: u64) -> Result<File> {
     let chunk_path = &task.chunk_path;
 
-    // Check if we need to append to an existing file
-    let already_exists = if chunk_path.exists() {
-        true
-    } else {
+    if existing_bytes == 0 {
         if let Some(parent) = chunk_path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .map_err(|e| DownloadError::DiskError {
+                    details: format!("Failed to create directory '{}': {}", parent.display(), e)
+                })?;
         }
-        false
     };
 
-    let file = map_io_error(
+    let mut file = map_io_error(
         OpenOptions::new()
             .create(true)
             .write(true)
-            .append(already_exists)     // Append if file exists with content
-            .truncate(!already_exists)  // Only truncate if file is empty or doesn't exist
+            .append(false)              // Never use O_APPEND to prevent race conditions
             .open(chunk_path),
         "open file",
         chunk_path
-    ).with_context(|| error_context!(format!("setup_download_file failed for chunk_path: {}", chunk_path.display())))?;
+    ).map_err(|e| DownloadError::DiskError {
+        details: format!("setup_download_file failed for chunk_path {}: {}", chunk_path.display(), e)
+    })?;
+
+    // If file exists and we need to append, seek to the end to prevent overwriting
+    if existing_bytes > 0 {
+        file.seek(std::io::SeekFrom::Start(existing_bytes))
+            .map_err(|e| DownloadError::DiskError {
+                details: format!("Failed to seek to end of file {}: {}", chunk_path.display(), e)
+            })?;
+    }
 
     Ok(file)
 }
@@ -4788,35 +4861,45 @@ fn write_chunk_data(
     task: &DownloadTask,
     chunk_append_offset: u64
 ) -> Result<usize> {
-    if !task.is_master_task() {
-        let chunk_size_val = task.chunk_size.load(Ordering::Relaxed);
-        if chunk_size_val > 0 {
-            let remaining = chunk_size_val.saturating_sub(chunk_append_offset);
-            if remaining == 0 {
-                log::warn!("Chunk task received {} surplus bytes, discarding", bytes_to_write);
-                return Ok(0); // Signal to stop
-            }
-            let write_len = std::cmp::min(bytes_to_write, remaining as usize);
+    let chunk_size_val = task.chunk_size.load(Ordering::Relaxed);
+    let write_len = if chunk_size_val > 0 {
+        let remaining = chunk_size_val.saturating_sub(chunk_append_offset);
+        if remaining == 0 {
+            log::warn!("Chunk task received {} surplus bytes, discarding", bytes_to_write);
+            return Ok(0); // Signal to stop
+        }
+        std::cmp::min(bytes_to_write, remaining as usize)
+    } else {
+        bytes_to_write
+    };
 
-            file.write_all(&buffer[..write_len])
-                .map_err(|e| eyre!("Failed to write {} bytes to chunk file '{}': {}",
-                                  write_len, task.chunk_path.display(), e))?;
+    file.write_all(&buffer[..write_len])
+        .map_err(|e| DownloadError::DiskError {
+            details: format!("Failed to write {} bytes to chunk file '{}': {}",
+                           write_len, task.chunk_path.display(), e)
+        })?;
 
-            if write_len < bytes_to_write && chunk_append_offset + write_len as u64 > chunk_size_val {
-                log::warn!("Chunk {} exceeded expected size by {} bytes; extra data ignored",
-                          task.chunk_path.display(), (chunk_append_offset + write_len as u64) - chunk_size_val);
-            }
-
-            return Ok(write_len);
+    // Validate file size after write to detect disk space issues or corruption
+    if let Ok(metadata) = file.metadata() {
+        let expected_size = chunk_append_offset + write_len as u64;
+        if metadata.len() != expected_size {
+            log::error!(
+                "File size mismatch after write: expected {} bytes but file has {} bytes for {}",
+                expected_size, metadata.len(), task.chunk_path.display()
+            );
+            return Err(DownloadError::DiskError {
+                details: format!("File size mismatch after write: expected {} bytes but file has {} bytes for {}",
+                               expected_size, metadata.len(), task.chunk_path.display())
+            }.into());
         }
     }
 
-    // Master task or no size limit
-    file.write_all(&buffer[..bytes_to_write])
-        .map_err(|e| eyre!("Failed to write {} bytes to file '{}': {}",
-                          bytes_to_write, task.chunk_path.display(), e))?;
+    if write_len < bytes_to_write && chunk_append_offset + write_len as u64 > chunk_size_val {
+        log::warn!("Chunk {} exceeded expected size by {} bytes; extra data ignored",
+                  task.chunk_path.display(), (chunk_append_offset + write_len as u64) - chunk_size_val);
+    }
 
-    Ok(bytes_to_write)
+    return Ok(write_len);
 }
 
 /// Update progress tracking for download tasks
@@ -5405,22 +5488,19 @@ fn validate_chunk_file_boundaries(task: &DownloadTask, chunk_append_offset: u64)
                 chunk_size,
                 task.url
             );
-            return Err(eyre!(
-                "Chunk file size mismatch: {} bytes on disk != {} bytes expected for {}",
-                actual_file_size,
-                chunk_size,
-                task.chunk_path.display()
-            ));
+            return Err(DownloadError::ContentValidation {
+                expected: format!("{} bytes", chunk_size),
+                actual: format!("{} bytes", actual_file_size)
+            }.into());
         }
     } else {
         log::warn!(
             "Could not read file metadata for {} to validate size",
             task.chunk_path.display()
         );
-        return Err(eyre!(
-            "Failed to read file metadata for {}",
-            task.chunk_path.display()
-        ));
+        return Err(DownloadError::DiskError {
+            details: format!("Failed to read file metadata for {}", task.chunk_path.display())
+        }.into());
     }
 
     // Validate that the sum of resumed and received bytes equals the chunk size
@@ -5546,15 +5626,19 @@ fn collect_and_sort_chunks(chunk_files: Vec<PathBuf>) -> Result<Vec<ChunkInfo>> 
         .into_iter()
         .filter_map(|path| {
             let offset = extract_offset(&path);
-            fs::metadata(&path)
-                .ok()
-                .map(|meta| {
+            match fs::metadata(&path) {
+                Ok(meta) => {
                     let filesize = meta.len();
                     // For existing chunks, we don't know the total size yet, so we set it to filesize initially
                     // This will be corrected later when we have the expected_size
                     let size = filesize;
-                    ChunkInfo{offset, size, filesize}
-                })
+                    Some(ChunkInfo{offset, size, filesize})
+                }
+                Err(e) => {
+                    log::warn!("Failed to read metadata for {}: {}", path.display(), e);
+                    None // Skip this chunk file
+                }
+            }
         })
         .collect();
 
@@ -5571,7 +5655,10 @@ fn validate_chunks<'a>(master_task: &DownloadTask, chunks: &'a [ChunkInfo], expe
 
     let master_partfile_size = match fs::metadata(&master_task.chunk_path) {
         Ok(metadata) => metadata.len(),
-        Err(_) => 1,
+        Err(e) => {
+            log::warn!("Failed to read master partfile metadata for {}: {}", master_task.chunk_path.display(), e);
+            1 // Default to 1 to avoid skipping all chunks
+        }
     };
 
     // Validate chunk overlaps and boundaries
