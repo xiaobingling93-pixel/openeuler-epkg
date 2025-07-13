@@ -87,7 +87,10 @@ impl PackageManager {
 
         // Create main environment
         self.create_environment(MAIN_ENV)?;
-        self.register_environment(MAIN_ENV)?;
+
+        // Load the environment config that was just created and register it
+        let env_config = crate::io::deserialize_env_config_for(MAIN_ENV.to_string())?;
+        self.register_environment_for(MAIN_ENV, &env_config)?;
 
         // Update shell configuration
         self.update_shell_rc()?;

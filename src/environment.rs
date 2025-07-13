@@ -278,7 +278,7 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("etc/epkg"))?;
 
         // Initialize channel and environment config
-        let mut env_config = if let Some(config_path) = &config().env.import_file {
+        let (mut env_config, channel_config) = if let Some(config_path) = &config().env.import_file {
             let config_contents = fs::read_to_string(config_path)
                 .with_context(|| format!("Failed to read config file: {}", config_path))?;
 
@@ -292,7 +292,7 @@ impl PackageManager {
             let channel_yaml = serde_yaml::to_string(&channel_config)?;
             fs::write(&env_channel_yaml, channel_yaml)?;
 
-            env_config
+            (env_config, channel_config)
         } else {
             // Initialize channel from command line option or default
             let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
@@ -323,7 +323,7 @@ impl PackageManager {
             let channel_yaml = serde_yaml::to_string(&channel_config)?;
             fs::write(&env_channel_yaml, channel_yaml)?;
 
-            EnvConfig::default()
+            (EnvConfig::default(), channel_config)
         };
 
         // Override config values with command line options
@@ -343,12 +343,12 @@ impl PackageManager {
 
         // Get packages before saving config (since env_config will be moved)
         let packages_to_install = env_config.packages.clone();
-        
+
         // Save environment config
         crate::io::serialize_env_config(env_config)?;
 
-        // Get channel config from the above env_channel_yaml
-        let format = crate::models::channel_config().format.clone();
+        // Use the channel config that was just created and saved to env_channel_yaml
+        let format = channel_config.format.clone();
         self.create_environment_directories(&env_root, &format)?;
 
         // Install packages if any
@@ -539,13 +539,11 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn register_environment(&mut self, name: &str) -> Result<()> {
+    pub fn register_environment_for(&mut self, name: &str, env_config: &EnvConfig) -> Result<()> {
         // Validate environment name
         if name == BASE_ENV {
             return Err(eyre::eyre!("Environment 'base' cannot be registered"));
         }
-
-        let env_config = crate::models::env_config();
 
         if env_config.register_to_path {
             println!("# Environment '{}' is already registered.", name);
@@ -574,7 +572,7 @@ impl PackageManager {
         println!("# Registering environment '{}' with priority {}", name, priority);
 
         // Create symlink in appropriate directory
-        let env_root = get_env_root(name.to_string())?;
+        let env_root = PathBuf::from(&env_config.env_root);
         let ebin_path = env_root.join("usr/ebin");
         let symlink_path = if priority >= 0 {
             fs::create_dir_all(&prepend_dir)?;
@@ -600,6 +598,11 @@ impl PackageManager {
 
         self.update_path()?;
         Ok(())
+    }
+
+    pub fn register_environment(&mut self, name: &str) -> Result<()> {
+        let env_config = crate::models::env_config();
+        self.register_environment_for(name, &env_config)
     }
 
     pub fn unregister_environment(&mut self, name: &str) -> Result<()> {
