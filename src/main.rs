@@ -1186,6 +1186,12 @@ impl PackageManager {
             format: crate::models::channel_config().format.clone(),
         };
 
+        // Warn if using -f (files) flag with a pattern containing path separators
+        if options.files && options.pattern.contains('/') {
+            eprintln!("Warning: Using -f|--files flag with pattern '{}' that contains '/'.\nConsider using -p|--paths flag instead for path-based searches.", options.pattern);
+            exit(0);
+        }
+
         // Process the filelists based on the options
         if options.regexp {
             // Create a regex from the pattern
