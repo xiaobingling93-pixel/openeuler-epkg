@@ -158,7 +158,14 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                     eyre::bail!("File has no extension: {} check {}", current_location, download_path.display())
                                 }
                             };
-                            let need_convert = !output_path.exists();
+                            // Check if we need to convert by checking both the output file and its JSON metadata
+                            let need_convert = if !output_path.exists() {
+                                true // Output file doesn't exist, definitely need to convert
+                            } else {
+                                // Output file exists, but check if RepoIndex.json exists
+                                let repoindex_path = repo_dir.join("RepoIndex.json");
+                                !repoindex_path.exists()
+                            };
 
                             info.push(RepoReleaseItem {
                                 format: PackageFormat::Rpm,
@@ -252,10 +259,10 @@ fn process_chunks<R: Read>(
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
-    log::debug!("Starting to process packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
+    log::debug!("[process_packages_content] Starting to process packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)
-        .map_err(|e| eyre!("Failed to initialize PackagesStreamline for {}: {}", revise.location, e))?;
+        .wrap_err_with(|| format!("[process_packages_content] Failed to initialize PackagesStreamline for {}", revise.location))?;
 
     // Always use automatic hash validation by passing the expected hash and size
     let reader = packages_stream::ReceiverHasher::new_with_size(data_rx, revise.hash.clone(), revise.size.try_into().unwrap());
@@ -304,8 +311,9 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     }
 
     // Finalize processing for both decoders
+    log::debug!("[process_packages_content] Finalizing processing for {}", revise.location);
     derived_files.on_finish(revise)
-        .map_err(|e| eyre!("Failed to finalize processing for {}: {}", revise.location, e))
+        .wrap_err_with(|| format!("[process_packages_content] Failed to finalize processing for {}", revise.location))
 }
 
 // Streaming XML processor that maintains state across chunks

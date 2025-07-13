@@ -367,20 +367,30 @@ fn sync_from_package_database(format: PackageFormat, repo: &RepoRevise, packages
  */
 
 pub fn sync_repo_metadata(format: PackageFormat, repo: &RepoRevise, result_tx: &mpsc::Sender<bool>) -> Result<bool> {
+    log::debug!("[sync_repo_metadata] Starting for repo: {} with index_url: {}", repo.repo_name, repo.index_url);
+
     let repo_dir = dirs::get_repo_dir(&repo)
         .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    log::debug!("[sync_repo_metadata] Got repo_dir: {:?}", repo_dir);
+
     let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url)
         .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
+    log::debug!("[sync_repo_metadata] Got release_path: {:?}", release_path);
 
+    log::debug!("[sync_repo_metadata] Determining release_items based on index_url: {}", repo.index_url);
     let release_items = if repo.index_url.ends_with("Release") || repo.index_url.ends_with("repomd.xml") {
+        log::debug!("[sync_repo_metadata] Calling sync_from_release_metadata");
         sync_from_release_metadata(format, repo, &release_path)
             .with_context(|| format!("Failed to parse release file for repository: {}", repo.repo_name))?
     } else if repo.index_url.ends_with("/") {
+        log::debug!("[sync_repo_metadata] Calling sync_from_directory_index");
         return crate::index_html::sync_from_directory_index(format, repo, &release_path);
     } else {
+        log::debug!("[sync_repo_metadata] Calling sync_from_package_database");
         sync_from_package_database(format, repo, &release_path)
             .with_context(|| format!("Failed to check packages file for repository: {}", repo.repo_name))?
     };
+    log::debug!("[sync_repo_metadata] Got {} release_items", release_items.len());
 
     let repo_dir = Arc::new(repo_dir.clone());
 
@@ -440,20 +450,28 @@ fn process_revises_parallel(
     release_items_clone2: Vec<RepoReleaseItem>,
     result_tx: mpsc::Sender<bool>
 ) {
+    log::debug!("[process_revises_parallel] Starting for repo: {} with {} revises", repo.repo_name, revises.len());
+
     // Clone the repo to avoid lifetime issues
     let repo_clone = repo.clone();
     std::thread::spawn(move || {
         let mut handles = Vec::new();
         let no_revises = revises.is_empty();
+        log::debug!("[process_revises_parallel] no_revises: {}", no_revises);
 
         // Process files in parallel std::thread
-        for revise in revises {
+        for revise in &revises {
+            log::debug!("[process_revises_parallel] Spawning thread for revise: {}", revise.location);
             let repo_dir = Arc::clone(&repo_dir);
             let revise = revise.clone();
 
             let handle = std::thread::spawn(move || {
+                log::debug!("[process_revises_parallel] Thread starting for: {}", revise.location);
                 match download_and_process_item(&revise, &repo_dir) {
-                    Ok(_) => true,
+                    Ok(_) => {
+                        log::debug!("[process_revises_parallel] Thread completed successfully for: {}", revise.location);
+                        true
+                    },
                     Err(e) => {
                         log::error!("Failed to download and process item {}: {:#}", revise.location, e);
                         false
@@ -464,22 +482,27 @@ fn process_revises_parallel(
             handles.push(handle);
         }
 
+        log::debug!("[process_revises_parallel] Waiting for {} threads to complete", handles.len());
         // Wait for all threads to complete
-        for handle in handles {
+        for (i, handle) in handles.into_iter().enumerate() {
+            log::debug!("[process_revises_parallel] Joining thread {}", i);
             if let Err(e) = handle.join() {
                 // Log the error but continue processing
-                log::error!("Failed to join thread: {:?}", e);
+                log::error!("Failed to join thread {}: {:?}", i, e);
             } else {
                 // Thread completed successfully
+                log::debug!("[process_revises_parallel] Thread {} completed successfully", i);
             }
         }
 
+        log::debug!("[process_revises_parallel] All threads completed, calling create_load_repoindex");
         if let Err(e) = create_load_repoindex(&repo_clone, no_revises, &repo_dir, release_items_clone2) {
             log::error!("Failed to save repo index json: {:#}", e);
             if let Err(send_err) = result_tx.send(false) {
                 log::error!("Failed to send error status on channel: {}", send_err);
             }
         } else {
+            log::debug!("[process_revises_parallel] Successfully created repo index, sending success");
             if let Err(send_err) = result_tx.send(true) {
                 log::error!("Failed to send success status on channel: {}", send_err);
             }
@@ -539,15 +562,22 @@ pub fn create_load_repoindex(
 
 /// Collect packages metafiles and save repo index
 fn collect_save_repoindex(repo: &RepoRevise, _repo_dir: &PathBuf, release_items: &[RepoReleaseItem]) -> Result<RepoIndex> {
+    log::debug!("[collect_save_repoindex] Starting for repository: {} with {} release items", repo.repo_name, release_items.len());
+
     let mut packages_metafiles = Vec::new();
-    for info in release_items {
+    for (i, info) in release_items.iter().enumerate() {
         if info.is_packages {
+            log::debug!("[collect_save_repoindex] Processing packages item {}: {}", i, info.location);
             let json_path = info.output_path.with_extension("json").to_str()
-                .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
+                .ok_or_else(|| eyre::eyre!("[collect_save_repoindex] Invalid packages metafile path for item {}: {}", i, info.location))?
                 .replace("packages", ".packages");
-            packages_metafiles.push(PathBuf::from(json_path));
+            let metafile_path = PathBuf::from(json_path);
+            log::debug!("[collect_save_repoindex] Generated metafile path: {}", metafile_path.display());
+            packages_metafiles.push(metafile_path);
         }
     }
+
+    log::debug!("[collect_save_repoindex] Found {} packages metafiles for repository: {}", packages_metafiles.len(), repo.repo_name);
     save_repo_index_json(&repo, packages_metafiles)
 }
 
@@ -565,23 +595,34 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
 
     // Process each packages metafile
     for (i, packages_metafile) in packages_metafiles.iter().enumerate() {
+        log::debug!("[collect_save_repoindex] Processing packages_metafile: {}", packages_metafile.display());
+
+        // Check if the packages metafile exists
+        if !packages_metafile.exists() {
+            log::warn!("[collect_save_repoindex] Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display());
+            return Err(eyre::eyre!("[collect_save_repoindex] Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display()));
+        }
+
         // Load packages info
         let packages_info_str = fs::read_to_string(&packages_metafile)
-            .with_context(|| format!("Failed to read packages metafile: {}", packages_metafile.display()))?;
+            .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read packages metafile: {}", packages_metafile.display()))?;
         let packages_info: FileInfo = serde_json::from_str(&packages_info_str)
-            .with_context(|| format!("Failed to parse packages info from: {}", packages_metafile.display()))?;
+            .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse packages info from: {}", packages_metafile.display()))?;
 
         // Try to load corresponding filelists if it exists
         let mut filelists_info = None;
         let filelists_metafile = packages_metafile.to_str()
-            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
+            .ok_or_else(|| eyre::eyre!("[collect_save_repoindex] Invalid packages metafile path: {}", packages_metafile.display()))?
             .replace(".packages", ".filelists");
         if Path::new(&filelists_metafile).exists() {
+            log::debug!("[collect_save_repoindex] Found filelists metafile: {}", filelists_metafile);
             let filelists_content = fs::read_to_string(&filelists_metafile)
-                .with_context(|| format!("Failed to read filelists: {}", filelists_metafile))?;
+                .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read filelists: {}", filelists_metafile))?;
             let filelists: FileInfo = serde_json::from_str(&filelists_content)
-                .with_context(|| format!("Failed to parse filelists info from: {}", filelists_metafile))?;
+                .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse filelists info from: {}", filelists_metafile))?;
             filelists_info = Some(filelists);
+        } else {
+            log::debug!("[collect_save_repoindex] Filelists metafile does not exist: {}", filelists_metafile);
         }
 
         // Use file stem as key, fallback to shard_i
@@ -599,6 +640,12 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
         });
     }
 
+    // Check if we found any valid packages metafiles
+    if repo_shards.is_empty() {
+        log::warn!("[collect_save_repoindex] No valid packages metafiles found for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
+        return Err(eyre::eyre!("[collect_save_repoindex] No valid packages metafiles found for repository: {}. Packages need to be downloaded and processed before creating repo index.", repo.repo_name));
+    }
+
     // Save the index for the repo
     let repo_index = RepoIndex {
         repodata_name: repo.repodata_name.clone(),
@@ -608,8 +655,22 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
         repo_shards
     };
     let index_path = repo_dir.join("RepoIndex.json");
-    fs::write(&index_path, serde_json::to_string_pretty(&repo_index)?)
-        .with_context(|| format!("Failed to write repo index to: {}", index_path.display()))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("[save_repo_index_json] Failed to create parent directory for: {}", index_path.display()))?;
+    }
+
+    // Serialize to JSON with proper error handling
+    let json_content = serde_json::to_string_pretty(&repo_index)
+        .wrap_err_with(|| format!("[save_repo_index_json] Failed to serialize repo index for repository: {}", repo.repo_name))?;
+
+    // Write to file with proper error handling
+    fs::write(&index_path, json_content)
+        .wrap_err_with(|| format!("[save_repo_index_json] Failed to write repo index to: {}", index_path.display()))?;
+
+    log::debug!("[save_repo_index_json] Successfully wrote repo index to {}", index_path.display());
 
     Ok(repo_index)
 }

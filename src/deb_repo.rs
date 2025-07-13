@@ -215,7 +215,14 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     // Check if we need to revise by checking if the file exists
                     let download_path = &release_dir.join(&download_location);
                     let need_download = !download_path.exists();
-                    let need_convert = !output_path.exists();
+                    // Check if we need to convert by checking both the output file and its JSON metadata
+                    let need_convert = if !output_path.exists() {
+                        true // Output file doesn't exist, definitely need to convert
+                    } else {
+                        // Output file exists, but check if RepoIndex.json exists
+                        let repoindex_path = repo_dir.join("RepoIndex.json");
+                        !repoindex_path.exists()
+                    };
 
                     let mut package_baseurl = repo.index_url.clone();
 
