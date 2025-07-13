@@ -299,13 +299,14 @@ pub fn get_field_order() -> &'static [&'static str] {
         "size", "installedSize", "section", "priority", "buildTime", "buildHost", "group", "cookie", "platform",
         "sourcePkgId", "rsaHeader", "sha256Header", "OriginalVcsBrowser", "OriginalVcsGit", "builtUsing",
         "originalMaintainer", "conffiles", "changelogTime", "changelogName", "changelogText",
-        "location", "sha256", "md5sum", "descriptionMd5", "multiArch", "tag",
+        "location", "sha256", "sha512", "sha1", "md5sum", "descriptionMd5", "multiArch", "tag",
         "protected", "essential", "important", "buildEssential", "buildIds", "comment",
         "rubyVersions", "luaVersions", "pythonVersion", "pythonEggName", "staticBuiltUsing",
         "javascriptBuiltUsing", "xCargoBuiltUsing", "builtUsingNewlibSource", "goImportPath",
         "ghcPackage", "efiVendor", "cnfIgnoreCommands", "cnfVisiblePkgname", "cnfExtraCommands",
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
         "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
+        "pkgkey", "repodataName", "status",
     ]
 }
 

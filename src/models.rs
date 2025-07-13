@@ -87,8 +87,10 @@ pub struct Package {
 
     // Apk only has sha1sum; other formats only have sha256sum
     #[serde(default)]
+    #[serde(rename = "sha256")]
     pub sha256sum: Option<String>,
     #[serde(default)]
+    #[serde(rename = "sha1")]
     pub sha1sum: Option<String>,
 
     #[serde(skip)]
@@ -132,8 +134,10 @@ pub struct Package {
     #[serde(skip)]
     pub pkgkey: String, // != pkgline
     #[serde(skip)]
+    #[serde(rename = "repodataName")]
     pub repodata_name: String,
     #[serde(skip)]
+    #[serde(rename = "packageBaseurl")]
     pub package_baseurl: String,
 }
 

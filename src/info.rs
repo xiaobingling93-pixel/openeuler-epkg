@@ -282,7 +282,7 @@ fn package_to_fields(package: &Package) -> Vec<(String, String)> {
 
     // Add fields that might not be serialized properly
     package_fields.push(("pkgkey".to_string(), package.pkgkey.clone()));
-    package_fields.push(("repodata_name".to_string(), package.repodata_name.clone()));
+    package_fields.push(("repodataName".to_string(), package.repodata_name.clone()));
 
     package_fields
 }
