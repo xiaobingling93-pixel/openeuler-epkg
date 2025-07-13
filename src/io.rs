@@ -16,16 +16,12 @@ pub fn deserialize_env_config() -> Result<EnvConfig> {
 }
 
 pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
-    let config_path = get_env_config_path(&env_name);
-
-    // Read the file contents
-    let contents = fs::read_to_string(&config_path)
+    let config_path = crate::dirs::find_env_config_path(&env_name)
+        .ok_or_else(|| eyre::eyre!("Environment config not found for: {}", env_name))?;
+    let contents = std::fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read file: {}", config_path.display()))?;
-
-    // Deserialize the YAML into EnvConfig
     let env_config: EnvConfig = serde_yaml::from_str(&contents)
         .with_context(|| format!("Failed to parse YAML from file: {}", config_path.display()))?;
-
     Ok(env_config)
 }
 
@@ -257,9 +253,7 @@ pub fn interpolate_index_url(config: &ChannelConfig, repo_name: &str, index_url:
 
 /// Save environment configuration to file
 pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
-    let env_name = env_config.name.clone();
-
-    let config_path = get_env_config_path(&env_name);
+    let config_path = get_env_config_path(&env_config);
 
     // Serialize the EnvConfig to YAML
     let yaml = serde_yaml::to_string(&env_config)
@@ -318,8 +312,8 @@ impl PackageManager {
 
     /// Edit environment configuration file
     pub fn edit_environment_config(&self) -> Result<()> {
-        let env_name = &config().common.env;
-        let config_path = get_env_config_path(env_name);
+        let env_config = crate::models::env_config();
+        let config_path = get_env_config_path(&env_config);
 
         // Open editor
         let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());

@@ -101,24 +101,64 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
     get_generations_root(&config().common.env)
 }
 
-// Find the path to an environment's root directory, the path is canonicalized and exists
-// Returns None if the environment is not found
-pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
+/// Get the base path for an environment
+///   - private: $HOME/.epkg/envs/$env_name
+///   - public: /opt/epkg/envs/$username/$env_name
+pub fn get_env_base_path(env_name: &str, public: bool) -> Result<PathBuf> {
+    if public {
+        let username = get_username()?;
+        Ok(dirs().opt_epkg.join("envs").join(username).join(env_name))
+    } else {
+        Ok(dirs().home_epkg.join("envs").join(env_name))
+    }
+}
+
+pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
     // Check private env first
     let private_env_base = dirs().home_epkg.join("envs").join(env_name);
     if private_env_base.exists() {
-        return std::fs::canonicalize(private_env_base).ok();
+        return Some(private_env_base);
     }
 
     // Check public env
     if let Ok(username) = get_username() {
         let public_env_base = dirs().opt_epkg.join("envs").join(username).join(env_name);
         if public_env_base.exists() {
-            return std::fs::canonicalize(public_env_base).ok();
+            return Some(public_env_base);
         }
     }
 
     None
+}
+
+pub fn find_env_config_path(env_name: &str) -> Option<PathBuf> {
+    find_env_base(env_name).map(|base| base.join("etc/epkg/env.yaml"))
+}
+
+/// Get the path to an environment's configuration file
+pub fn get_env_config_path(env_config: &EnvConfig) -> PathBuf {
+    get_env_base_path(&env_config.name, env_config.public)
+        .expect("Failed to get env base path")
+        .join("etc/epkg/env.yaml")
+}
+
+/// Find the root directory for an environment by searching both private and public locations
+/// Returns None if the environment is not found
+pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
+    if let Some(env_base) = find_env_base(env_name) {
+        // Canonicalize the base to resolve symlinks and get the real path
+        return std::fs::canonicalize(env_base).ok();
+    }
+    None
+}
+
+/// Find the first existing dir:
+/// - $HOME/.epkg/envs/base/usr/src/epkg
+/// - /opt/epkg/envs/root/base/usr/src/epkg
+pub fn get_epkg_src_path() -> Result<PathBuf> {
+    let base_env_root = find_env_root(BASE_ENV)
+                .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
+    Ok(base_env_root.join("usr/src/epkg"))
 }
 
 /// Retrieves the home directory path, trying multiple methods.
@@ -177,21 +217,6 @@ pub fn get_repo_dir(repo: &RepoRevise) -> Result<PathBuf> {
     let channel_dir = dirs().epkg_cache.join("channel");
     let repo_dir = channel_dir.join(&repo.channel).join(repo.repodata_name.clone()).join(repo.arch.clone());
     Ok(repo_dir)
-}
-
-/// Find the first existing dir:
-/// - $HOME/.epkg/envs/base/usr/src/epkg
-/// - /opt/epkg/envs/root/base/usr/src/epkg
-pub fn get_epkg_src_path() -> Result<PathBuf> {
-    let base_env_root = find_env_root(BASE_ENV)
-                .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
-    Ok(base_env_root.join("usr/src/epkg"))
-}
-
-/// Get the path to an environment's configuration file
-/// $HOME/.epkg/config/envs/$env.yaml
-pub fn get_env_config_path(env_name: &str) -> PathBuf {
-    dirs().home_config.join("envs").join(format!("{}.yaml", env_name))
 }
 
 /// $HOME/.epkg
@@ -317,7 +342,7 @@ pub fn get_shell_rc() -> Result<Vec<ShellRcInfo>> {
     Ok(infos)
 }
 
-fn get_username() -> Result<String> {
+pub fn get_username() -> Result<String> {
     // Try USER environment variable first (common on Unix/Linux)
     if let Ok(username) = env::var("USER") {
         if !username.is_empty() {
