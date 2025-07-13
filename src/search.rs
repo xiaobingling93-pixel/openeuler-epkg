@@ -691,9 +691,21 @@ fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: 
                             } else {
                                 line
                             }
-                        } else if let Some(rest) = line.strip_prefix(b"  <file type=\"dir\">") {
-                            if let Some(rest) = rest.strip_suffix(b"</file>") {
-                                rest
+                        } else if line.starts_with(b"  <file type=\"") {
+                            // Handle any <file type="..."> pattern
+                            if let Some(rest) = line.strip_suffix(b"</file>") {
+                                // Find the closing quote of the type attribute
+                                if let Some(quote_pos) = memchr::memchr(b'"', &line[14..]) {
+                                    // Skip past the type attribute and the closing >
+                                    let content_start = 14 + quote_pos + 2; // 14 for "  <file type=\"", quote_pos for the type value, +2 for " and >
+                                    if content_start < rest.len() {
+                                        &rest[content_start..]
+                                    } else {
+                                        line
+                                    }
+                                } else {
+                                    line
+                                }
                             } else {
                                 line
                             }
