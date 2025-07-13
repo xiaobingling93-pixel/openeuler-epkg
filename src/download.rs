@@ -608,6 +608,7 @@ pub fn update_download_status(task: &DownloadTask, new_status: DownloadStatus) -
     // Check if status already equals new_status and show a warning
     if *status == new_status {
         log::warn!("Attempting to set download status to same value: {:?} for {}", new_status, task.url);
+        return Err(eyre!("Attempting to set download status to same value: {:?} for {}", new_status, task.url));
     }
 
     *status = new_status;
@@ -1503,11 +1504,23 @@ impl DownloadManager {
             let chunk_clone = Arc::clone(chunk_task);
             let _chunk_handles_clone = Arc::clone(chunk_handles);
 
+            // Double-check that the task is still pending before spawning
+            if !matches!(chunk_clone.get_status(), DownloadStatus::Pending) {
+                log::debug!("Skipping chunk task {} that is no longer pending (status: {:?})",
+                           chunk_clone.chunk_path.display(), chunk_clone.get_status());
+                continue;
+            }
+
             // Mark chunk as downloading NOW to avoid duplicate scheduling in the next scheduler tick
             if let Err(e) = update_download_status(&chunk_clone, DownloadStatus::Downloading) {
                 log::error!("Failed to set chunk status to Downloading for {}: {}", chunk_clone.chunk_path.display(), e);
                 continue; // Skip spawning thread if we cannot update status
             }
+
+            log::debug!("Spawning chunk thread for {} (offset: {}, size: {})",
+                       chunk_clone.chunk_path.display(),
+                       chunk_clone.chunk_offset.load(Ordering::Relaxed),
+                       chunk_clone.chunk_size.load(Ordering::Relaxed));
 
             let handle = thread::spawn(move || {
 
@@ -3591,7 +3604,7 @@ fn process_download_response(
         // For chunk tasks, validate we got partial content
         if response.status() == 200 {
             // Server ignoring Range header - would corrupt chunk
-            log::error!("CORRUPTION PREVENTED: Server returned HTTP 200 instead of 206 for range request to {} (chunk: {})",
+            log::warn!("CORRUPTION PREVENTED: Server returned HTTP 200 instead of 206 for range request to {} (chunk: {})",
                        resolved_url, task.chunk_path.display());
             if let Err(e) = mirror::append_http_log(resolved_url, mirror::HttpEvent::NoRange) {
                 log::warn!("Failed to log chunk range error: {}", e);
