@@ -919,10 +919,8 @@ impl PackageManager {
         log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
         let mut relative_ebin_links: Vec<String> = Vec::new();
         for abs_path in absolute_ebin_paths {
-            log::debug!("expose_package for store_fs_dir '{}': processing abs_path='{}', env_root='{}'", store_fs_dir.display(), abs_path.display(), env_root.display());
             match abs_path.strip_prefix(env_root) {
                 Ok(rel_path) => {
-                    log::debug!("expose_package for store_fs_dir '{}': successfully stripped prefix, rel_path='{}'", store_fs_dir.display(), rel_path.display());
                     relative_ebin_links.push(rel_path.to_string_lossy().into_owned());
                 }
                 Err(e) => {
@@ -1240,19 +1238,23 @@ impl PackageManager {
         self.installed_packages.extend(completed_packages.clone());
 
         let mut appbin_count = 0;
-        let mut appbin_packages = Vec::new();
+        let mut appbin_packages = HashMap::new();
 
-        for (pkgkey, package_info) in &completed_packages { // package_info here is from completed_packages, which is a clone
+        for (pkgkey, package_info) in &completed_packages {
             if package_info.ebin_exposure {
                 appbin_count += 1;
-                appbin_packages.push(pkgkey.clone());
                 let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
                 let links = self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
 
+                // Store the links in our map
+                if !links.is_empty() {
+                    appbin_packages.insert(pkgkey.clone(), links.clone());
+                }
+
                 // Now, update self.installed_packages with these links
                 if let Some(installed_package_info_mut) = self.installed_packages.get_mut(pkgkey) {
-                    installed_package_info_mut.ebin_links = links;
+                    installed_package_info_mut.ebin_links = links.clone();
                 } else {
                     // This should ideally not happen because we extended self.installed_packages with completed_packages
                     log::warn!("execute_installation_plan: pkgkey '{}' from completed_packages not found in self.installed_packages after exposure. Ebin links not stored.", pkgkey);
@@ -1263,7 +1265,6 @@ impl PackageManager {
         for (pkgkey, package_info_from_args) in &packages_to_expose_from_args { // Renamed package_info to avoid confusion
             if !completed_packages.contains_key(pkgkey) && package_info_from_args.ebin_exposure {
                 appbin_count += 1;
-                appbin_packages.push(pkgkey.clone());
 
                 // For packages that are already installed, copy their pkgline from the existing installation
                 let pkgline = if package_info_from_args.pkgline.is_empty() {
@@ -1287,6 +1288,11 @@ impl PackageManager {
 
                 let links = self.expose_package(&store_fs_dir, &env_root.to_path_buf())
                     .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+
+                // Store the links in our map
+                if !links.is_empty() {
+                    appbin_packages.insert(pkgkey.clone(), links.clone());
+                }
 
                 // Now, update self.installed_packages with these links
                 if let Some(installed_package_info_mut) = self.installed_packages.get_mut(pkgkey) {
@@ -1321,10 +1327,23 @@ impl PackageManager {
 
         self.update_current_generation_symlink(new_generation)?;
 
-        println!("Installation successful - Total packages in transaction: {}, AppBin packages: {}", all_packages_for_session.len(), appbin_count);
         if !appbin_packages.is_empty() {
-            println!("AppBin package list: {}", appbin_packages.join(", "));
+            println!("Exposed package commands to {}/usr/ebin:", env_root.display());
+            for (pkgkey, links) in appbin_packages {
+                // Extract just the command names (last component of the path)
+                let command_names: Vec<&str> = links.iter()
+                    .map(|link| Path::new(link).file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(""))
+                    .filter(|name| !name.is_empty())
+                    .collect();
+
+                if !command_names.is_empty() {
+                    println!("{:<36} {}", pkgkey, command_names.join(" "));
+                }
+            }
         }
+        println!("Installation successful - Total packages: {}, ebin packages: {}", all_packages_for_session.len(), appbin_count);
 
         Ok(())
     }
