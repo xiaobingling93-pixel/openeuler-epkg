@@ -3293,11 +3293,12 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
             .and_then(|s| s.to_str())
             .unwrap_or("<invalid-path>");
 
-        println!("  Validating chunk {}: {} (offset: {}, size: {}, current: {} bytes)",
+        println!("  Validating chunk {}: {} (offset: {}, size: {}, current: {} bytes) for parent {}",
                    i, display_name,
                    chunk_offset,
                    chunk_size,
-                   current_size);
+                   current_size,
+                   parent_task.chunk_path.display());
 
         // Ensure chunk tasks are actually chunk tasks
         if !chunk_task.is_chunk_task() {
@@ -3355,7 +3356,8 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
     let parent_size = parent_task.chunk_size.load(Ordering::Relaxed);
     let parent_end = parent_offset + parent_size;
 
-    println!("Parent task range: [{}, {}) bytes ({} bytes)", parent_offset, parent_end, parent_size);
+    println!("Parent task range: [{}, {}) bytes ({} bytes) for {}",
+             parent_offset, parent_end, parent_size, parent_task.chunk_path.display());
 
     // Check for overlapping chunks among new chunks
     for i in 1..sorted_chunks.len() {
@@ -3401,11 +3403,11 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
 
         // Check for gaps between parent task and new chunks
         if first_chunk_offset > parent_end {
-            log::warn!("add_chunk_tasks: gap detected between parent task and new chunks: parent ends at {}, but first chunk starts at {} (gap: {} bytes)",
-                      parent_end, first_chunk_offset, first_chunk_offset - parent_end);
+            log::warn!("add_chunk_tasks: gap detected between parent task and new chunks: parent ends at {}, but first chunk starts at {} (gap: {} bytes) for {}",
+                      parent_end, first_chunk_offset, first_chunk_offset - parent_end, parent_task.chunk_path.display());
         } else if last_chunk_end < parent_offset {
-            log::warn!("add_chunk_tasks: gap detected between new chunks and parent task: last chunk ends at {}, but parent starts at {} (gap: {} bytes)",
-                      last_chunk_end, parent_offset, parent_offset - last_chunk_end);
+            log::warn!("add_chunk_tasks: gap detected between new chunks and parent task: last chunk ends at {}, but parent starts at {} (gap: {} bytes) for {}",
+                      last_chunk_end, parent_offset, parent_offset - last_chunk_end, parent_task.chunk_path.display());
         }
     }
 
@@ -3416,8 +3418,8 @@ fn validate_chunk_tasks(parent_task: &DownloadTask, chunk_tasks: &Vec<Arc<Downlo
 
     // Check that parent size >= resumed size
     if parent_size < resumed_size {
-        let error_msg = format!("add_chunk_tasks: parent size {} < resumed size {} - parent task cannot be smaller than what's already downloaded",
-                               parent_size, resumed_size);
+        let error_msg = format!("add_chunk_tasks: parent size {} < resumed size {} - parent task cannot be smaller than what's already downloaded for {}",
+                               parent_size, resumed_size, parent_task.chunk_path.display());
         log::error!("{}", error_msg);
         error_messages.push(error_msg);
     }
@@ -4209,8 +4211,8 @@ fn may_ondemand_chunking(task: &DownloadTask) -> bool {
 
 /// Create on-demand chunk tasks during download
 ///
-/// This function modifies the master task's chunk range and creates additional 256KB chunk tasks
-/// when a download is slow and we want to parallelize it further. The master task is modified to
+/// This function modifies the parent task's chunk range and creates additional 256KB chunk tasks
+/// when a download is slow and we want to parallelize it further. The parent task is modified to
 /// cover from current position to the next 256KB boundary, then additional chunks are created
 /// for the remaining data.
 ///
@@ -4224,16 +4226,25 @@ fn may_ondemand_chunking(task: &DownloadTask) -> bool {
 // Chunk 3:                 1024KB → 1280KB (256KB)
 // Chunk 4:                 1280KB → 1300KB (20KB final)
 //
-// Result: 5 parallel downloads (1 master + 4 chunks)
+// Result: 5 parallel downloads (1 parent + 4 chunks)
 //
-// Step 1: Modify master task to cover existing_bytes → next_boundary
+// Step 1: Modify parent task to cover existing_bytes → next_boundary
 // Step 2: Create 256KB chunks from next_boundary → end
-// Step 3: Add all chunks to master task atomically
+// Step 3: Add all chunks to parent task atomically
 fn create_ondemand_chunks(task: &DownloadTask, chunk_append_offset: u64, remaining_size: u64) -> Result<usize> {
+    // Add debug information about the current state
+    log::debug!("create_ondemand_chunks: starting for {} with append_offset={}, remaining_size={}, current_chunk_size={}",
+               task.chunk_path.display(), chunk_append_offset, remaining_size, task.chunk_size.load(Ordering::Relaxed));
+
+    if remaining_size < ONDEMAND_CHUNK_SIZE * 2 {
+        return Err(eyre!("Skip ondemand chunking for {} because remaining size {} is less than 2 * ONDEMAND_CHUNK_SIZE ({})",
+                         remaining_size, ONDEMAND_CHUNK_SIZE * 2, task.chunk_path.display()));
+    }
+
     // Calculate the next 256KB boundary after current position.
     // If we are already aligned to a boundary (i.e. chunk_append_offset is an exact multiple
     // of ONDEMAND_CHUNK_SIZE) we must advance by one full chunk; otherwise `next_boundary`
-    // would equal `chunk_append_offset`, producing a zero-length master chunk and triggering
+    // would equal `chunk_append_offset`, producing a zero-length parent chunk and triggering
     // errors later when `create_chunk_tasks` is called again.
 
     let chunk_offset = task.chunk_offset.load(Ordering::Relaxed);
@@ -4246,17 +4257,18 @@ fn create_ondemand_chunks(task: &DownloadTask, chunk_append_offset: u64, remaini
 
     let total_size = final_append_offset + remaining_size;
 
-    // Modify master task to cover from current position to next 256KB boundary
-    let master_chunk_size = std::cmp::min(next_boundary - chunk_offset, remaining_size);
+    // Modify parent task to cover from current position to next 256KB boundary
+    let parent_chunk_size = std::cmp::min(next_boundary - chunk_offset, remaining_size);
 
-    // Update master task's chunk information
-    task.chunk_size.store(master_chunk_size, Ordering::Relaxed);
+    // Update parent task's chunk information
+    task.chunk_size.store(parent_chunk_size, Ordering::Relaxed);
 
     log::debug!(
-        "Modified master task range: [{}, {}) bytes ({} bytes)",
+        "Modified parent task range: [{}, {}) ({} bytes) for {}",
         final_append_offset,
-        final_append_offset + master_chunk_size,
-        master_chunk_size
+        final_append_offset + parent_chunk_size,
+        parent_chunk_size,
+        task.chunk_path.display()
     );
 
     // Create additional 256KB chunks from next boundary to end of file
@@ -4270,11 +4282,11 @@ fn create_ondemand_chunks(task: &DownloadTask, chunk_append_offset: u64, remaini
         offset += chunk_size;
     }
 
-    // Add all chunk tasks to the master task using the unified add_chunk_tasks function
+    // Add all chunk tasks to the parent task using the unified add_chunk_tasks function
     add_chunk_tasks(task, chunk_tasks.clone(), ChunkStatus::HasOndemandChunk)?;
 
     log::info!(
-        "Created {} on-demand chunks (256KB each) for {} bytes remaining, master covers {}→{} bytes",
+        "Created {} on-demand chunks (256KB each) for {} bytes remaining, parent covers {}→{} bytes",
         chunk_tasks.len(), remaining_size, chunk_offset, next_boundary
     );
 
@@ -4835,9 +4847,9 @@ fn calculate_write_bytes(
 
         if chunk_append_offset >= boundary {
             if task.is_master_task() {
-                log::debug!("Master task reached chunk boundary at {} bytes, stopping", chunk_append_offset);
+                log::debug!("Master task reached chunk boundary at {} bytes, stopping for {}", chunk_append_offset, task.chunk_path.display());
             } else {
-                log::debug!("Chunk task completed at {} bytes", chunk_append_offset);
+                log::debug!("Chunk task completed at {} bytes for {}", chunk_append_offset, task.chunk_path.display());
             }
             return 0; // Signal to stop
         }
@@ -4865,7 +4877,7 @@ fn write_chunk_data(
     let write_len = if chunk_size_val > 0 {
         let remaining = chunk_size_val.saturating_sub(chunk_append_offset);
         if remaining == 0 {
-            log::warn!("Chunk task received {} surplus bytes, discarding", bytes_to_write);
+            log::warn!("Chunk task received {} surplus bytes, discarding for {}", bytes_to_write, task.chunk_path.display());
             return Ok(0); // Signal to stop
         }
         std::cmp::min(bytes_to_write, remaining as usize)
@@ -4956,7 +4968,7 @@ fn check_ondemand_chunking(
             // Note: chunk status is now set by add_chunk_tasks() inside create_ondemand_chunks()
         }
         Err(_) => {
-            log::warn!("Failed to create ondemand chunks, resetting status to NoChunk");
+            log::warn!("Failed to create ondemand chunks, resetting status to NoChunk for {}", task.chunk_path.display());
             if let Err(e) = task.set_chunk_status(ChunkStatus::NoChunk) {
                 log::warn!("Failed to reset chunk status: {}", e);
             }
