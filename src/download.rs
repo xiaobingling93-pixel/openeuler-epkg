@@ -5035,21 +5035,27 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
 
     // If URL doesn't contain $mirror, just update resolved URL
     if !url.contains("$mirror") {
+        log::debug!("resolve_mirror_and_update_task: URL {} doesn't contain $mirror, using as-is", url);
         if let Ok(mut resolved) = task.resolved_url.lock() {
             *resolved = url.to_string();
         }
         return Ok(url.to_string());
     }
 
+    log::debug!("resolve_mirror_and_update_task: Resolving mirror for URL {}", url);
+
     // Select mirror with usage tracking
     let selected_mirror = {
         let mut mirrors = mirror::MIRRORS.lock()
             .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
 
-        mirrors.select_mirror_with_usage_tracking(need_range, Some(&task.url))
+        let mirror = mirrors.select_mirror_with_usage_tracking(need_range, Some(&task.url))
             .map_err(|e| DownloadError::MirrorResolution {
                 details: format!("{}", e)
-            })?
+            })?;
+
+        log::debug!("resolve_mirror_and_update_task: Selected mirror {} for URL {}", mirror.url, url);
+        mirror
     };
 
     // Get distro directory for the selected mirror
@@ -5816,23 +5822,36 @@ fn adjust_and_create_chunks(
 }
 
 fn add_url_to_mirror_skip_list(task: &DownloadTask) {
-    let mirror_url = {
-        if let Ok(mirror_guard) = task.mirror_inuse.lock() {
-            if let Some(ref mirror) = *mirror_guard {
-                Some(mirror::url2site(&mirror.url))
-            } else {
-                None
-            }
+    // Get resolved URL; do not use task.mirror_inuse -- it's None at the call time
+    let resolved_url = {
+        if let Ok(resolved_guard) = task.resolved_url.lock() {
+            resolved_guard.clone()
         } else {
-            None
+            log::warn!("Failed to lock resolved_url for task URL {}", task.url);
+            return;
         }
     };
-    if let Some(site_key) = mirror_url {
-        let url = &task.url;
-        if let Ok(mut mirrors) = mirror::MIRRORS.lock() {
-            if let Some(mirror_in_collection) = mirrors.mirrors.get_mut(&site_key) {
-                mirror_in_collection.add_skip_url(url);
-            }
+
+    // Return early if resolved URL is the same as original URL or still contains $mirror
+    if resolved_url == task.url || resolved_url.contains("$mirror") {
+        log::debug!("add_url_to_mirror_skip_list: No resolved URL found for task URL {}", task.url);
+        return;
+    }
+
+    // Extract mirror site from resolved URL
+    let site_key = mirror::url2site(&resolved_url);
+    log::debug!("add_url_to_mirror_skip_list: task.url={}, resolved_url={}, site_key={}", task.url, resolved_url, site_key);
+
+    // Add URL to mirror skip list
+    let url = &task.url;
+    if let Ok(mut mirrors) = mirror::MIRRORS.lock() {
+        if let Some(mirror_in_collection) = mirrors.mirrors.get_mut(&site_key) {
+            mirror_in_collection.add_skip_url(url);
+            log::debug!("Successfully added {} to skip_urls for mirror site {}", url, site_key);
+        } else {
+            log::warn!("Mirror site {} not found in mirrors collection for URL {}", site_key, url);
         }
+    } else {
+        log::warn!("Failed to lock mirrors collection for URL {}", url);
     }
 }

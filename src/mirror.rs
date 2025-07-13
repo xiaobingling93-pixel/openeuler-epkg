@@ -384,7 +384,7 @@ impl Mirror {
 
     pub fn add_skip_url(&mut self, url: &str) {
         self.skip_urls.insert(url.to_string());
-        log::debug!("Added {} to skip_urls for mirror {}", url, self.url);
+        log::debug!("Added {} to skip_urls for mirror {} (total skip_urls: {})", url, self.url, self.skip_urls.len());
     }
 
     pub fn should_skip_url(&self, url: &str) -> bool {
@@ -1124,7 +1124,7 @@ impl Mirrors {
                 // Exclude mirrors that have metadata conflicts with master task
                 if let Some(url) = raw_url {
                     if mirror.should_skip_url(url) {
-                        log::debug!("Skipping mirror {} for URL {} due to metadata conflicts", mirror.url, url);
+                        log::trace!("Skipping mirror {} for URL {} due to metadata conflicts", mirror.url, url);
                         return None;
                     }
                 }
