@@ -8,6 +8,7 @@ use crate::parse_cmdline;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use std::sync::Arc;
+use crate::search::SearchOptions;
 
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
@@ -493,6 +494,8 @@ pub struct EPKGConfig {
     pub history: HistoryOptions,
     #[serde(default = "default_init_options")]
     pub init: InitOptions,
+    #[serde(skip)]
+    pub search: SearchOptions,
 
     #[serde(skip)]
     pub config_file: String,

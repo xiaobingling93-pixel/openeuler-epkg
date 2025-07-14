@@ -395,10 +395,13 @@ pub fn sync_repo_metadata(format: PackageFormat, repo: &RepoRevise, result_tx: &
     let repo_dir = Arc::new(repo_dir.clone());
 
     // Filter out items that don't need revision
+    let need_filelists = config().subcommand == EpkgCommand::Update ||
+                         config().subcommand == EpkgCommand::Search && (config().search.files || config().search.paths);
+
     let release_items_clone = release_items.clone();
     let revises: Vec<_> = release_items_clone.iter()
         .filter(|revise| revise.need_download || revise.need_convert)
-        .filter(|revise| revise.is_packages || config().subcommand == EpkgCommand::Update)
+        .filter(|revise| revise.is_packages || need_filelists)
         .cloned()
         .collect();
 

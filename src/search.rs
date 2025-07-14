@@ -14,26 +14,18 @@ use memmap2::Mmap;
 use color_eyre::eyre::{Result, Context};
 use log::warn;
 
-use crate::models::repodata_indice;
-use crate::models::PackageFormat;
+use crate::models::*;
 
 // Search options for RPM filelists
-#[derive(Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct SearchOptions {
     pub ignore_case: bool,
-    #[allow(dead_code)]
-    pub exact_match: bool,
-    #[allow(dead_code)]
-    pub show_version: bool,
-    #[allow(dead_code)]
-    pub show_path: bool,
     pub files: bool,
     pub paths: bool,
     pub regexp: bool,
     pub pattern: String,
     pub u8_pattern: Vec<u8>,
     pub regex_pattern: Option<Arc<regex::bytes::Regex>>,
-    pub format: PackageFormat,
 }
 
 // Constants for package metadata patterns
@@ -48,9 +40,6 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
 
     for repo_index in repodata_indice.values() {
         let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
-
-        // Pass the package format from the repository to the search options
-        options.format = repo_index.format;
 
         for shard in repo_index.repo_shards.values() {
             if options.files || options.paths {
@@ -76,7 +65,11 @@ pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
     }
 
     if !any_filelists && (options.files || options.paths) {
-        warn!("No filelists found in any repository");
+        if channel_config().format == PackageFormat::Apk {
+            eprintln!("Alpine has no filelists for search");
+        }
+        eprintln!("No filelists downloaded yet, please run 'epkg update' first");
+        std::process::exit(0);
     }
 
     // Wait for all producer threads to complete first
@@ -512,7 +505,7 @@ fn process_simple_line(
     // Split the line into pkgname and path
     if let Some(space_pos) = memchr::memchr(b' ', line) {
         // Handle different package formats
-        let (pkgname, path) = match options.format {
+        let (pkgname, path) = match channel_config().format {
             // For Deb format, the order is "path pkgname/section"
             PackageFormat::Deb => {
                 let path = &line[..space_pos];
@@ -958,7 +951,7 @@ fn search_package_metadata(
     (found_pkgname, found_summary)
 }
 
-pub fn search_packages(packages_path: &Path, options: &mut SearchOptions) -> Result<()> {
+pub fn search_packages(packages_path: &Path, options: &SearchOptions) -> Result<()> {
     // Memory map the file
     let file = File::open(packages_path)?;
     let mmap = unsafe { Mmap::map(&file)? };

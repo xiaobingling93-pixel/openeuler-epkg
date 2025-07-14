@@ -848,8 +848,47 @@ fn parse_options_run(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches)
     Ok(())
 }
 
-fn parse_options_search(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
-    // Nothing to store in EPKGConfig
+fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    let mut options = search::SearchOptions {
+        files: sub_matches.get_flag("files"),
+        paths: sub_matches.get_flag("paths"),
+        regexp: sub_matches.get_flag("regexp"),
+        ignore_case: sub_matches.get_flag("ignore-case"),
+        pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
+        u8_pattern: Vec::new(),     // Will be populated in command_search()
+        regex_pattern: None,        // Will be set if regexp is true
+    };
+
+    // Warn if using -f (files) flag with a pattern containing path separators
+    if options.files && options.pattern.contains('/') {
+        eprintln!("Warning: Using -f|--files flag with pattern '{}' that contains '/'.\nConsider using -p|--paths flag instead for path-based searches.", options.pattern);
+        exit(0);
+    }
+
+    // Process the filelists based on the options
+    if options.regexp {
+        // Create a regex from the pattern
+        let mut regex_builder = RegexBuilder::new(&options.pattern);
+        let regex = Arc::new(regex_builder.case_insensitive(options.ignore_case).build()?);
+
+        // Try to extract a literal prefix for optimization
+        // If we can't extract a prefix, we'll just use the original pattern
+        // This is less efficient but will still work correctly
+        if let Some(literal) = crate::search::extract_literal_string(&options.pattern) {
+            options.pattern = literal;
+        } else {
+            log::warn!("Failed to extract literal, cannot handle complex regexp now");
+        }
+
+        // Set the regex pattern in options
+        options.regex_pattern = Some(Arc::clone(&regex));
+    }
+
+    if options.ignore_case {
+        options.pattern = options.pattern.to_lowercase();
+    }
+
+    config.search = options;
     Ok(())
 }
 
@@ -1169,51 +1208,12 @@ impl PackageManager {
         Ok(())
     }
 
-    fn command_search(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+    fn command_search(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
         self.sync_channel_metadata()?;
 
-        let mut options = search::SearchOptions {
-            files: sub_matches.get_flag("files"),
-            paths: sub_matches.get_flag("paths"),
-            regexp: sub_matches.get_flag("regexp"),
-            pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
-            u8_pattern: Vec::new(), // Will be populated in search_filelists
-            ignore_case: sub_matches.get_flag("ignore-case"), // Use the new ignore-case flag
-            exact_match: false, // Default to non-exact matching
-            show_version: false, // Default to not showing versions
-            show_path: true, // Default to showing paths
-            regex_pattern: None, // Will be set if regexp is true
-            format: crate::models::channel_config().format.clone(),
-        };
-
-        // Warn if using -f (files) flag with a pattern containing path separators
-        if options.files && options.pattern.contains('/') {
-            eprintln!("Warning: Using -f|--files flag with pattern '{}' that contains '/'.\nConsider using -p|--paths flag instead for path-based searches.", options.pattern);
-            exit(0);
-        }
-
-        // Process the filelists based on the options
-        if options.regexp {
-            // Create a regex from the pattern
-            let mut regex_builder = RegexBuilder::new(&options.pattern);
-            let regex = Arc::new(regex_builder.case_insensitive(options.ignore_case).build()?);
-
-            // Try to extract a literal prefix for optimization
-            // If we can't extract a prefix, we'll just use the original pattern
-            // This is less efficient but will still work correctly
-            if let Some(literal) = crate::search::extract_literal_string(&options.pattern) {
-                options.pattern = literal;
-            } else {
-                log::warn!("Failed to extract literal, cannot handle complex regexp now");
-            }
-
-            // Set the regex pattern in options
-            options.regex_pattern = Some(Arc::clone(&regex));
-        }
-
-        if options.ignore_case {
-            options.pattern = options.pattern.to_lowercase();
-        }
+        // channel_config() cannot be referenced at parse_options_search() time,
+        // so setup the derived options.u8_pattern here
+        let mut options = config().search.clone();
 
         // Create the pattern for searching and store it in options
         options.u8_pattern = options.pattern.as_bytes().to_vec();
@@ -1221,10 +1221,10 @@ impl PackageManager {
         // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
         // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
         // with relative filelist entries like usr/bin/ls
-        if (options.format == crate::models::PackageFormat::Deb ||
-            options.format == crate::models::PackageFormat::Pacman) &&
-           !options.u8_pattern.is_empty() &&
-           options.u8_pattern[0] == b'/' {
+        if (channel_config().format == crate::models::PackageFormat::Deb ||
+            channel_config().format == crate::models::PackageFormat::Pacman) &&
+            !options.u8_pattern.is_empty() &&
+            options.u8_pattern[0] == b'/' {
             options.u8_pattern.remove(0);
         }
 
