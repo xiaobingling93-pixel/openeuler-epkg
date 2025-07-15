@@ -200,13 +200,28 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
     Ok(())
 }
 
+/// Estimate the number of lines in a file based on its size and an average bytes-per-line value
+fn estimate_lines_from_file_size(file_path: &std::path::Path, bytes_per_line: u64, fallback: usize) -> usize {
+    let file_size = std::fs::metadata(file_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if file_size > 0 {
+        (file_size / bytes_per_line) as usize
+    } else {
+        fallback
+    }
+}
+
 /// Deserializes package provides mapping from a file
 pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<String, Vec<String>>> {
     log::debug!("deserialize_provide2pkgnames for {}", file_path.display());
 
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Estimate number of entries based on file size and average bytes per line (46 bytes/line)
+    let estimated_lines = estimate_lines_from_file_size(file_path, 46, 64);
+    let mut map: HashMap<String, Vec<String>> = HashMap::with_capacity(estimated_lines);
 
     for (line_num, line_result) in reader.lines().enumerate() {
         let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path.display()))?;
