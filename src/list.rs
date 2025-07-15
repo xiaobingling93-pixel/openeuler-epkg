@@ -1,6 +1,7 @@
-use color_eyre::Result;
-use crate::models::*;
 use std::sync::Arc;
+use crate::models::*;
+use crate::mmio;
+use color_eyre::Result;
 use memchr::{memchr, memmem::Finder};
 
 // ======================================================================================
@@ -163,8 +164,8 @@ impl PackageManager {
         let matching_pkgnames = self.collect_matching_pkgnames(pattern)?;
 
         for pkgname in matching_pkgnames {
-            // Get package details from repository using crate::mmio directly
-            match crate::mmio::map_pkgname2packages(&pkgname) {
+            // Get package details from repository using crate::mmio directly to skip caching
+            match mmio::map_pkgname2packages(&pkgname) {
                 Ok(packages) => {
                     for pkg in packages {
                         // Skip if package is already installed (for Available scope)
@@ -190,13 +191,14 @@ impl PackageManager {
 
     /// Collect matching package names with optimizations based on pattern type
     fn collect_matching_pkgnames(&self, pattern: &str) -> Result<Vec<String>> {
-        let repodata_indice = crate::models::repodata_indice();
+        let mut repodata_indice = crate::models::repodata_indice_mut();
         let mut matching_pkgnames = Vec::new();
 
         // Case 1: Handle exact name match (no wildcards)
         if !pattern.contains('*') {
-            for repo_index in repodata_indice.values() {
-                for shard in repo_index.repo_shards.values() {
+            for repo_index in repodata_indice.values_mut() {
+                for shard in repo_index.repo_shards.values_mut() {
+                    mmio::ensure_pkgname2ranges_loaded(shard)?;
                     if shard.pkgname2ranges.contains_key(pattern) {
                         matching_pkgnames.push(pattern.to_string());
                         return Ok(matching_pkgnames); // Found exact match, no need to continue
@@ -209,9 +211,9 @@ impl PackageManager {
         // Case 2: Handle prefix pattern (e.g., "prefix*")
         if pattern.ends_with('*') && !pattern[..pattern.len()-1].contains('*') {
             let prefix = &pattern[..pattern.len()-1];
-            for repo_index in repodata_indice.values() {
-                for shard in repo_index.repo_shards.values() {
-                    // Use BTreeMap range for efficient prefix matching
+            for repo_index in repodata_indice.values_mut() {
+                for shard in repo_index.repo_shards.values_mut() {
+                    mmio::ensure_pkgname2ranges_loaded(shard)?;
                     let range = shard.pkgname2ranges.range(prefix.to_string()..);
                     for (pkgname, _) in range {
                         if pkgname.starts_with(prefix) {
@@ -229,8 +231,9 @@ impl PackageManager {
         let mut handles = Vec::new();
         let pattern = pattern.to_string();
 
-        for repo_index in repodata_indice.values() {
-            for shard in repo_index.repo_shards.values() {
+        for repo_index in repodata_indice.values_mut() {
+            for shard in repo_index.repo_shards.values_mut() {
+                mmio::ensure_pkgname2ranges_loaded(shard)?;
                 let shard_pkgnames: Vec<String> = shard.pkgname2ranges.keys().cloned().collect();
                 let pattern_clone = pattern.clone();
 
@@ -261,18 +264,20 @@ impl PackageManager {
 
     /// Process all available packages when pattern is empty or "*" - optimized direct scanning
     fn process_all_available_packages(&mut self, list_title: &str) -> Result<usize> {
-        let repodata_indice = crate::models::repodata_indice();
+        let mut repodata_indice = crate::models::repodata_indice_mut();
         let mut count = 0;
         let mut local_items = Vec::new();
 
-        for repo_index in repodata_indice.values() {
-            for shard in repo_index.repo_shards.values() {
+        for repo_index in repodata_indice.values_mut() {
+            for shard in repo_index.repo_shards.values_mut() {
                 if let Some(mmap) = &shard.packages_mmap {
                     count += self.scan_packages_mmap(
-                        mmap.data(),
+                        mmap,
                         &repo_index.repodata_name,
                         &mut local_items,
                     )?;
+                    // Clear pkgname2ranges after scan
+                    shard.pkgname2ranges.clear();
                 }
             }
         }
@@ -281,21 +286,26 @@ impl PackageManager {
         Ok(count)
     }
 
-    /// Scan a packages_mmap buffer and collect PackageListItems efficiently
+    /// Scan a packages_mmap buffer and collect PackageListItems efficiently, dropping past mmap pages by 2MB-aligned granularity
     fn scan_packages_mmap(
         &self,
-        data: &[u8],
+        file_mapper: &crate::mmio::FileMapper,
         repodata_name: &str,
         local_items: &mut Vec<PackageListItem>,
     ) -> Result<usize> {
+        use libc::{madvise, c_void, MADV_DONTNEED};
+        let data = file_mapper.data();
         let mut count = 0;
         let mut pos = 0;
         let finder = Finder::new(b"pkgname: ");
-        let mut current_pkgname: Option<&[u8]> = None;
-        let mut current_version: Option<&[u8]> = None;
-        let mut current_arch: Option<&[u8]> = None;
-        let mut current_summary: Option<&[u8]> = None;
+        // Use plain slices and a found counter
+        let mut pkgname: &[u8] = &[];
+        let mut version: &[u8] = &[];
+        let mut arch: &[u8] = &[];
+        let mut summary: &[u8] = &[];
         let mut nr_found_fields = 0;
+        let mut last_advised = 0;
+        const MMAP_DROP_GRANULARITY: usize = 2 * 1024 * 1024; // 2MB
         while pos < data.len() {
             // If we are at the start of a package, use Finder to jump to next 'pkgname: '
             if nr_found_fields == 0 {
@@ -304,8 +314,8 @@ impl PackageManager {
                     // Now parse pkgname line
                     let line_end = memchr(b'\n', &data[pos..]).map(|i| pos + i).unwrap_or(data.len());
                     let line = &data[pos..line_end];
-                    if let Some(value) = line.strip_prefix(b"pkgname: ") {
-                        current_pkgname = Some(value);
+                    if line.starts_with(b"pkgname: ") {
+                        pkgname = &line[b"pkgname: ".len()..];
                         nr_found_fields = 1;
                         pos = line_end + 1;
                     } else {
@@ -321,35 +331,44 @@ impl PackageManager {
                 let line_end = memchr(b'\n', &data[pos..]).map(|i| pos + i).unwrap_or(data.len());
                 let line = &data[pos..line_end];
                 if line.is_empty() {
-                    continue;
+                    nr_found_fields = 4;    // print on end of paragraph; summary field is optional
                 }
-                if let Some(rest) = line.strip_prefix(b"version: ") {
-                    current_version = Some(rest);
+                if line.starts_with(b"version: ") {
+                    version = &line[b"version: ".len()..];
                     nr_found_fields += 1;
-                } else if let Some(rest) = line.strip_prefix(b"arch: ") {
-                    current_arch = Some(rest);
+                } else if line.starts_with(b"arch: ") {
+                    arch = &line[b"arch: ".len()..];
                     nr_found_fields += 1;
-                } else if let Some(rest) = line.strip_prefix(b"summary: ") {
-                    current_summary = Some(rest);
+                } else if line.starts_with(b"summary: ") {
+                    summary = &line[b"summary: ".len()..];
                     nr_found_fields += 1;
                 }
                 pos = line_end + 1;
-                // If all 4 fields found, process package and jump to next pkgname
                 if nr_found_fields >= 4 {
                     count += self.handle_completed_package_bytes(
-                        current_pkgname,
-                        current_version,
-                        current_arch,
-                        current_summary,
+                        pkgname,
+                        version,
+                        arch,
+                        summary,
                         repodata_name,
                         local_items,
                     )?;
-                    current_pkgname = None;
-                    current_version = None;
-                    current_arch = None;
-                    current_summary = None;
+                    pkgname = &[];
+                    version = &[];
+                    arch = &[];
+                    summary = &[];
                     nr_found_fields = 0;
                 }
+            }
+            // Drop past mmap pages by 2MB-aligned granularity
+            let next_advisable = (pos / MMAP_DROP_GRANULARITY) * MMAP_DROP_GRANULARITY;
+            if next_advisable > last_advised {
+                let advise_ptr = unsafe { data.as_ptr().add(last_advised) as *mut c_void };
+                let advise_len = next_advisable - last_advised;
+                unsafe {
+                    madvise(advise_ptr, advise_len, MADV_DONTNEED);
+                }
+                last_advised = next_advisable;
             }
         }
         Ok(count)
@@ -357,22 +376,18 @@ impl PackageManager {
 
     fn handle_completed_package_bytes(
         &self,
-        pkgname: Option<&[u8]>,
-        version: Option<&[u8]>,
-        arch: Option<&[u8]>,
-        summary: Option<&[u8]>,
+        pkgname: &[u8],
+        version: &[u8],
+        arch: &[u8],
+        summary: &[u8],
         repodata_name: &str,
         local_items: &mut Vec<PackageListItem>,
     ) -> Result<usize> {
-        if let (Some(pkgname), Some(version), Some(arch)) = (pkgname, version, arch) {
+        if !pkgname.is_empty() {
             let pkgname_str = std::str::from_utf8(pkgname)?.trim();
             let version_str = std::str::from_utf8(version)?.trim();
             let arch_str = std::str::from_utf8(arch)?.trim();
-            let summary_str = if let Some(s) = summary {
-                std::str::from_utf8(s)?.trim()
-            } else {
-                ""
-            };
+            let summary_str = std::str::from_utf8(summary).unwrap_or("").trim();
             let pkgkey = crate::package::format_pkgkey(pkgname_str, version_str, arch_str);
             if !self.installed_packages.contains_key(&pkgkey) {
                 let item = self.create_available_package_item_from_data_borrowed(
@@ -496,7 +511,7 @@ impl PackageManager {
         let pos1 = if installed_info.ebin_exposure { 'E' } else { 'I' };
 
         // Position 2: Depth/Essential status
-        let pos2 = if crate::mmio::is_essential_pkgname(pkgname) {
+        let pos2 = if mmio::is_essential_pkgname(pkgname) {
             'E'
         } else {
             char::from_digit(installed_info.depend_depth as u32, 10).unwrap_or('9')

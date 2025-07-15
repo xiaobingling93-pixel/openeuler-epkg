@@ -426,6 +426,8 @@ pub struct RepoShard {
     pub pkgname2ranges: BTreeMap<String, Vec<PackageRange>>,
     #[serde(skip)]
     pub packages_mmap: Option<crate::mmio::FileMapper>,
+    #[serde(skip)]
+    pub pkgname2ranges_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]

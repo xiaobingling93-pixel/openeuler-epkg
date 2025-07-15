@@ -640,6 +640,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
             provide2pkgnames:   std::collections::HashMap::new(),
             pkgname2ranges:     std::collections::BTreeMap::new(),
             packages_mmap:      None,
+            pkgname2ranges_path: None,
         });
     }
 

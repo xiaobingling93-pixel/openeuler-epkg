@@ -102,8 +102,8 @@ pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> 
             let (packages_path, _provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
                 get_package_paths(&repo_dir, &filename);
             shard.packages_mmap = Some(FileMapper::new(packages_path.to_str().unwrap())?);
-            shard.pkgname2ranges = deserialize_pkgname2ranges(&pkgname2ranges_path)?;
             shard.essential_pkgnames = deserialize_essential_pkgnames(&essential_pkgnames_path)?;
+            shard.pkgname2ranges_path = Some(pkgname2ranges_path);
         }
     }
 
@@ -202,6 +202,8 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
 
 /// Deserializes package provides mapping from a file
 pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<String, Vec<String>>> {
+    log::debug!("deserialize_provide2pkgnames for {}", file_path.display());
+
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -239,6 +241,8 @@ pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String
 
 // Function to deserialize pkgname2ranges from a file
 pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec<PackageRange>>> {
+    log::debug!("deserialize_pkgname2ranges for {}", path.display());
+
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read index file: {}", path.display()))?;
 
@@ -379,15 +383,25 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
     }
 }
 
-pub fn lookup_in_packages(
+pub fn ensure_pkgname2ranges_loaded(shard: &mut RepoShard) -> Result<()> {
+    if shard.pkgname2ranges.is_empty() {
+        if let Some(ref path) = shard.pkgname2ranges_path {
+            shard.pkgname2ranges = deserialize_pkgname2ranges(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn lookup_in_packages(
     pkgname: &str,
     repodata_name: &str,
     package_baseurl: &str,
-    pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>,
-    packages_mmap: &Option<FileMapper>
+    shard: &mut RepoShard,
 ) -> Result<Vec<Package>> {
+    ensure_pkgname2ranges_loaded(shard)?;
+    let pkgname2ranges = &shard.pkgname2ranges;
+    let packages_mmap = &shard.packages_mmap;
     let mut packages = Vec::new();
-
     if let Some(ranges) = pkgname2ranges.get(pkgname) {
         if let Some(mmap) = packages_mmap {
             for range in ranges {
@@ -403,26 +417,22 @@ pub fn lookup_in_packages(
             }
         }
     }
-
     Ok(packages)
 }
 
 pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
     let mut packages = Vec::new();
-
-    let repodata_indice = repodata_indice();
-    for repo_index in repodata_indice.values() {
-        for shard in repo_index.repo_shards.values() {
+    let mut repodata_indice = repodata_indice_mut();
+    for repo_index in repodata_indice.values_mut() {
+        for shard in repo_index.repo_shards.values_mut() {
             if let Ok(mut shard_packages) = lookup_in_packages(pkgname,
                         &repo_index.repodata_name,
                         &repo_index.package_baseurl,
-                        &shard.pkgname2ranges,
-                        &shard.packages_mmap) {
+                        shard) {
                 packages.append(&mut shard_packages);
             }
         }
     }
-
     Ok(packages)
 }
 
