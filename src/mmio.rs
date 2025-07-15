@@ -458,13 +458,15 @@ pub fn get_essential_pkgnames() -> Result<HashSet<String>> {
 }
 
 pub fn is_essential_pkgname(pkgname: &str) -> bool {
-    match get_essential_pkgnames() {
-        Ok(essential_pkgnames) => essential_pkgnames.contains(pkgname),
-        Err(e) => {
-            log::warn!("Failed to get essential package names: {}", e);
-            false
+    let repodata_indice = repodata_indice();
+    for repo_index in repodata_indice.values() {
+        for shard in repo_index.repo_shards.values() {
+            if shard.essential_pkgnames.contains(pkgname) {
+                return true;
+            }
         }
     }
+    return false;
 }
 
 /// Maps a pkgline (from installed packages) to a Package by deserializing from local store

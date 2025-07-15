@@ -1,6 +1,7 @@
 use color_eyre::Result;
 use crate::models::*;
 use std::sync::Arc;
+use memchr::{memchr, memmem::Finder};
 
 // ======================================================================================
 // `epkg list` - Enhanced Package Listing Command
@@ -74,15 +75,16 @@ impl PackageManager {
                 packages_found_overall += self.process_installed_packages(pattern, true, "Upgradable Packages")?;
             },
             ListScope::Available => {
-                packages_found_overall += self.process_available_packages(pattern, "Available Packages (not installed)")?;
+                packages_found_overall += self.process_available_packages(pattern)?;
             },
             ListScope::All => {
                 // Display installed packages first
                 let installed_count = self.process_installed_packages(pattern, false, "Installed Packages")?;
                 packages_found_overall += installed_count;
 
+                self.pkgkey2package.clear();
                 // Then display available packages
-                let available_count = self.process_available_packages(pattern, "Available Packages (not installed)")?;
+                let available_count = self.process_available_packages(pattern)?;
                 packages_found_overall += available_count;
             }
         }
@@ -119,7 +121,7 @@ impl PackageManager {
             };
 
             // Apply pattern filtering early
-            if !self.matches_glob_pattern(&pkgname, pattern) {
+            if !matches_glob_pattern(&pkgname, pattern) {
                 continue;
             }
 
@@ -143,51 +145,272 @@ impl PackageManager {
         Ok(count)
     }
 
+    fn process_available_packages(&mut self, pattern: &str) -> Result<usize> {
+        let list_title = "Available Packages (not installed)";
+        if pattern.is_empty() || pattern == "*" {
+            return self.process_all_available_packages(&list_title);
+        } else {
+            return self.process_few_available_packages(pattern, &list_title);
+        };
+    }
+
     /// Stream through available packages, applying filtering, excluding installed ones, then sorts and displays them.
     /// Returns the number of packages found and processed.
-    fn process_available_packages(&mut self, pattern: &str, list_title: &str) -> Result<usize> {
+    fn process_few_available_packages(&mut self, pattern: &str, list_title: &str) -> Result<usize> {
         let mut local_items = Vec::new();
-        let mut seen_pkgkeys = std::collections::HashSet::new();
-        let repodata_indice = crate::models::repodata_indice();
 
-        for repo_index in repodata_indice.values() {
-            for shard in repo_index.repo_shards.values() {
-                for pkgname in shard.pkgname2ranges.keys() {
-                    // Apply pattern filtering early
-                    if !self.matches_glob_pattern(pkgname, pattern) {
-                        continue;
+        // Collect matching package names with optimizations
+        let matching_pkgnames = self.collect_matching_pkgnames(pattern)?;
+
+        for pkgname in matching_pkgnames {
+            // Get package details from repository using crate::mmio directly
+            match crate::mmio::map_pkgname2packages(&pkgname) {
+                Ok(packages) => {
+                    for pkg in packages {
+                        // Skip if package is already installed (for Available scope)
+                        if self.installed_packages.contains_key(&pkg.pkgkey) {
+                            continue;
+                        }
+
+                        // Create package item for this available package
+                        match self.create_available_package_item(&pkg) {
+                            Ok(item) => local_items.push(item),
+                            Err(e) => log::warn!("Failed to create item for available package {}: {}", pkgname, e),
+                        }
                     }
-
-                    // Get package details from repository
-                    match self.map_pkgname2packages(pkgname) {
-                        Ok(packages) => {
-                            for pkg in packages {
-                                // Skip if package is already installed (for Available scope)
-                                if self.installed_packages.contains_key(&pkg.pkgkey) {
-                                    continue;
-                                }
-
-                                // Skip if we've already seen this pkgkey (deduplication)
-                                if !seen_pkgkeys.insert(pkg.pkgkey.clone()) {
-                                    continue;
-                                }
-
-                                // Create package item for this available package
-                                match self.create_available_package_item(&pkg) {
-                                    Ok(item) => local_items.push(item),
-                                    Err(e) => log::warn!("Failed to create item for available package {}: {}", pkgname, e),
-                                }
-                            }
-                        },
-                        Err(e) => log::warn!("Failed to get package details for {}: {}", pkgname, e),
-                    }
-                }
+                },
+                Err(e) => log::warn!("Failed to get package details for {}: {}", pkgname, e),
             }
         }
 
         let count = local_items.len();
         self.sort_and_display_packages(&mut local_items, list_title)?;
         Ok(count)
+    }
+
+    /// Collect matching package names with optimizations based on pattern type
+    fn collect_matching_pkgnames(&self, pattern: &str) -> Result<Vec<String>> {
+        let repodata_indice = crate::models::repodata_indice();
+        let mut matching_pkgnames = Vec::new();
+
+        // Case 1: Handle exact name match (no wildcards)
+        if !pattern.contains('*') {
+            for repo_index in repodata_indice.values() {
+                for shard in repo_index.repo_shards.values() {
+                    if shard.pkgname2ranges.contains_key(pattern) {
+                        matching_pkgnames.push(pattern.to_string());
+                        return Ok(matching_pkgnames); // Found exact match, no need to continue
+                    }
+                }
+            }
+            return Ok(matching_pkgnames); // No exact match found
+        }
+
+        // Case 2: Handle prefix pattern (e.g., "prefix*")
+        if pattern.ends_with('*') && !pattern[..pattern.len()-1].contains('*') {
+            let prefix = &pattern[..pattern.len()-1];
+            for repo_index in repodata_indice.values() {
+                for shard in repo_index.repo_shards.values() {
+                    // Use BTreeMap range for efficient prefix matching
+                    let range = shard.pkgname2ranges.range(prefix.to_string()..);
+                    for (pkgname, _) in range {
+                        if pkgname.starts_with(prefix) {
+                            matching_pkgnames.push(pkgname.clone());
+                        } else {
+                            break; // No more matches with this prefix
+                        }
+                    }
+                }
+            }
+            return Ok(matching_pkgnames);
+        }
+
+        // Case 3: Handle other patterns with threading
+        let mut handles = Vec::new();
+        let pattern = pattern.to_string();
+
+        for repo_index in repodata_indice.values() {
+            for shard in repo_index.repo_shards.values() {
+                let shard_pkgnames: Vec<String> = shard.pkgname2ranges.keys().cloned().collect();
+                let pattern_clone = pattern.clone();
+
+                let handle = std::thread::spawn(move || {
+                    let mut local_matches = Vec::new();
+                    for pkgname in shard_pkgnames {
+                        // Simple glob pattern matching (can be optimized further)
+                        if matches_glob_pattern(&pkgname, &pattern_clone) {
+                            local_matches.push(pkgname);
+                        }
+                    }
+                    local_matches
+                });
+                handles.push(handle);
+            }
+        }
+
+        // Collect results from all threads
+        for handle in handles {
+            match handle.join() {
+                Ok(thread_matches) => matching_pkgnames.extend(thread_matches),
+                Err(_) => log::warn!("Thread failed to complete"),
+            }
+        }
+
+        Ok(matching_pkgnames)
+    }
+
+    /// Process all available packages when pattern is empty or "*" - optimized direct scanning
+    fn process_all_available_packages(&mut self, list_title: &str) -> Result<usize> {
+        let repodata_indice = crate::models::repodata_indice();
+        let mut count = 0;
+        let mut local_items = Vec::new();
+
+        for repo_index in repodata_indice.values() {
+            for shard in repo_index.repo_shards.values() {
+                if let Some(mmap) = &shard.packages_mmap {
+                    count += self.scan_packages_mmap(
+                        mmap.data(),
+                        &repo_index.repodata_name,
+                        &mut local_items,
+                    )?;
+                }
+            }
+        }
+
+        self.sort_and_display_packages(&mut local_items, list_title)?;
+        Ok(count)
+    }
+
+    /// Scan a packages_mmap buffer and collect PackageListItems efficiently
+    fn scan_packages_mmap(
+        &self,
+        data: &[u8],
+        repodata_name: &str,
+        local_items: &mut Vec<PackageListItem>,
+    ) -> Result<usize> {
+        let mut count = 0;
+        let mut pos = 0;
+        let finder = Finder::new(b"pkgname: ");
+        let mut current_pkgname: Option<&[u8]> = None;
+        let mut current_version: Option<&[u8]> = None;
+        let mut current_arch: Option<&[u8]> = None;
+        let mut current_summary: Option<&[u8]> = None;
+        let mut nr_found_fields = 0;
+        while pos < data.len() {
+            // If we are at the start of a package, use Finder to jump to next 'pkgname: '
+            if nr_found_fields == 0 {
+                if let Some(found) = finder.find(&data[pos..]) {
+                    pos += found;
+                    // Now parse pkgname line
+                    let line_end = memchr(b'\n', &data[pos..]).map(|i| pos + i).unwrap_or(data.len());
+                    let line = &data[pos..line_end];
+                    if let Some(value) = line.strip_prefix(b"pkgname: ") {
+                        current_pkgname = Some(value);
+                        nr_found_fields = 1;
+                        pos = line_end + 1;
+                    } else {
+                        // Should not happen, skip line
+                        pos = line_end + 1;
+                        continue;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                // Parse next lines for version, arch, summary
+                let line_end = memchr(b'\n', &data[pos..]).map(|i| pos + i).unwrap_or(data.len());
+                let line = &data[pos..line_end];
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix(b"version: ") {
+                    current_version = Some(rest);
+                    nr_found_fields += 1;
+                } else if let Some(rest) = line.strip_prefix(b"arch: ") {
+                    current_arch = Some(rest);
+                    nr_found_fields += 1;
+                } else if let Some(rest) = line.strip_prefix(b"summary: ") {
+                    current_summary = Some(rest);
+                    nr_found_fields += 1;
+                }
+                pos = line_end + 1;
+                // If all 4 fields found, process package and jump to next pkgname
+                if nr_found_fields >= 4 {
+                    count += self.handle_completed_package_bytes(
+                        current_pkgname,
+                        current_version,
+                        current_arch,
+                        current_summary,
+                        repodata_name,
+                        local_items,
+                    )?;
+                    current_pkgname = None;
+                    current_version = None;
+                    current_arch = None;
+                    current_summary = None;
+                    nr_found_fields = 0;
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    fn handle_completed_package_bytes(
+        &self,
+        pkgname: Option<&[u8]>,
+        version: Option<&[u8]>,
+        arch: Option<&[u8]>,
+        summary: Option<&[u8]>,
+        repodata_name: &str,
+        local_items: &mut Vec<PackageListItem>,
+    ) -> Result<usize> {
+        if let (Some(pkgname), Some(version), Some(arch)) = (pkgname, version, arch) {
+            let pkgname_str = std::str::from_utf8(pkgname)?.trim();
+            let version_str = std::str::from_utf8(version)?.trim();
+            let arch_str = std::str::from_utf8(arch)?.trim();
+            let summary_str = if let Some(s) = summary {
+                std::str::from_utf8(s)?.trim()
+            } else {
+                ""
+            };
+            let pkgkey = crate::package::format_pkgkey(pkgname_str, version_str, arch_str);
+            if !self.installed_packages.contains_key(&pkgkey) {
+                let item = self.create_available_package_item_from_data_borrowed(
+                    pkgname_str,
+                    version_str,
+                    arch_str,
+                    summary_str,
+                    repodata_name,
+                    &pkgkey,
+                )?;
+                local_items.push(item);
+                return Ok(1);
+            }
+        }
+        Ok(0)
+    }
+
+    /// Create a PackageListItem for an available package from borrowed data (no unnecessary allocations)
+    fn create_available_package_item_from_data_borrowed(
+        &self,
+        pkgname: &str,
+        version: &str,
+        arch: &str,
+        summary: &str,
+        repodata_name: &str,
+        pkgkey: &str,
+    ) -> Result<PackageListItem> {
+        let status = self.determine_status_for_available(pkgname)?;
+        Ok(PackageListItem {
+            pkgname: pkgname.to_owned(),
+            version: version.to_owned(),
+            arch: arch.to_owned(),
+            repodata_name: repodata_name.to_owned(),
+            summary: summary.to_owned(),
+            status,
+            pkgkey: pkgkey.to_owned(),
+            installed_info: None,
+        })
     }
 
     /// Helper to sort and display a list of package items.
@@ -341,55 +564,6 @@ impl PackageManager {
         crate::version::is_version_newer(new_version, current_version)
     }
 
-    /// Check if a name matches a glob pattern
-    fn matches_glob_pattern(&self, name: &str, pattern: &str) -> bool {
-        // Handle simple cases
-        if pattern.is_empty() || pattern == "*" {
-            return true; // matches everything
-        }
-
-        if !pattern.contains('*') {
-            // No wildcards, exact match
-            return name == pattern;
-        }
-
-        // Split pattern by '*' to get parts that must be matched in order
-        let parts: Vec<&str> = pattern.split('*').collect();
-
-        // Filter out empty parts (from consecutive '*' or leading/trailing '*')
-        let parts: Vec<&str> = parts.into_iter().filter(|&p| !p.is_empty()).collect();
-
-        if parts.is_empty() {
-            return true; // Pattern is all '*', matches everything
-        }
-
-        let mut search_start = 0;
-
-        for (i, part) in parts.iter().enumerate() {
-            if i == 0 && !pattern.starts_with('*') {
-                // First part and pattern doesn't start with '*' - must match at beginning
-                if !name.starts_with(part) {
-                    return false;
-                }
-                search_start = part.len();
-            } else if i == parts.len() - 1 && !pattern.ends_with('*') {
-                // Last part and pattern doesn't end with '*' - must match at end
-                if !name[search_start..].ends_with(part) {
-                    return false;
-                }
-            } else {
-                // Middle part or flexible end - find it after current position
-                if let Some(pos) = name[search_start..].find(part) {
-                    search_start += pos + part.len();
-                } else {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
     /// Display the package list in a formatted table
     fn display_package_list(&self, items: &[PackageListItem]) -> Result<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -410,8 +584,13 @@ impl PackageManager {
             println!("+++-==============================-==============================-============-==================-========================================");
         }
 
-        // Print package items
+        let mut prev_pkgkey = "";
         for item in items {
+            if item.pkgkey == prev_pkgkey {
+                continue;
+            }
+            prev_pkgkey = &item.pkgkey;
+
             let summary = if item.summary.chars().count() > 60 {
                 let truncated: String = item.summary.chars().take(58).collect();
                 format!("{}..", truncated)
@@ -458,151 +637,173 @@ impl PackageManager {
     }
 }
 
+/// Static version of matches_glob_pattern for use in threads
+fn matches_glob_pattern(name: &str, pattern: &str) -> bool {
+    // Handle simple cases
+    if pattern.is_empty() || pattern == "*" {
+        return true; // matches everything
+    }
+
+    if !pattern.contains('*') {
+        // No wildcards, exact match
+        return name == pattern;
+    }
+
+    // Split pattern by '*' to get parts that must be matched in order
+    let parts: Vec<&str> = pattern.split('*').collect();
+
+    // Filter out empty parts (from consecutive '*' or leading/trailing '*')
+    let parts: Vec<&str> = parts.into_iter().filter(|&p| !p.is_empty()).collect();
+
+    if parts.is_empty() {
+        return true; // Pattern is all '*', matches everything
+    }
+
+    let mut search_start = 0;
+
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 && !pattern.starts_with('*') {
+            // First part and pattern doesn't start with '*' - must match at beginning
+            if !name.starts_with(part) {
+                return false;
+            }
+            search_start = part.len();
+        } else if i == parts.len() - 1 && !pattern.ends_with('*') {
+            // Last part and pattern doesn't end with '*' - must match at end
+            if !name[search_start..].ends_with(part) {
+                return false;
+            }
+        } else {
+            // Middle part or flexible end - find it after current position
+            if let Some(pos) = name[search_start..].find(part) {
+                search_start += pos + part.len();
+            } else {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    // Helper function to create a dummy PackageManager for testing
-    fn create_test_package_manager() -> PackageManager {
-        PackageManager {
-            repos_data: Vec::new(),
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        }
-    }
-
     #[test]
     fn test_matches_glob_pattern_no_wildcards() {
-        let pm = create_test_package_manager();
-
         // Exact matching when no wildcards
-        assert!(pm.matches_glob_pattern("bash", "bash"));
-        assert!(!pm.matches_glob_pattern("bash-completion", "bash"));
-        assert!(!pm.matches_glob_pattern("mybash", "bash"));
-        assert!(!pm.matches_glob_pattern("bash123", "bash"));
-        assert!(!pm.matches_glob_pattern("bsh", "bash"));
-        assert!(!pm.matches_glob_pattern("base", "bash"));
+        assert!(matches_glob_pattern("bash", "bash"));
+        assert!(!matches_glob_pattern("bash-completion", "bash"));
+        assert!(!matches_glob_pattern("mybash", "bash"));
+        assert!(!matches_glob_pattern("bash123", "bash"));
+        assert!(!matches_glob_pattern("bsh", "bash"));
+        assert!(!matches_glob_pattern("base", "bash"));
     }
 
     #[test]
     fn test_matches_glob_pattern_prefix() {
-        let pm = create_test_package_manager();
-
         // Prefix matching (pattern*)
-        assert!(pm.matches_glob_pattern("bash", "bash*"));
-        assert!(pm.matches_glob_pattern("bash-completion", "bash*"));
-        assert!(pm.matches_glob_pattern("bashrc", "bash*"));
-        assert!(!pm.matches_glob_pattern("mybash", "bash*"));
-        assert!(!pm.matches_glob_pattern("abc", "bash*"));
+        assert!(matches_glob_pattern("bash", "bash*"));
+        assert!(matches_glob_pattern("bash-completion", "bash*"));
+        assert!(matches_glob_pattern("bashrc", "bash*"));
+        assert!(!matches_glob_pattern("mybash", "bash*"));
+        assert!(!matches_glob_pattern("abc", "bash*"));
 
-        assert!(pm.matches_glob_pattern("java-8", "java*"));
-        assert!(pm.matches_glob_pattern("java", "java*"));
-        assert!(!pm.matches_glob_pattern("python-java", "java*"));
+        assert!(matches_glob_pattern("java-8", "java*"));
+        assert!(matches_glob_pattern("java", "java*"));
+        assert!(!matches_glob_pattern("python-java", "java*"));
     }
 
     #[test]
     fn test_matches_glob_pattern_suffix() {
-        let pm = create_test_package_manager();
-
         // Suffix matching (*pattern)
-        assert!(pm.matches_glob_pattern("bash", "*bash"));
-        assert!(pm.matches_glob_pattern("mybash", "*bash"));
-        assert!(pm.matches_glob_pattern("zsh-bash", "*bash"));
-        assert!(!pm.matches_glob_pattern("bash-completion", "*bash"));
-        assert!(!pm.matches_glob_pattern("bashrc", "*bash"));
+        assert!(matches_glob_pattern("bash", "*bash"));
+        assert!(matches_glob_pattern("mybash", "*bash"));
+        assert!(matches_glob_pattern("zsh-bash", "*bash"));
+        assert!(!matches_glob_pattern("bash-completion", "*bash"));
+        assert!(!matches_glob_pattern("bashrc", "*bash"));
 
-        assert!(pm.matches_glob_pattern("lib-dev", "*dev"));
-        assert!(pm.matches_glob_pattern("something-dev", "*dev"));
-        assert!(!pm.matches_glob_pattern("development", "*dev"));
+        assert!(matches_glob_pattern("lib-dev", "*dev"));
+        assert!(matches_glob_pattern("something-dev", "*dev"));
+        assert!(!matches_glob_pattern("development", "*dev"));
     }
 
     #[test]
     fn test_matches_glob_pattern_contains() {
-        let pm = create_test_package_manager();
-
         // Contains matching (*pattern*)
-        assert!(pm.matches_glob_pattern("bash", "*bash*"));
-        assert!(pm.matches_glob_pattern("mybash", "*bash*"));
-        assert!(pm.matches_glob_pattern("bash-completion", "*bash*"));
-        assert!(pm.matches_glob_pattern("my-bash-script", "*bash*"));
-        assert!(!pm.matches_glob_pattern("bsh", "*bash*"));
-        assert!(!pm.matches_glob_pattern("base", "*bash*"));
+        assert!(matches_glob_pattern("bash", "*bash*"));
+        assert!(matches_glob_pattern("mybash", "*bash*"));
+        assert!(matches_glob_pattern("bash-completion", "*bash*"));
+        assert!(matches_glob_pattern("my-bash-script", "*bash*"));
+        assert!(!matches_glob_pattern("bsh", "*bash*"));
+        assert!(!matches_glob_pattern("base", "*bash*"));
 
-        assert!(pm.matches_glob_pattern("java-openjdk", "*java*"));
-        assert!(pm.matches_glob_pattern("javac", "*java*"));
-        assert!(!pm.matches_glob_pattern("python", "*java*"));
+        assert!(matches_glob_pattern("java-openjdk", "*java*"));
+        assert!(matches_glob_pattern("javac", "*java*"));
+        assert!(!matches_glob_pattern("python", "*java*"));
     }
 
     #[test]
     fn test_matches_glob_pattern_complex() {
-        let pm = create_test_package_manager();
-
         // Complex patterns (pre*suf)
-        assert!(pm.matches_glob_pattern("bash", "b*sh"));
-        assert!(pm.matches_glob_pattern("bush", "b*sh"));
-        assert!(pm.matches_glob_pattern("brush", "b*sh"));
-        assert!(!pm.matches_glob_pattern("zsh", "b*sh"));
-        assert!(!pm.matches_glob_pattern("bash-completion", "b*sh"));
+        assert!(matches_glob_pattern("bash", "b*sh"));
+        assert!(matches_glob_pattern("bush", "b*sh"));
+        assert!(matches_glob_pattern("brush", "b*sh"));
+        assert!(!matches_glob_pattern("zsh", "b*sh"));
+        assert!(!matches_glob_pattern("bash-completion", "b*sh"));
 
         // Multiple wildcards
-        assert!(pm.matches_glob_pattern("java-openjdk-headless", "java*openjdk*headless"));
-        assert!(pm.matches_glob_pattern("java-11-openjdk-headless", "java*openjdk*headless"));
-        assert!(pm.matches_glob_pattern("java-17-openjdk-devel-headless", "java*openjdk*headless"));
-        assert!(!pm.matches_glob_pattern("java-openjdk", "java*openjdk*headless"));
-        assert!(!pm.matches_glob_pattern("openjdk-headless", "java*openjdk*headless"));
+        assert!(matches_glob_pattern("java-openjdk-headless", "java*openjdk*headless"));
+        assert!(matches_glob_pattern("java-11-openjdk-headless", "java*openjdk*headless"));
+        assert!(matches_glob_pattern("java-17-openjdk-devel-headless", "java*openjdk*headless"));
+        assert!(!matches_glob_pattern("java-openjdk", "java*openjdk*headless"));
+        assert!(!matches_glob_pattern("openjdk-headless", "java*openjdk*headless"));
 
         // Pattern with parts in different positions
-        assert!(pm.matches_glob_pattern("abc-def-ghi", "a*d*i"));
-        assert!(pm.matches_glob_pattern("apple-dog-igloo", "a*d*o"));
-        assert!(!pm.matches_glob_pattern("abc-ghi", "a*d*i"));
-        assert!(!pm.matches_glob_pattern("def-ghi", "a*d*i"));
+        assert!(matches_glob_pattern("abc-def-ghi", "a*d*i"));
+        assert!(matches_glob_pattern("apple-dog-igloo", "a*d*o"));
+        assert!(!matches_glob_pattern("abc-ghi", "a*d*i"));
+        assert!(!matches_glob_pattern("def-ghi", "a*d*i"));
     }
 
     #[test]
     fn test_matches_glob_pattern_edge_cases() {
-        let pm = create_test_package_manager();
-
         // Empty pattern should match everything (fix for "epkg list" without pattern)
-        assert!(pm.matches_glob_pattern("anything", ""));
-        assert!(pm.matches_glob_pattern("bash", ""));
-        assert!(pm.matches_glob_pattern("", ""));
-        assert!(pm.matches_glob_pattern("java-openjdk", ""));
+        assert!(matches_glob_pattern("anything", ""));
+        assert!(matches_glob_pattern("bash", ""));
+        assert!(matches_glob_pattern("", ""));
+        assert!(matches_glob_pattern("java-openjdk", ""));
 
         // Just wildcard
-        assert!(pm.matches_glob_pattern("anything", "*"));
-        assert!(pm.matches_glob_pattern("", "*"));
-        assert!(pm.matches_glob_pattern("bash", "*"));
+        assert!(matches_glob_pattern("anything", "*"));
+        assert!(matches_glob_pattern("", "*"));
+        assert!(matches_glob_pattern("bash", "*"));
 
         // Multiple consecutive wildcards
-        assert!(pm.matches_glob_pattern("bash", "**bash**"));
-        assert!(pm.matches_glob_pattern("mybash", "**bash**"));
-        assert!(pm.matches_glob_pattern("bash-completion", "**bash**"));
+        assert!(matches_glob_pattern("bash", "**bash**"));
+        assert!(matches_glob_pattern("mybash", "**bash**"));
+        assert!(matches_glob_pattern("bash-completion", "**bash**"));
 
         // Empty pattern parts
-        assert!(pm.matches_glob_pattern("bash", "*bash*"));
-        assert!(pm.matches_glob_pattern("bash", "bash**"));
-        assert!(pm.matches_glob_pattern("bash", "**bash"));
+        assert!(matches_glob_pattern("bash", "*bash*"));
+        assert!(matches_glob_pattern("bash", "bash**"));
+        assert!(matches_glob_pattern("bash", "**bash"));
 
         // Pattern longer than name
-        assert!(!pm.matches_glob_pattern("sh", "bash"));
-        assert!(!pm.matches_glob_pattern("ba", "bash*"));
+        assert!(!matches_glob_pattern("sh", "bash"));
+        assert!(!matches_glob_pattern("ba", "bash*"));
 
         // Empty name
-        assert!(!pm.matches_glob_pattern("", "bash"));
-        assert!(pm.matches_glob_pattern("", "*"));
-        assert!(!pm.matches_glob_pattern("", "a*"));
+        assert!(!matches_glob_pattern("", "bash"));
+        assert!(matches_glob_pattern("", "*"));
+        assert!(!matches_glob_pattern("", "a*"));
     }
 
     #[test]
     fn test_matches_glob_pattern_real_world_examples() {
-        let pm = create_test_package_manager();
-
         // Real package names and patterns
         let packages = vec![
             "bash",
@@ -620,13 +821,13 @@ mod tests {
 
         // Test *bash* pattern
         let bash_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| pm.matches_glob_pattern(pkg, "*bash*"))
+            .filter(|&pkg| matches_glob_pattern(pkg, "*bash*"))
             .collect();
         assert_eq!(bash_matches, vec![&"bash", &"bash-completion", &"bash-static"]);
 
         // Test java* pattern
         let java_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| pm.matches_glob_pattern(pkg, "java*"))
+            .filter(|&pkg| matches_glob_pattern(pkg, "java*"))
             .collect();
         assert_eq!(java_matches, vec![
             &"java-1.8.0-openjdk",
@@ -637,13 +838,13 @@ mod tests {
 
         // Test *dev pattern
         let dev_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| pm.matches_glob_pattern(pkg, "*dev"))
+            .filter(|&pkg| matches_glob_pattern(pkg, "*dev"))
             .collect();
         assert_eq!(dev_matches, vec![&"lib-dev", &"python3-dev"]);
 
         // Test *openjdk*headless pattern
         let openjdk_headless_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| pm.matches_glob_pattern(pkg, "*openjdk*headless"))
+            .filter(|&pkg| matches_glob_pattern(pkg, "*openjdk*headless"))
             .collect();
         assert_eq!(openjdk_headless_matches, vec![
             &"java-1.8.0-openjdk-headless",
