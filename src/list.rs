@@ -147,6 +147,7 @@ impl PackageManager {
     /// Returns the number of packages found and processed.
     fn process_available_packages(&mut self, pattern: &str, list_title: &str) -> Result<usize> {
         let mut local_items = Vec::new();
+        let mut seen_pkgkeys = std::collections::HashSet::new();
         let repodata_indice = crate::models::repodata_indice();
 
         for repo_index in repodata_indice.values() {
@@ -163,6 +164,11 @@ impl PackageManager {
                             for pkg in packages {
                                 // Skip if package is already installed (for Available scope)
                                 if self.installed_packages.contains_key(&pkg.pkgkey) {
+                                    continue;
+                                }
+
+                                // Skip if we've already seen this pkgkey (deduplication)
+                                if !seen_pkgkeys.insert(pkg.pkgkey.clone()) {
                                     continue;
                                 }
 
@@ -406,8 +412,9 @@ impl PackageManager {
 
         // Print package items
         for item in items {
-            let summary = if item.summary.len() > 60 {
-                format!("{}..", &item.summary[..58])
+            let summary = if item.summary.chars().count() > 60 {
+                let truncated: String = item.summary.chars().take(58).collect();
+                format!("{}..", truncated)
             } else {
                 item.summary.clone()
             };
