@@ -39,7 +39,7 @@ lazy_static! {
     };
 }
 
-pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
     log::debug!("Starting to process APK packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)

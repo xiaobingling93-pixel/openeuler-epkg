@@ -266,7 +266,15 @@ impl PackageManager {
     fn process_all_available_packages(&mut self, list_title: &str) -> Result<usize> {
         let mut repodata_indice = crate::models::repodata_indice_mut();
         let mut count = 0;
-        let mut local_items = Vec::new();
+        // Pre-size local_items using the sum of nr_packages from all shards
+        let mut estimated_total_packages = 0;
+        for repo_index in repodata_indice.values_mut() {
+            for shard in repo_index.repo_shards.values_mut() {
+                estimated_total_packages += shard.packages.nr_packages;
+                shard.pkgname2ranges.clear();  // possibly loaded ondemand by process_installed_packages()
+            }
+        }
+        let mut local_items = Vec::with_capacity(estimated_total_packages);
 
         for repo_index in repodata_indice.values_mut() {
             for shard in repo_index.repo_shards.values_mut() {
@@ -276,8 +284,6 @@ impl PackageManager {
                         &repo_index.repodata_name,
                         &mut local_items,
                     )?;
-                    // Clear pkgname2ranges after scan
-                    shard.pkgname2ranges.clear();
                 }
             }
         }

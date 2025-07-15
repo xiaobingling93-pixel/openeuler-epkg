@@ -49,7 +49,7 @@ lazy_static! {
     };
 }
 
-pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
     log::debug!("Starting to process Arch packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
     // Validate download path
@@ -277,13 +277,13 @@ fn process_tar_entries(
 /// - `packages.txt.zst`: Compressed package metadata in standard repository format
 /// - `filelists.txt.zst`: Compressed file listings for all packages
 ///
-/// **Returns:** FileInfo containing details about the processed repository files
+/// **Returns:** PackagesFileInfo containing details about the processed repository files
 fn finalize_processing(
     filelists_encoder: ZstdEncoder<std::fs::File>,
     derived_files: &mut packages_stream::PackagesStreamline,
     repo_dir: &PathBuf,
     revise: &RepoReleaseItem
-) -> Result<FileInfo> {
+) -> Result<PackagesFileInfo> {
     // Ensure the last package gets indexed
     if !derived_files.current_pkgname.is_empty() {
         log::debug!("Finalizing last package: {}", derived_files.current_pkgname);

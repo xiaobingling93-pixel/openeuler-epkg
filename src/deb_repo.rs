@@ -288,7 +288,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
     Ok(release_items)
 }
 
-pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
     log::debug!("Starting to process packages content for {} (hash: {})", revise.location, revise.hash);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)

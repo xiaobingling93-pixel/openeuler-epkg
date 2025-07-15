@@ -311,7 +311,7 @@ impl PackagesStreamline {
         Ok(())
     }
 
-    pub fn on_finish(&mut self, _revise: &RepoReleaseItem) -> Result<FileInfo> {
+    pub fn on_finish(&mut self, _revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
         log::debug!("[PackagesStreamline::on_finish] Flushing writer for {:?}", self.output_path);
         self.writer.flush()
             .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to flush output file: {:?}", self.output_path))?;
@@ -329,8 +329,15 @@ impl PackagesStreamline {
 
         let sha256sum = hex::encode(self.new_hasher.finalize_reset());
         log::debug!("[PackagesStreamline::on_finish] Saving file metadata to {:?}", self.json_path);
-        save_file_metadata(&self.output_path, &self.json_path, sha256sum)
-            .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to save file metadata to {:?}", self.json_path))
+        save_packages_metadata(
+            &self.output_path,
+            &self.json_path,
+            sha256sum,
+            self.pkgname2ranges.len(),
+            self.provide2pkgnames.len(),
+            self.essential_pkgnames.len(),
+        )
+        .wrap_err_with(|| format!("[PackagesStreamline::on_finish] Failed to save file metadata to {:?}", self.json_path))
     }
 
     pub fn handle_chunk(&mut self, result: std::io::Result<usize>, unpack_buf: &[u8]) -> Result<bool> {
@@ -425,27 +432,37 @@ impl PackagesStreamline {
     }
 }
 
-fn save_file_metadata(output_path: &PathBuf, json_path: &PathBuf, sha256sum: String) -> Result<FileInfo> {
-    log::debug!("[save_file_metadata] Saving metadata for {:?} to {:?}", output_path, json_path);
+fn save_packages_metadata(
+    output_path: &PathBuf,
+    json_path: &PathBuf,
+    sha256sum: String,
+    nr_packages: usize,
+    nr_provides: usize,
+    nr_essentials: usize,
+) -> Result<PackagesFileInfo> {
+    log::debug!("[save_packages_metadata] Saving metadata for {:?} to {:?}", output_path, json_path);
     let metadata = fs::metadata(output_path)
-        .wrap_err_with(|| format!("[save_file_metadata] Failed to get metadata for file: {}", output_path.display()))?;
-    let file_info = FileInfo {
+        .wrap_err_with(|| format!("[save_packages_metadata] Failed to get metadata for file: {}", output_path.display()))?;
+    let file_info = PackagesFileInfo {
         filename: output_path.file_name()
-            .ok_or_else(|| eyre!("[save_file_metadata] Invalid output path: {}", output_path.display()))?
+            .ok_or_else(|| eyre!("[save_packages_metadata] Invalid output path: {}", output_path.display()))?
             .to_string_lossy().into_owned(),
         sha256sum: sha256sum,
         datetime: metadata.modified()
-            .wrap_err_with(|| format!("[save_file_metadata] Failed to get modification time for {}", output_path.display()))?
+            .wrap_err_with(|| format!("[save_packages_metadata] Failed to get modification time for {}", output_path.display()))?
             .duration_since(SystemTime::UNIX_EPOCH)
-            .wrap_err_with(|| format!("[save_file_metadata] Failed to calculate duration since epoch for {}", output_path.display()))?
+            .wrap_err_with(|| format!("[save_packages_metadata] Failed to calculate duration since epoch for {}", output_path.display()))?
             .as_secs().to_string(),
         size: metadata.len(),
+        nr_packages,
+        nr_provides,
+        nr_essentials,
     };
     let json_content = serde_json::to_string_pretty(&file_info)
-        .wrap_err_with(|| "[save_file_metadata] Failed to serialize file info to JSON")?;
+        .wrap_err_with(|| "[save_packages_metadata] Failed to serialize file info to JSON")?;
     fs::write(json_path, json_content)
-        .wrap_err_with(|| format!("[save_file_metadata] Failed to write JSON metadata to file: {:?}", json_path))?;
+        .wrap_err_with(|| format!("[save_packages_metadata] Failed to write JSON metadata to file: {:?}", json_path))?;
 
-    log::debug!("[save_file_metadata] Successfully processed packages content");
+    log::debug!("[save_packages_metadata] Successfully processed packages content");
     Ok(file_info)
 }

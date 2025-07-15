@@ -241,7 +241,7 @@ fn sync_from_release_metadata(format: PackageFormat, repo: &RepoRevise, release_
         match format {
             PackageFormat::Deb => crate::deb_repo::parse_release_file(&repo, &release_content, &release_dir.to_path_buf())?,
             PackageFormat::Rpm => crate::rpm_repo::parse_repomd_file(&repo, &release_content, &release_dir.to_path_buf())?,
-            _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format))
+            _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format)),
         };
 
     Ok(release_items)
@@ -514,7 +514,7 @@ fn process_revises_parallel(
 }
 
 /// Download and process a single Debian release item
-fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Result<FileInfo> {
+fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Result<()> {
     let (data_tx, data_rx) = channel();
 
     // Create and submit download task
@@ -535,7 +535,8 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     // Process data blocks as they arrive
     process_data(data_rx, repo_dir, revise)
         .with_context(|| format!("Failed to process data for item: {} (format: {:?}, size: {}, hash: {})",
-            revise.location, revise.format, revise.size, revise.hash))
+            revise.location, revise.format, revise.size, revise.hash))?;
+    Ok(())
 }
 
 pub fn create_load_repoindex(
@@ -609,7 +610,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
         // Load packages info
         let packages_info_str = fs::read_to_string(&packages_metafile)
             .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read packages metafile: {}", packages_metafile.display()))?;
-        let packages_info: FileInfo = serde_json::from_str(&packages_info_str)
+        let packages_info: PackagesFileInfo = serde_json::from_str(&packages_info_str)
             .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse packages info from: {}", packages_metafile.display()))?;
 
         // Try to load corresponding filelists if it exists
@@ -621,7 +622,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
             log::debug!("[collect_save_repoindex] Found filelists metafile: {}", filelists_metafile);
             let filelists_content = fs::read_to_string(&filelists_metafile)
                 .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read filelists: {}", filelists_metafile))?;
-            let filelists: FileInfo = serde_json::from_str(&filelists_content)
+            let filelists: FilelistsFileInfo = serde_json::from_str(&filelists_content)
                 .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse filelists info from: {}", filelists_metafile))?;
             filelists_info = Some(filelists);
         } else {
@@ -679,19 +680,20 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
     Ok(repo_index)
 }
 
-pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
     if revise.is_packages {
         match revise.format {
-            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location)),
-            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location)),
-            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location)),
-            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location)),
-            _ => Err(eyre::eyre!("Unsupported package format: {:?}", revise.format))
-        }
+            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location))?,
+            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location))?,
+            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location))?,
+            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location))?,
+            _ => return Err(eyre::eyre!("Unsupported package format: {:?}", revise.format)),
+        };
     } else {
         process_filelists_content(data_rx, repo_dir, revise)
-            .with_context(|| format!("Failed to process filelists content for {}", revise.location))
+            .with_context(|| format!("Failed to process filelists content for {}", revise.location))?;
     }
+    Ok(())
 }
 
 /**
@@ -713,7 +715,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
  * respective `filelists` formats.
  */
 /// Process filelists content by verifying hash, creating symlinks, and generating metadata
-pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FilelistsFileInfo> {
     log::debug!("Processing filelists content for arch: {:?}", revise);
 
     // Step 1: Verify the hash of the received data
@@ -810,11 +812,11 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
 }
 
 /// Generate file metadata and write it to a JSON file
-pub fn generate_and_write_filelists_metadata(output_path: &PathBuf, calculated_hash: String) -> Result<FileInfo> {
+pub fn generate_and_write_filelists_metadata(output_path: &PathBuf, calculated_hash: String) -> Result<FilelistsFileInfo> {
     let metadata = fs::metadata(output_path)
         .with_context(|| format!("Failed to get metadata for {}", output_path.display()))?;
 
-    let file_info = FileInfo {
+    let file_info = FilelistsFileInfo {
         filename: output_path.file_name()
             .ok_or_else(|| eyre::eyre!("Failed to get filename from path: {}", output_path.display()))?
             .to_string_lossy()
@@ -834,7 +836,7 @@ pub fn generate_and_write_filelists_metadata(output_path: &PathBuf, calculated_h
 }
 
 /// Write filelists metadata to a JSON file
-fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FileInfo) -> Result<()> {
+fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FilelistsFileInfo) -> Result<()> {
     let json_path = output_path.with_extension("").with_extension("json").to_str()
             .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?
             .replace("filelists", ".filelists");

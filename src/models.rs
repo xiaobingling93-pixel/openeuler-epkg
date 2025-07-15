@@ -141,33 +141,6 @@ pub struct Package {
     pub package_baseurl: String,
 }
 
-// $HOME/.cache/epkg/channel/${channel}/${repo}/${arch}/repodata/index.json
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct Repodata {
-    #[serde(skip)]
-    pub name: String,
-    #[serde(skip)]
-    pub dir: String,
-    #[serde(default)]
-    pub format: Option<String>,
-
-    #[serde(default)]
-    #[serde(rename = "store-paths")]
-    pub store_paths: Vec<StorePathsIndex>,
-    #[serde(default)]
-    #[serde(rename = "pkg-info")]
-    pub pkg_infos: Vec<FileInfo>,
-    #[serde(default)]
-    #[serde(rename = "pkg-files")]
-    pub pkg_files: Vec<FileInfo>,
-
-    #[serde(skip)]
-    pub provide2pkgnames: HashMap<String, Vec<String>>,
-    #[serde(skip)]
-    pub essential_pkgnames: HashSet<String>,
-}
-
 // pkgline format: {ca_hash}__{pkgname}__{version}__{arch}
 // 09c88c8eb9820a3570d9a856b91f419c__libselinux__3.3-5.oe2203sp3__x86_64
 #[allow(dead_code)]
@@ -181,12 +154,22 @@ pub struct StorePathsIndex {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-#[allow(dead_code)]
-pub struct FileInfo {
+pub struct FilelistsFileInfo {
     pub filename: String,
     pub sha256sum: String,
     pub datetime: String,
     pub size: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct PackagesFileInfo {
+    pub filename: String,
+    pub sha256sum: String,
+    pub datetime: String,
+    pub size: u64,
+    pub nr_packages: usize,
+    pub nr_provides: usize,
+    pub nr_essentials: usize,
 }
 
 /*
@@ -414,9 +397,9 @@ pub struct RepoIndex {
 #[allow(dead_code)]
 pub struct RepoShard {
     #[serde(default)]
-    pub packages: FileInfo,
+    pub packages: PackagesFileInfo,
     #[serde(default)]
-    pub filelists: Option<FileInfo>,
+    pub filelists: Option<FilelistsFileInfo>,
 
     #[serde(skip)]
     pub provide2pkgnames: HashMap<String, Vec<String>>,
@@ -669,14 +652,6 @@ pub struct EPKGDirs {
 #[allow(dead_code)]
 #[derive(Default)]
 pub struct PackageManager {
-    // legacy epkg data structure
-    pub repos_data: Vec<Repodata>,
-    // These legacy fields have been obsoleted:
-    // pkghash2spec replaced by pkgkey2package
-    // pkgname2lines replaced by map_pkgname2packages() + Package.pkgkey
-    // provide2pkgnames replaced by map_provide2pkgnames()
-    // essential_pkgnames replaced by get_essential_pkgnames()
-
     // cache need to installing packages info
     pub pkgkey2package: HashMap<String, Arc<Package>>,
     pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages

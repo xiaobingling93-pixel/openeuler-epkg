@@ -258,7 +258,7 @@ fn process_chunks<R: Read>(
     Ok(())
 }
 
-pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FileInfo> {
+pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
     log::debug!("[process_packages_content] Starting to process packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)
