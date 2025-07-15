@@ -1,6 +1,5 @@
 use std::path::PathBuf;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::time::SystemTime;
 use std::sync::mpsc::Receiver;
 use std::fs;
@@ -197,7 +196,7 @@ impl std::io::Read for ReceiverHasher {
 pub struct PackagesStreamline {
     pub provide2pkgnames: HashMap<String, Vec<String>>,
     pub essential_pkgnames: HashSet<String>,
-    pub pkgname2ranges: HashMap<String, Vec<PackageRange>>,
+    pub pkgname2ranges: BTreeMap<String, Vec<PackageRange>>,
     pub output_path: PathBuf,
     pub json_path: PathBuf,
     pub provide2pkgnames_path: PathBuf,
@@ -252,7 +251,7 @@ impl PackagesStreamline {
         Ok(Self {
             provide2pkgnames: HashMap::new(),
             essential_pkgnames: HashSet::new(),
-            pkgname2ranges: HashMap::new(),
+            pkgname2ranges: BTreeMap::new(),
             output_path: output_path.to_path_buf(),
             json_path,
             provide2pkgnames_path,

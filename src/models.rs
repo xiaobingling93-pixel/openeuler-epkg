@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -424,7 +423,7 @@ pub struct RepoShard {
     #[serde(skip)]
     pub essential_pkgnames: HashSet<String>,
     #[serde(skip)]
-    pub pkgname2ranges: HashMap<String, Vec<PackageRange>>,
+    pub pkgname2ranges: BTreeMap<String, Vec<PackageRange>>,
     #[serde(skip)]
     pub packages_mmap: Option<crate::mmio::FileMapper>,
 }

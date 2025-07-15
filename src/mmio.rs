@@ -1,7 +1,7 @@
 use std::fs;
 use std::fs::File;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::Mmap;
@@ -218,7 +218,7 @@ pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<Strin
 }
 
 // Function to serialize pkgname2ranges to a file
-pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &HashMap<String, Vec<PackageRange>>) -> Result<()> {
+pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>) -> Result<()> {
     let mut file = fs::File::create(path)
         .with_context(|| format!("Failed to create index file: {}", path.display()))?;
 
@@ -238,11 +238,11 @@ pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &HashMap<String,
 }
 
 // Function to deserialize pkgname2ranges from a file
-pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<HashMap<String, Vec<PackageRange>>> {
+pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec<PackageRange>>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read index file: {}", path.display()))?;
 
-    let mut pkgname2ranges = HashMap::new();
+    let mut pkgname2ranges = BTreeMap::new();
     for line in content.lines() {
         if let Some((pkgname, offsets_str)) = line.split_once(": ") {
             let offsets: Vec<PackageRange> = offsets_str
@@ -383,7 +383,7 @@ pub fn lookup_in_packages(
     pkgname: &str,
     repodata_name: &str,
     package_baseurl: &str,
-    pkgname2ranges: &HashMap<String, Vec<PackageRange>>,
+    pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>,
     packages_mmap: &Option<FileMapper>
 ) -> Result<Vec<Package>> {
     let mut packages = Vec::new();

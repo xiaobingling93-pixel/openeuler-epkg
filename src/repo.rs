@@ -638,7 +638,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
             filelists: filelists_info,
             essential_pkgnames: std::collections::HashSet::new(),
             provide2pkgnames:   std::collections::HashMap::new(),
-            pkgname2ranges:     std::collections::HashMap::new(),
+            pkgname2ranges:     std::collections::BTreeMap::new(),
             packages_mmap:      None,
         });
     }
