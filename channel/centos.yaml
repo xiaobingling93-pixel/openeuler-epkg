@@ -8,16 +8,7 @@ distro_dirs:
 - centos-stream
 - centosstream
 - CentOS-stream
-- CentOS
-- centos9
-- centos
-# Add other common CentOS path components if known, e.g., specific versioned paths
-# or variants like 'centos-stream' if they appear as distinct suffixes in mirror URLs.
-# For now, 'centos' is the primary one. 'Stream' or 'Linux' are usually part of the category name
-# and 'centos' is the key used in DISTRO_CONFIGS.
 
-# Basic repo structure (example, might need adjustment based on actual CentOS structure)
-# This part is not directly used by fetch_new_mirrors.py for URL stripping.
 versions:
   - "10-stream"
   - "9-stream"
@@ -25,8 +16,8 @@ versions:
   - "8"
   - "7"
 repos:
-  baseos:
-  appstream:
+  BaseOS:
+  AppStream:
 
 # Example: https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/repodata/repomd.xml
 index_url: $mirror/$version/$repo/$arch/os/repodata/repomd.xml
