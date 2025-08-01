@@ -9,9 +9,9 @@ versions:
 - "latest"
 repos:
   endeavouros:
-  endeavouros-testing:
-index_url: $mirror/repo/$repo/$arch/$repo.db.tar.xz
+index_url: $mirror/repo/$repo/$arch/$repo.files.tar.xz
 
 # Example URLs:
+# https://mirrors.nju.edu.cn/endeavouros/repo/endeavouros/x86_64/endeavouros.files.tar.xz
 # https://mirror.alpix.eu/endeavouros/repo/endeavouros/x86_64/endeavouros.db.tar.xz
 # https://mirror.alpix.eu/endeavouros/repo/endeavouros-testing/x86_64/endeavouros-testing.db.tar.xz

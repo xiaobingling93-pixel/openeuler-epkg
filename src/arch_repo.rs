@@ -11,6 +11,7 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 use sha2::{Sha256, Digest};
 use std::fs;
 use hex;
+use liblzma::read::XzDecoder;
 
 use crate::models::*;
 use crate::repo::RepoReleaseItem;
@@ -49,6 +50,47 @@ lazy_static! {
     };
 }
 
+/// Generic decoder that can handle both gz and xz compression
+enum GenericDecoder<R: Read> {
+    Gz(GzDecoder<R>),
+    Xz(XzDecoder<R>),
+}
+
+impl<R: Read> Read for GenericDecoder<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            GenericDecoder::Gz(decoder) => decoder.read(buf),
+            GenericDecoder::Xz(decoder) => decoder.read(buf),
+        }
+    }
+}
+
+/// Determine compression type based on file extension
+fn get_compression_type(filename: &str) -> &'static str {
+    if filename.ends_with(".xz") {
+        "xz"
+    } else if filename.ends_with(".gz") {
+        "gz"
+    } else {
+        "gz" // default to gz for backward compatibility
+    }
+}
+
+/// Create appropriate decoder based on compression type
+fn create_decoder<R: Read>(reader: R, compression_type: &str) -> Result<GenericDecoder<R>> {
+    match compression_type {
+        "xz" => {
+            log::debug!("Creating xz decoder");
+            Ok(GenericDecoder::Xz(XzDecoder::new(reader)))
+        }
+        "gz" => {
+            log::debug!("Creating gzip decoder");
+            Ok(GenericDecoder::Gz(GzDecoder::new(reader)))
+        }
+        _ => Err(eyre::eyre!("Unsupported compression type: {}", compression_type))
+    }
+}
+
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
     log::debug!("Starting to process Arch packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
 
@@ -73,11 +115,13 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         revise.size.try_into().map_err(|e| eyre::eyre!("Failed to convert size {} to u64: {}", revise.size, e))?
     );
 
-    log::debug!("Creating gzip decoder for {}", revise.location);
-    let gz_decoder = GzDecoder::new(receiver_reader);
+    // Determine compression type and create appropriate decoder
+    let compression_type = get_compression_type(&revise.location);
+    log::debug!("Detected compression type: {} for {}", compression_type, revise.location);
+    let decoder = create_decoder(receiver_reader, compression_type)?;
 
     log::debug!("Creating tar archive for {}", revise.location);
-    let mut archive = Archive::new(gz_decoder);
+    let mut archive = Archive::new(decoder);
     archive.set_ignore_zeros(true);
 
     // Create zstd encoder for filelists compression
@@ -158,7 +202,7 @@ fn validate_download_path(revise: &RepoReleaseItem) -> Result<()> {
 /// This streaming approach allows processing large repository archives without
 /// loading everything into memory at once.
 fn process_tar_entries(
-    archive: &mut Archive<GzDecoder<packages_stream::ReceiverHasher>>,
+    archive: &mut Archive<GenericDecoder<packages_stream::ReceiverHasher>>,
     packages: &mut std::collections::HashMap<String, PackageFiles>,
     filelists_encoder: &mut ZstdEncoder<std::fs::File>,
     derived_files: &mut packages_stream::PackagesStreamline,
@@ -215,10 +259,10 @@ fn process_tar_entries(
                     }
                     Err(e) => {
                         log::error!("Failed to read content from {}/{}: {}", package_name, file_type, e.to_string());
-                        // If it's a corrupt deflate stream, mark the entire file as bad
-                        if e.to_string().contains("corrupt deflate stream") {
+                        // If it's a corrupt compression stream, mark the entire file as bad
+                        if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
                             utils::mark_file_bad(&full_path)?;
-                            return Err(eyre::eyre!("Corrupt deflate stream detected in {}/{} for {}: {} (file marked as .bad)",
+                            return Err(eyre::eyre!("Corrupt compression stream detected in {}/{} for {}: {} (file marked as .bad)",
                                 package_name, file_type, revise.location, e));
                         }
                         continue;
