@@ -6,16 +6,13 @@ distro_dirs:
 - artixlinux
 - artix
 versions:
-- system
-- world
-- galaxy
+- latest
 repos:
   system:
   world:
-  extra:
-  community:
-index_url: $mirror/repos/$version/os/$arch/$version.db.tar.xz
+  galaxy:
+  lib32:
+index_url: $mirror/$repo/os/$arch/$repo.files.tar.gz
 
 # Example URLs:
-# https://packages.artixlinux.org/repos/system/os/x86_64/system.db.tar.xz
-# https://packages.artixlinux.org/repos/world/os/x86_64/world.db.tar.xz
+# https://mirrors.tuna.tsinghua.edu.cn/artixlinux/system/os/x86_64/system.files.tar.gz
