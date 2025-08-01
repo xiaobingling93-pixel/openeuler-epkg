@@ -4,6 +4,7 @@ use std::io::Read;
 use color_eyre::eyre::Result;
 use color_eyre::eyre;
 use liblzma;
+use flate2::read::GzDecoder;
 
 use crate::models::*;
 use crate::dirs;
@@ -97,6 +98,43 @@ fn parent_parent_parent(path: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Filter release items to prefer .xz over .gz when both exist for the same location
+fn filter_packages_by_compression(release_items: Vec<RepoReleaseItem>) -> Vec<RepoReleaseItem> {
+    let mut filtered_items = Vec::new();
+    let mut seen_locations = std::collections::HashSet::new();
+
+    // First pass: collect all .xz files and non-Packages items
+    for item in &release_items {
+        if item.location.ends_with("/Packages.xz") {
+            // Strip the compression suffix to get the base location
+            if let Some(base_location) = item.location.strip_suffix("/Packages.xz") {
+                seen_locations.insert(base_location.to_string());
+                filtered_items.push(item.clone());
+            }
+        } else if item.location.ends_with("/Packages.gz") {
+            // Skip .gz files for now, will handle in second pass
+            continue;
+        } else {
+            // Keep all non-Packages items (Contents files, etc.)
+            filtered_items.push(item.clone());
+        }
+    }
+
+    // Second pass: add .gz files only if no .xz file exists for that location
+    for item in &release_items {
+        if item.location.ends_with("/Packages.gz") {
+            // Strip the compression suffix to get the base location
+            if let Some(base_location) = item.location.strip_suffix("/Packages.gz") {
+                if !seen_locations.contains(base_location) {
+                    filtered_items.push(item.clone());
+                }
+            }
+        }
+    }
+
+    filtered_items
+}
+
 pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
     let mut current_hash_type = String::new();
@@ -138,7 +176,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                 }
 
                 // Check if this is a file we're interested in
-                let is_packages = location.contains("/binary-") && location.ends_with("/Packages.xz");
+                let is_packages = location.contains("/binary-") && (location.ends_with("/Packages.xz") || location.ends_with("/Packages.gz"));
                 let is_contents = location.contains("Contents-") && location.ends_with(".gz");
 
                 // Only process entries that match the Debian repo metadata files of interest
@@ -285,7 +323,10 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
         priority == 3 // Keep only SHA256 entries
     });
 
-    Ok(release_items)
+    // Prefer .xz over .gz when both exist for the same location
+    let filtered_items = filter_packages_by_compression(release_items);
+
+    Ok(filtered_items)
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
@@ -297,29 +338,58 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     // Always use automatic hash validation by passing the expected hash
     let reader = packages_stream::ReceiverHasher::new_with_size(data_rx, revise.hash.clone(), revise.size.try_into().unwrap());
 
-    log::debug!("Using XZ decoder for {}", revise.location);
-    let mut decoder = liblzma::read::XzDecoder::new(reader);
     let mut unpack_buf = vec![0u8; 65536];
     let mut chunk_count = 0;
 
-    // Collect data and calculate hash incrementally
-    loop {
-        let read_result = decoder.read(&mut unpack_buf);
-        chunk_count += 1;
+    // Detect compression type and use appropriate decoder
+    if revise.location.ends_with(".xz") {
+        log::debug!("Using XZ decoder for {}", revise.location);
+        let mut decoder = liblzma::read::XzDecoder::new(reader);
 
-        if chunk_count % 100 == 0 {
-            log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
-        }
+        // Collect data and calculate hash incrementally
+        loop {
+            let read_result = decoder.read(&mut unpack_buf);
+            chunk_count += 1;
 
-        match derived_files.handle_chunk(read_result, &unpack_buf)
-            .map_err(|e| eyre::eyre!("Failed to handle chunk {} for {}: {}", chunk_count, revise.location, e))?
-        {
-            true => continue,
-            false => {
-                log::debug!("Finished processing after {} chunks for {}", chunk_count, revise.location);
-                break;
+            if chunk_count % 100 == 0 {
+                log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
+            }
+
+            match derived_files.handle_chunk(read_result, &unpack_buf)
+                .map_err(|e| eyre::eyre!("Failed to handle chunk {} for {}: {}", chunk_count, revise.location, e))?
+            {
+                true => continue,
+                false => {
+                    log::debug!("Finished processing after {} chunks for {}", chunk_count, revise.location);
+                    break;
+                }
             }
         }
+    } else if revise.location.ends_with(".gz") {
+        log::debug!("Using GZIP decoder for {}", revise.location);
+        let mut decoder = GzDecoder::new(reader);
+
+        // Collect data and calculate hash incrementally
+        loop {
+            let read_result = decoder.read(&mut unpack_buf);
+            chunk_count += 1;
+
+            if chunk_count % 100 == 0 {
+                log::trace!("Processed {} chunks for {}", chunk_count, revise.location);
+            }
+
+            match derived_files.handle_chunk(read_result, &unpack_buf)
+                .map_err(|e| eyre::eyre!("Failed to handle chunk {} for {}: {}", chunk_count, revise.location, e))?
+            {
+                true => continue,
+                false => {
+                    log::debug!("Finished processing after {} chunks for {}", chunk_count, revise.location);
+                    break;
+                }
+            }
+        }
+    } else {
+        return Err(eyre::eyre!("Unsupported compression format for {}: expected .xz or .gz", revise.location));
     }
 
     log::debug!("Finalizing processing for {}", revise.location);

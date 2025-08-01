@@ -590,6 +590,12 @@ fn collect_save_repoindex(repo: &RepoRevise, _repo_dir: &PathBuf, release_items:
 pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> Result<RepoIndex> {
     log::debug!("save_repo_index_json for {:#?}", packages_metafiles);
 
+    // Check if we have any packages metafiles
+    if packages_metafiles.is_empty() {
+        log::warn!("[save_repo_index_json] No packages metafiles provided for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
+        return Err(eyre::eyre!("[save_repo_index_json] No packages metafiles provided for repository: {}. Packages need to be downloaded and processed before creating repo index. Expected metafiles would be generated from packages items in release_items. Current packages_metafiles: {:#?}. This typically means no release_items with is_packages=true were found, or the packages processing step failed to generate the expected .packages.json files.", repo.repo_name, packages_metafiles));
+    }
+
     // Get the repo directory from the first metafile
     let cloned = packages_metafiles.clone();
     let repo_dir = cloned[0].parent()
