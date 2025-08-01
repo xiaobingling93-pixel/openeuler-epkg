@@ -6,7 +6,8 @@ distro_dirs:
 - linuxmint.com
 - linuxmint
 - mint
-versions:
+versions: # https://www.linuxmint.com/download_all.php
+- xia       22.1
 - virginia  21.3
 - una       21.2
 - vanessa   21.1
@@ -17,7 +18,9 @@ repos:
   upstream:
   import:
   backport:
-index_url: $mirror/packages/dists/$version/Release
+  universe:
+  multiverse:
+index_url: $mirror/dists/$version/Release
 
 # Example URLs:
 # http://packages.linuxmint.com/dists/virginia/main/binary-amd64/Packages.xz
