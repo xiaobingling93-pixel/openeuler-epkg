@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,13 +93,16 @@ pub struct Mirror {
     pub url: String,
     #[serde(rename = "os")]
     #[serde(default)]
-    pub distros: Vec<String>,
+    pub distros: HashSet<String>,
     #[serde(rename = "dir")]
     #[serde(default)]
-    pub distro_dirs: Vec<String>,
+    pub distro_dirs: HashSet<String>,
+    #[serde(rename = "pdir")]
+    #[serde(default)]
+    pub probe_dirs: HashSet<String>,    // will be merged into distro_dirs after JSON loading
     #[serde(rename = "ls")]
     #[serde(default)]
-    pub ls_dirs: Vec<String>,   // will be merged into distro_dirs after JSON loading
+    pub ls_dirs: HashSet<String>,       // will be merged into distro_dirs after JSON loading
     #[serde(rename = "root", default, deserialize_with = "crate::mirror::bool_from_number")]
     pub top_level: bool,
     #[serde(rename = "cc")]
@@ -118,7 +122,7 @@ pub struct Mirror {
     #[serde(skip_serializing, skip_deserializing)]
     pub is_near: bool,  // true if mirror is in the same country as user
     #[serde(skip_serializing, skip_deserializing)]
-    pub skip_urls: std::collections::HashSet<String>, // Skip due to metadata conflicts with master task
+    pub skip_urls: HashSet<String>, // Skip due to metadata conflicts with master task
 }
 
 /// Shared usage statistics that need to be synchronized across Mirror clones
@@ -195,9 +199,10 @@ impl Default for Mirror {
     fn default() -> Self {
         Self {
             url: String::new(),
-            distros: Vec::new(),
-            distro_dirs: Vec::new(),
-            ls_dirs: Vec::new(),
+            distros: HashSet::new(),
+            distro_dirs: HashSet::new(),
+            probe_dirs: HashSet::new(),
+            ls_dirs: HashSet::new(),
             top_level: false,
             country_code: None,
             protocols: 0,
@@ -218,6 +223,7 @@ impl Clone for Mirror {
             url: self.url.clone(),
             distros: self.distros.clone(),
             distro_dirs: self.distro_dirs.clone(),
+            probe_dirs: self.distro_dirs.clone(),
             ls_dirs: self.ls_dirs.clone(),
             top_level: self.top_level,
             country_code: self.country_code.clone(),
@@ -514,6 +520,9 @@ fn merge_single_manual_mirror(
         if !manual_mirror.country_code.is_none() {
             existing_mirror.country_code = manual_mirror.country_code.clone();
         }
+        if !manual_mirror.probe_dirs.is_empty() {
+            existing_mirror.probe_dirs = manual_mirror.probe_dirs.clone();
+        }
         if !manual_mirror.ls_dirs.is_empty() {
             existing_mirror.ls_dirs = manual_mirror.ls_dirs.clone();
         }
@@ -583,6 +592,7 @@ fn convert_mirror_data_structure(all_mirrors_raw: HashMap<String, Mirror>) -> Ha
     let mut all_mirrors: HashMap<String, Mirror> = HashMap::new();
 
     for (url, mut mirror) in all_mirrors_raw {
+        mirror.distro_dirs.extend(mirror.probe_dirs.clone());
         mirror.distro_dirs.extend(mirror.ls_dirs.clone());
         mirror.distro_dirs.extend(mirror.distros.clone());
         mirror.url = url.clone();
@@ -595,40 +605,34 @@ fn convert_mirror_data_structure(all_mirrors_raw: HashMap<String, Mirror>) -> Ha
     all_mirrors
 }
 
-/// Apply distro filtering to mirrors if requested
-fn apply_distro_filtering(
+/// Apply filtering by channel_config().distro OR channel_config().distro_dirs
+fn apply_channel_config_filtering(
     all_mirrors: HashMap<String, Mirror>,
-    distro_filter: Option<&str>,
 ) -> Result<HashMap<String, Mirror>> {
-    if let Some(target_distro) = distro_filter {
-        let original_count = all_mirrors.len();
-        let filtered_mirrors: HashMap<String, Mirror> = all_mirrors
-            .into_iter()
-            .filter(|(_, mirror)| {
-                // Check if mirror is suitable for the target distro
-                is_mirror_suitable_for_distro(mirror, target_distro)
-            })
-            .collect();
+    let distro = &channel_config().distro;
+    let distro_dirs = &channel_config().distro_dirs;
 
-        log::debug!(
-            "Filtered mirrors for distro '{}': {} out of {} mirrors selected",
-            target_distro,
-            filtered_mirrors.len(),
-            original_count
-        );
+    let original_count = all_mirrors.len();
+    let filtered_mirrors: HashMap<String, Mirror> = all_mirrors
+        .into_iter()
+        .filter(|(_, mirror)| {
+            is_mirror_suitable_for_channel_config(mirror, distro, distro_dirs)
+        })
+        .collect();
 
-        Ok(filtered_mirrors)
-    } else {
-        log::debug!("Loading all mirrors without distro filtering");
-        Ok(all_mirrors)
-    }
+    log::debug!(
+        "Filtered mirrors for distro '{}' OR distro_dirs {:?}: {} out of {} mirrors selected",
+        distro,
+        distro_dirs,
+        filtered_mirrors.len(),
+        original_count
+    );
+
+    Ok(filtered_mirrors)
 }
 
-/// Load channel/mirrors.json with optional distro filtering
-///
-/// When distro_filter is None, loads all mirrors (used for initial bootstrap)
-/// When distro_filter is Some(distro), only loads mirrors supporting that distro
-pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<String, Mirror>> {
+/// Load channel/mirrors.json with filtering by channel_config().distro OR channel_config().distro_dirs
+fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
     let manager_path = crate::dirs::get_epkg_src_path()?;
     let mirrors_file_path = manager_path.join("channel/mirrors.json");
     let manual_mirrors_file_path = manager_path.join("channel/manual-mirrors.json");
@@ -642,8 +646,8 @@ pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<St
     // Convert URL keys to site keys and merge distros and ls_dirs into distro_dirs
     let all_mirrors = convert_mirror_data_structure(all_mirrors_raw);
 
-    // Apply distro filtering if requested
-    let mut filtered_mirrors = apply_distro_filtering(all_mirrors, distro_filter)?;
+    // Apply filtering by channel_config().distro AND channel_config().distro_dirs
+    let mut filtered_mirrors = apply_channel_config_filtering(all_mirrors)?;
 
     // Initialize performance scores for all mirrors to ensure they have valid stats
     for mirror in filtered_mirrors.values_mut() {
@@ -656,18 +660,23 @@ pub fn load_mirrors_for_distro(distro_filter: Option<&str>) -> Result<HashMap<St
     Ok(filtered_mirrors)
 }
 
-/// Check if a mirror is suitable for the given distro, considering architecture-specific rules
-fn is_mirror_suitable_for_distro(mirror: &Mirror, target_distro: &str) -> bool {
-    // Basic distro support check
-    if !mirror.distros.contains(&target_distro.to_string()) {
+/// Check if a mirror is suitable for the channel config, considering distro OR distro_dirs
+fn is_mirror_suitable_for_channel_config(mirror: &Mirror, target_distro: &str, target_distro_dirs: &[String]) -> bool {
+    // Check if mirror supports the target distro OR any of the required distro_dirs
+    let has_distro = mirror.distros.contains(&target_distro.to_string());
+    let has_dirs = target_distro_dirs.iter().any(|required_dir| {
+        mirror.distro_dirs.contains(required_dir)
+    });
+
+    // Mirror must support either the distro OR the distro_dirs
+    if !has_distro && !has_dirs {
         return false;
     }
 
-    let distro = &channel_config().distro;
     let arch = &channel_config().arch;
 
     // Fedora-specific architecture rules
-    if distro == "fedora" {
+    if target_distro == "fedora" {
         if arch != "x86_64" && arch != "aarch64" {
             // For non-primary architectures, mirror must support secondary repos
             return mirror.distro_dirs.iter().any(|dir| dir.contains("secondary"));
@@ -675,7 +684,7 @@ fn is_mirror_suitable_for_distro(mirror: &Mirror, target_distro: &str) -> bool {
     }
 
     // Ubuntu-specific architecture rules
-    if distro == "ubuntu" {
+    if target_distro == "ubuntu" {
         if arch != "x86_64" {
             // For non-x86_64 architectures, mirror must support ports
             return mirror.distro_dirs.iter().any(|dir| dir.contains("ports"));
@@ -1717,7 +1726,7 @@ fn filter_mirrors_by_exploration(mirrors: &mut HashMap<String, Mirror>) {
 
 /// Initialize mirrors with distro and country code filtering
 fn initialize_mirrors() -> Result<Mirrors> {
-    let mirrors = match load_mirrors_for_distro(Some(&channel_config().distro)) {
+    let mirrors = match load_mirrors_for_distro() {
         Ok(m) if !m.is_empty() => apply_country_code_filtering(m),
         Ok(_) | Err(_) => {
             bail!("Failed to load mirrors for distro '{}'", channel_config().distro);
