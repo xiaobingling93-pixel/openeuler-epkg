@@ -278,52 +278,10 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("etc/epkg"))?;
 
         // Initialize channel and environment config
-        let (mut env_config, channel_config) = if let Some(config_path) = &config().env.import_file {
-            let config_contents = fs::read_to_string(config_path)
-                .with_context(|| format!("Failed to read config file: {}", config_path))?;
-
-            // Parse configs separately
-            let env_config: EnvConfig = serde_yaml::from_str(&config_contents)
-                .with_context(|| format!("Failed to parse env config from file: {}", config_path))?;
-            let channel_config: ChannelConfig = serde_yaml::from_str(&config_contents)
-                .with_context(|| format!("Failed to parse channel config from file: {}", config_path))?;
-
-            // Save channel config
-            let channel_yaml = serde_yaml::to_string(&channel_config)?;
-            fs::write(&env_channel_yaml, channel_yaml)?;
-
-            (env_config, channel_config)
+        let (mut env_config, channel_configs) = if let Some(config_path) = &config().env.import_file {
+            self.import_environment_from_file(config_path)?
         } else {
-            // Initialize channel from command line option or default
-            let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
-            let epkg_src = get_epkg_src_path()?;
-            let mut src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", channel));
-            if !src_channel_yaml.exists() {
-                let repo_name = channel.split(":").next().unwrap_or(&channel);
-                src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", repo_name));
-            }
-            if !src_channel_yaml.exists() {
-                return Err(eyre::eyre!("Channel not found: '{}'", channel));
-            }
-
-            // Copy the source channel config and apply version override if specified
-            let mut channel_config: ChannelConfig = {
-                let contents = fs::read_to_string(&src_channel_yaml)
-                    .with_context(|| format!("Failed to read channel config: {}", src_channel_yaml.display()))?;
-                serde_yaml::from_str(&contents)
-                    .with_context(|| format!("Failed to parse channel config: {}", src_channel_yaml.display()))?
-            };
-
-            // If channel contains a version suffix (e.g., "alpine:3.21"), extract and set the version
-            if let Some(version) = channel.split(':').nth(1) {
-                channel_config.version = version.to_string();
-            }
-
-            // Save the modified channel config
-            let channel_yaml = serde_yaml::to_string(&channel_config)?;
-            fs::write(&env_channel_yaml, channel_yaml)?;
-
-            (EnvConfig::default(), channel_config)
+            self.create_default_environment_config(name)?
         };
 
         // Override config values with command line options
@@ -342,13 +300,16 @@ impl PackageManager {
         }
 
         // Get packages before saving config (since env_config will be moved)
-        let packages_to_install = env_config.packages.clone();
+        let packages_to_install = std::mem::take(&mut env_config.packages);
 
         // Save environment config
         crate::io::serialize_env_config(env_config)?;
 
+        // Save channel configs
+        self.save_channel_configs(&env_root, &channel_configs)?;
+
         // Use the channel config that was just created and saved to env_channel_yaml
-        let format = channel_config.format.clone();
+        let format = channel_configs[0].format.clone();
         self.create_environment_directories(&env_root, &format)?;
 
         // Install packages if any
@@ -363,6 +324,184 @@ impl PackageManager {
 
             // Record the environment creation in command history
             self.record_history(&gen_1_dir, "create", Vec::new(), Vec::new())?;
+        }
+
+        Ok(())
+    }
+
+    /*
+     * Import environment configuration from a YAML file that may contain multiple documents.
+     *
+     * File Format:
+     * The file can contain multiple YAML documents separated by "---" delimiters:
+     *
+     * # Environment configuration (first document)
+     * name: myenv
+     * env_base: /path/to/env
+     * env_root: /path/to/env
+     * public: false
+     * register_to_path: false
+     * register_priority: 0
+     * env_vars: {}
+     * packages: {}
+     *
+     * ---
+     * # Main channel configuration (second document, optional)
+     * format: deb
+     * distro: debian
+     * version: trixie
+     * arch: x86_64
+     * channel: debian
+     * repos:
+     *   main:
+     *     enabled: true
+     *     index_url: https://deb.debian.org/debian
+     * index_url: https://deb.debian.org/debian
+     *
+     * ---
+     * file_name: repo_1.yaml
+     * # Additional channel config from repos.d (optional)
+     * format: deb
+     * distro: debian
+     * repos:
+     *   contrib:
+     *     enabled: true
+     *     index_url: https://deb.debian.org/debian
+     * index_url: https://deb.debian.org/debian
+     *
+     * ---
+     * file_name: repo_2.yaml
+     * # Another additional channel config (optional)
+     * format: deb
+     * distro: debian
+     * repos:
+     *   non-free:
+     *     enabled: true
+     *     index_url: https://deb.debian.org/debian
+     * index_url: https://deb.debian.org/debian
+     *
+     * Parsing Logic:
+     * 1. First document is always parsed as EnvConfig
+     * 2. Subsequent documents are parsed as ChannelConfig
+     * 3. Documents with "file_name:" field are from repos.d and are skipped
+     * 4. If no ChannelConfig documents found, try parsing entire content as single ChannelConfig
+     *
+     * Returns: (EnvConfig, Vec<ChannelConfig>) tuple
+     */
+    fn import_environment_from_file(&self, config_path: &str) -> Result<(EnvConfig, Vec<ChannelConfig>)> {
+        let config_contents = fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read config file: {}", config_path))?;
+
+        // Parse environment config
+        let env_config: EnvConfig = serde_yaml::from_str(&config_contents)
+            .with_context(|| format!("Failed to parse env config from file: {}", config_path))?;
+
+        // Parse channel configs
+        let mut channel_configs = Vec::new();
+
+        // Split the content by "---" to handle multiple YAML documents
+        let documents: Vec<&str> = config_contents.split("---").collect();
+
+        for (i, doc) in documents.iter().enumerate() {
+            let doc = doc.trim();
+            if doc.is_empty() {
+                continue;
+            }
+
+            // Skip first document as it's already parsed as EnvConfig
+            if i == 0 {
+                continue;
+            }
+
+            // Try to parse as ChannelConfig
+            if let Ok(mut channel_config) = serde_yaml::from_str::<ChannelConfig>(doc) {
+                // Store original document data
+                channel_config.file_data = doc.to_string();
+                channel_configs.push(channel_config);
+            }
+        }
+
+        Ok((env_config, channel_configs))
+    }
+
+    fn create_default_environment_config(&self, _name: &str) -> Result<(EnvConfig, Vec<ChannelConfig>)> {
+        // Initialize channel from command line option or default
+        let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
+        let epkg_src = get_epkg_src_path()?;
+        let mut src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", channel));
+        if !src_channel_yaml.exists() {
+            let repo_name = channel.split(":").next().unwrap_or(&channel);
+            src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", repo_name));
+        }
+        if !src_channel_yaml.exists() {
+            return Err(eyre::eyre!("Channel not found: '{}'", channel));
+        }
+
+        // Copy the source channel config and apply version override if specified
+        let mut contents = fs::read_to_string(&src_channel_yaml)
+            .with_context(|| format!("Failed to read channel config: {}", src_channel_yaml.display()))?;
+        let mut channel_config: ChannelConfig = serde_yaml::from_str(&contents)
+            .with_context(|| format!("Failed to parse channel config: {}", src_channel_yaml.display()))?;
+
+        // If channel contains a version suffix (e.g., "alpine:3.21"), extract and set the version
+        if let Some(version) = channel.split(':').nth(1) {
+            channel_config.version = version.to_string();
+            contents = self.update_version_in_contents(&contents, version);
+        }
+
+        // Store original file data
+        channel_config.file_data = contents;
+
+        Ok((EnvConfig::default(), vec![channel_config]))
+    }
+
+    /// Update version line in YAML contents
+    /// If a version line exists, replace it; otherwise append a new version line
+    fn update_version_in_contents(&self, contents: &str, version: &str) -> String {
+        let lines: Vec<&str> = contents.lines().collect();
+        let mut has_version_line = false;
+        let mut new_lines = Vec::new();
+
+        for line in lines {
+            if line.trim().starts_with("version:") {
+                new_lines.push(format!("version: {}", version));
+                has_version_line = true;
+            } else {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        if !has_version_line {
+            new_lines.push(format!("version: {}", version));
+        }
+
+        new_lines.join("\n")
+    }
+
+    fn save_channel_configs(&self, env_root: &Path, channel_configs: &[ChannelConfig]) -> Result<()> {
+        if channel_configs.is_empty() {
+            return Err(eyre::eyre!("No channel configs to save"));
+        }
+
+        // Save main channel config
+        let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
+        fs::write(&env_channel_yaml, &channel_configs[0].file_data)?;
+
+        // Save additional channel configs to repos.d
+        if channel_configs.len() > 1 {
+            let repos_dir = env_root.join("etc/epkg/repos.d");
+            fs::create_dir_all(&repos_dir)?;
+
+            for config in channel_configs.iter().skip(1) {
+                if config.file_data.starts_with("file_name: ") {
+                    // Extract filename from first line and strip it from file_data
+                    if let Some((first_line, file_data)) = config.file_data.split_once('\n') {
+                        let filename = first_line[11..].trim().to_string();
+                        let file_path = repos_dir.join(&filename);
+                        fs::write(&file_path, &file_data)?;
+                    };
+                }
+            }
         }
 
         Ok(())
@@ -781,20 +920,14 @@ impl PackageManager {
         }
 
         // Serialize each config separately
-        let channel_config = crate::models::channel_config();
-        let channel_yaml = serde_yaml::to_string(&channel_config)?;
+        let channel_configs = crate::models::channel_configs();
         let env_yaml = serde_yaml::to_string(&env_config)?;
 
-        // Skip leading "---" if present
-        let channel_yaml = if channel_yaml.starts_with("---\n") {
-            &channel_yaml[4..]
-        } else {
-            &channel_yaml
-        };
+        // Start with environment config
+        let mut combined_yaml = env_yaml;
 
-        // Combine into single YAML document
-        let combined_yaml = format!("{}\n{}\n",
-            env_yaml, channel_yaml);
+        // Build combined YAML with channel configs
+        combined_yaml = self.build_combined_yaml(combined_yaml, &channel_configs, &env_config)?;
 
         // Write to file or stdout
         if let Some(output_path) = output {
@@ -805,6 +938,45 @@ impl PackageManager {
         }
 
         Ok(())
+    }
+
+    // Its output will be used by import_environment_from_file(), see its comment for the content format.
+    fn build_combined_yaml(&self, mut combined_yaml: String, channel_configs: &[ChannelConfig], env_config: &EnvConfig) -> Result<String> {
+        // Add main channel config with separator
+        if !channel_configs.is_empty() {
+            let channel_yaml = serde_yaml::to_string(&channel_configs[0])?;
+            // Skip leading "---" if present
+            let channel_yaml = if channel_yaml.starts_with("---\n") {
+                &channel_yaml[4..]
+            } else {
+                &channel_yaml
+            };
+            combined_yaml.push_str(&format!("\n---\n{}", channel_yaml));
+        }
+
+        // Add additional channel configs from repos.d
+        let env_root = PathBuf::from(&env_config.env_root);
+        let repos_dir = env_root.join("etc/epkg/repos.d");
+        if repos_dir.exists() {
+            for entry in fs::read_dir(repos_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                // Skip dot files
+                if let Some(file_name) = path.file_name() {
+                    if file_name.to_string_lossy().starts_with('.') {
+                        continue;
+                    }
+                }
+                if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                    let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+                    let contents = fs::read_to_string(&path)?;
+
+                    combined_yaml.push_str(&format!("\n---\nfile_name: {}\n{}", file_name, contents));
+                }
+            }
+        }
+
+        Ok(combined_yaml)
     }
 
     /// Get environment configuration value

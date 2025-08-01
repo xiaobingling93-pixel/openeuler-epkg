@@ -75,7 +75,16 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig) -> Result<()> {
         }
     }
 
-    // Step 4: Validate that all required fields are now set
+    // Step 4: Set default app_version from app_versions if empty
+    if cc.app_version.is_empty() {
+        if let Some(app_version_from_list) = cc.app_versions.first() {
+            let app_version = app_version_from_list.split_whitespace().next()
+                .ok_or_else(|| eyre::eyre!("malformed app_version string: {}", app_version_from_list))?;
+            cc.app_version = app_version.to_string();
+        }
+    }
+
+    // Step 5: Validate that all required fields are now set
     if cc.channel.is_empty() {
         return Err(eyre::eyre!("channel name could not be determined"));
     }
@@ -133,85 +142,59 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
 }
 
 /// Deserialize channel configuration from disk
-pub fn deserialize_channel_config() -> Result<ChannelConfig> {
+pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
     let env_root = PathBuf::from(&env_config.env_root);
 
+    let mut channel_configs = Vec::new();
+
+    // Load main channel config
     let file_path = env_root.join("etc/epkg/channel.yaml");
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
     let mut channel_config: ChannelConfig = serde_yaml::from_str(&contents)
         .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))?;
 
-    // Load and merge additional configs from repos.d
-    let repos_dir = env_root.join("etc/epkg/repos.d");
-    if repos_dir.exists() {
-        for entry in fs::read_dir(repos_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
-                let contents = fs::read_to_string(&path)
-                    .with_context(|| format!("Failed to read file: {}", path.display()))?;
-                let repo_config: ChannelConfig = serde_yaml::from_str(&contents)
-                    .with_context(|| format!("Failed to parse YAML from file: {}", path.display()))?;
-                merge_channel_configs(&mut channel_config, repo_config)?;
-            }
-        }
-    }
     set_channel_config_defaults(&mut channel_config)?;
     expand_channel_config_urls(&mut channel_config)?;
 
     // Sort distro_dirs by length once during deserialization
     channel_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
 
-    log::trace!("channel_config {:#?}", channel_config);
+    channel_configs.push(channel_config);
 
-    Ok(channel_config)
-}
+    // Load additional configs from repos.d
+    let repos_dir = env_root.join("etc/epkg/repos.d");
+    if repos_dir.exists() {
+        for entry in fs::read_dir(repos_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            // Skip dot files
+            if let Some(file_name) = path.file_name() {
+                if file_name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+            }
+            if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                let contents = fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read file: {}", path.display()))?;
+                let mut repo_config: ChannelConfig = serde_yaml::from_str(&contents)
+                    .with_context(|| format!("Failed to parse YAML from file: {}", path.display()))?;
 
-#[allow(dead_code)]
-pub fn get_channel_config() -> Result<ChannelConfig> {
-    Ok(channel_config().clone())
-}
+                set_channel_config_defaults(&mut repo_config)?;
+                expand_channel_config_urls(&mut repo_config)?;
 
-pub fn merge_channel_configs(base: &mut ChannelConfig, additional: ChannelConfig) -> Result<()> {
-    // Merge repos
-    for (repo_name, mut repo_config) in additional.repos {
-        if repo_config.index_url.is_none() {
-            repo_config.index_url = Some(additional.index_url.clone());
+                // Sort distro_dirs by length once during deserialization
+                repo_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
+
+                channel_configs.push(repo_config);
+            }
         }
-        if repo_config.index_url_updates.is_none() {
-           if !additional.index_url_updates.is_none() {
-            repo_config.index_url_updates = additional.index_url_updates.clone();
-           } else {
-            repo_config.index_url_updates = Some("".to_string());
-           }
-        }
-        if repo_config.index_url_security.is_none() {
-           if !additional.index_url_security.is_none() {
-            repo_config.index_url_security = additional.index_url_security.clone();
-           } else {
-            repo_config.index_url_security = Some("".to_string());
-           }
-        }
-        base.repos.insert(repo_name, repo_config);
     }
 
-    // Merge other fields if they're not set in base
-    if base.arch.is_empty() {
-        base.arch = additional.arch;
-    }
-    if base.channel.is_empty() {
-        base.channel = additional.channel;
-    }
-    if base.distro.is_empty() {
-        base.distro = additional.distro;
-    }
-    if base.version.is_empty() {
-        base.version = additional.version;
-    }
+    log::trace!("channel_configs {:#?}", channel_configs);
 
-    Ok(())
+    Ok(channel_configs)
 }
 
 // Replace variables in the index_url string with actual values
@@ -222,31 +205,25 @@ pub fn merge_channel_configs(base: &mut ChannelConfig, additional: ChannelConfig
 // Variables:
 // - $mirror: the top priority mirror that supports the distribution
 // - $VERSION: the upper case version string
+// - $version_integer: the version string with non-numeric characters stripped
 // - $version: the version string
 // - $repo: the repository name
 // - $arch: the architecture name
-#[allow(dead_code)]
+// - $app_version: the app_version string
 pub fn interpolate_index_url(config: &ChannelConfig, repo_name: &str, index_url: &str) -> Result<String> {
     // Keep $mirror placeholder for later resolution in download functions
     let mut url = index_url.to_string();
 
-    // If there's no $mirror placeholder, add one at the appropriate position
-    if !url.contains("$mirror") {
-        // Find the first '/' after '://' and replace with '$mirror///'
-        if let Some(pos) = url.find("://") {
-            let rest = &url[pos + 3..]; // Skip past '://'
-            if let Some(slash_pos) = rest.find('/') {
-                let replace_pos = pos + 3 + slash_pos;
-                url.replace_range(replace_pos..replace_pos + 1, "$mirror///");
-            }
-        }
-    }
+    // Strip non-numeric characters from config.version for $version_integer
+    let version_integer: String = config.version.chars().filter(|c| c.is_ascii_digit()).collect();
+    url = url.replace("$version_integer", &version_integer);
 
     // Replace other variables but keep $mirror for download-time resolution
     url = url.replace("$VERSION", &config.version.to_uppercase());
     url = url.replace("$version", &config.version);
     url = url.replace("$repo", repo_name);
     url = url.replace("$arch", &config.arch);
+    url = url.replace("$app_version", &config.app_version);
 
     Ok(url)
 }

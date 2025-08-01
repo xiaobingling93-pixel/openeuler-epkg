@@ -981,9 +981,7 @@ impl PackageManager {
         self.load_installed_packages()?;
         let original_installed_packages = self.installed_packages.clone();
 
-        let channel_config = crate::models::channel_config();
-        let package_format = channel_config.format;
-
+        let package_format = channel_config().format;
         let mut initial_packages_info = self.resolve_package_info(package_specs.clone(), package_format);
 
         // Filter out packages that are already installed
@@ -1206,8 +1204,7 @@ impl PackageManager {
 
         self.fixup_env_links(&env_root)?;
 
-        let channel_config = crate::models::channel_config();
-        let package_format = channel_config.format;
+        let package_format = channel_config().format;
 
         let mut upgrades_new_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
         for (pkgkey, info) in &completed_packages {

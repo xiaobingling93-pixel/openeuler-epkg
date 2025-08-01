@@ -88,15 +88,19 @@ impl HashType {
     }
 }
 
-#[allow(dead_code)]
 impl PackageManager {
 
     pub fn sync_channel_metadata(&mut self) -> Result<()> {
-        let channel_config = crate::models::channel_config();
+        let channel_configs = crate::models::channel_configs();
+        let mut all_repos = Vec::new();
 
-        let all_repos = get_revise_repos(channel_config.clone())
-            .with_context(|| "Failed to get repository revision information")?;
-        revise_repos(channel_config.format.clone(), all_repos)
+        for channel_config in channel_configs {
+            let repos = get_revise_repos(channel_config.clone())
+                .with_context(|| "Failed to get repository revision information")?;
+            all_repos.extend(repos);
+        }
+
+        revise_repos(channel_configs[0].format.clone(), all_repos)
             .with_context(|| "Failed to process repository revisions")?;
 
         Ok(())

@@ -1377,6 +1377,7 @@ impl Mirrors {
 
     pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
         let cache_root = dirs().epkg_downloads_cache.clone();
+        log::debug!("url_to_cache_path {}", url);
         Ok(Self::resolve_mirror_path(url, &cache_root))
     }
 

@@ -313,21 +313,35 @@ pub struct ChannelConfig {
     pub distro: String,
     #[serde(default)]
     pub distro_dirs: Vec<String>,
-    #[serde(default)]
-    pub version: String,
+
     #[serde(default)]
     pub arch: String,
-    #[serde(default)]
-    pub versions: Vec<String>,
     #[serde(default)]
     pub channel: String,
     #[serde(default)]
     pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
+
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub versions: Vec<String>,
+
+    #[serde(default)]
+    pub app_version: String,
+    #[serde(default)]
+    pub app_versions: Vec<String>,
+
     pub index_url: String,
     #[serde(default)]
     pub index_url_updates: Option<String>,
     #[serde(default)]
     pub index_url_security: Option<String>,
+
+    #[serde(default)]
+    pub file_name: Option<String>, // filename for repos.d configs
+    #[serde(skip_serializing, skip_deserializing)]
+    #[serde(default)]
+    pub file_data: String, // original file data to preserve during save
 }
 
 fn default_as_true() -> bool { true }
@@ -352,12 +366,12 @@ pub struct RepoConfig {
 static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
         LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
-// Global ENV_CONFIG and CHANNEL_CONFIG using LazyLock
+// Global ENV_CONFIG and CHANNEL_CONFIGS using LazyLock
 static ENV_CONFIG: LazyLock<EnvConfig> = LazyLock::new(|| {
     crate::io::deserialize_env_config().expect("Failed to deserialize env config")
 });
 
-static CHANNEL_CONFIG: LazyLock<ChannelConfig> = LazyLock::new(|| {
+static CHANNEL_CONFIGS: LazyLock<Vec<ChannelConfig>> = LazyLock::new(|| {
     crate::io::deserialize_channel_config().expect("Failed to deserialize channel config")
 });
 
@@ -366,8 +380,12 @@ pub fn env_config() -> &'static EnvConfig {
     &ENV_CONFIG
 }
 
+pub fn channel_configs() -> &'static Vec<ChannelConfig> {
+    &CHANNEL_CONFIGS
+}
+
 pub fn channel_config() -> &'static ChannelConfig {
-    &CHANNEL_CONFIG
+    &CHANNEL_CONFIGS[0]
 }
 
 // use at package install time

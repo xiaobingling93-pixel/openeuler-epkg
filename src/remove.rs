@@ -323,10 +323,7 @@ impl PackageManager {
         let new_generation = self.create_new_generation()?;
         let env_root = crate::dirs::get_default_env_root()?;
         let store_root = dirs().epkg_store.clone();
-        let repo_format = {
-            let channel_config = crate::models::channel_config();
-            channel_config.format
-        };
+        let repo_format = channel_config().format;
 
         run_scriptlets(
             &final_removal_set,

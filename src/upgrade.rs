@@ -55,11 +55,8 @@ impl PackageManager {
             return Ok(());
         }
 
-        let channel_config = crate::models::channel_config();
-        let format = channel_config.format;
-
         // Collect all dependencies for the initial set of packages.
-        let all_packages_for_session = self.collect_recursive_depends(&initial_packages_to_process, format)?;
+        let all_packages_for_session = self.collect_recursive_depends(&initial_packages_to_process, channel_config().format)?;
 
         // Call the main installation function, which will handle planning and execution.
         self.install_pkgkeys(
