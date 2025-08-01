@@ -54,6 +54,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
     let mut current_data_type = String::new();
     let mut current_location = String::new();
     let mut current_checksum = String::new();
+    let mut current_checksum_type = String::new();
     let mut current_size = 0;
     let mut in_data = false;
     let mut current_element = String::new();
@@ -70,6 +71,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                         // Reset values for new data element
                         current_location.clear();
                         current_checksum.clear();
+                        current_checksum_type.clear();
                         current_size = 0;
 
                         if let Some(data_type) = e.attributes()
@@ -88,6 +90,27 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             current_data_type = data_type;
                         } else {
                             log::warn!("Failed to find 'type' attribute in 'data' element");
+                        }
+                    }
+                    b"checksum" => {
+                        // Extract checksum type from the checksum element
+                        if let Some(checksum_type) = e.attributes()
+                            .find(|attr_result| {
+                                match attr_result {
+                                    Ok(attr) => attr.key.as_ref() == b"type",
+                                    Err(_) => false
+                                }
+                            })
+                            .and_then(|attr_result| attr_result.ok())
+                            .and_then(|attr| String::from_utf8(attr.value.into_owned())
+                                .map_err(|e| {
+                                    log::warn!("Failed to convert checksum type attribute value to UTF-8: {}", e);
+                                    e
+                                }).ok()) {
+                            current_checksum_type = checksum_type.to_uppercase();
+                        } else {
+                            log::warn!("Failed to find 'type' attribute in 'checksum' element, defaulting to SHA256");
+                            current_checksum_type = "SHA256".to_string();
                         }
                     }
                     _ => {}
@@ -176,7 +199,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 arch: repo.arch.clone(),
                                 url: url.clone(),
                                 package_baseurl: baseurl.to_string(),
-                                hash_type: "SHA256".to_string(),
+                                hash_type: current_checksum_type.clone(),
                                 hash: current_checksum.clone(),
                                 size: current_size,
                                 location: current_location.clone(),
@@ -259,13 +282,13 @@ fn process_chunks<R: Read>(
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
-    log::debug!("[process_packages_content] Starting to process packages content for {} (hash: {}, size: {})", revise.location, revise.hash, revise.size);
+    log::debug!("[process_packages_content] Starting to process packages content for {} (hash: {}, size: {}, hash_type: {})", revise.location, revise.hash, revise.size, revise.hash_type);
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_xml_package)
         .wrap_err_with(|| format!("[process_packages_content] Failed to initialize PackagesStreamline for {}", revise.location))?;
 
     // Always use automatic hash validation by passing the expected hash and size
-    let reader = packages_stream::ReceiverHasher::new_with_size(data_rx, revise.hash.clone(), revise.size.try_into().unwrap());
+    let reader = packages_stream::ReceiverHasher::new_with_hash_type(data_rx, revise.hash.clone(), revise.size.try_into().unwrap(), revise.hash_type.clone());
 
     // Detect compression type from file extension and use appropriate decoder
     let mut unpack_buf = vec![0u8; 65536];

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{SystemTime, Duration};
-use sha2::{Sha256, Digest};
+use sha2::{Sha256, Sha512, Digest};
 use filetime;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -58,6 +58,34 @@ pub struct RepoReleaseItem {
     pub is_packages: bool,
     pub download_path: PathBuf,
     pub output_path: PathBuf,
+}
+
+pub enum HashType {
+    Sha256(Sha256),
+    Sha512(Sha512),
+}
+
+impl HashType {
+    pub fn update(&mut self, data: &[u8]) {
+        match self {
+            HashType::Sha256(hasher) => hasher.update(data),
+            HashType::Sha512(hasher) => hasher.update(data),
+        }
+    }
+
+    pub fn finalize(self) -> Vec<u8> {
+        match self {
+            HashType::Sha256(hasher) => hasher.finalize().to_vec(),
+            HashType::Sha512(hasher) => hasher.finalize().to_vec(),
+        }
+    }
+
+    pub fn finalize_reset(&mut self) -> Vec<u8> {
+        match self {
+            HashType::Sha256(hasher) => hasher.finalize_reset().to_vec(),
+            HashType::Sha512(hasher) => hasher.finalize_reset().to_vec(),
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -742,7 +770,10 @@ pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf
 
 /// Verify the hash of the received filelists data
 fn verify_filelists_hash(data_rx: Receiver<Vec<u8>>, revise: &RepoReleaseItem) -> Result<String> {
-    let mut hasher = Sha256::new();
+    let mut hasher = match revise.hash_type.as_str() {
+        "SHA512" => HashType::Sha512(Sha512::new()),
+        _ => HashType::Sha256(Sha256::new()),
+    };
     let mut total_bytes = 0;
 
     // Process data and calculate hash incrementally

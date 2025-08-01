@@ -8,7 +8,7 @@ use std::io::BufWriter;
 use std::io::Write;
 use color_eyre::eyre::{eyre, Result};
 use color_eyre::eyre::WrapErr;
-use sha2::{Sha256, Digest};
+use sha2::{Sha256, Sha512, Digest};
 use hex;
 use crate::models::*;
 use crate::repo::*;
@@ -35,7 +35,7 @@ pub struct ReceiverHasher {
     receiver: Receiver<Vec<u8>>,
     current_chunk: Vec<u8>,
     position: usize,
-    pub hasher: Sha256,
+    pub hasher: HashType,
     pub sha256sum: String,
     expected_hash: Option<String>,
     expected_size: Option<u64>,
@@ -50,7 +50,7 @@ impl ReceiverHasher {
             receiver,
             current_chunk: Vec::new(),
             position: 0,
-            hasher: Sha256::new(),
+            hasher: HashType::Sha256(Sha256::new()),
             sha256sum: String::new(),
             expected_hash: Some(expected_hash),
             expected_size: None,
@@ -68,7 +68,30 @@ impl ReceiverHasher {
             receiver,
             current_chunk: Vec::new(),
             position: 0,
-            hasher: Sha256::new(),
+            hasher: HashType::Sha256(Sha256::new()),
+            sha256sum: String::new(),
+            expected_hash: Some(expected_hash),
+            expected_size: effective_size,
+            total_bytes_received: 0,
+            total_bytes_sent: 0,
+            hash_validated: false,
+        }
+    }
+
+    pub fn new_with_hash_type(receiver: Receiver<Vec<u8>>, expected_hash: String, expected_size: u64, hash_type: String) -> Self {
+        let effective_size = if expected_size > 0 { Some(expected_size) } else { None };
+        log::debug!("ReceiverHasher::new_with_hash_type: expected_size={}, effective_size={:?}, hash_type={}", expected_size, effective_size, hash_type);
+
+        let hasher = match hash_type.as_str() {
+            "SHA512" => HashType::Sha512(Sha512::new()),
+            _ => HashType::Sha256(Sha256::new()),
+        };
+
+        Self {
+            receiver,
+            current_chunk: Vec::new(),
+            position: 0,
+            hasher,
             sha256sum: String::new(),
             expected_hash: Some(expected_hash),
             expected_size: effective_size,
