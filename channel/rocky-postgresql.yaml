@@ -1,0 +1,20 @@
+format: rpm
+distro: rocky
+distro_dirs:
+- postgresql
+versions: # RHEL-compatible versions
+- "9"
+- "8"
+app_versions:
+- 17
+- 16
+- 15
+- 14
+- 13
+- 12
+repos:
+  postgresql:
+index_url: https://mirrors.tuna.tsinghua.edu.cn///postgresql/repos/yum/$app_version/redhat/rhel-$version-$arch/repodata/repomd.xml
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/yum/17/redhat/rhel-9-x86_64/repodata/repomd.xml

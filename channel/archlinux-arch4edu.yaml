@@ -1,5 +1,5 @@
 format: pacman
-distro: archlinux/arch4edu
+distro: archlinux
 distro_dirs:
 - ftp.archlinux.org
 - mirrors.tuna.tsinghua.edu.cn/arch4edu
@@ -9,9 +9,8 @@ distro_dirs:
 versions:
 - "latest"
 repos:
-  any:
-  x86_64:
-index_url: $mirror/$arch/$repo.db.tar.xz
+  arch4edu:
+index_url: $mirror/$arch/arch4edu.db.tar.xz
 
 # Example URLs:
 # https://mirrors.tuna.tsinghua.edu.cn/arch4edu/x86_64/arch4edu.db.tar.xz

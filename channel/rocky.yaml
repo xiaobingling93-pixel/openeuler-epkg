@@ -1,18 +1,10 @@
 format: rpm
 distro: rocky
-distro_dirs: # longer first
+distro_dirs:
 - rocky-linux
 - rocky
-- fedoraproject.org/epel
-- fedora-projects/epel
-- fedora-linux/epel
-- fedora/fedora-epel
-- Fedora/epel
-- fedora/epel
-- Fedora-EPEL
-- fedora-epel
-- epel
 versions: # RHEL-compatible versions
+- "10"
 - "9"
 - "8"
 - "9.4"
@@ -22,8 +14,10 @@ versions: # RHEL-compatible versions
 - "8.8"
 repos:
   BaseOS:
-  extras:
+  # extras:
+  # AppStream:
 index_url: $mirror/$version/$repo/$arch/os/repodata/repomd.xml
 
 # Example URLs:
+# http://mirrors.163.com/rocky/10/BaseOS/x86_64/os/repodata/repomd.xml
 # https://mirror.rackspace.com/rocky/9.5/BaseOS/aarch64/os/repodata/

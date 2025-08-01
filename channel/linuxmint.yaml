@@ -15,13 +15,14 @@ versions: # https://www.linuxmint.com/download_all.php
 - wilma     22
 repos:
   main:
-  upstream:
-  import:
-  backport:
   universe:
   multiverse:
+  # upstream:
+  # import:
+  # backport:
 index_url: $mirror/dists/$version/Release
 
 # Example URLs:
+# http://packages.linuxmint.com/dists/xia/Release
 # http://packages.linuxmint.com/dists/virginia/main/binary-amd64/Packages.xz
 # http://packages.linuxmint.com/dists/una/upstream/binary-amd64/Packages.xz

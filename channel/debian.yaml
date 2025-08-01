@@ -1,18 +1,18 @@
 format: deb
 distro: debian
 distro_dirs:
+- ftp.debian.org/debian-security
 - ftp.debian.org/debian
+- debian/debian-security
 - debian/debian
-- debian
 - debian-security
-- debian-multimedia
-- deb-multimedia
-- debian-elts
+- debian
 version: trixie
 versions:
-- trixie    12 12.10 Debian12.10  # First value is official and used for $version interpolation, others are aliases
-- bookworm  11 11.11 Debian11.11
-- bullseye  10 10.13 Debian10.13
+- bookworm  12 12.10 Debian12.10  # First value is official and used for $version interpolation, others are aliases
+- bullseye  11 11.11 Debian11.11
+- buster    10 10.13 Debian10.13
+- trixie    13
 - testing
 - sid unstable
 repos:
@@ -20,8 +20,8 @@ repos:
   contrib:
   non-free:
 index_url:          $mirror/debian/dists/$version/Release
-# index_url_updates:  $mirror/debian/dists/$version-updates/Release
-# index_url_security: $mirror/debian-security/dists/$version/Release
+index_url_updates:  $mirror/debian/dists/$version-updates/Release
+index_url_security: $mirror/debian-security/dists/$version-security/Release
 
 # Example URLs:
 # https://mirrors.huaweicloud.com/debian/dists/trixie/contrib/binary-amd64/Packages.xz

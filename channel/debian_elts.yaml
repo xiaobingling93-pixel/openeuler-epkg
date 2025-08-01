@@ -1,12 +1,10 @@
 format: deb
-distro: debian/elts
+distro: debian
 distro_dirs:
-- ftp.debian.org
-- deb.freexian.com
-- elts.debian.org
 - debian-elts
-- freexian
-versions:
+- extended-lts
+versions: # Extended LTS versions
+- buster    10
 - stretch   9
 - jessie    8
 - wheezy    7
@@ -14,8 +12,9 @@ repos:
   main:
   contrib:
   non-free:
-index_url: $mirror/elts/dists/$version/Release
+index_url: $mirror/dists/$version/Release
 
 # Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/debian-elts/dists/buster/Release
 # https://deb.freexian.com/extended-lts/dists/stretch/main/binary-amd64/Packages.xz
 # https://deb.freexian.com/extended-lts/dists/jessie/contrib/binary-amd64/Packages.xz

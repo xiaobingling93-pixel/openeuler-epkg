@@ -1,10 +1,7 @@
 format: rpm
-distro: fedora/rpmfusion
+distro: fedora
 distro_dirs:
 - download1.rpmfusion.org
-- dl.fedoraproject.org
-- download.fedora.redhat.com
-- mirrors.rpmfusion.org
 - rpmfusion.org
 - rpmfusion
 versions:
@@ -13,10 +10,7 @@ versions:
 - "40"
 - "39"
 repos:
-  free:
-  nonfree:
-  free-updates:
-  nonfree-updates:
+  rpmfusion:
 index_url: $mirror/free/fedora/releases/$version/Everything/$arch/os/repodata/repomd.xml
 index_url_updates: $mirror/free/fedora/updates/$version/$arch/repodata/repomd.xml
 index_url_nonfree: $mirror/nonfree/fedora/releases/$version/Everything/$arch/os/repodata/repomd.xml

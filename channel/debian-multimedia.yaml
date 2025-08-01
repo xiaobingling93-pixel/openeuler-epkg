@@ -1,0 +1,18 @@
+format: deb
+distro: debian
+distro_dirs:
+- debian-multimedia
+- deb-multimedia
+versions:
+- bookworm  12 12.10 Debian12.10  # First value is official and used for $version interpolation, others are aliases
+- bullseye  11 11.11 Debian11.11
+- buster    10 10.13 Debian10.13
+- trixie    13
+- testing
+- sid unstable
+repos:
+  multimedia:
+index_url:          $mirror/debian/dists/$version/Release
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/debian-multimedia/dists/bookworm/Release

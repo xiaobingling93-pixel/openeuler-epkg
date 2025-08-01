@@ -1,0 +1,26 @@
+format: deb
+distro: ubuntu
+distro_dirs:
+- cuda
+- nvidia
+versions:
+- "24.04"
+- "22.04"
+- "20.04"
+- "18.10"
+- "18.04"
+- "17.10"
+- "17.04"
+- "16.04"
+- "15.04"
+- "14.10"
+- "14.04"
+- "13.04"
+- "12.10"
+- "12.04"
+repos:
+  cuda:
+index_url: https://developer.download.nvidia.cn/compute///cuda/repos/ubuntu$version_integer/$arch/Release
+
+# Example URLs:
+# https://developer.download.nvidia.cn/compute/cuda/repos/ubuntu2204/x86_64/Release

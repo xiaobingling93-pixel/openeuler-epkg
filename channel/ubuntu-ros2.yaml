@@ -1,18 +1,14 @@
 format: deb
-distro: ubuntu/ros2
+distro: ubuntu
 distro_dirs:
-- packages.ros.org
-- ros.org
-- ros
+- packages.ros.org/ros2
 - ros2
-- packages-ros
 versions:
 - noble   24.04
 - jammy   22.04
 - focal   20.04
 repos:
-  main:
-  universe:
+  ros2:
 index_url: $mirror/ubuntu/dists/$version/Release
 
 # Example URLs:

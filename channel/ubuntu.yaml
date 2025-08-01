@@ -1,6 +1,7 @@
 format: deb
 distro: ubuntu
 distro_dirs: # longer first
+- releases.ubuntu.com/ubuntu
 - archive.ubuntu.com/ubuntu
 - archive.ubuntu.com
 - ubuntu/ubuntu-archive
@@ -14,7 +15,6 @@ distro_dirs: # longer first
 - ubuntu-archive
 - ubuntu/archive
 - ubuntuarchive
-- releases.ubuntu.com/ubuntu
 - ubuntu
 version: noble
 versions: # First value is official, others are aliases
