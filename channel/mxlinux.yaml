@@ -6,15 +6,13 @@ distro_dirs:
 - mxlinux
 - mx-repo
 versions:
-- mx-23    23
-- mx-21    21
-- mx-19    19
+- bookworm  23
+- trixie    25
 repos:
   main:
-  test:
   ahs:
+  non-free:
 index_url: $mirror/mx/repo/dists/$version/Release
 
 # Example URLs:
-# https://mxrepo.com/mx/repo/dists/mx-23/main/binary-amd64/Packages.xz
-# https://mxrepo.com/mx/repo/dists/mx-21/test/binary-amd64/Packages.xz
+# https://mxrepo.com/mx/repo/dists/trixie/Release
