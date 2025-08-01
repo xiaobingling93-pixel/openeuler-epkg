@@ -14,7 +14,7 @@ repos:
   contrib:
   non-free:
   commercial:
-index_url: $mirror/deepin/dists/$version/Release
+index_url: $mirror/dists/$version/Release
 
 # Example URLs:
 # https://packages.deepin.com/deepin/dists/apricot/main/binary-amd64/Packages.xz
