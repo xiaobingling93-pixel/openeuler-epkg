@@ -138,6 +138,7 @@ fn filter_packages_by_compression(release_items: Vec<RepoReleaseItem>) -> Vec<Re
 pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
     let mut current_hash_type = String::new();
+    let mut components = Vec::new();
 
     // Map Debian architecture to standard architecture
     let map_architecture = |arch: &str| -> String {
@@ -164,6 +165,12 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
             continue;
         }
 
+        if line.starts_with("Components:") {
+            let components_line = line.strip_prefix("Components:").unwrap_or("").trim();
+            components = components_line.split_whitespace().map(|s| s.to_string()).collect();
+            continue;
+        }
+
         if !current_hash_type.is_empty() && !line.trim().is_empty() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
@@ -176,25 +183,42 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                 }
 
                 // Check if this is a file we're interested in
-                let is_packages = location.contains("/binary-") && (location.ends_with("/Packages.xz") || location.ends_with("/Packages.gz"));
+                let is_packages = location.contains("/binary-") && (location.ends_with("/Packages.xz") || location.ends_with("/Packages.gz")) ||
+                                 location.ends_with("Packages.gz");
                 let is_contents = location.contains("Contents-") && location.ends_with(".gz");
 
                 // Only process entries that match the Debian repo metadata files of interest
                 if is_packages || is_contents {
                     // repo_name: e.g. "main" from "main/binary-amd64/Packages.xz"
-                    let mut repo_name = location.split('/').next().unwrap_or("").to_string();
+                    // or use the repository's name for repositories like CUDA that don't use subdirectories
+                    let mut repo_name = if location.contains('/') {
+                        location.split('/').next().unwrap_or("").to_string()
+                    } else {
+                        // For repositories like CUDA that don't use subdirectories,
+                        // use the repository's name
+                        repo.repo_name.clone()
+                    };
+
                     if repo_name == location && repo.repo_name == "main" {
                         repo_name = repo.repo_name.clone();
                         // Ubuntu has a single Contents file outside of a specific repo
                         // As a workaround, attribute it to the "main" repo
-                    } else if repo_name != repo.repo_name {
+                    } else if location.contains('/') && repo_name != repo.repo_name && components.contains(&repo.repo_name) {
+                        // Do filtering only when repo.repo_name is standard repo names like "main", "contrib"
                         continue;
                     }
 
                     // arch: e.g. "amd64" from "main/binary-amd64/Packages.xz" or "main/Contents-amd64.gz"
+                    // or from "Packages" (for repositories like CUDA that don't use binary- subdirectories)
                     let arch = if is_packages {
-                        let deb_arch = location.split("binary-").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string();
-                        map_architecture(&deb_arch)
+                        if location.contains("/binary-") {
+                            let deb_arch = location.split("binary-").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string();
+                            map_architecture(&deb_arch)
+                        } else {
+                            // For repositories like CUDA that don't use binary- subdirectories,
+                            // use the repository's architecture
+                            repo.arch.clone()
+                        }
                     } else {
                         let deb_arch = location.split("Contents-").nth(1).unwrap_or("").split('.').next().unwrap_or("").to_string();
                         map_architecture(&deb_arch)
