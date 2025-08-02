@@ -1,15 +1,14 @@
-use std::path::PathBuf;
-use color_eyre::eyre::Result;
-use color_eyre::eyre;
-use color_eyre::eyre::WrapErr;
 use std::fs;
+use std::path::PathBuf;
+use color_eyre::{Result, eyre};
+use color_eyre::eyre::WrapErr;
 use regex::Regex;
 
 use crate::models::*;
+use crate::repo::{should_refresh_release_file, ReleaseStatus};
 use crate::dirs;
 use crate::repo::*;
 use crate::packages_stream;
-use crate::download::download_urls;
 
 /*
  * REPOSITORY ARCHITECTURE OVERVIEW - HTML Directory Index Handler
@@ -78,8 +77,8 @@ pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, relea
 
     // Only download if needed
     if status != ReleaseStatus::FineExist && status != ReleaseStatus::FineRecent {
-        // Download the index.html file
-        download_urls(vec![index_html_url], &dirs().epkg_downloads_cache, 6, false)
+        // Download the index.html file using the new helper function
+        crate::repo::download_file_with_repodata_name(&index_html_url, &repo.repodata_name)
             .with_context(|| "Failed to download index.html")?;
     }
 

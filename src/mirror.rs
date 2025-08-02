@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +12,8 @@ use color_eyre::eyre::{Context, Result, eyre, bail};
 use crate::location;
 use crate::models::dirs;
 use crate::models::channel_config;
+use crate::models::channel_configs;
+
 
 const MAX_PGET_LIMIT:usize = 5;
 
@@ -610,13 +611,19 @@ fn apply_channel_config_filtering(
     all_mirrors: HashMap<String, Mirror>,
 ) -> Result<HashMap<String, Mirror>> {
     let distro = &channel_config().distro;
-    let distro_dirs = &channel_config().distro_dirs;
+
+    // Get the union of all distro_dirs from all channel configs
+    let mut all_distro_dirs = HashSet::new();
+    for config in channel_configs() {
+        all_distro_dirs.extend(config.distro_dirs.iter().cloned());
+    }
+    let distro_dirs: Vec<String> = all_distro_dirs.into_iter().collect();
 
     let original_count = all_mirrors.len();
     let filtered_mirrors: HashMap<String, Mirror> = all_mirrors
         .into_iter()
         .filter(|(_, mirror)| {
-            is_mirror_suitable_for_channel_config(mirror, distro, distro_dirs)
+            is_mirror_suitable_for_channel_config(mirror, distro, &distro_dirs)
         })
         .collect();
 
@@ -1074,7 +1081,7 @@ impl Mirrors {
     /// Select mirror with automatic usage tracking
     ///
     /// Returns a Mirror that automatically tracks usage when selected and dropped
-    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool, raw_url: Option<&str>) -> Result<Mirror> {
+    pub fn select_mirror_with_usage_tracking(&mut self, need_range: bool, raw_url: Option<&str>, repodata_name: &str) -> Result<Mirror> {
         // Initialize mirrors if not already done
         if self.mirrors.is_empty() {
             let initialized_mirrors = initialize_mirrors()?;
@@ -1091,7 +1098,7 @@ impl Mirrors {
         let should_dump = call_count % 2 == 1;
 
         // Update available mirrors based on filtering criteria
-        self.update_available_mirrors(need_range, distro, arch, raw_url);
+        self.update_available_mirrors(need_range, distro, arch, raw_url, repodata_name);
 
         if self.available_mirrors.is_empty() {
             dump_mirror_performance_stats(&self, true);
@@ -1117,7 +1124,7 @@ impl Mirrors {
     }
 
     /// Filter mirrors based on availability and requirements and update available_mirrors
-    fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str, raw_url: Option<&str>) {
+    fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str, raw_url: Option<&str>, repodata_name: &str) {
         self.available_mirrors = self.mirrors.iter()
             .filter_map(|(site, mirror)| {
                 // Exclude mirrors with no_content, old_content, or no_online
@@ -1139,9 +1146,8 @@ impl Mirrors {
                 }
 
                 // Check if this mirror can provide a valid distro directory
-                let distro_dir = Self::find_distro_dir(mirror, distro, arch);
-                if distro_dir.is_empty() && mirror.distro_dirs.is_empty() {
-                    log::info!("WARNING: Mirror {} does not provide a valid distro directory: {:?}", mirror.url, mirror);
+                let distro_dir = Self::find_distro_dir(mirror, distro, arch, repodata_name);
+                if distro_dir.is_empty() {
                     return None;
                 }
 
@@ -1315,12 +1321,12 @@ impl Mirrors {
     }
 
     /// Find the best matching distro directory for a mirror
-    pub fn find_distro_dir(mirror: &Mirror, distro: &str, arch: &str) -> String {
-        // Use pre-sorted distro_dirs from channel config (sorted during deserialization)
-        let sorted_dirs = &channel_config().distro_dirs;
+    pub fn find_distro_dir(mirror: &Mirror, distro: &str, arch: &str, repodata_name: &str) -> String {
+        // Use distro_dirs from the global hashmap for the specific repodata_name
+        let sorted_dirs = get_distro_dirs_for_repodata_name(repodata_name);
 
         let mut found_dir = String::new();
-        for item in sorted_dirs {
+        for item in &sorted_dirs {
             let item_lower = item.to_lowercase();
             if distro == "fedora" {
                 if item_lower.contains("alt") {
@@ -1375,35 +1381,21 @@ impl Mirrors {
         Ok(url)
     }
 
-    pub fn url_to_cache_path(url: &str) -> Result<PathBuf> {
+    pub fn url_to_cache_path(url: &str, repodata_name: &str) -> Result<PathBuf> {
         let cache_root = dirs().epkg_downloads_cache.clone();
-        log::debug!("url_to_cache_path {}", url);
-        Ok(Self::resolve_mirror_path(url, &cache_root))
+        log::debug!("url_to_cache_path {} {}", url, repodata_name);
+        Ok(Self::resolve_mirror_path(url, &cache_root, repodata_name))
     }
 
-    pub fn resolve_mirror_path(url: &str, output_dir: &Path) -> PathBuf {
+    pub fn resolve_mirror_path(url: &str, output_dir: &Path, repodata_name: &str) -> PathBuf {
         let final_path = if let Some((_, str_b)) = url.split_once("$mirror/") {
-            let distro = &channel_config().distro;
-            let arch = &channel_config().arch;
-            let mut local_subdir = String::new();
-
-            if distro == "fedora" {
-                if arch != "x86_64" && arch != "aarch64" {
-                    local_subdir = "fedora-secondary".to_string();
-                }
+            let distro_dirs = get_distro_dirs_for_repodata_name(repodata_name);
+            let local_subdir = distro_dirs.last().unwrap().clone();
+            if local_subdir != "debian" {
+                output_dir.join(&local_subdir).join(str_b)
+            } else {
+                output_dir.join(str_b)
             }
-
-            if distro == "ubuntu" {
-                if arch != "x86_64" {
-                    local_subdir = "ubuntu-ports".to_string();
-                }
-            }
-
-            if local_subdir.is_empty() && distro != "debian" {
-                local_subdir = distro.clone();
-            }
-
-            output_dir.join(&local_subdir).join(str_b)
         } else if let Some((_, str_b)) = url.split_once("///") {
             output_dir.join(str_b)
         } else {
@@ -1413,30 +1405,6 @@ impl Mirrors {
         };
 
         final_path
-    }
-
-
-
-    /// Get current usage statistics for debugging
-    #[allow(dead_code)]
-    pub fn get_usage_stats(&self) -> HashMap<String, (usize, u64, u64)> {
-        self.mirrors.iter()
-            .map(|(url, mirror)| {
-                let active = mirror.shared_usage.active_downloads.load(Ordering::Relaxed);
-                let total = mirror.shared_usage.total_uses.load(Ordering::Relaxed);
-                let last_used = mirror.shared_usage.last_used.load(Ordering::Relaxed);
-                (url.clone(), (active, total, last_used))
-            })
-            .collect()
-    }
-
-    /// Reset all mirror usage tracking counters (useful for debugging corrupted counters)
-    #[allow(dead_code)]
-    pub fn reset_all_usage_tracking(&mut self) {
-        for mirror in self.mirrors.values_mut() {
-            mirror.reset_usage_tracking();
-        }
-        log::info!("Reset usage tracking counters for all mirrors");
     }
 
 }
@@ -2043,4 +2011,33 @@ where
     }
 
     deserializer.deserialize_any(BoolVisitor)
+}
+
+// Global hashmap for repodata_name to distro_dirs mapping
+static REPODATA_NAME2DISTRO_DIRS: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Extend the global repodata_name2distro_dirs hashmap with repos from a specific channel config
+pub fn extend_repodata_name2distro_dirs(channel_config: &crate::models::ChannelConfig, repos: &[crate::repo::RepoRevise]) -> Result<()> {
+    let mut hashmap = REPODATA_NAME2DISTRO_DIRS.lock()
+        .map_err(|e| eyre!("Failed to lock repodata_name2distro_dirs: {}", e))?;
+
+    for repo in repos {
+        hashmap.insert(repo.repodata_name.clone(), channel_config.distro_dirs.clone());
+        log::debug!("repodata_name2distro_dirs[{}] = {:?}", repo.repodata_name.clone(), channel_config.distro_dirs.clone());
+    }
+
+    Ok(())
+}
+
+/// Get distro_dirs for a specific repodata_name
+pub fn get_distro_dirs_for_repodata_name(repodata_name: &str) -> Vec<String> {
+    if let Ok(hashmap) = REPODATA_NAME2DISTRO_DIRS.lock() {
+        if let Some(distro_dirs) = hashmap.get(repodata_name) {
+            return distro_dirs.clone();
+        }
+    }
+
+    // Fallback to channel_config().distro_dirs if not found
+    channel_config().distro_dirs.clone()
 }

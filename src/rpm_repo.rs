@@ -165,7 +165,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 index_url.trim_end_matches('/')
                             };
                             let url = format!("{}/{}", baseurl, current_location);
-                            let download_path = crate::mirror::Mirrors::url_to_cache_path(&url)
+                            let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
                                 .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
                             let need_download = !download_path.exists();
 

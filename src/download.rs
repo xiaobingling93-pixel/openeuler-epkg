@@ -448,6 +448,9 @@ pub struct DownloadTask {
     // Server metadata from response headers, stored for later application
     pub master_metadata:      Mutex<Option<ServerMetadata>>,
 
+    // Repository information for mirror selection
+    pub repodata_name:        String,                                     // Repository name for mirror selection
+
     // Chunking semantics rules:
     // 1. chunk_offset - decided on initial allocation, won't change over time; 0 for master task
     // 2. chunk_size - decided on initial allocation, won't change over time but may be lowered on ondemand chunking; equals file_size for master task without chunking
@@ -617,11 +620,11 @@ pub fn update_download_status(task: &DownloadTask, new_status: DownloadStatus) -
 
 impl DownloadTask {
     pub fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
-        Self::with_size(url, output_dir, max_retries, None)
+        Self::with_size(url, output_dir, max_retries, None, "".to_string())
     }
 
-    pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, file_size: Option<u64>) -> Self {
-        let final_path = mirror::Mirrors::resolve_mirror_path(&url, &output_dir);
+    pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, file_size: Option<u64>, repodata_name: String) -> Self {
+        let final_path = mirror::Mirrors::resolve_mirror_path(&url, &output_dir, &repodata_name);
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = utils::append_suffix(&final_path, "part");
 
@@ -656,6 +659,7 @@ impl DownloadTask {
             duration_ms:       AtomicU64::new(0),
             range_request:     Mutex::new(RangeRequest::None),
             mirror_inuse:      Arc::new(Mutex::new(None)),
+            repodata_name:     repodata_name,
         }
     }
 
@@ -793,6 +797,7 @@ impl DownloadTask {
             eta:                  AtomicU64::new(0),
             duration_ms:          AtomicU64::new(0),
             range_request:        Mutex::new(RangeRequest::None),
+            repodata_name:        self.repodata_name.clone(),
         })
     }
 
@@ -2989,7 +2994,7 @@ impl PackageManager {
             };
 
             // Submit download task with size information (handles both local and remote files)
-            let task = DownloadTask::with_size(url.clone(), output_dir.clone(), 6, size);
+            let task = DownloadTask::with_size(url.clone(), output_dir.clone(), 6, size, package.repodata_name.clone());
             submit_download_task(task)
                 .with_context(|| format!("Failed to submit download task for {}", url))?;
             url_to_pkgkey.insert(url, pkgkey.clone());
@@ -3029,39 +3034,10 @@ impl PackageManager {
             Ok(dest_path.to_string_lossy().to_string())
         } else {
             // Remote file - use the URL to cache path conversion
-            let cache_path = mirror::Mirrors::url_to_cache_path(&url)
+            let cache_path = mirror::Mirrors::url_to_cache_path(&url, &package.repodata_name)
                 .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?;
             Ok(cache_path.to_string_lossy().to_string())
         }
-    }
-
-    // Download packages specified by their pkgkey strings.
-    #[allow(dead_code)]
-    pub fn download_packages(&mut self, packages: &HashMap<String, InstalledPackageInfo>, async_mode: bool) -> Result<Vec<String>> {
-        let output_dir = dirs().epkg_downloads_cache.clone();
-
-        // Step 1: Compose URLs for each pkgkey
-        let mut urls = Vec::new();
-        let mut local_files = Vec::new();
-        for pkgkey in packages.keys() {
-            let package = self.load_package_info(pkgkey)
-                .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
-            let url = format!(
-                "{}/{}",
-                package.package_baseurl,
-                package.location
-            );
-            urls.push(url.clone());
-            let cache_path = mirror::Mirrors::url_to_cache_path(&url)
-                .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?
-                .to_string_lossy().to_string();
-            local_files.push(cache_path);
-        }
-
-        // Step 2: Call download_urls function (handles both local and remote files)
-        download_urls(urls, &output_dir, 6, async_mode)
-            .map_err(|e| eyre!("Failed to download URLs to {}: {}", output_dir.display(), e))?;
-        Ok(local_files)
     }
 
     // Wait for all pending downloads to complete
@@ -5049,19 +5025,19 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
         let mut mirrors = mirror::MIRRORS.lock()
             .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
 
-        let mirror = mirrors.select_mirror_with_usage_tracking(need_range, Some(&task.url))
+        let mirror = mirrors.select_mirror_with_usage_tracking(need_range, Some(&task.url), &task.repodata_name)
             .map_err(|e| DownloadError::MirrorResolution {
                 details: format!("{}", e)
             })?;
 
-        log::debug!("resolve_mirror_and_update_task: Selected mirror {} for URL {}", mirror.url, url);
+        log::debug!("resolve_mirror_and_update_task: Selected mirror {} for URL {} {}", mirror.url, url, &task.repodata_name);
         mirror
     };
 
     // Get distro directory for the selected mirror
     let distro = &channel_config().distro;
     let arch = &channel_config().arch;
-    let distro_dir = mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch);
+    let distro_dir = mirror::Mirrors::find_distro_dir(&selected_mirror, distro, arch, &task.repodata_name);
     let final_distro_dir = if distro_dir.is_empty() { distro.to_string() } else { distro_dir };
 
     // Format mirror URL

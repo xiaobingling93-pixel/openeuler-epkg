@@ -13,7 +13,7 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
 use crate::models::*;
 use crate::dirs;
-use crate::download::download_urls;
+
 use crate::download::DownloadTask;
 use crate::download::submit_download_task;
 use crate::download::DOWNLOAD_MANAGER;
@@ -94,9 +94,14 @@ impl PackageManager {
         let channel_configs = crate::models::channel_configs();
         let mut all_repos = Vec::new();
 
+        // Collect all repos first
         for channel_config in channel_configs {
             let repos = get_revise_repos(channel_config.clone())
                 .with_context(|| "Failed to get repository revision information")?;
+
+            crate::mirror::extend_repodata_name2distro_dirs(&channel_config, &repos)
+                .with_context(|| "Failed to set up repodata_name2distro_dirs hashmap")?;
+
             all_repos.extend(repos);
         }
 
@@ -106,6 +111,24 @@ impl PackageManager {
         Ok(())
     }
 
+}
+
+/// Download a single file using DownloadTask with repodata_name
+pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Result<()> {
+    let task = DownloadTask::with_size(
+        url.to_string(),
+        dirs().epkg_downloads_cache.clone(),
+        6,
+        None,
+        repodata_name.to_string()
+    );
+    submit_download_task(task)
+        .with_context(|| format!("Failed to submit download task for {}", url))?;
+    DOWNLOAD_MANAGER.start_processing();
+    // Wait for the download to complete
+    DOWNLOAD_MANAGER.wait_for_task(url.to_string())
+        .with_context(|| format!("Failed to wait for download from {}", url))?;
+    Ok(())
 }
 
 pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
@@ -251,8 +274,8 @@ pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
         return Ok(());
     }
 
-    // Download Release file
-    download_urls(vec![repo.index_url.clone()], &dirs().epkg_downloads_cache, 6, false)
+    // Download Release file using the new helper function
+    download_file_with_repodata_name(&repo.index_url, &repo.repodata_name)
         .with_context(|| format!("Failed to download release file from {}", repo.index_url))?;
     Ok(())
 }
@@ -405,7 +428,7 @@ pub fn sync_repo_metadata(format: PackageFormat, repo: &RepoRevise, result_tx: &
         .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
     log::debug!("[sync_repo_metadata] Got repo_dir: {:?}", repo_dir);
 
-    let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url)
+    let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
     log::debug!("[sync_repo_metadata] Got release_path: {:?}", release_path);
 
@@ -554,7 +577,8 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
         revise.url.clone(),
         dirs().epkg_downloads_cache.clone(),
         6,
-        if revise.size > 0 { Some(revise.size as u64) } else { None }
+        if revise.size > 0 { Some(revise.size as u64) } else { None },
+        revise.repodata_name.clone()
     ).with_data_channel(data_tx);
 
     // Submit download task
