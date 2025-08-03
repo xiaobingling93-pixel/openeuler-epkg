@@ -336,6 +336,10 @@ pub struct ChannelConfig {
     pub index_url_updates: Option<String>,
     #[serde(default)]
     pub index_url_security: Option<String>,
+    #[serde(default)]
+    pub index_url_nonfree: Option<String>,
+    #[serde(default)]
+    pub index_url_nonfree_updates: Option<String>,
 
     #[serde(default)]
     pub file_name: Option<String>, // filename for repos.d configs
@@ -359,6 +363,10 @@ pub struct RepoConfig {
     pub index_url_updates: Option<String>,
     #[serde(default)]
     pub index_url_security: Option<String>,
+    #[serde(default)]
+    pub index_url_nonfree: Option<String>,
+    #[serde(default)]
+    pub index_url_nonfree_updates: Option<String>,
     #[serde(default)]
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
 }

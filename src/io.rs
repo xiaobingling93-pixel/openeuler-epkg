@@ -156,6 +156,12 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
         if repo_config.index_url_security.is_none() {
             repo_config.index_url_security = cc.index_url_security.clone();
         }
+        if repo_config.index_url_nonfree.is_none() {
+            repo_config.index_url_nonfree = cc.index_url_nonfree.clone();
+        }
+        if repo_config.index_url_nonfree_updates.is_none() {
+            repo_config.index_url_nonfree_updates = cc.index_url_nonfree_updates.clone();
+        }
     }
 
     // Second pass: interpolate URLs
@@ -170,6 +176,12 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
         if let Some(url) = &repo_config.index_url_security {
             interpolated_urls.push((repo_name.clone(), "index_url_security", interpolate_index_url(cc, repo_name, url)?));
         }
+        if let Some(url) = &repo_config.index_url_nonfree {
+            interpolated_urls.push((repo_name.clone(), "index_url_nonfree", interpolate_index_url(cc, repo_name, url)?));
+        }
+        if let Some(url) = &repo_config.index_url_nonfree_updates {
+            interpolated_urls.push((repo_name.clone(), "index_url_nonfree_updates", interpolate_index_url(cc, repo_name, url)?));
+        }
     }
 
     // Third pass: update the URLs
@@ -179,6 +191,8 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
                 "index_url" => repo_config.index_url = Some(interpolated_url),
                 "index_url_updates" => repo_config.index_url_updates = Some(interpolated_url),
                 "index_url_security" => repo_config.index_url_security = Some(interpolated_url),
+                "index_url_nonfree" => repo_config.index_url_nonfree = Some(interpolated_url),
+                "index_url_nonfree_updates" => repo_config.index_url_nonfree_updates = Some(interpolated_url),
                 _ => unreachable!(),
             }
         }

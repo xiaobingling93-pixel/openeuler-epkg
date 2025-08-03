@@ -169,6 +169,26 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
                 index_url: security_url.clone(),
             });
         }
+        if let Some(nonfree_url) = &repo_config.index_url_nonfree {
+            all_repos.push(RepoRevise {
+                format: config.format.clone(),
+                arch: config.arch.clone(),
+                channel: config.channel.clone(),
+                repo_name: repo_name.clone(),
+                repodata_name: format!("{}-nonfree", repo_name),
+                index_url: nonfree_url.clone(),
+            });
+        }
+        if let Some(nonfree_updates_url) = &repo_config.index_url_nonfree_updates {
+            all_repos.push(RepoRevise {
+                format: config.format.clone(),
+                arch: config.arch.clone(),
+                channel: config.channel.clone(),
+                repo_name: repo_name.clone(),
+                repodata_name: format!("{}-nonfree-updates", repo_name),
+                index_url: nonfree_updates_url.clone(),
+            });
+        }
     }
 
     log::debug!("get_revise_repos: {:#?}", all_repos);
