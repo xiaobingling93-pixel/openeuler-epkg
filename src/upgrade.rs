@@ -30,6 +30,7 @@ impl PackageManager {
                     true, // Explicitly requested packages are exposed
                     &mut initial_packages_to_process,
                     &mut missing_items_log,
+                    false, // Not in OR group context for upgrade
                 );
             }
 

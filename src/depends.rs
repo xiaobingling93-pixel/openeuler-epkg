@@ -124,26 +124,30 @@ impl PackageManager {
     fn add_one_package_installing(&mut self, pkg_name: &str, depth: u16, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
                                   missing_names: &mut Vec<String>) -> Option<String> {
-        return self.add_one_package_installing_with_arch_spec(pkg_name, None, depth, ebin_flag, packages, missing_names);
+        return self.add_one_package_installing_with_arch_spec(pkg_name, None, depth, ebin_flag, packages, missing_names, false);
     }
 
     pub fn add_one_package_installing_with_arch_spec(&mut self, pkg_name: &str, arch_spec: Option<&str>, candidate_depth: u16, ebin_flag: bool,
                                   packages: &mut HashMap<String, InstalledPackageInfo>,
-                                  missing_names: &mut Vec<String>) -> Option<String> {
-        log::debug!("Attempting to add package '{}' (dependency of a depth {} package) with arch_spec {:?} (ebin_flag: {})", pkg_name, candidate_depth, arch_spec, ebin_flag);
+                                  missing_names: &mut Vec<String>, in_or_group: bool) -> Option<String> {
+        log::debug!("Attempting to add package '{}' (dependency of a depth {} package) with arch_spec {:?} (ebin_flag: {}, in_or_group: {})", pkg_name, candidate_depth, arch_spec, ebin_flag, in_or_group);
 
         match self.map_pkgname2packages(pkg_name) {
             Ok(unfiltered_packages) => {
                 if unfiltered_packages.is_empty() {
                     log::debug!("No packages found for name '{}' by map_pkgname2packages.", pkg_name);
-                    missing_names.push(pkg_name.to_string());
+                    if !in_or_group {
+                        missing_names.push(pkg_name.to_string());
+                    }
                     return None;
                 }
 
                 let arch_filtered_packages = self.filter_packages_by_arch_spec(unfiltered_packages, arch_spec);
                 if arch_filtered_packages.is_empty() {
                     log::debug!("No packages for name '{}' matched architecture specification '{:?}'.", pkg_name, arch_spec);
-                    missing_names.push(format!("{} (no matching arch)", pkg_name));
+                    if !in_or_group {
+                        missing_names.push(format!("{} (no matching arch)", pkg_name));
+                    }
                     return None;
                 }
 
@@ -178,13 +182,17 @@ impl PackageManager {
                     return Some(package_to_add.pkgkey.clone());
                 } else {
                     log::warn!("No suitable package found for '{}' after arch filtering and version selection.", pkg_name);
-                    missing_names.push(format!("{} (version selection failed)", pkg_name));
+                    if !in_or_group {
+                        missing_names.push(format!("{} (version selection failed)", pkg_name));
+                    }
                     return None;
                 }
             },
             Err(e) => {
                 log::warn!("Error mapping package name '{}': {}", pkg_name, e);
-                missing_names.push(pkg_name.to_string());
+                if !in_or_group {
+                    missing_names.push(pkg_name.to_string());
+                }
                 return None;
             }
         }
@@ -383,6 +391,7 @@ impl PackageManager {
                             ebin_flag, // ebin_flag from the requiring context
                             packages_map, // The map to update
                             missing_items_log,
+                            false, // Not in OR group context for direct package lookup
                         ) {
                             log::debug!(
                                 "{}: Package {} successfully added/selected as {}. add_one_package_installing_with_arch_spec handled depth update.",
@@ -412,6 +421,7 @@ impl PackageManager {
         ebin_flag: bool,
         missing_items_log: &mut Vec<String>,
         format: PackageFormat,
+        in_or_group: bool, // New parameter to indicate if we're in an OR group context
     ) -> Result<Option<String>> { // Returns Some(pkgkey) if satisfied, None otherwise
         log::trace!(
             "Resolving single capability item: '{}', depth: {}, ebin_flag: {}, format: {:?}",
@@ -490,6 +500,7 @@ impl PackageManager {
                 ebin_flag,
                 packages_map,
                 missing_items_log,
+                in_or_group, // Pass the OR group context
             ) {
                 log::debug!(
                     "Capability '{}' satisfied by installing/finding first provider '{}' (resolved to pkgkey '{}')",
@@ -514,11 +525,19 @@ impl PackageManager {
             capability_or_pkg_name,
             provider_list_to_check.get(0).map_or("N/A", |s| s.as_str())
         );
-        missing_items_log.push(format!(
-            "{} (could not be resolved/installed, provider list: {:?})",
-            capability_or_pkg_name,
-            provider_list_to_check
-        ));
+        // Only log missing dependencies if we're not in an OR group context
+        // In OR groups, other capabilities might still satisfy the requirement
+        log::debug!("resolve_single_capability_item: in_or_group = {}, capability = {}", in_or_group, capability_or_pkg_name);
+        if !in_or_group {
+            log::debug!("Logging missing dependency: {} (could not be resolved/installed, provider list: {:?})", capability_or_pkg_name, provider_list_to_check);
+            missing_items_log.push(format!(
+                "{} (could not be resolved/installed, provider list: {:?})",
+                capability_or_pkg_name,
+                provider_list_to_check
+            ));
+        } else {
+            log::debug!("NOT logging missing dependency for OR group: {} (could not be resolved/installed, provider list: {:?})", capability_or_pkg_name, provider_list_to_check);
+        }
         Ok(None)
     }
 
@@ -539,6 +558,7 @@ impl PackageManager {
                 ebin_flag_for_explicit_req,
                 &mut missing_items_log,
                 format,
+                false, // Not in an OR group context for top-level resolution
             ); // We check missing_items_log at the end, so direct result of call isn't critical here
         }
 
@@ -831,6 +851,7 @@ impl PackageManager {
                         false,           // ebin_flag is false for dependencies
                         missing_deps_log,
                         format,          // Pass the format
+                        true,            // Indicate we are in an OR group
                     )? {
                         Some(satisfied_by_pkgkey_b) => {
                             // Capability satisfied by pkgkey_b.
