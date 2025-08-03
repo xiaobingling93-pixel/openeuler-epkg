@@ -18,10 +18,7 @@ pub fn deserialize_env_config() -> Result<EnvConfig> {
 pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
     let config_path = crate::dirs::find_env_config_path(&env_name)
         .ok_or_else(|| eyre::eyre!("Environment config not found for: {}", env_name))?;
-    let contents = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read file: {}", config_path.display()))?;
-    let env_config: EnvConfig = serde_yaml::from_str(&contents)
-        .with_context(|| format!("Failed to parse YAML from file: {}", config_path.display()))?;
+    let (env_config, _): (EnvConfig, _) = read_yaml_file(&config_path)?;
     Ok(env_config)
 }
 
@@ -31,7 +28,7 @@ pub fn get_env_config() -> Result<EnvConfig> {
     Ok(env_config().clone())
 }
 
-fn set_channel_config_defaults(cc: &mut ChannelConfig) -> Result<()> {
+pub fn set_channel_config_defaults(cc: &mut ChannelConfig) -> Result<()> {
     // Set default architecture if missing
     if cc.arch.is_empty() {
         cc.arch = config().common.arch.clone();
@@ -40,6 +37,55 @@ fn set_channel_config_defaults(cc: &mut ChannelConfig) -> Result<()> {
     // Handle the data dependencies between channel, distro, and version
     resolve_channel_distro_version(cc)?;
 
+    Ok(())
+}
+
+fn process_channel_config(mut channel_config: ChannelConfig) -> Result<ChannelConfig> {
+    set_channel_config_defaults(&mut channel_config)?;
+    expand_channel_config_urls(&mut channel_config)?;
+
+    // Sort distro_dirs by length once during deserialization
+    channel_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
+
+    // If distro_dirs contains the distro, it's a distro config, move it to the end so that
+    // resolve_mirror_path() will use the distro name as local_subdir
+    if channel_config.distro_dirs.contains(&channel_config.distro) {
+        // Remove the distro from its current position
+        channel_config.distro_dirs.retain(|d| d != &channel_config.distro);
+        // Add it to the end
+        channel_config.distro_dirs.push(channel_config.distro.clone());
+    }
+
+    Ok(channel_config)
+}
+
+pub fn read_yaml_file<T>(file_path: &std::path::Path) -> Result<(T, String)>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let contents = fs::read_to_string(file_path)
+        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+    let config: T = serde_yaml::from_str(&contents)
+        .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))?;
+    Ok((config, contents))
+}
+
+pub fn load_and_process_channel_config(file_path: &std::path::Path, channel_configs: &mut Vec<ChannelConfig>, record_file_info: bool) -> Result<()> {
+    let (mut channel_config, contents): (ChannelConfig, String) = read_yaml_file(file_path)?;
+
+    if record_file_info {
+        // Set the original file name
+        let file_name = file_path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| "unknown")
+            .to_string();
+
+        channel_config.file_data = format!("file_name: {}\n{}", file_name, contents);
+        channel_config.file_name = Some(file_name);
+    }
+
+    let processed_config = process_channel_config(channel_config)?;
+    channel_configs.push(processed_config);
     Ok(())
 }
 
@@ -150,18 +196,7 @@ pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
 
     // Load main channel config
     let file_path = env_root.join("etc/epkg/channel.yaml");
-    let contents = fs::read_to_string(&file_path)
-        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-    let mut channel_config: ChannelConfig = serde_yaml::from_str(&contents)
-        .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))?;
-
-    set_channel_config_defaults(&mut channel_config)?;
-    expand_channel_config_urls(&mut channel_config)?;
-
-    // Sort distro_dirs by length once during deserialization
-    channel_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
-
-    channel_configs.push(channel_config);
+    load_and_process_channel_config(&file_path, &mut channel_configs, false)?;
 
     // Load additional configs from repos.d
     let repos_dir = env_root.join("etc/epkg/repos.d");
@@ -176,18 +211,7 @@ pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
                 }
             }
             if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
-                let contents = fs::read_to_string(&path)
-                    .with_context(|| format!("Failed to read file: {}", path.display()))?;
-                let mut repo_config: ChannelConfig = serde_yaml::from_str(&contents)
-                    .with_context(|| format!("Failed to parse YAML from file: {}", path.display()))?;
-
-                set_channel_config_defaults(&mut repo_config)?;
-                expand_channel_config_urls(&mut repo_config)?;
-
-                // Sort distro_dirs by length once during deserialization
-                repo_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
-
-                channel_configs.push(repo_config);
+                load_and_process_channel_config(&path, &mut channel_configs, false)?;
             }
         }
     }
