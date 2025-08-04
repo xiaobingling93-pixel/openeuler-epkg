@@ -18,7 +18,7 @@ use log;
 pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<std::path::PathBuf>> {
     let mut final_dirs = Vec::new();
     for package_file in package_files {
-        let final_dir = unpack_mv_package(&package_file)
+        let final_dir = unpack_mv_package(&package_file, None)
             .wrap_err_with(|| format!("Failed to unpack package: {}", package_file))?;
         final_dirs.push(final_dir);
     }
@@ -27,7 +27,7 @@ pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<std::path::Path
 
 /// Unpacks a single package and moves it to the final store location
 /// Returns the path to the final directory where the package was unpacked
-pub fn unpack_mv_package(package_file: &str) -> Result<std::path::PathBuf> {
+pub fn unpack_mv_package(package_file: &str, pkgkey: Option<&str>) -> Result<std::path::PathBuf> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = dirs().epkg_cache.join("unpack").join(&temp_name);
@@ -35,7 +35,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<std::path::PathBuf> {
         .wrap_err_with(|| format!("Failed to create temporary directory: {}", store_tmp_dir.display()))?;
 
     // Unpack the package
-    general_unpack_package(Path::new(package_file), &store_tmp_dir)
+    general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey)
         .wrap_err_with(|| format!("Failed to unpack package {} to {}", package_file, store_tmp_dir.display()))?;
 
     // Calculate content-addressable hash
@@ -107,7 +107,7 @@ pub fn unpack_mv_package(package_file: &str) -> Result<std::path::PathBuf> {
 }
 
 /// Generic package unpacking function that detects format and delegates to appropriate handler
-pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let package_file = package_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -123,7 +123,7 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P)
             crate::rpm_pkg::unpack_package(package_file, store_tmp_dir)?
         }
         PackageFormat::Apk => {
-            crate::apk_pkg::unpack_package(package_file, store_tmp_dir)?
+            crate::apk_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         PackageFormat::Pacman => {
             crate::arch_pkg::unpack_package(package_file, store_tmp_dir)?

@@ -1406,7 +1406,7 @@ impl PackageManager {
         let file_path = self.get_package_file_path(pkgkey)?;
 
         // Unpack the package
-        let final_dir = crate::store::unpack_mv_package(&file_path)
+        let final_dir = crate::store::unpack_mv_package(&file_path, Some(pkgkey))
             .with_context(|| format!("Failed to unpack package: {}", file_path))?;
 
         // Get the pkgline from the directory name

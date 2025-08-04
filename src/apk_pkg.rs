@@ -169,7 +169,7 @@ lazy_static! {
 }
 
 /// Unpacks an APK package to the specified directory
-pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let apk_file = apk_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -195,7 +195,7 @@ pub fn unpack_package<P: AsRef<Path>>(apk_file: P, store_tmp_dir: P) -> Result<(
 
     // Create package.txt with improved parsing
     log::debug!("Creating package.txt");
-    create_package_txt(store_tmp_dir)
+    create_package_txt(store_tmp_dir, pkgkey)
         .wrap_err_with(|| format!("Failed to create package.txt for {}", store_tmp_dir.display()))?;
 
     log::debug!("APK unpacking completed successfully");
@@ -240,7 +240,7 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
         };
 
         entries_processed += 1;
-        log::debug!("Processing tar entry #{}: {}", entries_processed, path);
+        log::trace!("Processing tar entry #{}: {}", entries_processed, path);
 
         // Create the target path - for dot files use just the filename, for others preserve path
         let target_path = if path.starts_with(".") {
@@ -315,8 +315,44 @@ pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     Ok(())
 }
 
+/// Handle the case where arch in .PKGINFO and packages.txt adisagree
+fn fixup_inconsistent_arch(raw_fields: &mut HashMap<String, Vec<String>>, pkgkey: Option<&str>) {
+    // Handle arch field: if arch is "noarch" and we have a pkgkey, get the correct arch from repository
+    if pkgkey.is_none() {
+        log::debug!("No pkgkey provided, skipping arch fixup");
+        return;
+    }
+
+    let pkgkey = pkgkey.unwrap();
+    log::debug!("Processing pkgkey: {}", pkgkey);
+
+    let arch = match crate::package::pkgkey2arch(pkgkey) {
+        Ok(arch) => {
+            log::debug!("Extracted arch '{}' from pkgkey '{}'", arch, pkgkey);
+            arch
+        },
+        Err(e) => {
+            log::warn!("Failed to extract arch from pkgkey '{}': {}", pkgkey, e);
+            return;
+        }
+    };
+
+    if let Some(arch_values) = raw_fields.get("arch") {
+        if let Some(arch_value) = arch_values.first() {
+            if arch_value != &arch {
+                log::debug!("Warning: using arch '{}' instead of '{}' for {}", arch, arch_value, pkgkey);
+                // Replace the arch value with the correct arch from pkgkey
+                raw_fields.insert("arch".to_string(), vec![arch.clone()]);
+            }
+            return;
+        }
+    }
+
+    log::debug!("Warning: no arch field found in .PKGINFO");
+}
+
 /// Parses the .PKGINFO file with improved validation and creates package.txt
-pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let pkginfo_path = store_tmp_dir.join("info/apk/.PKGINFO");
 
@@ -359,6 +395,8 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             log::warn!("Invalid PKGINFO line format at line {}: {}", line_num + 1, line);
         }
     }
+
+    fixup_inconsistent_arch(&mut raw_fields, pkgkey);
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
     let mut package_fields: Vec<(String, String)> = Vec::new();

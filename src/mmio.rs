@@ -451,6 +451,24 @@ pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
     Ok(packages)
 }
 
+/// Maps a pkgkey to a Package by extracting the package name and finding the specific package
+pub fn map_pkgkey2package(pkgkey: &str) -> Result<Package> {
+    // Extract package name from pkgkey
+    let pkgname = crate::package::pkgkey2pkgname(pkgkey)?;
+
+    // Get all packages with this name
+    let packages = map_pkgname2packages(&pkgname)?;
+
+    // Find the specific package matching the pkgkey
+    for package in packages {
+        if package.pkgkey == pkgkey {
+            return Ok(package);
+        }
+    }
+
+    Err(eyre::eyre!("Package not found for pkgkey: {}", pkgkey))
+}
+
 pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
     // First, ensure provide2pkgnames data is loaded
     ensure_provide2pkgnames_loaded()?;

@@ -1,16 +1,11 @@
 use std::process::exit;
 use std::collections::HashMap;
 use std::collections::HashSet;
-
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use color_eyre::Result;
-use color_eyre::eyre;
-use log;
 use crate::models::{config, *};
-
 use crate::parse_requires::*;
-use crate::package;
 use crate::version;
 
 /*
@@ -975,25 +970,25 @@ impl PackageManager {
 
     pub fn load_package_info(&mut self, pkgkey: &str) -> Result<Arc<Package>> {
         log::trace!("Loading package info for '{}'", pkgkey);
-        // Try to find by pkgkey first
+        // Try to find in cache first
         if let Some(package) = self.pkgkey2package.get(pkgkey) {
             log::trace!("Found cached package info for '{}'", pkgkey);
             return Ok(Arc::clone(package));
         }
 
-        // Extract package name from pkgkey and try to load all packages with that name
-        log::debug!("Package '{}' not in cache, extracting package name", pkgkey);
-        let pkgname = package::pkgkey2pkgname(pkgkey)?;
-        self.map_pkgname2packages(&pkgname)?;
-
-        // Try to find the package again after loading
-        if let Some(package) = self.pkgkey2package.get(pkgkey) {
-            log::debug!("Found package '{}' after loading", pkgkey);
-            return Ok(Arc::clone(package));
+        // Query info in packages.txt
+        log::debug!("Package '{}' not in cache, loading from repository", pkgkey);
+        match crate::mmio::map_pkgkey2package(pkgkey) {
+            Ok(package) => {
+                let arc_package = Arc::new(package);
+                // Cache the package for future use
+                self.pkgkey2package.insert(pkgkey.to_string(), Arc::clone(&arc_package));
+                Ok(arc_package)
+            }
+            Err(e) => {
+                Err(e)
+            }
         }
-
-        log::warn!("Package not found: {}", pkgkey);
-        Err(eyre::eyre!("Package not found: {}", pkgkey))
     }
 
 }
