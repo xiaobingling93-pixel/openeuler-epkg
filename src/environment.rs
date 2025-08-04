@@ -427,32 +427,55 @@ impl PackageManager {
     fn create_default_environment_config(&self, _name: &str) -> Result<(EnvConfig, Vec<ChannelConfig>)> {
         // Initialize channel from command line option or default
         let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
+
+        // Split channel into channel_name and version_name
+        let (channel_name, version_name) = if let Some(colon_pos) = channel.find(':') {
+            let (name, version) = channel.split_at(colon_pos);
+            (name.to_string(), Some(version[1..].to_string()))
+        } else {
+            (channel.clone(), None)
+        };
+
         let epkg_src = get_epkg_src_path()?;
-        let mut src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", channel));
-        if !src_channel_yaml.exists() {
-            let repo_name = channel.split(":").next().unwrap_or(&channel);
-            src_channel_yaml = epkg_src.join("channel").join(format!("{}.yaml", repo_name));
+        let mut channel_configs = Vec::new();
+
+        // Load main channel config
+        let channel_path = epkg_src.join("channel");
+        let mut src_channel_yaml_path = channel_path.join(format!("{}.yaml", channel));
+        if !src_channel_yaml_path.exists() {
+            src_channel_yaml_path = channel_path.join(format!("{}.yaml", channel_name));
         }
-        if !src_channel_yaml.exists() {
+        if !src_channel_yaml_path.exists() {
             return Err(eyre::eyre!("Channel not found: '{}'", channel));
         }
 
-        // Copy the source channel config and apply version override if specified
-        let mut contents = fs::read_to_string(&src_channel_yaml)
-            .with_context(|| format!("Failed to read channel config: {}", src_channel_yaml.display()))?;
-        let mut channel_config: ChannelConfig = serde_yaml::from_str(&contents)
-            .with_context(|| format!("Failed to parse channel config: {}", src_channel_yaml.display()))?;
+        // Load and process main channel config with record_file_info=true
+        crate::io::load_and_process_channel_config(&src_channel_yaml_path, &mut channel_configs, true)?;
 
-        // If channel contains a version suffix (e.g., "alpine:3.21"), extract and set the version
-        if let Some(version) = channel.split(':').nth(1) {
-            channel_config.version = version.to_string();
-            contents = self.update_version_in_contents(&contents, version);
+        // Apply version override if specified
+        if let Some(version) = version_name {
+            if let Some(main_config) = channel_configs.first_mut() {
+                main_config.version = version.clone();
+                // Update the file_data with the new version
+                let contents = self.update_version_in_contents(&main_config.file_data, &version);
+                main_config.file_data = contents;
+            }
         }
 
-        // Store original file data
-        channel_config.file_data = contents;
+        // Load additional repo configs
+        for repo in &config().env.repos {
+            let mut src_repo_yaml_path = channel_path.join(format!("{}-{}.yaml", channel_name, repo));
+            if !src_repo_yaml_path.exists() {
+                // Try without channel prefix
+                src_repo_yaml_path = channel_path.join(format!("{}.yaml", repo));
+            }
+            if !src_repo_yaml_path.exists() {
+                return Err(eyre::eyre!("Repo config not found in {} or {}-{}.yaml", src_repo_yaml_path.display(), channel_name, repo));
+            }
+            crate::io::load_and_process_channel_config(&src_repo_yaml_path, &mut channel_configs, true)?;
+        }
 
-        Ok((EnvConfig::default(), vec![channel_config]))
+        Ok((EnvConfig::default(), channel_configs))
     }
 
     /// Update version line in YAML contents

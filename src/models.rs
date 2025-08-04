@@ -629,6 +629,8 @@ pub struct EnvOptions {
     pub pure: bool,
     #[serde(default)]
     pub stack: bool,
+    #[serde(default)]
+    pub repos: Vec<String>,
 
     #[serde(skip)]
     pub env_path: Option<String>,

@@ -347,7 +347,8 @@ OPTIONS:
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
                 .arg(arg!(--version <VERSION>).help(format!("Version of epkg to install [default: {}]", DEFAULT_VERSION)))
-                .arg(arg!(-c --channel <CHANNEL> "Set the channel for the main environment"))
+                .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
+                .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                 .arg(
                     arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
                         .default_value("auto")
@@ -367,7 +368,8 @@ OPTIONS:
                     Command::new("create")
                         .about("Create a new environment")
                         .arg(arg!(<ENV_NAME> "Name of the new environment"))
-                        .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment"))
+                        .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
+                        .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                         .arg(arg!(-P --public "Usable by all users in the machine"))
                         .arg(arg!(-p --path <PATH> "Specify custom path for the environment"))
                         .arg(arg!(-i --import <FILE> "Import from config file"))
@@ -712,6 +714,9 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
     if let Some(channel) = sub_matches.get_one::<String>("channel") {
         config.env.channel = Some(channel.to_string());
     }
+    if let Some(repos) = sub_matches.get_many::<String>("repo") {
+        config.env.repos = repos.map(|s| s.to_string()).collect();
+    }
 
     Ok(())
 }
@@ -724,6 +729,9 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             }
             if let Some(channel) = sub_matches.get_one::<String>("channel") {
                 config.env.channel = Some(channel.to_string());
+            }
+            if let Some(repos) = sub_matches.get_many::<String>("repo") {
+                config.env.repos = repos.map(|s| s.to_string()).collect();
             }
             if sub_matches.contains_id("public") {
                 config.env.public = sub_matches.get_flag("public");
