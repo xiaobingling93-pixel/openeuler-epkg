@@ -215,7 +215,7 @@ lazy_static! {
     // No '=', since rpm_repo.rs and rpm_pkg.rs will expand EQ or EQUAL to ' = '.
     static ref RPM_OPERATOR_REGEX:       Regex = Regex::new(r"(>=|<=|==|!=|>|<|~=)").unwrap();
 
-    static ref ARCHLINUX_OPERATOR_REGEX: Regex = Regex::new(r"(>=|<=|==|!=|>|<|=|~=)").unwrap();
+    static ref ARCHLINUX_OPERATOR_REGEX: Regex = Regex::new(r"(>=|<=|==|!=|>|<|=~|=|~=|~)").unwrap();
     static ref ARCHLINUX_COMMENT_REGEX: Regex = Regex::new(r"\s*: .*").unwrap();
     static ref PYTHON_COMMENT_REGEX: Regex = Regex::new(r"\s*# .*").unwrap();
 }
@@ -555,6 +555,8 @@ fn parse_operator(op: &str) -> Option<Operator> {
         "=" | "==" => Some(Operator::VersionEqual),
         "!=" => Some(Operator::VersionNotEqual),
         "~=" => Some(Operator::VersionCompatible),
+        "=~" => Some(Operator::VersionCompatible),   // https://wiki.alpinelinux.org/wiki/Alpine_Package_Keeper#Package_pinning apk add 'asterisk=~1.6'
+        "~"  => Some(Operator::VersionCompatible),   // https://wiki.alpinelinux.org/wiki/APKBUILD_Reference ignores revision part
         "=*" => Some(Operator::VersionEqualStar),    // for use by unit test
         "!*" => Some(Operator::VersionNotEqualStar), // for use by unit test
         "if" => Some(Operator::IfInstall),
