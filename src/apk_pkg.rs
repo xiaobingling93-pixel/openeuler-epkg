@@ -221,6 +221,10 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
 
     let mut entries_processed = 0;
 
+    // Change to the target directory before extracting to fix hard link issues
+    let original_dir = std::env::current_dir()?;
+    std::env::set_current_dir(store_tmp_dir.join("fs"))?;
+
     // Process tar entries
     for entry_result in archive.entries()? {
         let mut entry = match entry_result {
@@ -251,8 +255,8 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
                 .unwrap_or_else(|| path.clone());
             store_tmp_dir.join("info/apk").join(file_name)
         } else {
-            // For regular files, preserve the full path
-            store_tmp_dir.join("fs").join(&path)
+            // For regular files, preserve the full path under fs/
+            Path::new(&path).to_path_buf()
         };
 
         // Ensure parent directory exists
@@ -269,6 +273,9 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
             continue;
         }
     }
+
+    // Restore original working directory
+    std::env::set_current_dir(original_dir)?;
 
     log::debug!("Successfully unpacked APK package with {} tar entries", entries_processed);
     Ok(())
