@@ -139,7 +139,7 @@ fn collect_user_personal_plan(home_dir: &Path) -> Result<DeinitPlan> {
     Ok(plan)
 }
 
-fn get_all_users() -> Result<Vec<(String, PathBuf)>> {
+pub fn get_all_users() -> Result<Vec<(String, PathBuf)>> {
     let mut users = Vec::new();
 
     // Try to get all users from /etc/passwd

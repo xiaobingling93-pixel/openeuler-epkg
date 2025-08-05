@@ -461,6 +461,7 @@ pub enum EpkgCommand {
     Convert,
     Run,
     Search,
+    Gc,
 }
 
 impl From<&str> for EpkgCommand {
@@ -484,6 +485,7 @@ impl From<&str> for EpkgCommand {
             "convert" => EpkgCommand::Convert,
             "run" => EpkgCommand::Run,
             "search" => EpkgCommand::Search,
+            "gc" => EpkgCommand::Gc,
             _ => EpkgCommand::None, // Default for empty or unrecognized strings
         }
     }
@@ -675,6 +677,7 @@ pub struct EPKGDirs {
     pub epkg_store: PathBuf,
     pub epkg_cache: PathBuf,
     pub epkg_downloads_cache: PathBuf,
+    pub epkg_channel_cache: PathBuf,
 }
 
 #[allow(dead_code)]

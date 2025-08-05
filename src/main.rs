@@ -38,6 +38,7 @@ mod scriptlets;
 mod run;
 mod info;
 mod search;
+mod gc;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;
@@ -105,6 +106,7 @@ fn main() -> Result<()> {
         Some(("convert",    sub_matches))  =>  package_manager.command_convert(&sub_matches)?,
         Some(("run",        sub_matches))  =>  package_manager.command_run(sub_matches)?,
         Some(("search",     sub_matches))  =>  package_manager.command_search(sub_matches)?,
+        Some(("gc",         sub_matches))  =>  package_manager.command_gc(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
 
@@ -534,6 +536,12 @@ OPTIONS:
                 .arg(arg!(-i --"ignore-case" "Case-insensitive search"))
                 .arg(arg!(<PATTERN> "Pattern to search for"))
         )
+        .subcommand(
+            Command::new("gc")
+                .about("Garbage collection - clean up unused cache and store files")
+                .arg(arg!(--"old-downloads" <DAYS> "Remove download files older than DAYS (0 = all files)")
+                    .value_parser(clap::value_parser!(u64)))
+        )
         .get_matches()
 }
 
@@ -640,7 +648,7 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
     config.subcommand = EpkgCommand::from(matches.subcommand_name().unwrap_or(""));
     if config.subcommand != EpkgCommand::Init {
-        config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg").exists();
+        config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/cache").exists();
     }
 
     match matches.subcommand() {
@@ -1237,6 +1245,12 @@ impl PackageManager {
         }
 
         search::search_repo_cache(&mut options)?;
+        Ok(())
+    }
+
+    fn command_gc(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
+        gc::gc_epkg(old_downloads_days)?;
         Ok(())
     }
 

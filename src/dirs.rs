@@ -48,6 +48,7 @@ impl EPKGDirs {
             epkg_store: store_root,
             epkg_cache: cache_root.clone(),
             epkg_downloads_cache: cache_root.join("downloads"),
+            epkg_channel_cache: cache_root.join("channel"),
         })
     }
 }
@@ -116,7 +117,8 @@ pub fn get_env_base_path(env_name: &str, public: bool) -> Result<PathBuf> {
 pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
     // Check private env first
     let private_env_base = dirs().home_epkg.join("envs").join(env_name);
-    if private_env_base.exists() {
+    // Checking $private_env_base is not enough: `epkg run` could mkdir $private_env_base/opt_real/
+    if private_env_base.join("etc/epkg/env.yaml").exists() {
         return Some(private_env_base);
     }
 
@@ -368,4 +370,14 @@ pub fn get_username() -> Result<String> {
 
     // If all else fails, return a descriptive error
     Err(eyre::eyre!("Could not determine username. Please ensure either USER or USERNAME environment variables are set. This is required to set up the public environments directory."))
+}
+
+/// Get the path to user's private environments directory
+pub fn user_private_envs(user_home: &str) -> PathBuf {
+    PathBuf::from(user_home).join(".epkg/envs")
+}
+
+/// Get the path to user's public environments directory
+pub fn user_public_envs(username: &str) -> PathBuf {
+    dirs().opt_epkg.join("envs").join(username)
 }
