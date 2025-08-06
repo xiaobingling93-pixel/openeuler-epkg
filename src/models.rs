@@ -247,9 +247,17 @@ pub struct GenerationCommand {
     pub action: String,
     pub command_line: String,
     #[serde(default)]
-    pub new_packages: Vec<String>,
+    pub fresh_installs: Vec<String>,
     #[serde(default)]
-    pub del_packages: Vec<String>,
+    pub upgrades_new: Vec<String>,
+    #[serde(default)]
+    pub upgrades_old: Vec<String>,
+    #[serde(default)]
+    pub old_removes: Vec<String>,
+    #[serde(default)]
+    pub new_exposes: Vec<String>,
+    #[serde(default)]
+    pub del_exposes: Vec<String>,
 }
 
 #[allow(dead_code)]

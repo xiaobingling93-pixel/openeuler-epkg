@@ -638,6 +638,10 @@ pub fn user_prompt_and_confirm() -> Result<bool> {
         return Ok(false);
     }
 
+    if models::config().common.assume_yes {
+        return Ok(true);
+    }
+
     print!("\nDo you want to continue? [Y/n] ");
     io::stdout().flush()?;
     let mut user_input = String::new();
@@ -759,4 +763,18 @@ pub fn remove_any_existing_file(path: &Path, rm_dir: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Format bytes into human-readable size string
+pub fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    match bytes {
+        0..KB => format!("{} B", bytes),
+        KB..MB => format!("{:.1} KB", bytes as f64 / KB as f64),
+        MB..GB => format!("{:.1} MB", bytes as f64 / MB as f64),
+        _ => format!("{:.1} GB", bytes as f64 / GB as f64),
+    }
 }

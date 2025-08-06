@@ -562,6 +562,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
         println!("epkg version {}", env!("CARGO_PKG_VERSION"));
         exit(0);
     }
+
     let mut config: EPKGConfig = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
@@ -611,17 +612,32 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
         config.common.ignore_missing    = matches.get_flag("ignore-missing");
     }
 
+    let args: Vec<String> = std::env::args().collect();
+    let command_line = if args.len() > 1 {
+        // Remove program path and join the rest
+        "epkg ".to_owned() + &args[1..].join(" ")
+    } else {
+        String::new()
+    };
+    config.command_line = command_line;
+    config.subcommand = EpkgCommand::from(matches.subcommand_name().unwrap_or(""));
+    if config.subcommand != EpkgCommand::Init {
+        config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/cache").exists();
+    }
+
     // Parse new common options
-    if let Some(metadata_expire) = matches.get_one::<i32>("metadata-expire") {
+    if config.subcommand == EpkgCommand::Remove ||
+        config.subcommand == EpkgCommand::Restore {
+        config.common.metadata_expire = 0;  // no auto update
+    } else if let Some(metadata_expire) = matches.get_one::<i32>("metadata-expire") {
         config.common.metadata_expire = *metadata_expire;
     }
+
     if let Some(proxy) = matches.get_one::<String>("proxy") {
         config.common.proxy = proxy.to_string();
     }
     // Setup parallel processing parameters
     setup_parallel_params(&mut config, matches);
-
-    config.command_line             = std::env::args().collect::<Vec<String>>().join(" ");
 
     Ok(config)
 }
@@ -646,11 +662,6 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
 }
 
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
-    config.subcommand = EpkgCommand::from(matches.subcommand_name().unwrap_or(""));
-    if config.subcommand != EpkgCommand::Init {
-        config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/cache").exists();
-    }
-
     match matches.subcommand() {
         Some(("deinit",     sub_matches))  =>  parse_options_deinit(&mut config, sub_matches).expect("Failed to parse deinit options"),
         Some(("init",       sub_matches))  =>  parse_options_init(&mut config, sub_matches).expect("Failed to parse init options"),
@@ -1070,7 +1081,6 @@ impl PackageManager {
                 }
             }
         } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            self.fork_on_suid()?;
             self.sync_channel_metadata()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.install_packages(packages_vec)?;
@@ -1079,7 +1089,6 @@ impl PackageManager {
     }
 
     fn command_upgrade(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.fork_on_suid()?;
         self.sync_channel_metadata()?;
 
         let package_names: Vec<String> = sub_matches
@@ -1092,8 +1101,6 @@ impl PackageManager {
 
     fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            self.fork_on_suid()?;
-            self.sync_channel_metadata()?;
             let packages_vec: Vec<String> = package_specs.cloned().collect();
             self.remove_packages(packages_vec)?;
         }
@@ -1106,20 +1113,20 @@ impl PackageManager {
 
     fn command_restore(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(rollback_id) = sub_matches.get_one::<i32>("GEN_ID") {
+            self.sync_channel_metadata()?;
             self.rollback_history(*rollback_id)?;
         }
         Ok(())
     }
 
     fn command_update(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.fork_on_suid()?;
         self.sync_channel_metadata()?;
         Ok(())
     }
 
     fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(_) = sub_matches.subcommand_matches("list") {
-            self.fork_on_suid()?;
+            self.fork_on_suid()?;  // to be removed
             crate::repo::list_repos()?;
         }
         Ok(())

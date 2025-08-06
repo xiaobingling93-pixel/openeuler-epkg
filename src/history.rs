@@ -1,12 +1,67 @@
 use std::fs;
 use std::path::PathBuf;
 use std::os::unix::fs::symlink;
-use color_eyre::eyre::{self, eyre, Result, WrapErr};
+use color_eyre::eyre::{self, Result, WrapErr};
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
+use crate::install::InstallationPlan;
+use std::collections::HashMap;
 
 impl PackageManager {
+
+    /// Creates an InstallationPlan by diffing two generations' InstalledPackageInfo.
+    /// This is used for rollback operations to determine what packages need to be
+    /// added/removed to restore a previous generation state.
+    pub fn create_rollback_plan(&self,
+                                mut current_packages: HashMap<String, InstalledPackageInfo>,
+                                mut target_packages: HashMap<String, InstalledPackageInfo>) -> InstallationPlan {
+        let mut plan = InstallationPlan::default();
+
+        // Track additional exposure changes for packages that exist in both generations
+        crate::install::track_additional_exposure_changes(
+            &mut plan,
+            &target_packages,
+            &current_packages,
+        );
+
+        // Find packages that exist in both collections and remove them as duplicates
+        let mut duplicate_packages = std::collections::HashSet::new();
+
+        for (pkgkey, _pkg_info) in &target_packages {
+            if current_packages.contains_key(pkgkey) {
+                duplicate_packages.insert(pkgkey.clone());
+            }
+        }
+
+        // Remove duplicates from both collections
+        for pkgkey in &duplicate_packages {
+            current_packages.remove(pkgkey);
+            target_packages.remove(pkgkey);
+        }
+
+        // Now classify remaining packages using find_upgrade_target()
+        for (pkgkey, pkg_info) in &target_packages {
+            // Package exists in both filtered collections - check if it's an upgrade
+            let (is_upgrade, old_pkgkey) = crate::install::find_upgrade_target(pkgkey, pkg_info, &current_packages);
+            if is_upgrade {
+                // Different versions - this is an upgrade
+                plan.upgrades_old.insert(old_pkgkey.clone(), current_packages[&old_pkgkey].clone());
+                plan.upgrades_new.insert(pkgkey.clone(), pkg_info.clone());
+                current_packages.remove(pkgkey);
+            } else {
+                // This package exists in target but not in current - needs to be installed
+                plan.fresh_installs.insert(pkgkey.clone(), pkg_info.clone());
+            }
+        }
+
+        plan.old_removes = current_packages;
+
+        // Auto-populate expose plan based on rollback actions
+        crate::PackageManager::auto_populate_expose_plan(&mut plan);
+
+        plan
+    }
 
     pub fn get_current_generation_id(&mut self) -> Result<u32> {
         let generations_root = crate::dirs::get_default_generations_root()?;
@@ -68,16 +123,31 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn record_history(&mut self, new_generation_path: &PathBuf, action: &str, new_packages: Vec<String>, del_packages: Vec<String>) -> Result<()> {
+    pub fn record_history(&mut self, new_generation_path: &PathBuf, plan: Option<&crate::install::InstallationPlan>) -> Result<()> {
         let command_json = new_generation_path.join("command.json");
 
-        let command = GenerationCommand {
+        let mut command = GenerationCommand {
             timestamp: OffsetDateTime::now_local()?.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
-            action: action.to_string(),
-            new_packages,
-            del_packages,
+            action: "Create".to_string(),
             command_line: config().command_line.to_string(),
+            fresh_installs: Vec::new(),
+            upgrades_new: Vec::new(),
+            upgrades_old: Vec::new(),
+            old_removes: Vec::new(),
+            new_exposes: Vec::new(),
+            del_exposes: Vec::new(),
         };
+
+        // If an InstallationPlan is provided, populate the command with its members
+        if let Some(plan) = plan {
+            command.action = format!("{:?}", config().subcommand);
+            command.fresh_installs = plan.fresh_installs.keys().cloned().collect();
+            command.upgrades_new = plan.upgrades_new.keys().cloned().collect();
+            command.upgrades_old = plan.upgrades_old.keys().cloned().collect();
+            command.old_removes = plan.old_removes.keys().cloned().collect();
+            command.new_exposes = plan.new_exposes.keys().cloned().collect();
+            command.del_exposes = plan.del_exposes.keys().cloned().collect();
+        }
 
         let json = serde_json::to_string_pretty(&command)?;
         fs::write(&command_json, json)?;
@@ -86,9 +156,9 @@ impl PackageManager {
     }
 
     pub fn print_history(&mut self) -> Result<()> {
-        println!("{}  {} env history  {}", "-".repeat(50), config().common.env, "-".repeat(50));
-        println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}", "id", "timestamp", "action", "new_packages", "del_packages", "command line");
-        println!("{:-<3}-+-{:-<26}-+-{:-<10}-+-{:-<12}-+-{:-<12}-+-{:-<40}", "", "", "", "", "", "");
+        println!("{}  ENVIRONMENT HISTORY  {}", "_".repeat(33), "_".repeat(33));
+        println!("{:<3} | {:<26} | {:<8} | {:<8} | {}", "id", "timestamp", "action", "packages", "command line");
+        println!("{:-<3}-+-{:-<26}-+-{:-<8}-+-{:-<8}-+-{:-<32}", "", "", "", "", "");
 
         let generations_root = crate::dirs::get_default_generations_root()?;
         let mut history_entries: Vec<(u32, GenerationCommand)> = Vec::new();
@@ -131,12 +201,29 @@ impl PackageManager {
         }
 
         for (id, command) in history_entries {
-            println!("{:<3} | {:<26} | {:<10} | {:<12} | {:<12} | {}",
+            let mut package_changes = Vec::new();
+
+            if command.fresh_installs.len() > 0 {
+                package_changes.push(format!("+{}", command.fresh_installs.len()));
+            }
+            if command.upgrades_new.len() > 0 {
+                package_changes.push(format!("^{}", command.upgrades_new.len()));
+            }
+            if command.old_removes.len() > 0 {
+                package_changes.push(format!("-{}", command.old_removes.len()));
+            }
+
+            let package_counts = if package_changes.is_empty() {
+                "".to_string()
+            } else {
+                package_changes.join(" ")
+            };
+
+            println!("{:<3} | {:<26} | {:<8} | {:<8} | {}",
                 id,
                 command.timestamp,
                 command.action,
-                command.new_packages.len(),
-                command.del_packages.len(),
+                package_counts,
                 command.command_line
             );
         }
@@ -171,95 +258,11 @@ impl PackageManager {
 
         // Load current and rollback installed-packages.json
         let current_packages = self.read_installed_packages(&config().common.env, current_generation_id)?;
-        let rollback_packages = self.read_installed_packages(&config().common.env, target_id)?;
+        let target_packages = self.read_installed_packages(&config().common.env, target_id)?;
 
-        // Calculate packages to add/remove
-        let new_packages: Vec<(String, bool)> = rollback_packages.keys()
-            .filter(|name| !current_packages.contains_key(*name))
-            .map(|name| (name.clone(), rollback_packages[name].ebin_exposure))
-            .collect();
-        let del_packages: Vec<String> = current_packages.keys()
-            .filter(|name| !rollback_packages.contains_key(*name))
-            .cloned()
-            .collect();
-
-        // Print rollback information
-        println!("{:-^100}", "  Rollback informaton  ");
-        println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}", "action", "hash", "pkg", "version", "release", "dist");
-        println!("{:-<6}-+-{:-<32}-+-{:-<20}-+-{:-<10}-+-{:-<7}-+-{:-<11}", "", "", "", "", "", "");
-        for pkg in &del_packages {
-            let parts: Vec<&str> = pkg.split("__").collect();
-            if parts.len() >= 4 {
-                let dist = parts[3].split('.').next().unwrap_or("");
-                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}",
-                    "del", parts[0], parts[1], parts[2], dist, parts[3]);
-            }
-        }
-        for (pkg, _) in &new_packages {
-            let parts: Vec<&str> = pkg.split("__").collect();
-            if parts.len() >= 4 {
-                let dist = parts[3].split('.').next().unwrap_or("");
-                println!("{:<6} | {:<32} | {:<20} | {:<10} | {:<7} | {}",
-                    "new", parts[0], parts[1], parts[2], dist, parts[3]);
-            }
-        }
-
-        // Create a new generation for this rollback operation
-        let new_generation = self.create_new_generation()?;
-        let store_root = dirs().epkg_store.clone();
-        let env_root = crate::dirs::get_default_env_root()?;
-
-        // Apply package changes directly to FHS directories at root level
-        // Step1: Unlink old packages
-        for pkgkey in &del_packages {
-            let pkgline = current_packages.get(pkgkey)
-                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
-                .pkgline.clone();
-            let fs_dir = store_root.join(pkgline).join("fs");
-            self.unlink_package(&fs_dir, &env_root)?;
-        }
-
-        // Step2: Link new packages
-        for (pkgkey, _) in &new_packages {
-            let pkgline = rollback_packages.get(pkgkey)
-                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
-                .pkgline.clone();
-            let fs_dir = store_root.join(pkgline).join("fs");
-            self.link_package(&fs_dir, &env_root)?;
-        }
-
-        // Step3: Expose new packages
-        for (pkgkey, ebin_exposure) in &new_packages {
-            let pkgline = rollback_packages.get(pkgkey)
-                .ok_or_else(|| eyre!("Package not found: {}", pkgkey))?
-                .pkgline.clone();
-            let fs_dir = store_root.join(pkgline).join("fs");
-            if *ebin_exposure {
-                let links = self.expose_package(&fs_dir, &env_root)
-                    .with_context(|| format!("Failed to expose package {} during rollback", pkgkey))?;
-
-                // self.installed_packages should have been reloaded from the rollback generation's JSON by now.
-                if let Some(package_info_mut) = self.installed_packages.get_mut(pkgkey) {
-                    package_info_mut.ebin_links = links;
-                } else {
-                    log::warn!("Rollback: pkgkey '{}' from new_packages (to be exposed) not found in self.installed_packages after loading rollback state. Ebin links not stored.", pkgkey);
-                }
-            }
-        }
-
-        // Copy rollback generation's installed-packages.json to current generation
-        let rollback_json = rollback_generation.join("installed-packages.json");
-        fs::copy(&rollback_json, new_generation.join("installed-packages.json"))?;
-
-        // Record history
-        self.record_history(&new_generation, "rollback", new_packages.iter().map(|(name, _)| name.clone()).collect(), del_packages)?;
-
-        // Last step: update current symlink to point to the new generation
-        self.update_current_generation_symlink(new_generation)?;
-
-        println!("Rollback success!");
-
-        Ok(())
+        // Create InstallationPlan by diffing the two generations
+        let plan = self.create_rollback_plan(current_packages, target_packages);
+        self.execute_installation_plan(plan)
     }
 
 }

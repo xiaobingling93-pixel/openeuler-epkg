@@ -323,7 +323,7 @@ impl PackageManager {
             fs::write(installed_packages, "{\n}")?;
 
             // Record the environment creation in command history
-            self.record_history(&gen_1_dir, "create", Vec::new(), Vec::new())?;
+            self.record_history(&gen_1_dir, None)?;
         }
 
         Ok(())
@@ -392,12 +392,9 @@ impl PackageManager {
         let config_contents = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path))?;
 
-        // Parse environment config
-        let env_config: EnvConfig = serde_yaml::from_str(&config_contents)
-            .with_context(|| format!("Failed to parse env config from file: {}", config_path))?;
-
         // Parse channel configs
         let mut channel_configs = Vec::new();
+        let mut env_config: Option<EnvConfig> = None;
 
         // Split the content by "---" to handle multiple YAML documents
         let documents: Vec<&str> = config_contents.split("---").collect();
@@ -408,8 +405,10 @@ impl PackageManager {
                 continue;
             }
 
-            // Skip first document as it's already parsed as EnvConfig
+            // Parse first document as EnvConfig
             if i == 0 {
+                env_config = Some(serde_yaml::from_str(doc)
+                    .with_context(|| format!("Failed to parse env config from file: {}", config_path))?);
                 continue;
             }
 
@@ -421,6 +420,7 @@ impl PackageManager {
             }
         }
 
+        let env_config = env_config.ok_or_else(|| eyre::eyre!("No environment config found in file: {}", config_path))?;
         Ok((env_config, channel_configs))
     }
 
@@ -932,7 +932,7 @@ impl PackageManager {
 
         // Get installed packages
         let current_gen = fs::read_link(generations_root.join("current"))?;
-        let installed_packages_path = current_gen.join("installed-packages.json");
+        let installed_packages_path = generations_root.join(current_gen).join("installed-packages.json");
 
         if installed_packages_path.exists() {
             let contents = fs::read_to_string(&installed_packages_path)?;
@@ -942,15 +942,8 @@ impl PackageManager {
             return Err(eyre::eyre!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
         }
 
-        // Serialize each config separately
-        let channel_configs = crate::models::channel_configs();
-        let env_yaml = serde_yaml::to_string(&env_config)?;
-
-        // Start with environment config
-        let mut combined_yaml = env_yaml;
-
-        // Build combined YAML with channel configs
-        combined_yaml = self.build_combined_yaml(combined_yaml, &channel_configs, &env_config)?;
+        let mut combined_yaml = serde_yaml::to_string(&env_config)?;
+        combined_yaml = self.build_combined_yaml(combined_yaml, &env_config)?;
 
         // Write to file or stdout
         if let Some(output_path) = output {
@@ -964,21 +957,16 @@ impl PackageManager {
     }
 
     // Its output will be used by import_environment_from_file(), see its comment for the content format.
-    fn build_combined_yaml(&self, mut combined_yaml: String, channel_configs: &[ChannelConfig], env_config: &EnvConfig) -> Result<String> {
-        // Add main channel config with separator
-        if !channel_configs.is_empty() {
-            let channel_yaml = serde_yaml::to_string(&channel_configs[0])?;
-            // Skip leading "---" if present
-            let channel_yaml = if channel_yaml.starts_with("---\n") {
-                &channel_yaml[4..]
-            } else {
-                &channel_yaml
-            };
-            combined_yaml.push_str(&format!("\n---\n{}", channel_yaml));
+    fn build_combined_yaml(&self, mut combined_yaml: String, env_config: &EnvConfig) -> Result<String> {
+        let env_root = PathBuf::from(&env_config.env_root);
+        let channel_file = env_root.join("etc/epkg/channel.yaml");
+        if channel_file.exists() {
+            let contents = fs::read_to_string(channel_file)?;
+            // Add main channel config with separator
+            combined_yaml.push_str(&format!("\n---\n{}", contents));
         }
 
         // Add additional channel configs from repos.d
-        let env_root = PathBuf::from(&env_config.env_root);
         let repos_dir = env_root.join("etc/epkg/repos.d");
         if repos_dir.exists() {
             for entry in fs::read_dir(repos_dir)? {

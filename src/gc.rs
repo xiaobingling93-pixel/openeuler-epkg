@@ -6,16 +6,16 @@ use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use crate::models::*;
 use crate::dirs::{*, user_private_envs, user_public_envs};
-use crate::deinit::get_all_users;
-use crate::io::read_yaml_file;
-use crate::utils::user_prompt_and_confirm;
+use crate::deinit;
+use crate::io;
+use crate::utils;
 
 #[derive(Debug)]
 pub struct GcPlan {
     pub old_downloads: Option<Vec<PathBuf>>,
     pub unused_channels: Vec<PathBuf>,
     pub unused_packages: Vec<PathBuf>,
-    pub unused_unpack_dirs: Vec<PathBuf>,
+    pub old_unpack_dirs: Vec<PathBuf>,
 }
 
 impl GcPlan {
@@ -24,7 +24,7 @@ impl GcPlan {
             old_downloads: None,
             unused_channels: Vec::new(),
             unused_packages: Vec::new(),
-            unused_unpack_dirs: Vec::new(),
+            old_unpack_dirs: Vec::new(),
         }
     }
 
@@ -32,7 +32,7 @@ impl GcPlan {
         self.old_downloads.as_ref().map_or(true, |v| v.is_empty()) &&
         self.unused_channels.is_empty() &&
         self.unused_packages.is_empty() &&
-        self.unused_unpack_dirs.is_empty()
+        self.old_unpack_dirs.is_empty()
     }
 
     pub fn total_size(&self) -> u64 {
@@ -54,7 +54,7 @@ impl GcPlan {
             total += get_dir_size(path).unwrap_or(0);
         }
 
-        for path in &self.unused_unpack_dirs {
+        for path in &self.old_unpack_dirs {
             total += get_dir_size(path).unwrap_or(0);
         }
 
@@ -74,7 +74,7 @@ pub fn gc_epkg(old_downloads_days: Option<u64>) -> Result<()> {
 
         plan.unused_channels = collect_unused_channels(&in_use_channels)?;
         plan.unused_packages = collect_unused_packages(&in_use_packages)?;
-        plan.unused_unpack_dirs = collect_unused_unpack_dirs()?;
+        plan.old_unpack_dirs = collect_old_unpack_dirs()?;
     }
 
     if plan.is_empty() {
@@ -85,7 +85,7 @@ pub fn gc_epkg(old_downloads_days: Option<u64>) -> Result<()> {
     // Display plan and confirm
     display_gc_plan(&plan, old_downloads_days.is_some())?;
 
-    if !user_prompt_and_confirm()? {
+    if !utils::user_prompt_and_confirm()? {
         println!("Garbage collection cancelled by user.");
         return Ok(());
     }
@@ -135,7 +135,7 @@ fn collect_in_use_resources() -> Result<(HashSet<String>, HashSet<String>)> {
 
     if config().init.shared_store {
         // Collect from all users
-        let all_users = get_all_users()?;
+        let all_users = deinit::get_all_users()?;
         for (username, home_dir) in all_users {
             collect_user_envs_channels(&username, &home_dir.to_string_lossy(), &mut in_use_channels, &mut in_use_packages)?;
         }
@@ -200,7 +200,7 @@ fn collect_env_configs(
     // Load channel config
     let channel_config_path = env_path.join("etc/epkg/channel.yaml");
     if channel_config_path.exists() {
-        if let Ok((mut channel_config, _)) = read_yaml_file::<ChannelConfig>(&channel_config_path) {
+        if let Ok((mut channel_config, _)) = io::read_yaml_file::<ChannelConfig>(&channel_config_path) {
             // Set defaults to populate channel field from distro:version
             if let Ok(()) = crate::io::set_channel_config_defaults(&mut channel_config) {
                 if config().common.verbose {
@@ -214,7 +214,7 @@ fn collect_env_configs(
     // Load env config
     let env_config_path = env_path.join("etc/epkg/env.yaml");
     if env_config_path.exists() {
-        if let Ok((_env_config, _)) = read_yaml_file::<EnvConfig>(&env_config_path) {
+        if let Ok((_env_config, _)) = io::read_yaml_file::<EnvConfig>(&env_config_path) {
             // Load installed packages
             let packages_path = env_path.join("generations/current/installed-packages.json");
             if packages_path.exists() {
@@ -292,13 +292,13 @@ fn collect_unused_packages(in_use_packages: &HashSet<String>) -> Result<Vec<Path
     Ok(unused_packages)
 }
 
-fn collect_unused_unpack_dirs() -> Result<Vec<PathBuf>> {
+fn collect_old_unpack_dirs() -> Result<Vec<PathBuf>> {
     let unpack_dir = dirs().epkg_cache.join("unpack");
     if !unpack_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut unused_unpack_dirs = Vec::new();
+    let mut old_unpack_dirs = Vec::new();
 
     // Only remove directories older than 1 hour to avoid race conditions
     let cutoff_time = SystemTime::now() - Duration::from_secs(3600); // 1 hour
@@ -311,7 +311,7 @@ fn collect_unused_unpack_dirs() -> Result<Vec<PathBuf>> {
                 if let Ok(metadata) = fs::metadata(&unpack_path) {
                     if let Ok(modified_time) = metadata.modified() {
                         if modified_time < cutoff_time {
-                            unused_unpack_dirs.push(unpack_path);
+                            old_unpack_dirs.push(unpack_path);
                         }
                     }
                 }
@@ -319,7 +319,7 @@ fn collect_unused_unpack_dirs() -> Result<Vec<PathBuf>> {
         }
     }
 
-    Ok(unused_unpack_dirs)
+    Ok(old_unpack_dirs)
 }
 
 fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
@@ -334,7 +334,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
                     .sum::<u64>();
                 println!("  Directory: {}", dirs().epkg_downloads_cache.display());
                 println!("  Files: {}", downloads.len());
-                println!("  Total size: {}", format_size(total_size));
+                println!("  Total size: {}", utils::format_size(total_size));
 
                 if config().common.verbose {
                     for file in downloads.iter().take(10) {
@@ -366,7 +366,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
                 plan.unused_channels.len(),
                 unused_channel_names.join(" ")
             );
-            println!("  Total size: {}", format_size(total_size));
+            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
                 for dir in &plan.unused_channels {
@@ -381,7 +381,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
                 .map(|p| get_dir_size(p).unwrap_or(0))
                 .sum::<u64>();
             println!("  Directories: {}", plan.unused_packages.len());
-            println!("  Total size: {}", format_size(total_size));
+            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
                 for dir in &plan.unused_packages {
@@ -390,16 +390,16 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
             }
         }
 
-        if !plan.unused_unpack_dirs.is_empty() {
+        if !plan.old_unpack_dirs.is_empty() {
             println!("\nUnused directories to remove under: {}", dirs().epkg_cache.join("unpack").display());
-            let total_size = plan.unused_unpack_dirs.iter()
+            let total_size = plan.old_unpack_dirs.iter()
                 .map(|p| get_dir_size(p).unwrap_or(0))
                 .sum::<u64>();
-            println!("  Directories: {}", plan.unused_unpack_dirs.len());
-            println!("  Total size: {}", format_size(total_size));
+            println!("  Directories: {}", plan.old_unpack_dirs.len());
+            println!("  Total size: {}", utils::format_size(total_size));
 
             if config().common.verbose {
-                for dir in &plan.unused_unpack_dirs {
+                for dir in &plan.old_unpack_dirs {
                     println!("    {}", dir.display());
                 }
             }
@@ -409,7 +409,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
     if plan.is_empty() {
         println!("No cleanup required.");
     } else {
-        println!("\nTotal space to be freed: {}", format_size(plan.total_size()));
+        println!("\nTotal space to be freed: {}", utils::format_size(plan.total_size()));
     }
 
     Ok(())
@@ -446,7 +446,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
     }
 
     // Remove unused unpack directories
-    for dir in &plan.unused_unpack_dirs {
+    for dir in &plan.old_unpack_dirs {
         if dir.exists() {
             println!("Removing unused unpack directory: {}", dir.display());
             force_remove_dir_all(dir)
@@ -480,18 +480,7 @@ fn get_dir_size(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
 
-    match bytes {
-        0..KB => format!("{} B", bytes),
-        KB..MB => format!("{:.1} KB", bytes as f64 / KB as f64),
-        MB..GB => format!("{:.1} MB", bytes as f64 / MB as f64),
-        _ => format!("{:.1} GB", bytes as f64 / GB as f64),
-    }
-}
 
 /// Recursively removes a directory, fixing permission issues if needed.
 fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<(), std::io::Error> {

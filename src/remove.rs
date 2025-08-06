@@ -1,11 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
-use color_eyre::eyre::{self, Result, WrapErr};
-use color_eyre::eyre::eyre;
-use crate::utils::*;
+use color_eyre::eyre::{self, Result};
 use crate::models::*;
-use crate::scriptlets::{run_scriptlets, ScriptletType};
+use crate::install::InstallationPlan;
 
 impl PackageManager {
 
@@ -39,36 +37,6 @@ impl PackageManager {
                 log::trace!("Removing package file: {}", target_path.display());
                 fs::remove_file(&target_path)?;
             }
-        }
-
-        // Remove ebin wrappers based on stored links
-        let pkgline_osstr = pkg_store_path.file_name().ok_or_else(||
-            eyre::eyre!("Could not extract file name from path: {}", pkg_store_path.display())
-        )?;
-        let pkgline = pkgline_osstr.to_string_lossy();
-        if pkgline.is_empty() {
-            return Err(eyre::eyre!("Extracted pkgline is empty from path: {}", pkg_store_path.display()));
-        }
-
-        let pkgkey = crate::package::pkgline2pkgkey(&pkgline)
-            .map_err(|e| eyre::eyre!("Failed to get pkgkey from pkgline '{}' (from {}): {}", pkgline, pkg_store_path.display(), e))?;
-
-        if let Some(package_info) = self.installed_packages.get(&pkgkey) {
-            if !package_info.ebin_links.is_empty() {
-                log::debug!("Removing {} ebin wrappers for package '{}'", package_info.ebin_links.len(), pkgkey);
-                for relative_ebin_path_str in &package_info.ebin_links {
-                    let ebin_path = env_root.join(relative_ebin_path_str);
-                    if fs::symlink_metadata(&ebin_path).is_ok() {
-                        log::debug!("Removing ebin wrapper: {}", ebin_path.display());
-                        fs::remove_file(&ebin_path)
-                            .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
-                        } else {
-                            log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
-                    }
-                }
-            }
-        } else {
-            log::warn!("Package info not found for key '{}' (derived from pkgline '{}' from path '{}') during unlink. Cannot remove ebin wrappers.", pkgkey, pkgline, pkg_store_path.display());
         }
 
         Ok(())
@@ -112,10 +80,42 @@ impl PackageManager {
     pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
         self.load_installed_packages()?;
 
+        let plan = self.prepare_removal_plan(package_specs)?;
+
+        if plan.old_removes.is_empty() {
+            return Ok(());
+        }
+
+        self.execute_installation_plan(plan)
+    }
+
+    /// Creates an InstallationPlan for package removal operations.
+    /// This function handles the dependency resolution and orphan detection logic
+    /// that was previously embedded in remove_packages().
+    pub fn prepare_removal_plan(&mut self, package_specs: Vec<String>) -> Result<InstallationPlan> {
+        let mut plan = InstallationPlan::default();
+
+        // Step 1: Resolve package specs to package keys
+        let (explicitly_requested_keys, _not_found_specs) = self.resolve_removal_specs(&package_specs);
+
+        // Step 2: Check for blocking dependencies
+        let (processing_queue, _prevented_removals) = self.check_removal_dependencies(&explicitly_requested_keys, &mut plan);
+
+        // Step 3: Process orphaned dependencies
+        self.process_orphaned_dependencies(&mut plan, processing_queue);
+
+        // Step 4: Auto-populate expose plan based on removal actions
+        crate::PackageManager::auto_populate_expose_plan(&mut plan);
+
+        Ok(plan)
+    }
+
+    /// Resolve package specs to package keys for removal
+    fn resolve_removal_specs(&self, package_specs: &[String]) -> (std::collections::HashSet<String>, Vec<String>) {
         let mut explicitly_requested_keys = std::collections::HashSet::new();
         let mut not_found_specs = Vec::new();
 
-        for spec in &package_specs {
+        for spec in package_specs {
             // Try exact match first
             if self.installed_packages.contains_key(spec) {
                 explicitly_requested_keys.insert(spec.clone());
@@ -138,7 +138,7 @@ impl PackageManager {
 
         if !not_found_specs.is_empty() {
             println!("Warning: The following specified packages were not found among installed packages:");
-            for spec in not_found_specs {
+            for spec in &not_found_specs {
                 println!("- {}", spec);
             }
         }
@@ -149,14 +149,21 @@ impl PackageManager {
             } else {
                 println!("No installed packages match the request to remove.");
             }
-            return Ok(());
         }
 
-        let mut final_removal_set: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        (explicitly_requested_keys, not_found_specs)
+    }
+
+    /// Check for blocking dependencies and populate initial removal plan
+    fn check_removal_dependencies(
+        &self,
+        explicitly_requested_keys: &std::collections::HashSet<String>,
+        plan: &mut InstallationPlan
+    ) -> (Vec<String>, HashMap<String, Vec<String>>) {
         let mut processing_queue: Vec<String> = Vec::new();
         let mut prevented_removals: HashMap<String, Vec<String>> = HashMap::new();
 
-        for requested_key in &explicitly_requested_keys {
+        for requested_key in explicitly_requested_keys {
             if let Some(requested_pkg_info) = self.installed_packages.get(requested_key) {
                 let mut can_remove_requested_key = true;
                 let mut blocking_rdepends = Vec::new();
@@ -170,7 +177,7 @@ impl PackageManager {
                 }
 
                 if can_remove_requested_key {
-                    final_removal_set.insert(requested_key.clone(), requested_pkg_info.clone());
+                    plan.old_removes.insert(requested_key.clone(), requested_pkg_info.clone());
                     processing_queue.push(requested_key.clone());
                 } else {
                     prevented_removals.insert(requested_key.clone(), blocking_rdepends);
@@ -187,21 +194,23 @@ impl PackageManager {
             for (pkg_to_remove, blockers) in &prevented_removals {
                 println!("- '{}' is required by: {}", pkg_to_remove, blockers.join(", "));
             }
-            // If ALL explicitly requested packages were blocked, then final_removal_set will be empty.
-            if final_removal_set.is_empty() {
+            // If ALL explicitly requested packages were blocked, then plan.old_removes will be empty.
+            if plan.old_removes.is_empty() {
                  println!("No packages will be removed as all specified packages have active dependencies or were not found.");
-                 return Ok(());
             }
-            // If some were blocked but others were not, final_removal_set is not empty,
+            // If some were blocked but others were not, plan.old_removes is not empty,
             // and we proceed with the ones that can be removed. The warning above is sufficient.
         }
 
-        // If, after all checks, there's nothing to remove (e.g. initial request was valid but all items got filtered out)
-        if final_removal_set.is_empty() && !explicitly_requested_keys.is_empty() {
+        if plan.old_removes.is_empty() && !explicitly_requested_keys.is_empty() {
             println!("No packages will be removed.");
-            return Ok(());
         }
 
+        (processing_queue, prevented_removals)
+    }
+
+    /// Process orphaned dependencies recursively
+    fn process_orphaned_dependencies(&mut self, plan: &mut InstallationPlan, mut processing_queue: Vec<String>) {
         // The original processing_queue was populated directly from explicitly_requested_keys.
         // Now it's populated with keys that passed the rdepend check.
         // The `visited_for_orphan_check` set is still appropriate for the subsequent orphan processing loop.
@@ -213,12 +222,12 @@ impl PackageManager {
             }
 
             let current_pkg_info = match self.installed_packages.get(&pkgkey_being_removed) {
-                Some(info) => info.clone(), // Clone to satisfy borrow checker for later map insertions
-                None => continue, // Should not happen as we populate from installed_packages
+                Some(info) => info.clone(),
+                None => continue,
             };
 
             for dep_pkgkey in &current_pkg_info.depends {
-                if final_removal_set.contains_key(dep_pkgkey) {
+                if plan.old_removes.contains_key(dep_pkgkey) {
                     continue; // Already marked for removal
                 }
 
@@ -245,8 +254,8 @@ impl PackageManager {
                     continue;
                 }
 
+                // Check if all reverse dependencies are being removed
                 let mut all_rdepends_being_removed = true;
-                log::debug!("[Orphan Check] Initial all_rdepends_being_removed for dep '{}': {}", dep_pkgkey, all_rdepends_being_removed);
                 if dep_info.rdepends.is_empty() {
                     // If a non-appbin package has no rdepends, it's an orphan if its direct requirer (pkgkey_being_removed) is removed.
                     // However, this state implies its rdepends were not properly recorded or it's a very old package.
@@ -257,7 +266,7 @@ impl PackageManager {
                     log::debug!("Dependency '{}' has no recorded rdepends. It will be removed if not kept by other means.", dep_pkgkey);
                 } else {
                     for rdep_pkgkey in &dep_info.rdepends {
-                        let rdep_is_in_final_set = final_removal_set.contains_key(rdep_pkgkey);
+                        let rdep_is_in_final_set = plan.old_removes.contains_key(rdep_pkgkey);
                         log::debug!("[Orphan Check]   Checking rdepend '{}' (of dep '{}'): is_in_final_removal_set? {}", rdep_pkgkey, dep_pkgkey, rdep_is_in_final_set);
                         if !rdep_is_in_final_set {
                             all_rdepends_being_removed = false;
@@ -270,7 +279,7 @@ impl PackageManager {
                 log::debug!("[Orphan Check] Final all_rdepends_being_removed for dep '{}': {}", dep_pkgkey, all_rdepends_being_removed);
                 if all_rdepends_being_removed {
                     log::info!("Marking orphaned dependency for removal: {}", dep_pkgkey);
-                    final_removal_set.insert(dep_pkgkey.clone(), dep_info.clone());
+                    plan.old_removes.insert(dep_pkgkey.clone(), dep_info.clone());
                     // Add to queue only if not already processed to check its dependencies for orphaning
                     if !visited_for_orphan_check.contains(dep_pkgkey) {
                          processing_queue.push(dep_pkgkey.clone());
@@ -278,94 +287,6 @@ impl PackageManager {
                 }
             }
         }
-
-        if final_removal_set.is_empty() {
-            println!("No packages to remove after considering dependencies.");
-            return Ok(());
-        }
-
-        println!("Packages to remove:");
-        let mut sorted_removal_keys: Vec<String> = final_removal_set.keys().cloned().collect();
-        sorted_removal_keys.sort(); // For consistent output
-        for pkgkey in &sorted_removal_keys {
-            println!("- {}", pkgkey);
-        }
-
-        // Ask for user confirmation before proceeding (also skips dry run)
-        if !user_prompt_and_confirm()? {
-            return Ok(());
-        }
-
-        // Update rdepends of packages that depended on the removed packages
-        // This is done after the dry_run check, as it modifies the state of self.installed_packages.
-        for (removed_pkg_key, _removed_pkg_info_clone) in &final_removal_set {
-            // The `final_removal_set` contains clones of `InstalledPackageInfo` as they were when added.
-            // So, `_removed_pkg_info_clone.depends` is the correct list of dependencies for `removed_pkg_key`.
-            if let Some(info_of_removed_pkg) = final_removal_set.get(removed_pkg_key) { // Use the info from final_removal_set
-                for dep_on_key in &info_of_removed_pkg.depends {
-                    // If the dependency itself is NOT being removed
-                    if !final_removal_set.contains_key(dep_on_key) {
-                        // Get the mutable info of this dependency from the main installed_packages map
-                        if let Some(dep_pkg_info_mut) = self.installed_packages.get_mut(dep_on_key) {
-                            let initial_rdep_count = dep_pkg_info_mut.rdepends.len();
-                            dep_pkg_info_mut.rdepends.retain(|r| r != removed_pkg_key);
-                            if dep_pkg_info_mut.rdepends.len() < initial_rdep_count {
-                                log::debug!("Updated rdepends for '{}': removed '{}' (was one of its rdepends)", dep_on_key, removed_pkg_key);
-                            } else {
-                                log::trace!("Checked rdepends for '{}': '{}' was not found as an rdepend (or already removed)", dep_on_key, removed_pkg_key);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let new_generation = self.create_new_generation()?;
-        let env_root = crate::dirs::get_default_env_root()?;
-        let store_root = dirs().epkg_store.clone();
-        let repo_format = channel_config().format;
-
-        run_scriptlets(
-            &final_removal_set,
-            &store_root,
-            &env_root,
-            repo_format,
-            ScriptletType::PreRemove,
-            false, // is_upgrade
-        )?;
-
-        for pkgkey in &sorted_removal_keys {
-            if let Some(info_to_remove) = final_removal_set.get(pkgkey) {
-                // Ensure pkgline is valid for path construction
-                if info_to_remove.pkgline.is_empty() || info_to_remove.pkgline.contains("/") || info_to_remove.pkgline.contains("..") {
-                    log::error!("Invalid pkgline for {}: '{}'. Skipping unlink.", pkgkey, info_to_remove.pkgline);
-                    return Err(eyre!("Invalid pkgline for {}: '{}'", pkgkey, info_to_remove.pkgline));
-                }
-                let pkg_store_path = store_root.join(&info_to_remove.pkgline);
-                log::info!("Unlinking files for package: {} from store path {}", pkgkey, pkg_store_path.display());
-                self.unlink_package(&pkg_store_path, &env_root)
-                    .with_context(|| format!("Failed to unlink package {} (store path: {})", pkgkey, pkg_store_path.display()))?;
-                self.installed_packages.remove(pkgkey);
-            } else {
-                 log::warn!("Package {} was in final_removal_set keys but not in map value during unlink phase.", pkgkey);
-            }
-        }
-
-        run_scriptlets(
-            &final_removal_set,
-            &store_root,
-            &env_root,
-            repo_format,
-            ScriptletType::PostRemove,
-            false, // is_upgrade
-        )?;
-
-        self.save_installed_packages(&new_generation)?;
-        self.record_history(&new_generation, "remove", sorted_removal_keys, vec![])?;
-        self.update_current_generation_symlink(new_generation)?;
-
-        println!("Removal successful. {} packages removed.", final_removal_set.len());
-        Ok(())
     }
 
 }

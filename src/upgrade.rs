@@ -5,9 +5,25 @@ use std::collections::HashMap;
 impl PackageManager {
     pub fn upgrade_packages(&mut self, package_names: Vec<String>) -> Result<()> {
         let original_installed_packages = self.installed_packages.clone();
+
+        // Step 1: Determine which packages to upgrade
+        let (initial_packages_to_process, packages_to_expose_from_args) = self.determine_upgrade_targets(&package_names)?;
+
+        // Step 2: Collect all dependencies for the initial set of packages
+        let all_packages_for_session = self.collect_recursive_depends(&initial_packages_to_process, channel_config().format)?;
+
+        // Step 3: Call the main installation function, which will handle planning and execution
+        self.install_pkgkeys(
+            all_packages_for_session,
+            packages_to_expose_from_args,
+            &original_installed_packages,
+        )
+    }
+
+    /// Determine which packages to upgrade based on the provided package names
+    fn determine_upgrade_targets(&mut self, package_names: &[String]) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         let mut initial_packages_to_process: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut missing_items_log: Vec<String> = Vec::new();
-
         let mut packages_to_expose_from_args = HashMap::new();
 
         if package_names.is_empty() {
@@ -21,7 +37,7 @@ impl PackageManager {
         } else {
             // If specific packages are named, resolve them to their latest versions.
             log::info!("Upgrading specified packages: {:?}", package_names);
-            for pkg_name in &package_names {
+            for pkg_name in package_names {
                 // apt-get behavior: if pkg_name not already installed, will install it
                 self.add_one_package_installing_with_arch_spec(
                     pkg_name,
@@ -53,17 +69,9 @@ impl PackageManager {
 
         if initial_packages_to_process.is_empty() {
             println!("No packages to upgrade.");
-            return Ok(());
+            return Ok((HashMap::new(), HashMap::new()));
         }
 
-        // Collect all dependencies for the initial set of packages.
-        let all_packages_for_session = self.collect_recursive_depends(&initial_packages_to_process, channel_config().format)?;
-
-        // Call the main installation function, which will handle planning and execution.
-        self.install_pkgkeys(
-            all_packages_for_session,
-            packages_to_expose_from_args,
-            &original_installed_packages,
-        )
+        Ok((initial_packages_to_process, packages_to_expose_from_args))
     }
 }
