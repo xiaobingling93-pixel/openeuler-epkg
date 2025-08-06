@@ -1,0 +1,6 @@
+label: epkg User Guide
+isManual: true
+description: epkg for package management
+sections:
+  - label: epkg User Guide
+    href: ./epkg_package_manager_usage_guide.md
