@@ -7,6 +7,7 @@ use flate2::read::MultiGzDecoder;
 use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
+use crate::utils;
 
 
 lazy_static! {
@@ -230,16 +231,30 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
         let mut entry = match entry_result {
             Ok(e) => e,
             Err(e) => {
-                log::warn!("Error reading tar entry: {}", e);
-                continue; // Skip problematic entries
+                log::error!("Error reading tar entry: {}", e);
+                // If it's a corrupt compression stream, mark the file as bad and fail
+                if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
+                    utils::mark_file_bad(apk_file)?;
+                    // Restore original working directory before returning error
+                    std::env::set_current_dir(original_dir)?;
+                    return Err(eyre::eyre!("Corrupt compression stream detected in APK package {}: {} (file marked as .bad)", apk_file.display(), e));
+                }
+                continue; // Skip other problematic entries
             }
         };
 
         let path = match entry.path() {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) => {
-                log::warn!("Error getting path from tar entry: {}", e);
-                continue; // Skip entries with invalid paths
+                log::error!("Error getting path from tar entry: {}", e);
+                // If it's a corrupt compression stream, mark the file as bad and fail
+                if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
+                    utils::mark_file_bad(apk_file)?;
+                    // Restore original working directory before returning error
+                    std::env::set_current_dir(original_dir)?;
+                    return Err(eyre::eyre!("Corrupt compression stream detected in APK package {}: {} (file marked as .bad)", apk_file.display(), e));
+                }
+                continue; // Skip other problematic entries
             }
         };
 
@@ -269,7 +284,14 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
 
         // Extract the file
         if let Err(e) = entry.unpack(&target_path) {
-            log::warn!("Failed to extract file {}: {}", path, e);
+            log::error!("Failed to extract file {}: {}", path, e);
+            // If it's a corrupt compression stream, mark the file as bad and fail
+            if e.to_string().contains("corrupt deflate stream") || e.to_string().contains("corrupt xz stream") {
+                utils::mark_file_bad(apk_file)?;
+                // Restore original working directory before returning error
+                std::env::set_current_dir(original_dir)?;
+                return Err(eyre::eyre!("Corrupt compression stream detected while extracting file {} in APK package {}: {} (file marked as .bad)", path, apk_file.display(), e));
+            }
             continue;
         }
         crate::utils::fixup_file_permissions(&target_path);
