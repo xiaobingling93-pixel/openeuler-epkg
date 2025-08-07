@@ -254,7 +254,7 @@ fn extract_package_contents<R: Read>(
         }
 
         // Fix up permissions after extraction to ensure files are readable/writable
-        fixup_file_permissions(&target_path);
+        crate::utils::fixup_file_permissions(&target_path);
     }
 
     if !found_pkginfo {
@@ -263,51 +263,6 @@ fn extract_package_contents<R: Read>(
 
     log::debug!("Successfully unpacked Arch Linux package with {} tar entries", entries_processed);
     Ok(())
-}
-
-/// Fix up file permissions to ensure they are readable/writable by the owner
-/// This prevents permission denied errors during hash calculation and file operations
-#[cfg(unix)]
-fn fixup_file_permissions(target_path: &Path) {
-    if let Ok(metadata) = fs::metadata(target_path) {
-        if metadata.is_dir() {
-            // Ensure directories are writable by owner so they can be removed later
-            // This prevents issues with read-only directories like /usr/lib (dr-xr-xr-x)
-            ensure_owner_permissions(target_path, 0o700, "directory");
-        } else {
-            // Ensure files are readable by owner for hash calculation and other operations
-            ensure_owner_permissions(target_path, 0o600, "file");
-        }
-    }
-}
-
-/// Ensure the file/directory has the specified owner permissions
-#[cfg(unix)]
-fn ensure_owner_permissions(target_path: &Path, required_mask: u32, file_type: &str) {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(metadata) = fs::metadata(target_path) {
-        let mut perms = metadata.permissions();
-        let current_mode = perms.mode();
-
-        if current_mode & required_mask != required_mask {
-            let new_mode = current_mode | required_mask;
-            perms.set_mode(new_mode);
-            if let Err(e) = fs::set_permissions(target_path, perms) {
-                log::warn!("Failed to set {} permissions for {}: {}", file_type, target_path.display(), e);
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn fixup_file_permissions(_target_path: &Path) {
-    // No-op on non-Unix systems
-}
-
-#[cfg(not(unix))]
-fn ensure_owner_permissions(_target_path: &Path, _required_mask: u32, _file_type: &str) {
-    // No-op on non-Unix systems
 }
 
 /// Extract install scriptlets from .INSTALL file

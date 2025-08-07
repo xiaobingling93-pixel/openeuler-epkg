@@ -272,6 +272,7 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
             log::warn!("Failed to extract file {}: {}", path, e);
             continue;
         }
+        crate::utils::fixup_file_permissions(&target_path);
     }
 
     // Restore original working directory
