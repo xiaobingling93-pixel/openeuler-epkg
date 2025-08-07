@@ -330,6 +330,7 @@ pub fn run_scriptlet(
                     args: script_args,
                     env_vars,
                     no_exit: true,           // Don't exit on scriptlet failures, just warn
+                    chdir_to_env_root: true, // Scriptlets should run relative to environment root
                 };
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation

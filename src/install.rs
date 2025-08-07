@@ -729,7 +729,8 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
                     command: "ldconfig".to_string(),
                     args: Vec::new(),
                     env_vars: std::collections::HashMap::new(),
-                    no_exit: false,  // Fail installation if ldconfig fails
+                    no_exit: true,
+                    chdir_to_env_root: true, // ldconfig should run relative to environment root
                 };
 
                 // Execute ldconfig

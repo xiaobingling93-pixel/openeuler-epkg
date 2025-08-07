@@ -23,6 +23,7 @@ pub struct RunOptions {
     pub args: Vec<String>,
     pub env_vars: std::collections::HashMap<String, String>,
     pub no_exit: bool,
+    pub chdir_to_env_root: bool,
 }
 
 /// Fork a new process and execute command with namespace isolation
@@ -39,11 +40,11 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
                     use nix::sys::wait::WaitStatus;
                     match wait_status {
                         WaitStatus::Exited(_, exit_code) => {
-                            debug!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
                             if exit_code != 0 {
                                 if run_options.no_exit {
-                                    warn!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
+                                    info!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
                                 } else {
+                                    warn!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
                                     // Instead of returning an error, just exit with the same code
                                     std::process::exit(exit_code);
                                 }
@@ -72,6 +73,18 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
             if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
                 eprintln!("Failed to setup namespaces: {}", e);
                 std::process::exit(1);
+            }
+
+            // Change to environment root directory before executing command if requested
+            if run_options.chdir_to_env_root {
+                // This ensures that scriptlets and other commands run relative to the environment root
+                // rather than the current working directory, which is important for commands like
+                // "chown etc/shadow" that expect to operate on files within the environment.
+                debug!("Changing working directory to environment root: {}", env_root.display());
+                if let Err(e) = std::env::set_current_dir(env_root) {
+                    eprintln!("Failed to change to environment root directory {}: {}", env_root.display(), e);
+                    std::process::exit(1);
+                }
             }
 
             // Execute the command - this replaces the current process
@@ -768,6 +781,7 @@ impl PackageManager {
             args,
             env_vars: std::collections::HashMap::new(),
             no_exit: false,
+            chdir_to_env_root: false,
         })
     }
 
