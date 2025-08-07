@@ -758,6 +758,10 @@ impl PackageManager {
             //           [ ! -h /usr/share/debconf/frontend ]; then
             //              _DEBCONF_IMPL=debconf
             "/usr/share/debconf/frontend",
+
+            // Fixes script search path
+            "/usr/bin/python3",
+            "/usr/bin/python",
         ];
 
         for symlink_path in &symlink_replace_list {
@@ -767,16 +771,32 @@ impl PackageManager {
             );
 
             if full_symlink_path.exists() && full_symlink_path.is_symlink() {
-                // Read the symlink target
-                let target_path = std::fs::read_link(&full_symlink_path)?;
+                // Resolve the symlink to get the actual target file path
+                let target_path = std::fs::canonicalize(&full_symlink_path)
+                    .map_err(|e| {
+                        log::warn!("Failed to resolve symlink {}: {}", full_symlink_path.display(), e);
+                        e
+                    })?;
 
                 // Remove the symlink
                 std::fs::remove_file(&full_symlink_path)?;
 
                 // Try to hardlink the target file to the symlink location, fall back to copy
-                if let Err(_) = std::fs::hard_link(&target_path, &full_symlink_path) {
+                if let Err(hardlink_err) = std::fs::hard_link(&target_path, &full_symlink_path) {
+                    log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
+                               target_path.display(), full_symlink_path.display(), hardlink_err);
+
                     // If hardlink fails, copy the file
-                    std::fs::copy(&target_path, &full_symlink_path)?;
+                    log::debug!("Copying file from {} to {}", target_path.display(), full_symlink_path.display());
+                    std::fs::copy(&target_path, &full_symlink_path)
+                        .map_err(|copy_err| {
+                            log::error!("Failed to copy file from {} to {}: {}",
+                                       target_path.display(), full_symlink_path.display(), copy_err);
+                            copy_err
+                        })?;
+                } else {
+                    log::debug!("Successfully created hardlink from {} to {}",
+                               target_path.display(), full_symlink_path.display());
                 }
             }
         }
