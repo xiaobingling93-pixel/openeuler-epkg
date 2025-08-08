@@ -181,7 +181,7 @@ main             private                 registered
 分别创建两个环境，指定不同的channel
 
 ```bash
-# t1这里使用了默认的channel debain
+# t1这里使用了默认的channel debian
 [root@51bc2f1c8444 /]# epkg env create t1
 Creating environment 't1' in /root/.epkg/envs/t1
 # t1这里使用了channel fedora
@@ -790,7 +790,7 @@ id  | timestamp                  | action     | new_packages | del_packages | co
 
 ```bash
 [root@51bc2f1c8444 ~]#  epkg restore 2
---------------------------------------  Rollback informaton  ---------------------------------------
+--------------------------------------  Rollback information  ---------------------------------------
 action | hash                             | pkg                  | version    | release | dist
 -------+----------------------------------+----------------------+------------+---------+------------
 Rollback success!
