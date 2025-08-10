@@ -90,7 +90,7 @@ pub fn unpack_mv_package(package_file: &str, pkgkey: Option<&str>) -> Result<std
 
     // Move to final location
     if final_dir.exists() {
-        log::warn!("Target store directory already exists: {}", final_dir.display());
+        log::info!("Target store directory already exists: {}", final_dir.display());
         fs::remove_dir_all(&final_dir)
             .wrap_err_with(|| format!("Failed to remove old store directory: {}", final_dir.display()))?;
     } else {
@@ -328,7 +328,7 @@ pub fn format_package_fields(package_fields: &[(String, String)]) -> String {
     // Then write any remaining fields that weren't in the preferred order
     for (original_field, value) in package_fields {
         if !field_order.contains(&original_field.as_str()) {
-            log::warn!("Field name '{}' not found in predefined field order list", original_field);
+            log::info!("Field name '{}' not found in predefined field order list", original_field);
             output.push_str(&format!("{}: {}\n", original_field, value));
         }
     }
