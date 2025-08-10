@@ -12,6 +12,7 @@ use crate::download;
 use crate::scriptlets::{run_scriptlets, ScriptletType};
 use std::io::Write;
 use regex;
+use glob;
 
 #[derive(Debug, Default, Clone)]
 pub struct InstallationPlan {
@@ -748,110 +749,6 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 }
 
 impl PackageManager {
-    /// Replace symlinks with their target file content
-    fn replace_symlinks_with_content(&self, env_root: &Path) -> Result<()> {
-        let symlink_replace_list = [
-            // Fixes:
-            //      /usr/share/debconf/confmodule: line 28: /usr/lib/cdebconf/debconf: No such file or directory
-            // Root cause: that script relies on this being normal file
-            //      elif [ -x /usr/share/debconf/frontend ] && \
-            //           [ ! -h /usr/share/debconf/frontend ]; then
-            //              _DEBCONF_IMPL=debconf
-            "/usr/share/debconf/frontend",
-
-            // Fixes script search path
-            "/usr/bin/python3",
-            "/usr/bin/python",
-        ];
-
-        for symlink_path in &symlink_replace_list {
-            let full_symlink_path = env_root.join(
-                symlink_path.strip_prefix("/")
-                .unwrap_or(symlink_path)  // Fallback to original if no prefix
-            );
-
-            if full_symlink_path.exists() && full_symlink_path.is_symlink() {
-                // Resolve the symlink to get the actual target file path
-                let target_path = std::fs::canonicalize(&full_symlink_path)
-                    .map_err(|e| {
-                        log::warn!("Failed to resolve symlink {}: {}", full_symlink_path.display(), e);
-                        e
-                    })?;
-
-                // Remove the symlink
-                std::fs::remove_file(&full_symlink_path)?;
-
-                // Try to hardlink the target file to the symlink location, fall back to copy
-                if let Err(hardlink_err) = std::fs::hard_link(&target_path, &full_symlink_path) {
-                    log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
-                               target_path.display(), full_symlink_path.display(), hardlink_err);
-
-                    // If hardlink fails, copy the file
-                    log::debug!("Copying file from {} to {}", target_path.display(), full_symlink_path.display());
-                    std::fs::copy(&target_path, &full_symlink_path)
-                        .map_err(|copy_err| {
-                            log::error!("Failed to copy file from {} to {}: {}",
-                                       target_path.display(), full_symlink_path.display(), copy_err);
-                            copy_err
-                        })?;
-                } else {
-                    log::debug!("Successfully created hardlink from {} to {}",
-                               target_path.display(), full_symlink_path.display());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Create common symlinks for shell and utilities if they don't exist
-    fn create_common_symlinks(&self, env_root: &Path) -> Result<()> {
-        // List of symlinks to create: [(symlink, [possible_targets])]
-        let symlinks = [
-            ("bin/sh", ["bash", "dash"]),
-            ("usr/bin/awk", ["mawk", "gawk"]),
-
-            // These are optional and will fail due to no "dpkg -L" output
-            ("usr/local/bin/py3compile", ["/usr/bin/true", "/bin/true"]),
-            ("usr/local/bin/py3clean", ["/usr/bin/true", "/bin/true"]),
-        ];
-
-        for (link_name, possible_targets) in &symlinks {
-            let link_path = env_root.join(link_name);
-
-            // Skip if symlink already exists
-            if link_path.exists() {
-                continue;
-            }
-
-            // Try each possible target until we find one that exists
-            for target in possible_targets.iter() {
-                let target_path = Path::new("/").join(link_name).parent().unwrap().join(target);
-                if target_path.exists() {
-                    if let Some(parent) = link_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    symlink(target_path, &link_path)
-                        .with_context(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Fix up environment links and remove system directories
-    fn fixup_env_links(&self, env_root: &Path) -> Result<()> {
-        // Prevent running and stalling on `systemctl --system daemon-reload`
-        let _ = std::fs::remove_dir(env_root.join("run/systemd/system"));
-
-        // Replace symlinks with their target file content
-        self.replace_symlinks_with_content(env_root)?;
-
-        // Create common symlinks for shells and utilities
-        self.create_common_symlinks(env_root)?;
-
-        Ok(())
-    }
 
     fn prepare_installation_plan(
         &self,
@@ -1297,7 +1194,7 @@ impl PackageManager {
             env_root,
         )?;
 
-        self.fixup_env_links(env_root)?;
+        utils::fixup_env_links(env_root)?;
 
         Ok(completed_packages)
     }
