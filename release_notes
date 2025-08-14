@@ -1,0 +1,54 @@
+# epkg Release Notes
+
+本文件记录 epkg 各版本发布的主要特性、修复和已知问题。
+
+
+---
+
+## [Unreleased]
+**预计发布日期**: 待定  
+**主要特性**:
+- xx
+
+**修复**:
+- xx
+
+**已知问题**:
+- xx
+
+---
+
+## [v0.1.0] - 2025-08-15
+**主要特性**：
+- epkg全局命令
+  - epkg init：初始化epkg包管理器（安装脚本自动执行） 
+  - epkg deinit：卸载epkg包管理器 
+  - epkg repo list：列出所有repo源
+  - epkg hash：计算指定目录的hash
+  - epkg build：基于源码构建软件包（开发中）
+  - epkg convert：将 rpm/deb/apk/... 转换为epkg包
+  - epkg unpack：解epkg包
+  - epkg run <pkg> -- [args] ：运行某个包中提供的程序
+  - epkg help：帮助信息
+  - epkg --version：查看 epkg 当前版本 
+
+- epkg包管理
+  - epkg install <pkg>：安装指定软件包 
+  -  epkg remove <pkg>：卸载已安装软件包     
+  - epkg list：列出当前环境中安装的软件包
+  - epkg search <keyword>： 搜索可用软件包
+  - epkg info <pkg>：查看某个软件包的详细信息
+  - epkg update：更新当前环境中软件包的索引
+  - epkg upgrade：升级所有已安装软件包
+
+- epkg环境管理
+  - epkg env list：列出所有环境
+  - epkg env create <env>：创建新环境
+  - epkg env remove <env>：删除指定环境 
+  - epkg env register <env>：注册指定环境
+  - epkg env unregister <env>：注销指定环境
+  - epkg env activate <env>：激活指定环境
+  - epkg env deactivate：退出当前激活环境
+  - epkg env path：查看当前env下的PATH
+  - epkg env config：查看或配置当前环境
+  - epkg history：查看环境历史 
