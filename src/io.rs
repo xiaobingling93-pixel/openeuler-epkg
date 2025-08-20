@@ -248,6 +248,8 @@ pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
 // - $repo: the repository name
 // - $arch: the architecture name
 // - $app_version: the app_version string
+// - $conda_arch: the conda-specific architecture name
+// - $conda_repofile: the conda repodata file name based on repository
 pub fn interpolate_index_url(config: &ChannelConfig, repo_name: &str, index_url: &str) -> Result<String> {
     // Keep $mirror placeholder for later resolution in download functions
     let mut url = index_url.to_string();
@@ -263,7 +265,66 @@ pub fn interpolate_index_url(config: &ChannelConfig, repo_name: &str, index_url:
     url = url.replace("$arch", &config.arch);
     url = url.replace("$app_version", &config.app_version);
 
+    // Replace $conda_arch with conda-specific architecture name
+    let conda_arch = map_to_conda_arch(&config.arch);
+    url = url.replace("$conda_arch", &conda_arch);
+
+    // Replace $conda_repofile with conda-specific repodata file name
+    let conda_repofile = map_to_conda_repofile(repo_name);
+    url = url.replace("$conda_repofile", &conda_repofile);
+
     Ok(url)
+}
+
+/// Map standard architecture names to conda-specific architecture names
+///
+/// Conda architecture names follow the pattern: {os}-{arch}
+/// Examples:
+/// - linux-64      (for x86_64 on Linux)
+/// - linux-aarch64 (for aarch64 on Linux)
+/// - osx-arm64     (for aarch64 on macOS)
+/// - win-64        (for x86_64 on Windows)
+fn map_to_conda_arch(arch: &str) -> String {
+    // Detect the operating system
+    let os = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "osx"
+    } else if cfg!(target_os = "windows") {
+        "win"
+    } else {
+        "linux" // Default to linux for unknown OS
+    };
+
+    // Map architecture names to conda format
+    let conda_arch = match arch {
+        "x86_64" | "amd64" => "64",
+        "aarch64" | "arm64" => "aarch64",
+        "armv6l" => "armv6l",
+        "armv7l" => "armv7l",
+        "ppc64le" => "ppc64le",
+        "i686" | "i386" => "32",
+        _ => "64", // Default to 64-bit for unknown architectures
+    };
+
+    // Special handling for macOS ARM64
+    if os == "osx" && (arch == "aarch64" || arch == "arm64") {
+        "arm64".to_string()
+    } else {
+        format!("{}-{}", os, conda_arch)
+    }
+}
+
+/// Map repository names to conda-specific repodata file names
+///
+/// Conda repositories use different repodata file formats:
+/// - 'main' and 'conda-forge' use 'current_repodata.json.gz'
+/// - Other repositories use 'repodata.json.bz2'
+fn map_to_conda_repofile(repo_name: &str) -> String {
+    match repo_name {
+        "main" | "conda-forge" => "current_repodata.json.gz".to_string(),
+        _ => "repodata.json.bz2".to_string(),
+    }
 }
 
 /// Save environment configuration to file

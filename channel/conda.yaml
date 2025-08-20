@@ -1,0 +1,23 @@
+format: conda
+distro: conda
+distro_dirs:
+- anaconda
+versions:
+- "latest"
+repos:
+  main:
+  free:
+  pro:
+  r:
+index_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/$repo/$conda_arch/$conda_repofile
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-aarch64/current_repodata.json.gz
+# https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-64/repodata.json.zst
+# https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-64/repodata.json.bz2
+#
+# Some repos only have this
+# https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/linux-64/repodata.json.bz2
+#
+# Some repos have old tar.bz2 format packages:
+# https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/linux-64/
