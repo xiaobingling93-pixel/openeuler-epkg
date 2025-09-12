@@ -13,7 +13,7 @@ use crate::search::SearchOptions;
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"debian";
-pub const DEFAULT_VERSION: &str = &"master"; // epkg init will download this version from gitee
+pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg init will download this commit from gitee
 
 pub const BASE_ENV: &str = &"base"; // holds epkg, elf-loader, package-manager source files
 pub const MAIN_ENV: &str = &"main"; // the default env for most operations, must be private
@@ -658,14 +658,14 @@ pub struct HistoryOptions {
 pub struct InitOptions {
     #[serde(skip)]
     pub shared_store: bool,
-    #[serde(default = "default_version")]
-    pub version: String,
+    #[serde(default = "default_commit")]
+    pub commit: String,
     #[serde(skip)]
     pub upgrade: bool,
 }
 
-pub fn default_version() -> String {
-    DEFAULT_VERSION.to_string()
+pub fn default_commit() -> String {
+    DEFAULT_COMMIT.to_string()
 }
 
 #[derive(Debug)]

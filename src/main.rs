@@ -296,11 +296,11 @@ fn try_print_backtrace() {
 
 pub fn parse_cmdline() -> clap::ArgMatches {
     Command::new("epkg")
-        .version(env!("CARGO_PKG_VERSION"))
         .author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
         .author("Duan Pengjie <pengjieduan@gmail.com>")
         .author("Yingjiahui <ying_register@163.com>")
         .about("The EPKG package manager")
+        .version(env!("EPKG_VERSION_INFO"))
         .arg_required_else_help(true) // This will show help if no args are provided
         .arg(arg!(-C --config <FILE> "Configuration file to use").hide(true).global(true))
         .arg(arg!(-e --env <ENV> "Select the environment").hide(true).global(true))
@@ -348,7 +348,7 @@ OPTIONS:
         .subcommand(
             Command::new("init")
                 .about("Initialize personal epkg dir layout")
-                .arg(arg!(--version <VERSION>).help(format!("Version of epkg to install [default: {}]", DEFAULT_VERSION)))
+                .arg(arg!(--commit <COMMIT>).help(format!("Source commit of epkg to install [default: {}]", DEFAULT_COMMIT)))
                 .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
                 .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                 .arg(
@@ -558,11 +558,6 @@ where
 }
 
 pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
-    if matches.contains_id("version") {
-        println!("epkg version {}", env!("CARGO_PKG_VERSION"));
-        exit(0);
-    }
-
     let mut config: EPKGConfig = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
@@ -716,11 +711,11 @@ fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         })
         .unwrap_or_else(|| utils::is_running_as_root());
 
-    if let Some(version) = sub_matches.get_one::<String>("version") {
-        config.init.version = version.to_string();
-    } else if config.init.version.is_empty() {
-        config.init.version = models::default_version();
-        eprintln!("version was configured to empty, using default version: {}", config.init.version);
+    if let Some(commit) = sub_matches.get_one::<String>("commit") {
+        config.init.commit = commit.to_string();
+    } else if config.init.commit.is_empty() {
+        config.init.commit = models::default_commit();
+        eprintln!("commit was configured to empty, using default commit: {}", config.init.commit);
     }
 
     // Set upgrade flag

@@ -1,7 +1,7 @@
 [package]
 name = "epkg"
 description = "epkg package manager"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # https://github.com/johnthagen/min-sized-rust
@@ -73,6 +73,9 @@ features = ["zstd-compression", "xz-compression"]
 # https://docs.rs/color-eyre/latest/color_eyre/#improving-perf-on-debug-builds
 [profile.dev.package.backtrace]
 opt-level = 3
+
+[build-dependencies]
+time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 
 [dev-dependencies]
 tempfile = "3.0"
