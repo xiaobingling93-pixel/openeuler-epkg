@@ -229,7 +229,14 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         continue;
                     }
 
-                    let repo_dir = dirs::get_repo_dir(&repo).unwrap();
+                    // Create a new RepoRevise object with the correct repodata_name for this component
+                    let component_repo = crate::repo::RepoRevise {
+                        repo_name: repo_name.clone(),
+                        repodata_name: repo.repodata_name.replace(&repo.repo_name, &repo_name),
+                        ..repo.clone()
+                    };
+
+                    let repo_dir = dirs::get_repo_dir(&component_repo).unwrap();
                     let output_path = if is_packages {
                         repo_dir.join(format!("packages-{}.txt", arch))
                     } else {
@@ -315,9 +322,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     // }
 
                     release_items.push(RepoReleaseItem {
-                        format: PackageFormat::Deb,
-                        repo_name,
-                        repodata_name: repo.repodata_name.to_string(),
+                        repo_revise: component_repo,
                         need_download,
                         need_convert,
                         arch,
@@ -347,10 +352,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
         priority == 3 // Keep only SHA256 entries
     });
 
-    // Prefer .xz over .gz when both exist for the same location
-    let filtered_items = filter_packages_by_compression(release_items);
-
-    Ok(filtered_items)
+    Ok(filter_packages_by_compression(release_items))
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {

@@ -91,9 +91,7 @@ pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, relea
 
     // Create a dummy RepoReleaseItem for PackagesStreamline
     let revise = RepoReleaseItem {
-        format: format,
-        repo_name: repo.repo_name.clone(),
-        repodata_name: repo.repodata_name.clone(),
+        repo_revise: repo.clone(),
         need_download: false,
         need_convert: status == ReleaseStatus::NeedConvert || !output_path.exists(),
         arch: repo.arch.clone(),

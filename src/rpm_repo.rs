@@ -191,9 +191,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             };
 
                             info.push(RepoReleaseItem {
-                                format: PackageFormat::Rpm,
-                                repo_name: repo.repo_name.to_string(),
-                                repodata_name: repo.repodata_name.to_string(),
+                                repo_revise: repo.clone(),
                                 need_download,
                                 need_convert,
                                 arch: repo.arch.clone(),

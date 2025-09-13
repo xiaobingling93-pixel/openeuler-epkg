@@ -432,7 +432,7 @@ pub struct DownloadTask {
     pub output_dir:           PathBuf,
     pub max_retries:          usize,
     pub client:               Arc<Mutex<Option<Agent>>>,                  // HTTP client created on-demand
-    pub data_channel:         Arc<Mutex<Option<Sender<Vec<u8>>>>>,        // will never change, but need take()
+    pub data_channels:        Arc<Mutex<Vec<Sender<Vec<u8>>>>>,           // Support multiple data channels for deduplication
                                                                           // to avoid blocking the consumer side
     pub status:               Arc<Mutex<DownloadStatus>>,
     pub final_path:           PathBuf,                                    // Store the final download path
@@ -637,7 +637,7 @@ impl DownloadTask {
             output_dir,
             max_retries,
             client:            Arc::new(Mutex::new(None)),  // Initialize with no client
-            data_channel:      Arc::new(Mutex::new(None)),
+            data_channels:     Arc::new(Mutex::new(Vec::new())),
             status:            Arc::new(Mutex::new(DownloadStatus::Pending)),
             final_path,
             file_size:         AtomicU64::new(file_size.unwrap_or(0)),
@@ -663,8 +663,10 @@ impl DownloadTask {
         }
     }
 
-    pub fn with_data_channel(mut self, channel: Sender<Vec<u8>>) -> Self {
-        self.data_channel = Arc::new(Mutex::new(Some(channel)));
+    pub fn with_data_channel(self, channel: Sender<Vec<u8>>) -> Self {
+        if let Ok(mut channels) = self.data_channels.lock() {
+            channels.push(channel);
+        }
         self
     }
 
@@ -775,7 +777,7 @@ impl DownloadTask {
             output_dir:           self.output_dir.clone(),
             max_retries:          self.max_retries,
             client:               Arc::new(Mutex::new(None)),           // Initialize with no client
-            data_channel:         Arc::new(Mutex::new(None)),           // Chunks don't need data channels
+            data_channels:        Arc::new(Mutex::new(Vec::new())),     // Chunks don't need data channels
             status:               Arc::new(Mutex::new(DownloadStatus::Pending)),
             final_path:           self.final_path.clone(),
             file_size:            AtomicU64::new(self.file_size.load(Ordering::Relaxed)),
@@ -886,12 +888,28 @@ impl DownloadTask {
 
     /// Clean helper to get data channel without repeated error handling
     pub fn get_data_channel(&self) -> Option<Sender<Vec<u8>>> {
-        self.data_channel.lock().ok().and_then(|dc| dc.clone())
+        self.data_channels.lock().ok().and_then(|channels| channels.first().cloned())
     }
 
-    /// Clean helper to take data channel (for closing)
-    pub fn take_data_channel(&self) -> Option<Sender<Vec<u8>>> {
-        self.data_channel.lock().ok().and_then(|mut dc| dc.take())
+    /// Add a data channel for duplicate downloads
+    pub fn add_data_channel(&self, channel: Sender<Vec<u8>>) {
+        if let Ok(mut channels) = self.data_channels.lock() {
+            channels.push(channel);
+        }
+    }
+
+    /// Get all data channels for broadcasting
+    pub fn get_all_data_channels(&self) -> Vec<Sender<Vec<u8>>> {
+        self.data_channels.lock().ok().map(|channels| channels.clone()).unwrap_or_default()
+    }
+
+    /// Clean helper to take data channels (for closing)
+    pub fn take_data_channels(&self) -> Vec<Sender<Vec<u8>>> {
+        self.data_channels.lock().ok().map(|mut channels| {
+            let result = channels.clone();
+            channels.clear();
+            result
+        }).unwrap_or_default()
     }
 
     /// Set progress bar length
@@ -978,8 +996,38 @@ impl DownloadManager {
             .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
         if !tasks.contains_key(&task.url) {
             tasks.insert(task.url.clone(), Arc::new(task));
+        } else {
+            // For duplicate URLs, share the data channel with the existing task
+            if let Some(existing_task) = tasks.get(&task.url) {
+                if let Some(new_data_channel) = task.get_data_channel() {
+                    // Add the new data channel to the existing task for data sharing
+                    existing_task.add_data_channel(new_data_channel);
+                    log::debug!("Added data channel for duplicate download URL: {} final_path: {}",
+                               task.url, task.final_path.display());
+                } else {
+                    log::warn!("Skipping duplicate download URL (no data channel): {} final_path: {}",
+                               task.url, task.final_path.display());
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Check if a task exists for the given URL and return its status
+    #[allow(dead_code)]
+    pub fn get_task_status(&self, url: &str) -> Option<DownloadStatus> {
+        let tasks = self.tasks.lock().ok()?;
+        let task = tasks.get(url)?;
+        task.status.lock().ok().map(|status| status.clone())
+    }
+
+    /// Check if a task exists for the given URL
+    pub fn has_task(&self, url: &str) -> bool {
+        if let Ok(tasks) = self.tasks.lock() {
+            tasks.contains_key(url)
+        } else {
+            false
+        }
     }
 
     pub fn wait_for_task(&self, task_url: String) -> Result<DownloadStatus> {
@@ -1256,7 +1304,7 @@ impl DownloadManager {
 
             // CRITICAL: Take data_channel to close it and unblock receivers
             // This prevents recv() from blocking forever after download completion
-            let _data_channel = task_clone.take_data_channel();
+            let _data_channels = task_clone.take_data_channels();
         });
 
         // Store the handle
@@ -1913,6 +1961,17 @@ pub fn submit_download_task(task: DownloadTask) -> Result<()> {
     DOWNLOAD_MANAGER.submit_task(task)
 }
 
+/// Check if a download task exists for the given URL
+pub fn has_download_task(url: &str) -> bool {
+    DOWNLOAD_MANAGER.has_task(url)
+}
+
+/// Get the status of a download task for the given URL
+#[allow(dead_code)]
+pub fn get_download_task_status(url: &str) -> Option<DownloadStatus> {
+    DOWNLOAD_MANAGER.get_task_status(url)
+}
+
 /// Wait for any of the specified download tasks to complete
 pub fn wait_for_any_download_task(task_urls: &[String]) -> Result<Option<String>> {
     DOWNLOAD_MANAGER.wait_for_any_task(task_urls)
@@ -2293,24 +2352,23 @@ pub fn send_file_to_channel(
         return Err(eyre!("Should not call send_file_to_channel() for chunk task {:?}", task));
     }
 
-    // Get data channel from task
-    let data_channel = match task.get_data_channel() {
-        Some(channel) => channel,
-        None => return Ok(()), // No channel to send to
-    };
+    // Get all data channels from task
+    let data_channels = task.get_all_data_channels();
+    if data_channels.is_empty() {
+        return Ok(()); // No channels to send to
+    }
 
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
     // "Decompression error: stream/file format not recognized"
-    send_chunk_to_channel(&task, &task.final_path, &data_channel)
+    send_chunk_to_all_channels(&task, &task.final_path, &data_channels)
 }
 
-/// Send a chunk file to the data channel (for streaming fresh chunk data)
-/// This bypasses the master task and has_sent_existing guards
-fn send_chunk_to_channel(
+/// Send a chunk file to all data channels (for broadcasting to duplicate downloads)
+fn send_chunk_to_all_channels(
     task: &DownloadTask,
     part_path: &Path,
-    data_channel: &Sender<Vec<u8>>,
+    data_channels: &[Sender<Vec<u8>>],
 ) -> Result<()> {
     // Ensure we only stream the pre-existing file once per download_file_with_retries() lifetime
     if task.has_sent_existing.swap(true, Ordering::SeqCst) {
@@ -2318,7 +2376,7 @@ fn send_chunk_to_channel(
         return Ok(());
     }
 
-    log::debug!("Sending chunk file to channel: {}", part_path.display());
+    log::debug!("Sending chunk file to {} channels: {}", data_channels.len(), part_path.display());
 
     let mut file = map_io_error(File::open(part_path), "open file for channel", part_path)?;
     let mut buffer = vec![0; 64 * 1024]; // 64KB buffer
@@ -2331,19 +2389,33 @@ fn send_chunk_to_channel(
         }
 
         chunks_sent += 1;
-        match data_channel.send(buffer[..bytes_read].to_vec()) {
-            Ok(_) => {
-                log::trace!("Sent chunk {} ({} bytes) from {}", chunks_sent, bytes_read, part_path.display());
-            }
-            Err(e) => {
-                // Treat closed receiver channel as a non-fatal condition for chunks too
-                log::warn!("Channel closed while sending chunk {} from {}: {}", chunks_sent, part_path.display(), e);
-                break;
+        let chunk_data = buffer[..bytes_read].to_vec();
+
+        // Send to all data channels
+        for (i, data_channel) in data_channels.iter().enumerate() {
+            match data_channel.send(chunk_data.clone()) {
+                Ok(_) => {
+                    log::trace!("Sent chunk {} ({} bytes) to channel {} from {}", chunks_sent, bytes_read, i, part_path.display());
+                }
+                Err(e) => {
+                    // Treat closed receiver channel as a non-fatal condition for chunks too
+                    log::warn!("Channel {} closed while sending chunk {} from {}: {}", i, chunks_sent, part_path.display(), e);
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Send a chunk file to the data channel (for streaming fresh chunk data)
+/// This bypasses the master task and has_sent_existing guards
+fn send_chunk_to_channel(
+    task: &DownloadTask,
+    part_path: &Path,
+    data_channel: &Sender<Vec<u8>>,
+) -> Result<()> {
+    send_chunk_to_all_channels(task, part_path, &[data_channel.clone()])
 }
 
 fn download_file(
@@ -3664,7 +3736,7 @@ fn process_download_response(
 fn merge_completed_chunk(
     master_task: &DownloadTask,
     chunk_task: &DownloadTask,
-    data_channel: &Option<Sender<Vec<u8>>>,
+    data_channels: &[Sender<Vec<u8>>],
     chunk_index: i32
 ) -> Result<()> {
     let chunk_offset = chunk_task.chunk_offset.load(Ordering::Relaxed);
@@ -3680,11 +3752,11 @@ fn merge_completed_chunk(
             .unwrap_or(0);
         validate_chunk_file_boundaries(&chunk_task, actual_size)?;
 
-        // If we have a data channel, stream the chunk data
-        if let Some(ref channel) = data_channel {
-            log::debug!("Streaming chunk {} data from {}", chunk_index, chunk_task.chunk_path.display());
+        // If we have data channels, stream the chunk data to all of them
+        if !data_channels.is_empty() {
+            log::debug!("Streaming chunk {} data to {} channels from {}", chunk_index, data_channels.len(), chunk_task.chunk_path.display());
             // For chunk streaming, we bypass the guards since this is fresh data being streamed
-            send_chunk_to_channel(&chunk_task, &chunk_task.chunk_path, channel)?;
+            send_chunk_to_all_channels(&chunk_task, &chunk_task.chunk_path, data_channels)?;
         }
 
         // Decide whether we really need to append this chunk.
@@ -3805,11 +3877,8 @@ fn wait_for_chunks_and_merge(master_task: &DownloadTask) -> Result<()> {
 
     log::debug!("Master task waiting for {} chunks for {}", chunk_count, master_task.url);
 
-    // Check if we have a data channel to stream to
-    let data_channel = match master_task.data_channel.lock() {
-        Ok(dc) => dc.clone(),
-        Err(_) => None,
-    };
+    // Check if we have data channels to stream to
+    let data_channels = master_task.get_all_data_channels();
     let mut any_fail = false; // Track if any chunks failed after exhausting retries
 
     // Initialize last_merged_offset to master_task's chunk_offset + chunk_size
@@ -3822,7 +3891,7 @@ fn wait_for_chunks_and_merge(master_task: &DownloadTask) -> Result<()> {
     // Level 1: Master task (already handled by initialization)
     // Level 2: L2 chunks (direct children of master)
     // Level 3: L3 chunks (children of L2 chunks)
-    process_chunks_at_level(master_task, master_task, &data_channel, &mut last_merged_offset, &mut any_fail, 2)?;
+    process_chunks_at_level(master_task, master_task, &data_channels, &mut last_merged_offset, &mut any_fail, 2)?;
 
     // Handle any failures that occurred after exhausting retries
     // This triggers download_file_with_retries() to retry the entire master task
@@ -3844,7 +3913,7 @@ fn wait_for_chunks_and_merge(master_task: &DownloadTask) -> Result<()> {
 fn process_chunks_at_level(
     master_task: &DownloadTask,
     parent_task: &DownloadTask,
-    data_channel: &Option<Sender<Vec<u8>>>,
+    data_channels: &[Sender<Vec<u8>>],
     last_merged_offset: &mut u64,
     any_fail: &mut bool,
     level: usize,
@@ -3874,7 +3943,7 @@ fn process_chunks_at_level(
             DownloadStatus::Completed => {
                 if !*any_fail {
                     // Perform the actual merge/stream processing
-                    merge_completed_chunk(master_task, chunk, data_channel, chunk_index)?;
+                    merge_completed_chunk(master_task, chunk, data_channels, chunk_index)?;
 
                     // Validate chunk merge integrity and update tracking
                     let expected_after = validate_chunk_merge_integrity(master_task, chunk, *last_merged_offset)?;
@@ -3883,7 +3952,7 @@ fn process_chunks_at_level(
 
                 // Process any L3 chunks if this is an L2 chunk
                 if level == 2 {
-                    process_chunks_at_level(master_task, chunk, data_channel, last_merged_offset, any_fail, 3)?;
+                    process_chunks_at_level(master_task, chunk, data_channels, last_merged_offset, any_fail, 3)?;
                 }
 
                 // Remove this chunk from the list
