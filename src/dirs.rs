@@ -118,7 +118,7 @@ pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
     // Check private env first
     let private_env_base = dirs().home_epkg.join("envs").join(env_name);
     // Checking $private_env_base is not enough: `epkg run` could mkdir $private_env_base/opt_real/
-    if private_env_base.join("etc/epkg/env.yaml").exists() {
+    if private_env_base.join("etc/epkg").exists() {
         return Some(private_env_base);
     }
 
