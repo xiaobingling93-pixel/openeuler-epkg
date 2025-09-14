@@ -15,6 +15,7 @@ use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
 use nix::unistd::{fork, ForkResult};
+use serde::{Deserialize, Serialize};
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -126,9 +127,27 @@ impl PackageManager {
             return Ok(());
         }
 
-        println!("Upgrading epkg installation...");
-        self.download_setup_files()?;
-        println!("epkg upgrade completed successfully.");
+        println!("Checking for updates...");
+
+        // Check for available updates
+        match check_for_updates() {
+            Ok(Some(new_version)) => {
+                println!("New versions available:");
+                println!("  epkg: {}", new_version.epkg_version);
+                println!("  elf-loader: {}", new_version.elf_loader_version);
+
+                println!("Upgrading epkg installation...");
+                self.download_setup_files()?;
+                println!("epkg upgrade completed successfully.");
+            }
+            Ok(None) => {
+                println!("epkg is already up to date.");
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to check for updates: {}", e);
+            }
+        }
+
         Ok(())
     }
 
@@ -151,12 +170,41 @@ impl PackageManager {
 
     fn download_required_files(&self, _env_root: &Path) -> Result<()> {
         let arch = &config().common.arch;
-        let epkg_version = &config().init.version;
         let dirs = dirs();
 
-        // Set up URLs and paths
-        let epkg_url = "https://repo.oepkgs.net/openeuler/epkg/rootfs/";
+        // Determine versions to use
+        let epkg_version = if config().init.upgrade {
+            // For upgrades, try to get current version first, then fetch latest if needed
+            get_epkg_version().unwrap_or_else(|_| {
+                fetch_latest_release("openeuler", "epkg")
+                    .map(|release| release.tag_name)
+                    .unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string())
+            })
+        } else {
+            // For fresh installs, use the build-time version
+            env!("EPKG_VERSION_TAG").to_string()
+        };
+
+        let elf_loader_version = {
+            let repo_root = find_repo_root()?;
+            let local_loader = repo_root.join("elf-loader/src/loader");
+
+            if local_loader.exists() {
+                // Use local elf-loader version
+                get_elf_loader_version(&local_loader)
+                    .unwrap_or_else(|_| "unknown".to_string())
+            } else {
+                // Fetch latest elf-loader version
+                fetch_latest_release("openeuler", "elf-loader")
+                    .map(|release| release.tag_name)
+                    .unwrap_or_else(|_| "unknown".to_string())
+            }
+        };
+
+        // Set up versioned URLs
+        let (epkg_binary_url, elf_loader_url) = get_versioned_urls(&epkg_version, &elf_loader_version, arch);
         let epkg_src_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
+
         let elf_loader = "elf-loader";
         let epkg_static = "epkg";
         let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
@@ -183,10 +231,10 @@ impl PackageManager {
 
         // Download epkg binary if upgrading
         if config().init.upgrade {
-            println!("Downloading epkg binary from {}", epkg_url);
+            println!("Downloading epkg binary from {}", epkg_binary_url);
             urls.extend(vec![
-                format!("{}/{}-{}",        epkg_url, epkg_static, arch),
-                format!("{}/{}-{}.sha256", epkg_url, epkg_static, arch)
+                epkg_binary_url.clone(),
+                format!("{}.sha256", epkg_binary_url)
             ]);
             need_download_epkg_binary = true;
         }
@@ -200,10 +248,10 @@ impl PackageManager {
                     local_loader.display(), elf_loader_path.display()))?;
             println!("Using local elf-loader from {}", local_loader.display());
         } else {
-            println!("Downloading elf-loader from {}", epkg_url);
+            println!("Downloading elf-loader from {}", elf_loader_url);
             urls.extend(vec![
-                format!("{}/{}-{}",        epkg_url, elf_loader, arch),
-                format!("{}/{}-{}.sha256", epkg_url, elf_loader, arch)
+                elf_loader_url.clone(),
+                format!("{}.sha256", elf_loader_url)
             ]);
         }
 
@@ -247,7 +295,11 @@ impl PackageManager {
     }
 
     fn setup_epkg_src(&self, env_root: &Path) -> Result<()> {
-        let epkg_version = &config().init.version;
+        let epkg_version = if config().init.upgrade {
+            get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string())
+        } else {
+            env!("EPKG_VERSION_TAG").to_string()
+        };
         let repo_root = find_repo_root()?;
         let usr_src = env_root.join("usr/src");
         let epkg_src = usr_src.join("epkg");
@@ -565,4 +617,157 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
 fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
     repo_root.join(".git").exists() &&
     repo_root.join("lib/epkg-rc.sh").exists()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GiteeRelease {
+    tag_name: String,
+    name: String,
+    published_at: String,
+    assets: Vec<GiteeAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GiteeAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VersionInfo {
+    epkg_version: String,
+    elf_loader_version: String,
+}
+
+/// Fetch the latest release information from Gitee API
+fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
+    let url = format!("https://gitee.com/api/v5/repos/{}/{}/releases/latest", owner, repo);
+
+    let mut response = ureq::get(&url)
+        .call()
+        .context("Failed to fetch release information from Gitee")?;
+
+    let body = response.body_mut().read_to_string()
+        .context("Failed to read response body")?;
+    let release: GiteeRelease = serde_json::from_str(&body)
+        .context("Failed to parse release information")?;
+
+    Ok(release)
+}
+
+/// Parse version from --version output
+fn parse_version_from_output(version_output: &str) -> Option<String> {
+    // Look for pattern: "... version $version_tag (build date $build_date, commit $git_hash)"
+    let re = regex::Regex::new(r"version\s+([^\s]+)\s+\(").ok()?;
+    let captures = re.captures(version_output)?;
+    Some(captures.get(1)?.as_str().to_string())
+}
+
+/// Get version from epkg binary
+fn get_epkg_version() -> Result<String> {
+    // If this is the running epkg program, use the build-time version
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(file_name) = current_exe.file_name() {
+            if let Some(name_str) = file_name.to_str() {
+                if name_str.contains("epkg") {
+                    return Ok(env!("EPKG_VERSION_TAG").to_string());
+                }
+            }
+        }
+    }
+
+    // Try to run epkg --version
+    let output = std::process::Command::new("epkg")
+        .arg("--version")
+        .output()
+        .context("Failed to run epkg --version")?;
+
+    if !output.status.success() {
+        return Err(eyre::eyre!("epkg --version failed"));
+    }
+
+    let version_output = String::from_utf8(output.stdout)
+        .context("Failed to parse epkg --version output")?;
+
+    parse_version_from_output(&version_output)
+        .ok_or_else(|| eyre::eyre!("Failed to parse version from epkg --version output"))
+}
+
+/// Get version from elf-loader binary
+fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
+    if !elf_loader_path.exists() {
+        return Err(eyre::eyre!("elf-loader binary not found"));
+    }
+
+    let output = std::process::Command::new(elf_loader_path)
+        .arg("--version")
+        .output()
+        .context("Failed to run elf-loader --version")?;
+
+    if !output.status.success() {
+        return Err(eyre::eyre!("elf-loader --version failed"));
+    }
+
+    let version_output = String::from_utf8(output.stdout)
+        .context("Failed to parse elf-loader --version output")?;
+
+    parse_version_from_output(&version_output)
+        .ok_or_else(|| eyre::eyre!("Failed to parse version from elf-loader --version output"))
+}
+
+/// Get the current installed version information
+fn get_current_version_info() -> Result<VersionInfo> {
+    let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
+
+    // Try to find elf-loader in common locations
+    let possible_elf_loader_paths = [
+        find_env_root(BASE_ENV).unwrap_or_else(|| PathBuf::new()).join("usr/bin/elf-loader"),
+        dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),
+        PathBuf::from("./elf-loader"),
+    ];
+
+    let elf_loader_version = possible_elf_loader_paths
+        .iter()
+        .find_map(|path| get_elf_loader_version(path).ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Ok(VersionInfo {
+        epkg_version,
+        elf_loader_version,
+    })
+}
+
+/// Check for updates and return new version information if available
+fn check_for_updates() -> Result<Option<VersionInfo>> {
+    let current_version = get_current_version_info()?;
+
+    // Fetch latest epkg version
+    let epkg_release = fetch_latest_release("openeuler", "epkg")
+        .context("Failed to fetch epkg release info")?;
+
+    // Fetch latest elf-loader version
+    let elf_loader_release = fetch_latest_release("openeuler", "elf-loader")
+        .context("Failed to fetch elf-loader release info")?;
+
+    let new_version = VersionInfo {
+        epkg_version: epkg_release.tag_name,
+        elf_loader_version: elf_loader_release.tag_name,
+    };
+
+    // Check if we have newer versions
+    if new_version.epkg_version != current_version.epkg_version ||
+        new_version.elf_loader_version != current_version.elf_loader_version {
+        Ok(Some(new_version))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Generate versioned download URLs
+fn get_versioned_urls(epkg_version: &str, elf_loader_version: &str, arch: &str) -> (String, String) {
+    let epkg_url = format!("https://gitee.com/openeuler/epkg/releases/download/{}/epkg-{}", epkg_version, arch);
+    let elf_loader_url = format!("https://gitee.com/openeuler/elf-loader/releases/download/{}/elf-loader-{}", elf_loader_version, arch);
+
+    (epkg_url, elf_loader_url)
 }
