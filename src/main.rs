@@ -457,6 +457,7 @@ OPTIONS:
                 .about("Install packages")
                 .arg(arg!(--"install-suggests" "Consider suggested packages as a dependency for installing"))
                 .arg(arg!(--"no-install-recommends" "Do not consider recommended packages as a dependency for installing"))
+                .arg(arg!(--"assume-installed" <PACKAGES> "Assume these packages are already installed (comma-separated list)").value_delimiter(','))
                 .arg(arg!([PACKAGE_SPEC] ... "Package specifications to install").required_unless_present("local"))
                 .arg(arg!(--local "Install packages from local filesystem"))
                 .arg(arg!(--fs <DIR> "Local filesystem directory to install packages"))
@@ -810,13 +811,14 @@ fn parse_options_info(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches)
 }
 
 fn parse_options_install(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    if let Some(_package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-        if sub_matches.contains_id("install-suggests") {
-            config.install.install_suggests = sub_matches.get_flag("install-suggests");
-        }
-        if sub_matches.contains_id("no-install-recommends") {
-            config.install.no_install_recommends = sub_matches.get_flag("no-install-recommends");
-        }
+    if sub_matches.contains_id("install-suggests") {
+        config.install.install_suggests = sub_matches.get_flag("install-suggests");
+    }
+    if sub_matches.contains_id("no-install-recommends") {
+        config.install.no_install_recommends = sub_matches.get_flag("no-install-recommends");
+    }
+    if let Some(assume_installed) = sub_matches.get_many::<String>("assume-installed") {
+        config.install.assume_installed = assume_installed.map(|s| s.to_string()).collect();
     }
     Ok(())
 }

@@ -615,6 +615,8 @@ pub struct InstallOptions {
     pub install_suggests: bool,
     #[serde(default)]
     pub no_install_recommends: bool,
+    #[serde(skip)]
+    pub assume_installed: Vec<String>,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]

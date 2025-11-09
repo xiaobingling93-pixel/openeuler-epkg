@@ -408,6 +408,13 @@ impl PackageManager {
         None
     }
 
+    /// Check if a package is in the assume_installed list and skip dependency resolution for it.
+    /// Returns true if the package should be skipped (assumed installed), false otherwise.
+    fn is_assume_installed_package(pkgname: &str) -> bool {
+        let assume_installed = &config().install.assume_installed;
+        assume_installed.iter().any(|p| p == pkgname)
+    }
+
     fn resolve_single_capability_item(
         &mut self,
         capability_or_pkg_name: &str,
@@ -429,6 +436,14 @@ impl PackageManager {
         // Parse capability name and architecture specification
         let (base_capability, arch_spec) = self.parse_capability_architecture(capability_or_pkg_name, format);
         let arch_spec_ref = arch_spec.as_deref();
+
+        // Check if this package is in assume_installed list - skip dependency resolution for it
+        if Self::is_assume_installed_package(&base_capability) {
+            log::debug!("Package '{}' is in assume_installed list, skipping dependency resolution", base_capability);
+            // Return None to indicate we're skipping this package (treating it as already satisfied)
+            // The caller will handle this appropriately
+            return Ok(None);
+        }
 
         // Policy Step 0: First try to lookup the name as a direct package name
         // This ensures that when someone explicitly requests "groff-x11", we try to install
@@ -839,6 +854,16 @@ impl PackageManager {
 
                 let mut or_group_satisfied = false;
                 for dep_capability_info in &or_group { // dep_capability_info.capability is the string
+                    // Check if this capability is assume_installed (including conda virtual packages)
+                    if Self::is_assume_installed_package(&dep_capability_info.capability, format) {
+                        log::debug!(
+                            "OR group for {} satisfied by assume_installed capability \"{}\"",
+                            requiring_pkgkey, dep_capability_info.capability
+                        );
+                        or_group_satisfied = true;
+                        break; // This OR group is satisfied, move to the next AND group
+                    }
+
                     match self.resolve_single_capability_item(
                         &dep_capability_info.capability,
                         all_pkgs_info_map, // Pass the main accumulating map
