@@ -29,6 +29,49 @@ use std::time::SystemTime;
 
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
+    // Check if this is a conda environment - conda ELF binaries can run directly
+    let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
+
+    if is_conda {
+        handle_elf_conda(target_path, env_root, fs_file)
+    } else {
+        handle_elf_with_loader(target_path, env_root, fs_file)
+    }
+}
+
+/// Handle ELF binary for conda environment - create hardlink directly from ELF binary to ebin
+fn handle_elf_conda(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
+    // For conda, create a hardlink directly from bin to ebin (no elf-loader wrapper needed)
+    if target_path.exists() {
+        fs::remove_file(target_path)
+            .with_context(|| format!("Failed to remove existing file {}", target_path.display()))?;
+    }
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+    }
+
+    // Create hardlink from fs_file (the actual ELF binary) to target_path (ebin)
+    fs::hard_link(fs_file, target_path)
+        .with_context(|| format!(
+            "Failed to create hardlink from {} to {}",
+            fs_file.display(),
+            target_path.display()
+        ))?;
+
+    log::debug!(
+        "handle_elf_conda target_path={}, env_root={}, fs_file={}",
+        target_path.display(),
+        env_root.display(),
+        fs_file.display()
+    );
+    Ok(())
+}
+
+/// Handle ELF binary with elf-loader wrapper (non-conda environments)
+fn handle_elf_with_loader(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     let base_env_root = dirs::find_env_root(BASE_ENV)
         .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
 
@@ -62,7 +105,7 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
     }
 
     log::debug!(
-        "handle_elf target_path={}, env_root={}, fs_file={}",
+        "handle_elf_with_loader target_path={}, env_root={}, fs_file={}",
         target_path.display(),
         env_root.display(),
         fs_file.display()

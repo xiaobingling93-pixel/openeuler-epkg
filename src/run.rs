@@ -26,6 +26,60 @@ pub struct RunOptions {
     pub chdir_to_env_root: bool,
 }
 
+/// Fork a new process and execute command for conda environment without namespace isolation
+pub fn fork_and_execute_conda(run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
+    // Still need to fork to avoid replacing the epkg process, but skip namespace setup
+    match unsafe { nix::unistd::fork() } {
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
+            // Parent process: wait for child to complete
+            debug!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
+            match nix::sys::wait::waitpid(child, None) {
+                Ok(wait_status) => {
+                    use nix::sys::wait::WaitStatus;
+                    match wait_status {
+                        WaitStatus::Exited(_, exit_code) => {
+                            if exit_code != 0 {
+                                if run_options.no_exit {
+                                    info!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
+                                } else {
+                                    warn!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
+                                    std::process::exit(exit_code);
+                                }
+                            }
+                        }
+                        WaitStatus::Signaled(_, signal, _) => {
+                            debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
+                            return Err(eyre::eyre!("Command killed by signal {:?}", signal));
+                        }
+                        _ => {
+                            debug!("Child process ended with status: {:?} (cmd: {})", wait_status, cmd_path.display());
+                            return Err(eyre::eyre!("Command ended with unexpected status: {:?}", wait_status));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(eyre::eyre!("Failed to wait for child process (cmd: {}): {}", cmd_path.display(), e));
+                }
+            }
+        }
+        Ok(nix::unistd::ForkResult::Child) => {
+            // Child process: execute command directly without namespace setup
+            debug!("Child process executing command directly (cmd: {})", cmd_path.display());
+            if let Err(e) = exec_command(cmd_path, &run_options.args, Some(&run_options.env_vars)) {
+                eprintln!("Failed to execute command '{}': {} (error: {:?})",
+                    cmd_path.display(), e, std::io::Error::last_os_error());
+                std::process::exit(127);
+            }
+            unreachable!();
+        }
+        Err(e) => {
+            return Err(eyre::eyre!("Failed to fork process: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
 /// Fork a new process and execute command with namespace isolation
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
     // Fork a new process to handle namespace creation and command execution
@@ -748,8 +802,16 @@ impl PackageManager {
         let cmd_path = find_command_in_env_path(&run_options.command, &env_root)?;
         info!("Found command at: {}", cmd_path.display());
 
-        // Fork and execute with namespace isolation
-        fork_and_execute(&env_root, &run_options, &cmd_path)?;
+        // Check if this is a conda environment - conda ELF binaries can run directly
+        let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
+
+        if is_conda {
+            // For conda, directly execute the ELF binary without namespace isolation
+            fork_and_execute_conda(&run_options, &cmd_path)?;
+        } else {
+            // For non-conda, fork and execute with namespace isolation
+            fork_and_execute(&env_root, &run_options, &cmd_path)?;
+        }
 
         Ok(())
     }
@@ -783,11 +845,5 @@ impl PackageManager {
             no_exit: false,
             chdir_to_env_root: false,
         })
-    }
-
-    /// Fork and execute with namespace isolation - kept for backward compatibility
-    #[allow(dead_code)]
-    pub fn fork_and_execute(&self, env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
-        fork_and_execute(env_root, run_options, cmd_path)
     }
 }
