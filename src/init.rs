@@ -127,24 +127,21 @@ impl PackageManager {
             return Ok(());
         }
 
-        println!("Checking for updates...");
-
-        // Check for available updates
+        // Check for available updates and get initialization plan
         match check_for_updates() {
-            Ok(Some(new_version)) => {
-                println!("New versions available:");
-                println!("  epkg: {}", new_version.epkg_version);
-                println!("  elf-loader: {}", new_version.elf_loader_version);
-
-                println!("Upgrading epkg installation...");
-                self.download_setup_files()?;
-                println!("epkg upgrade completed successfully.");
-            }
-            Ok(None) => {
-                println!("epkg is already up to date.");
+            Ok(init_plan) => {
+                // Check if upgrade is needed
+                if init_plan.new.epkg_version != init_plan.current.epkg_version ||
+                    init_plan.new.elf_loader_version != init_plan.current.elf_loader_version {
+                    println!("Upgrading epkg installation...");
+                    self.download_setup_files(&init_plan)?;
+                } else {
+                    println!("epkg is already up to date.");
+                }
             }
             Err(e) => {
                 eprintln!("Warning: Failed to check for updates: {}", e);
+                return Ok(());
             }
         }
 
@@ -161,97 +158,45 @@ impl PackageManager {
         // Pre-populate country cache in background thread to speed up later invocations
         pre_populate_country_cache();
 
-        self.download_setup_files()?;
+        // For fresh install, create a basic init plan
+        let init_plan = check_for_updates()?;
+        self.download_setup_files(&init_plan)?;
 
         self.create_environment(BASE_ENV)?;
 
         Ok(())
     }
 
-    fn download_required_files(&self, _env_root: &Path) -> Result<()> {
-        let arch = &config().common.arch;
-        let dirs = dirs();
-
-        // Determine versions to use
-        let epkg_version = if config().init.upgrade {
-            // For upgrades, try to get current version first, then fetch latest if needed
-            get_epkg_version().unwrap_or_else(|_| {
-                fetch_latest_release("openeuler", "epkg")
-                    .map(|release| release.tag_name)
-                    .unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string())
-            })
-        } else {
-            // For fresh installs, use the build-time version
-            env!("EPKG_VERSION_TAG").to_string()
-        };
-
-        let elf_loader_version = {
-            let repo_root = find_repo_root()?;
-            let local_loader = repo_root.join("elf-loader/src/loader");
-
-            if local_loader.exists() {
-                // Use local elf-loader version
-                get_elf_loader_version(&local_loader)
-                    .unwrap_or_else(|_| "unknown".to_string())
-            } else {
-                // Fetch latest elf-loader version
-                fetch_latest_release("openeuler", "elf-loader")
-                    .map(|release| release.tag_name)
-                    .unwrap_or_else(|_| "unknown".to_string())
-            }
-        };
-
-        // Set up versioned URLs
-        let (epkg_binary_url, elf_loader_url) = get_versioned_urls(&epkg_version, &elf_loader_version, arch);
-        let epkg_src_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", epkg_version);
-
-        let elf_loader = "elf-loader";
-        let epkg_static = "epkg";
-        let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
-        let epkg_src_tar = epkg_download_dir.join(format!("{}.tar.gz", epkg_version));
-        let elf_loader_path = epkg_download_dir.join(format!("{}-{}", elf_loader, arch));
-        let elf_loader_sha = epkg_download_dir.join(format!("{}-{}.sha256", elf_loader, arch));
-        let epkg_binary_sha = epkg_download_dir.join(format!("{}-{}.sha256", epkg_static, arch));
-
-        let mut need_download_epkg_src: bool = false;
-        let mut need_download_epkg_binary: bool = false;
-
+    fn download_required_files(&self, _env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         // Collect urls for downloading in parallel
         let mut urls = Vec::new();
 
-        let repo_root = find_repo_root()?;
-
         // Handle epkg source code (local repo or download)
-        let using_local_repo = is_valid_local_repo(&repo_root);
-        if !using_local_repo {
-            println!("Downloading epkg source code from {}", epkg_src_url);
-            urls.push(epkg_src_url.clone());
-            need_download_epkg_src = true;
+        if init_plan.need_download_epkg_src {
+            println!("Downloading epkg source code from {}", init_plan.epkg_src_url);
+            urls.push(init_plan.epkg_src_url.clone());
         }
 
         // Download epkg binary if upgrading
-        if config().init.upgrade {
-            println!("Downloading epkg binary from {}", epkg_binary_url);
+        if init_plan.need_download_epkg_binary {
+            println!("Downloading epkg binary from {}", init_plan.epkg_binary_url);
             urls.extend(vec![
-                epkg_binary_url.clone(),
-                format!("{}.sha256", epkg_binary_url)
+                init_plan.epkg_binary_url.clone(),
+                init_plan.epkg_binary_sha_url.clone()
             ]);
-            need_download_epkg_binary = true;
         }
 
         // Check for local elf-loader
-        let local_loader = repo_root.join("elf-loader/src/loader");
-
-        if local_loader.exists() {
-            fs::copy(&local_loader, &elf_loader_path)
+        if let Some(ref local_loader) = init_plan.local_elf_loader_path {
+            fs::copy(local_loader, &init_plan.elf_loader_path)
                 .context(format!("Failed to copy local elf-loader from {} to {}",
-                    local_loader.display(), elf_loader_path.display()))?;
+                    local_loader.display(), init_plan.elf_loader_path.display()))?;
             println!("Using local elf-loader from {}", local_loader.display());
-        } else {
-            println!("Downloading elf-loader from {}", elf_loader_url);
+        } else if init_plan.need_download_elf_loader {
+            println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
             urls.extend(vec![
-                elf_loader_url.clone(),
-                format!("{}.sha256", elf_loader_url)
+                init_plan.elf_loader_url.clone(),
+                init_plan.elf_loader_sha_url.clone()
             ]);
         }
 
@@ -259,53 +204,59 @@ impl PackageManager {
             return Ok(());
         }
 
+        // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
+        // so download.rs would think "File unchanged" based on file size matching.
+        let sha256_files_to_delete = vec![&init_plan.elf_loader_sha_path, &init_plan.epkg_binary_sha_path];
+        for sha256_path in sha256_files_to_delete {
+            if sha256_path.exists() {
+                log::debug!("Deleting existing .sha256 file: {}", sha256_path.display());
+                if let Err(e) = fs::remove_file(sha256_path) {
+                    log::warn!("Failed to delete existing .sha256 file {}: {}", sha256_path.display(), e);
+                }
+            }
+        }
+
         // Download to the new epkg subdirectory within downloads cache
-        let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
-        download_urls(urls, &epkg_download_dir, 6, false)
+        let epkg_download_dir = init_plan.epkg_binary_path.parent().unwrap();
+        download_urls(urls, epkg_download_dir, 6, false)
             .context("Failed to download required files")?;
 
         // Verify checksums
-        if !local_loader.exists() {
-            utils::verify_sha256sum(&elf_loader_sha)
+        if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+            utils::verify_sha256sum(&init_plan.elf_loader_sha_path)
                 .context("Failed to verify elf-loader checksum")?;
         }
 
-        if need_download_epkg_binary {
-            utils::verify_sha256sum(&epkg_binary_sha)
+        if init_plan.need_download_epkg_binary {
+            utils::verify_sha256sum(&init_plan.epkg_binary_sha_path)
                 .context("Failed to verify epkg binary checksum")?;
         }
 
-        if need_download_epkg_src && !epkg_src_tar.exists() {
-            return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", epkg_src_url));
+        if init_plan.need_download_epkg_src && !init_plan.epkg_src_path.exists() {
+            return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", init_plan.epkg_src_url));
         }
 
         Ok(())
     }
 
-    fn download_setup_files(&mut self) -> Result<()> {
+    fn download_setup_files(&mut self, init_plan: &InitPlan) -> Result<()> {
         let base_env_root = self.new_env_base(BASE_ENV);
 
-        self.download_required_files(&base_env_root)
+        self.download_required_files(&base_env_root, init_plan)
             .context("Failed to download required files for base environment")?;
 
-        self.setup_epkg_src(&base_env_root)?;
+        self.setup_epkg_src(&base_env_root, init_plan)?;
         self.setup_common_binaries(&base_env_root)?;
 
         Ok(())
     }
 
-    fn setup_epkg_src(&self, env_root: &Path) -> Result<()> {
-        let epkg_version = if config().init.upgrade {
-            get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string())
-        } else {
-            env!("EPKG_VERSION_TAG").to_string()
-        };
-        let repo_root = find_repo_root()?;
+    fn setup_epkg_src(&self, env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         let usr_src = env_root.join("usr/src");
         let epkg_src = usr_src.join("epkg");
 
         // Check if we're using a local repository
-        if is_valid_local_repo(&repo_root) {
+        if init_plan.using_local_repo {
             // Create symlink directly to git working directory
             if !usr_src.exists() {
                 fs::create_dir_all(&usr_src)
@@ -313,6 +264,7 @@ impl PackageManager {
             }
 
             if !epkg_src.exists() {
+                let repo_root = find_repo_root()?;
                 symlink(repo_root.to_str().unwrap(), &epkg_src)
                     .context("Failed to create symlink to local repository")?;
             }
@@ -322,9 +274,8 @@ impl PackageManager {
         }
 
         // Extract epkg source code tar for remote repository
-        let epkg_extracted_dir = format!("epkg-{}", epkg_version);
+        let epkg_extracted_dir = format!("epkg-{}", init_plan.new.epkg_version);
         let epkg_extracted_path = usr_src.join(&epkg_extracted_dir);
-        let epkg_src_tar = dirs().epkg_downloads_cache.join("epkg").join(format!("{}.tar.gz", epkg_version));
 
         println!("Extracting epkg source code to: {}", usr_src.display());
 
@@ -336,7 +287,7 @@ impl PackageManager {
         }
 
         // Extract tar.gz file with error handling
-        utils::extract_tar_gz(&epkg_src_tar, &usr_src)
+        utils::extract_tar_gz(&init_plan.epkg_src_path, &usr_src)
             .context("Failed to extract epkg source code tar file")?;
 
         // Create a symlink from epkg to epkg-master (or epkg-$version)
@@ -623,7 +574,7 @@ fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
 struct GiteeRelease {
     tag_name: String,
     name: String,
-    published_at: String,
+    created_at: String,
     assets: Vec<GiteeAsset>,
 }
 
@@ -631,27 +582,107 @@ struct GiteeRelease {
 struct GiteeAsset {
     name: String,
     browser_download_url: String,
-    size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VersionInfo {
+struct EpkgVersionInfo {
     epkg_version: String,
     elf_loader_version: String,
+}
+
+#[derive(Debug, Clone)]
+struct InitPlan {
+    current: EpkgVersionInfo,
+    new: EpkgVersionInfo,
+    // File paths and URLs
+    epkg_binary_url: String,
+    epkg_binary_sha_url: String,
+    epkg_src_url: String,
+    elf_loader_url: String,
+    elf_loader_sha_url: String,
+    // Local file paths
+    epkg_binary_path: std::path::PathBuf,
+    epkg_binary_sha_path: std::path::PathBuf,
+    epkg_src_path: std::path::PathBuf,
+    elf_loader_path: std::path::PathBuf,
+    elf_loader_sha_path: std::path::PathBuf,
+    // Flags
+    need_download_epkg_binary: bool,
+    need_download_epkg_src: bool,
+    need_download_elf_loader: bool,
+    using_local_repo: bool,
+    // Local elf-loader info
+    local_elf_loader_path: Option<std::path::PathBuf>,
 }
 
 /// Fetch the latest release information from Gitee API
 fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
     let url = format!("https://gitee.com/api/v5/repos/{}/{}/releases/latest", owner, repo);
 
-    let mut response = ureq::get(&url)
+    // Create an agent with timeout configuration for better error handling
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+
+    // Make the HTTP request with detailed error context
+    let mut response = agent.get(&url)
         .call()
-        .context("Failed to fetch release information from Gitee")?;
+        .map_err(|e| {
+            match e {
+                ureq::Error::StatusCode(code) => {
+                    eyre::eyre!(
+                        "HTTP {} error when fetching release info from {}",
+                        code,
+                        url
+                    )
+                }
+                ureq::Error::Io(io_err) => {
+                    eyre::eyre!(
+                        "Network I/O error when fetching release info from {}: {}",
+                        url,
+                        io_err
+                    )
+                }
+                _ => {
+                    eyre::eyre!(
+                        "General error when fetching release info from {}: {}",
+                        url,
+                        e
+                    )
+                }
+            }
+        })?;
+
+    let status = response.status();
+    if status != 200 {
+        let body = response.body_mut().read_to_string().unwrap_or_else(|_| "Failed to read error response body".to_string());
+        return Err(eyre::eyre!(
+            "HTTP {} error when fetching release info from {}: {}",
+            status,
+            url,
+            body
+        ));
+    }
 
     let body = response.body_mut().read_to_string()
         .context("Failed to read response body")?;
+
+    // Log response body for debugging (first 500 chars)
+    let debug_body = if body.len() > 500 {
+        format!("{}...", &body[..500])
+    } else {
+        body.clone()
+    };
+
+    log::debug!("Response body: {}", debug_body);
+
     let release: GiteeRelease = serde_json::from_str(&body)
-        .context("Failed to parse release information")?;
+        .with_context(|| format!(
+            "Failed to parse release information from response body: {}",
+            debug_body
+        ))?;
 
     Ok(release)
 }
@@ -717,12 +748,13 @@ fn get_elf_loader_version(elf_loader_path: &Path) -> Result<String> {
 }
 
 /// Get the current installed version information
-fn get_current_version_info() -> Result<VersionInfo> {
+fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
 
     // Try to find elf-loader in common locations
+    let env_root = find_env_root(BASE_ENV);
     let possible_elf_loader_paths = [
-        find_env_root(BASE_ENV).unwrap_or_else(|| PathBuf::new()).join("usr/bin/elf-loader"),
+        env_root.as_ref().map(|root| root.join("usr/bin/elf-loader")).unwrap_or_else(|| PathBuf::new()),
         dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),
         PathBuf::from("./elf-loader"),
     ];
@@ -732,15 +764,17 @@ fn get_current_version_info() -> Result<VersionInfo> {
         .find_map(|path| get_elf_loader_version(path).ok())
         .unwrap_or_else(|| "unknown".to_string());
 
-    Ok(VersionInfo {
+    Ok(EpkgVersionInfo {
         epkg_version,
         elf_loader_version,
     })
 }
 
-/// Check for updates and return new version information if available
-fn check_for_updates() -> Result<Option<VersionInfo>> {
-    let current_version = get_current_version_info()?;
+/// Check for updates and return initialization plan
+fn check_for_updates() -> Result<InitPlan> {
+    println!("Checking for updates...");
+
+    let current_version = get_current_epkg_version_info()?;
 
     // Fetch latest epkg version
     let epkg_release = fetch_latest_release("openeuler", "epkg")
@@ -750,18 +784,66 @@ fn check_for_updates() -> Result<Option<VersionInfo>> {
     let elf_loader_release = fetch_latest_release("openeuler", "elf-loader")
         .context("Failed to fetch elf-loader release info")?;
 
-    let new_version = VersionInfo {
-        epkg_version: epkg_release.tag_name,
-        elf_loader_version: elf_loader_release.tag_name,
+    let new_version = EpkgVersionInfo {
+        epkg_version: epkg_release.tag_name.clone(),
+        elf_loader_version: elf_loader_release.tag_name.clone(),
     };
 
-    // Check if we have newer versions
-    if new_version.epkg_version != current_version.epkg_version ||
-        new_version.elf_loader_version != current_version.elf_loader_version {
-        Ok(Some(new_version))
-    } else {
-        Ok(None)
-    }
+    // Always show version information
+    println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
+    println!("  elf-loader: {} → {}", current_version.elf_loader_version, new_version.elf_loader_version);
+
+    // Determine if this is an upgrade or fresh install
+    let is_upgrade = config().init.upgrade;
+    let arch = &config().common.arch;
+    let dirs = dirs();
+    let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
+
+    // Check for local repo
+    let repo_root = find_repo_root()?;
+    let using_local_repo = is_valid_local_repo(&repo_root);
+
+    // Check for local elf-loader
+    let local_elf_loader_path = repo_root.join("elf-loader/src/loader");
+    let has_local_elf_loader = local_elf_loader_path.exists();
+
+    // Set up file paths
+    let epkg_binary_path = epkg_download_dir.join(format!("epkg-{}", arch));
+    let epkg_binary_sha_path = epkg_download_dir.join(format!("epkg-{}.sha256", arch));
+    let epkg_src_path = epkg_download_dir.join(format!("{}.tar.gz", new_version.epkg_version));
+    let elf_loader_path = epkg_download_dir.join(format!("elf-loader-{}", arch));
+    let elf_loader_sha_path = epkg_download_dir.join(format!("elf-loader-{}.sha256", arch));
+
+    // Set up URLs
+    let (epkg_binary_url, elf_loader_url) = get_versioned_urls(&new_version.epkg_version, &new_version.elf_loader_version, arch);
+    let epkg_binary_sha_url = format!("{}.sha256", epkg_binary_url);
+    let epkg_src_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", new_version.epkg_version);
+    let elf_loader_sha_url = format!("{}.sha256", elf_loader_url);
+
+    // Determine what needs to be downloaded
+    let need_download_epkg_binary = is_upgrade;
+    let need_download_epkg_src = !using_local_repo;
+    let need_download_elf_loader = !has_local_elf_loader;
+
+    Ok(InitPlan {
+        current: current_version,
+        new: new_version,
+        epkg_binary_url,
+        epkg_binary_sha_url,
+        epkg_src_url,
+        elf_loader_url,
+        elf_loader_sha_url,
+        epkg_binary_path,
+        epkg_binary_sha_path,
+        epkg_src_path,
+        elf_loader_path,
+        elf_loader_sha_path,
+        need_download_epkg_binary,
+        need_download_epkg_src,
+        need_download_elf_loader,
+        using_local_repo,
+        local_elf_loader_path: if has_local_elf_loader { Some(local_elf_loader_path) } else { None },
+    })
 }
 
 /// Generate versioned download URLs
