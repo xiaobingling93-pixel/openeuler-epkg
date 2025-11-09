@@ -31,6 +31,8 @@ mod apk_repo;
 mod apk_pkg;
 mod arch_repo;
 mod arch_pkg;
+mod conda_repo;
+mod conda_pkg;
 mod index_html;
 mod epkg;
 mod version;

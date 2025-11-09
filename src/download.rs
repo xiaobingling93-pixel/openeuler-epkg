@@ -625,6 +625,10 @@ impl DownloadTask {
 
     pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, file_size: Option<u64>, repodata_name: String) -> Self {
         let final_path = mirror::Mirrors::resolve_mirror_path(&url, &output_dir, &repodata_name);
+        Self::with_path(url, final_path, max_retries, file_size, repodata_name)
+    }
+
+    pub fn with_path(url: String, final_path: PathBuf, max_retries: usize, file_size: Option<u64>, repodata_name: String) -> Self {
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = utils::append_suffix(&final_path, "part");
 
@@ -634,7 +638,7 @@ impl DownloadTask {
         Self {
             url:               url.clone(),
             resolved_url:      Mutex::new(url),             // Initialize resolved_url with the original url
-            output_dir,
+            output_dir:        PathBuf::new(), // Not used in with_path
             max_retries,
             client:            Arc::new(Mutex::new(None)),  // Initialize with no client
             data_channels:     Arc::new(Mutex::new(Vec::new())),

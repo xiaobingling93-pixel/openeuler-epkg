@@ -409,10 +409,32 @@ impl PackageManager {
     }
 
     /// Check if a package is in the assume_installed list and skip dependency resolution for it.
+    /// For conda format, also checks if the package is a conda virtual package.
     /// Returns true if the package should be skipped (assumed installed), false otherwise.
-    fn is_assume_installed_package(pkgname: &str) -> bool {
+    fn is_assume_installed_package(pkgname: &str, format: PackageFormat) -> bool {
+        // Check assume_installed list
         let assume_installed = &config().install.assume_installed;
-        assume_installed.iter().any(|p| p == pkgname)
+        if assume_installed.iter().any(|p| p == pkgname) {
+            return true;
+        }
+
+        // For conda format, treat virtual packages as assume_installed
+        if format == PackageFormat::Conda {
+            let conda_virtual_packages = vec![
+                "__glibc",     // GNU C Library
+                "__linux",     // Linux kernel
+                "__unix",      // Unix-like system
+                "__win",       // Windows system (for windows packages)
+                "__osx",       // macOS system (for osx packages)
+                "tzdata",      // Timezone data
+            ];
+            if conda_virtual_packages.iter().any(|p| p == &pkgname) {
+                log::debug!("Package '{}' is a conda virtual package, treating as assume_installed", pkgname);
+                return true;
+            }
+        }
+
+        false
     }
 
     fn resolve_single_capability_item(
@@ -438,8 +460,8 @@ impl PackageManager {
         let arch_spec_ref = arch_spec.as_deref();
 
         // Check if this package is in assume_installed list - skip dependency resolution for it
-        if Self::is_assume_installed_package(&base_capability) {
-            log::debug!("Package '{}' is in assume_installed list, skipping dependency resolution", base_capability);
+        if Self::is_assume_installed_package(&base_capability, format) {
+            log::debug!("Package '{}' is in assume_installed list or is a conda virtual package, skipping dependency resolution", base_capability);
             // Return None to indicate we're skipping this package (treating it as already satisfied)
             // The caller will handle this appropriately
             return Ok(None);

@@ -548,6 +548,9 @@ pub fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> 
     } else if repo.index_url.ends_with("/") {
         crate::index_html::sync_from_directory_index(repo.format, repo, &release_path)?;
         Vec::new()
+    } else if repo.format == PackageFormat::Conda && (repo.index_url.ends_with("repodata.json") || repo.index_url.ends_with("repodata.json.gz") || repo.index_url.ends_with("repodata.json.bz2")) {
+        crate::conda_repo::parse_repodata_json(repo, &release_path.parent().unwrap().to_path_buf())
+            .with_context(|| format!("Failed to parse conda repodata.json for repository: {}", repo.repo_name))?
     } else {
         sync_from_package_database(repo, &release_path)
             .with_context(|| format!("Failed to check packages file for repository: {}", repo.repo_name))?
@@ -622,13 +625,25 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     let (data_tx, data_rx) = channel();
 
     // Create and submit download task
-    let task = DownloadTask::with_size(
-        revise.url.clone(),
-        dirs().epkg_downloads_cache.clone(),
-        6,
-        if revise.size > 0 { Some(revise.size as u64) } else { None },
-        revise.repo_revise.repodata_name.clone()
-    ).with_data_channel(data_tx);
+    let task = if revise.repo_revise.format == PackageFormat::Conda {
+        // For conda packages, use the pre-calculated download_path to avoid file conflicts
+        DownloadTask::with_path(
+            revise.url.clone(),
+            revise.download_path.clone(),
+            6,
+            if revise.size > 0 { Some(revise.size as u64) } else { None },
+            revise.repo_revise.repodata_name.clone()
+        ).with_data_channel(data_tx)
+    } else {
+        // For other package formats, use the standard path resolution
+        DownloadTask::with_size(
+            revise.url.clone(),
+            dirs().epkg_downloads_cache.clone(),
+            6,
+            if revise.size > 0 { Some(revise.size as u64) } else { None },
+            revise.repo_revise.repodata_name.clone()
+        ).with_data_channel(data_tx)
+    };
 
     // Submit download task
     submit_download_task(task)
@@ -806,6 +821,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
             PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location))?,
             PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location))?,
             PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location))?,
+            PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.location))?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", revise.repo_revise.format)),
         };
     } else {

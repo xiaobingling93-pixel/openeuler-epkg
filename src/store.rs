@@ -128,6 +128,9 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P,
         PackageFormat::Pacman => {
             crate::arch_pkg::unpack_package(package_file, store_tmp_dir)?
         }
+        PackageFormat::Conda => {
+            crate::conda_pkg::unpack_package(package_file, store_tmp_dir)?
+        }
         PackageFormat::Epkg => {
             // Handle existing .epkg format
             crate::epkg::unpack_package(package_file, store_tmp_dir)?
@@ -155,6 +158,8 @@ fn detect_package_format(package_file: &Path) -> Result<PackageFormat> {
     } else if file_name.ends_with(".apk") {
         Ok(PackageFormat::Apk)
     } else if file_name.ends_with(".conda") {
+        Ok(PackageFormat::Conda)
+    } else if file_name.ends_with(".tar.bz2") {
         Ok(PackageFormat::Conda)
     } else if file_name.ends_with(".pkg.tar.xz") || file_name.ends_with(".pkg.tar.zst") {
         Ok(PackageFormat::Pacman)

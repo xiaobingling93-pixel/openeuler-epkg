@@ -141,6 +141,7 @@ fn parse_html_and_write_packages(
         PackageFormat::Deb => "deb",
         PackageFormat::Apk => "apk",
         PackageFormat::Pacman => "pkg.tar.xz",
+        PackageFormat::Conda => "conda",
         _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format)),
     };
 
@@ -198,6 +199,22 @@ fn parse_package_filename(filename: &str, format: PackageFormat) -> Option<(Stri
                 let pkgname = caps.get(1)?.as_str().to_string();
                 let version = caps.get(2)?.as_str().to_string();
                 let arch = caps.get(3)?.as_str().to_string();
+                return Some((pkgname, version, arch));
+            }
+        },
+        PackageFormat::Conda => {
+            // Example: numpy-1.21.0-py39h6c62de6_0.conda or numpy-1.21.0-py39h6c62de6_0.tar.bz2
+            // Pattern: name-version-build.conda or name-version-build.tar.bz2
+            let re = Regex::new(r"^([^-]+)-(.+)-([^-]+)\.(conda|tar\.bz2)$").ok()?;
+            if let Some(caps) = re.captures(filename) {
+                let pkgname = caps.get(1)?.as_str().to_string();
+                let version = caps.get(2)?.as_str().to_string();
+                let build_string = caps.get(3)?.as_str();
+                // For conda packages, arch is often embedded in build string or is noarch
+                let arch = if build_string.contains("noarch") { "all".to_string() }
+                          else if build_string.contains("x86_64") || build_string.contains("linux_64") { "x86_64".to_string() }
+                          else if build_string.contains("aarch64") || build_string.contains("arm64") { "aarch64".to_string() }
+                          else { "x86_64".to_string() }; // default
                 return Some((pkgname, version, arch));
             }
         },
