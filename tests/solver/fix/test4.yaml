@@ -1,0 +1,7 @@
+format: apk
+description: fix test 4
+repo: basic.yaml
+installed: installed.yaml
+install:
+- b
+- a

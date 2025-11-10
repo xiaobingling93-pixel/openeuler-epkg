@@ -378,6 +378,31 @@ impl<'a> StreamingXmlProcessor<'a> {
         }
     }
 
+    fn decode_html_entities(&self, text: &str) -> String {
+        // First, handle standard named entities
+        let named_entities_transformed = text.replace("&lt;", "<")
+             .replace("&gt;", ">")
+             .replace("&amp;", "&")
+             .replace("&quot;", "\"")
+             .replace("&apos;", "'");
+
+        // Then, handle numeric character references (decimal and hex)
+        self.numeric_char_ref_regex.replace_all(&named_entities_transformed, |caps: &regex::Captures| {
+            let val_hex = caps.get(1).map(|m| u32::from_str_radix(m.as_str(), 16));
+            let val_dec = caps.get(2).map(|m| m.as_str().parse::<u32>());
+
+            match (val_hex, val_dec) {
+                (Some(Ok(code_point)), _) | (_, Some(Ok(code_point))) => {
+                    std::char::from_u32(code_point).map_or_else(
+                        || caps.get(0).unwrap().as_str().to_string(), // If invalid char, return original sequence
+                        |c| c.to_string()
+                    )
+                }
+                _ => caps.get(0).unwrap().as_str().to_string(), // If parsing fails, return original sequence
+            }
+        }).into_owned()
+    }
+
     fn process_chunk(&mut self, chunk: &[u8]) -> Result<()> {
         if chunk.is_empty() {
             return Ok(());
@@ -394,6 +419,14 @@ impl<'a> StreamingXmlProcessor<'a> {
     fn finalize(&mut self) -> Result<()> {
         // Process any remaining complete packages in the buffer
         self.process_complete_packages().context("Failed to process remaining complete packages during finalization")?;
+
+        // Ensure the last package is saved to the index
+        // on_new_paragraph() is normally called when a new package starts (to save the previous one),
+        // but the last package never triggers a new package start, so we need to save it here
+        if !self.derived_files.current_pkgname.is_empty() {
+            log::debug!("Saving last package to index: {}", self.derived_files.current_pkgname);
+            self.derived_files.on_new_paragraph();
+        }
 
         // Log final statistics
         log::info!("StreamingXmlProcessor finished: processed {} packages total", self.packages_processed);
@@ -692,10 +725,10 @@ impl<'a> StreamingXmlProcessor<'a> {
                             "EQ" => " = ", // Added spaces to distinguish from "font(:lang=yap)",
                                            // "gstreamer1(decoder-video/x-dv)(systemstream=true)()(64bit)",
                                            // etc. values at split time
-                            "GE" => ">=",
-                            "GT" => ">",
-                            "LE" => "<=",
-                            "LT" => "<",
+                            "GE" => " >= ",
+                            "GT" => " > ",
+                            "LE" => " <= ",
+                            "LT" => " < ",
                             unknown => {
                                 log::warn!(
                                     "Encountered unknown rpm dependency flag '{}' in <rpm:entry> (name: '{}', section: '{}'). Defaulting to '='.",
@@ -703,7 +736,7 @@ impl<'a> StreamingXmlProcessor<'a> {
                                     name,
                                     self.in_dependency_section
                                 );
-                                "="
+                                " = "
                             }
                         };
 
@@ -735,7 +768,9 @@ impl<'a> StreamingXmlProcessor<'a> {
                             regular.push(formatted_entry);
                         }
                         if self.in_dependency_section == "provides" {
-                            self.derived_files.on_provides(vec![&name_copy]);
+                            // Decode HTML entities in the name before passing to on_provides
+                            let decoded_name = self.decode_html_entities(&name_copy);
+                            self.derived_files.on_provides(&decoded_name, PackageFormat::Rpm);
                         }
                     } else {
                         log::warn!("Unknown dependency section: {}", self.in_dependency_section);
@@ -758,64 +793,48 @@ impl<'a> StreamingXmlProcessor<'a> {
                     "enhances", "supplements", "conflicts", "obsoletes"
                 ];
 
-                // Helper function to transform HTML entities in dependency entries
-                let re_numeric_char_ref_borrow = &self.numeric_char_ref_regex;
-                let transform_entities = |entry: &str| -> String {
-                // First, handle standard named entities
-                let named_entities_transformed = entry.replace("&lt;", "<")
-                     .replace("&gt;", ">")
-                     .replace("&amp;", "&")
-                     .replace("&quot;", "\"")
-                     .replace("&apos;", "'");
+                // Transform all dependency entries first (before mutably borrowing output)
+                // This avoids borrow checker issues with the closure
+                let mut transformed_dependency_lists: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
+                for (section_name, (regular, pre)) in &self.dependency_lists {
+                    let transformed_regular: Vec<String> = regular.iter()
+                        .map(|entry| self.decode_html_entities(entry))
+                        .collect();
+                    let transformed_pre: Vec<String> = pre.iter()
+                        .map(|entry| self.decode_html_entities(entry))
+                        .collect();
+                    transformed_dependency_lists.insert(section_name.clone(), (transformed_regular, transformed_pre));
+                }
 
-                // Then, handle numeric character references (decimal and hex)
-                re_numeric_char_ref_borrow.replace_all(&named_entities_transformed, |caps: &regex::Captures| {
-                    let val_hex = caps.get(1).map(|m| u32::from_str_radix(m.as_str(), 16));
-                    let val_dec = caps.get(2).map(|m| m.as_str().parse::<u32>());
-
-                    match (val_hex, val_dec) {
-                        (Some(Ok(code_point)), _) | (_, Some(Ok(code_point))) => {
-                            std::char::from_u32(code_point).map_or_else(
-                                || caps.get(0).unwrap().as_str().to_string(), // If invalid char, return original sequence
-                                |c| c.to_string()
-                            )
-                        }
-                        _ => caps.get(0).unwrap().as_str().to_string(), // If parsing fails, return original sequence
-                    }
-                }).into_owned()
-            };
-
-                // Helper function to transform and output a list of entries
-                let output_transformed_list = |entries: &[String], key: &str, output: &mut String| {
+                // Helper function to output a list of entries
+                let output_list = |entries: &[String], key: &str, output: &mut String| {
                     if !entries.is_empty() {
-                        let transformed: Vec<String> = entries.iter()
-                            .map(|entry| transform_entities(entry))
-                            .collect();
-                        output.push_str(&format!("{}: {}\n", key, transformed.join(", ")));
+                        output.push_str(&format!("{}: {}\n", key, entries.join(", ")));
                     }
                 };
 
                 for section_name in &dependency_order {
-                    if let Some((regular, pre)) = self.dependency_lists.get(*section_name) {
+                    if let Some((regular, pre)) = transformed_dependency_lists.get(*section_name) {
                         if *section_name == "requires" {
                             // Special handling for requires - emit requiresPre separately
-                            output_transformed_list(pre, "requiresPre", &mut self.derived_files.output);
-                            output_transformed_list(regular, "requires", &mut self.derived_files.output);
+                            output_list(pre, "requiresPre", &mut self.derived_files.output);
+                            output_list(regular, "requires", &mut self.derived_files.output);
                         } else {
                             // For other dependency types, combine pre and regular
                             let mut all_entries = pre.clone();
                             all_entries.extend(regular.iter().cloned());
-                            output_transformed_list(&all_entries, section_name, &mut self.derived_files.output);
+                            output_list(&all_entries, section_name, &mut self.derived_files.output);
                         }
                     }
                 }
 
                 // Emit files if any
                 if !self.files.is_empty() {
-                    self.derived_files.output.push_str(&format!("files: {}\n", self.files.join(", ")));
-                    // Convert Vec<String> to Vec<&str> for on_provides
-                    let file_slices: Vec<&str> = self.files.iter().map(|s| s.as_str()).collect();
-                    self.derived_files.on_provides(file_slices);
+                    let files_str = self.files.join(", ");
+                    self.derived_files.output.push_str(&format!("files: {}\n", files_str));
+                    // Files are provides (for file-based provides)
+                    // Join with comma and pass to on_provides - parse_provides handles comma-separated lists
+                    self.derived_files.on_provides(&files_str, PackageFormat::Rpm);
                 }
 
                 // End package processing

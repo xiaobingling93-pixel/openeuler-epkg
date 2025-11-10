@@ -9,6 +9,7 @@ repos:
   pytorch:
   MindSpore:
 index_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/$repo/$conda_arch/$conda_repofile
+index_url_noarch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/$repo/noarch/$conda_repofile
 
 # Example URLs:
 # https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/linux-64/current_repodata.json.gz

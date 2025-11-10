@@ -1,0 +1,11 @@
+a__2__x86_64:
+  depend_depth: 0
+  ebin_exposure: true
+  depends:
+    - b__2__x86_64
+
+b__2__x86_64:
+  depend_depth: 1
+  rdepends:
+    - a__2__x86_64
+

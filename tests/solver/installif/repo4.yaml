@@ -1,0 +1,36 @@
+- pkgname: postmarketos-base-ui-gnome
+  version: 1
+  requires:
+    - polkit
+  provides:
+    - postmarketos-base-ui-gnome = 1
+    - postmarketos-base-ui-gnome(x86-64) = 1
+
+- pkgname: openrc
+  version: 1
+  provides:
+    - openrc = 1
+    - openrc(x86-64) = 1
+
+- pkgname: postmarketos-base-ui-gnome-openrc
+  version: 1
+  requires:
+    - polkit-elogind
+  # install-if: postmarketos-base-ui-gnome=1 and openrc
+  provides:
+    - postmarketos-base-ui-gnome-openrc = 1
+    - postmarketos-base-ui-gnome-openrc(x86-64) = 1
+
+- pkgname: polkit
+  version: 1
+  provides:
+    - polkit = 1
+    - polkit(x86-64) = 1
+
+- pkgname: polkit-elogind
+  version: 1
+  provides:
+    - polkit = 1
+    - polkit-elogind = 1
+    - polkit-elogind(x86-64) = 1
+

@@ -1,0 +1,9 @@
+format: pacman
+distro: archlinux
+distro_dirs:
+- chaotic-aur
+versions:
+- "latest"
+repos:
+  chaotic-aur:
+index_url: https://geo-mirror.chaotic.cx/chaotic-aur/x86_64/chaotic-aur.files.tar.zst

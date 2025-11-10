@@ -1,0 +1,7 @@
+format: apk
+description: Basic17 test - install a when b=1 is installed (solver keeps existing versions)
+repo: repo.yaml
+installed: installed.yaml
+install:
+- a
+plan:

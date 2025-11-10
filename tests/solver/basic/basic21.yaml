@@ -1,0 +1,5 @@
+- pkgname: b
+  version: '1'
+  provides:
+  - b = 1
+  - b(x86_64) = 1

@@ -1,0 +1,31 @@
+- pkgname: root-histv7
+  version: 6.34.04-2.fc42
+  requires:
+    - libCore.so.6.34()(64bit)
+    - root-core(x86-64) = 6.34.04-2.fc42
+  provides:
+    - libROOTHist.so.6.34()(64bit)
+    - root-histv7 = 6.34.04-2.fc42
+    - root-histv7(x86-64) = 6.34.04-2.fc42
+
+- pkgname: root-core
+  version: 6.34.04-2.fc42
+  provides:
+    - libCore.so.6.34()(64bit)
+    - root-core = 6.34.04-2.fc42
+    - root-core(x86-64) = 6.34.04-2.fc42
+  obsoletes:
+    - root-doc<6.26.00
+    - root-geocad<6.18.00
+
+- pkgname: root-core
+  version: 6.36.04-1.fc42
+  provides:
+    - libCore.so.6.36()(64bit)
+    - libCore.so.6.34()(64bit)
+    - root-core = 6.36.04-1.fc42
+    - root-core(x86-64) = 6.36.04-1.fc42
+  obsoletes:
+    - root-histv7<6.36.00
+    - root-doc<6.26.00
+

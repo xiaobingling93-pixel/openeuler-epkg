@@ -1,0 +1,18 @@
+format: apk
+description: upgrade test 3
+repo: repo.yaml
+installed: installed.yaml
+upgrade:
+- b
+- app
+plan:
+  fresh_installs:
+    libnew__1__x86_64:
+  upgrades_new:
+    b__2__x86_64:
+    app__2__x86_64:
+  upgrades_old:
+    b__1__x86_64:
+    app__1__x86_64:
+  old_removes:
+    libold__1__x86_64:

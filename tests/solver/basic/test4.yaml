@@ -1,0 +1,9 @@
+format: apk
+description: basic test 4
+repo: repo.yaml
+installed: installed.yaml
+remove:
+- a
+plan:
+  old_removes:
+    a__1__x86_64:

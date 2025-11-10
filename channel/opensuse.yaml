@@ -18,7 +18,7 @@ repos:
   oss:
   non-oss:
 index_url: $mirror/distribution/leap/$version/repo/$repo/$arch/repodata/repomd.xml
-index_url_updates: $mirror/update/leap/$version/$repo/repodata/repomd.xml
+# index_url_updates: $mirror/update/leap/$version/$repo/repodata/repomd.xml
 
 # Example URLs:
 # https://mirrors.tuna.tsinghua.edu.cn/opensuse/distribution/leap/16.0/repo/oss/aarch64/repodata/

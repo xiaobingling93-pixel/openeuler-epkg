@@ -1,0 +1,7 @@
+format: apk
+description: conflict test 2
+repo: repo.yaml
+install:
+- a
+- b>1
+expect_fail: true

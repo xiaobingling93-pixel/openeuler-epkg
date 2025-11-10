@@ -1,0 +1,15 @@
+- pkgname: foo
+  version: '1'
+  provides:
+  - foo = 1
+  - foo(x86_64) = 1
+- pkgname: bar
+  version: '1'
+  provides:
+  - bar = 1
+  - bar(x86_64) = 1
+- pkgname: baz
+  version: '1'
+  provides:
+  - baz = 1
+  - baz(x86_64) = 1

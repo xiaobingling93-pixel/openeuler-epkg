@@ -1,0 +1,9 @@
+format: apk
+description: provides test 1
+repo: repo.yaml
+install:
+- app
+plan:
+  fresh_installs:
+    libfoo__1__x86_64:
+    app__2__x86_64:

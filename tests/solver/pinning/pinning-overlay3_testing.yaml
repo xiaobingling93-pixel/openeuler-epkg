@@ -1,0 +1,8 @@
+- pkgname: iif
+  version: '3'
+  requires:
+  - a
+  - b
+  provides:
+  - iif = 3
+  - iif(x86_64) = 3

@@ -1,0 +1,33 @@
+- pkgname: postmarketos-base-systemd
+  version: '1'
+  requires:
+  - polkit>9999
+  provides:
+  - postmarketos-base-systemd = 1
+  - postmarketos-base-systemd(x86_64) = 1
+- pkgname: polkit-dev
+  version: '999124'
+  requires:
+  - polkit=999124
+  provides:
+  - pc:polkit-gobject-1=124
+  - polkit-dev = 999124
+  - polkit-dev(x86_64) = 999124
+- pkgname: polkit-dev
+  version: '125'
+  requires:
+  - polkit=125
+  provides:
+  - pc:polkit-gobject-1=125
+  - polkit-dev = 125
+  - polkit-dev(x86_64) = 125
+- pkgname: polkit
+  version: '999124'
+  provides:
+  - polkit = 999124
+  - polkit(x86_64) = 999124
+- pkgname: polkit
+  version: '125'
+  provides:
+  - polkit = 125
+  - polkit(x86_64) = 125

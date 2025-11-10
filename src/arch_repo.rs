@@ -8,6 +8,7 @@ use color_eyre::eyre;
 use flate2::read::GzDecoder;
 use tar::Archive;
 use zstd::stream::write::Encoder as ZstdEncoder;
+use zstd::stream::read::Decoder as ZstdDecoder;
 use sha2::{Sha256, Digest};
 use std::fs;
 use hex;
@@ -50,10 +51,11 @@ lazy_static! {
     };
 }
 
-/// Generic decoder that can handle both gz and xz compression
+/// Generic decoder that can handle gz, xz, and zst compression
 enum GenericDecoder<R: Read> {
     Gz(GzDecoder<R>),
     Xz(XzDecoder<R>),
+    Zst(Box<dyn Read>),
 }
 
 impl<R: Read> Read for GenericDecoder<R> {
@@ -61,13 +63,16 @@ impl<R: Read> Read for GenericDecoder<R> {
         match self {
             GenericDecoder::Gz(decoder) => decoder.read(buf),
             GenericDecoder::Xz(decoder) => decoder.read(buf),
+            GenericDecoder::Zst(decoder) => decoder.read(buf),
         }
     }
 }
 
 /// Determine compression type based on file extension
 fn get_compression_type(filename: &str) -> &'static str {
-    if filename.ends_with(".xz") {
+    if filename.ends_with(".zst") {
+        "zst"
+    } else if filename.ends_with(".xz") {
         "xz"
     } else if filename.ends_with(".gz") {
         "gz"
@@ -77,8 +82,13 @@ fn get_compression_type(filename: &str) -> &'static str {
 }
 
 /// Create appropriate decoder based on compression type
-fn create_decoder<R: Read>(reader: R, compression_type: &str) -> Result<GenericDecoder<R>> {
+fn create_decoder<R: Read + 'static>(reader: R, compression_type: &str) -> Result<GenericDecoder<R>> {
     match compression_type {
+        "zst" => {
+            log::debug!("Creating zstd decoder");
+            let boxed_reader: Box<dyn Read> = Box::new(reader);
+            Ok(GenericDecoder::Zst(Box::new(ZstdDecoder::new(boxed_reader)?)))
+        }
         "xz" => {
             log::debug!("Creating xz decoder");
             Ok(GenericDecoder::Xz(XzDecoder::new(reader)))
@@ -448,26 +458,10 @@ fn process_desc_section(
                     derived_files.on_new_pkgname(value);
                 }
                 "PROVIDES" => {
-                    // Split provides by spaces and clean up version requirements
-                    let provides: Vec<&str> = section_content.iter()
-                        .flat_map(|line| line.split_whitespace())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| {
-                            // Remove version part after >, <, >=, <=, =
-                            if let Some(i) = s.find('>') {
-                                &s[..i]
-                            } else if let Some(i) = s.find('<') {
-                                &s[..i]
-                            } else if let Some(i) = s.find('=') {
-                                &s[..i]
-                            } else {
-                                s
-                            }
-                        })
-                        .collect();
-
-                    if !provides.is_empty() {
-                        derived_files.on_provides(provides);
+                    // on_provides handles parsing internally
+                    let provides_str = section_content.join(" ");
+                    if !provides_str.trim().is_empty() {
+                        derived_files.on_provides(&provides_str, PackageFormat::Pacman);
                     }
                 }
                 _ => {}

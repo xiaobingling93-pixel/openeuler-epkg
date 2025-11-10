@@ -1,0 +1,47 @@
+- pkgname: a
+  version: '2'
+  requires:
+  - b
+  - c
+  provides:
+  - a = 2
+  - a(x86_64) = 2
+- pkgname: a
+  version: '3'
+  requires:
+  - b
+  - c
+  - d>1.5
+  provides:
+  - a = 3
+  - a(x86_64) = 3
+- pkgname: b
+  version: '1'
+  requires:
+  - c
+  - d<2.0
+  provides:
+  - b = 1
+  - b(x86_64) = 1
+- pkgname: c
+  version: '1'
+  requires:
+  - d>1.0
+  provides:
+  - c = 1
+  - c(x86_64) = 1
+- pkgname: d
+  version: '1.0'
+  provides:
+  - d = 1.0
+  - d(x86_64) = 1.0
+- pkgname: d
+  version: '1.5'
+  provides:
+  - d = 1.5
+  - d(x86_64) = 1.5
+- pkgname: d
+  version: '2.0'
+  provides:
+  - d = 2.0
+  - d(x86_64) = 2.0

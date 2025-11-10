@@ -1,0 +1,13 @@
+format: apk
+description: installif test 6
+repo: installif6.yaml
+install:
+- sway
+- peruse
+plan:
+  fresh_installs:
+    qt5-qtbase__1__x86_64:
+    peruse__1__x86_64:
+    wayland-libs-client__1__x86_64:
+    qt5-qtwayland__1__x86_64:
+    sway__1__x86_64:

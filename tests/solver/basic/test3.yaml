@@ -1,0 +1,11 @@
+format: apk
+description: basic test 3
+repo: repo.yaml
+installed: installed.yaml
+upgrade:
+- a
+plan:
+  upgrades_new:
+    a__2__x86_64:
+  upgrades_old:
+    a__1__x86_64:

@@ -3,7 +3,10 @@ mod models;
 mod io;
 mod download;
 mod depends;
+mod resolvo;
+mod solver_tests;
 mod parse_requires;
+mod parse_provides;
 mod install;
 mod upgrade;
 mod remove;
@@ -47,7 +50,6 @@ mod rpm_verify;
 
 use std::env;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
 use std::sync::Arc;
@@ -60,7 +62,7 @@ use crate::models::*;
 use crate::ipc::privdrop_on_suid;
 use crate::dirs::get_epkg_src_path;
 use color_eyre::Result;
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre::{self};
 use clap::{arg, Command};
 use ctrlc;
 use env_logger;
@@ -312,6 +314,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .arg(arg!(-q --quiet "Suppress output").hide(true).global(true))
         .arg(arg!(-v --verbose "Verbose operation, show debug messages").hide(true).global(true))
         .arg(arg!(-y --"assume-yes" "Automatically answer yes to all prompts").hide(true).global(true))
+        .arg(arg!(--"assume-no" "Automatically answer no to all prompts").hide(true).global(true))
         .arg(arg!(-m --"ignore-missing" "Ignore missing packages").hide(true).global(true))
         .arg(arg!(--"metadata-expire" <SECONDS> "Metadata expiration time in seconds (0=never, -1=always)").value_parser(clap::value_parser!(i32)).hide(true).global(true))
         .arg(arg!(--proxy <URL> "HTTP proxy URL (e.g., http://proxy.example.com:8080)").hide(true).global(true))
@@ -331,6 +334,7 @@ OPTIONS:
   -q, --quiet                       Suppress output
   -v, --verbose                     Verbose operation, show debug messages
   -y, --assume-yes                  Automatically answer yes to all prompts
+      --assume-no                   Automatically answer no to all prompts
   -m, --ignore-missing              Ignore missing packages
       --metadata-expire <SECONDS>   Metadata expiration time in seconds (0=never, -1=always)
       --proxy <URL>                 HTTP proxy URL (e.g., http://proxy.example.com:8080)
@@ -459,16 +463,16 @@ OPTIONS:
                 .about("Install packages")
                 .arg(arg!(--"install-suggests" "Consider suggested packages as a dependency for installing"))
                 .arg(arg!(--"no-install-recommends" "Do not consider recommended packages as a dependency for installing"))
+                .arg(arg!(--"no-install-essentials" "Do not automatically install essential packages"))
                 .arg(arg!(--"assume-installed" <PACKAGES> "Assume these packages are already installed (comma-separated list)").value_delimiter(','))
-                .arg(arg!([PACKAGE_SPEC] ... "Package specifications to install").required_unless_present("local"))
-                .arg(arg!(--local "Install packages from local filesystem"))
-                .arg(arg!(--fs <DIR> "Local filesystem directory to install packages"))
-                .arg(arg!(--symlink <DIR> "Local symlink directory to install packages"))
-                .arg(arg!(--ebin "Install package binaries to ebin/"))
+                .arg(arg!(--solver <SOLVER> "Dependency solver to use: 'resolvo' (resolvo-based SAT solver, default) or 'simple' (simple solver)").value_parser(["resolvo", "simple"]))
+                .arg(arg!([PACKAGE_SPEC] ... "Package specifications to install (can be package names, local .rpm/.deb files, or URLs to package files)"))
         )
         .subcommand(
             Command::new("upgrade")
                 .about("Upgrade packages")
+                .arg(arg!(--solver <SOLVER> "Dependency solver to use: 'resolvo' (resolvo-based SAT solver, default) or 'simple' (simple solver)").value_parser(["resolvo", "simple"]))
+                .arg(arg!(--full "Full upgrade: upgrade all packages, not just those in world.json"))
                 .arg(arg!([PACKAGE_SPEC] ... "Package specifications to upgrade"))
         )
         .subcommand(
@@ -606,6 +610,9 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     if matches.contains_id("assume-yes") {
         config.common.assume_yes        = matches.get_flag("assume-yes");
     }
+    if matches.contains_id("assume-no") {
+        config.common.assume_no         = matches.get_flag("assume-no");
+    }
     if matches.contains_id("ignore-missing") {
         config.common.ignore_missing    = matches.get_flag("ignore-missing");
     }
@@ -681,7 +688,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
         _ => {} // No subcommand or unknown subcommand
     }
-    log::debug!("Configuration: {:#?}", config);
+    log::trace!("Configuration: {:#?}", config);
     Ok(config)
 }
 
@@ -819,13 +826,23 @@ fn parse_options_install(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches
     if sub_matches.contains_id("no-install-recommends") {
         config.install.no_install_recommends = sub_matches.get_flag("no-install-recommends");
     }
+    if sub_matches.contains_id("no-install-essentials") {
+        config.install.no_install_essentials = sub_matches.get_flag("no-install-essentials");
+    }
     if let Some(assume_installed) = sub_matches.get_many::<String>("assume-installed") {
         config.install.assume_installed = assume_installed.map(|s| s.to_string()).collect();
+    }
+    if let Some(solver) = sub_matches.get_one::<String>("solver") {
+        config.install.solver = Some(solver.clone());
     }
     Ok(())
 }
 
-fn parse_options_upgrade(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+fn parse_options_upgrade(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(solver) = sub_matches.get_one::<String>("solver") {
+        config.install.solver = Some(solver.clone());
+    }
+    config.upgrade.full_upgrade = sub_matches.get_flag("full");
     Ok(())
 }
 
@@ -845,6 +862,7 @@ fn parse_options_restore(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatc
 }
 
 fn parse_options_update(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Update command doesn't have any options to parse
     Ok(())
 }
 
@@ -917,6 +935,7 @@ fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches)
     config.search = options;
     Ok(())
 }
+
 
 // Command handlers
 impl PackageManager {
@@ -1051,38 +1070,10 @@ impl PackageManager {
     }
 
     fn command_install(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if sub_matches.get_flag("local") {
-            if let (Some(fs_dir), Some(symlink_dir)) = (sub_matches.get_one::<String>("fs"), sub_matches.get_one::<String>("symlink")) {
-                let ebin = sub_matches.get_flag("ebin");
-                let fs_dir = PathBuf::from(fs_dir);
-                let symlink_dir = PathBuf::from(symlink_dir);
-                // First phase: Link the package
-                self.link_package(&fs_dir, &symlink_dir)?;
-                // Second phase: Expose the package if ebin flag is set
-                if ebin {
-                    let local_pkgline = fs_dir.file_name().ok_or_else(|| eyre::eyre!("Failed to get filename from fs_dir for local expose: {}", fs_dir.display()))?.to_string_lossy();
-                        if local_pkgline.is_empty() {
-                            return Err(eyre::eyre!("Filename from fs_dir is empty for local expose: {}", fs_dir.display()));
-                        }
-                        // Attempt to derive pkgkey. If fs_dir is not named like a pkgline, this might fail or produce an unexpected key.
-                        let local_pkgkey = crate::package::pkgline2pkgkey(&local_pkgline).unwrap_or_else(|_| local_pkgline.to_string());
-                        let links = self.expose_package(&fs_dir, &symlink_dir)
-                            .with_context(|| format!("Failed to expose local package from fs_dir: {}", fs_dir.display()))?;
-
-                        // For local installs, the pkgkey might not be in self.installed_packages.
-                        // If it is, update its ebin_links. Otherwise, the links are created but not tracked for removal by this mechanism.
-                        if let Some(package_info_mut) = self.installed_packages.get_mut(&local_pkgkey) {
-                            package_info_mut.ebin_links = links;
-                            log::info!("Local expose for managed package '{}': updated ebin_links.", local_pkgkey);
-                        } else {
-                            log::info!("Local expose for '{}': {} ebin wrappers created. Links not stored in managed package metadata as key was not found.", local_pkgkey, links.len());
-                        }
-                }
-            }
-        } else if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            self.sync_channel_metadata()?;
+        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             let packages_vec: Vec<String> = package_specs.cloned().collect();
-            self.install_packages(packages_vec)?;
+            self.sync_channel_metadata()?;
+            self.install_packages(packages_vec).map(|_| ())?;
         }
         Ok(())
     }
@@ -1095,13 +1086,13 @@ impl PackageManager {
             .map(|vals| vals.cloned().collect())
             .unwrap_or_else(Vec::new);
 
-        self.upgrade_packages(package_names)
+        self.upgrade_packages(package_names).map(|_| ())
     }
 
     fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
             let packages_vec: Vec<String> = package_specs.cloned().collect();
-            self.remove_packages(packages_vec)?;
+            self.remove_packages(packages_vec).map(|_| ())?;
         }
         Ok(())
     }

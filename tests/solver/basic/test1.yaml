@@ -1,0 +1,9 @@
+format: apk
+description: basic test 1
+repo: repo.yaml
+install:
+- a
+plan:
+  fresh_installs:
+    b__2__x86_64:
+    a__2__x86_64:

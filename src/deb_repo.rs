@@ -454,12 +454,8 @@ fn process_line(line: &str,
             } else if key == "Important" && value.trim().eq_ignore_ascii_case("yes") {
                 derived_files.output.push_str("\npriority: important");
             } else if key == "Provides" {
-                // Example value: "nvidia-open-kernel-535.247.01, nvidia-open-kernel-dkms-any (= 535.247.01)"
-                let provides: Vec<&str> = value.split(", ")
-                    .map(|s| s.split_whitespace().next().unwrap_or(""))
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                derived_files.on_provides(provides);
+                // on_provides handles parsing internally
+                derived_files.on_provides(value, PackageFormat::Deb);
             }
         } else {
             log::warn!("Unexpected key in line -- {}: {}", key, value);

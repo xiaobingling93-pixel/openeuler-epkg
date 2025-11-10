@@ -474,38 +474,6 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 递归复制源路径下的所有内容到目标路径，支持文件和目录的复制。
-///
-/// 若源路径是目录，该函数会递归复制目录下的所有文件和子目录到目标路径；
-/// 若源路径是文件，则直接将该文件复制到目标路径。
-///
-/// # 参数
-/// * `src` - 源路径，可以是文件或目录，实现了 `AsRef<Path>` 特征。
-/// * `dst` - 目标路径，复制操作的目的地，实现了 `AsRef<Path>` 特征。
-///
-/// # 返回值
-/// * `Ok(())` - 复制操作成功完成。
-/// * `Err` - 复制过程中出现 I/O 错误，如无法获取元数据、创建目录失败或复制文件失败等。
-#[allow(dead_code)]
-pub fn copy_all<P: AsRef<Path>>(src: P, dst: P) -> Result<()> {
-    let metadata = fs::metadata(&src)
-        .with_context(|| format!("Failed to get metadata for {}", src.as_ref().display()))?;
-
-    if metadata.is_dir() {
-        // 若源路径是目录，则创建目标目录（如果不存在），然后递归复制目录下的所有文件和子目录。
-        fs::create_dir_all(&dst)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let dst_path = dst.as_ref().join(entry.file_name());
-            copy_all(src_path, dst_path)?;
-        }
-    } else {
-        fs::copy(src, dst)?;
-    }
-    Ok(())
-}
-
 pub fn is_running_as_root() -> bool {
     unistd::geteuid().is_root()
 }
@@ -635,6 +603,10 @@ pub fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 pub fn user_prompt_and_confirm() -> Result<bool> {
     if models::config().common.dry_run {
         println!("\nDry run: No changes will be made to the system.");
+        return Ok(false);
+    }
+
+    if models::config().common.assume_no {
         return Ok(false);
     }
 

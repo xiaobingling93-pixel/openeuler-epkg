@@ -1,0 +1,10 @@
+format: apk
+description: complicated test 2
+repo: repo.yaml
+install:
+- b
+plan:
+  fresh_installs:
+    d__1.5__x86_64:
+    c__1__x86_64:
+    b__1__x86_64:

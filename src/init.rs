@@ -11,6 +11,7 @@ use crate::download::download_urls;
 use crate::utils;
 use crate::dirs::{find_env_root, get_env_root};
 use crate::models::dirs;
+use crate::mirror;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
@@ -217,8 +218,9 @@ impl PackageManager {
         }
 
         // Download to the new epkg subdirectory within downloads cache
-        let epkg_download_dir = init_plan.epkg_binary_path.parent().unwrap();
-        download_urls(urls, epkg_download_dir, 6, false)
+        // Use the base directory - download_urls will construct nested paths internally
+        let epkg_download_dir = dirs().epkg_downloads_cache.join("epkg");
+        download_urls(urls, &epkg_download_dir, 6, false)
             .context("Failed to download required files")?;
 
         // Verify checksums
@@ -246,7 +248,7 @@ impl PackageManager {
             .context("Failed to download required files for base environment")?;
 
         self.setup_epkg_src(&base_env_root, init_plan)?;
-        self.setup_common_binaries(&base_env_root)?;
+        self.setup_common_binaries(&base_env_root, init_plan)?;
 
         Ok(())
     }
@@ -299,8 +301,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn setup_common_binaries(&self, env_root: &Path) -> Result<()> {
-        let arch = env::consts::ARCH;
+    fn setup_common_binaries(&self, env_root: &Path, init_plan: &InitPlan) -> Result<()> {
         let usr_bin = env_root.join("usr/bin");
 
         fs::create_dir_all(&usr_bin)
@@ -311,11 +312,10 @@ impl PackageManager {
         // Determine epkg binary source based on whether we're upgrading or installing
         let epkg_source = if config().init.upgrade {
             // Use downloaded epkg binary for upgrades
-            let epkg_binary_path = dirs().epkg_downloads_cache.join("epkg").join(format!("epkg-{}", arch));
-            if !epkg_binary_path.exists() {
-                return Err(eyre::eyre!("Downloaded epkg binary not found at {}", epkg_binary_path.display()));
+            if !init_plan.epkg_binary_path.exists() {
+                return Err(eyre::eyre!("Downloaded epkg binary not found at {}", init_plan.epkg_binary_path.display()));
             }
-            epkg_binary_path
+            init_plan.epkg_binary_path.clone()
         } else {
             // Use current executable for normal installs
             std::env::current_exe()
@@ -326,9 +326,8 @@ impl PackageManager {
         self.copy_epkg_binary_atomically(&epkg_source, &target_epkg, true)?;
 
         // Copy elf-loader binary using atomic operation
-        let elf_loader_source = dirs().epkg_downloads_cache.join("epkg").join(format!("elf-loader-{}", arch));
         let elf_loader_target = usr_bin.join("elf-loader");
-        self.copy_epkg_binary_atomically(&elf_loader_source, &elf_loader_target, false)?;
+        self.copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
 
         // Create symlink to epkg binary in the first valid PATH component
         self.create_epkg_symlink(env_root, &target_epkg)
@@ -452,7 +451,7 @@ impl PackageManager {
         let path_var = env::var("PATH")
             .unwrap_or_else(|_| "".to_string());
 
-        if path_var.contains(home_bin.to_string_lossy().as_ref()) {
+        if path_var.contains(&*home_bin.to_string_lossy()) {
             if home_bin.exists() {
                 println!("Creating symlink: {}/epkg -> {}", home_bin.display(), epkg_binary_path.display());
                 if let Err(e) = utils::force_symlink(epkg_binary_path, &home_bin.join("epkg")) {
@@ -807,18 +806,19 @@ fn check_for_updates() -> Result<InitPlan> {
     let local_elf_loader_path = repo_root.join("elf-loader/src/loader");
     let has_local_elf_loader = local_elf_loader_path.exists();
 
-    // Set up file paths
-    let epkg_binary_path = epkg_download_dir.join(format!("epkg-{}", arch));
-    let epkg_binary_sha_path = epkg_download_dir.join(format!("epkg-{}.sha256", arch));
-    let epkg_src_path = epkg_download_dir.join(format!("{}.tar.gz", new_version.epkg_version));
-    let elf_loader_path = epkg_download_dir.join(format!("elf-loader-{}", arch));
-    let elf_loader_sha_path = epkg_download_dir.join(format!("elf-loader-{}.sha256", arch));
-
-    // Set up URLs
+    // Set up URLs first (needed for path resolution)
     let (epkg_binary_url, elf_loader_url) = get_versioned_urls(&new_version.epkg_version, &new_version.elf_loader_version, arch);
     let epkg_binary_sha_url = format!("{}.sha256", epkg_binary_url);
     let epkg_src_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", new_version.epkg_version);
     let elf_loader_sha_url = format!("{}.sha256", elf_loader_url);
+
+    // Set up file paths using the same resolution logic as the download system
+    // This ensures paths match where files are actually downloaded
+    let epkg_binary_path      = mirror::Mirrors::resolve_mirror_path(&epkg_binary_url,       &epkg_download_dir, "epkg");
+    let epkg_binary_sha_path  = mirror::Mirrors::resolve_mirror_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg");
+    let epkg_src_path         = mirror::Mirrors::resolve_mirror_path(&epkg_src_url,          &epkg_download_dir, "epkg");
+    let elf_loader_path       = mirror::Mirrors::resolve_mirror_path(&elf_loader_url,        &epkg_download_dir, "epkg");
+    let elf_loader_sha_path   = mirror::Mirrors::resolve_mirror_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg");
 
     // Determine what needs to be downloaded
     let need_download_epkg_binary = is_upgrade;

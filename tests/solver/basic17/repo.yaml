@@ -1,0 +1,28 @@
+- pkgname: a
+  version: 1
+  requires:
+    - b=1
+  provides:
+    - a = 1
+    - a(x86-64) = 1
+
+- pkgname: a
+  version: 2
+  requires:
+    - b=2
+  provides:
+    - a = 2
+    - a(x86-64) = 2
+
+- pkgname: b
+  version: 1
+  provides:
+    - b = 1
+    - b(x86-64) = 1
+
+- pkgname: b
+  version: 2
+  provides:
+    - b = 2
+    - b(x86-64) = 2
+

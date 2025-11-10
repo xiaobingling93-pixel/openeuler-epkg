@@ -1,0 +1,9 @@
+format: apk
+description: installif test 8
+repo: installif8.yaml
+install:
+- bar
+plan:
+  fresh_installs:
+    bar__1__x86_64:
+    foo__1__x86_64:

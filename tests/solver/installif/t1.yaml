@@ -1,0 +1,12 @@
+format: apk
+description: installif test 1
+repo: repo.yaml
+install:
+- foo
+- app
+plan:
+  fresh_installs:
+    lib__1__x86_64:
+    app__1__x86_64:
+    foo__1__x86_64:
+    appiif1__1__x86_64:

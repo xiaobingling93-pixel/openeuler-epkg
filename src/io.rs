@@ -10,6 +10,7 @@ use crate::dirs::*;
 use crate::models::{self, *};
 
 /// Deserialize environment configuration from disk
+#[allow(dead_code)] // quiet warning in cargo test calls
 pub fn deserialize_env_config() -> Result<EnvConfig> {
     let env_name = config().common.env.clone();
     deserialize_env_config_for(env_name)
@@ -150,6 +151,9 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
         if repo_config.index_url.is_none() {
             repo_config.index_url = Some(cc.index_url.clone());
         }
+        if repo_config.index_url_noarch.is_none() {
+            repo_config.index_url_noarch = cc.index_url_noarch.clone();
+        }
         if repo_config.index_url_updates.is_none() {
             repo_config.index_url_updates = cc.index_url_updates.clone();
         }
@@ -170,6 +174,9 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
         if let Some(url) = &repo_config.index_url {
             interpolated_urls.push((repo_name.clone(), "index_url", interpolate_index_url(cc, repo_name, url)?));
         }
+        if let Some(url) = &repo_config.index_url_noarch {
+            interpolated_urls.push((repo_name.clone(), "index_url_noarch", interpolate_index_url(cc, repo_name, url)?));
+        }
         if let Some(url) = &repo_config.index_url_updates {
             interpolated_urls.push((repo_name.clone(), "index_url_updates", interpolate_index_url(cc, repo_name, url)?));
         }
@@ -189,6 +196,7 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
         if let Some(repo_config) = cc.repos.get_mut(&repo_name) {
             match url_type {
                 "index_url" => repo_config.index_url = Some(interpolated_url),
+                "index_url_noarch" => repo_config.index_url_noarch = Some(interpolated_url),
                 "index_url_updates" => repo_config.index_url_updates = Some(interpolated_url),
                 "index_url_security" => repo_config.index_url_security = Some(interpolated_url),
                 "index_url_nonfree" => repo_config.index_url_nonfree = Some(interpolated_url),
@@ -202,6 +210,7 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
 }
 
 /// Deserialize channel configuration from disk
+#[allow(dead_code)] // quiet warning in cargo test calls
 pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
     let env_root = PathBuf::from(&env_config.env_root);
@@ -364,6 +373,11 @@ impl PackageManager {
     }
 
     pub fn load_installed_packages(&mut self) -> Result<()> {
+        // If installed_packages is already populated (e.g., in test mode), skip loading
+        // This preserves test-set installed packages and avoids overwriting them
+        if !self.installed_packages.is_empty() {
+            return Ok(());
+        }
         let generation_id = self.get_current_generation_id()?;
         self.installed_packages = self.read_installed_packages(&config().common.env, generation_id)?;
         Ok(())
@@ -381,6 +395,47 @@ impl PackageManager {
 
         if config().common.verbose {
             println!("Installed packages saved to: {}", file_path.display());
+        }
+
+        Ok(())
+    }
+
+    pub fn read_world(&mut self, env: &str, generation_id: u32) -> Result<HashMap<String, String>> {
+        let generations_root = get_generations_root(env)?;
+        let file_path = generations_root.join(generation_id.to_string()).join("world.json");
+
+        // If file doesn't exist, return empty map
+        if !file_path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let contents = fs::read_to_string(&file_path)
+            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+
+        let world: HashMap<String, String> = serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
+
+        Ok(world)
+    }
+
+    pub fn load_world(&mut self) -> Result<()> {
+        let generation_id = self.get_current_generation_id()?;
+        self.world = self.read_world(&config().common.env, generation_id)?;
+        Ok(())
+    }
+
+    pub fn save_world(&mut self, new_generation: &PathBuf) -> Result<()> {
+        // Construct the file path
+        let file_path = new_generation.join("world.json");
+
+        // Serialize the world to JSON
+        let json = serde_json::to_string_pretty(&self.world)?;
+
+        // Write the JSON to the file
+        fs::write(&file_path, json)?;
+
+        if config().common.verbose {
+            println!("World saved to: {}", file_path.display());
         }
 
         Ok(())

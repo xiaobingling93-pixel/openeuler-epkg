@@ -1,0 +1,5 @@
+format: apk
+description: error test 8
+install:
+- foo=invalid
+expect_fail: true

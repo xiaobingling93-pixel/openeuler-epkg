@@ -1,0 +1,7 @@
+format: apk
+description: pinning test 11
+repo: pinning-basic.yaml pinning-overlay1_testing.yaml
+install:
+- c>=3
+- a@testing
+expect_fail: true

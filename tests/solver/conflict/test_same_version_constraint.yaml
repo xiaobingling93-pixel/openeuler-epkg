@@ -1,0 +1,15 @@
+format: rpm
+description: Test that packages with same version that constrain capabilities provided by other same-version packages are handled correctly (self-contradictory constraint filtering)
+repo: repo_same_version_constraint.yaml
+install:
+- libgfrpc0
+- libgfxdr0
+plan:
+  fresh_installs:
+    libglusterfs0__11.1-5.oe2403sp1__x86_64: {}
+    libgfrpc0__11.1-5.oe2403sp1__x86_64: {}
+    libgfxdr0__11.1-5.oe2403sp1__x86_64: {}
+    glibc__2.38-65.oe2403sp1__x86_64: {}
+    openssl__3.0.0__x86_64: {}
+    bash__5.0__x86_64: {}
+

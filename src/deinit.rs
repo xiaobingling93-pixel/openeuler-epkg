@@ -231,6 +231,10 @@ fn confirm_deinit() -> Result<bool> {
         return Ok(false);
     }
 
+    if config().common.assume_no {
+        return Ok(false);
+    }
+
     if config().common.assume_yes {
         return Ok(true);
     }

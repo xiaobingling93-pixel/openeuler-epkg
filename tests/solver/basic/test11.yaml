@@ -1,0 +1,14 @@
+format: apk
+description: basic test 11
+repo: repo.yaml
+config:
+  ignore_missing: true
+install:
+- a
+- broken
+- not-in-repo
+plan:
+  fresh_installs:
+    a__2__x86_64:
+    b__2__x86_64:
+    broken__1__x86_64:

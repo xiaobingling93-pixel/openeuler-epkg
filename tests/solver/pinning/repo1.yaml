@@ -1,0 +1,24 @@
+- pkgname: a
+  version: '2'
+  requires:
+  - b
+  provides:
+  - a = 2
+  - a(x86_64) = 2
+- pkgname: b
+  version: '2'
+  provides:
+  - b = 2
+  - b(x86_64) = 2
+- pkgname: c
+  version: '2'
+  requires:
+  - a>=2
+  provides:
+  - c = 2
+  - c(x86_64) = 2
+- pkgname: samever
+  version: '10'
+  provides:
+  - samever = 10
+  - samever(x86_64) = 10

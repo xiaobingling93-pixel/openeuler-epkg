@@ -1,0 +1,6 @@
+- pkgname: b
+  version: '2'
+  provides:
+  - a=2
+  - b = 2
+  - b(x86_64) = 2

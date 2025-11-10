@@ -430,6 +430,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
     let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut conflicts_values = Vec::new();
 
     for (original_field, values) in raw_fields {
         let mapped_field = PACKAGE_KEY_MAPPING
@@ -437,14 +438,56 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
             .unwrap_or(&original_field.as_str())
             .to_string();
 
-        // Join multiple values with commas for repeatable fields
-        let combined_value = if values.len() > 1 {
-            values.join(", ")
-        } else {
-            values.into_iter().next().unwrap_or_default()
-        };
+        // Special handling for "depend" field: separate conflicts (starting with '!') from regular requires
+        if original_field == "depend" {
+            let mut requires = Vec::new();
+            let mut conflicts = Vec::new();
 
-        package_fields.push((mapped_field, combined_value));
+            for value in &values {
+                // Split by whitespace in case there are multiple dependencies in one value
+                for dep in value.split_whitespace() {
+                    if dep.starts_with('!') {
+                        // Conflict: remove '!' prefix and add to conflicts
+                        conflicts.push(dep[1..].to_string());
+                    } else {
+                        // Regular dependency: add to requires
+                        requires.push(dep.to_string());
+                    }
+                }
+            }
+
+            // Add requires field if there are any regular dependencies
+            if !requires.is_empty() {
+                let requires_value = if requires.len() > 1 {
+                    requires.join(", ")
+                } else {
+                    requires.into_iter().next().unwrap_or_default()
+                };
+                package_fields.push(("requires".to_string(), requires_value));
+            }
+
+            // Collect conflicts to add later
+            conflicts_values.extend(conflicts);
+        } else {
+            // Join multiple values with commas for repeatable fields
+            let combined_value = if values.len() > 1 {
+                values.join(", ")
+            } else {
+                values.into_iter().next().unwrap_or_default()
+            };
+
+            package_fields.push((mapped_field, combined_value));
+        }
+    }
+
+    // Add conflicts field if there are any conflicts
+    if !conflicts_values.is_empty() {
+        let conflicts_value = if conflicts_values.len() > 1 {
+            conflicts_values.join(", ")
+        } else {
+            conflicts_values.into_iter().next().unwrap_or_default()
+        };
+        package_fields.push(("conflicts".to_string(), conflicts_value));
     }
 
     // Use the general store function to save the package.txt file

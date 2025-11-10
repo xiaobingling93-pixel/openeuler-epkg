@@ -1,0 +1,16 @@
+format: apk
+description: complicated test 4
+repo: repo.yaml
+installed: installed.yaml
+install:
+- a
+- d
+plan:
+  fresh_installs:
+    c__1__x86_64:
+    b__1__x86_64:
+    a__2__x86_64:
+  upgrades_new:
+    d__1.5__x86_64:
+  upgrades_old:
+    d__1.0__x86_64:

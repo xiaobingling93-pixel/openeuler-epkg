@@ -314,7 +314,8 @@ impl PackageManager {
 
         // Install packages if any
         if !packages_to_install.is_empty() {
-            self.install_pkgkeys(packages_to_install, std::collections::HashMap::new(), &std::collections::HashMap::new())?;
+            let plan = self.prepare_installation_plan(&packages_to_install)?;
+            self.execute_installation_plan(plan)?;
         } else {
             // Create metadata files
             let generations_root = env_root.join("generations");
@@ -849,80 +850,6 @@ impl PackageManager {
         let mut result: Vec<String> = env_names.into_iter().collect();
         result.sort();
         Ok(result)
-    }
-
-    #[allow(dead_code)]
-    pub fn list_generations(&mut self, name: &str) -> Result<()> {
-        // Check if environment exists
-        let env_root = get_env_root(name.to_string())?;
-        if !env_root.exists() {
-            return Err(eyre::eyre!("Environment does not exist: '{}'", name));
-        }
-
-        // Get generations directory
-        let generations_root = get_generations_root(name)?;
-        if !generations_root.exists() {
-            return Err(eyre::eyre!("No generations found for environment: '{}'", name));
-        }
-
-        // Get current generation
-        let current_id = self.get_current_generation_id()?;
-
-        // List all generations
-        let mut generations: Vec<u32> = fs::read_dir(&generations_root)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let name = entry.file_name().into_string().ok()?;
-                if name.chars().all(|c| c.is_digit(10)) {
-                    name.parse::<u32>().ok()
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Sort numerically
-        generations.sort();
-
-        // Print table header
-        println!("{:<12}  {:<10}  {}", "Generation", "Status", "Command");
-        println!("{}", "-".repeat(60));
-
-        // Print each generation with its status
-        for gen in generations {
-            let gen_dir = generations_root.join(gen.to_string());
-            let command_file = gen_dir.join("command.json");
-
-            // Try to read command from command.json
-            let command = if command_file.exists() {
-                match fs::read_to_string(&command_file) {
-                    Ok(content) => {
-                        // Simple extraction, in real code you'd use serde
-                        content.lines()
-                            .find(|line| line.contains("\"command\""))
-                            .unwrap_or("")
-                            .trim()
-                            .replace("\"command\":", "")
-                            .replace("\"", "")
-                            .trim()
-                            .to_string()
-                    },
-                    Err(_) => "unknown".to_string()
-                }
-            } else {
-                "unknown".to_string()
-            };
-
-            let status = if gen == current_id {
-                "current"
-            } else {
-                ""
-            };
-
-            println!("{:<12}  {:<10}  {}", gen, status, command);
-        }
-
-        Ok(())
     }
 
     pub fn export_environment(&mut self, name: &str, output: Option<String>) -> Result<()> {

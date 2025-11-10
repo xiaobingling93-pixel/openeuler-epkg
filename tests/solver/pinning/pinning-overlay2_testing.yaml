@@ -1,0 +1,19 @@
+- pkgname: a
+  version: '3.1'
+  requires:
+  - b
+  provides:
+  - a = 3.1
+  - a(x86_64) = 3.1
+- pkgname: b
+  version: '3.1'
+  provides:
+  - b = 3.1
+  - b(x86_64) = 3.1
+- pkgname: c
+  version: '3.1'
+  requires:
+  - a>=3
+  provides:
+  - c = 3.1
+  - c(x86_64) = 3.1

@@ -1,0 +1,164 @@
+- pkgname: libfoo
+  version: '1'
+  provides:
+  - so:foo.so.1=1.0
+  - libfoo = 1
+  - libfoo(x86_64) = 1
+- pkgname: libfoo
+  version: '2'
+  provides:
+  - so:foo.so.2=1.0
+  - libfoo = 2
+  - libfoo(x86_64) = 2
+- pkgname: app
+  version: '2'
+  requires:
+  - so:foo.so.1
+  provides:
+  - app = 2
+  - app(x86_64) = 2
+- pkgname: app2
+  version: '2'
+  requires:
+  - so:foo.so.2
+  provides:
+  - app2 = 2
+  - app2(x86_64) = 2
+- pkgname: mymailreader
+  version: '0.1'
+  provides:
+  - mymailreader = 0.1
+  - mymailreader(x86_64) = 0.1
+- pkgname: mymailreader
+  version: '1'
+  provides:
+  - mail-reader
+  - mail-reader(x86_64) = 1
+  - mymailreader = 1
+  - mymailreader(x86_64) = 1
+- pkgname: mailreadplus
+  version: '1'
+  provides:
+  - mail-reader
+  - mail-reader(x86_64) = 1
+  - mailreadplus = 1
+  - mailreadplus(x86_64) = 1
+- pkgname: mailreadsolo
+  version: '1'
+  conflicts:
+  - mail-reader
+  provides:
+  - mail-reader
+  - mail-reader(x86_64) = 1
+  - mailreadsolo = 1
+  - mailreadsolo(x86_64) = 1
+- pkgname: server-a
+  version: '1'
+  provides:
+  - theservice=1
+  - server-a = 1
+  - server-a(x86_64) = 1
+- pkgname: server-b
+  version: '1'
+  provides:
+  - theservice=2
+  - server-b = 1
+  - server-b(x86_64) = 1
+- pkgname: selfconflicting
+  version: '1'
+  provides:
+  - selfprovided=2
+  - selfprovided=3
+  - selfconflicting = 1
+  - selfconflicting(x86_64) = 1
+- pkgname: conflicted-provider-a
+  version: '0.1'
+  provides:
+  - conflicted-provider
+  - conflicted-provider(x86_64) = 0.1
+  - conflicted-provider-a = 0.1
+  - conflicted-provider-a(x86_64) = 0.1
+- pkgname: conflicted-provider-b
+  version: '0.1'
+  provides:
+  - conflicted-provider conflicted-provider-2
+  - conflicted-provider conflicted-provider-2(x86_64) = 0.1
+  - conflicted-provider-b = 0.1
+  - conflicted-provider-b(x86_64) = 0.1
+- pkgname: conflicted-dep
+  version: '0.1'
+  requires:
+  - conflicted-provider
+  provides:
+  - conflicted-dep = 0.1
+  - conflicted-dep(x86_64) = 0.1
+- pkgname: conflicted-parent
+  version: '0.1'
+  requires:
+  - conflicted-dep
+  provides:
+  - conflicted-parent = 0.1
+  - conflicted-parent(x86_64) = 0.1
+- pkgname: self-provide
+  version: '0.1'
+  provides:
+  - self-provide
+  - self-provide(x86_64) = 0.1
+  - self-provide = 0.1
+  - self-provide(x86_64) = 0.1
+- pkgname: conflicted-dep-2
+  version: '0.1'
+  requires:
+  - conflicted-provider-2
+  provides:
+  - conflicted-dep-2 = 0.1
+  - conflicted-dep-2(x86_64) = 0.1
+- pkgname: pulseaudio-alsa
+  version: '1'
+  provides:
+  - pulseaudio-alsa = 1
+  - pulseaudio-alsa(x86_64) = 1
+- pkgname: pulseaudio
+  version: '1'
+  provides:
+  - pulseaudio = 1
+  - pulseaudio(x86_64) = 1
+- pkgname: pipewire-pulse
+  version: '1'
+  provides:
+  - pulseaudio=1 pulseaudio-alsa=1
+  - pipewire-pulse = 1
+  - pipewire-pulse(x86_64) = 1
+- pkgname: sane-backends
+  version: '1'
+  provides:
+  - sane-backends = 1
+  - sane-backends(x86_64) = 1
+- pkgname: sane-backend-hpaio
+  version: '1'
+  provides:
+  - hplip-sane
+  - hplip-sane(x86_64) = 1
+  - sane-backend-hpaio = 1
+  - sane-backend-hpaio(x86_64) = 1
+- pkgname: testp
+  version: 0.1-r0
+  provides:
+  - foopkg
+  - foopkg(x86_64) = 0.1-r0
+  - testp = 0.1-r0
+  - testp(x86_64) = 0.1-r0
+- pkgname: testq
+  version: 0.1-r0
+  provides:
+  - foopkg
+  - foopkg(x86_64) = 0.1-r0
+  - testq = 0.1-r0
+  - testq(x86_64) = 0.1-r0
+- pkgname: testr
+  version: 0.1-r0
+  requires:
+  - foopkg
+  provides:
+  - testr = 0.1-r0
+  - testr(x86_64) = 0.1-r0

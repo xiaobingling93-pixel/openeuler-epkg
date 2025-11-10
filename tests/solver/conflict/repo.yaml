@@ -1,0 +1,17 @@
+- pkgname: a
+  version: '1'
+  conflicts:
+  - b>1
+  provides:
+  - a = 1
+  - a(x86_64) = 1
+- pkgname: b
+  version: '1'
+  provides:
+  - b = 1
+  - b(x86_64) = 1
+- pkgname: b
+  version: '2'
+  provides:
+  - b = 2
+  - b(x86_64) = 2

@@ -1,0 +1,8 @@
+format: apk
+description: provides test 19
+repo: repo.yaml
+install:
+- mailreadsolo
+plan:
+  fresh_installs:
+    mailreadsolo__1__x86_64:

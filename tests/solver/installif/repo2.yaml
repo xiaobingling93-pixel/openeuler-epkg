@@ -1,0 +1,8 @@
+- pkgname: appiif1
+  version: '2'
+  requires:
+  - app
+  - broken-deps
+  provides:
+  - appiif1 = 2
+  - appiif1(x86_64) = 2

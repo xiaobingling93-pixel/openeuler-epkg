@@ -1,0 +1,6 @@
+format: apk
+description: fuzzy test 2
+repo: repo.yaml
+install:
+- a~2.4
+expect_fail: true

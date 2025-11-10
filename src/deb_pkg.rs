@@ -287,8 +287,13 @@ Architecture: all
         let control_path = deb_dir.join("control");
         fs::write(&control_path, control_content).unwrap();
 
-        // Run the function
-        create_package_txt(&store_tmp_dir, &store_tmp_dir).unwrap();
+        // Create a mock deb file for SHA256 calculation
+        let mock_deb_file = store_tmp_dir.join("mock.deb");
+        fs::write(&mock_deb_file, b"mock deb file content").unwrap();
+
+        // Run the function - both arguments must be the same type
+        let store_tmp_dir_buf = store_tmp_dir.to_path_buf();
+        create_package_txt(&mock_deb_file, &store_tmp_dir_buf).unwrap();
 
         // Read the generated package.txt file
         let package_txt_path = store_tmp_dir.join("info/package.txt");

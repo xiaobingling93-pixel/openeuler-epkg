@@ -10,8 +10,8 @@ versions:
 - "latest"
 repos:
   arch4edu:
-index_url: $mirror/$arch/arch4edu.db.tar.xz
+index_url: $mirror/$arch/arch4edu.db.tar.gz
 
 # Example URLs:
-# https://mirrors.tuna.tsinghua.edu.cn/arch4edu/x86_64/arch4edu.db.tar.xz
-# https://arch4edu.keybase.pub/any/arch4edu.db.tar.xz
+# https://mirrors.tuna.tsinghua.edu.cn/arch4edu/x86_64/arch4edu.db.tar.gz
+# https://arch4edu.keybase.pub/any/arch4edu.db.tar.gz

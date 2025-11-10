@@ -1,0 +1,10 @@
+- pkgname: a
+  version: '2.2'
+  provides:
+  - a = 2.2
+  - a(x86_64) = 2.2
+- pkgname: a
+  version: '2.10'
+  provides:
+  - a = 2.10
+  - a(x86_64) = 2.10

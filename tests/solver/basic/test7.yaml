@@ -1,0 +1,6 @@
+format: apk
+description: basic test 7
+repo: repo.yaml
+installed: installed.yaml
+install:
+- a

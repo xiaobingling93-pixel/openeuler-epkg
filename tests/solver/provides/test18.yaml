@@ -1,0 +1,13 @@
+format: apk
+description: provides test 18
+repo: provides-del.yaml
+installed: installed.yaml
+install:
+- wine
+remove:
+- wine-staging
+plan:
+  fresh_installs:
+    wine__2__x86_64:
+  old_removes:
+    wine-staging__10__x86_64:

@@ -1,0 +1,5 @@
+format: apk
+description: error test 10
+install:
+- foo==
+expect_fail: true

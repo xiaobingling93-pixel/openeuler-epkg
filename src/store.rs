@@ -144,7 +144,7 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P,
 }
 
 /// Detects package format from file extension
-fn detect_package_format(package_file: &Path) -> Result<PackageFormat> {
+pub fn detect_package_format(package_file: &Path) -> Result<PackageFormat> {
     let file_name = package_file.file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| eyre::eyre!("Invalid package file name"))?;

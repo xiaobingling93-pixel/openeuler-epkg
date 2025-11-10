@@ -1,0 +1,72 @@
+# Error whitelist for test-depends.py
+# Each line contains a pattern to match in error output.
+# If an error matches any pattern, the test will continue instead of failing.
+# Lines starting with # are comments and will be ignored.
+# Empty lines are also ignored.
+
+/usr/lib/ocf/resource.d
+airflow 1.10
+airflow-with-slack 1.10
+az-cli-image
+azure-mgmt-containerinstance
+azure-storage
+bctoolbox-devel 5.3
+biber2.19
+binutils_linux-64(=2.38.0=hc2dff05_0)
+budgie-control-center
+bugzilla 5.0
+compiler-rt_osx-arm64 12.
+cuda-cudart 12.8
+cuda-libraries-dev 12.8
+dpctl
+emacs-filesystem
+exfatprogs
+freexl
+gcc_impl_linux-64
+golang-github-containers-common-dev 0.57
+gprconfig-kb
+gxx-dbg_linux-64 8.2
+langchain-core 0.3.
+libcurl
+libjaxws-java 2.3
+libjodatime-java
+libproxy-duktape
+libstdc++6-pp-gcc13-32bit 13
+linux-image-uc-6.8.0-1041-azure
+linux-modules-6.8.0-1005-intel
+linux-modules-nvidia-
+llama.cpp-tools
+llvm15-libc++1 15
+-microarch-level
+nodejs-request 2.67
+nvidia-kernel-common-
+osx-64
+perl-gtk2
+perl-gtk3
+perl-Mojo-Pg
+perl-text-diff 1.45
+postgresql(=13.22)
+postgresql14-server
+postgresql15-server
+postgresql16-server
+postgresql17-server
+protobuf-emacs 3.19
+purpose-services(>=6.16.0)
+pyrush 1.0
+python3-fedora
+python313-watchfiles 0.24
+rakudo-star
+r-av
+r-base 3
+r-base 4
+r-cld3 1.2
+r-mrclient-mml
+r-sf
+rust-icu_locid_transform+serde-devel 1.5
+spacy
+systemd-bootchart
+tex4ht
+texlive-texlive-scripts(=11:20230311-89.fc42)
+vdsm 4
+woodwork
+ydata-profiling 4.16

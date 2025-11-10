@@ -1,0 +1,37 @@
+- pkgname: a
+  version: '1'
+  requires:
+  - b
+  provides:
+  - a = 1
+  - a(x86_64) = 1
+- pkgname: a
+  version: '2'
+  requires:
+  - b
+  provides:
+  - a = 2
+  - a(x86_64) = 2
+- pkgname: b
+  version: '1'
+  provides:
+  - b = 1
+  - b(x86_64) = 1
+- pkgname: b
+  version: '2'
+  provides:
+  - b = 2
+  - b(x86_64) = 2
+- pkgname: broken
+  version: '1'
+  requires:
+  - missing-dependency
+  provides:
+  - broken = 1
+  - broken(x86_64) = 1
+- pkgname: badarch
+  version: '1'
+  arch: badarch
+  provides:
+  - badarch = 1
+  - badarch(badarch) = 1

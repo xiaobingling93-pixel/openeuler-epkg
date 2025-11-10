@@ -1,0 +1,15 @@
+- pkgname: openjdk8-jdk
+  version: '1.0'
+  requires:
+  - so:openjdk8:libawt.so=0
+  provides:
+  - openjdk8-jdk = 1.0
+  - openjdk8-jdk(x86_64) = 1.0
+- pkgname: openjdk8-jre-base
+  version: '1.0'
+  provides:
+  - java-jre-headless
+  - java-jre-headless(x86_64) = 1.0
+  - so:openjdk8:libawt.so=0
+  - openjdk8-jre-base = 1.0
+  - openjdk8-jre-base(x86_64) = 1.0

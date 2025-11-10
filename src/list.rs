@@ -711,7 +711,6 @@ fn matches_glob_pattern(name: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn test_matches_glob_pattern_no_wildcards() {

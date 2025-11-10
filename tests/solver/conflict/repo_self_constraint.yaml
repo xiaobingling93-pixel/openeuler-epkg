@@ -1,0 +1,34 @@
+- pkgname: texlive-plain-generic
+  version: 2024.20250309-2
+  provides:
+  - tex4ht
+  - texlive-plain-generic = 2024.20250309-2
+  - texlive-plain-generic(x86_64) = 2024.20250309-2
+  conflicts:
+  - tex4ht (<< 20160814)
+  - tex4ht-common
+  requires:
+  - tex-common (>= 6.13)
+  - texlive-base (>= 2024.20240401)
+  - texlive-binaries (>= 2024.20240313)
+- pkgname: tex-common
+  version: 6.13
+  provides:
+  - tex-common = 6.13
+  - tex-common(x86_64) = 6.13
+- pkgname: texlive-base
+  version: 2024.20240401
+  provides:
+  - texlive-base = 2024.20240401
+  - texlive-base(x86_64) = 2024.20240401
+- pkgname: texlive-binaries
+  version: 2024.20240313
+  provides:
+  - texlive-binaries = 2024.20240313
+  - texlive-binaries(x86_64) = 2024.20240313
+- pkgname: tex4ht-common
+  version: 20160814
+  provides:
+  - tex4ht-common = 20160814
+  - tex4ht-common(x86_64) = 20160814
+

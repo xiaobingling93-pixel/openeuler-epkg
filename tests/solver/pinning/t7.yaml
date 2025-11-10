@@ -1,0 +1,7 @@
+format: apk
+description: pinning test 7
+repo: pinning-basic.yaml pinning-overlay1_testing.yaml pinning-overlay1_testing2.yaml
+installed: installed.yaml
+install:
+- c@testing2
+- c@testing

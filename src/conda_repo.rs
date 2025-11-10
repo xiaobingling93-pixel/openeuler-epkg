@@ -4,18 +4,82 @@ use std::collections::{HashMap, HashSet, BTreeMap};
 use std::fs::OpenOptions;
 use std::io::{Write, BufWriter};
 use std::fmt::Write as FmtWrite;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr};
 use color_eyre::eyre;
 use flate2::read::GzDecoder;
 use bzip2::read::BzDecoder;
 use sha2::{Sha256, Digest};
 use hex;
 use time::{OffsetDateTime, format_description};
+use serde::de::{Error, Visitor};
+use std::fmt;
 use crate::models::*;
 use crate::dirs;
 use crate::repo::*;
 use crate::packages_stream;
 use crate::mmio;
+
+/// Custom deserializer for noarch field which can be either a string or a boolean.
+/// If it's a boolean `true`, converts it to the string "generic".
+/// If it's a boolean `false`, returns None.
+/// If it's a string, uses it as-is.
+fn deserialize_noarch<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct NoarchVisitor;
+
+    impl<'de> Visitor<'de> for NoarchVisitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or boolean")
+        }
+
+        fn visit_bool<E>(self, v: bool) -> Result<Option<String>, E>
+        where
+            E: Error,
+        {
+            if v {
+                // Boolean true means generic noarch
+                Ok(Some("generic".to_string()))
+            } else {
+                // Boolean false means not noarch
+                Ok(None)
+            }
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Option<String>, E>
+        where
+            E: Error,
+        {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<Option<String>, E>
+        where
+            E: Error,
+        {
+            Ok(Some(v))
+        }
+
+        fn visit_none<E>(self) -> Result<Option<String>, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Option<String>, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(NoarchVisitor)
+        }
+    }
+
+    deserializer.deserialize_any(NoarchVisitor)
+}
 
 // Conda-specific structures for repodata.json deserialization
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -80,8 +144,8 @@ pub struct CondaPackage {
     pub sha256: Option<String>,
 
     // Build information
-    #[serde(default)]
-    pub noarch: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_noarch")]
+    pub noarch: Option<String>,
     #[serde(default)]
     pub platform: Option<String>,
 
@@ -102,9 +166,16 @@ impl CondaPackage {
             if ts > 10000000000 { (ts / 1000) as u32 } else { ts as u32 }
         });
 
+        // Combine version and build string using VERSION_BUILD_SEPARATOR
+        let version_with_build = if let Some(build) = &self.build {
+            format!("{}{}{}", self.version, crate::conda_pkg::VERSION_BUILD_SEPARATOR, build)
+        } else {
+            self.version.clone()
+        };
+
         Package {
             pkgname: self.name.clone(),
-            version: self.version.clone(),
+            version: version_with_build,
             arch: arch.to_string(),
             size: self.size.unwrap_or(0) as u32,
             installed_size: 0, // Conda doesn't typically provide this
@@ -121,6 +192,10 @@ impl CondaPackage {
             recommends: Vec::new(),
             suggests: Vec::new(),
             conflicts: Vec::new(),
+            obsoletes: Vec::new(),
+            enhances: Vec::new(),
+            supplements: Vec::new(),
+            files: Vec::new(),
             summary: self.summary.clone().unwrap_or_default(),
             description: self.description.clone(),
             homepage: self.url.clone().unwrap_or_default(),
@@ -137,44 +212,31 @@ impl CondaPackage {
     }
 }
 
-/// Returns (host, path) tuple
-fn parse_url_components(url: &str) -> Result<(String, String)> {
-    // Find scheme end
-    let after_scheme = if let Some(scheme_end) = url.find("://") {
-        &url[scheme_end + 3..]
-    } else {
-        return Err(eyre::eyre!("Invalid URL: missing scheme in '{}'", url));
-    };
-
-    // Find host end (first '/' or end of string)
-    let host_end = after_scheme.find('/').unwrap_or(after_scheme.len());
-    let host = after_scheme[..host_end].to_string();
-
-    // Extract path part (everything after host)
-    let path_part = if host_end < after_scheme.len() {
-        after_scheme[host_end + 1..].to_string()
-    } else {
-        String::new()
-    };
-
-    if host.is_empty() {
-        return Err(eyre::eyre!("Invalid URL: missing host in '{}'", url));
-    }
-
-    Ok((host, path_part))
-}
-
 /// Parse repodata.json content from Conda repositories
 pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
 
+    // Detect if this is a noarch repository by checking URL or repodata_name
+    let is_noarch = repo.index_url.contains("/noarch/") || repo.repodata_name.ends_with("-noarch");
+
+    // For noarch repositories, use "all" as the architecture instead of the repo's arch
+    // Note: repo.arch is already set to "all" for noarch repos in get_revise_repos(),
+    // but we still need effective_arch for the output filename
+    let effective_arch = if is_noarch {
+        "all".to_string()
+    } else {
+        map_conda_arch_to_standard(&repo.arch)
+    };
+
+    // Use the standard get_repo_dir() - it now works correctly because repo.arch is "all" for noarch
     let repo_dir = dirs::get_repo_dir(&repo)
         .map_err(|e| eyre::eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
 
-    let arch = map_conda_arch_to_standard(&repo.arch);
-    let output_path = repo_dir.join(format!("packages-{}.txt", arch));
+    let output_path = repo_dir.join(format!("packages-{}.txt", effective_arch));
 
     let url = repo.index_url.clone();
+    // Extract location as the relative path from the base URL (just the filename for conda)
+    // This matches the pattern used in deb_repo.rs where location is the relative path
     let location = url.split('/').last().unwrap_or("repodata.json.gz").to_string();
 
     let package_baseurl = if let Some(last_slash_pos) = url.rfind('/') {
@@ -183,21 +245,10 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
         url.clone()
     };
 
-    let (host, path_part) = parse_url_components(&url)?;
-
-    let mut download_dir = dirs().epkg_channel_cache.join(host);
-
-    if !path_part.is_empty() {
-        let path_segments: Vec<&str> = path_part.split('/').collect();
-        for segment in path_segments.iter().take(path_segments.len().saturating_sub(1)) {
-            if !segment.is_empty() {
-                download_dir = download_dir.join(segment);
-            }
-        }
-    }
-
-    let unique_filename = format!("{}-{}", repo.repo_name, location);
-    let download_path = download_dir.join(&unique_filename);
+    // Use url_to_cache_path to get the download_path, matching the pattern used in rpm_repo.rs
+    // This ensures consistency with the download system's path resolution
+    let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
+        .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
 
     let need_download = !download_path.exists();
     let need_convert = !output_path.exists() || {
@@ -209,7 +260,7 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
         repo_revise: repo.clone(),
         need_download,
         need_convert,
-        arch: arch.clone(),
+        arch: effective_arch.clone(),
         url,
         package_baseurl: package_baseurl.to_string(),
         hash_type: "SHA256".to_string(),
@@ -225,43 +276,86 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
 }
 
 pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<PackagesFileInfo> {
-    log::debug!("Starting to process Conda packages content for {} (hash: {})", revise.location, revise.hash);
+    log::debug!("Starting to process Conda packages content for {}", revise.location);
+    log::debug!("  repo_dir: {:?}", repo_dir);
+    log::debug!("  output_path: {:?}", revise.output_path);
+    log::debug!("  arch: {}", revise.arch);
 
-    let reader = if !revise.hash.is_empty() && revise.size > 0 {
-        log::debug!("Creating ReceiverHasher with expected hash: {}, size: {} bytes", revise.hash, revise.size);
-        packages_stream::ReceiverHasher::new_with_size(data_rx, revise.hash.clone(), revise.size.try_into().unwrap())
-    } else {
-        if revise.hash.is_empty() {
-            log::warn!("No hash provided for {}, integrity verification will be skipped", revise.location);
-        }
-        if revise.size == 0 {
-            log::warn!("No size provided for {}, download completeness verification will be skipped", revise.location);
-        }
-        packages_stream::ReceiverHasher::new(data_rx, String::new())
-    };
+    let reader = packages_stream::ReceiverHasher::new(data_rx, String::new());
+    log::debug!("Created ReceiverHasher, starting to parse compressed JSON for {}", revise.location);
 
-    let repodata: CondaRepoData = parse_compressed_json(reader, &revise.location)?;
+    let repodata: CondaRepoData = parse_compressed_json(reader, &revise.location)
+        .with_context(|| format!("Failed to parse compressed JSON for {}", revise.location))?;
+
+    log::debug!("Successfully parsed JSON, found {} packages + {} packages.conda",
+                repodata.packages.len(), repodata.packages_conda.len());
+
     process_conda_repodata(repo_dir, revise, repodata)
+        .with_context(|| format!("Failed to process conda repodata for {}", revise.location))
 }
 
 fn parse_compressed_json(reader: packages_stream::ReceiverHasher, location: &str) -> Result<CondaRepoData> {
+    log::debug!("parse_compressed_json: Starting for {}", location);
+
     let result = if location.ends_with(".gz") {
         log::debug!("Using GZIP decoder for {}", location);
-        serde_json::from_reader(GzDecoder::new(reader))
+        match serde_json::from_reader::<_, CondaRepoData>(GzDecoder::new(reader)) {
+            Ok(data) => Ok(data),
+            Err(e) => {
+                log::error!("GZIP JSON parsing failed for {}: {}", location, e);
+                if e.is_io() {
+                    log::error!("IO error details: {}", e);
+                } else if e.is_data() {
+                    log::error!("JSON data error - invalid JSON structure: {}", e);
+                } else if e.is_syntax() {
+                    log::error!("JSON syntax error: {}", e);
+                }
+                Err(e)
+            }
+        }
     } else if location.ends_with(".bz2") {
         log::debug!("Using BZIP2 decoder for {}", location);
-        serde_json::from_reader(BzDecoder::new(reader))
+        match serde_json::from_reader::<_, CondaRepoData>(BzDecoder::new(reader)) {
+            Ok(data) => Ok(data),
+            Err(e) => {
+                log::error!("BZIP2 JSON parsing failed for {}: {}", location, e);
+                Err(e)
+            }
+        }
     } else {
         log::debug!("Parsing uncompressed JSON for {}", location);
-        serde_json::from_reader(reader)
+        match serde_json::from_reader::<_, CondaRepoData>(reader) {
+            Ok(data) => Ok(data),
+            Err(e) => {
+                log::error!("Uncompressed JSON parsing failed for {}: {}", location, e);
+                Err(e)
+            }
+        }
     };
 
     result.map_err(|e| {
-        let error_type = if e.is_io() { "IO" } else { "JSON parsing" };
-        eyre::eyre!("{} error for {}: {}. {}",
-            error_type, location, e,
-            if e.is_io() { "This might indicate download corruption or hash validation failure." } else { "" }
-        )
+        let error_type = if e.is_io() {
+            "IO"
+        } else if e.is_data() {
+            "JSON data"
+        } else if e.is_syntax() {
+            "JSON syntax"
+        } else {
+            "JSON parsing"
+        };
+
+        let error_msg = format!("{} error for {}: {}", error_type, location, e);
+        log::error!("{}", error_msg);
+
+        let mut err = eyre::eyre!("{}", error_msg);
+        if e.is_io() {
+            err = err.wrap_err("This might indicate download corruption, incomplete download, or hash validation failure.");
+        } else if e.is_data() {
+            err = err.wrap_err("The JSON structure may be invalid or the file may be corrupted.");
+        } else if e.is_syntax() {
+            err = err.wrap_err("The JSON syntax is invalid. The file may be corrupted or not valid JSON.");
+        }
+        err
     })
 }
 
@@ -270,6 +364,10 @@ fn process_conda_repodata(
     revise: &RepoReleaseItem,
     repodata: CondaRepoData,
 ) -> Result<PackagesFileInfo> {
+    log::debug!("process_conda_repodata: Starting for {}", revise.location);
+    log::debug!("  repo_dir: {:?}", repo_dir);
+    log::debug!("  output_path: {:?}", revise.output_path);
+
     let mut packages: Vec<Package> = Vec::new();
     let mut provide2pkgnames: HashMap<String, Vec<String>> = HashMap::new();
     let essential_pkgnames: HashSet<String> = HashSet::new();
@@ -277,6 +375,9 @@ fn process_conda_repodata(
     let mut output = String::new();
 
     let total_packages = repodata.packages.len() + repodata.packages_conda.len();
+    log::debug!("Total packages to process: {} ({} packages + {} packages.conda)",
+                total_packages, repodata.packages.len(), repodata.packages_conda.len());
+
     if total_packages > 0 {
         let estimated_total_size = total_packages * 800;
         output.reserve(estimated_total_size);
@@ -286,8 +387,18 @@ fn process_conda_repodata(
     let arch = repodata.info
         .as_ref()
         .and_then(|info| info.subdir.as_ref())
-        .map(|subdir| map_conda_arch_to_standard(subdir))
-        .unwrap_or_else(|| map_conda_arch_to_standard(&revise.arch));
+        .map(|subdir| {
+            let mapped = map_conda_arch_to_standard(subdir);
+            log::debug!("Using arch from repodata.info.subdir: {} -> {}", subdir, mapped);
+            mapped
+        })
+        .unwrap_or_else(|| {
+            let mapped = map_conda_arch_to_standard(&revise.arch);
+            log::debug!("Using arch from revise.arch: {} -> {}", revise.arch, mapped);
+            mapped
+        });
+
+    log::debug!("Effective arch for processing: {}", arch);
 
     let removed_packages: HashSet<String> = repodata.removed.into_iter().collect();
     if !removed_packages.is_empty() {
@@ -296,6 +407,7 @@ fn process_conda_repodata(
 
     let mut processed_count = 0;
     let mut skipped_count = 0;
+    let mut error_count = 0;
 
     let package_sets = [
         (&repodata.packages, "tar.bz2"),
@@ -303,6 +415,7 @@ fn process_conda_repodata(
     ];
 
     for (package_map, package_format) in package_sets {
+        log::debug!("Processing {} {} packages", package_map.len(), package_format);
         for (filename, conda_pkg) in package_map {
             if removed_packages.contains(filename) {
                 log::trace!("Skipping removed {} package: {}", package_format, filename);
@@ -310,14 +423,29 @@ fn process_conda_repodata(
                 continue;
             }
 
-            let package = process_conda_package(conda_pkg, filename, package_format, &arch, &mut output, &mut provide2pkgnames, &mut pkgname2ranges)?;
-            packages.push(package);
-            processed_count += 1;
+            match process_conda_package(conda_pkg, filename, package_format, &arch, &mut output, &mut provide2pkgnames, &mut pkgname2ranges) {
+                Ok(package) => {
+                    packages.push(package);
+                    processed_count += 1;
+                }
+                Err(e) => {
+                    error_count += 1;
+                    log::error!("Failed to process package {} ({}): {}", filename, package_format, e);
+                    // Continue processing other packages instead of failing completely
+                    // This allows us to see all errors, not just the first one
+                }
+            }
         }
+    }
+
+    if error_count > 0 {
+        return Err(eyre::eyre!("Failed to process {} packages from Conda repodata. Processed: {}, Skipped: {}",
+                               error_count, processed_count, skipped_count));
     }
 
     log::debug!("Processed {} packages from Conda repodata (skipped {} removed packages)", processed_count, skipped_count);
 
+    log::debug!("Writing conda packages output to {:?}", revise.output_path);
     write_conda_packages_output(
         repo_dir,
         revise,
@@ -327,6 +455,7 @@ fn process_conda_repodata(
         pkgname2ranges,
         packages.len(),
     )
+    .with_context(|| format!("Failed to write conda packages output for {}", revise.location))
 }
 
 fn process_conda_package(
@@ -345,7 +474,10 @@ fn process_conda_package(
     output.push('\n');
 
     writeln!(output, "pkgname: {}", package.pkgname).unwrap();
+    
+    // Version already includes build string from to_package(), so use it directly
     writeln!(output, "version: {}", package.version).unwrap();
+    
     writeln!(output, "arch: {}", package.arch).unwrap();
     writeln!(output, "location: {}", package.location).unwrap();
 
@@ -355,14 +487,6 @@ fn process_conda_package(
 
     if let Some(build_time) = package.build_time {
         writeln!(output, "buildTime: {}", build_time).unwrap();
-    }
-
-    if let Some(build) = &conda_pkg.build {
-        writeln!(output, "buildString: {}", build).unwrap();
-    }
-
-    if let Some(build_number) = conda_pkg.build_number {
-        writeln!(output, "buildNumber: {}", build_number).unwrap();
     }
 
     if !package.summary.is_empty() {
@@ -401,7 +525,7 @@ fn process_conda_package(
         writeln!(output, "md5sum: {}", md5).unwrap();
     }
 
-    if let Some(noarch) = conda_pkg.noarch {
+    if let Some(noarch) = &conda_pkg.noarch {
         writeln!(output, "noarch: {}", noarch).unwrap();
     }
 
@@ -468,10 +592,21 @@ fn write_conda_packages_output(
     pkgname2ranges: BTreeMap<String, Vec<PackageRange>>,
     _package_count: usize,
 ) -> Result<PackagesFileInfo> {
+    log::debug!("write_conda_packages_output: Starting");
+    log::debug!("  repo_dir: {:?}", repo_dir);
+    log::debug!("  output_path: {:?}", revise.output_path);
+    log::debug!("  output size: {} bytes", output.len());
+
     let output_path = &revise.output_path;
     let filename = output_path.file_name()
-        .ok_or_else(|| eyre::eyre!("Invalid output path: no filename component"))?
+        .ok_or_else(|| {
+            let err = eyre::eyre!("Invalid output path: no filename component: {:?}", output_path);
+            log::error!("{}", err);
+            err
+        })?
         .to_string_lossy();
+
+    log::debug!("Extracted filename: {}", filename);
 
     let (_, provide2pkgnames_path, essential_pkgnames_path, pkgname2ranges_path) =
         crate::mmio::get_package_paths(repo_dir, &filename);
@@ -484,31 +619,63 @@ fn write_conda_packages_output(
     };
 
     if let Some(parent) = output_path.parent() {
+        log::debug!("Creating output directory: {:?}", parent);
         std::fs::create_dir_all(parent)
-            .map_err(|e| eyre::eyre!("Failed to create output directory: {}", e))?;
+            .map_err(|e| {
+                let err = eyre::eyre!("Failed to create output directory {:?}: {}", parent, e);
+                log::error!("{}", err);
+                err
+            })?;
+        log::debug!("Successfully created output directory: {:?}", parent);
+    } else {
+        log::warn!("output_path has no parent directory: {:?}", output_path);
     }
 
     if let Some(parent) = json_path.parent() {
+        log::debug!("Creating json directory: {:?}", parent);
         std::fs::create_dir_all(parent)
-            .map_err(|e| eyre::eyre!("Failed to create json directory: {}", e))?;
+            .map_err(|e| {
+                let err = eyre::eyre!("Failed to create json directory {:?}: {}", parent, e);
+                log::error!("{}", err);
+                err
+            })?;
+        log::debug!("Successfully created json directory: {:?}", parent);
+    } else {
+        log::warn!("json_path has no parent directory: {:?}", json_path);
     }
 
     let mut hasher = Sha256::new();
     hasher.update(output.as_bytes());
     let sha256sum = hex::encode(hasher.finalize());
 
+    log::debug!("Opening output file: {:?}", output_path);
     let file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(output_path)
-        .map_err(|e| eyre::eyre!("Failed to create output file {}: {}", output_path.display(), e))?;
+        .map_err(|e| {
+            let err = eyre::eyre!("Failed to create output file {}: {}", output_path.display(), e);
+            log::error!("{}", err);
+            err
+        })?;
+    log::debug!("Successfully opened output file: {:?}", output_path);
 
     let mut writer = BufWriter::new(file);
+    log::debug!("Writing {} bytes to output file", output.as_bytes().len());
     writer.write_all(output.as_bytes())
-        .map_err(|e| eyre::eyre!("Failed to write to output file: {}", e))?;
+        .map_err(|e| {
+            let err = eyre::eyre!("Failed to write to output file {}: {}", output_path.display(), e);
+            log::error!("{}", err);
+            err
+        })?;
     writer.flush()
-        .map_err(|e| eyre::eyre!("Failed to flush output file: {}", e))?;
+        .map_err(|e| {
+            let err = eyre::eyre!("Failed to flush output file {}: {}", output_path.display(), e);
+            log::error!("{}", err);
+            err
+        })?;
+    log::debug!("Successfully wrote and flushed output file: {:?}", output_path);
 
     log::debug!("Serializing pkgname2ranges to {:?}", pkgname2ranges_path);
     mmio::serialize_pkgname2ranges(&pkgname2ranges_path, &pkgname2ranges)

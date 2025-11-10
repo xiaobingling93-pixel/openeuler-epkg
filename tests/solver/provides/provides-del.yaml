@@ -1,0 +1,11 @@
+- pkgname: wine
+  version: '2'
+  provides:
+  - wine = 2
+  - wine(x86_64) = 2
+- pkgname: wine-staging
+  version: '10'
+  provides:
+  - wine=1
+  - wine-staging = 10
+  - wine-staging(x86_64) = 10

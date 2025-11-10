@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::process::Command;
 use tar::Archive;
 use log;
 use lazy_static::lazy_static;
@@ -10,6 +11,12 @@ use color_eyre::eyre::{self, WrapErr};
 use bzip2::read::BzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zip::ZipArchive;
+use regex;
+
+/// Separator used to combine version and build_string in pkgkey for virtual packages
+/// Format: version-build_string (e.g., "1-skylake_avx512")
+/// This allows us to encode build_string in the version field without conflicting with pkgkey's '__' separator
+pub const VERSION_BUILD_SEPARATOR: &str = "-";
 
 lazy_static! {
     /// Mapping from Conda package metadata fields to common field names
@@ -448,4 +455,297 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Detect glibc version using ldd --version
+/// Returns (family, version) tuple, e.g., ("glibc", "2.35")
+pub fn detect_glibc_version() -> Result<Option<(String, String)>> {
+    #[cfg(target_os = "linux")]
+    {
+        let output = match Command::new("ldd").arg("--version").output() {
+            Err(_) => {
+                log::debug!("Failed to execute `ldd --version`. Assuming glibc is not available.");
+                return Ok(None);
+            }
+            Ok(output) => output,
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(version) = parse_glibc_ldd_version(&stdout)? {
+            return Ok(Some(("glibc".to_string(), version)));
+        }
+        Ok(None)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(None)
+    }
+}
+
+/// Parse glibc version from ldd output
+fn parse_glibc_ldd_version(input: &str) -> Result<Option<String>> {
+    // Match patterns like "ldd (Ubuntu GLIBC 2.35-0ubuntu3.1) 2.35" or "ldd (GNU libc) 2.31" or
+    // "ldd (Debian GLIBC 2.41-12) 2.41"
+    // Skip content in parentheses and match version at the end
+    let re = regex::Regex::new(r"\)\s*([0-9]+\.[0-9a-b.]+)").unwrap();
+
+    if let Some(captures) = re.captures(input) {
+        if let Some(version_match) = captures.get(1) {
+            return Ok(Some(version_match.as_str().to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// Detect Linux kernel version from /proc/version or uname
+/// Returns version string, e.g., "5.10.102"
+pub fn detect_linux_version() -> Result<Option<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try /proc/version first
+        if let Ok(proc_version) = fs::read_to_string("/proc/version") {
+            if let Some(version) = extract_linux_version_from_proc(&proc_version) {
+                return Ok(Some(version));
+            }
+        }
+
+        // Fallback to uname -r
+        if let Ok(output) = Command::new("uname").arg("-r").output() {
+            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(version) = extract_linux_version_part(&version_str) {
+                return Ok(Some(version));
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(None)
+    }
+}
+
+/// Extract Linux version from /proc/version content
+fn extract_linux_version_from_proc(proc_version: &str) -> Option<String> {
+    // /proc/version format: "Linux version 5.10.102.1-microsoft-standard-WSL2 (buildd@lgw01-amd64-060) (gcc (Ubuntu 9.4.0-1ubuntu1~20.04.1) 9.4.0, GNU ld (GNU Binutils for Ubuntu) 2.34) #1 SMP Thu Mar 17 19:48:32 UTC 2022"
+    // We want to extract "5.10.102.1" or at least "5.10.102"
+    let re = regex::Regex::new(r"Linux version ([0-9]+\.[0-9]+(?:\.[0-9]+)*(?:\.[0-9]+)?)").ok()?;
+    if let Some(captures) = re.captures(proc_version) {
+        if let Some(version_match) = captures.get(1) {
+            return extract_linux_version_part(version_match.as_str());
+        }
+    }
+    None
+}
+
+/// Extract first 2-4 version components from Linux version string
+/// Takes "5.10.102.1-microsoft-standard-WSL2" and returns "5.10.102.1"
+fn extract_linux_version_part(version_str: &str) -> Option<String> {
+    // Match up to 4 version components: major.minor.patch.patch2
+    let re = regex::Regex::new(r"^([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.[0-9]+)?)").ok()?;
+    if let Some(captures) = re.captures(version_str) {
+        if let Some(version_match) = captures.get(1) {
+            return Some(version_match.as_str().to_string());
+        }
+    }
+    None
+}
+
+/// Detect CUDA version using nvidia-smi or library detection
+/// Returns version string, e.g., "11.8"
+pub fn detect_cuda_version() -> Result<Option<String>> {
+    // Try nvidia-smi first (works on musl and other systems)
+    if let Ok(output) = Command::new("nvidia-smi")
+        .arg("--query")
+        .arg("-u")
+        .arg("-x")
+        .env_remove("CUDA_VISIBLE_DEVICES")
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let re = regex::Regex::new(r"<cuda_version>(.*?)</cuda_version>").unwrap();
+        if let Some(captures) = re.captures(&stdout) {
+            if let Some(version_match) = captures.get(1) {
+                return Ok(Some(version_match.as_str().to_string()));
+            }
+        }
+    }
+
+    // Could add library-based detection here if needed
+    // For now, return None if nvidia-smi doesn't work
+    Ok(None)
+}
+
+/// Check if running on Unix-like system
+pub fn is_unix() -> bool {
+    cfg!(unix)
+}
+
+/// Create a virtual package Package struct
+pub fn create_virtual_package(
+    pkgname: &str,
+    version: &str,
+    build_string: Option<&str>,
+) -> crate::models::Package {
+    use crate::models::Package;
+    use crate::package;
+
+    let arch = std::env::consts::ARCH.to_string();
+
+    // For __archspec, encode build_string in pkgkey if provided
+    // pkgkey format: pkgname__version__arch
+    // For __archspec with build_string, we encode it as: version@build_string
+    // This avoids conflict with pkgkey's '__' separator
+    let version_for_pkgkey = if let Some(build) = build_string {
+        format!("{}{}{}", version, VERSION_BUILD_SEPARATOR, build)
+    } else {
+        version.to_string()
+    };
+    let pkgkey = package::format_pkgkey(pkgname, &version_for_pkgkey, &arch);
+
+    Package {
+        pkgname: pkgname.to_string(),
+        version: version.to_string(),
+        arch: arch.clone(),
+        size: 0,
+        installed_size: 0,
+        build_time: None,
+        source: None,
+        location: String::new(),
+        ca_hash: None,
+        sha256sum: None,
+        sha1sum: None,
+        depends: Vec::new(),
+        requires_pre: Vec::new(),
+        requires: Vec::new(),
+        provides: Vec::new(),
+        recommends: Vec::new(),
+        suggests: Vec::new(),
+        conflicts: Vec::new(),
+        obsoletes: Vec::new(),
+        enhances: Vec::new(),
+        supplements: Vec::new(),
+        files: Vec::new(),
+        summary: format!("Virtual package: {}", pkgname),
+        description: if let Some(build) = build_string {
+            Some(format!("System virtual package for {} (build: {})", pkgname, build))
+        } else {
+            Some(format!("System virtual package for {}", pkgname))
+        },
+        homepage: String::new(),
+        section: None,
+        priority: None,
+        maintainer: String::new(),
+        tag: None,
+        origin_url: None,
+        multi_arch: None,
+        pkgkey,
+        repodata_name: "virtual".to_string(),
+        package_baseurl: String::new(),
+    }
+}
+
+/// Detect CPU microarchitecture for __archspec
+/// Returns the microarchitecture name (e.g., "skylake_avx512", "x86_64_v4", "cascadelake")
+pub fn detect_archspec() -> Option<String> {
+    // For now, use a simple detection based on CPU architecture
+    // In the future, this could use the archspec library like rattler does
+    let arch = std::env::consts::ARCH;
+
+    // Map common architectures to generic microarchitecture names
+    // This is a simplified version - a full implementation would use archspec library
+    match arch {
+        "x86_64" => {
+            // Try to detect more specific microarchitecture via /proc/cpuinfo
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
+                    // Look for model name or flags that indicate specific microarchitecture
+                    for line in cpuinfo.lines() {
+                        if line.starts_with("model name") {
+                            let model = line.split(':').nth(1)?.trim().to_lowercase();
+                            // Try to extract microarchitecture from model name
+                            if model.contains("skylake") || model.contains("skx") {
+                                return Some("skylake_avx512".to_string());
+                            }
+                            if model.contains("cascade") {
+                                return Some("cascadelake".to_string());
+                            }
+                            if model.contains("sapphire") {
+                                return Some("sapphirerapids".to_string());
+                            }
+                            if model.contains("ice lake") || model.contains("icelake") {
+                                return Some("icelake".to_string());
+                            }
+                            if model.contains("zen") {
+                                // Try to detect Zen generation
+                                if model.contains("zen 4") || model.contains("zen4") {
+                                    return Some("zen4".to_string());
+                                }
+                                if model.contains("zen 3") || model.contains("zen3") {
+                                    return Some("zen3".to_string());
+                                }
+                                if model.contains("zen 2") || model.contains("zen2") {
+                                    return Some("zen2".to_string());
+                                }
+                            }
+                        }
+                        // Check for AVX-512 support
+                        if line.starts_with("flags") && line.contains("avx512") {
+                            // Default to x86_64_v4 if AVX-512 is available
+                            return Some("x86_64_v4".to_string());
+                        }
+                    }
+                }
+            }
+            // Fallback to generic x86_64
+            Some("x86_64".to_string())
+        }
+        "aarch64" | "arm64" => Some("aarch64".to_string()),
+        "powerpc64le" => Some("power10le".to_string()),
+        _ => Some(arch.to_string()),
+    }
+}
+
+/// Detect and create virtual packages for Conda
+/// Returns a vector of Package structs for detected virtual packages
+pub fn detect_conda_virtual_packages() -> Result<Vec<crate::models::Package>> {
+    let mut virtual_packages = Vec::new();
+
+    // Detect __unix (always available on Unix systems)
+    if is_unix() {
+        virtual_packages.push(create_virtual_package("__unix", "0", None));
+    }
+
+    // Detect __linux
+    if let Ok(Some(linux_version)) = detect_linux_version() {
+        virtual_packages.push(create_virtual_package("__linux", &linux_version, None));
+        log::debug!("Detected __linux version: {}", linux_version);
+    }
+
+    // Detect __glibc (only on Linux)
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(Some((_family, version))) = detect_glibc_version() {
+            // Virtual package name is __glibc (lowercase family name with __ prefix)
+            virtual_packages.push(create_virtual_package("__glibc", &version, None));
+            log::debug!("Detected __glibc version: {}", version);
+        }
+    }
+
+    // Detect __cuda
+    if let Ok(Some(cuda_version)) = detect_cuda_version() {
+        virtual_packages.push(create_virtual_package("__cuda", &cuda_version, None));
+        log::debug!("Detected __cuda version: {}", cuda_version);
+    }
+
+    // Detect __archspec
+    if let Some(archspec_name) = detect_archspec() {
+        virtual_packages.push(create_virtual_package("__archspec", "1", Some(&archspec_name)));
+        log::debug!("Detected __archspec: {}", archspec_name);
+    }
+
+    log::info!("Detected {} Conda virtual packages", virtual_packages.len());
+    Ok(virtual_packages)
 }

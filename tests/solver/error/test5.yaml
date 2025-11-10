@@ -1,0 +1,6 @@
+format: apk
+description: error test 5
+repo: complicated1.yaml
+install:
+- a>2
+expect_fail: true

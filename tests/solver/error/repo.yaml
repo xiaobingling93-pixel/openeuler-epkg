@@ -1,0 +1,8 @@
+- pkgname: invalid
+  version: '1'
+  arch: noarch
+  requires:
+  - invalid-dependency@tag
+  provides:
+  - invalid = 1
+  - invalid(noarch) = 1

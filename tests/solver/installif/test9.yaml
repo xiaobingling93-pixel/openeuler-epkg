@@ -1,0 +1,10 @@
+format: apk
+description: installif test 9
+repo: installif8.yaml
+install:
+- bar
+- baz
+plan:
+  fresh_installs:
+    bar__1__x86_64:
+    baz__1__x86_64:

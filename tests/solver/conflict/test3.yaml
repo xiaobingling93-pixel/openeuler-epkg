@@ -1,0 +1,10 @@
+format: apk
+description: conflict test 3
+repo: conflict2.yaml
+installed: installed.yaml
+install:
+- baz
+- foo
+plan:
+  fresh_installs:
+    baz__1__x86_64:

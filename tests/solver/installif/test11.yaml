@@ -1,0 +1,7 @@
+format: apk
+description: installif test 11
+repo: installif11.yaml
+installed: installed.yaml
+install:
+- app
+- foo

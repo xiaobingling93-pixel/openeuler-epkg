@@ -38,10 +38,59 @@ fn parse_args_and_filters(all_args: &[String]) -> (Vec<String>, HashMap<String, 
     let mut package_specs = Vec::new();
     let mut filters = HashMap::new();
 
+    // Valid filter keys that can be used with key=val syntax
+    // Examples: version=1.0, arch=x86_64, summary="Some package"
+    let valid_filter_keys = ["version", "arch", "summary", "maintainer", "section", "priority", "homepage"];
+
     for arg in all_args {
-        if let Some((key, val)) = arg.split_once('=') {
-            filters.insert(key.to_string(), val.to_string());
+        if let Some(equals_pos) = arg.find('=') {
+            // Check if the '=' is inside parentheses (e.g., font(:lang=en))
+            // This handles provides/capabilities with parameters like:
+            //   - font(:lang=en) -> package spec
+            //   - gstreamer1(decoder-video/x-dv)(systemstream=true) -> package spec
+            let before_equals = &arg[..equals_pos];
+            let mut paren_depth = 0;
+            for ch in before_equals.chars() {
+                if ch == '(' {
+                    paren_depth += 1;
+                } else if ch == ')' {
+                    paren_depth -= 1;
+                }
+            }
+            let is_inside_parens = paren_depth > 0;
+
+            // If '=' is inside parentheses, treat as package spec
+            // Examples:
+            //   - font(:lang=en) -> package spec (provide with parameter)
+            //   - libfoo(x86-64)=2.0 -> package spec (provide with arch and version)
+            if is_inside_parens {
+                package_specs.push(arg.clone());
+                continue;
+            }
+
+            // Check if it's a valid filter key
+            // Examples:
+            //   - version=1.0 -> filter
+            //   - arch=x86_64 -> filter
+            //   - pkgname=1.0 -> package spec (not a valid filter key)
+            if let Some((key, val)) = arg.split_once('=') {
+                if valid_filter_keys.contains(&key) {
+                    filters.insert(key.to_string(), val.to_string());
+                } else {
+                    // Not a valid filter key, treat as package spec
+                    // Examples:
+                    //   - pkgname=1.0 -> package spec (version constraint)
+                    //   - mypackage=2.5 -> package spec
+                    package_specs.push(arg.clone());
+                }
+            } else {
+                package_specs.push(arg.clone());
+            }
         } else {
+            // No '=' sign, definitely a package spec
+            // Examples:
+            //   - font -> package spec (package name)
+            //   - libfoo -> package spec (package name)
             package_specs.push(arg.clone());
         }
     }
@@ -57,18 +106,39 @@ fn process_package_spec(
     show_scripts: bool,
     show_files: bool,
 ) -> Result<()> {
-    // Get packages from repository
-    let mut packages = package_manager.map_pkgname2packages(package_spec)?;
+    // Check if package_spec looks like a pkgkey (format: pkgname__version__arch)
+    // A pkgkey has exactly 2 '__' separators, resulting in 3 parts when split
+    let parts: Vec<&str> = package_spec.split("__").collect();
+    let is_pkgkey = parts.len() == 3 && !parts[0].is_empty() && !parts[1].is_empty() && !parts[2].is_empty();
 
-    // If no packages found, retry with capability/provide mapping
-    if packages.is_empty() {
-        // Try to find provider package names for this capability
-        let provider_pkgnames = crate::mmio::map_provide2pkgnames(package_spec)?;
+    let mut packages = Vec::new();
 
-        // For each provider package name, get its packages
-        for provider_pkgname in provider_pkgnames {
-            let mut provider_packages = package_manager.map_pkgname2packages(&provider_pkgname)?;
-            packages.append(&mut provider_packages);
+    if is_pkgkey {
+        // Try to look up by pkgkey directly - only show the exact matching package
+        match crate::mmio::map_pkgkey2package(package_spec) {
+            Ok(package) => {
+                packages.push(package);
+            }
+            Err(_) => {
+                // If pkgkey lookup fails, don't fall back - show error for exact match
+                println!("No packages found matching '{}'", package_spec);
+                return Ok(());
+            }
+        }
+    } else {
+        // Get packages from repository by pkgname
+        packages = package_manager.map_pkgname2packages(package_spec)?;
+
+        // If no packages found, retry with capability/provide mapping
+        if packages.is_empty() {
+            // Try to find provider package names for this capability
+            let provider_pkgnames = crate::mmio::map_provide2pkgnames(package_spec)?;
+
+            // For each provider package name, get its packages
+            for provider_pkgname in provider_pkgnames {
+                let mut provider_packages = package_manager.map_pkgname2packages(&provider_pkgname)?;
+                packages.append(&mut provider_packages);
+            }
         }
     }
 

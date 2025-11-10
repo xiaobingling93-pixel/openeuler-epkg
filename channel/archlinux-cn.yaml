@@ -1,0 +1,9 @@
+format: pacman
+distro: archlinux
+distro_dirs:
+- archlinuxcn
+versions:
+- "latest"
+repos:
+  archlinuxcn:
+index_url: $mirror/$arch/archlinuxcn.files.tar.gz

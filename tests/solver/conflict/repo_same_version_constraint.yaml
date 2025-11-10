@@ -1,0 +1,84 @@
+# Test case for same-version constraint normalization
+# This simulates the glusterfs scenario where:
+# - libgfrpc0 and libgfxdr0 (version 11.1-5.oe2403sp1) have obsoletes: glusterfs-libs <= 11.1-5.oe2403sp1
+# - After normalization, this becomes: glusterfs-libs < 11.1-5.oe2403sp1
+# - After inversion, this becomes: glusterfs-libs >= 11.1-5.oe2403sp1
+# - libglusterfs0 (version 11.1-5.oe2403sp1) provides glusterfs-libs = 11.1-5.oe2403sp1, which satisfies >=
+#
+# HOW OS PACKAGERS SHOULD FIX THIS ISSUE:
+#
+# This test case demonstrates a common RPM packaging mistake where packages obsolete capabilities
+# at their own version using "<= pkg.version", which creates self-contradictory constraints.
+#
+# The solver automatically fixes this for RPM format by changing "cap <= pkg.version" to
+# "cap < pkg.version" when pkg.version matches the package's own version. However, packagers
+# should fix this at the source:
+#
+#   Change: obsoletes: glusterfs-libs <= 11.1-5.oe2403sp1
+#   To:     obsoletes: glusterfs-libs < 11.1-5.oe2403sp1
+#
+# This way, the inverted constraint becomes glusterfs-libs >= 11.1-5.oe2403sp1, which is
+# satisfied by same-version providers (glusterfs-libs = 11.1-5.oe2403sp1).
+#
+# Best practice: When obsoleting capabilities, use "< pkg.version" instead of "<= pkg.version"
+# to avoid self-conflicts with same-version providers.
+
+- pkgname: libglusterfs0
+  version: 11.1-5.oe2403sp1
+  arch: x86_64
+  provides:
+  - glusterfs-libs = 11.1-5.oe2403sp1
+  - libglusterd0 = 11.1-5.oe2403sp1
+  requires:
+  - ld-linux-x86-64.so.2()(64bit)
+  - libc.so.6(GLIBC_2.38)(64bit)
+  - /bin/sh
+
+- pkgname: libgfrpc0
+  version: 11.1-5.oe2403sp1
+  arch: x86_64
+  provides:
+  - libgfrpc0 = 11.1-5.oe2403sp1
+  requires:
+  - glusterfs-libs
+  - libcrypto.so.3()(64bit)
+  - libc.so.6(GLIBC_2.34)(64bit)
+  - /bin/sh
+  obsoletes:
+  - glusterfs-libs <= 11.1-5.oe2403sp1
+
+- pkgname: libgfxdr0
+  version: 11.1-5.oe2403sp1
+  arch: x86_64
+  provides:
+  - libgfxdr0 = 11.1-5.oe2403sp1
+  requires:
+  - glusterfs-libs
+  - libcrypto.so.3()(64bit)
+  - libc.so.6(GLIBC_2.4)(64bit)
+  - /bin/sh
+  obsoletes:
+  - glusterfs-libs <= 11.1-5.oe2403sp1
+
+# Dependencies for the packages
+- pkgname: glibc
+  version: 2.38-65.oe2403sp1
+  arch: x86_64
+  provides:
+  - libc.so.6(GLIBC_2.4)(64bit)
+  - libc.so.6(GLIBC_2.34)(64bit)
+  - libc.so.6(GLIBC_2.38)(64bit)
+  - ld-linux-x86-64.so.2()(64bit)
+
+- pkgname: openssl
+  version: 3.0.0
+  arch: x86_64
+  provides:
+  - libcrypto.so.3()(64bit)
+
+- pkgname: bash
+  version: 5.0
+  arch: x86_64
+  provides:
+  - /bin/sh
+

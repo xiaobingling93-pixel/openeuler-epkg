@@ -1,0 +1,9 @@
+format: apk
+description: provides test 15
+repo: repo.yaml
+install:
+- hplip-sane
+- sane-backend-hpaio
+- sane-backends
+- nonexistent
+expect_fail: true

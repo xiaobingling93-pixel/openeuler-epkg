@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::os::unix::fs::symlink;
+use std::time::SystemTime;
+
 use color_eyre::eyre::{self, Result, WrapErr, eyre};
 use crate::models::*;
 use crate::dirs;
@@ -14,19 +16,124 @@ use std::io::Write;
 use regex;
 use glob;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct InstallationPlan {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub fresh_installs: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub upgrades_new: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub upgrades_old: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub old_removes: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub new_exposes: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub del_exposes: HashMap<String, InstalledPackageInfo>,
 }
-use std::time::SystemTime;
 
+impl<'de> serde::Deserialize<'de> for InstallationPlan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Helper {
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            fresh_installs: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            upgrades_new: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            upgrades_old: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            old_removes: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            new_exposes: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
+            del_exposes: HashMap<String, InstalledPackageInfo>,
+        }
 
+        fn deserialize_pkgkey_map<'de, D>(
+            deserializer: D,
+        ) -> Result<HashMap<String, InstalledPackageInfo>, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            use serde::de::{MapAccess, Visitor};
+            use std::fmt;
+
+            struct PkgkeyMapVisitor;
+
+            impl<'de> Visitor<'de> for PkgkeyMapVisitor {
+                type Value = HashMap<String, InstalledPackageInfo>;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a map of pkgkey to InstalledPackageInfo or null")
+                }
+
+                fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+                where
+                    M: MapAccess<'de>,
+                {
+                    let mut result = HashMap::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        // Try to deserialize as Option<InstalledPackageInfo>
+                        // null values will deserialize as None, which we convert to a default
+                        let pkgkey = key.clone();
+                        let info = match map.next_value::<Option<InstalledPackageInfo>>() {
+                            Ok(Some(info)) => info,
+                            Ok(None) => {
+                                // null value - create minimal default (we only compare keys anyway)
+                                InstalledPackageInfo {
+                                    pkgline: format!("fake_hash__{}", pkgkey),
+                                    arch: "x86_64".to_string(),
+                                    depend_depth: 0,
+                                    install_time: 1000000000,
+                                    ebin_exposure: true,
+                                    rdepends: Vec::new(),
+                                    depends: Vec::new(),
+                                    ebin_links: Vec::new(),
+                                }
+                            }
+                            Err(_) => {
+                                // Deserialization error - also create default
+                                InstalledPackageInfo {
+                                    pkgline: format!("fake_hash__{}", pkgkey),
+                                    arch: "x86_64".to_string(),
+                                    depend_depth: 0,
+                                    install_time: 1000000000,
+                                    ebin_exposure: true,
+                                    rdepends: Vec::new(),
+                                    depends: Vec::new(),
+                                    ebin_links: Vec::new(),
+                                }
+                            }
+                        };
+                        result.insert(key, info);
+                    }
+                    Ok(result)
+                }
+            }
+
+            deserializer.deserialize_map(PkgkeyMapVisitor)
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        Ok(InstallationPlan {
+            fresh_installs: helper.fresh_installs,
+            upgrades_new: helper.upgrades_new,
+            upgrades_old: helper.upgrades_old,
+            skipped_reinstalls: helper.skipped_reinstalls,
+            old_removes: helper.old_removes,
+            new_exposes: helper.new_exposes,
+            del_exposes: helper.del_exposes,
+        })
+    }
+}
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     // Check if this is a conda environment - conda ELF binaries can run directly
@@ -269,6 +376,11 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
 /// - target_path: Where to create the file/symlink in the environment
 /// - fhs_file: Relative path from store_fs_dir (used to determine if file is in /etc/)
 fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
+    // Skip symlinks for top-level directories: sbin, bin, lib, lib64, lib32
+    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32") {
+        return Ok(());
+    }
+
     // Remove any existing file/dirs
     if fs::symlink_metadata(target_path).is_ok() {
         // On upgrade, it's normal to overwrite old files from previous version
@@ -793,50 +905,33 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 
 impl PackageManager {
 
-    fn prepare_installation_plan(
+    pub fn prepare_installation_plan(
         &self,
         all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
-        packages_to_expose_from_args: HashMap<String, InstalledPackageInfo>,
-        original_installed_packages: &HashMap<String, InstalledPackageInfo>,
     ) -> Result<InstallationPlan> {
         let mut plan = InstallationPlan::default();
 
         for (session_pkgkey, session_pkg_info) in all_packages_for_session {
-            if original_installed_packages.contains_key(session_pkgkey) {
+            if self.installed_packages.contains_key(session_pkgkey) {
                 plan.skipped_reinstalls.insert(session_pkgkey.clone(), session_pkg_info.clone());
                 continue;
             }
 
-            let _ = match package::parse_pkgkey(session_pkgkey) {
-                Ok(_) => {},
-                Err(e) => {
-                    log::warn!(
-                        "Failed to parse session_pkgkey {}: {}. Considering as fresh install.",
-                        session_pkgkey, e
-                    );
-                    plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
-                    continue;
-                }
-            };
-
-            let (is_upgrade, old_pkgkey) = find_upgrade_target(session_pkgkey, session_pkg_info, original_installed_packages);
+            let (is_upgrade, old_pkgkey) = find_upgrade_target(session_pkgkey, session_pkg_info, &self.installed_packages);
             if is_upgrade {
                 plan.upgrades_new.insert(session_pkgkey.clone(), session_pkg_info.clone());
-                plan.upgrades_old.insert(old_pkgkey.clone(), original_installed_packages[&old_pkgkey].clone());
+                plan.upgrades_old.insert(old_pkgkey.clone(), self.installed_packages[&old_pkgkey].clone());
             } else {
                 plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
             }
         }
 
-        // Auto-populate expose plan based on installation/removal actions
-        Self::auto_populate_expose_plan(&mut plan);
+        // Find and add orphaned packages to removals
+        self.add_orphans_to_removes(&mut plan)?;
 
-        // Track additional exposure changes for existing packages (not covered by auto-populate)
-        track_additional_exposure_changes(
-            &mut plan,
-            &packages_to_expose_from_args,
-            original_installed_packages,
-        );
+        // Auto-populate expose plan based on installation/removal actions
+        self.auto_populate_expose_plan(&mut plan);
+
         Ok(plan)
     }
 
@@ -875,102 +970,31 @@ impl PackageManager {
     }
 
     /// Installs specified packages and their dependencies.
-    ///
-    /// This function orchestrates the package installation process as follows:
-    /// 1.  Loads existing installed package metadata (`installed-packages.json`) into
-    ///     `self.installed_packages` and creates a copy (`original_installed_packages`)
-    ///     to represent the state at the start of the operation.
-    /// 2.  Resolves the initial `package_specs` (user-provided package names) against
-    ///     repository metadata to get basic package information.
-    /// 3.  Recursively collects all dependencies for these initial packages, resulting
-    ///     in `all_packages_for_session`. This map contains `InstalledPackageInfo`
-    ///     for all packages involved in the current session, with `pkgline` fields
-    ///     correctly initialized as empty strings (`String::new()`).
-    /// 4.  Further processes this set collect essential packages (`collect_essential_packages`),
-    ///     resulting in `processed_session_packages`.
-    /// 5.  Determines `packages_needing_file_ops`:
-    ///     Iterates through `processed_session_packages`. A package is added to
-    ///     `packages_needing_file_ops` if:
-    ///     a. It was not present in `original_installed_packages` (i.e., it's a new package).
-    ///     b. Or, if its `ebin_exposure` has changed compared to `original_installed_packages`.
-    ///        (This implies a change in how it should be exposed, requiring file operations).
-    /// 6.  Updates `self.installed_packages` (the in-memory representation that will be saved):
-    ///     Packages from `all_packages_for_session` (which includes newly requested packages
-    ///     and all their dependencies, potentially re-evaluating existing ones) are merged into
-    ///     `self.installed_packages`. If a package from `all_packages_for_session` already
-    ///     exists in `self.installed_packages`, its information is updated. If not, it's added.
-    ///     This ensures that metadata (depend_depth, rdepends, depends, ebin_exposure, and
-    ///     initially empty pkglines) is updated for packages involved in this session, while
-    ///     preserving other unrelated, already-installed packages.
-    /// 7.  If `packages_needing_file_ops` is empty:
-    ///     Prints a message indicating no new files need to be installed/linked.
-    ///     Saves the (potentially updated metadata in) `self.installed_packages` to a new
-    ///     generation, as metadata like dependency relationships might have changed even
-    ///     if no files were physically altered.
-    ///     Then, exits.
-    /// 8.  If `packages_needing_file_ops` is NOT empty:
-    ///     Calls `self.install_pkgkeys()` with `packages_needing_file_ops`.
-    ///     `install_pkgkeys` handles the actual downloading, unpacking, linking, and
-    ///     exposure of package files. Critically, during this process (specifically in
-    ///     `process_downloaded_package`), the `pkgline` in `InstalledPackageInfo`
-    ///     is populated with its final value. The pkgline format is `{ca_hash}__{pkgkey}`,
-    ///     where `ca_hash` is computed from the content of the unpacked package.
-    ///     `install_pkgkeys` is responsible for ensuring these `InstalledPackageInfo`
-    ///     objects (with corrected `pkglines`) are used to update `self.installed_packages`
-    ///     before it finally saves `installed-packages.json` for the new generation.
-    pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
-        self.load_installed_packages()?;
-        let original_installed_packages = self.installed_packages.clone();
+    pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<InstallationPlan> {
+        self.load_world()?;
 
-        let package_format = channel_config().format;
-        let mut initial_packages_info = self.resolve_package_info(package_specs.clone(), package_format);
+        // Process package specs: handle local files/URLs, return all package specs ready for installation
+        let processed_specs = self.process_url_package_specs(package_specs)?;
 
-        // Filter out packages that are already installed
-        let current_installed_from_request: Vec<String> = initial_packages_info
-            .keys()
-            .filter(|name| original_installed_packages.contains_key(*name))
-            .cloned()
-            .collect();
+        // Create delta_world from processed specs (in case local files were converted to specs)
+        let mut delta_world = Self::create_delta_world_from_specs(&processed_specs);
+        self.apply_delta_world(&delta_world);
 
-        if !current_installed_from_request.is_empty() {
-            println!("Packages already installed: {}", current_installed_from_request.join(" "));
+        // Prepare user_request_world BEFORE adding essential packages
+        // user_request_world should only contain explicitly user-requested packages, not essential ones
+        // user_request_world will be used for setting ebin_exposure
+        let user_request_world = Some(delta_world.clone());
 
-            // Remove already installed packages from the initial packages info
-            for pkgkey in &current_installed_from_request {
-                initial_packages_info.remove(pkgkey);
-            }
-
-            // If all requested packages are already installed, exit early
-            if initial_packages_info.is_empty() {
-                return Ok(());
-            }
+        // Add essential packages to delta_world if not already in self.world
+        // this extended delta_world won't be saved to disk
+        if !crate::models::config().install.no_install_essentials {
+            self.add_essential_packages_to_delta_world(&mut delta_world)?;
         }
 
-        self.collect_essential_packages(&mut initial_packages_info)?;
-        let mut all_packages_for_session = self.collect_recursive_depends(&initial_packages_info, package_format)?;
-
-        let packages_to_expose = self.extend_appbin_by_source(&mut all_packages_for_session)?;
-
-        if packages_to_expose.is_empty() && all_packages_for_session.is_empty() {
-            println!("No packages to install or upgrade.");
-            return Ok(());
-        }
-
-
-        self.install_pkgkeys(all_packages_for_session, packages_to_expose, &original_installed_packages)
-    }
-
-    pub fn install_pkgkeys(
-        &mut self,
-        all_packages_for_session: HashMap<String, InstalledPackageInfo>,
-        packages_to_expose_from_args: HashMap<String, InstalledPackageInfo>,
-        original_installed_packages: &HashMap<String, InstalledPackageInfo>,
-    ) -> Result<()> {
-        let plan = self.prepare_installation_plan(&all_packages_for_session, packages_to_expose_from_args, original_installed_packages)?;
-
-        // If we reach here, actions_planned was true, user confirmed, and not dry_run.
-        // Proceed with actual installation steps by calling the unified execution method.
-        self.execute_installation_plan(plan)
+        self.resolve_and_install_packages(
+            &delta_world,
+            user_request_world.as_ref(),
+        )
     }
 
     /// Prompt the user with the installation plan and confirm before proceeding.
@@ -1044,6 +1068,30 @@ impl PackageManager {
         actions_planned
     }
 
+    fn print_packages_by_depend_depth(&mut self, packages: &HashMap<String, InstalledPackageInfo>) {
+        // Convert HashMap to a Vec of tuples (pkgkey, info)
+        let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().collect();
+
+        // Sort by depend_depth
+        packages_vec.sort_by(|a, b| a.1.depend_depth.cmp(&b.1.depend_depth));
+
+        // Print the header
+        println!("{:<5} {:>10}  {:<30}", "DEPTH", "SIZE", "PACKAGE");
+
+        // Print each package
+        for (pkgkey, info) in packages_vec {
+            // Try to load package info to get size
+            let size_str = match self.load_package_info(pkgkey) {
+                Ok(package) => {
+                    format!("{}", utils::format_size(package.size as u64))
+                }
+                Err(_) => "".to_string(),
+            };
+
+            println!("{:<5} {:>10}  {:<30}", info.depend_depth, size_str, pkgkey);
+        }
+    }
+
     /// Print summary statistics for the installation plan
     fn print_installation_summary(&self, plan: &InstallationPlan) {
         let num_upgraded = plan.upgrades_new.len();
@@ -1086,11 +1134,12 @@ impl PackageManager {
 
     /// Execute an InstallationPlan by performing the actual installation/removal operations.
     /// This function can be reused by both install and remove operations.
-    pub fn execute_installation_plan(&mut self, plan: InstallationPlan) -> Result<()> {
+    /// If config().common.dry_run is true, will return the plan without executing it.
+    pub fn execute_installation_plan(&mut self, plan: InstallationPlan) -> Result<InstallationPlan> {
         // --- USER PROMPT AND PRE-EXECUTION CHECKS ---
         let go_on = self.prompt_and_confirm_install_plan(&plan)?;
         if !go_on {
-            return Ok(());
+            return Ok(plan);
         }
 
         let new_generation = self.create_new_generation()?;
@@ -1113,9 +1162,10 @@ impl PackageManager {
 
         self.record_history(&new_generation, Some(&plan))?;
         self.save_installed_packages(&new_generation)?;
+        self.save_world(&new_generation)?;
         self.update_current_generation_symlink(new_generation)?;
 
-        Ok(())
+        Ok(plan)
     }
 
     /// Execute package removals
@@ -1376,7 +1426,7 @@ impl PackageManager {
                     pending_urls.retain(|url| *url != completed_url);
 
                     // Process the downloaded package
-                    if let Some((actual_pkgkey, package_info)) = self.process_downloaded_package(
+                    if let Some((actual_pkgkey, package_info)) = self.unpack_link_downloaded_package(
                         &pkgkey,
                         packages_to_install,
                         store_root,
@@ -1402,7 +1452,7 @@ impl PackageManager {
     /// - Links the package (exposure happens later)
     ///
     /// Returns the actual package key and updated package info if successful
-    fn process_downloaded_package(
+    fn unpack_link_downloaded_package(
         &mut self,
         pkgkey: &str,
         packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
@@ -1439,7 +1489,7 @@ impl PackageManager {
         self.link_package(&store_fs_dir, &env_root.to_path_buf())
             .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
 
-        // Exposure will happen later in install_pkgkeys
+        // Exposure will happen later in execute_installation_plan()
 
         Ok(Some((actual_pkgkey, package_info)))
     }
@@ -1522,7 +1572,7 @@ impl PackageManager {
         )?;
 
         // Step 3: Link new package files to env
-        // Done in process_downloaded_package() for now
+        // Done in unpack_link_downloaded_package() for now
         // let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
         // self.link_package(&new_store_fs_dir, &env_root.to_path_buf())
         //     .with_context(|| format!("Failed to link new package {}", new_package_info.pkgline))?;
@@ -1668,7 +1718,7 @@ impl PackageManager {
         )?;
 
         // Step 2: Install files (link packages)
-        // This is moved earlier to process_downloaded_package(), so that scriptlets have command to run.
+        // This is moved earlier to unpack_link_downloaded_package(), so that scriptlets have command to run.
         // for (_, package_info) in fresh_installs {
         //     let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
         //     self.link_package(&store_fs_dir, &env_root.to_path_buf())
@@ -1691,9 +1741,140 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Recursively find orphaned packages and add them to plan.old_removes
+    /// An orphaned package is one that has no remaining reverse dependencies
+    /// (i.e., no other installed package depends on it)
+    /// Packages with depend_depth=0 (user-requested packages) are never considered orphans
+    /// Essential packages are never considered orphans
+    fn add_orphans_to_removes(
+        &self,
+        plan: &mut InstallationPlan,
+    ) -> Result<()> {
+        // Helper function to check if a package is essential
+        let is_essential = |pkgkey: &str| -> bool {
+            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                crate::mmio::is_essential_pkgname(&pkgname)
+            } else {
+                false
+            }
+        };
+
+        // Calculate possible orphans: installed packages that are not being skipped or upgraded
+        // Exclude packages with depend_depth=0 (user-requested packages) and essential packages
+        let possible_orphans: Vec<String> = self.installed_packages
+            .iter()
+            .filter(|(pkgkey, pkg_info)| {
+                !plan.skipped_reinstalls.contains_key(*pkgkey) &&
+                !plan.upgrades_old.contains_key(*pkgkey) &&
+                pkg_info.depend_depth > 0 &&  // Exclude user-requested packages (depend_depth=0)
+                !is_essential(pkgkey)  // Exclude essential packages
+            })
+            .map(|(pkgkey, _)| pkgkey.clone())
+            .collect();
+
+        if possible_orphans.is_empty() {
+            return Ok(());
+        }
+
+        // Build pkgkey_to_depends for possible orphans
+        let mut pkgkey_to_depends: HashMap<String, Vec<String>> = HashMap::new();
+        for pkgkey in &possible_orphans {
+            if let Some(pkg_info) = self.installed_packages.get(pkgkey) {
+                pkgkey_to_depends.insert(pkgkey.clone(), pkg_info.depends.clone());
+            }
+        }
+
+        // Build remaining_rdepends for each possible orphan
+        // Filter out rdepends that are being removed or upgraded (old version)
+        // Keep rdepends that are staying installed (skipped_reinstalls, upgrades_new, fresh_installs)
+        let mut remaining_rdepends: HashMap<String, Vec<String>> = HashMap::new();
+        for pkgkey in &possible_orphans {
+            if let Some(pkg_info) = self.installed_packages.get(pkgkey) {
+                let filtered_rdepends: Vec<String> = pkg_info.rdepends
+                    .iter()
+                    .filter(|rdep_pkgkey| {
+                        // Filter out rdepends that are being removed or upgraded (old version)
+                        // These won't keep the package alive
+                        let is_being_removed = plan.old_removes.contains_key(*rdep_pkgkey);
+                        let is_old_upgrade = plan.upgrades_old.contains_key(*rdep_pkgkey);
+
+                        // Keep rdepends that are staying installed:
+                        // - skipped_reinstalls: staying as-is
+                        // - upgrades_new: new version staying
+                        // - fresh_installs: being installed
+                        // Also ensure the rdepend is still in installed_packages (not already removed)
+                        !is_being_removed && !is_old_upgrade &&
+                        self.installed_packages.contains_key(*rdep_pkgkey)
+                    })
+                    .cloned()
+                    .collect();
+                remaining_rdepends.insert(pkgkey.clone(), filtered_rdepends);
+            }
+        }
+
+        // Ensure all possible orphans have an entry in remaining_rdepends
+        for pkgkey in &possible_orphans {
+            remaining_rdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+        }
+
+        // Loop to find orphans recursively (similar to calculate_pkgkey_to_depth)
+        loop {
+            // Find packages with empty remaining_rdepends => these are orphans
+            // Exclude packages with depend_depth=0 (user-requested packages) and essential packages
+            let orphan_pkgkeys: Vec<String> = remaining_rdepends
+                .iter()
+                .filter(|(pkgkey, rdepends)| {
+                    rdepends.is_empty() && {
+                        // Double-check that it's not a user-requested package or essential package
+                        if let Some(pkg_info) = self.installed_packages.get(*pkgkey) {
+                            pkg_info.depend_depth > 0 && !is_essential(pkgkey)
+                        } else {
+                            false
+                        }
+                    }
+                })
+                .map(|(pkgkey, _)| pkgkey.clone())
+                .collect();
+
+            if orphan_pkgkeys.is_empty() {
+                // No more orphans found
+                break;
+            }
+
+            log::debug!("Found {} orphaned packages", orphan_pkgkeys.len());
+
+            // Add orphans to plan.old_removes
+            for orphan_pkgkey in &orphan_pkgkeys {
+                if let Some(pkg_info) = self.installed_packages.get(orphan_pkgkey) {
+                    plan.old_removes.insert(orphan_pkgkey.clone(), pkg_info.clone());
+                    log::debug!("Added orphaned package '{}' to old_removes", orphan_pkgkey);
+                }
+            }
+
+            // Remove orphan nodes from remaining_rdepends and update reverse dependencies
+            for orphan_pkgkey in &orphan_pkgkeys {
+                // Remove this orphan from remaining_rdepends
+                remaining_rdepends.remove(orphan_pkgkey);
+
+                // Remove this orphan from reverse dependency lists of packages it depends on
+                // If orphan_pkgkey depends on dep_pkgkey, then orphan_pkgkey is in remaining_rdepends[dep_pkgkey]
+                // We need to remove orphan_pkgkey from remaining_rdepends[dep_pkgkey]
+                if let Some(depends_list) = pkgkey_to_depends.get(orphan_pkgkey) {
+                    for dep_pkgkey in depends_list {
+                        if let Some(rdepends) = remaining_rdepends.get_mut(dep_pkgkey) {
+                            rdepends.retain(|x| x != orphan_pkgkey);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Auto-add items to plan.del_exposes/new_exposes based on ebin_exposure status
     /// This function automatically populates the expose fields based on the installation/removal plan
-    pub fn auto_populate_expose_plan(plan: &mut InstallationPlan) {
+    pub fn auto_populate_expose_plan(&self, plan: &mut InstallationPlan) {
         // Track exposure changes for packages being removed
         for (pkgkey, pkg_info) in &plan.old_removes {
             if pkg_info.ebin_exposure {
@@ -1702,11 +1883,36 @@ impl PackageManager {
             }
         }
 
+        // Build a reverse map from old_pkgkey to new_pkgkey for efficient lookup
+        // Match by package name and architecture
+        let mut old_to_new: HashMap<String, String> = HashMap::new();
+        for (new_pkgkey, _) in &plan.upgrades_new {
+            if let Ok((new_pkgname, _, new_arch)) = crate::package::parse_pkgkey(new_pkgkey) {
+                for (old_pkgkey, _) in &plan.upgrades_old {
+                    if let Ok((old_pkgname, _, old_arch)) = crate::package::parse_pkgkey(old_pkgkey) {
+                        if new_pkgname == old_pkgname && new_arch == old_arch {
+                            old_to_new.insert(old_pkgkey.clone(), new_pkgkey.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // Track exposure changes for packages being upgraded (old versions)
-        for (pkgkey, pkg_info) in &plan.upgrades_old {
-            if pkg_info.ebin_exposure {
+        // Also ensure new versions inherit exposure from old versions
+        for (old_pkgkey, old_pkg_info) in &plan.upgrades_old {
+            if old_pkg_info.ebin_exposure {
                 // Old version being upgraded was exposed - will be unexposed
-                plan.del_exposes.insert(pkgkey.clone(), pkg_info.clone());
+                plan.del_exposes.insert(old_pkgkey.clone(), old_pkg_info.clone());
+
+                // Find the corresponding new version and ensure it's also exposed
+                if let Some(new_pkgkey) = old_to_new.get(old_pkgkey) {
+                    if let Some(new_pkg_info) = plan.upgrades_new.get(new_pkgkey) {
+                        // Found matching new version - ensure it's exposed
+                        plan.new_exposes.insert(new_pkgkey.clone(), new_pkg_info.clone());
+                    }
+                }
             }
         }
 
@@ -1719,64 +1925,50 @@ impl PackageManager {
         }
 
         // Track exposure changes for packages being upgraded (new versions)
+        // Note: This handles cases where new version has ebin_exposure set but old version didn't
         for (pkgkey, pkg_info) in &plan.upgrades_new {
             if pkg_info.ebin_exposure {
                 // New version being upgraded should be exposed
                 plan.new_exposes.insert(pkgkey.clone(), pkg_info.clone());
             }
         }
+
+        // Track additional exposure changes for skipped_reinstalls
+        self.process_skipped_reinstalls_exposure(plan);
     }
 
-    fn print_packages_by_depend_depth(&mut self, packages: &HashMap<String, InstalledPackageInfo>) {
-        // Convert HashMap to a Vec of tuples (pkgkey, info)
-        let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().collect();
-
-        // Sort by depend_depth
-        packages_vec.sort_by(|a, b| a.1.depend_depth.cmp(&b.1.depend_depth));
-
-        // Print the header
-        println!("{:<5} {:>10}  {:<30}", "DEPTH", "SIZE", "PACKAGE");
-
-        // Print each package
-        for (pkgkey, info) in packages_vec {
-            // Try to load package info to get size
-            let size_str = match self.load_package_info(pkgkey) {
-                Ok(package) => {
-                    if package.size > 0 {
-                        format!("{}", utils::format_size(package.size as u64))
-                    } else {
-                        "".to_string()
-                    }
-                }
-                Err(_) => "".to_string(),
+    /// Track exposure changes for packages in skipped_reinstalls
+    /// This function handles cases where packages exist in both old and new states but have exposure changes.
+    /// IMPORTANT: For skipped reinstalls (same version), we preserve the existing exposure status.
+    /// We only change exposure if the user explicitly requested it (which would be handled elsewhere).
+    fn process_skipped_reinstalls_exposure(
+        &self,
+        plan: &mut InstallationPlan,
+    ) {
+        // Collect keys first to avoid borrow checker issues
+        let pkgkeys: Vec<String> = plan.skipped_reinstalls.keys().cloned().collect();
+        for pkgkey in pkgkeys {
+            // Extract values we need before any mutable borrows
+            let (new_ebin_exposure, new_info_clone) = {
+                let new_info = plan.skipped_reinstalls.get(&pkgkey).unwrap();
+                (new_info.ebin_exposure, new_info.clone())
             };
 
-            println!("{:<5} {:>10}  {:<30}", info.depend_depth, size_str, pkgkey);
-        }
-    }
-}
-
-/// Track additional exposure changes for packages in skipped_reinstalls
-/// This function handles cases where packages exist in both old and new states but have exposure changes
-pub fn track_additional_exposure_changes(
-    plan: &mut InstallationPlan,
-    new_packages: &HashMap<String, InstalledPackageInfo>,
-    old_packages: &HashMap<String, InstalledPackageInfo>,
-) {
-    for (pkgkey, new_info) in new_packages {
-        if let Some(old_info) = old_packages.get(pkgkey) {
-            // Package exists in both - check for exposure changes not covered by auto-populate
-            if old_info.ebin_exposure != new_info.ebin_exposure {
-                // This is already handled by auto_populate_expose_plan for fresh_installs and upgrades_new
-                // Only handle cases where packages are in skipped_reinstalls but have exposure changes
-                if plan.skipped_reinstalls.contains_key(pkgkey) {
-                    if new_info.ebin_exposure {
-                        // Package will be newly exposed
-                        plan.new_exposes.insert(pkgkey.clone(), new_info.clone());
-                    } else {
-                        // Package will be unexposed
-                        plan.del_exposes.insert(pkgkey.clone(), old_info.clone());
+            if let Some(old_info) = self.installed_packages.get(&pkgkey) {
+                // Package exists in both - check for exposure changes
+                // For skipped reinstalls (same version), preserve existing exposure status
+                // The new_ebin_exposure might be false due to resolution logic (e.g., user_request_world=None),
+                // but we should preserve the installed package's exposure status
+                if new_ebin_exposure != old_info.ebin_exposure {
+                    // Only change exposure if the new exposure is explicitly true (user requested)
+                    // If old was exposed and new is false, preserve the exposure (don't unexpose)
+                    // If old was not exposed and new is true, expose it (user requested)
+                    if new_ebin_exposure && !old_info.ebin_exposure {
+                        // Package will be newly exposed (user requested)
+                        plan.new_exposes.insert(pkgkey.clone(), new_info_clone);
                     }
+                    // If old was exposed but new session says false, preserve exposure (don't unexpose)
+                    // This happens when user_request_world is None during full upgrade
                 }
             }
         }
@@ -2229,6 +2421,224 @@ mod tests {
         assert_eq!(info.interpreter_path, "/usr/bin/python3");
         assert_eq!(info.interpreter_basename, "python3");
         assert_eq!(info.remaining_params, "");
+    }
+}
+
+// ============================================================================
+// LOCAL PACKAGE FILE AND URL HANDLING
+// ============================================================================
+
+/// Check if a spec is a remote URL (http://, https://)
+pub fn is_remote_url(spec: &str) -> bool {
+    spec.starts_with("http://") || spec.starts_with("https://")
+}
+
+
+impl PackageManager {
+    /// Download remote package URLs to local paths in parallel
+    fn download_remote_package_urls(&self, urls: Vec<String>) -> Result<Vec<String>> {
+        use crate::download::download_urls;
+        use crate::models::dirs;
+        use crate::mirror;
+
+        if urls.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Create output directory
+        let output_dir = dirs().epkg_downloads_cache.clone();
+        std::fs::create_dir_all(&output_dir)
+            .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
+
+        // Download all URLs in parallel (download_urls waits for completion when async_mode=false)
+        download_urls(urls.clone(), &output_dir, 6, false)
+            .with_context(|| format!("Failed to download URLs"))?;
+
+        // Get the local file paths - construct from URL using mirror cache path logic
+        let mut local_paths = Vec::new();
+        for url in urls {
+            // Use mirror URL to cache path conversion (same logic as get_package_file_path)
+            let cache_path = mirror::Mirrors::url_to_cache_path(&url, "local")
+                .unwrap_or_else(|_| {
+                    // Fallback: use filename from URL
+                    let filename = url.split('/').last()
+                        .unwrap_or("package");
+                    output_dir.join(filename)
+                });
+            local_paths.push(cache_path.to_string_lossy().to_string());
+        }
+
+        Ok(local_paths)
+    }
+
+    /// Process local package files: unpack packages, load metadata, and add to cache
+    /// Returns package specs that can be used with install_packages()
+    fn process_local_package_files(&mut self, local_files: Vec<String>) -> Result<Vec<String>> {
+        use std::sync::Arc;
+        use crate::store::detect_package_format;
+        use crate::mmio::deserialize_package;
+
+        let mut package_specs = Vec::new();
+
+        // Process each local package file
+        for package_file in local_files {
+            // Verify the file exists and is a package file
+            let path = std::path::Path::new(&package_file);
+            if !path.exists() {
+                return Err(eyre::eyre!("Package file not found: {}", package_file));
+            }
+            if !path.is_file() {
+                return Err(eyre::eyre!("Path is not a file: {}", package_file));
+            }
+
+            // Unpack the package to the store
+            let final_dir = crate::store::unpack_mv_package(&package_file, None)
+                .with_context(|| format!("Failed to unpack package: {}", package_file))?;
+
+            // Extract caHash from the pkgline (directory name)
+            // Format: {ca_hash}__{pkgname}__{version}__{arch}
+            let pkgline = final_dir.file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| eyre::eyre!("Invalid package directory name: {}", final_dir.display()))?;
+            let parsed_pkgline = crate::package::parse_pkgline(pkgline)
+                .with_context(|| format!("Failed to parse pkgline: {}", pkgline))?;
+
+            // Read package.txt from the unpacked package
+            let package_txt_path = final_dir.join("info/package.txt");
+            if !package_txt_path.exists() {
+                return Err(eyre::eyre!("Package metadata not found: {}", package_txt_path.display()));
+            }
+
+            let package_content = std::fs::read_to_string(&package_txt_path)
+                .with_context(|| format!("Failed to read package.txt: {}", package_txt_path.display()))?;
+
+            // Deserialize package metadata
+            let mut package = deserialize_package(&package_content)
+                .with_context(|| format!("Failed to deserialize package from: {}", package_txt_path.display()))?;
+
+            // Set caHash from the parsed pkgline (unpack_mv_package ensures it's in the directory name)
+            package.ca_hash = Some(parsed_pkgline.ca_hash.clone());
+
+            // Set repodata_name to "local" for locally installed packages
+            package.repodata_name = "local".to_string();
+
+            // Set location to the absolute local file path so install_packages can use it
+            let abs_path = std::path::Path::new(&package_file).canonicalize()
+                .with_context(|| format!("Failed to canonicalize path: {}", package_file))?;
+            package.location = abs_path.to_string_lossy().to_string();
+            package.package_baseurl = String::new(); // Empty baseurl indicates local file
+
+            // Generate pkgkey from package metadata (using caHash from pkgline)
+            package.pkgkey = crate::package::pkgline2pkgkey(pkgline)
+                .unwrap_or_else(|_| format!("{}={}", package.pkgname, package.version));
+
+            // Detect package format from file extension
+            let format = detect_package_format(std::path::Path::new(&package_file))
+                .with_context(|| format!("Failed to detect package format for: {}", package_file))?;
+
+            // Add package to cache
+            self.add_package_to_cache(Arc::new(package.clone()), format);
+
+            // Create package spec (pkgname=version)
+            let spec = format!("{}={}", package.pkgname, package.version);
+            package_specs.push(spec);
+        }
+
+        Ok(package_specs)
+    }
+
+    /// Process package specs: separate regular specs from files/URLs, download URLs, process local files
+    fn process_url_package_specs(&mut self, package_specs: Vec<String>) -> Result<Vec<String>> {
+        use crate::store::detect_package_format;
+
+        // Separate package specs into regular package names and local files/URLs
+        let mut regular_specs = Vec::new();
+        let mut remote_urls = Vec::new();
+        let mut local_files = Vec::new();
+
+        for spec in package_specs {
+            if is_remote_url(&spec) {
+                remote_urls.push(spec);
+            } else if spec.starts_with("file://") {
+                // Handle file:// URLs - convert to local path
+                let local_path = spec.strip_prefix("file://")
+                    .unwrap_or(&spec)
+                    .to_string();
+                local_files.push(local_path);
+            } else {
+                // Check if it's a local package file by trying to detect format
+                let path = std::path::Path::new(&spec);
+                if path.exists() && path.is_file() {
+                    // Use detect_package_format to check if it's a supported package file
+                    if detect_package_format(path).is_ok() {
+                        local_files.push(spec);
+                    } else {
+                        regular_specs.push(spec);
+                    }
+                } else {
+                    regular_specs.push(spec);
+                }
+            }
+        }
+
+        // Download all remote URLs in parallel (if any)
+        if !remote_urls.is_empty() {
+            let downloaded_paths = self.download_remote_package_urls(remote_urls)?;
+            local_files.extend(downloaded_paths);
+        }
+
+        // Process local package files (unpack, load metadata, add to cache)
+        if !local_files.is_empty() {
+            let package_specs_from_files = self.process_local_package_files(local_files)?;
+            regular_specs.extend(package_specs_from_files);
+        }
+
+        Ok(regular_specs)
+    }
+
+    /// Create a delta_world HashMap from package specs
+    /// Parses each spec and returns a map of package name -> version constraint
+    pub(crate) fn create_delta_world_from_specs(package_specs: &[String]) -> HashMap<String, String> {
+        use crate::parse_requires::{parse_package_spec_with_version, format_version_constraint_for_world};
+        use crate::models::PackageFormat;
+
+        let mut delta_world = HashMap::new();
+
+        for spec in package_specs {
+            let (pkgname, constraints) = parse_package_spec_with_version(spec, PackageFormat::Apk);
+
+            // Format the constraint string
+            let constraint_str = if let Some(ref constraints) = constraints {
+                format_version_constraint_for_world(constraints)
+            } else {
+                String::new()
+            };
+
+            // Add to delta_world
+            delta_world.insert(pkgname, constraint_str);
+        }
+
+        delta_world
+    }
+
+    /// Update self.world from delta_world
+    pub(crate) fn apply_delta_world(&mut self, delta_world: &HashMap<String, String>) {
+        for (pkgname, constraint_str) in delta_world {
+            self.world.insert(pkgname.clone(), constraint_str.clone());
+        }
+    }
+
+    /// Add essential packages to delta_world if not already in self.world
+    fn add_essential_packages_to_delta_world(&mut self, delta_world: &mut HashMap<String, String>) -> Result<()> {
+        let essential_pkgnames = crate::mmio::get_essential_pkgnames()?;
+        for essential_pkgname in &essential_pkgnames {
+            // Only add if not already in self.world or delta_world
+            if !self.world.contains_key(essential_pkgname) && !delta_world.contains_key(essential_pkgname) {
+                // Add with empty constraint string (no version constraint)
+                delta_world.insert(essential_pkgname.clone(), String::new());
+            }
+        }
+        Ok(())
     }
 }
 

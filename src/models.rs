@@ -3,7 +3,6 @@ use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use crate::parse_cmdline;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use std::sync::Arc;
@@ -61,7 +60,7 @@ pub struct PackageRange {
 pub struct Package {
     pub pkgname: String,
     pub version: String,
-    #[serde(default)]
+    #[serde(default = "default_arch")]
     pub arch: String,
 
     #[serde(default)]
@@ -108,6 +107,14 @@ pub struct Package {
     pub suggests: Vec<String>,
     #[serde(default)]
     pub conflicts: Vec<String>,
+    #[serde(default)]
+    pub obsoletes: Vec<String>,
+    #[serde(default)]
+    pub enhances: Vec<String>,
+    #[serde(default)]
+    pub supplements: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
 
     #[serde(default)]
     pub summary: String,
@@ -202,8 +209,11 @@ pub struct PackagesFileInfo {
 pub struct InstalledPackageInfo {
     // pkgline format is: {ca_hash}__{pkgname}__{version}__{arch}
     // that means pkgline={ca_hash}__{pkgkey}
+    #[serde(default)]  // empty for solver test data
     pub pkgline: String,
+    #[serde(default = "default_arch")]
     pub arch: String,
+    #[serde(default)]
     pub depend_depth: u16,
     #[serde(default)]
     pub install_time: u64,
@@ -341,6 +351,8 @@ pub struct ChannelConfig {
 
     pub index_url: String,
     #[serde(default)]
+    pub index_url_noarch: Option<String>, // conda https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r/noarch/
+    #[serde(default)]
     pub index_url_updates: Option<String>,
     #[serde(default)]
     pub index_url_security: Option<String>,
@@ -356,7 +368,7 @@ pub struct ChannelConfig {
     pub file_data: String, // original file data to preserve during save
 }
 
-fn default_as_true() -> bool { true }
+pub fn default_as_true() -> bool { true }
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
@@ -367,6 +379,8 @@ pub struct RepoConfig {
     pub enabled: bool,
     #[serde(default)]
     pub index_url: Option<String>,
+    #[serde(default)]
+    pub index_url_noarch: Option<String>,
     #[serde(default)]
     pub index_url_updates: Option<String>,
     #[serde(default)]
@@ -384,11 +398,29 @@ static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> 
 
 // Global ENV_CONFIG and CHANNEL_CONFIGS using LazyLock
 static ENV_CONFIG: LazyLock<EnvConfig> = LazyLock::new(|| {
-    crate::io::deserialize_env_config().expect("Failed to deserialize env config")
+    // During tests, config() might not be available, so provide a default
+    #[cfg(test)]
+    {
+        // Return a minimal default config for tests
+        return EnvConfig::default();
+    }
+    #[cfg(not(test))]
+    {
+        crate::io::deserialize_env_config().expect("Failed to deserialize env config")
+    }
 });
 
 static CHANNEL_CONFIGS: LazyLock<Vec<ChannelConfig>> = LazyLock::new(|| {
-    crate::io::deserialize_channel_config().expect("Failed to deserialize channel config")
+    // During tests, config() might not be available, so provide a default
+    #[cfg(test)]
+    {
+        // Return empty vec for tests
+        return Vec::new();
+    }
+    #[cfg(not(test))]
+    {
+        crate::io::deserialize_channel_config().expect("Failed to deserialize channel config")
+    }
 });
 
 // Accessor functions for global configs
@@ -400,8 +432,44 @@ pub fn channel_configs() -> &'static Vec<ChannelConfig> {
     &CHANNEL_CONFIGS
 }
 
+#[cfg(test)]
+static DEFAULT_CHANNEL_CONFIG: LazyLock<Mutex<ChannelConfig>> = LazyLock::new(|| Mutex::new(ChannelConfig::default()));
+
 pub fn channel_config() -> &'static ChannelConfig {
+    // During tests, CHANNEL_CONFIGS might be empty
+    #[cfg(test)]
+    {
+        static CONFIG_PTR: OnceLock<usize> = OnceLock::new();
+        if CHANNEL_CONFIGS.is_empty() {
+            let mutex = LazyLock::force(&DEFAULT_CHANNEL_CONFIG);
+            let config = mutex.lock().unwrap();
+
+            // SAFETY: Similar to config() implementation - we store a raw pointer
+            // to data inside a static Mutex and return it as a static reference.
+            // This is safe because:
+            // 1. DEFAULT_CHANNEL_CONFIG is a static LazyLock, so it lives for the entire program
+            // 2. The Mutex ensures thread safety
+            // 3. We're only reading, and the pointer points to data in the static Mutex
+            let ptr_usize = *CONFIG_PTR.get_or_init(|| {
+                &*config as *const ChannelConfig as usize
+            });
+            return unsafe { &*(ptr_usize as *const ChannelConfig) };
+        }
+    }
     &CHANNEL_CONFIGS[0]
+}
+
+#[cfg(test)]
+/// Get mutable access to the channel config for test customization.
+/// This function locks the Mutex, so it should be used carefully in tests.
+pub fn channel_config_mut() -> std::sync::MutexGuard<'static, ChannelConfig> {
+    if CHANNEL_CONFIGS.is_empty() {
+        // In test mode, we use Mutex for interior mutability
+        DEFAULT_CHANNEL_CONFIG.lock().unwrap()
+    } else {
+        // This shouldn't happen in tests, but handle it gracefully
+        panic!("channel_config_mut() called but CHANNEL_CONFIGS is not empty");
+    }
 }
 
 // use at package install time
@@ -507,6 +575,8 @@ pub struct EPKGConfig {
     #[serde(default)]
     pub install: InstallOptions,
     #[serde(default)]
+    pub upgrade: UpgradeOptions,
+    #[serde(default)]
     pub list: ListOptions,
     #[serde(default)]
     pub env: EnvOptions,
@@ -554,6 +624,8 @@ pub struct CommonOptions {
     pub verbose: bool,
     #[serde(default)]
     pub assume_yes: bool,
+    #[serde(default)]
+    pub assume_no: bool,
     #[serde(default)]
     pub ignore_missing: bool,
 
@@ -615,8 +687,22 @@ pub struct InstallOptions {
     pub install_suggests: bool,
     #[serde(default)]
     pub no_install_recommends: bool,
+    #[serde(default)]
+    pub no_install_essentials: bool,
     #[serde(skip)]
     pub assume_installed: Vec<String>,
+    // Solver selection: "resolvo" (resolvo-based SAT solver, default) or "simple" (simple solver)
+    // Default: "resolvo" for all formats
+    #[serde(default)]
+    pub solver: Option<String>,
+}
+
+#[derive(Default, Debug, Clone, Deserialize)]
+pub struct UpgradeOptions {
+    /// Full upgrade mode: upgrade all packages, not just those in world.json
+    /// When true and command is Upgrade, get_candidates() won't favor any packages
+    #[serde(skip)]
+    pub full_upgrade: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
@@ -697,11 +783,24 @@ pub struct PackageManager {
     pub pkgkey2package: HashMap<String, Arc<Package>>,
     pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages
 
+    // Performance indexes for fast lookups (maintained when packages are added to pkgkey2package)
+    // Index: pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
+    #[allow(dead_code)] // Used in map_pkgname2packages()
+    pub(crate) pkgname2packages: HashMap<String, Vec<Arc<Package>>>,
+    // Index: provide_name -> HashSet<pkgname> for O(1) provider lookup
+    #[allow(dead_code)] // Used in build_provider_list()
+    pub(crate) provide2pkgnames: HashMap<String, HashSet<String>>,
+
     // loaded from env installed-packages.json
     // `self.installed_packages` (loaded from installed-packages.json) is the
     // authoritative data source. If a pkgkey is not found here, the package
     // is treated as not installed.
     pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey (!= pkgline)
+
+    // loaded from env world.json
+    // `self.world` maintains top-level package constraints (name -> version_constraint)
+    // where version_constraint is normally empty string, or e.g., "=version1", ">=version2"
+    pub world: HashMap<String, String>, // key is pkgname, value is version constraint string
 
     pub has_worker_process: bool,
     pub ipc_socket: String,
@@ -710,9 +809,55 @@ pub struct PackageManager {
 }
 
 pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
-    parse_cmdline()
+    // During tests, create a minimal ArgMatches to avoid command-line parsing errors
+    // This allows tests to run without requiring valid epkg command-line arguments
+    #[cfg(test)]
+    {
+        use clap::{Command, Arg, ArgAction};
+        Command::new("epkg")
+            .arg(Arg::new("arch").long("arch").default_value(std::env::consts::ARCH))
+            .arg(Arg::new("env").short('e').long("env"))
+            .arg(Arg::new("config").short('C').long("config"))
+            .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
+            .arg(Arg::new("download-only").long("download-only").action(ArgAction::SetTrue))
+            .arg(Arg::new("quiet").short('q').long("quiet").action(ArgAction::SetTrue))
+            .arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))
+            .arg(Arg::new("assume-yes").short('y').long("assume-yes").action(ArgAction::SetTrue))
+            .arg(Arg::new("assume-no").long("assume-no").action(ArgAction::SetTrue))
+            .arg(Arg::new("ignore-missing").short('m').long("ignore-missing").action(ArgAction::SetTrue))
+            .arg(Arg::new("metadata-expire").long("metadata-expire"))
+            .arg(Arg::new("proxy").long("proxy"))
+            .arg(Arg::new("nr-parallel").long("nr-parallel"))
+            .arg(Arg::new("parallel-processing").long("parallel-processing"))
+            // Add a dummy subcommand so parsing doesn't fail
+            .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
+            .arg_required_else_help(false) // Don't require subcommand during tests
+            .get_matches_from(vec!["epkg", "--dry-run", "info"]) // Use a valid subcommand with dry-run enabled
+    }
+    #[cfg(not(test))]
+    {
+        use crate::parse_cmdline;
+        parse_cmdline()
+    }
 });
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
+static CONFIG_MUTEX: LazyLock<Mutex<EPKGConfig>> = LazyLock::new(|| {
+    let matches = &CLAP_MATCHES;
+    let config = parse_options_common(&matches)
+        .expect("Failed to parse common options for CONFIG");
+    let config = parse_options_subcommand(&matches, config)
+        .expect("Failed to parse subcommand options for CONFIG");
+    Mutex::new(config)
+});
+
+#[cfg(test)]
+static CONFIG_PTR: OnceLock<usize> = OnceLock::new();
+
+#[cfg(not(test))]
 static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
     let matches = &CLAP_MATCHES;
     let config = parse_options_common(&matches)
@@ -728,8 +873,34 @@ static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
         .expect("Failed to initialize EPKGDirs")
 });
 
+#[cfg(test)]
+pub fn config() -> &'static EPKGConfig {
+    // SAFETY: In test mode, we use a Mutex for interior mutability.
+    // We initialize a raw pointer (as usize) once and reuse it. This is safe because:
+    // 1. CONFIG_MUTEX is a static LazyLock, so it lives for the entire program
+    // 2. The Mutex ensures thread safety for mutations
+    // 3. We're only reading, and the pointer points to data in the static Mutex
+    unsafe {
+        let ptr_usize = *CONFIG_PTR.get_or_init(|| {
+            let mutex = LazyLock::force(&CONFIG_MUTEX);
+            let guard = mutex.lock().unwrap();
+            &*guard as *const EPKGConfig as usize
+        });
+        &*(ptr_usize as *const EPKGConfig)
+    }
+}
+
+#[cfg(not(test))]
 pub fn config() -> &'static EPKGConfig {
     &CONFIG
+}
+
+#[cfg(test)]
+/// Get mutable access to the global config for test customization.
+/// This function locks the Mutex, so it should be used carefully in tests.
+pub fn config_mut() -> std::sync::MutexGuard<'static, EPKGConfig> {
+    // In test mode, we use Mutex for interior mutability
+    CONFIG_MUTEX.lock().unwrap()
 }
 
 pub fn dirs() -> &'static EPKGDirs {

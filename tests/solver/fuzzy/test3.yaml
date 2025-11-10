@@ -1,0 +1,8 @@
+format: apk
+description: fuzzy test 3
+repo: repo.yaml
+install:
+- a>~2.5
+plan:
+  fresh_installs:
+    a__2.10__x86_64:

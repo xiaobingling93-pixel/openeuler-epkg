@@ -1,0 +1,6 @@
+format: apk
+description: basic test 6
+repo: repo.yaml
+installed: installed5.yaml
+upgrade:
+- a

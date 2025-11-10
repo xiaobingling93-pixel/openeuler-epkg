@@ -1,0 +1,12 @@
+format: apk
+description: installif test 4
+repo: repo.yaml
+installed: installed.yaml
+remove:
+- app
+plan:
+  old_removes:
+    appiif1__1__x86_64:
+    app__1__x86_64:
+    lib__1__x86_64:
+    foo__1__x86_64:

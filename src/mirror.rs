@@ -1399,12 +1399,51 @@ impl Mirrors {
         } else if let Some((_, str_b)) = url.split_once("///") {
             output_dir.join(str_b)
         } else {
-            let file_name = url.split('/').last()
-                .unwrap_or("unknown_file");
-            output_dir.join(file_name)
+            Self::resolve_http_url_path(url, output_dir)
         };
 
         final_path
+    }
+
+    /// Resolve HTTP(S) URL to a cache path that includes host and path segments.
+    /// This prevents collisions when the same filename appears in different URL paths.
+    ///
+    /// Examples:
+    /// - `https://example.com/path/to/file.txt` -> `output_dir/example.com/path/to/file.txt`
+    /// - `https://mirror.com/repo/linux-64/file.gz` -> `output_dir/mirror.com/repo/linux-64/file.gz`
+    /// - `https://mirror.com/repo/noarch/file.gz` -> `output_dir/mirror.com/repo/noarch/file.gz`
+    pub(crate) fn resolve_http_url_path(url: &str, output_dir: &Path) -> PathBuf {
+        // For regular URLs, include host and path segments to avoid collisions
+        // when the same filename appears in different paths
+        if let Some(url_stripped) = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) {
+            let parts: Vec<&str> = url_stripped.split('/').collect();
+            if parts.len() > 1 {
+                // Include host and path segments (excluding the filename)
+                let host = parts[0];
+                let path_segments = &parts[1..];
+                let file_name = path_segments.last().copied().unwrap_or("unknown_file");
+
+                // Build path: output_dir/host/path_segments.../filename
+                let mut path = output_dir.join(host);
+                // Include all path segments except the last one (which is the filename)
+                for segment in path_segments.iter().take(path_segments.len().saturating_sub(1)) {
+                    if !segment.is_empty() {
+                        path = path.join(segment);
+                    }
+                }
+                path.join(file_name)
+            } else {
+                // Fallback: just use filename if URL structure is unexpected
+                let file_name = url.split('/').last()
+                    .unwrap_or("unknown_file");
+                output_dir.join(file_name)
+            }
+        } else {
+            // Not an HTTP(S) URL, fallback to filename only
+            let file_name = url.split('/').last()
+                .unwrap_or("unknown_file");
+            output_dir.join(file_name)
+        }
     }
 
 }
@@ -2040,4 +2079,108 @@ pub fn get_distro_dirs_for_repodata_name(repodata_name: &str) -> Vec<String> {
 
     // Fallback to channel_config().distro_dirs if not found
     channel_config().distro_dirs.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_resolve_http_url_path_basic() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "https://example.com/path/to/file.txt";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        assert_eq!(result, PathBuf::from("/cache/example.com/path/to/file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_http() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "http://example.com/path/to/file.txt";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        assert_eq!(result, PathBuf::from("/cache/example.com/path/to/file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_prevents_collision() {
+        let output_dir = PathBuf::from("/cache");
+
+        // Two URLs with same filename but different paths should map to different cache paths
+        let url1 = "https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-64/current_repodata.json.gz";
+        let url2 = "https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/noarch/current_repodata.json.gz";
+
+        let result1 = Mirrors::resolve_http_url_path(url1, &output_dir);
+        let result2 = Mirrors::resolve_http_url_path(url2, &output_dir);
+
+        assert_ne!(result1, result2, "Different paths should produce different cache paths");
+        assert_eq!(result1, PathBuf::from("/cache/mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-64/current_repodata.json.gz"));
+        assert_eq!(result2, PathBuf::from("/cache/mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/noarch/current_repodata.json.gz"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_with_empty_segments() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "https://example.com//path//to//file.txt";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        // Empty segments should be skipped
+        assert_eq!(result, PathBuf::from("/cache/example.com/path/to/file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_root_path() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "https://example.com/file.txt";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        assert_eq!(result, PathBuf::from("/cache/example.com/file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_no_path() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "https://example.com";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        // Should fallback to filename only
+        assert_eq!(result, PathBuf::from("/cache/example.com"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_non_http() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "file:///path/to/file.txt";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        // Should fallback to filename only
+        assert_eq!(result, PathBuf::from("/cache/file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_complex_path() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "https://repo.example.com/conda/main/linux-64/repodata.json";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        assert_eq!(result, PathBuf::from("/cache/repo.example.com/conda/main/linux-64/repodata.json"));
+    }
+
+    #[test]
+    fn test_resolve_http_url_path_with_port() {
+        let output_dir = PathBuf::from("/cache");
+        let url = "https://example.com:8080/path/file.txt";
+        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        // Port is part of host
+        assert_eq!(result, PathBuf::from("/cache/example.com:8080/path/file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_mirror_path_integration() {
+        let output_dir = PathBuf::from("/cache");
+
+        // Test that resolve_mirror_path uses resolve_http_url_path for regular URLs
+        let url1 = "https://mirror.com/repo/linux-64/file.gz";
+        let url2 = "https://mirror.com/repo/noarch/file.gz";
+
+        let result1 = Mirrors::resolve_mirror_path(url1, &output_dir, "test");
+        let result2 = Mirrors::resolve_mirror_path(url2, &output_dir, "test");
+
+        assert_ne!(result1, result2, "Different paths should produce different cache paths");
+    }
 }

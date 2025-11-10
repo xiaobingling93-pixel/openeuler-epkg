@@ -1,0 +1,14 @@
+format: apk
+description: basic test 18
+repo: basic17.yaml
+installed: installed.yaml
+upgrade:
+- a
+- b
+plan:
+  upgrades_new:
+    b__2__x86_64:
+    a__2__x86_64:
+  upgrades_old:
+    b__1__x86_64:
+    a__1__x86_64:

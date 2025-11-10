@@ -1,0 +1,7 @@
+format: apk
+description: provides test 6
+repo: repo.yaml
+install:
+- app
+- app2
+expect_fail: true

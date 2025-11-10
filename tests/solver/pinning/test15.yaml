@@ -1,0 +1,6 @@
+format: apk
+description: pinning test 15
+repo: pinning-basic_tag.yaml
+install:
+- missing@tag
+expect_fail: true

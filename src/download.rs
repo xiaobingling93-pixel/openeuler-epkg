@@ -5619,7 +5619,6 @@ fn validate_chunk_file_boundaries(task: &DownloadTask, chunk_append_offset: u64)
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(test, visibility::make(pub))]
 pub(crate) struct ChunkInfo {
     offset: u64,
     size: u64,      // Total chunk size (from offset to end of chunk)
@@ -5640,7 +5639,6 @@ pub(crate) struct ChunkInfo {
 /// - New chunks created are aligned to PGET_CHUNK_SIZE boundaries
 /// - New chunks' to_download area is normally exact PGET_CHUNK_SIZE, or around it (for the first/last ones)
 /// - New chunks' filesize = 0 (no existing files for them, so no filesize)
-#[cfg_attr(test, visibility::make(pub))]
 pub(crate) fn split_download_areas(
     input_chunks: &[&ChunkInfo],
 ) -> Vec<ChunkInfo> {

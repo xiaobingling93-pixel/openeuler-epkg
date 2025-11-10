@@ -1,0 +1,9 @@
+format: apk
+description: pinning test 1
+repo: pinning-basic.yaml pinning-overlay1_testing.yaml
+install:
+- a
+plan:
+  fresh_installs:
+    b__2__x86_64:
+    a__2__x86_64:

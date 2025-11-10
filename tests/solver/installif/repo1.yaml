@@ -1,0 +1,60 @@
+- pkgname: app
+  version: '1'
+  requires:
+  - lib
+  provides:
+  - app = 1
+  - app(x86_64) = 1
+- pkgname: lib
+  version: '1'
+  provides:
+  - lib = 1
+  - lib(x86_64) = 1
+- pkgname: foo
+  version: '1'
+  provides:
+  - foo = 1
+  - foo(x86_64) = 1
+- pkgname: bar
+  version: '1'
+  provides:
+  - bar = 1
+  - bar(x86_64) = 1
+- pkgname: libiif
+  version: '1'
+  provides:
+  - libiif = 1
+  - libiif(x86_64) = 1
+- pkgname: appiif1
+  version: '1'
+  requires:
+  - app
+  provides:
+  - appiif1 = 1
+  - appiif1(x86_64) = 1
+- pkgname: appiif2
+  version: '1'
+  requires:
+  - app
+  provides:
+  - appiif2 = 1
+  - appiif2(x86_64) = 1
+- pkgname: dam
+  version: '1'
+  provides:
+  - dam = 1
+  - dam(x86_64) = 1
+- pkgname: dam-babel
+  version: '1'
+  provides:
+  - cmd:babel
+  - cmd:babel(x86_64) = 1
+  - dam-babel = 1
+  - dam-babel(x86_64) = 1
+- pkgname: dam1-babel
+  version: '1'
+  provides:
+  - cmd:babel
+  - cmd:babel(x86_64) = 1
+  - dam1-babel = 1
+  - dam1-babel(x86_64) = 1

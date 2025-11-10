@@ -1,0 +1,22 @@
+- pkgname: app
+  version: '1'
+  requires:
+  - lib
+  provides:
+  - app = 1
+  - app(x86_64) = 1
+- pkgname: lib
+  version: '1'
+  provides:
+  - lib = 1
+  - lib(x86_64) = 1
+- pkgname: foo
+  version: '1'
+  provides:
+  - foo = 1
+  - foo(x86_64) = 1
+- pkgname: bar
+  version: '1'
+  provides:
+  - bar = 1
+  - bar(x86_64) = 1

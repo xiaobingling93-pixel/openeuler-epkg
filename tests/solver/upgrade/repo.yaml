@@ -1,0 +1,31 @@
+- pkgname: libold
+  version: '1'
+  provides:
+  - libold = 1
+  - libold(x86_64) = 1
+- pkgname: libnew
+  version: '1'
+  conflicts:
+  - libold
+  provides:
+  - libnew = 1
+  - libnew(x86_64) = 1
+- pkgname: app
+  version: '1'
+  requires:
+  - libold
+  provides:
+  - app = 1
+  - app(x86_64) = 1
+- pkgname: app
+  version: '2'
+  requires:
+  - libnew
+  provides:
+  - app = 2
+  - app(x86_64) = 2
+- pkgname: b
+  version: '2'
+  provides:
+  - b = 2
+  - b(x86_64) = 2

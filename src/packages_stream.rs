@@ -11,6 +11,7 @@ use color_eyre::eyre::WrapErr;
 use sha2::{Sha256, Sha512, Digest};
 use hex;
 use crate::models::*;
+use crate::parse_provides::parse_provides;
 use crate::repo::*;
 use crate::mmio;
 
@@ -314,10 +315,18 @@ impl PackagesStreamline {
         self.essential_pkgnames.insert(pkgname);
     }
 
-    pub fn on_provides(&mut self, provides: Vec<&str>) {
-        for provide in provides {
+    pub fn on_provides(&mut self, provides_str: &str, format: PackageFormat) {
+        // Parse provides string and extract names with optional versions
+        // IMPORTANT: Provides are in the form cap_with_arch=version (e.g., "libfoo(x86-64)=2.0")
+        // cap_with_arch is an atomic tag that should NEVER be split. The provide2pkgnames
+        // index is keyed by cap_with_arch (e.g., "libfoo(x86-64)"), not by cap alone.
+        // parse_provides preserves cap_with_arch, so provide_name is always cap_with_arch.
+        let provide_map = parse_provides(provides_str, format);
+        for (provide_name, _version) in provide_map {
+            // provide_name is cap_with_arch (atomic, never split)
+            // version is available but not currently used for indexing
             self.provide2pkgnames
-                .entry(provide.to_string())
+                .entry(provide_name)
                 .or_insert(Vec::new())
                 .push(self.current_pkgname.clone());
         }

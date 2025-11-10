@@ -45,9 +45,9 @@ impl PackageManager {
     /// Removes specified packages and their orphaned dependencies.
     ///
     /// This function operates solely on the information within `self.installed_packages`
-    /// and does not consult external repositories or perform new dependency resolution
-    /// via `collect_recursive_depends`. This ensures that removal decisions are based
-    /// purely on the currently recorded state of installed packages.
+    /// and does not consult external repositories or perform new dependency resolution.
+    /// This ensures that removal decisions are based purely on the currently recorded
+    /// state of installed packages.
     ///
     /// The process is as follows:
     /// 1. Loads the current set of installed packages.
@@ -77,13 +77,17 @@ impl PackageManager {
     /// ensuring that shared dependencies are not removed if other installed packages
     /// (not part of the current removal set) still rely on them according to the
     /// `rdepends` information.
-    pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<()> {
+    pub fn remove_packages(&mut self, package_specs: Vec<String>) -> Result<InstallationPlan> {
         self.load_installed_packages()?;
+        self.load_world()?;
+
+        // Remove packages from world.json based on the specs
+        self.remove_from_world(&package_specs)?;
 
         let plan = self.prepare_removal_plan(package_specs)?;
 
         if plan.old_removes.is_empty() {
-            return Ok(());
+            return Ok(InstallationPlan::default());
         }
 
         self.execute_installation_plan(plan)
@@ -99,15 +103,33 @@ impl PackageManager {
         let (explicitly_requested_keys, _not_found_specs) = self.resolve_removal_specs(&package_specs);
 
         // Step 2: Check for blocking dependencies
-        let (processing_queue, _prevented_removals) = self.check_removal_dependencies(&explicitly_requested_keys, &mut plan);
+        let _prevented_removals = self.add_top_removable(&mut plan, &explicitly_requested_keys);
 
         // Step 3: Process orphaned dependencies
-        self.process_orphaned_dependencies(&mut plan, processing_queue);
+        self.add_orphaned_dependencies(&mut plan);
 
         // Step 4: Auto-populate expose plan based on removal actions
-        crate::PackageManager::auto_populate_expose_plan(&mut plan);
-
+        self.auto_populate_expose_plan(&mut plan);
+        
         Ok(plan)
+    }
+
+    /// Remove packages from world.json based on package specs
+    fn remove_from_world(&mut self, package_specs: &[String]) -> Result<()> {
+        use crate::parse_requires::parse_package_spec_with_version;
+        use crate::models::PackageFormat;
+
+        for spec in package_specs {
+            // Parse the spec to get package name
+            // Use Rpm as default format since most package specs are RPM-based
+            // and the format is not available in this context
+            let (pkgname, _) = parse_package_spec_with_version(spec, PackageFormat::Rpm);
+
+            // Remove from world.json
+            self.world.remove(&pkgname);
+        }
+
+        Ok(())
     }
 
     /// Resolve package specs to package keys for removal
@@ -154,13 +176,29 @@ impl PackageManager {
         (explicitly_requested_keys, not_found_specs)
     }
 
-    /// Check for blocking dependencies and populate initial removal plan
-    fn check_removal_dependencies(
+    /// Filter out blocking dependencies and populate initial removal plan.
+    ///
+    /// This function validates whether explicitly requested packages can be safely removed
+    /// by checking their reverse dependencies (rdepends). A package can only be removed if
+    /// all of its reverse dependencies are either:
+    /// - Not currently installed, or
+    /// - Also explicitly requested for removal
+    ///
+    /// Packages that pass this check are added to the removal plan.
+    /// Packages that are blocked by active reverse dependencies are recorded in the
+    /// prevented_removals map and a warning is displayed to the user.
+    ///
+    /// # Arguments
+    /// * `plan` - Mutable reference to the InstallationPlan to populate with removable packages
+    /// * `explicitly_requested_keys` - Set of package keys that the user wants to remove
+    ///
+    /// # Returns
+    /// Map of blocked package keys to their blocking reverse dependencies
+    fn add_top_removable(
         &self,
-        explicitly_requested_keys: &std::collections::HashSet<String>,
-        plan: &mut InstallationPlan
-    ) -> (Vec<String>, HashMap<String, Vec<String>>) {
-        let mut processing_queue: Vec<String> = Vec::new();
+        plan: &mut InstallationPlan,
+        explicitly_requested_keys: &std::collections::HashSet<String>
+    ) -> HashMap<String, Vec<String>> {
         let mut prevented_removals: HashMap<String, Vec<String>> = HashMap::new();
 
         for requested_key in explicitly_requested_keys {
@@ -178,7 +216,6 @@ impl PackageManager {
 
                 if can_remove_requested_key {
                     plan.old_removes.insert(requested_key.clone(), requested_pkg_info.clone());
-                    processing_queue.push(requested_key.clone());
                 } else {
                     prevented_removals.insert(requested_key.clone(), blocking_rdepends);
                 }
@@ -206,14 +243,37 @@ impl PackageManager {
             println!("No packages will be removed.");
         }
 
-        (processing_queue, prevented_removals)
+        prevented_removals
     }
 
-    /// Process orphaned dependencies recursively
-    fn process_orphaned_dependencies(&mut self, plan: &mut InstallationPlan, mut processing_queue: Vec<String>) {
-        // The original processing_queue was populated directly from explicitly_requested_keys.
-        // Now it's populated with keys that passed the rdepend check.
-        // The `visited_for_orphan_check` set is still appropriate for the subsequent orphan processing loop.
+    /// Find orphaned dependencies recursively and adds them to the removal plan.
+    ///
+    /// This function identifies and marks dependencies as orphaned when all packages
+    /// that depend on them are being removed. It operates on packages already marked
+    /// for removal in the plan and recursively checks their dependencies.
+    ///
+    /// The algorithm works as follows:
+    /// 1. Starts with a queue of packages already marked for removal in `plan.old_removes`.
+    /// 2. For each package being removed, examines its direct dependencies.
+    /// 3. For each dependency, determines if it should be considered orphaned:
+    ///    - Skips if already marked for removal
+    ///    - Skips if explicitly installed (`ebin_exposure == true`) or has `depend_depth == 0`
+    ///    - Skips if it's an essential package
+    ///    - Marks as orphaned if ALL of its reverse dependencies (`rdepends`) are
+    ///      already in the removal plan (meaning all packages that depend on it are
+    ///      being removed)
+    /// 4. When a dependency is marked as orphaned, it's added to the removal plan
+    ///    and to the processing queue to check its own dependencies recursively.
+    ///
+    /// This ensures that transitive dependencies are properly cleaned up when
+    /// they're no longer needed by any remaining installed packages.
+    ///
+    /// # Arguments
+    /// * `plan` - Mutable reference to the InstallationPlan that contains packages
+    ///            already marked for removal and will be updated with orphaned dependencies
+    fn add_orphaned_dependencies(&mut self, plan: &mut InstallationPlan) {
+        // Build initial processing queue from packages already marked for removal
+        let mut processing_queue: Vec<String> = plan.old_removes.keys().cloned().collect();
         let mut visited_for_orphan_check = std::collections::HashSet::new();
 
         while let Some(pkgkey_being_removed) = processing_queue.pop() {
@@ -257,7 +317,7 @@ impl PackageManager {
                 // Check if all reverse dependencies are being removed
                 let mut all_rdepends_being_removed = true;
                 if dep_info.rdepends.is_empty() {
-                    // If a non-appbin package has no rdepends, it's an orphan if its direct requirer (pkgkey_being_removed) is removed.
+                    // If a non-ebin package has no rdepends, it's an orphan if its direct requirer (pkgkey_being_removed) is removed.
                     // However, this state implies its rdepends were not properly recorded or it's a very old package.
                     // For safety, we only act if there's at least one rdepend and it's pkgkey_being_removed or also in final_removal_set.
                     // If rdepends is truly empty, it means no *other* installed package depends on it.

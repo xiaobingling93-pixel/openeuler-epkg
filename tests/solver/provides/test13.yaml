@@ -1,0 +1,10 @@
+format: apk
+description: provides test 13
+repo: repo.yaml
+install:
+- pulseaudio
+- pulseaudio-alsa
+plan:
+  fresh_installs:
+    pulseaudio__1__x86_64:
+    pulseaudio-alsa__1__x86_64:

@@ -1,0 +1,12 @@
+format: apk
+description: installif test 10
+repo: installif10.yaml
+install:
+- postmarketos-base-ui-gnome
+- openrc
+plan:
+  fresh_installs:
+    openrc__1__x86_64:
+    polkit-elogind__1__x86_64:
+    postmarketos-base-ui-gnome__1__x86_64:
+    postmarketos-base-ui-gnome-openrc__1__x86_64:

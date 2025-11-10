@@ -259,39 +259,52 @@ fn process_line(line: &str,
         let value = value.trim();
 
         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(key) {
-            if !mapped_key.is_empty() {
-                derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
-            }
-
             match key {
+                "D" => {
+                    // Dependencies field - separate conflicts (starting with '!') from regular requires
+                    let deps: Vec<&str> = value.split_whitespace().filter(|s| !s.is_empty()).collect();
+                    let mut requires = Vec::new();
+                    let mut conflicts = Vec::new();
+
+                    for dep in deps {
+                        if dep.starts_with('!') {
+                            // Conflict: remove '!' prefix and add to conflicts
+                            conflicts.push(&dep[1..]);
+                        } else {
+                            // Regular dependency: add to requires
+                            requires.push(dep);
+                        }
+                    }
+
+                    // Write requires field if there are any regular dependencies
+                    if !requires.is_empty() {
+                        derived_files.output.push_str(&format!("\nrequires: {}", requires.join(" ")));
+                    }
+
+                    // Write conflicts field if there are any conflicts
+                    if !conflicts.is_empty() {
+                        derived_files.output.push_str(&format!("\nconflicts: {}", conflicts.join(" ")));
+                    }
+                }
                 "P" => {
                     // Start tracking the new package
                     derived_files.on_new_pkgname(value);
+                    if !mapped_key.is_empty() {
+                        derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+                    }
                 }
                 "p" => {
-                    // Provides field - split by spaces and extract only package names
-                    let provides: Vec<&str> = value.split_whitespace()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| {
-                            // Remove version part after '=' when followed by a digit
-                            // Examples:
-                            //   boost-atomic=1.84.0-r3
-                            //   so:libc.musl-x86_64.so.1=1
-                            //   so:libcairo-gobject.so.2=2.11804.4
-                            if let Some(i) = s.find('=') {
-                                if i + 1 < s.len() && s[i+1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                                    &s[..i]
-                                } else {
-                                    s
-                                }
-                            } else {
-                                s
-                            }
-                        })
-                        .collect();
-                    derived_files.on_provides(provides);
+                    // Provides field - on_provides handles parsing internally
+                    derived_files.on_provides(value, PackageFormat::Apk);
+                    if !mapped_key.is_empty() {
+                        derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+                    }
                 }
-                _ => {}
+                _ => {
+                    if !mapped_key.is_empty() {
+                        derived_files.output.push_str(&format!("\n{}: {}", mapped_key, value));
+                    }
+                }
             }
         } else {
             log::warn!("Unexpected key in APK line -- {}: {}", key, value);

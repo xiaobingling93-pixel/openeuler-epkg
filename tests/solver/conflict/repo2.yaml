@@ -1,0 +1,22 @@
+- pkgname: foo
+  version: 1
+  requires:
+    - cmd:b
+  provides:
+    - foo = 1
+    - foo(x86-64) = 1
+
+- pkgname: bar
+  version: 1
+  provides:
+    - cmd:b = 2
+    - bar = 1
+    - bar(x86-64) = 1
+
+- pkgname: baz
+  version: 1
+  provides:
+    - cmd:b = 1
+    - baz = 1
+    - baz(x86-64) = 1
+

@@ -1,0 +1,10 @@
+format: apk
+description: conflict test 1
+repo: repo.yaml
+install:
+- a
+- b
+plan:
+  fresh_installs:
+    b__1__x86_64:
+    a__1__x86_64:

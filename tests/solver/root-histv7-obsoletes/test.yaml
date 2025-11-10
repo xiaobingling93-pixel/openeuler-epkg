@@ -1,0 +1,10 @@
+format: rpm
+description: Test that solver prefers non-obsoleting provider versions (root-histv7
+  scenario)
+repo: repo.yaml
+install:
+- root-histv7
+plan:
+  fresh_installs:
+    root-histv7__6.34.04-2.fc42__x86_64:
+    root-core__6.34.04-2.fc42__x86_64:

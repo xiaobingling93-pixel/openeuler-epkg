@@ -1,7 +1,7 @@
 [package]
 name = "epkg"
 description = "epkg package manager"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 
 # https://github.com/johnthagen/min-sized-rust
@@ -16,7 +16,7 @@ opt-level = "z"  # Optimize for size.
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 quick-xml = { version = "0.37", default-features = false }
 clap = { version = "4.5", features = ["std", "usage", "help"], default-features = false }
-ureq = { version = "3.0", features = ["rustls"], default-features = true }
+ureq = { version = "3.1", features = ["rustls"], default-features = true }
 serde = { version = "1.0", features = ["derive"], default-features = false }
 serde_json = { version = "1.0", features = ["std"], default-features = false }
 serde_yaml = { version = "0.9", default-features = false }
@@ -36,26 +36,27 @@ nix = { version = "0.30", features = ["process", "user", "fs", "signal", "sched"
 rand = { version = "0.8", features = ["std", "std_rng", "getrandom"], default-features = false }
 users = { version = "0.11", default-features = false }
 crossbeam-channel = { version = "0.5", features = ["std"], default-features = false }
-rayon = { version = "1.10", default-features = false }
+rayon = { version = "1.11", default-features = false }
 pathdiff = { version = "0.2.3", default-features = false }
 lazy_static = { version = "1.5", default-features = false }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
-regex = { version = "1.11.1", features = ["std", "unicode-perl"], default-features = false }
+regex = { version = "1.12.2", features = ["std", "unicode-perl"], default-features = false }
 memchr = { version = "2.7", default-features = false }
 aho-corasick = { version = "1.1", default-features = false }
-uuid = { version = "1.16", features = ["v4"], default-features = false }
+uuid = { version = "1.18", features = ["v4"], default-features = false }
 log = { version = "0.4", default-features = false }
 env_logger = { version = "0.11.8", default-features = false }
 color-eyre = { version = "0.6" }
 libc = "0.2"
 # color-eyre = { version = "0.6", features = ["capture-spantrace"], default-features = false }
 filetime = "0.2"
-ctrlc = "3.4"      # For handling Ctrl-C cleanly
+ctrlc = "3.5"      # For handling Ctrl-C cleanly
 memmap2 = "0.9"
-num_cpus = "1.16"
+num_cpus = "1.17"
 sys-info = "0.9"
-tempfile = "3.0"
+tempfile = "3.23"
 versions = "6.3"
+resolvo = { version = "0.10.1", path = "resolvo" }
 
 # Optional but recommended for better progress bars
 [dependencies.console]
@@ -80,4 +81,4 @@ opt-level = 3
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile = "3.23"

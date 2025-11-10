@@ -18,13 +18,6 @@ impl PackageManager {
                                 mut target_packages: HashMap<String, InstalledPackageInfo>) -> InstallationPlan {
         let mut plan = InstallationPlan::default();
 
-        // Track additional exposure changes for packages that exist in both generations
-        crate::install::track_additional_exposure_changes(
-            &mut plan,
-            &target_packages,
-            &current_packages,
-        );
-
         // Find packages that exist in both collections and remove them as duplicates
         let mut duplicate_packages = std::collections::HashSet::new();
 
@@ -58,7 +51,7 @@ impl PackageManager {
         plan.old_removes = current_packages;
 
         // Auto-populate expose plan based on rollback actions
-        crate::PackageManager::auto_populate_expose_plan(&mut plan);
+        self.auto_populate_expose_plan(&mut plan);
 
         plan
     }
@@ -262,7 +255,7 @@ impl PackageManager {
 
         // Create InstallationPlan by diffing the two generations
         let plan = self.create_rollback_plan(current_packages, target_packages);
-        self.execute_installation_plan(plan)
+        self.execute_installation_plan(plan).map(|_| ())
     }
 
 }

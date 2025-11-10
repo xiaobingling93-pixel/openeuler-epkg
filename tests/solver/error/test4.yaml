@@ -1,0 +1,7 @@
+format: apk
+description: error test 4
+repo: complicated1.yaml
+install:
+- a
+- nonexistant
+expect_fail: true

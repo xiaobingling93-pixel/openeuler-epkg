@@ -1,0 +1,31 @@
+- pkgname: qt5-qtbase
+  version: '1'
+  provides:
+  - so:libQt5Core.so.5=1
+  - qt5-qtbase = 1
+  - qt5-qtbase(x86_64) = 1
+- pkgname: wayland-libs-client
+  version: '1'
+  provides:
+  - so:libwayland-client.so.0=1
+  - wayland-libs-client = 1
+  - wayland-libs-client(x86_64) = 1
+- pkgname: peruse
+  version: '1'
+  requires:
+  - so:libQt5Core.so.5
+  provides:
+  - peruse = 1
+  - peruse(x86_64) = 1
+- pkgname: sway
+  version: '1'
+  requires:
+  - so:libwayland-client.so.0
+  provides:
+  - sway = 1
+  - sway(x86_64) = 1
+- pkgname: qt5-qtwayland
+  version: '1'
+  provides:
+  - qt5-qtwayland = 1
+  - qt5-qtwayland(x86_64) = 1

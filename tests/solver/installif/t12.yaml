@@ -1,0 +1,6 @@
+format: apk
+description: installif test 12
+installed: installed.yaml
+install:
+- app
+- foo

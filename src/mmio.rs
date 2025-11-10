@@ -124,6 +124,15 @@ pub fn ensure_provide2pkgnames_loaded() -> Result<()> {
         return Ok(());
     }
 
+    // During tests, repodata_indice will be empty, so skip loading
+    let repodata_indice_check = repodata_indice();
+    if repodata_indice_check.is_empty() {
+        // During tests, no repos are loaded, so mark as loaded to avoid repeated checks
+        PROVIDE2PKGNAMES_LOADED.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    drop(repodata_indice_check);
+
     let mut repodata_indice = repodata_indice_mut();
 
     for repo_index in repodata_indice.values_mut() {
@@ -193,8 +202,22 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
     sorted_names.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (key, values) in sorted_names {
-        let line = format!("{}: {}", key, values.join(" "));
-        writeln!(writer, "{}", line)?;
+        // Filter out trivial entries where key equals value
+        // Also filter out values that equal the key
+        // Deduplicate values using HashSet
+        let filtered_values: HashSet<String> = values.iter()
+            .filter(|value| *value != key)
+            .cloned()
+            .collect();
+
+        // Only write the line if there are non-trivial values
+        if !filtered_values.is_empty() {
+            // Convert to sorted Vec for consistent output
+            let mut sorted_values: Vec<String> = filtered_values.into_iter().collect();
+            sorted_values.sort();
+            let line = format!("{}: {}", key, sorted_values.join(" "));
+            writeln!(writer, "{}", line)?;
+        }
     }
 
     Ok(())
@@ -315,6 +338,10 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         recommends: Vec::new(),
         suggests: Vec::new(),
         conflicts: Vec::new(),
+        obsoletes: Vec::new(),
+        enhances: Vec::new(),
+        supplements: Vec::new(),
+        files: Vec::new(),
         summary: String::new(),
         description: None,
         homepage: String::new(),
@@ -390,6 +417,10 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
         "recommends"        => package.recommends   = value.split(", ").map(|s| s.to_string()).collect(),
         "suggests"          => package.suggests     = value.split(", ").map(|s| s.to_string()).collect(),
         "conflicts"         => package.conflicts    = value.split(", ").map(|s| s.to_string()).collect(),
+        "obsoletes"         => package.obsoletes    = value.split(", ").map(|s| s.to_string()).collect(),
+        "enhances"          => package.enhances     = value.split(", ").map(|s| s.to_string()).collect(),
+        "supplements"       => package.supplements  = value.split(", ").map(|s| s.to_string()).collect(),
+        "files"             => package.files        = value.split(", ").map(|s| s.to_string()).collect(),
         "source"            => package.source       = Some(value.to_string()),
         "originUrl"         => package.origin_url   = Some(value.to_string()),
         _                   => {
@@ -469,6 +500,12 @@ pub fn map_pkgkey2package(pkgkey: &str) -> Result<Package> {
     Err(eyre::eyre!("Package not found for pkgkey: {}", pkgkey))
 }
 
+/// Lookup package names that provide a given capability.
+///
+/// IMPORTANT: The capability parameter must be cap_with_arch (e.g., "libfoo(x86-64)"),
+/// which is an atomic tag that should NEVER be split. The provide2pkgnames index
+/// is keyed by cap_with_arch, not by cap alone. Never strip the arch from cap_with_arch
+/// when calling this function.
 pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
     // First, ensure provide2pkgnames data is loaded
     ensure_provide2pkgnames_loaded()?;
@@ -478,6 +515,7 @@ pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
     let repodata_indice = repodata_indice();
     for repo_index in repodata_indice.values() {
         for shard in repo_index.repo_shards.values() {
+            // capability is cap_with_arch (atomic, never split)
             if let Some(shard_pkgnames) = shard.provide2pkgnames.get(capability) {
                 pkgnames.extend(shard_pkgnames.clone());
             }
@@ -501,7 +539,13 @@ pub fn get_essential_pkgnames() -> Result<HashSet<String>> {
 }
 
 pub fn is_essential_pkgname(pkgname: &str) -> bool {
+    // During tests, repodata_indice will be empty (no repos loaded)
+    // Check if it's empty first to avoid any potential config access
     let repodata_indice = repodata_indice();
+    if repodata_indice.is_empty() {
+        // During tests, no repos are loaded, so no packages are essential
+        return false;
+    }
     for repo_index in repodata_indice.values() {
         for shard in repo_index.repo_shards.values() {
             if shard.essential_pkgnames.contains(pkgname) {

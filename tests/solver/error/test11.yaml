@@ -1,0 +1,6 @@
+format: apk
+description: error test 11
+repo: repo.yaml
+install:
+- invalid
+expect_fail: true

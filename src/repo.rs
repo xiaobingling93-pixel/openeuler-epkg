@@ -146,6 +146,20 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
             repodata_name: repo_name.clone(),
             index_url: index_url.clone(),
         });
+
+        if let Some(noarch_url) = &repo_config.index_url_noarch {
+            // For noarch repositories, set arch to "all" to be consistent with other distros
+            // This ensures get_repo_dir() works correctly without special handling
+            all_repos.push(RepoRevise {
+                format: config.format.clone(),
+                arch: "all".to_string(),  // Use "all" for noarch, not the system arch
+                channel: config.channel.clone(),
+                repo_name: repo_name.clone(),
+                repodata_name: format!("{}-noarch", repo_name),
+                index_url: noarch_url.clone(),
+            });
+        }
+
         if let Some(updates_url) = &repo_config.index_url_updates {
             all_repos.push(RepoRevise {
                 format: config.format.clone(),
@@ -156,6 +170,7 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
                 index_url: updates_url.clone(),
             });
         }
+
         if let Some(security_url) = &repo_config.index_url_security {
             all_repos.push(RepoRevise {
                 format: config.format.clone(),
@@ -166,6 +181,7 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
                 index_url: security_url.clone(),
             });
         }
+
         if let Some(nonfree_url) = &repo_config.index_url_nonfree {
             all_repos.push(RepoRevise {
                 format: config.format.clone(),
@@ -176,6 +192,7 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
                 index_url: nonfree_url.clone(),
             });
         }
+
         if let Some(nonfree_updates_url) = &repo_config.index_url_nonfree_updates {
             all_repos.push(RepoRevise {
                 format: config.format.clone(),
@@ -263,7 +280,9 @@ fn create_repository_indexes(revises: Vec<RepoReleaseItem>, deduplicated_items: 
     for (repodata_name, release_items) in repo_items_map {
         if let Some(first_item) = release_items.first() {
             let repo = &first_item.repo_revise;
-            let repo_dir = dirs::get_repo_dir(repo).unwrap();
+            // Use the standard get_repo_dir() - repo.arch is already set correctly (e.g., "all" for noarch)
+            let repo_dir = dirs::get_repo_dir(repo)
+                .with_context(|| format!("Failed to get repository directory for: {}", repodata_name))?;
             let no_revises = !revises_map.contains_key(&repodata_name);
             create_load_repoindex(repo, no_revises, &repo_dir, release_items.clone())
                 .with_context(|| format!("Failed to create and load repository index for: {}", repodata_name))?;
@@ -566,7 +585,9 @@ fn process_revises_sequential(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
     // Process each item sequentially
     for revise in &revises {
-        download_and_process_item(revise, &dirs::get_repo_dir(&revise.repo_revise).unwrap())
+        let repo_dir = dirs::get_repo_dir(&revise.repo_revise)
+            .with_context(|| format!("Failed to get repository directory for item: {}", revise.location))?;
+        download_and_process_item(revise, &repo_dir)
             .with_context(|| format!("Failed to download and process item: {}", revise.location))?;
     }
 
@@ -583,14 +604,19 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
     // Process each item in a separate thread
     for revise in revises {
         let _tx = tx.clone();
+        let repo_dir = dirs::get_repo_dir(&revise.repo_revise)
+            .unwrap_or_else(|e| {
+                log::error!("Failed to get repository directory for item {}: {}", revise.location, e);
+                PathBuf::from("/tmp") // Last resort fallback
+            });
         let handle = std::thread::spawn(move || {
-            match download_and_process_item(&revise, &dirs::get_repo_dir(&revise.repo_revise).unwrap()) {
+            match download_and_process_item(&revise, &repo_dir) {
                 Ok(_) => {
                     log::debug!("Successfully processed: {}", revise.location);
                     true
                 },
                 Err(e) => {
-                    log::error!("Failed to process {}: {}", revise.location, e);
+                    log::error!("Failed to process {}: {:#}", revise.location, e);
                     false
                 }
             }
@@ -625,25 +651,13 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     let (data_tx, data_rx) = channel();
 
     // Create and submit download task
-    let task = if revise.repo_revise.format == PackageFormat::Conda {
-        // For conda packages, use the pre-calculated download_path to avoid file conflicts
-        DownloadTask::with_path(
-            revise.url.clone(),
-            revise.download_path.clone(),
-            6,
-            if revise.size > 0 { Some(revise.size as u64) } else { None },
-            revise.repo_revise.repodata_name.clone()
-        ).with_data_channel(data_tx)
-    } else {
-        // For other package formats, use the standard path resolution
-        DownloadTask::with_size(
-            revise.url.clone(),
-            dirs().epkg_downloads_cache.clone(),
-            6,
-            if revise.size > 0 { Some(revise.size as u64) } else { None },
-            revise.repo_revise.repodata_name.clone()
-        ).with_data_channel(data_tx)
-    };
+    let task = DownloadTask::with_size(
+        revise.url.clone(),
+        dirs().epkg_downloads_cache.clone(),
+        6,
+        if revise.size > 0 { Some(revise.size as u64) } else { None },
+        revise.repo_revise.repodata_name.clone()
+    ).with_data_channel(data_tx);
 
     // Submit download task
     submit_download_task(task)
@@ -652,6 +666,7 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     DOWNLOAD_MANAGER.start_processing();
 
     log::debug!("process_data for {:?}", revise);
+    log::debug!("Using repo_dir: {:?} for item: {}", repo_dir, revise.location);
     // Process data blocks as they arrive
     process_data(data_rx, repo_dir, revise)
         .with_context(|| format!("Failed to process data for item: {} (format: {:?}, size: {}, hash: {})",
