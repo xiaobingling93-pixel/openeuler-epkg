@@ -4,9 +4,11 @@
 
 # Global variables
 ARCH=$(uname -m)
-EPKG_URL="https://repo.oepkgs.net/openeuler/epkg/rootfs/"
 EPKG_STATIC="epkg"
 EPKG_CACHE="$HOME/.cache/epkg/downloads/epkg"
+GITEE_API_BASE="https://gitee.com/api/v5/repos"
+GITEE_OWNER="openeuler"
+GITEE_REPO="epkg"
 
 # Default values
 CHANNEL=""
@@ -99,6 +101,38 @@ check_git_tree() {
     return 1
 }
 
+fetch_show_latest_release() {
+    # Fetch latest release from Gitee API
+    local api_url="${GITEE_API_BASE}/${GITEE_OWNER}/${GITEE_REPO}/releases/latest"
+    local response
+
+    response=$(curl -s --connect-timeout 15 --max-time 30 "$api_url") || {
+        print_error "Failed to fetch release info from Gitee API"
+    }
+
+    # Extract tag_name from JSON response
+    # Using a simple approach that works with common JSON parsers
+    local tag_name
+    if command -v jq >/dev/null 2>&1; then
+        tag_name=$(echo "$response" | jq -r '.tag_name // empty')
+    elif command -v python3 >/dev/null 2>&1; then
+        tag_name=$(echo "$response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
+    elif command -v python >/dev/null 2>&1; then
+        tag_name=$(echo "$response" | python -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
+    fi
+
+    if [ -z "$tag_name" ] || [ "$tag_name" = "null" ] || [ "$tag_name" = "" ]; then
+        # Fallback: use grep/sed to extract tag_name (less robust but works without dependencies)
+        tag_name=$(echo "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    fi
+
+    if [ -z "$tag_name" ] || [ "$tag_name" = "null" ] || [ "$tag_name" = "" ]; then
+        print_error "Failed to parse release tag from Gitee API response"
+    fi
+
+    echo "$tag_name"
+}
+
 download_files() {
     # Skip download if running from git tree
     if check_git_tree; then
@@ -107,18 +141,39 @@ download_files() {
         return
     fi
 
+    # Fetch latest release version
+    print_info "Fetching latest release from Gitee..."
+    local latest_version
+    latest_version=$(fetch_show_latest_release) || exit 1
+
+    # Construct download URLs based on latest release
+    # Format: https://gitee.com/openeuler/epkg/releases/download/{tag_name}/epkg-{arch}
+    local EPKG_BINARY_URL="https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${latest_version}/${EPKG_STATIC}-${ARCH}"
+    local EPKG_SHA_URL="${EPKG_BINARY_URL}.sha256"
+
     cd "$EPKG_CACHE" || exit
 
     echo
-    print_info "Source URL: $EPKG_URL"
+    print_info "Latest release: $latest_version"
+    print_info "Source URL: $EPKG_BINARY_URL"
     print_info "Destination: $EPKG_CACHE"
 
     echo
     echo "Downloading $EPKG_STATIC-$ARCH.sha256 ..."
-    curl -# -o "$EPKG_STATIC-$ARCH.sha256" "$EPKG_URL/$EPKG_STATIC-$ARCH.sha256"    || print_error "Failed to download checksum file"
+    curl -L -# -o "$EPKG_STATIC-$ARCH.sha256" "$EPKG_SHA_URL" --connect-timeout 15 --max-time 30 || print_error "Failed to download checksum file"
+
+    # Validate checksum file
+    if [ ! -s "$EPKG_STATIC-$ARCH.sha256" ]; then
+        print_error "Checksum file is empty or not found"
+    fi
+
+    # Check if file contains HTML (error page) - look for common HTML tags
+    if grep -q -i '<html\|<!DOCTYPE\|<body' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
+        print_error "Checksum file appears to be an HTML error page. URL may be incorrect."
+    fi
 
     echo "Downloading $EPKG_STATIC-$ARCH ..."
-    curl -# -o "$EPKG_STATIC-$ARCH"        "$EPKG_URL/$EPKG_STATIC-$ARCH" --retry 5 || print_error "Failed to download binary"
+    curl -L -# -o "$EPKG_STATIC-$ARCH" "$EPKG_BINARY_URL" --retry 5 --connect-timeout 15 --max-time 300 || print_error "Failed to download binary"
     chmod +x "./$EPKG_STATIC-$ARCH"
     EPKG_PATH=./$EPKG_STATIC-$ARCH
 
