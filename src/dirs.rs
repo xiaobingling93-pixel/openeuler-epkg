@@ -42,7 +42,6 @@ impl EPKGDirs {
         Ok(Self {
             opt_epkg: opt_epkg.clone(),
             home_epkg: home_epkg.clone(),
-            home_config: home_epkg.join("config"),
             private_envs: home_epkg.join("envs"),
             public_envs: user_pubenvs,
             epkg_store: store_root,

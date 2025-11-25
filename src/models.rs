@@ -55,7 +55,6 @@ pub struct PackageRange {
 }
 
 // $HOME/.cache/epkg/channel/debian:trixie/main/x86_64/packages-all.txt
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Package {
     pub pkgname: String,
@@ -93,6 +92,7 @@ pub struct Package {
     pub sha1sum: Option<String>,
 
     #[serde(skip)]
+    #[allow(dead_code)]
     pub depends: Vec<Dependency>,
     #[serde(default)]
     #[serde(rename = "requiresPre")]
@@ -204,7 +204,6 @@ pub struct PackagesFileInfo {
 	  },
     }
 */
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstalledPackageInfo {
     // pkgline format is: {ca_hash}__{pkgname}__{version}__{arch}
@@ -233,23 +232,6 @@ pub struct InstalledPackageInfo {
     pub ebin_links: Vec<String>,
 }
 
-impl InstalledPackageInfo {
-    #[allow(dead_code)]
-    pub fn new(pkgline: String, arch: String, depend_depth: u16, ebin_exposure: bool) -> Self {
-        Self {
-            pkgline,
-            arch,
-            depend_depth,
-            install_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-            ebin_exposure,
-            rdepends: Vec::new(), // Initialize rdepends as empty
-            depends: Vec::new(), // Initialize depends as empty
-            ebin_links: Vec::new(), // Initialize ebin_links as empty
-        }
-    }
-}
-
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct GenerationCommand {
@@ -270,7 +252,6 @@ pub struct GenerationCommand {
     pub del_exposes: Vec<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 #[derive(Clone)]
@@ -294,9 +275,6 @@ pub struct EnvConfig {
     #[serde(skip_serializing)]
     #[serde(default)]
     pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
-    #[serde(skip_serializing)]
-    #[serde(default)]
-    pub pypi_packages: HashMap<String, InstalledPackageInfo>,   // key is pkgkey
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
@@ -320,7 +298,6 @@ impl Default for PackageFormat {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 #[derive(Clone)]
@@ -370,7 +347,6 @@ pub struct ChannelConfig {
 
 pub fn default_as_true() -> bool { true }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 #[derive(Clone)]
@@ -482,7 +458,6 @@ pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, HashMap<Str
     REPODATA_INDICE.write().expect("Failed to write repodata index")
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RepoIndex {
     pub repodata_name: String,
@@ -496,7 +471,6 @@ pub struct RepoIndex {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-#[allow(dead_code)]
 pub struct RepoShard {
     #[serde(default)]
     pub packages: PackagesFileInfo,
@@ -568,7 +542,6 @@ impl From<&str> for EpkgCommand {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct EPKGConfig {
     #[serde(default = "default_common_options")]
     pub common: CommonOptions,
@@ -759,13 +732,10 @@ pub fn default_commit() -> String {
 #[derive(Debug)]
 pub struct EPKGDirs {
     // Base directories
-    #[allow(dead_code)]
     pub opt_epkg: PathBuf,
-    #[allow(dead_code)]
     pub home_epkg: PathBuf,
 
     // Subdirectories
-    pub home_config: PathBuf,
     pub private_envs: PathBuf,
     pub public_envs: PathBuf,
 
@@ -776,7 +746,6 @@ pub struct EPKGDirs {
     pub epkg_channel_cache: PathBuf,
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct PackageManager {
     // cache need to installing packages info
@@ -785,10 +754,8 @@ pub struct PackageManager {
 
     // Performance indexes for fast lookups (maintained when packages are added to pkgkey2package)
     // Index: pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
-    #[allow(dead_code)] // Used in map_pkgname2packages()
     pub(crate) pkgname2packages: HashMap<String, Vec<Arc<Package>>>,
     // Index: provide_name -> HashSet<pkgname> for O(1) provider lookup
-    #[allow(dead_code)] // Used in build_provider_list()
     pub(crate) provide2pkgnames: HashMap<String, HashSet<String>>,
 
     // loaded from env installed-packages.json

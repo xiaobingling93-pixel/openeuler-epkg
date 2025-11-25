@@ -3,6 +3,7 @@ use std::os::unix::fs::symlink;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
+use std::collections::HashSet;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use color_eyre::Result;
@@ -14,74 +15,27 @@ use crate::models::*;
 use crate::dirs::*;
 use log::warn;
 
-// epkg PATH management
+// epkg stores persistent PATH registration metadata inside each environment's
+// `etc/epkg/env.yaml`. The `register_to_path` flag combined with
+// `register_priority` drives how PATH is constructed:
 //
-// $HOME/.epkg/config/path.d directory structure:
+// PATH layout:
+//   registered prepend entries (priority >= 0)
+//   + original PATH
+//   + registered append entries (priority < 0)
 //
-// The path.d directory implements a priority-based PATH management system with two subdirectories:
-// - prepend/: Contains symlinks to paths that should be added to the beginning of PATH
-// - append/: Contains symlinks to paths that should be added to the end of PATH
-//
-// Each symlink follows the naming convention: PRIORITY-NAME
-// - PRIORITY: A numeric value that determines the order of paths
-// - NAME: Env name for the path entry
-//
-// Example structure:
-// .epkg/config/path.d/
-// ├── prepend/
-// │   ├── 10-main -> ~/.epkg/envs/main/usr/ebin
-// │   └── 20-debian12 -> ~/.epkg/envs/debian12/usr/ebin
-// └── append/
-//     └── 10-archlinux -> ~/.epkg/envs/archlinux/usr/ebin
-//
-// Paths are processed in numeric order (ascending) within each directory.
-// The final PATH is constructed as:
-//   prepend_paths + original_PATH + append_paths
-//
-// This design allows for:
-// 1. Flexible path ordering through numeric priorities
-// 2. Clear separation of prepend vs append paths
-// 3. Easy addition/removal of paths through symlinks
-// 4. System-wide and user-specific path management
-// 5. Maintainable and human-readable path configuration
-//
-// Environment Management Operations:
-//
-// 1. Register/Unregister (Persistent Configuration):
-//    - Purpose: Manage installed commands for daily usage
-//    - Effect: Creates/removes symlinks in path.d directory
-//    - Persistence: Changes are saved to disk and persist across shell sessions
-//    - Usage: For making installed commands available system-wide
-//    - Example: Registering development tools for daily use
-//
-// 2. Activate/Deactivate (Session-based):
-//    - Purpose: Manage project-specific development environments
-//    - Effect: Updates PATH for current shell session only
-//    - Persistence: Changes only affect current terminal/shell login
-//    - Usage: For project development, testing, or temporary environment switching
-//    - Example: Activating a specific project's development environment
-//
-// Key Differences:
-// - Register/Unregister:
-//   * Changes filesystem (creates/removes symlinks in $HOME/.epkg/config/path.d)
+// Register/Unregister:
+//   * `epkg env register` / `epkg env unregister` toggle env.yaml values
 //   * Affects all shell sessions
-//   * Used for permanent environment setup
-//   * Requires root/admin privileges for system-wide changes
 //
-// - Activate/Deactivate:
-//   * Changes only environment variables
-//   * Affects only current shell session
-//   * Used for temporary environment switching
-//   * Can be done by any user for their own sessions
+// Activate/Deactivate:
+//   * Session-only PATH updates stacked on top of registered envs
+//   * Compatible with pure/stack modes
 //
 // Environment Registration Rules:
-// The 'epkg env register' command manages path registration with the following rules:
-// - Command format: epkg env register <name> [--priority N]
-// - If --priority is specified:
-//   * N >= 0 entries will be created under path.d/prepend/
-//   * N <  0 entries will be created under path.d/append/
-// - If --priority is omitted:
-//   * The path will be registered under path.d/prepend/ with the first unused priority in 10, 20, 30, ...
+// - `epkg env register <name> [--priority N]`
+// - If `--priority` is omitted the first free multiple of 10 (>= 10) is chosen
+// - `N >= 0` participates in the prepend side, `N < 0` in the append side
 //
 // Example registrations:
 //   epkg env register openeuler2409
@@ -109,6 +63,21 @@ fn push_env_var(script: &mut String, key: &str, new_value: Option<String>, origi
 }
 
 impl PackageManager {
+
+    fn next_prepend_priority(&self) -> Result<i32> {
+        let registered = registered_env_configs();
+        let used: HashSet<i32> = registered.into_iter()
+            .filter(|cfg| cfg.register_priority >= 0)
+            .map(|cfg| cfg.register_priority)
+            .collect();
+
+        let mut priority = 10;
+        while used.contains(&priority) {
+            priority += 10;
+        }
+
+        Ok(priority)
+    }
 
     /// Get list of all environment names except 'base'
     ///
@@ -702,7 +671,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn register_environment_for(&mut self, name: &str, env_config: &EnvConfig) -> Result<()> {
+    pub fn register_environment_for(&mut self, name: &str, mut env_config: EnvConfig) -> Result<()> {
         // Validate environment name
         if name == BASE_ENV {
             return Err(eyre::eyre!("Environment 'base' cannot be registered"));
@@ -713,48 +682,16 @@ impl PackageManager {
             return Ok(());
         }
 
-        // Create path.d directories if they don't exist
-        let prepend_dir = dirs().home_config.join("path.d/prepend");
-        let append_dir = dirs().home_config.join("path.d/append");
-
         // Get priority from options or auto-detect
         let priority = if let Some(priority) = config().env.priority {
             priority
         } else {
-            // Auto-detect first available priority
-            let mut priority = 10;
-            loop {
-                let symlink_path = prepend_dir.join(format!("{}-{}", priority, name));
-                if !symlink_path.exists() {
-                    break priority;
-                }
-                priority += 10;
-            }
+            self.next_prepend_priority()?
         };
 
         println!("# Registering environment '{}' with priority {}", name, priority);
 
-        // Create symlink in appropriate directory
-        let env_root = PathBuf::from(&env_config.env_root);
-        let ebin_path = env_root.join("usr/ebin");
-        let symlink_path = if priority >= 0 {
-            fs::create_dir_all(&prepend_dir)?;
-            prepend_dir.join(format!("{}-{}", priority, name))
-        } else {
-            fs::create_dir_all(&append_dir)?;
-            append_dir.join(format!("{}-{}", -priority, name))
-        };
-
-        // Remove existing symlink if it exists
-        if symlink_path.exists() {
-            fs::remove_file(&symlink_path)?;
-        }
-
-        // Create new symlink
-        symlink(&ebin_path, &symlink_path)?;
-
         // Update and save environment config
-        let mut env_config = env_config.clone();
         env_config.register_to_path = true;
         env_config.register_priority = priority;
         crate::io::serialize_env_config(env_config)?;
@@ -764,34 +701,19 @@ impl PackageManager {
     }
 
     pub fn register_environment(&mut self, name: &str) -> Result<()> {
-        let env_config = crate::models::env_config();
-        self.register_environment_for(name, &env_config)
+        let env_config = crate::io::deserialize_env_config_for(name.to_string())?;
+        self.register_environment_for(name, env_config)
     }
 
     pub fn unregister_environment(&mut self, name: &str) -> Result<()> {
-        // Check if already unregistered
-        let env_config = crate::models::env_config();
+        let mut env_config = crate::io::deserialize_env_config_for(name.to_string())?;
+
         if !env_config.register_to_path {
             println!("# Environment '{}' is not registered.", name);
             return Ok(());
         }
 
-        // Remove symlinks from both prepend and append directories
-        let prepend_pattern = dirs().home_config.join(format!("path.d/prepend/*-{}", name));
-        let append_pattern = dirs().home_config.join(format!("path.d/append/*-{}", name));
-
-        for pattern in &[prepend_pattern, append_pattern] {
-            for path in glob::glob(pattern.to_str().unwrap())? {
-                if let Ok(path) = path {
-                    if path.exists() {
-                        fs::remove_file(&path)?;
-                    }
-                }
-            }
-        }
-
         // Update and save environment config
-        let mut env_config = env_config.clone();
         env_config.register_to_path = false;
         env_config.register_priority = 0;
         crate::io::serialize_env_config(env_config)?;
@@ -801,54 +723,19 @@ impl PackageManager {
         Ok(())
     }
 
-    /// Get list of registered environment names from path.d directory structure
+    /// Get list of registered environment names from env.yaml metadata
     ///
-    /// This function parses the path.d directory structure to extract environment names
-    /// from symlinks in both prepend/ and append/ directories. The names are extracted
-    /// from symlink names that follow the pattern PRIORITY-NAME.
-    ///
-    /// Example structure:
-    /// .epkg/config/path.d/
-    /// ├── prepend/
-    /// │   ├── 10-main -> ~/.epkg/envs/main/usr/ebin
-    /// │   └── 20-debian12 -> ~/.epkg/envs/debian12/usr/ebin
-    /// └── append/
-    ///     └── 10-archlinux -> ~/.epkg/envs/archlinux/usr/ebin
-    ///
-    /// Returns a Vec of unique environment names found in both directories.
+    /// This function scans both private (~/.epkg/envs) and current user's
+    /// public (/opt/epkg/envs/$USER) environment directories. Each
+    /// `etc/epkg/env.yaml` is parsed for the `register_to_path` flag and the
+    /// environment name is included when the flag is true.
     pub fn get_registered_env_names(&self) -> Result<Vec<String>> {
-        let mut env_names = std::collections::HashSet::new();
-
-        // Helper function to extract env name from symlink name
-        let extract_env_name = |name: &str| -> Option<String> {
-            // Split on first hyphen to separate priority from name
-            name.split_once('-')
-                .map(|(_priority, name)| name.to_string())
-        };
-
-        // Helper function to process a directory
-        let mut process_dir = |dir: &std::path::Path| -> Result<()> {
-            if dir.exists() {
-                for entry in fs::read_dir(dir)? {
-                    let entry = entry?;
-                    let name = entry.file_name()
-                        .into_string()
-                        .map_err(|_| eyre::eyre!("Invalid UTF-8 in filename"))?;
-                    if let Some(env_name) = extract_env_name(&name) {
-                        env_names.insert(env_name);
-                    }
-                }
-            }
-            Ok(())
-        };
-
-        // Process both directories
-        process_dir(&dirs().home_config.join("path.d/prepend"))?;
-        process_dir(&dirs().home_config.join("path.d/append"))?;
-
-        // Convert HashSet to sorted Vec
-        let mut result: Vec<String> = env_names.into_iter().collect();
+        let mut result: Vec<String> = registered_env_configs()
+            .into_iter()
+            .map(|cfg| cfg.name)
+            .collect();
         result.sort();
+        result.dedup();
         Ok(result)
     }
 
@@ -961,5 +848,79 @@ impl PackageManager {
         crate::io::serialize_env_config(config)?;
 
         Ok(())
+    }
+}
+
+pub(crate) fn registered_env_configs() -> Vec<EnvConfig> {
+    let mut configs = Vec::new();
+    collect_registered_envs_from_dir(&dirs().private_envs, &mut configs);
+    collect_registered_envs_from_dir(&dirs().public_envs, &mut configs);
+    configs
+}
+
+fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
+    if !dir.exists() {
+        return;
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!("Failed to read environments under {}: {}", dir.display(), err);
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                warn!("Failed to read entry in {}: {}", dir.display(), err);
+                continue;
+            }
+        };
+
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => {},
+            _ => continue,
+        }
+
+        let env_name = match entry.file_name().into_string() {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+
+        if env_name == BASE_ENV || env_name.starts_with('.') {
+            continue;
+        }
+
+        let config_path = entry.path().join("etc/epkg/env.yaml");
+        if !config_path.exists() {
+            continue;
+        }
+
+        let contents = match fs::read_to_string(&config_path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                warn!("Failed to read {}: {}", config_path.display(), err);
+                continue;
+            }
+        };
+
+        let mut config: EnvConfig = match serde_yaml::from_str(&contents) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                warn!("Failed to parse {}: {}", config_path.display(), err);
+                continue;
+            }
+        };
+
+        if config.name.is_empty() {
+            config.name = env_name.clone();
+        }
+
+        if config.register_to_path {
+            configs.push(config);
+        }
     }
 }

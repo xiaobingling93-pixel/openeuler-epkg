@@ -4,18 +4,6 @@
 
 # keep clean and minimal -- it's sourced by every user terminal
 
-# PATH prepend/append rules:
-# - Files in path.d/prepend and path.d/append are symlinks named with numeric prefixes
-# - Files are processed in reverse version order (e.g. 10-main before 3-focal)
-# - Each symlink points to an ebin directory in an epkg environment
-# Example path.d/prepend:
-#   10-main -> ~/.epkg/envs/main/usr/ebin
-#   3-focal -> ~/.epkg/envs/focal/usr/ebin
-# This results in PATH ordering:
-#   /home/user/.epkg/envs/main/usr/ebin:
-#   /home/user/.epkg/envs/focal/usr/ebin:
-#   [original PATH]
-
 epkg() {
     local env_base_dir="$HOME/.epkg/envs/base"
     [ -d "$env_base_dir" ] || env_base_dir="/opt/epkg/envs/root/base"

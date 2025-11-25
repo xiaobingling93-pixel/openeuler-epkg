@@ -1,9 +1,10 @@
-use std::fs;
 use std::env;
+use std::path::Path;
 use color_eyre::Result;
 use color_eyre::eyre;
 use crate::models::*;
 use crate::dirs::get_env_root;
+use crate::environment::registered_env_configs;
 
 impl PackageManager {
 
@@ -85,45 +86,36 @@ impl PackageManager {
     fn get_registered_env_paths(&self) -> Result<Vec<String>> {
         let mut path_components = Vec::new();
 
-        // Get paths from prepend directory (main environment)
-        let prepend_dir = dirs().home_config.join("path.d/prepend");
-        path_components.extend(self.get_priority_sorted_paths(&prepend_dir)?);
+        let mut prepend: Vec<(i32, String, String)> = Vec::new();
+        let mut append: Vec<(i32, String, String)> = Vec::new();
+
+        for config in registered_env_configs() {
+            let ebin_path = Path::new(&config.env_root).join("usr/ebin");
+            if !ebin_path.exists() {
+                continue;
+            }
+
+            let path_str = ebin_path.display().to_string();
+            let entry = (config.register_priority, config.name.clone(), path_str);
+
+            if config.register_priority >= 0 {
+                prepend.push(entry);
+            } else {
+                append.push(entry);
+            }
+        }
+
+        prepend.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        append.sort_by(|a, b| a.0.abs().cmp(&b.0.abs()).then(a.1.cmp(&b.1)));
+
+        path_components.extend(prepend.into_iter().map(|(_, _, path)| path));
 
         // Get system paths, excluding epkg paths
         path_components.extend(self.get_system_paths()?);
 
-        // Get paths from append directory (other environments)
-        let append_dir = dirs().home_config.join("path.d/append");
-        path_components.extend(self.get_priority_sorted_paths(&append_dir)?);
+        path_components.extend(append.into_iter().map(|(_, _, path)| path));
 
         Ok(path_components)
-    }
-
-    fn get_priority_sorted_paths(&self, dir: &std::path::Path) -> Result<Vec<String>> {
-        let mut entries = Vec::new();
-
-        if let Ok(read_dir) = fs::read_dir(dir) {
-            // Collect entries with their priorities
-            let mut priority_entries: Vec<(i32, String)> = read_dir
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let name = entry.file_name().into_string().ok()?;
-                    // Extract priority from filename (e.g. "10-main" -> 10)
-                    let priority = name.split('-').next()?.parse::<i32>().ok()?;
-                    if let Ok(target) = fs::read_link(entry.path()) {
-                        Some((priority, target.display().to_string()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // Sort by priority in ascending order (lower numbers first)
-            priority_entries.sort_by_key(|&(priority, _)| priority);
-            entries.extend(priority_entries.into_iter().map(|(_, path)| path));
-        }
-
-        Ok(entries)
     }
 
     fn get_system_paths(&self) -> Result<Vec<String>> {
