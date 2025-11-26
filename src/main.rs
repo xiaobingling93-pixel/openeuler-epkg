@@ -465,13 +465,12 @@ OPTIONS:
                 .arg(arg!(--"no-install-recommends" "Do not consider recommended packages as a dependency for installing"))
                 .arg(arg!(--"no-install-essentials" "Do not automatically install essential packages"))
                 .arg(arg!(--"assume-installed" <PACKAGES> "Assume these packages are already installed (comma-separated list)").value_delimiter(','))
-                .arg(arg!(--solver <SOLVER> "Dependency solver to use: 'resolvo' (resolvo-based SAT solver, default) or 'simple' (simple solver)").value_parser(["resolvo", "simple"]))
+                .arg(arg!(--"prefer-low-version" "Prefer lower/older versions when multiple candidates are available"))
                 .arg(arg!([PACKAGE_SPEC] ... "Package specifications to install (can be package names, local .rpm/.deb files, or URLs to package files)"))
         )
         .subcommand(
             Command::new("upgrade")
                 .about("Upgrade packages")
-                .arg(arg!(--solver <SOLVER> "Dependency solver to use: 'resolvo' (resolvo-based SAT solver, default) or 'simple' (simple solver)").value_parser(["resolvo", "simple"]))
                 .arg(arg!(--full "Full upgrade: upgrade all packages, not just those in world.json"))
                 .arg(arg!([PACKAGE_SPEC] ... "Package specifications to upgrade"))
         )
@@ -832,16 +831,13 @@ fn parse_options_install(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches
     if let Some(assume_installed) = sub_matches.get_many::<String>("assume-installed") {
         config.install.assume_installed = assume_installed.map(|s| s.to_string()).collect();
     }
-    if let Some(solver) = sub_matches.get_one::<String>("solver") {
-        config.install.solver = Some(solver.clone());
+    if sub_matches.contains_id("prefer-low-version") {
+        config.install.prefer_low_version = sub_matches.get_flag("prefer-low-version");
     }
     Ok(())
 }
 
 fn parse_options_upgrade(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    if let Some(solver) = sub_matches.get_one::<String>("solver") {
-        config.install.solver = Some(solver.clone());
-    }
     config.upgrade.full_upgrade = sub_matches.get_flag("full");
     Ok(())
 }

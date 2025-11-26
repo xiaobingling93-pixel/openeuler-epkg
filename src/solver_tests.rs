@@ -331,13 +331,6 @@ impl TestCase {
         // Apply config overrides if present (including format)
         self.apply_config_overrides()?;
 
-        // Set the solver in config
-        #[cfg(test)]
-        {
-            let mut global_config = crate::models::config_mut();
-            global_config.install.solver = Some(solver_name.to_string());
-        }
-
         let mut pm = self.setup_package_manager();
 
         // Determine which operation to perform and get the plan

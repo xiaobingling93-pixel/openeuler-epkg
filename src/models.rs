@@ -664,10 +664,8 @@ pub struct InstallOptions {
     pub no_install_essentials: bool,
     #[serde(skip)]
     pub assume_installed: Vec<String>,
-    // Solver selection: "resolvo" (resolvo-based SAT solver, default) or "simple" (simple solver)
-    // Default: "resolvo" for all formats
     #[serde(default)]
-    pub solver: Option<String>,
+    pub prefer_low_version: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]

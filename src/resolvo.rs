@@ -1831,10 +1831,24 @@ impl DependencyProvider for GenericDependencyProvider {
                         (true, false) => Ordering::Less,  // a is loaded, prefer a
                         (false, true) => Ordering::Greater, // b is loaded, prefer b
                         _ => {
-                            // Both or neither loaded - compare by version (newer first)
+                            // Both or neither loaded - compare by version
+                            // Default: newer first, but respect prefer_low_version setting
+                            let prefer_low_version = config().install.prefer_low_version;
                             match version::compare_versions(&rec_b.version, &rec_a.version, self.format) {
-                                Some(Ordering::Less) => Ordering::Less,
-                                Some(Ordering::Greater) => Ordering::Greater,
+                                Some(Ordering::Less) => {
+                                    if prefer_low_version {
+                                        Ordering::Greater // Prefer older (a comes first)
+                                    } else {
+                                        Ordering::Less // Prefer newer (a comes first)
+                                    }
+                                },
+                                Some(Ordering::Greater) => {
+                                    if prefer_low_version {
+                                        Ordering::Less // Prefer older (b comes first)
+                                    } else {
+                                        Ordering::Greater // Prefer newer (b comes first)
+                                    }
+                                },
                                 Some(Ordering::Equal) | None => Ordering::Equal,
                             }
                         }
