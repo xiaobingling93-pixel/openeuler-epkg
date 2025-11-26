@@ -402,3 +402,191 @@ pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
 
     Ok(())
 }
+
+/// Collect all pkglines from the epkg store and organize them by pkgkey
+/// Returns a HashMap where key is pkgkey (pkgname__version__arch) and value is a list of matching pkglines
+pub fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String, Vec<String>>> {
+    use crate::models::dirs;
+    use crate::package::pkgline2pkgkey;
+    use std::fs;
+    use std::collections::HashMap;
+
+    let store_dir = dirs().epkg_store.clone();
+    let mut store_pkglines_by_pkgkey: HashMap<String, Vec<String>> = HashMap::new();
+
+    if !store_dir.exists() {
+        return Ok(store_pkglines_by_pkgkey);
+    }
+
+    // Collect all pkglines from the store and organize by pkgkey
+    if let Ok(entries) = fs::read_dir(&store_dir) {
+        for entry in entries.flatten() {
+            let package_path = entry.path();
+            if package_path.is_dir() {
+                if let Some(pkgline) = package_path.file_name().and_then(|name| name.to_str()) {
+                    // Parse the pkgline to extract pkgkey
+                    if let Ok(pkgkey) = pkgline2pkgkey(pkgline) {
+                        store_pkglines_by_pkgkey
+                            .entry(pkgkey)
+                            .or_insert_with(Vec::new)
+                            .push(pkgline.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(store_pkglines_by_pkgkey)
+}
+
+/// Match a package from repodata with packages in the store by comparing Package fields
+/// Returns the matching pkgline if found, None otherwise
+fn match_package_with_store(
+    repodata_package: &crate::models::Package,
+    store_pkglines: &[String],
+    package_manager: &mut crate::models::PackageManager,
+) -> Result<Option<String>> {
+    // Try each candidate pkgline from the store
+    for store_pkgline in store_pkglines {
+        // Load Package from store
+        match package_manager.map_pkgline2package(store_pkgline) {
+            Ok(store_package) => {
+                // Compare Package fields
+                if packages_match(repodata_package, &store_package) {
+                    return Ok(Some(store_pkgline.clone()));
+                }
+            }
+            Err(e) => {
+                log::debug!("Failed to load package from store pkgline {}: {}", store_pkgline, e);
+                continue;
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Compare two Package structs to determine if they represent the same package
+/// Compares multiple fields: pkgname, version, arch, source, sha256sum, sha1sum, buildTime
+fn packages_match(repodata_pkg: &crate::models::Package, store_pkg: &crate::models::Package) -> bool {
+    // Only compare size if both are non-zero (some packages don't store size in package.txt)
+    if repodata_pkg.size != 0 && store_pkg.size != 0 {
+        if repodata_pkg.size != store_pkg.size {
+            return false;
+        }
+    }
+
+    // Only compare installed_size if both are non-zero
+    if repodata_pkg.installed_size != 0 && store_pkg.installed_size != 0 {
+        if repodata_pkg.installed_size != store_pkg.installed_size {
+            return false;
+        }
+    }
+
+    if repodata_pkg.pkgname != store_pkg.pkgname
+        || repodata_pkg.version != store_pkg.version
+        || repodata_pkg.arch != store_pkg.arch {
+        return false;
+    }
+
+    // Compare source if available (helps identify packages from different sources)
+    if let (Some(repodata_source), Some(store_source)) = (&repodata_pkg.source, &store_pkg.source) {
+        if repodata_source != store_source {
+            return false;
+        }
+    }
+
+    // Compare checksums if both are available (strongest match indicator)
+    // If only one side has a checksum, we still allow the match if basic fields match
+    // (e.g., Arch packages don't store sha256sum in package.txt, only in repodata)
+    if let (Some(repodata_sha256), Some(store_sha256)) = (&repodata_pkg.sha256sum, &store_pkg.sha256sum) {
+        return repodata_sha256 == store_sha256;
+    }
+
+    if let (Some(repodata_sha1), Some(store_sha1)) = (&repodata_pkg.sha1sum, &store_pkg.sha1sum) {
+        return repodata_sha1 == store_sha1;
+    }
+
+    // Compare buildTime if both are available (strong match indicator similar to checksums)
+    if let (Some(repodata_build_time), Some(store_build_time)) =
+        (&repodata_pkg.build_time, &store_pkg.build_time)
+    {
+        return repodata_build_time == store_build_time;
+    }
+
+    false
+}
+
+/// Try to match and fill pkgline for a single package entry
+/// Returns true if a match was found and pkgline was filled, false otherwise
+fn try_match_and_fill_pkgline(
+    pkgkey: &str,
+    package_info: &mut crate::models::InstalledPackageInfo,
+    store_pkglines_by_pkgkey: &std::collections::HashMap<String, Vec<String>>,
+    package_manager: &mut crate::models::PackageManager,
+) -> Result<bool> {
+    // Skip if pkgline is already filled
+    if !package_info.pkgline.is_empty() {
+        return Ok(false);
+    }
+
+    // Get candidate pkglines from store for this pkgkey
+    let candidate_pkglines = match store_pkglines_by_pkgkey.get(pkgkey) {
+        Some(pkglines) => pkglines,
+        None => return Ok(false),
+    };
+
+    // Load Package from repodata
+    let repodata_package = match package_manager.load_package_info(pkgkey) {
+        Ok(pkg) => pkg,
+        Err(e) => {
+            log::debug!("Failed to load package info for {}: {}", pkgkey, e);
+            return Ok(false);
+        }
+    };
+
+    // Match with store packages
+    match match_package_with_store(&repodata_package, candidate_pkglines, package_manager) {
+        Ok(Some(matching_pkgline)) => {
+            package_info.pkgline = matching_pkgline;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(e) => {
+            log::debug!("Error matching package {}: {}", pkgkey, e);
+            Ok(false)
+        }
+    }
+}
+
+/// Fill pkglines in the installation plan by matching packages with existing store packages
+/// Returns the number of packages that were matched and filled
+pub fn fill_pkglines_in_plan(
+    plan: &mut crate::install::InstallationPlan,
+    package_manager: &mut crate::models::PackageManager,
+) -> Result<usize> {
+    // Collect store pkglines organized by pkgkey
+    let store_pkglines_by_pkgkey = collect_store_pkglines_by_pkgkey()?;
+
+    if store_pkglines_by_pkgkey.is_empty() {
+        return Ok(0);
+    }
+
+    let mut matched_count = 0;
+
+    // Process fresh_installs
+    for (pkgkey, package_info) in plan.fresh_installs.iter_mut() {
+        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey, package_manager)? {
+            matched_count += 1;
+        }
+    }
+
+    // Process upgrades_new
+    for (pkgkey, package_info) in plan.upgrades_new.iter_mut() {
+        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey, package_manager)? {
+            matched_count += 1;
+        }
+    }
+
+    Ok(matched_count)
+}
