@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use color_eyre::Result;
+use color_eyre::eyre::WrapErr;
 use crate::models::*;
 use crate::parse_requires::*;
 use crate::parse_provides::parse_provides;
@@ -477,7 +478,11 @@ impl PackageManager {
             return Ok(InstallationPlan::default());
         }
 
-        let plan = self.prepare_installation_plan(&all_packages_for_session)?;
+        let mut plan = self.prepare_installation_plan(&all_packages_for_session)?;
+
+        // Fill pkglines for packages that already exist in the store
+        crate::store::fill_pkglines_in_plan(&mut plan, self)
+            .with_context(|| "Failed to find existing packages in store")?;
 
         // If we reach here, actions_planned was true, user confirmed, and not dry_run.
         // Proceed with actual installation steps by calling the unified execution method.
@@ -997,8 +1002,10 @@ impl PackageManager {
         depend_depth: u16,
         ebin_exposure: bool,
     ) -> Result<InstalledPackageInfo> {
-        // Generate pkgline from pkgkey (simplified - would need ca_hash in real implementation)
-        let pkgline = format!("__{}", pkgkey);
+        // pkgline should be empty initially - it will be filled by fill_pkglines_in_plan
+        // if the package already exists in the store, otherwise it will remain empty
+        // and the package will be downloaded and installed
+        let pkgline = String::new();
 
         let depends_list = pkgkey_to_depends.get(pkgkey).cloned().unwrap_or_default();
 

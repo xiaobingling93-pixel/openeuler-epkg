@@ -1147,6 +1147,11 @@ impl PackageManager {
         let store_root = dirs().epkg_store.clone();
         let package_format = channel_config().format;
 
+        // Fill pkglines for packages that already exist in the store
+        let mut plan = plan;
+        crate::store::fill_pkglines_in_plan(&mut plan, self)
+            .with_context(|| "Failed to find existing packages in store")?;
+
         // Execute removals
         self.execute_removals(&plan, &store_root, &env_root, package_format)?;
 
@@ -1236,12 +1241,18 @@ impl PackageManager {
             return Ok(());
         }
 
+        // Remove old versions of upgraded packages from self.installed_packages *before* downloads
+        for old_pkgkey_to_remove in plan.upgrades_old.keys() {
+            self.installed_packages.remove(old_pkgkey_to_remove);
+        }
+
         // Step 1: Prepare packages for download and processing
-        let packages_to_download_and_process = self.prepare_packages_for_installation(plan);
+        let (packages_to_download_and_process, packages_with_pkglines) = self.prepare_packages_for_installation(plan)?;
 
         // Step 2: Download and install packages
         let completed_packages = self.download_and_install_packages(
             &packages_to_download_and_process,
+            &packages_with_pkglines,
             store_root,
             env_root,
         )?;
@@ -1256,36 +1267,69 @@ impl PackageManager {
     }
 
     /// Prepare packages for download and processing
-    fn prepare_packages_for_installation(&mut self, plan: &InstallationPlan) -> HashMap<String, InstalledPackageInfo> {
-        let mut packages_to_download_and_process = plan.fresh_installs.clone();
-        packages_to_download_and_process.extend(plan.upgrades_new.clone());
+    /// Returns: (packages_to_download, packages_with_pkglines)
+    fn prepare_packages_for_installation(&mut self, plan: &InstallationPlan) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
+        // Separate packages into those with pkglines (already in store) and those without (need download)
+        let mut packages_to_download = HashMap::new();
+        let mut packages_with_pkglines = HashMap::new();
 
-        // Remove old versions of upgraded packages from self.installed_packages *before* downloads
-        for old_pkgkey_to_remove in plan.upgrades_old.keys() {
-            self.installed_packages.remove(old_pkgkey_to_remove);
+        // Process fresh_installs
+        for (pkgkey, package_info) in &plan.fresh_installs {
+            if !package_info.pkgline.is_empty() {
+                packages_with_pkglines.insert(pkgkey.clone(), package_info.clone());
+            } else {
+                packages_to_download.insert(pkgkey.clone(), package_info.clone());
+            }
         }
 
-        packages_to_download_and_process
+        // Process upgrades_new
+        for (pkgkey, package_info) in &plan.upgrades_new {
+            if !package_info.pkgline.is_empty() {
+                packages_with_pkglines.insert(pkgkey.clone(), package_info.clone());
+            } else {
+                packages_to_download.insert(pkgkey.clone(), package_info.clone());
+            }
+        }
+
+        Ok((packages_to_download, packages_with_pkglines))
     }
 
     /// Download and install packages
     fn download_and_install_packages(
         &mut self,
         packages_to_download_and_process: &HashMap<String, InstalledPackageInfo>,
+        packages_with_pkglines: &HashMap<String, InstalledPackageInfo>,
         store_root: &Path,
         env_root: &Path,
     ) -> Result<HashMap<String, InstalledPackageInfo>> {
+        // Submit download tasks first
         let url_to_pkgkey = self.submit_download_tasks(packages_to_download_and_process)?;
         let pending_urls: Vec<String> = url_to_pkgkey.keys().cloned().collect();
 
+        // While downloading, link packages that already exist in the store (have non-empty pkgline)
+        let mut completed_packages = HashMap::new();
+        for (pkgkey, package_info) in packages_with_pkglines {
+            // Link the package from store to env_root
+            let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+            self.link_package(&store_fs_dir, &env_root.to_path_buf())
+                .with_context(|| format!("Failed to link existing package {}", pkgkey))?;
+
+            // Add to completed packages
+            completed_packages.insert(pkgkey.clone(), package_info.clone());
+        }
+
+        // Process downloads for packages that needed to be downloaded
         let mut mutable_packages_for_processing = packages_to_download_and_process.clone();
-        let completed_packages = self.process_downloads_and_install(
+        let downloaded_packages = self.wait_downloads_and_unpack_link(
             &url_to_pkgkey,
             pending_urls,
             &mut mutable_packages_for_processing,
             store_root,
             env_root,
         )?;
+
+        // Merge downloaded packages with already-linked packages
+        completed_packages.extend(downloaded_packages);
 
         utils::fixup_env_links(env_root)?;
 
@@ -1404,7 +1448,7 @@ impl PackageManager {
     }
 
     /// Process downloads and install packages as they complete
-    fn process_downloads_and_install(
+    fn wait_downloads_and_unpack_link(
         &mut self,
         url_to_pkgkey: &HashMap<String, String>,
         mut pending_urls: Vec<String>,
