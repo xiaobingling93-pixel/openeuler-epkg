@@ -16,3 +16,4 @@
 *.txt
 files
 perf.data*
+tests/e2e/reproduce/
