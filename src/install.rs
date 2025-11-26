@@ -880,13 +880,10 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
         match crate::run::find_command_in_env_path("ldconfig", env_root) {
             Ok(ldconfig_path) => {
                 let run_options = crate::run::RunOptions {
-                    mount_dirs: Vec::new(),
-                    user: None,
                     command: "ldconfig".to_string(),
-                    args: Vec::new(),
-                    env_vars: std::collections::HashMap::new(),
                     no_exit: true,
                     chdir_to_env_root: true, // ldconfig should run relative to environment root
+                    ..Default::default()
                 };
 
                 // Execute ldconfig

@@ -15,7 +15,7 @@ use log::{info, debug, warn};
 use crate::models::*;
 use crate::utils;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     pub mount_dirs: Vec<String>,
     pub user: Option<String>,
@@ -24,63 +24,12 @@ pub struct RunOptions {
     pub env_vars: std::collections::HashMap<String, String>,
     pub no_exit: bool,
     pub chdir_to_env_root: bool,
+    pub skip_namespace_isolation: bool,
 }
 
-/// Fork a new process and execute command for conda environment without namespace isolation
-pub fn fork_and_execute_conda(run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
-    // Still need to fork to avoid replacing the epkg process, but skip namespace setup
-    match unsafe { nix::unistd::fork() } {
-        Ok(nix::unistd::ForkResult::Parent { child }) => {
-            // Parent process: wait for child to complete
-            debug!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
-            match nix::sys::wait::waitpid(child, None) {
-                Ok(wait_status) => {
-                    use nix::sys::wait::WaitStatus;
-                    match wait_status {
-                        WaitStatus::Exited(_, exit_code) => {
-                            if exit_code != 0 {
-                                if run_options.no_exit {
-                                    info!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
-                                } else {
-                                    warn!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
-                                    std::process::exit(exit_code);
-                                }
-                            }
-                        }
-                        WaitStatus::Signaled(_, signal, _) => {
-                            debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
-                            return Err(eyre::eyre!("Command killed by signal {:?}", signal));
-                        }
-                        _ => {
-                            debug!("Child process ended with status: {:?} (cmd: {})", wait_status, cmd_path.display());
-                            return Err(eyre::eyre!("Command ended with unexpected status: {:?}", wait_status));
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(eyre::eyre!("Failed to wait for child process (cmd: {}): {}", cmd_path.display(), e));
-                }
-            }
-        }
-        Ok(nix::unistd::ForkResult::Child) => {
-            // Child process: execute command directly without namespace setup
-            debug!("Child process executing command directly (cmd: {})", cmd_path.display());
-            if let Err(e) = exec_command(cmd_path, &run_options.args, Some(&run_options.env_vars)) {
-                eprintln!("Failed to execute command '{}': {} (error: {:?})",
-                    cmd_path.display(), e, std::io::Error::last_os_error());
-                std::process::exit(127);
-            }
-            unreachable!();
-        }
-        Err(e) => {
-            return Err(eyre::eyre!("Failed to fork process: {}", e));
-        }
-    }
-
-    Ok(())
-}
-
-/// Fork a new process and execute command with namespace isolation
+/// Fork a new process and execute command with optional namespace isolation
+/// If `run_options.skip_namespace_isolation` is true, executes without namespace setup (for conda environments).
+/// Otherwise, sets up namespace isolation before executing.
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
     // Fork a new process to handle namespace creation and command execution
     // This is necessary because multi-threaded processes cannot create user namespaces
@@ -120,24 +69,29 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
             }
         }
         Ok(nix::unistd::ForkResult::Child) => {
-            // Child process: set up namespaces and execute command
-            debug!("Child process starting namespace setup (cmd: {})", cmd_path.display());
+            if run_options.skip_namespace_isolation {
+                // Child process: execute command directly without namespace setup
+                debug!("Child process executing command directly (cmd: {})", cmd_path.display());
+            } else {
+                // Child process: set up namespaces and execute command
+                debug!("Child process starting namespace setup (cmd: {})", cmd_path.display());
 
-            // Set up namespace and bind mounts
-            if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
-                eprintln!("Failed to setup namespaces: {}", e);
-                std::process::exit(1);
-            }
-
-            // Change to environment root directory before executing command if requested
-            if run_options.chdir_to_env_root {
-                // This ensures that scriptlets and other commands run relative to the environment root
-                // rather than the current working directory, which is important for commands like
-                // "chown etc/shadow" that expect to operate on files within the environment.
-                debug!("Changing working directory to environment root: {}", env_root.display());
-                if let Err(e) = std::env::set_current_dir(env_root) {
-                    eprintln!("Failed to change to environment root directory {}: {}", env_root.display(), e);
+                // Set up namespace and bind mounts
+                if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
+                    eprintln!("Failed to setup namespaces: {}", e);
                     std::process::exit(1);
+                }
+
+                // Change to environment root directory before executing command if requested
+                if run_options.chdir_to_env_root {
+                    // This ensures that scriptlets and other commands run relative to the environment root
+                    // rather than the current working directory, which is important for commands like
+                    // "chown etc/shadow" that expect to operate on files within the environment.
+                    debug!("Changing working directory to environment root: {}", env_root.display());
+                    if let Err(e) = std::env::set_current_dir(env_root) {
+                        eprintln!("Failed to change to environment root directory {}: {}", env_root.display(), e);
+                        std::process::exit(1);
+                    }
                 }
             }
 
@@ -789,7 +743,7 @@ pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::col
 impl PackageManager {
     /// Execute command with environment PATH lookup and namespace isolation
     pub fn command_run(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        let run_options = self.parse_run_options(sub_matches)?;
+        let mut run_options = self.parse_run_options(sub_matches)?;
 
         debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
         debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
@@ -805,13 +759,14 @@ impl PackageManager {
         // Check if this is a conda environment - conda ELF binaries can run directly
         let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
 
+        // Set namespace isolation flag based on environment type
         if is_conda {
             // For conda, directly execute the ELF binary without namespace isolation
-            fork_and_execute_conda(&run_options, &cmd_path)?;
-        } else {
-            // For non-conda, fork and execute with namespace isolation
-            fork_and_execute(&env_root, &run_options, &cmd_path)?;
+            run_options.skip_namespace_isolation = true;
         }
+
+        // Fork and execute with appropriate isolation settings
+        fork_and_execute(&env_root, &run_options, &cmd_path)?;
 
         Ok(())
     }
@@ -841,9 +796,7 @@ impl PackageManager {
             user,
             command,
             args,
-            env_vars: std::collections::HashMap::new(),
-            no_exit: false,
-            chdir_to_env_root: false,
+            ..Default::default()
         })
     }
 }
