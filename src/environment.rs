@@ -247,11 +247,13 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("etc/epkg"))?;
 
         // Initialize channel and environment config
-        let (mut env_config, channel_configs) = if let Some(config_path) = &config().env.import_file {
+        let (mut env_export, channel_configs) = if let Some(config_path) = &config().env.import_file {
             self.import_environment_from_file(config_path)?
         } else {
             self.create_default_environment_config(name)?
         };
+
+        let mut env_config = env_export.env;
 
         // Override config values with command line options
         env_config.name = name.to_string();
@@ -269,7 +271,7 @@ impl PackageManager {
         }
 
         // Get packages before saving config (since env_config will be moved)
-        let packages_to_install = std::mem::take(&mut env_config.packages);
+        let packages_to_install = std::mem::take(&mut env_export.packages);
 
         // Save environment config
         crate::io::serialize_env_config(env_config)?;
@@ -283,7 +285,10 @@ impl PackageManager {
 
         // Install packages if any
         if !packages_to_install.is_empty() {
-            let plan = self.prepare_installation_plan(&packages_to_install)?;
+            // Clear installed_packages since this is a new environment with no packages installed yet
+            self.installed_packages.clear();
+            let mut plan = self.prepare_installation_plan(&packages_to_install)?;
+            plan.env_name = Some(name.to_string());
             self.execute_installation_plan(plan)?;
         } else {
             // Create metadata files
@@ -314,6 +319,7 @@ impl PackageManager {
      * register_priority: 0
      * env_vars: {}
      * packages: {}
+     * world: {}
      *
      * ---
      * # Main channel configuration (second document, optional)
@@ -351,20 +357,20 @@ impl PackageManager {
      * index_url: https://deb.debian.org/debian
      *
      * Parsing Logic:
-     * 1. First document is always parsed as EnvConfig
+     * 1. First document is always parsed as EnvExport (EnvConfig plus packages/world)
      * 2. Subsequent documents are parsed as ChannelConfig
      * 3. Documents with "file_name:" field are from repos.d and are skipped
      * 4. If no ChannelConfig documents found, try parsing entire content as single ChannelConfig
      *
-     * Returns: (EnvConfig, Vec<ChannelConfig>) tuple
+     * Returns: (EnvExport, Vec<ChannelConfig>) tuple
      */
-    fn import_environment_from_file(&self, config_path: &str) -> Result<(EnvConfig, Vec<ChannelConfig>)> {
+    fn import_environment_from_file(&self, config_path: &str) -> Result<(EnvExport, Vec<ChannelConfig>)> {
         let config_contents = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path))?;
 
         // Parse channel configs
         let mut channel_configs = Vec::new();
-        let mut env_config: Option<EnvConfig> = None;
+        let mut env_export: Option<EnvExport> = None;
 
         // Split the content by "---" to handle multiple YAML documents
         let documents: Vec<&str> = config_contents.split("---").collect();
@@ -375,10 +381,10 @@ impl PackageManager {
                 continue;
             }
 
-            // Parse first document as EnvConfig
+            // Parse first document as EnvExport
             if i == 0 {
-                env_config = Some(serde_yaml::from_str(doc)
-                    .with_context(|| format!("Failed to parse env config from file: {}", config_path))?);
+                env_export = Some(serde_yaml::from_str(doc)
+                    .with_context(|| format!("Failed to parse env export from file: {}", config_path))?);
                 continue;
             }
 
@@ -390,11 +396,11 @@ impl PackageManager {
             }
         }
 
-        let env_config = env_config.ok_or_else(|| eyre::eyre!("No environment config found in file: {}", config_path))?;
-        Ok((env_config, channel_configs))
+        let env_export = env_export.ok_or_else(|| eyre::eyre!("No environment config found in file: {}", config_path))?;
+        Ok((env_export, channel_configs))
     }
 
-    fn create_default_environment_config(&self, _name: &str) -> Result<(EnvConfig, Vec<ChannelConfig>)> {
+    fn create_default_environment_config(&self, _name: &str) -> Result<(EnvExport, Vec<ChannelConfig>)> {
         // Initialize channel from command line option or default
         let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
 
@@ -445,7 +451,7 @@ impl PackageManager {
             crate::io::load_and_process_channel_config(&src_repo_yaml_path, &mut channel_configs, true)?;
         }
 
-        Ok((EnvConfig::default(), channel_configs))
+        Ok((EnvExport::default(), channel_configs))
     }
 
     /// Update version line in YAML contents
@@ -740,24 +746,35 @@ impl PackageManager {
     }
 
     pub fn export_environment(&mut self, name: &str, output: Option<String>) -> Result<()> {
-        // Get environment config and channel config first
-        let mut env_config = crate::models::env_config().clone();
+        // Prepare environment export container
+        let mut env_export = EnvExport {
+            env: crate::models::env_config().clone(),
+            ..EnvExport::default()
+        };
         let generations_root = get_generations_root(name)?;
 
         // Get installed packages
         let current_gen = fs::read_link(generations_root.join("current"))?;
-        let installed_packages_path = generations_root.join(current_gen).join("installed-packages.json");
+        let installed_packages_path = generations_root.join(current_gen.clone()).join("installed-packages.json");
 
         if installed_packages_path.exists() {
             let contents = fs::read_to_string(&installed_packages_path)?;
-            env_config.packages = serde_json::from_str(&contents)?;
+            env_export.packages = serde_json::from_str(&contents)?;
         } else {
             warn!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display());
             return Err(eyre::eyre!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
         }
 
-        let mut combined_yaml = serde_yaml::to_string(&env_config)?;
-        combined_yaml = self.build_combined_yaml(combined_yaml, &env_config)?;
+        // Load world.json content
+        let world_path = generations_root.join(current_gen).join("world.json");
+        let world_contents = fs::read_to_string(&world_path)
+            .with_context(|| format!("Failed to read world.json from {}", world_path.display()))?;
+        env_export.world = serde_json::from_str(&world_contents)
+            .with_context(|| format!("Failed to parse world.json at {}", world_path.display()))?;
+
+        // Serialize env_export
+        let combined_yaml = serde_yaml::to_string(&env_export)?;
+        let combined_yaml = self.build_combined_yaml(combined_yaml, &env_export.env)?;
 
         // Write to file or stdout
         if let Some(output_path) = output {

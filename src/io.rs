@@ -214,7 +214,11 @@ pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
 pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
     let env_root = PathBuf::from(&env_config.env_root);
+    deserialize_channel_config_from_root(&env_root)
+}
 
+/// Deserialize channel configuration from a specific environment root
+pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<ChannelConfig>> {
     let mut channel_configs = Vec::new();
 
     // Load main channel config
