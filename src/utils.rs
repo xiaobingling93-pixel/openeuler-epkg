@@ -882,18 +882,27 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
         let link_path = env_root.join(link_name);
 
         // Skip if symlink already exists
-        if link_path.exists() {
+        if link_path.is_symlink() || link_path.exists() {
             continue;
         }
 
         // Try each possible target until we find one that exists
         for target in possible_targets.iter() {
-            let target_path = Path::new("/").join(link_name).parent().unwrap().join(target);
-            if target_path.exists() {
+            // Check if target exists within env_root, not host rootfs
+            let target_check_path = if target.starts_with('/') {
+                // Absolute path: check in env_root
+                env_root.join(&target[1..]) // Remove leading slash
+            } else {
+                // Relative path: relative to symlink's parent directory within env_root
+                env_root.join(link_name).parent().unwrap().join(target)
+            };
+
+            if target_check_path.exists() {
                 if let Some(parent) = link_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                symlink(target_path, &link_path)
+                // Use the original target string for the symlink (relative or absolute as specified)
+                symlink(target, &link_path)
                     .with_context(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
                 break;
             }
