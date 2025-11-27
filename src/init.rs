@@ -185,6 +185,11 @@ impl PackageManager {
 
         // Check for local elf-loader
         if let Some(ref local_loader) = init_plan.local_elf_loader_path {
+            // Ensure parent directory exists before copying
+            if let Some(parent) = init_plan.elf_loader_path.parent() {
+                fs::create_dir_all(parent)
+                    .context(format!("Failed to create parent directory for {}", init_plan.elf_loader_path.display()))?;
+            }
             fs::copy(local_loader, &init_plan.elf_loader_path)
                 .context(format!("Failed to copy local elf-loader from {} to {}",
                     local_loader.display(), init_plan.elf_loader_path.display()))?;
