@@ -562,6 +562,43 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
             .context("Failed to get current directory")?
     };
 
+    // If we found a valid repo from the executable path, return it
+    if is_valid_local_repo(&repo_root) {
+        return Ok(repo_root);
+    }
+
+    // Fallback: Check if base environment has a symlink to the repo
+    // This handles the case where root installed epkg and created a symlink at
+    // /opt/epkg/envs/root/base/usr/src/epkg -> /c/epkg, but normal users
+    // running the installed epkg don't have the repo in their executable path.
+    // We need to check both the current user's base env and root's base env.
+    let possible_base_envs = vec![
+        find_env_root(BASE_ENV),
+        // Also check root's base environment directly
+        Some(dirs().opt_epkg.join("envs").join("root").join(BASE_ENV))
+            .filter(|p| p.exists()),
+    ];
+
+    for base_env_root_opt in possible_base_envs {
+        if let Some(base_env_root) = base_env_root_opt {
+            let epkg_src_symlink = base_env_root.join("usr/src/epkg");
+            if epkg_src_symlink.exists() {
+                // Check if it's a symlink
+                if let Ok(metadata) = fs::symlink_metadata(&epkg_src_symlink) {
+                    if metadata.file_type().is_symlink() {
+                        // Follow the symlink to get the actual repo root
+                        // Use canonicalize on the symlink itself to handle both absolute and relative paths
+                        if let Ok(canonical_path) = fs::canonicalize(&epkg_src_symlink) {
+                            if is_valid_local_repo(&canonical_path) {
+                                return Ok(canonical_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(repo_root)
 }
 
@@ -776,36 +813,40 @@ fn check_for_updates() -> Result<InitPlan> {
 
     let current_version = get_current_epkg_version_info()?;
 
-    // Fetch latest epkg version
-    let epkg_release = fetch_latest_release("openeuler", "epkg")
-        .context("Failed to fetch epkg release info")?;
-
-    // Fetch latest elf-loader version
-    let elf_loader_release = fetch_latest_release("openeuler", "elf-loader")
-        .context("Failed to fetch elf-loader release info")?;
-
-    let new_version = EpkgVersionInfo {
-        epkg_version: epkg_release.tag_name.clone(),
-        elf_loader_version: elf_loader_release.tag_name.clone(),
-    };
-
-    // Always show version information
-    println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
-    println!("  elf-loader: {} → {}", current_version.elf_loader_version, new_version.elf_loader_version);
-
     // Determine if this is an upgrade or fresh install
     let is_upgrade = config().init.upgrade;
     let arch = &config().common.arch;
     let dirs = dirs();
     let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
 
-    // Check for local repo
+    // Check for local repo and local elf-loader BEFORE making API calls
     let repo_root = find_repo_root()?;
     let using_local_repo = is_valid_local_repo(&repo_root);
-
-    // Check for local elf-loader
     let local_elf_loader_path = repo_root.join("elf-loader/src/loader");
     let has_local_elf_loader = local_elf_loader_path.exists();
+
+    // If both local repo and local elf-loader are detected, skip API calls
+    let new_version = if using_local_repo && has_local_elf_loader {
+        // Use current version as new version when using local development binaries
+        current_version.clone()
+    } else {
+        // Fetch latest epkg version
+        let epkg_release = fetch_latest_release("openeuler", "epkg")
+            .context("Failed to fetch epkg release info")?;
+
+        // Fetch latest elf-loader version
+        let elf_loader_release = fetch_latest_release("openeuler", "elf-loader")
+            .context("Failed to fetch elf-loader release info")?;
+
+        EpkgVersionInfo {
+            epkg_version: epkg_release.tag_name.clone(),
+            elf_loader_version: elf_loader_release.tag_name.clone(),
+        }
+    };
+
+    // Always show version information
+    println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
+    println!("  elf-loader: {} → {}", current_version.elf_loader_version, new_version.elf_loader_version);
 
     // Set up URLs first (needed for path resolution)
     let (epkg_binary_url, elf_loader_url) = get_versioned_urls(&new_version.epkg_version, &new_version.elf_loader_version, arch);
