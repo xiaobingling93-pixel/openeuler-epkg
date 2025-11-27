@@ -196,12 +196,55 @@ fn handle_elf_with_loader(target_path: &Path, env_root: &Path, fs_file: &Path) -
             .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
     }
 
-    fs::hard_link(&elf_loader_path, target_path)
-        .with_context(|| format!(
-            "Failed to create hardlink from {} to {}",
-            elf_loader_path.display(),
-            target_path.display()
-        ))?;
+    // First, try hardlink directly
+    match fs::hard_link(&elf_loader_path, target_path) {
+        Ok(_) => {
+            // Success, continue with symlink setup
+        }
+        Err(hardlink_err) => {
+            // Hardlink failed, check if it's cross-device error
+            if hardlink_err.raw_os_error() == Some(18) { // EXDEV - Cross-device link
+                // Copy elf-loader to env_root/ebin/.elf-loader if not already exists
+                let local_elf_loader = env_root.join("ebin/.elf-loader");
+
+                if !local_elf_loader.exists() {
+                    // Create ebin directory if it doesn't exist
+                    if let Some(parent) = local_elf_loader.parent() {
+                        fs::create_dir_all(parent)
+                            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+                    }
+
+                    // Copy elf-loader to local location
+                    fs::copy(&elf_loader_path, &local_elf_loader)
+                        .with_context(|| format!(
+                            "Failed to copy elf-loader from {} to {}",
+                            elf_loader_path.display(),
+                            local_elf_loader.display()
+                        ))?;
+
+                    // Preserve permissions
+                    if let Ok(perms) = fs::metadata(&elf_loader_path) {
+                        fs::set_permissions(&local_elf_loader, perms.permissions())
+                            .with_context(|| format!("Failed to set permissions for {}", local_elf_loader.display()))?;
+                    }
+                }
+
+                // Hardlink from local copy to target
+                fs::hard_link(&local_elf_loader, target_path)
+                    .with_context(|| format!(
+                        "Failed to create hardlink from {} to {}",
+                        local_elf_loader.display(),
+                        target_path.display()
+                    ))?;
+            } else {
+                return Err(hardlink_err).with_context(|| format!(
+                    "Failed to create hardlink from {} to {}",
+                    elf_loader_path.display(),
+                    target_path.display()
+                ));
+            }
+        }
+    }
 
     let has_symlink1 = replace_existing_symlink1(target_path, fs_file)
         .with_context(|| format!("Failed to ensure symlink1 for {}", target_path.display()))?;
