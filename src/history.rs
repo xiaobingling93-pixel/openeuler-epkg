@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::os::unix::fs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr};
 use time::OffsetDateTime;
@@ -76,10 +76,18 @@ impl PackageManager {
         self.get_generation_path(current_id)
     }
 
-    pub fn create_new_generation(&mut self) -> Result<PathBuf> {
+    pub fn create_new_generation_with_root(&mut self, generations_root: &Path) -> Result<PathBuf> {
         // Get current generation info
-        let current_id = self.get_current_generation_id()?;
-        let current_generation = self.get_generation_path(current_id)?;
+        let current_link = generations_root.join("current");
+        let current_id = if current_link.exists() {
+            let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
+            target.to_str().unwrap().parse::<u32>().with_context(||
+                format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?
+        } else {
+            // No current generation exists, start with generation 1
+            1
+        };
+        let current_generation = generations_root.join(current_id.to_string());
 
         // Check if we need to create a new generation
         let command_json = current_generation.join("command.json");
@@ -90,7 +98,7 @@ impl PackageManager {
 
         // Create new generation
         let new_id = current_id + 1;
-        let new_generation = self.get_generation_path(new_id)?;
+        let new_generation = generations_root.join(new_id.to_string());
 
         // Create new generation directory
         fs::create_dir_all(&new_generation)?;
@@ -104,8 +112,7 @@ impl PackageManager {
         Ok(new_generation)
     }
 
-    pub fn update_current_generation_symlink(&mut self, new_generation: PathBuf) -> Result<()> {
-        let generations_root = crate::dirs::get_default_generations_root()?;
+    pub fn update_current_generation_symlink_with_root(&mut self, generations_root: &Path, new_generation: PathBuf) -> Result<()> {
         let current_link = generations_root.join("current");
 
         if current_link.exists() {

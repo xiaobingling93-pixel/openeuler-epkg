@@ -32,6 +32,8 @@ pub struct InstallationPlan {
     pub new_exposes: HashMap<String, InstalledPackageInfo>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub del_exposes: HashMap<String, InstalledPackageInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_name: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for InstallationPlan {
@@ -55,6 +57,8 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             new_exposes: HashMap<String, InstalledPackageInfo>,
             #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
             del_exposes: HashMap<String, InstalledPackageInfo>,
+            #[serde(default)]
+            env_name: Option<String>,
         }
 
         fn deserialize_pkgkey_map<'de, D>(
@@ -131,6 +135,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             old_removes: helper.old_removes,
             new_exposes: helper.new_exposes,
             del_exposes: helper.del_exposes,
+            env_name: helper.env_name,
         })
     }
 }
@@ -1175,20 +1180,52 @@ impl PackageManager {
     /// Execute an InstallationPlan by performing the actual installation/removal operations.
     /// This function can be reused by both install and remove operations.
     /// If config().common.dry_run is true, will return the plan without executing it.
-    pub fn execute_installation_plan(&mut self, plan: InstallationPlan) -> Result<InstallationPlan> {
+    /// The target environment is determined by InstallationPlan.env_name or defaults to config().common.env.
+    pub fn execute_installation_plan(&mut self, mut plan: InstallationPlan) -> Result<InstallationPlan> {
         // --- USER PROMPT AND PRE-EXECUTION CHECKS ---
         let go_on = self.prompt_and_confirm_install_plan(&plan)?;
         if !go_on {
             return Ok(plan);
         }
 
-        let new_generation = self.create_new_generation()?;
-        let env_root = crate::dirs::get_default_env_root()?.clone();
+        if plan.env_name.is_none() {
+            let default_env = crate::models::config().common.env.clone();
+            if default_env.is_empty() {
+                return Err(eyre::eyre!("Environment name not specified for installation plan"));
+            }
+            plan.env_name = Some(default_env);
+        }
+        let env_name = plan.env_name.clone().unwrap();
+        let is_default_env = env_name == crate::models::config().common.env;
+
+        let env_root = if is_default_env {
+            crate::dirs::get_default_env_root()?
+        } else {
+            crate::dirs::get_env_root(env_name.clone())?
+        };
+        let generations_root = if is_default_env {
+            crate::dirs::get_default_generations_root()?
+        } else {
+            crate::dirs::get_generations_root(&env_name)?
+        };
+
+        let new_generation = self.create_new_generation_with_root(&generations_root)?;
+        let env_root = env_root.clone();
         let store_root = dirs().epkg_store.clone();
-        let package_format = channel_config().format;
+
+        // Load channel config from the correct environment
+        // If env_name differs from the default, load from that environment's root, otherwise use global
+        let package_format = if is_default_env {
+            channel_config().format
+        } else {
+            let channel_configs = crate::io::deserialize_channel_config_from_root(&env_root)?;
+            if channel_configs.is_empty() {
+                return Err(eyre::eyre!("No channel config found for environment"));
+            }
+            channel_configs[0].format.clone()
+        };
 
         // Fill pkglines for packages that already exist in the store
-        let mut plan = plan;
         crate::store::fill_pkglines_in_plan(&mut plan, self)
             .with_context(|| "Failed to find existing packages in store")?;
 
@@ -1208,7 +1245,7 @@ impl PackageManager {
         self.record_history(&new_generation, Some(&plan))?;
         self.save_installed_packages(&new_generation)?;
         self.save_world(&new_generation)?;
-        self.update_current_generation_symlink(new_generation)?;
+        self.update_current_generation_symlink_with_root(&generations_root, new_generation)?;
 
         Ok(plan)
     }

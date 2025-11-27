@@ -270,11 +270,18 @@ pub struct EnvConfig {
 
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
+}
 
-    // Only for importing from exported config file
-    #[serde(skip_serializing)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct EnvExport {
+    #[serde(flatten)]
+    pub env: EnvConfig,
+
     #[serde(default)]
     pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
+
+    #[serde(default)]
+    pub world: HashMap<String, String>,
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
