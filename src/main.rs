@@ -430,7 +430,7 @@ OPTIONS:
                 .subcommand(
                     Command::new("export")
                         .about("Export environment configuration")
-                        .arg(arg!(<ENV_NAME> "Name of the environment to export"))
+                        .arg(arg!([ENV_NAME] "Name of the environment to export"))
                         .arg(arg!(-o --output <FILE> "Output file path"))
                 )
                 .subcommand(
@@ -811,6 +811,7 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             if let Some(env_name) = sub_matches.get_one::<String>("ENV_NAME") {
                 config.common.env = env_name.to_string();
             }
+            // If ENV_NAME is not provided, use the value from global -e flag (already set in parse_options_common)
         }
         _ => {}
     }
@@ -994,12 +995,11 @@ impl PackageManager {
             }
             Some(("deactivate", _)) => self.deactivate_environment(),
             Some(("export", sub_matches)) => {
-                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
-                    let output = sub_matches.get_one::<String>("output").cloned();
-                    self.export_environment(name, output)
-                } else {
-                    Ok(())
-                }
+                let name = sub_matches.get_one::<String>("ENV_NAME")
+                    .map(|s| s.as_str())
+                    .unwrap_or_else(|| &config().common.env);
+                let output = sub_matches.get_one::<String>("output").cloned();
+                self.export_environment(name, output)
             }
             Some(("path", _)) => self.update_path(),
             Some(("config", sub_matches)) => {
