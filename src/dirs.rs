@@ -121,11 +121,16 @@ pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
         return Some(private_env_base);
     }
 
-    // Check public env
-    if let Ok(username) = get_username() {
-        let public_env_base = dirs().opt_epkg.join("envs").join(username).join(env_name);
-        if public_env_base.exists() {
-            return Some(public_env_base);
+    // Check public envs - search through all users' public environment directories
+    let public_envs_parent = dirs().opt_epkg.join("envs");
+    if let Ok(entries) = fs::read_dir(&public_envs_parent) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let public_env_base = entry.path().join(env_name);
+                if public_env_base.join("etc/epkg").exists() {
+                    return Some(public_env_base);
+                }
+            }
         }
     }
 
