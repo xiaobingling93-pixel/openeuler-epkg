@@ -69,14 +69,35 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
             }
         }
         Ok(nix::unistd::ForkResult::Child) => {
-            if run_options.skip_namespace_isolation {
-                // Child process: execute command directly without namespace setup
-                debug!("Child process executing command directly (cmd: {})", cmd_path.display());
+            // Resolve command path (if namespace isolation is used, canonicalize before mounts)
+            let final_cmd_path = if run_options.skip_namespace_isolation {
+                // No namespace isolation, use original path
+                cmd_path.to_path_buf()
             } else {
-                // Child process: set up namespaces and execute command
-                debug!("Child process starting namespace setup (cmd: {})", cmd_path.display());
+                // Convert command path to a path relative to env_root (e.g., usr/bin/htop),
+                // then after mounts, use the absolute path from root (e.g., /usr/bin/htop).
+                // This makes the ELF binary think it's running from within the environment root.
+                let rel_cmd_path = if cmd_path.starts_with(env_root) {
+                    match cmd_path.strip_prefix(env_root) {
+                        Ok(rel_path) => {
+                            // Convert to absolute path from root (e.g., /usr/bin/htop)
+                            let abs_from_root = Path::new("/").join(rel_path);
+                            debug!("Converted command path to env-relative: {} -> {}", cmd_path.display(), abs_from_root.display());
+                            abs_from_root
+                        }
+                        Err(_) => {
+                            debug!("Could not strip env_root prefix, using original: {}", cmd_path.display());
+                            cmd_path.to_path_buf()
+                        }
+                    }
+                } else {
+                    debug!("Command path not under env_root, using original: {}", cmd_path.display());
+                    cmd_path.to_path_buf()
+                };
 
                 // Set up namespace and bind mounts
+                debug!("Child process starting namespace setup (cmd: {})", rel_cmd_path.display());
+
                 if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
                     eprintln!("Failed to setup namespaces: {}", e);
                     std::process::exit(1);
@@ -93,10 +114,14 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
                         std::process::exit(1);
                     }
                 }
-            }
+
+                // After mounts, use the path relative to root (e.g., /usr/bin/htop)
+                // which will be accessible through the mount structure
+                rel_cmd_path
+            };
 
             // Execute the command - this replaces the current process
-            if let Err(e) = exec_command(cmd_path, &run_options.args, Some(&run_options.env_vars)) {
+            if let Err(e) = exec_command(&final_cmd_path, &run_options.args, Some(&run_options.env_vars)) {
                 eprintln!("Failed to execute command '{}': {} (error: {:?})",
                     cmd_path.display(), e, std::io::Error::last_os_error());
                 std::process::exit(127);
@@ -301,8 +326,118 @@ pub fn mount_make_rprivate() -> Result<()> {
     Ok(())
 }
 
-/// Mount environment directories
-pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
+/// Check if the host OS uses traditional directory layout (dirs) or usr-merge layout (symlinks).
+/// Returns true if the host uses traditional layout (e.g., Alpine < 3.22), false if usr-merge.
+pub fn host_uses_traditional_layout() -> bool {
+    // Check if /lib is a directory (traditional) or symlink (usr-merge)
+    let lib_path = Path::new("/lib");
+    if let Ok(metadata) = fs::symlink_metadata(lib_path) {
+        return metadata.file_type().is_dir();
+    }
+    // If we can't check, assume traditional layout to be safe
+    true
+}
+
+/*
+ * Directory Layout Compatibility: Traditional (dirs) vs Usr-merge (symlinks)
+ *
+ * BACKGROUND:
+ * Linux distributions have evolved from traditional directory layout to usr-merge layout:
+ *
+ * Traditional Layout (dirs):
+ *   - /bin, /sbin, /lib are actual directories
+ *   - Examples: Alpine Linux, older distributions
+ *   - Structure: /bin, /sbin, /lib are separate from /usr
+ *
+ * Usr-merge Layout (symlinks):
+ *   - /bin -> usr/bin, /sbin -> usr/sbin, /lib -> usr/lib, /lib64 -> usr/lib64
+ *   - Examples: Modern RPM/Debian/Arch Linux, Alpine >= 3.22
+ *   - Structure: Everything under /usr, with symlinks for compatibility
+ *
+ * GUEST ENVIRONMENT:
+ *   - epkg environments always use usr-merge layout (symlinks)
+ *   - /bin -> usr/bin, /sbin -> usr/sbin, /lib -> usr/lib, /lib64 -> usr/lib64
+ *
+ * STRATEGY TABLE:
+ *   host        guest           strategy
+ *   ===================================================================
+ *   dirs        dirs            bind mount /bin /sbin /lib to $env_root/usr/bin .. on 'epkg run'
+ *   dirs        symlinks        bind mount /bin /sbin /lib to $env_root/usr/bin .. on 'epkg run';
+ *                               check and create the '/lib64 -> usr/lib64' symlink in host os on 'epkg init', if it's run by root.
+ *                               archlinux host has '/lib64 -> usr/lib' which can be safely fixed pointing to usr/lib64
+ *   symlinks    dirs            current code works, no more fixup
+ *   symlinks    symlinks        current code works, no more fixup
+ *
+ * IMPLEMENTATION:
+ *   - For "dirs (host) + symlinks (guest)": We bind mount host's /bin, /sbin, /lib to
+ *     $env_root/usr/bin, $env_root/usr/sbin, $env_root/usr/lib BEFORE mounting $env_root/usr.
+ *   - For "symlinks (host) + symlinks (guest)": No special handling needed, symlinks work naturally.
+ */
+
+/// Helper function to bind mount a host directory to a guest directory.
+fn bind_mount_host_to_guest(host_path: &Path, guest_path: &Path, error_msg: &str) -> Result<()> {
+    if host_path.exists() && guest_path.exists() {
+        // Check that both paths are real directories, not symlinks
+        let host_metadata = fs::symlink_metadata(host_path)
+            .wrap_err_with(|| format!("Failed to get metadata for host path: {}", host_path.display()))?;
+        let guest_metadata = fs::symlink_metadata(guest_path)
+            .wrap_err_with(|| format!("Failed to get metadata for guest path: {}", guest_path.display()))?;
+
+        if !host_metadata.is_dir() {
+            return Ok(());
+        }
+        if !guest_metadata.is_dir() {
+            return Ok(());
+        }
+
+        debug!("Bind mounting host {} -> {}", host_path.display(), guest_path.display());
+        mount(
+            Some(guest_path),
+            host_path,
+            Some(""),
+            MsFlags::MS_BIND,
+            Some(""),
+        ).wrap_err_with(|| error_msg.to_string())?;
+    }
+    Ok(())
+}
+
+/// Handle traditional layout host compatibility for usr-merge guest environments.
+/// Bind mounts host's /bin, /sbin, /lib to guest's usr/bin, usr/sbin, usr/lib.
+/// This must be called BEFORE mounting $env_root/usr over /usr.
+fn mount_traditional_host_compatibility(env_root: &Path) -> Result<()> {
+    if !host_uses_traditional_layout() {
+        return Ok(());
+    }
+
+    debug!("Host uses traditional layout, binding host /bin, /sbin, /lib to environment usr directories");
+
+    // Bind mount host's /bin to $env_root/usr/bin
+    bind_mount_host_to_guest(
+        Path::new("/bin"),
+        &env_root.join("usr/bin"),
+        "Failed to bind mount host /bin to env usr/bin",
+    )?;
+
+    // Bind mount host's /sbin to $env_root/usr/sbin
+    bind_mount_host_to_guest(
+        Path::new("/sbin"),
+        &env_root.join("usr/sbin"),
+        "Failed to bind mount host /sbin to env usr/sbin",
+    )?;
+
+    // Bind mount host's /lib to $env_root/usr/lib
+    bind_mount_host_to_guest(
+        Path::new("/lib"),
+        &env_root.join("usr/lib"),
+        "Failed to bind mount host /lib to env usr/lib",
+    )?;
+
+    Ok(())
+}
+
+/// Mount core environment directories (usr, etc, var, run, root).
+fn mount_core_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     mount_env_dir(env_root, "/usr")?;
     mount_env_dir(env_root, "/etc")?;
     mount_env_dir(env_root, "/var")?;
@@ -316,27 +451,33 @@ pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
         mount_env_dir(env_root, "/root")?;
     }
 
-    /*
-     * Special handling for /opt/epkg mount isolation:
-     *
-     * Problem:
-     * - When we bind-mount the user's /opt ($env_root/opt over /opt), it hides the original /opt/epkg
-     * - This breaks dependencies (e.g., LLVM libraries in /opt/openEuler) that are symlinked through /opt/epkg
-     *
-     * Solution:
-     * 1. Before mounting user's /opt:
-     *    - If /opt/epkg exists, create a backup bind-mount at $env_root/opt_real
-     * 2. Mount user's /opt normally (shadowing original)
-     * 3. Restore /opt/epkg access:
-     *    - Bind-mount the backup ($env_root/opt_real) back to /opt/epkg
-     *
-     * This gives us:
-     * - User's isolated /opt environment
-     * - Continued access to system /opt/epkg contents
-     * - No root privileges required after initial setup
-     *
-     * Note: Uses MS_BIND instead of MS_MOVE for reliability across different filesystem setups
-     */
+    Ok(())
+}
+
+/*
+ * Special handling for /opt/epkg mount isolation:
+ *
+ * Problem:
+ * - When we bind-mount the user's /opt ($env_root/opt over /opt), it hides the original /opt/epkg
+ * - This breaks dependencies (e.g., LLVM libraries in /opt/openEuler) that are symlinked through /opt/epkg
+ *
+ * Solution:
+ * 1. Before mounting user's /opt:
+ *    - If /opt/epkg exists, create a backup bind-mount at $env_root/opt_real
+ * 2. Mount user's /opt normally (shadowing original)
+ * 3. Restore /opt/epkg access:
+ *    - Bind-mount the backup ($env_root/opt_real) back to /opt/epkg
+ *
+ * This gives us:
+ * - User's isolated /opt environment
+ * - Continued access to system /opt/epkg contents
+ * - No root privileges required after initial setup
+ *
+ * Note: Uses MS_BIND instead of MS_MOVE for reliability across different filesystem setups
+ */
+/// Handle /opt/epkg mount isolation to preserve access to system /opt/epkg.
+/// This ensures that when we mount the guest's /opt, we don't lose access to the host's /opt/epkg.
+fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
     let opt_real_path = if env_root.starts_with("/opt/epkg") {
         /*
          * Use a path outside /opt/epkg to avoid circular dependency
@@ -362,11 +503,15 @@ pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to create opt_real directory '{}': {}", opt_real_path.display(), e))?;
 
     let opt_epkg_path = Path::new("/opt/epkg");
-    if opt_epkg_path.exists() {
+    // Store whether /opt/epkg existed BEFORE mounting env_root/opt over /opt
+    // This is critical because after mounting, /opt/epkg will be hidden
+    let opt_epkg_existed = opt_epkg_path.exists();
+
+    if opt_epkg_existed {
         // For root, will bind mount /opt/epkg to
         // /root/.epkg/envs/main/opt_real, instead of
         // /opt/epkg/envs/root/main/opt_real
-        debug!("Bind mounting /opt/epkg mount to {}", opt_real_path.display());
+        debug!("Bind mounting {} -> {}", opt_epkg_path.display(), opt_real_path.display());
         mount(
             Some(opt_epkg_path),
             &opt_real_path,
@@ -380,10 +525,11 @@ pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     // Mount environment /opt directory
     mount_env_dir(env_root, "/opt")?;
 
-    // If /opt/epkg existed, bind mount it back
-    if opt_epkg_path.exists() {
+    // If /opt/epkg existed BEFORE mounting, bind mount it back
+    // Use the stored value, not a new check, because /opt/epkg is now hidden
+    if opt_epkg_existed {
         if opt_real_path.exists() {
-            debug!("Bind mounting {} to {}", opt_real_path.display(), opt_epkg_path.display());
+            debug!("Bind mounting {} -> {}", opt_real_path.display(), opt_epkg_path.display());
             mount(
                 Some(&opt_real_path),
                 opt_epkg_path,
@@ -397,21 +543,35 @@ pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Mount environment directories
+pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
+    // Handle traditional layout host compatibility (must be done BEFORE mounting /usr)
+    mount_traditional_host_compatibility(env_root)?;
+
+    // Mount core environment directories
+    mount_core_env_dirs(uid, env_root)?;
+
+    // Handle /opt/epkg mount isolation
+    mount_opt_epkg_isolation(env_root)?;
+
+    Ok(())
+}
+
 /// Mount a single environment directory
 pub fn mount_env_dir(env_root: &Path, dir: &str) -> Result<()> {
     let src = env_root.join(dir.trim_start_matches('/'));
-    let dst = Path::new(dir);
+    let host_path = Path::new(dir);
 
     if src.exists() {
-        debug!("Bind mounting {} to {}", src.display(), dst.display());
+        debug!("Bind mounting host {} -> {}", host_path.display(), src.display());
 
         mount(
             Some(&src),
-            dst,
+            host_path,
             Some(""),
             MsFlags::MS_BIND,
             Some(""),
-        ).map_err(|e| eyre::eyre!("Failed to bind mount {} to {}: {}", src.display(), dst.display(), e))?;
+        ).map_err(|e| eyre::eyre!("Failed to bind mount host {} to {}: {}", host_path.display(), src.display(), e))?;
     }
 
     Ok(())
@@ -420,20 +580,20 @@ pub fn mount_env_dir(env_root: &Path, dir: &str) -> Result<()> {
 /// Mount additional directory specified by user
 pub fn mount_additional_dir(env_root: &Path, mount_dir: &str) -> Result<()> {
     let src = env_root.join(mount_dir.trim_start_matches('/'));
-    let dst = Path::new(mount_dir);
+    let host_path = Path::new(mount_dir);
 
-    if src.exists() && dst.exists() {
-        debug!("Bind mounting additional dir {} to {}", src.display(), dst.display());
+    if src.exists() && host_path.exists() {
+        debug!("Bind mounting additional host {} -> {}", host_path.display(), src.display());
 
         mount(
             Some(&src),
-            dst,
+            host_path,
             Some(""),
             MsFlags::MS_BIND,
             Some(""),
-        ).map_err(|e| eyre::eyre!("Failed to bind mount additional dir {} to {}: {}", src.display(), dst.display(), e))?;
+        ).map_err(|e| eyre::eyre!("Failed to bind mount additional host {} to {}: {}", host_path.display(), src.display(), e))?;
     } else {
-        warn!("Additional mount directory {} or {} does not exist, skipping", src.display(), dst.display());
+        warn!("Additional mount directory host {} or {} does not exist, skipping", host_path.display(), src.display());
     }
 
     Ok(())
