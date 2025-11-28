@@ -3,8 +3,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::time::{Duration, Instant};
 
 use nix::unistd::{Uid, Gid, getuid, getgid, geteuid};
+use nix::sys::signal::{self, Signal};
 
 use nix::sched::{unshare, CloneFlags};
 use nix::mount::{mount, MsFlags};
@@ -25,6 +27,187 @@ pub struct RunOptions {
     pub no_exit: bool,
     pub chdir_to_env_root: bool,
     pub skip_namespace_isolation: bool,
+    pub timeout: u64, // Timeout in seconds, 0 means no timeout
+    pub builtin: bool, // Use built-in command implementation
+}
+
+/// Kill child process when timeout occurs
+fn kill_child_on_timeout(child: nix::unistd::Pid, cmd_path: &Path, timeout: u64) -> Result<()> {
+    warn!("Command '{}' timed out after {} seconds, killing child process", cmd_path.display(), timeout);
+    // Send SIGTERM first (graceful shutdown)
+    if let Err(e) = signal::kill(child, Signal::SIGTERM) {
+        warn!("Failed to send SIGTERM to child {}: {}", child, e);
+    }
+
+    // Wait a bit for graceful shutdown
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Check if process is still alive and force kill if needed
+    match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+        Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+            // Process still running, force kill
+            if let Err(e) = signal::kill(child, Signal::SIGKILL) {
+                warn!("Failed to send SIGKILL to child {}: {}", child, e);
+            }
+        }
+        _ => {
+            // Process already terminated
+        }
+    }
+
+    // Wait for the process to actually terminate
+    let _ = nix::sys::wait::waitpid(child, None);
+    Err(eyre::eyre!("Command '{}' timed out after {} seconds", cmd_path.display(), timeout))
+}
+
+/// Handle wait status result and process exit codes
+fn handle_wait_status(wait_status: nix::sys::wait::WaitStatus, cmd_path: &Path, run_options: &RunOptions) -> Result<()> {
+    use nix::sys::wait::WaitStatus;
+    match wait_status {
+        WaitStatus::Exited(_, exit_code) => {
+            if exit_code != 0 {
+                if run_options.no_exit {
+                    eprintln!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
+                } else {
+                    warn!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
+                    // Instead of returning an error, just exit with the same code
+                    std::process::exit(exit_code);
+                }
+            }
+            Ok(())
+        }
+        WaitStatus::Signaled(_, signal, _) => {
+            debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
+            Err(eyre::eyre!("Command killed by signal {:?}", signal))
+        }
+        _ => {
+            debug!("Child process ended with status: {:?} (cmd: {})", wait_status, cmd_path.display());
+            Err(eyre::eyre!("Command ended with unexpected status: {:?}", wait_status))
+        }
+    }
+}
+
+/// Wait for child process with timeout using polling
+fn wait_for_child_with_timeout_polling(child: nix::unistd::Pid, cmd_path: &Path, run_options: &RunOptions, timeout_duration: Duration) -> Result<()> {
+    let start_time = Instant::now();
+
+    loop {
+        // Check if timeout has elapsed
+        if start_time.elapsed() >= timeout_duration {
+            return kill_child_on_timeout(child, cmd_path, run_options.timeout);
+        }
+
+        // Check if child has exited (non-blocking)
+        match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+            Ok(wait_status) => {
+                use nix::sys::wait::WaitStatus;
+                match wait_status {
+                    WaitStatus::StillAlive => {
+                        // Child still running, wait a bit and check again
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    _ => {
+                        return handle_wait_status(wait_status, cmd_path, run_options);
+                    }
+                }
+            }
+            Err(nix::errno::Errno::ECHILD) => {
+                // Child already reaped, exit loop
+                break;
+            }
+            Err(e) => {
+                return Err(eyre::eyre!("Failed to wait for child process (cmd: {}): {}", cmd_path.display(), e));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Wait for child process to complete, with optional timeout
+fn wait_for_child_with_timeout(child: nix::unistd::Pid, cmd_path: &Path, run_options: &RunOptions) -> Result<()> {
+    debug!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
+
+    if run_options.timeout > 0 {
+        // Handle timeout with polling
+        let timeout_duration = Duration::from_secs(run_options.timeout);
+        wait_for_child_with_timeout_polling(child, cmd_path, run_options, timeout_duration)
+    } else {
+        // No timeout, use blocking wait
+        match nix::sys::wait::waitpid(child, None) {
+            Ok(wait_status) => {
+                handle_wait_status(wait_status, cmd_path, run_options)
+            }
+            Err(e) => {
+                Err(eyre::eyre!("Failed to wait for child process (cmd: {}): {}", cmd_path.display(), e))
+            }
+        }
+    }
+}
+
+/// Execute command in child process with namespace setup
+fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> ! {
+    // Resolve command path (if namespace isolation is used, canonicalize before mounts)
+    let final_cmd_path = if run_options.skip_namespace_isolation {
+        // No namespace isolation, use original path
+        cmd_path.to_path_buf()
+    } else {
+        // Convert command path to a path relative to env_root (e.g., usr/bin/htop),
+        // then after mounts, use the absolute path from root (e.g., /usr/bin/htop).
+        // This makes the ELF binary think it's running from within the environment root.
+        let rel_cmd_path = if cmd_path.starts_with(env_root) {
+            match cmd_path.strip_prefix(env_root) {
+                Ok(rel_path) => {
+                    // Convert to absolute path from root (e.g., /usr/bin/htop)
+                    let abs_from_root = Path::new("/").join(rel_path);
+                    debug!("Converted command path to env-relative: {} -> {}", cmd_path.display(), abs_from_root.display());
+                    abs_from_root
+                }
+                Err(_) => {
+                    debug!("Could not strip env_root prefix, using original: {}", cmd_path.display());
+                    cmd_path.to_path_buf()
+                }
+            }
+        } else {
+            debug!("Command path not under env_root, using original: {}", cmd_path.display());
+            cmd_path.to_path_buf()
+        };
+
+        // Set up namespace and bind mounts
+        debug!("Child process starting namespace setup (cmd: {})", rel_cmd_path.display());
+
+        if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
+            eprintln!("Failed to setup namespaces: {}", e);
+            std::process::exit(1);
+        }
+
+        // Change to environment root directory before executing command if requested
+        if run_options.chdir_to_env_root {
+            // This ensures that scriptlets and other commands run relative to the environment root
+            // rather than the current working directory, which is important for commands like
+            // "chown etc/shadow" that expect to operate on files within the environment.
+            debug!("Changing working directory to environment root: {}", env_root.display());
+            if let Err(e) = std::env::set_current_dir(env_root) {
+                eprintln!("Failed to change to environment root directory {}: {}", env_root.display(), e);
+                std::process::exit(1);
+            }
+        }
+
+        // After mounts, use the path relative to root (e.g., /usr/bin/htop)
+        // which will be accessible through the mount structure
+        rel_cmd_path
+    };
+
+    // Execute the command - this replaces the current process
+    if let Err(e) = exec_command(&final_cmd_path, &run_options.args, Some(&run_options.env_vars)) {
+        eprintln!("Failed to execute command '{}': {} (error: {:?})",
+            cmd_path.display(), e, std::io::Error::last_os_error());
+        std::process::exit(127);
+    }
+
+    // This should never be reached due to execvp
+    unreachable!();
 }
 
 /// Fork a new process and execute command with optional namespace isolation
@@ -35,107 +218,15 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
     // This is necessary because multi-threaded processes cannot create user namespaces
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
-            // Parent process: wait for child to complete
-            debug!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
-
-            match nix::sys::wait::waitpid(child, None) {
-                Ok(wait_status) => {
-                    use nix::sys::wait::WaitStatus;
-                    match wait_status {
-                        WaitStatus::Exited(_, exit_code) => {
-                            if exit_code != 0 {
-                                if run_options.no_exit {
-                                    info!("Command '{}' exited with code {} (no_exit=true, continuing)", cmd_path.display(), exit_code);
-                                } else {
-                                    warn!("Child process exited with code {} (cmd: {})", exit_code, cmd_path.display());
-                                    // Instead of returning an error, just exit with the same code
-                                    std::process::exit(exit_code);
-                                }
-                            }
-                        }
-                        WaitStatus::Signaled(_, signal, _) => {
-                            debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
-                            return Err(eyre::eyre!("Command killed by signal {:?}", signal));
-                        }
-                        _ => {
-                            debug!("Child process ended with status: {:?} (cmd: {})", wait_status, cmd_path.display());
-                            return Err(eyre::eyre!("Command ended with unexpected status: {:?}", wait_status));
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(eyre::eyre!("Failed to wait for child process (cmd: {}): {}", cmd_path.display(), e));
-                }
-            }
+            wait_for_child_with_timeout(child, cmd_path, run_options)
         }
         Ok(nix::unistd::ForkResult::Child) => {
-            // Resolve command path (if namespace isolation is used, canonicalize before mounts)
-            let final_cmd_path = if run_options.skip_namespace_isolation {
-                // No namespace isolation, use original path
-                cmd_path.to_path_buf()
-            } else {
-                // Convert command path to a path relative to env_root (e.g., usr/bin/htop),
-                // then after mounts, use the absolute path from root (e.g., /usr/bin/htop).
-                // This makes the ELF binary think it's running from within the environment root.
-                let rel_cmd_path = if cmd_path.starts_with(env_root) {
-                    match cmd_path.strip_prefix(env_root) {
-                        Ok(rel_path) => {
-                            // Convert to absolute path from root (e.g., /usr/bin/htop)
-                            let abs_from_root = Path::new("/").join(rel_path);
-                            debug!("Converted command path to env-relative: {} -> {}", cmd_path.display(), abs_from_root.display());
-                            abs_from_root
-                        }
-                        Err(_) => {
-                            debug!("Could not strip env_root prefix, using original: {}", cmd_path.display());
-                            cmd_path.to_path_buf()
-                        }
-                    }
-                } else {
-                    debug!("Command path not under env_root, using original: {}", cmd_path.display());
-                    cmd_path.to_path_buf()
-                };
-
-                // Set up namespace and bind mounts
-                debug!("Child process starting namespace setup (cmd: {})", rel_cmd_path.display());
-
-                if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
-                    eprintln!("Failed to setup namespaces: {}", e);
-                    std::process::exit(1);
-                }
-
-                // Change to environment root directory before executing command if requested
-                if run_options.chdir_to_env_root {
-                    // This ensures that scriptlets and other commands run relative to the environment root
-                    // rather than the current working directory, which is important for commands like
-                    // "chown etc/shadow" that expect to operate on files within the environment.
-                    debug!("Changing working directory to environment root: {}", env_root.display());
-                    if let Err(e) = std::env::set_current_dir(env_root) {
-                        eprintln!("Failed to change to environment root directory {}: {}", env_root.display(), e);
-                        std::process::exit(1);
-                    }
-                }
-
-                // After mounts, use the path relative to root (e.g., /usr/bin/htop)
-                // which will be accessible through the mount structure
-                rel_cmd_path
-            };
-
-            // Execute the command - this replaces the current process
-            if let Err(e) = exec_command(&final_cmd_path, &run_options.args, Some(&run_options.env_vars)) {
-                eprintln!("Failed to execute command '{}': {} (error: {:?})",
-                    cmd_path.display(), e, std::io::Error::last_os_error());
-                std::process::exit(127);
-            }
-
-            // This should never be reached due to execvp
-            unreachable!();
+            execute_in_child(env_root, run_options, cmd_path)
         }
         Err(e) => {
-            return Err(eyre::eyre!("Failed to fork process: {}", e));
+            Err(eyre::eyre!("Failed to fork process: {}", e))
         }
     }
-
-    Ok(())
 }
 
 /// Check if a file is executable
@@ -853,6 +944,76 @@ fn write_id_map_for_pid(pid: nix::unistd::Pid, path_template: &str, content: &st
     Ok(())
 }
 
+/// Execute a built-in command
+/// Returns an error if the command is not a built-in command
+fn exec_builtin_command(cmd_name: &str, args: &[String]) -> Result<()> {
+    match cmd_name {
+        "sleep" => {
+            if args.is_empty() {
+                return Err(eyre::eyre!("sleep: missing operand"));
+            }
+            let duration = args[0].parse::<u64>()
+                .map_err(|e| eyre::eyre!("sleep: invalid time interval '{}': {}", args[0], e))?;
+            std::thread::sleep(Duration::from_secs(duration));
+            Ok(())
+        }
+        "true" => {
+            Ok(())
+        }
+        "false" => {
+            std::process::exit(1);
+        }
+        "echo" => {
+            println!("{}", args.join(" "));
+            Ok(())
+        }
+        "cat" => {
+            use std::io::{self, Read};
+            if args.is_empty() {
+                // Read from stdin
+                let mut buffer = String::new();
+                io::stdin().read_to_string(&mut buffer)
+                    .map_err(|e| eyre::eyre!("cat: failed to read from stdin: {}", e))?;
+                print!("{}", buffer);
+            } else {
+                // Read from files
+                for file_path in args {
+                    let content = fs::read_to_string(file_path)
+                        .map_err(|e| eyre::eyre!("cat: {}: {}", file_path, e))?;
+                    print!("{}", content);
+                }
+            }
+            Ok(())
+        }
+        "ls" => {
+            let path = if args.is_empty() {
+                Path::new(".")
+            } else {
+                Path::new(&args[0])
+            };
+
+            let entries = fs::read_dir(path)
+                .map_err(|e| eyre::eyre!("ls: {}: {}", path.display(), e))?;
+
+            let mut names: Vec<String> = entries
+                .filter_map(|entry| {
+                    entry.ok().map(|e| {
+                        e.file_name().to_string_lossy().to_string()
+                    })
+                })
+                .collect();
+
+            names.sort();
+            let output = names.join("\n");
+            println!("{}", output);
+            Ok(())
+        }
+        _ => {
+            Err(eyre::eyre!("Cannot run: {} {:?}", cmd_name, args))
+        }
+    }
+}
+
 /// Execute the command with arguments and optional environment variables
 pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collections::HashMap<String, String>>) -> Result<()> {
     debug!("Executing: {} {:?}", cmd_path.display(), args);
@@ -908,24 +1069,22 @@ impl PackageManager {
         debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
         debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
 
-        // Get the default environment root
-        let env_root = crate::dirs::get_default_env_root()?.clone();
+        if run_options.builtin {
+            return exec_builtin_command(&run_options.command, &run_options.args);
+        }
+
+        let env_root = crate::dirs::get_default_env_root()?;
         info!("Using environment root: {}", env_root.display());
 
-        // Find the command in environment PATH under env_root prefix
         let cmd_path = find_command_in_env_path(&run_options.command, &env_root)?;
         info!("Found command at: {}", cmd_path.display());
 
-        // Check if this is a conda environment - conda ELF binaries can run directly
         let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
-
-        // Set namespace isolation flag based on environment type
         if is_conda {
-            // For conda, directly execute the ELF binary without namespace isolation
+            // conda ELF binary has RPATH
             run_options.skip_namespace_isolation = true;
         }
 
-        // Fork and execute with appropriate isolation settings
         fork_and_execute(&env_root, &run_options, &cmd_path)?;
 
         Ok(())
@@ -951,11 +1110,22 @@ impl PackageManager {
             Vec::new()
         };
 
+        let timeout = if let Some(timeout_str) = sub_matches.get_one::<String>("timeout") {
+            timeout_str.parse::<u64>()
+                .map_err(|e| eyre::eyre!("Invalid timeout value '{}': {}", timeout_str, e))?
+        } else {
+            0 // Default: no timeout
+        };
+
+        let builtin = sub_matches.get_flag("builtin");
+
         Ok(RunOptions {
             mount_dirs,
             user,
             command,
             args,
+            timeout,
+            builtin,
             ..Default::default()
         })
     }
