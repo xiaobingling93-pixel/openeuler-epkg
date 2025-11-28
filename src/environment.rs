@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,6 +12,7 @@ use serde_json;
 use serde_yaml;
 use crate::models::*;
 use crate::dirs::*;
+use crate::utils::force_symlink;
 use log::warn;
 
 // epkg stores persistent PATH registration metadata inside each environment's
@@ -184,9 +184,9 @@ impl PackageManager {
         fs::create_dir_all(env_root.join("opt/epkg"))?;
 
         // Create symlinks in generation 1
-        symlink("usr/sbin", env_root.join("sbin"))?;
-        symlink("usr/bin", env_root.join("bin"))?;
-        symlink("usr/lib", env_root.join("lib"))?;
+        force_symlink("usr/sbin", env_root.join("sbin"))?;
+        force_symlink("usr/bin", env_root.join("bin"))?;
+        force_symlink("usr/lib", env_root.join("lib"))?;
 
         // Create different lib64 symlinks based on package format
         match format {
@@ -195,27 +195,27 @@ impl PackageManager {
                 // /usr/lib64 -> lib
                 // /lib64 -> usr/lib
                 fs::create_dir_all(env_root.join("usr"))?;
-                symlink("lib", env_root.join("usr/lib64"))?;
-                symlink("usr/lib", env_root.join("lib64"))?;
+                force_symlink("lib", env_root.join("usr/lib64"))?;
+                force_symlink("usr/lib", env_root.join("lib64"))?;
             },
             _ => {
                 // Default behavior for other formats
                 fs::create_dir_all(env_root.join("usr/lib64"))?;
                 fs::create_dir_all(env_root.join("usr/lib32"))?;
-                symlink("usr/lib64", env_root.join("lib64"))?;
-                symlink("usr/lib32", env_root.join("lib32"))?;
+                force_symlink("usr/lib64", env_root.join("lib64"))?;
+                force_symlink("usr/lib32", env_root.join("lib32"))?;
             }
         }
 
         // Create "current" symlink in generations directory pointing to generation 1
-        symlink("1", generations_root.join("current"))?;
+        force_symlink("1", generations_root.join("current"))?;
 
         fs::copy("/etc/resolv.conf", env_root.join("etc/resolv.conf"))?;
 
         // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
         let systemctl_path = env_root.join("usr/local/bin/systemctl");
         if !systemctl_path.exists() {
-            symlink("/usr/bin/true", &systemctl_path)
+            force_symlink("/usr/bin/true", &systemctl_path)
                 .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
         }
 
