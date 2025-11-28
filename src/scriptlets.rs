@@ -332,6 +332,8 @@ pub fn run_scriptlet(
                     no_exit: true,           // Don't exit on scriptlet failures, just warn
                     chdir_to_env_root: true, // Scriptlets should run relative to environment root
                     skip_namespace_isolation: false,
+                    timeout: 60,             // 60 second timeout for scriptlets
+                    builtin: false,          // Scriptlets are not builtin commands
                 };
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation

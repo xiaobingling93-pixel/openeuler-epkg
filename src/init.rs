@@ -68,6 +68,7 @@ impl PackageManager {
             | EpkgCommand::Repo
             | EpkgCommand::Init
             | EpkgCommand::Deinit
+            | EpkgCommand::Run
             | EpkgCommand::None
         ) {
             return Ok(());

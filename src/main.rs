@@ -546,6 +546,8 @@ OPTIONS:
                 .long_about("Run a command in an isolated environment namespace. Use '--' to separate epkg options from command arguments.\n\nExamples:\n  epkg run -- jq --jq-option")
                 .arg(arg!(-M --mount <DIRS> "Comma-separated list of additional directories to mount"))
                 .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
+                .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
+                .arg(arg!(--builtin "Use built-in command implementation (cat, ls, echo, sleep, true, false)"))
                 .arg(arg!(<command> "Command to execute"))
                 .arg(arg!([args] ... "Arguments to pass to the command (use '--' to separate from epkg options)"))
                 .allow_hyphen_values(true)
