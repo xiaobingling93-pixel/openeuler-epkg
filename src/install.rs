@@ -395,8 +395,8 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
 /// - fs_file: Path to the symlink in the store
 /// - target_path: Where to create the symlink in the environment
 fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
-    // Skip symlinks for top-level directories: sbin, bin, lib, lib64, lib32
-    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32") {
+    // Skip symlinks for top-level directories
+    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
         return Ok(());
     }
 
@@ -424,8 +424,8 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
 /// - target_path: Where to create the file/symlink in the environment
 /// - fhs_file: Relative path from store_fs_dir (used to determine if file is in /etc/)
 fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
-    // Skip symlinks for top-level directories: sbin, bin, lib, lib64, lib32
-    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32") {
+    // Skip symlinks for top-level directories
+    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
         return Ok(());
     }
 

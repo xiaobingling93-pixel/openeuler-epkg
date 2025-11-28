@@ -146,6 +146,11 @@ impl PackageManager {
     }
 
     pub fn install_epkg(&mut self) -> Result<()> {
+        fixup_host_lib64_symlink()
+            .unwrap_or_else(|e| {
+                log::debug!("Could not fixup /lib64 symlink: {}", e);
+            });
+
         // Set up installation paths
         fs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))
             .context("Failed to create epkg downloads directory")?;
@@ -894,4 +899,60 @@ fn get_versioned_urls(epkg_version: &str, elf_loader_version: &str, arch: &str) 
     let elf_loader_url = format!("https://gitee.com/openeuler/elf-loader/releases/download/{}/elf-loader-{}", elf_loader_version, arch);
 
     (epkg_url, elf_loader_url)
+}
+
+/// Fix up /lib64 symlink in the host OS.
+/// - If /lib64 already exists as a symlink to usr/lib64: fine and return
+/// - If /lib64 already exists as a symlink to usr/lib (archlinux host): remove it or warn 'rpm/deb guest os may not work'
+/// - If /lib64 not exists (alpine host): create symlink to usr/lib64 or warn 'guest os other than alpine/archlinux/conda may not work'
+/// Only works when running as root.
+fn fixup_host_lib64_symlink() -> Result<()> {
+    let lib64_path = Path::new("/lib64");
+    let usr_lib64_target = Path::new("usr/lib64");
+
+    // Check if /lib64 already exists as a symlink
+    if let Ok(metadata) = fs::symlink_metadata(lib64_path) {
+        if metadata.file_type().is_symlink() {
+            if let Ok(target) = fs::read_link(lib64_path) {
+                // Check if it points to usr/lib64 (correct)
+                if target == usr_lib64_target {
+                    // Already correct, nothing to do
+                    return Ok(());
+                }
+
+                // Check if it points to usr/lib (needs fixing on usr-merge systems like Arch)
+                let usr_lib_target = Path::new("usr/lib");
+                if target == usr_lib_target {
+                    if utils::is_running_as_root() {
+                        // Remove the old symlink so we can create the correct one
+                        fs::remove_file(lib64_path)
+                            .wrap_err_with(|| format!("Failed to remove existing /lib64 symlink"))?;
+                        // Fall through to create the correct symlink
+                    } else {
+                        // Not root, can't fix it
+                        eprintln!("WARNING: /lib64 -> usr/lib symlink exists but cannot be fixed to usr/lib64 (not running as root). RPM/Debian guest OS may not work.");
+                        return Err(eyre::eyre!("/lib64 -> usr/lib exists but cannot be fixed: not running as root"));
+                    }
+                } else {
+                    // Points to something else, don't touch it
+                    return Err(eyre::eyre!("/lib64 exists as symlink pointing to {:?}, not fixing", target));
+                }
+            }
+        } else {
+            // /lib64 exists but is not a symlink (directory or file)
+            return Err(eyre::eyre!("/lib64 exists but is not a symlink, cannot fix"));
+        }
+    }
+
+    // /lib64 doesn't exist (or was just removed), need to create it
+    if !utils::is_running_as_root() {
+        eprintln!("WARNING: /lib64 -> usr/lib64 symlink does not exist and cannot be created (not running as root). Guest OS other than Alpine/ArchLinux/Conda may not work.");
+        return Err(eyre::eyre!("Cannot create /lib64 symlink: not running as root"));
+    }
+
+    // Create the symlink using relative path
+    symlink(usr_lib64_target, lib64_path)
+        .wrap_err_with(|| format!("Failed to create /lib64 -> usr/lib64 symlink"))?;
+
+    Ok(())
 }
