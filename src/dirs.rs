@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::models::*;
 use crate::repo::RepoRevise;
+use crate::utils;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 
@@ -169,6 +170,11 @@ pub fn get_epkg_src_path() -> Result<PathBuf> {
 
 /// Retrieves the home directory path, trying multiple methods.
 pub fn get_home() -> Result<String> {
+    // bare docker may have HOME=/
+    if utils::is_running_as_root() {
+        return Ok("/root".to_string());
+    }
+
     // Try HOME environment variable first
     if let Ok(home) = env::var("HOME") {
         return Ok(home);
@@ -361,6 +367,11 @@ pub fn get_username() -> Result<String> {
         if !username.is_empty() {
             return Ok(username);
         }
+    }
+
+    // Fall back to /root if running as root
+    if utils::is_running_as_root() {
+        return Ok("root".to_string());
     }
 
     // Try to get username from HOME path
