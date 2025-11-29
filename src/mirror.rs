@@ -51,6 +51,10 @@ pub const RATIO_MIRRORS_FOR_EXPLORATION: usize = 8;         // Power-of-2 divide
 pub const ENOUGH_LOCAL_MIRRORS: usize = 10;                 // Enough local mirrors to stop including more world wide ones
 pub const INCLUDE_WORLD_MIRRORS: usize = 90;                // Pull in some world wide mirrors on too few local mirrors
 
+// NoOnline threshold constants
+pub const MIN_ATTEMPTS_FOR_NOONLINE: usize = 2;             // Minimum attempts before marking as NoOnline
+pub const MAX_NOONLINE_FRACTION_DENOM: usize = 3;           // Maximum fraction of mirrors that can be NoOnline: 1/MAX_NOONLINE_FRACTION_DENOM
+
 // Static variable to track how many times mirror performance stats function was called
 static STATS_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -971,11 +975,60 @@ fn update_mirror_performance(log_entry: &PerformanceLog) -> Result<()> {
  * - System automatically distributes excess load to other mirrors
  */
 
+/// Check if a mirror should be marked as NoOnline based on success rate and global limit
+///
+/// A mirror should be marked as NoOnline only if:
+/// - It is not already marked as NoOnline, AND
+/// - It meets the failure criteria (no throughputs with errors, or failure rate > 2/3), AND
+/// - The total number of NoOnline mirrors would not exceed 1/MAX_NOONLINE_FRACTION_DENOM of all mirrors
+///
+/// This prevents mirrors from being marked offline too easily and ensures we don't exclude
+/// too many mirrors (max 1/3 of all mirrors can be NoOnline).
+fn should_mark_no_online(stats: &MirrorStats, total_mirrors: usize, current_noonline_count: usize) -> bool {
+    // If already marked as NoOnline, don't mark again
+    if stats.no_online {
+        return false;
+    }
+
+    let successes = stats.throughputs.len();
+    let total_errors: usize = stats.http_errors.values().sum::<u32>() as usize + stats.other_errors as usize;
+    let total_attempts = successes + total_errors;
+
+    // Check if mirror meets failure criteria
+    let meets_failure_criteria = if successes == 0 && total_errors > 0 {
+        // New mirror that failed immediately
+        true
+    } else if total_attempts >= MIN_ATTEMPTS_FOR_NOONLINE && total_attempts > 0 {
+        // Only mark as NoOnline if failure rate > 2/3 (i.e., success rate < 1/3)
+        // Using integer comparison: total_errors * 3 > total_attempts * 2
+        total_errors * 3 > total_attempts * 2
+    } else {
+        false
+    };
+
+    if !meets_failure_criteria {
+        return false;
+    }
+
+    // Check global limit: don't mark as NoOnline if we've already excluded 1/3 of mirrors
+    if total_mirrors > 0 {
+        return (current_noonline_count + 1) * MAX_NOONLINE_FRACTION_DENOM <= total_mirrors;
+    }
+
+    false
+}
+
 /// Update in-memory mirror data based on HTTP events
 fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
     let site = url2site(&http_log.url);
 
     if let Ok(mut mirrors_guard) = MIRRORS.lock() {
+        let total_mirrors = mirrors_guard.mirrors.len();
+        // Count NoOnline mirrors, excluding the current one if it exists
+        let current_noonline_count = mirrors_guard.mirrors.iter()
+            .filter(|(s, m)| *s != &site && m.stats.no_online)
+            .count();
+
         if let Some(mirror) = mirrors_guard.mirrors.get_mut(&site) {
             let stats = &mut mirror.stats;
             stats.last_check = Some(http_log.timestamp);
@@ -988,15 +1041,22 @@ fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
                     stats.no_range = true;
                 },
                 HttpEvent::NetError(_) => {
-                    stats.no_online = true;
+                    stats.other_errors += 1;
+                    if should_mark_no_online(stats, total_mirrors, current_noonline_count) {
+                        stats.no_online = true;
+                    }
                 },
                 HttpEvent::HttpStatus(code) => {
+                    // Record the error first
+                    *stats.http_errors.entry(*code).or_insert(0) += 1;
+
                     if *code == 404 {
                         stats.no_content = true;
                     } else if *code == HTTP_FORBIDDEN || *code >= HTTP_SERVER_ERROR_START {
-                        stats.no_online = true;
+                        if should_mark_no_online(stats, total_mirrors, current_noonline_count) {
+                            stats.no_online = true;
+                        }
                     }
-                    *stats.http_errors.entry(*code).or_insert(0) += 1;
                 },
                 HttpEvent::TooManyRequests(conn_count_val) => {
                     let conn_count = conn_count_val.clone();
@@ -1843,21 +1903,18 @@ fn parse_and_distribute_log_entries(
         // Mirror online status logic:
         // 1. Mark mirror as online (no_online = false) on any successful download with throughput data
         // 2. Mark mirror as offline (no_online = true) only when:
-        //    - Network/HTTP errors occur AND no historical throughput data exists
-        //    - This prevents mirrors with past performance data from being incorrectly marked offline
-        //      due to temporary network issues or isolated errors
-        //
-        // Example of mirrors that should remain available despite errors:
-        // Rank |  URL                                   | Score |  Usage   |  Throughputs (KB/s)              |  Latencies (ms)              | Status Flags
-        // -----|----------------------------------------|-------|----------|----------------------------------|------------------------------|---------------------------
-        // === Unavailable Mirrors ===
-        //   1  | mirrors.zju.edu.cn                     |  3345 |  0< 0< 0 | [101, 178, 147KB/s]              | [1404, 1513, 1135ms]         | NoOnline
-        //   2  | mirrors.ustc.edu.cn                    |  1746 |  0< 0< 0 | [109, 61, 31KB/s]                | [2733, 363, 2485ms]          | NoOnline
-        //
-        // Problem in a corner case: if a site happen to be offline at first access, then the log
-        // file will have http error and no throughput data, that site will be excluded until the
-        // log file expired after months.
+        //    - New mirror with no throughputs and has errors (failed immediately), OR
+        //    - Has >= MIN_ATTEMPTS_FOR_NOONLINE attempts AND failure rate > 2/3 (success rate < 1/3)
+        //    - AND total NoOnline mirrors would not exceed 1/MAX_NOONLINE_FRACTION_DENOM of all mirrors
+        //    - This prevents mirrors from being marked offline too easily and ensures we don't exclude
+        //      too many mirrors (max 1/3 of all mirrors can be NoOnline).
         let site = url2site(&url);
+        let total_mirrors = mirrors.len();
+        // Count NoOnline mirrors, excluding the current one if it exists
+        let current_noonline_count = mirrors.iter()
+            .filter(|(s, m)| *s != &site && m.stats.no_online)
+            .count();
+
         if let Some(mirror) = mirrors.get_mut(&site) {
             // Update mirror attributes based on the log entry
             if bytes_transferred > 0 && success {
@@ -1873,17 +1930,21 @@ fn parse_and_distribute_log_entries(
                 // Server doesn't support range requests (permanent attribute)
                 mirror.stats.no_range = true;
             } else if net_error.is_some() {
-                if mirror.stats.throughputs.is_empty() {
+                mirror.stats.other_errors += 1;
+                if should_mark_no_online(&mirror.stats, total_mirrors, current_noonline_count) {
                     mirror.stats.no_online = true;
                 }
             } else if let Some(code) = http_status {
+                // Record the error first
+                *mirror.stats.http_errors.entry(code).or_insert(0) += 1;
+
                 if code == HTTP_FORBIDDEN || code >= HTTP_SERVER_ERROR_START {
-                    if mirror.stats.throughputs.is_empty() {
+                    if should_mark_no_online(&mirror.stats, total_mirrors, current_noonline_count) {
                         mirror.stats.no_online = true;
                     }
-                    // DO NOT set no_content on 404 history logs: it may well be temp
-                    // issue due to rsync delays, or error in a different distro/version
                 }
+                // DO NOT set no_content on 404 history logs: it may well be temp
+                // issue due to rsync delays, or error in a different distro/version
             } else if let Some(conn_count_val) = too_many_requests {
                 let conn_count = conn_count_val;
                 // Handle TooManyRequests event: set max_parallel_conns to min(conn_count-1, old_value)
