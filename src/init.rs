@@ -337,7 +337,7 @@ impl PackageManager {
         self.copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
 
         // Create symlink to epkg binary in the first valid PATH component
-        self.create_epkg_symlink(env_root, &target_epkg)
+        self.create_epkg_symlink(&target_epkg)
             .context("Failed to create epkg symlink in PATH")?;
 
         Ok(())
@@ -437,20 +437,10 @@ impl PackageManager {
     ///    - If the process is running as root and /usr/local/bin exists, a symlink is created there.
     ///    - This makes 'epkg' available system-wide for all users.
     ///    - Does not attempt to create /usr/local/bin if it does not exist.
-    fn create_epkg_symlink(&self, env_root: &Path, epkg_binary_path: &Path) -> Result<()> {
+    fn create_epkg_symlink(&self, epkg_binary_path: &Path) -> Result<()> {
         if config().init.upgrade {
             return Ok(());
         }
-
-        let main_ebin = env_root.join("main/usr/ebin");
-
-        fs::create_dir_all(&main_ebin)
-            .context(format!("Failed to create usr/ebin directory at {}", main_ebin.display()))?;
-
-        println!("Creating symlink: {}/epkg -> {}", main_ebin.display(), epkg_binary_path.display());
-        utils::force_symlink(epkg_binary_path, &main_ebin.join("epkg"))
-            .context(format!("Failed to create symlink from {} to {}",
-                epkg_binary_path.display(), main_ebin.join("epkg").display()))?;
 
         // Try to create symlink in $HOME/bin if it's in PATH
         let home = crate::dirs::get_home().wrap_err("Failed to get HOME directory")?;
@@ -470,11 +460,11 @@ impl PackageManager {
         // Try to create symlink in /usr/local/bin if running as root
         if utils::is_running_as_root() {
             let usr_local_bin = PathBuf::from("/usr/local/bin");
-            if usr_local_bin.exists() {
-                println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
-                if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
-                    log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
-                }
+            fs::create_dir_all(&usr_local_bin)
+                .context(format!("Failed to create /usr/local/bin directory at {}", usr_local_bin.display()))?;
+            println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
+            if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
+                log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
             }
         }
 
