@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::models::*;
 use crate::repo::RepoRevise;
+use crate::utils;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 
@@ -171,7 +172,17 @@ pub fn get_epkg_src_path() -> Result<PathBuf> {
 pub fn get_home() -> Result<String> {
     // Try HOME environment variable first
     if let Ok(home) = env::var("HOME") {
+        // fixup bare docker HOME=/
+        if home == "/" && utils::is_running_as_root() {
+            return Ok("/root".to_string());
+        }
+
         return Ok(home);
+    }
+
+    // bare docker may have HOME=/
+    if utils::is_running_as_root() {
+        return Ok("/root".to_string());
     }
 
     // Try using getpwuid on Unix systems
