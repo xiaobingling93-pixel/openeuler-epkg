@@ -266,9 +266,23 @@ impl PackageManager {
             env_base.clone()
         };
 
+        // If env_path is specified, we need to create a symlink from env_base to env_root
+        if config().env.env_path.is_some() {
+            // Check if env_base already exists as a directory (not a symlink)
+            if env_base.exists() && !env_base.is_symlink() {
+                return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
+            }
+            // Ensure parent directory of env_base exists
+            if let Some(parent) = env_base.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            force_symlink(&env_root, &env_base)
+                .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
+        }
+
         let env_channel_yaml = env_root.join("etc/epkg/channel.yaml");
         if env_channel_yaml.exists() {
-            return Err(eyre::eyre!("Environment already exists at path: '{}'", env_base.display()));
+            return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
         }
         println!("Creating environment '{}' in {}", name, env_root.display());
         fs::create_dir_all(env_root.join("etc/epkg"))?;
