@@ -166,6 +166,33 @@ impl PackageManager {
         Ok(())
     }
 
+    fn setup_resolv_conf(&self, env_root: &Path) -> Result<()> {
+        // Create /etc directory if it doesn't exist
+        fs::create_dir_all(env_root.join("etc"))?;
+
+        let resolv_conf_path = env_root.join("etc/resolv.conf");
+        let host_resolv_conf = Path::new("/etc/resolv.conf");
+
+        // Skip on 'docker -v /etc/resolv.conf:/etc/resolv.conf:ro' and installing to /
+        if resolv_conf_path.exists() {
+            return Ok(());
+        }
+
+        // Check if /etc/resolv.conf exists on host before trying to copy
+        if host_resolv_conf.exists() {
+            fs::copy(host_resolv_conf, &resolv_conf_path)
+                .with_context(|| format!("Failed to copy /etc/resolv.conf to {}", resolv_conf_path.display()))?;
+        } else {
+            // If /etc/resolv.conf doesn't exist on host, create a default one
+            warn!("/etc/resolv.conf does not exist on host. Creating default resolv.conf");
+            let default_resolv_conf = "nameserver 8.8.8.8\nnameserver 223.6.6.6\nnameserver 8.8.4.4\nnameserver 1.1.1.1\n";
+            fs::write(&resolv_conf_path, default_resolv_conf)
+                .with_context(|| format!("Failed to create default resolv.conf at {}", resolv_conf_path.display()))?;
+        }
+
+        Ok(())
+    }
+
     fn create_environment_directories(&self, env_root: &Path, format: &PackageFormat) -> Result<()> {
         let generations_root = env_root.join("generations");
         let gen_1_dir = generations_root.join("1");
@@ -210,7 +237,7 @@ impl PackageManager {
         // Create "current" symlink in generations directory pointing to generation 1
         force_symlink("1", generations_root.join("current"))?;
 
-        fs::copy("/etc/resolv.conf", env_root.join("etc/resolv.conf"))?;
+        self.setup_resolv_conf(env_root)?;
 
         // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
         let systemctl_path = env_root.join("usr/local/bin/systemctl");
