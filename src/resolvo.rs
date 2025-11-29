@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::ops::{BitOr, BitOrAssign};
 
@@ -37,8 +37,9 @@ impl DependFieldFlags {
     pub const NONE: Self = Self(0);
     pub const REQUIRES: Self = Self(1 << 0);
     pub const BUILD_REQUIRES: Self = Self(1 << 1);
-    pub const RECOMMENDS: Self = Self(1 << 2);
-    pub const SUGGESTS: Self = Self(1 << 3);
+    pub const CHECK_REQUIRES: Self = Self(1 << 2);
+    pub const RECOMMENDS: Self = Self(1 << 3);
+    pub const SUGGESTS: Self = Self(1 << 4);
 
     pub fn contains(self, other: Self) -> bool {
         (self.0 & other.0) != 0
@@ -199,7 +200,7 @@ pub struct GenericDependencyProvider {
     pkgkey_to_solvable: RefCell<HashMap<String, SolvableId>>,
 
     /// Package format being resolved
-    format: PackageFormat,
+    pub format: PackageFormat,
 
     /// Which dependency fields to use (using RefCell for interior mutability)
     depend_fields: RefCell<DependFieldFlags>,
@@ -210,6 +211,9 @@ pub struct GenericDependencyProvider {
     /// Package names in delta_world (packages being upgraded/installed)
     /// Used to determine which packages should not be favored during upgrade
     delta_world_keys: std::collections::HashSet<String>,
+
+    /// Packages in no-install list (should not be installed as dependencies)
+    no_install: std::collections::HashSet<String>,
 
     /// Cached installed packages (pkgname -> Vec<pkgkey>) to avoid repeated computation
     /// Allows direct lookup by package name instead of iterating through all candidates
@@ -223,6 +227,7 @@ impl GenericDependencyProvider {
         depend_fields: DependFieldFlags,
         package_manager: *mut PackageManager,
         delta_world_keys: std::collections::HashSet<String>,
+        no_install: std::collections::HashSet<String>,
     ) -> Self {
         Self {
             pool: resolvo::utils::Pool::default(),
@@ -233,6 +238,7 @@ impl GenericDependencyProvider {
             depend_fields: RefCell::new(depend_fields),
             package_manager,
             delta_world_keys,
+            no_install,
             installed_pkgname2keys: RefCell::new(None),
         }
     }
@@ -1046,17 +1052,6 @@ impl GenericDependencyProvider {
             .collect()
     }
 
-    /// Process conflicts from a package
-    fn process_conflicts(&self, package: &Package, known_deps: &mut KnownDependencies, pkgkey: &str) {
-        self.process_conflicts_or_obsoletes(&package.conflicts, "conflict", known_deps, package, pkgkey);
-    }
-
-    /// Process obsoletes from a package (treated as conflicts)
-    /// Obsoletes work like conflicts - they prevent installation of the obsoleted package
-    /// and need constraint inversion just like conflicts.
-    fn process_obsoletes(&self, package: &Package, known_deps: &mut KnownDependencies, pkgkey: &str) {
-        self.process_conflicts_or_obsoletes(&package.obsoletes, "obsolete", known_deps, package, pkgkey);
-    }
 
     /// Normalize constraints in conflicts/obsoletes to avoid self-conflicts (RPM format only)
     ///
@@ -1195,21 +1190,12 @@ impl GenericDependencyProvider {
     }
 
     /// Get dependency strings from a package based on depend_fields
-    fn get_dependency_strings(&self, package: &Package) -> Vec<String> {
-        let mut deps = Vec::new();
+    fn get_dependency_strings(&self, package: &Package) -> HashSet<String> {
+        let mut deps = HashSet::new();
 
         if self.depend_fields.borrow().contains(DependFieldFlags::REQUIRES) {
             deps.extend(package.requires.iter().cloned());
             deps.extend(package.requires_pre.iter().cloned());
-        }
-
-        if self
-            .depend_fields
-            .borrow()
-            .contains(DependFieldFlags::BUILD_REQUIRES)
-        {
-            // Currently not available in Package metadata
-            // Placeholder for future formats exposing build requirements
         }
 
         if self.depend_fields.borrow().contains(DependFieldFlags::RECOMMENDS) {
@@ -1218,6 +1204,17 @@ impl GenericDependencyProvider {
 
         if self.depend_fields.borrow().contains(DependFieldFlags::SUGGESTS) {
             deps.extend(package.suggests.iter().cloned());
+        }
+
+        if self.depend_fields.borrow().contains(DependFieldFlags::BUILD_REQUIRES)
+            && package.repodata_name == "aur"
+        {
+            deps.extend(package.build_requires.iter().cloned());
+        }
+
+        if self.depend_fields.borrow().contains(DependFieldFlags::CHECK_REQUIRES)
+        {
+            deps.extend(package.check_requires.iter().cloned());
         }
 
         deps
@@ -1243,6 +1240,17 @@ impl GenericDependencyProvider {
                 // Normalize capability name by stripping architecture suffixes (e.g., python3:any -> python3)
                 // This matches the behavior of the simple solver's resolve_single_capability_item
                 let normalized_capability = self.normalize_capability_name(capability);
+
+                // Filter out dependencies where the package name is in no-install
+                // Check the normalized capability name (which is what we actually use for lookups)
+                if !self.no_install.is_empty() && self.no_install.contains(&normalized_capability) {
+                    log::debug!(
+                        "[RESOLVO] Skipping dependency '{}' (normalized: '{}') - in no-install list",
+                        capability,
+                        normalized_capability
+                    );
+                    continue;
+                }
 
                 // Check if package/capability exists when ignore_missing is enabled
                 if ignore_missing
@@ -1445,6 +1453,52 @@ impl GenericDependencyProvider {
             None
         }
     }
+
+    /// Log detailed debug information about dependencies
+    fn log_dependencies_debug(&self, known_deps: &KnownDependencies) {
+        // Log individual requirements if debug level
+        if log::log_enabled!(log::Level::Debug) {
+            for req in &known_deps.requirements {
+                let req_str = match &req.requirement {
+                    resolvo::Requirement::Single(version_set_id) => {
+                        let req_name = self.version_set_name(*version_set_id);
+                        let req_name_str = self.display_name(req_name);
+                        let req_spec = self.display_version_set(*version_set_id);
+                        format!("{}: {}", req_name_str, req_spec)
+                    }
+                    resolvo::Requirement::Union(union_id) => {
+                        let version_sets: Vec<String> = self
+                            .version_sets_in_union(*union_id)
+                            .map(|vs_id| {
+                                let vs_name = self.version_set_name(vs_id);
+                                let vs_name_str = self.display_name(vs_name);
+                                let vs_spec = self.display_version_set(vs_id);
+                                format!("{}: {}", vs_name_str, vs_spec)
+                            })
+                            .collect();
+                        format!("({})", version_sets.join(" | "))
+                    }
+                };
+                let condition_str = if let Some(cond_id) = req.condition {
+                    let condition = self.resolve_condition(cond_id);
+                    format!(" [condition: {}]", self.format_condition(&condition))
+                } else {
+                    String::new()
+                };
+                log::debug!("[RESOLVO]   Requirement: {}{}", req_str, condition_str);
+            }
+            for constraint in &known_deps.constrains {
+                let constraint_name = self.version_set_name(*constraint);
+                let constraint_name_str = self.display_name(constraint_name);
+                let constraint_spec = self.display_version_set(*constraint);
+                log::debug!(
+                    "[RESOLVO]   Constraint: {}: {}",
+                    constraint_name_str,
+                    constraint_spec
+                );
+            }
+        }
+    }
 }
 
 impl Interner for GenericDependencyProvider {
@@ -1588,8 +1642,8 @@ impl DependencyProvider for GenericDependencyProvider {
         // Process all dependency types
         let mut known_deps = KnownDependencies::default();
         self.process_requirements(&package, &mut known_deps);
-        self.process_conflicts(&package, &mut known_deps, pkgkey);
-        self.process_obsoletes(&package, &mut known_deps, pkgkey);
+        self.process_conflicts_or_obsoletes(&package.conflicts, "conflict", &mut known_deps, &package, pkgkey);
+        self.process_conflicts_or_obsoletes(&package.obsoletes, "obsolete", &mut known_deps, &package, pkgkey);
 
         log::debug!(
             "[RESOLVO] get_dependencies for {}: {} requirements, {} constraints",
@@ -1598,48 +1652,7 @@ impl DependencyProvider for GenericDependencyProvider {
             known_deps.constrains.len()
         );
 
-        // Log individual requirements if debug level
-        if log::log_enabled!(log::Level::Debug) {
-            for req in &known_deps.requirements {
-                let req_str = match &req.requirement {
-                    resolvo::Requirement::Single(version_set_id) => {
-                        let req_name = self.version_set_name(*version_set_id);
-                        let req_name_str = self.display_name(req_name);
-                        let req_spec = self.display_version_set(*version_set_id);
-                        format!("{}: {}", req_name_str, req_spec)
-                    }
-                    resolvo::Requirement::Union(union_id) => {
-                        let version_sets: Vec<String> = self
-                            .version_sets_in_union(*union_id)
-                            .map(|vs_id| {
-                                let vs_name = self.version_set_name(vs_id);
-                                let vs_name_str = self.display_name(vs_name);
-                                let vs_spec = self.display_version_set(vs_id);
-                                format!("{}: {}", vs_name_str, vs_spec)
-                            })
-                            .collect();
-                        format!("({})", version_sets.join(" | "))
-                    }
-                };
-                let condition_str = if let Some(cond_id) = req.condition {
-                    let condition = self.resolve_condition(cond_id);
-                    format!(" [condition: {}]", self.format_condition(&condition))
-                } else {
-                    String::new()
-                };
-                log::debug!("[RESOLVO]   Requirement: {}{}", req_str, condition_str);
-            }
-            for constraint in &known_deps.constrains {
-                let constraint_name = self.version_set_name(*constraint);
-                let constraint_name_str = self.display_name(constraint_name);
-                let constraint_spec = self.display_version_set(*constraint);
-                log::debug!(
-                    "[RESOLVO]   Constraint: {}: {}",
-                    constraint_name_str,
-                    constraint_spec
-                );
-            }
-        }
+        self.log_dependencies_debug(&known_deps);
 
         Dependencies::Known(known_deps)
     }

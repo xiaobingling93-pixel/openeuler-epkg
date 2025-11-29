@@ -100,6 +100,8 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
                                     ebin_exposure: true,
                                     rdepends: Vec::new(),
                                     depends: Vec::new(),
+                                    bdepends: Vec::new(),
+                                    rbdepends: Vec::new(),
                                     ebin_links: Vec::new(),
                                 }
                             }
@@ -113,6 +115,8 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
                                     ebin_exposure: true,
                                     rdepends: Vec::new(),
                                     depends: Vec::new(),
+                                    bdepends: Vec::new(),
+                                    rbdepends: Vec::new(),
                                     ebin_links: Vec::new(),
                                 }
                             }
@@ -1018,6 +1022,9 @@ impl PackageManager {
     pub fn install_packages(&mut self, package_specs: Vec<String>) -> Result<InstallationPlan> {
         self.load_world()?;
 
+        // Apply no-install changes from CLI to world.json
+        self.apply_no_install_changes()?;
+
         // Process package specs: handle local files/URLs, return all package specs ready for installation
         let processed_specs = self.process_url_package_specs(package_specs)?;
 
@@ -1037,7 +1044,7 @@ impl PackageManager {
         }
 
         self.resolve_and_install_packages(
-            &delta_world,
+            &mut delta_world,
             user_request_world.as_ref(),
         )
     }
@@ -1326,8 +1333,8 @@ impl PackageManager {
         // Step 1: Prepare packages for download and processing
         let (packages_to_download_and_process, packages_with_pkglines) = self.prepare_packages_for_installation(plan)?;
 
-        // Step 2: Download and install packages
-        let completed_packages = self.download_and_install_packages(
+        // Step 2: Download (binary + AUR) and unpack+link (binary) packages
+        let (mut completed_packages, aur_packages) = self.download_and_install_packages(
             &packages_to_download_and_process,
             &packages_with_pkglines,
             store_root,
@@ -1336,6 +1343,12 @@ impl PackageManager {
 
         // Step 3: Process upgrades and fresh installations
         self.process_installation_results(plan, &completed_packages, store_root, env_root, package_format)?;
+
+        // Step 4: Build and install AUR packages (build with makepkg)
+        if !aur_packages.is_empty() {
+            let aur_completed = self.build_and_install_aur_packages(&aur_packages, plan, store_root, env_root, package_format)?;
+            completed_packages.extend(aur_completed);
+        }
 
         // Step 4: Update installed packages metadata
         self.installed_packages.extend(completed_packages);
@@ -1347,6 +1360,7 @@ impl PackageManager {
     /// Returns: (packages_to_download, packages_with_pkglines)
     fn prepare_packages_for_installation(&mut self, plan: &InstallationPlan) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         // Separate packages into those with pkglines (already in store) and those without (need download)
+        // AUR packages are included in both categories and will be filtered later
         let mut packages_to_download = HashMap::new();
         let mut packages_with_pkglines = HashMap::new();
 
@@ -1372,33 +1386,41 @@ impl PackageManager {
     }
 
     /// Download and install packages
+    /// Returns: (completed_packages, aur_packages)
     fn download_and_install_packages(
         &mut self,
         packages_to_download_and_process: &HashMap<String, InstalledPackageInfo>,
         packages_with_pkglines: &HashMap<String, InstalledPackageInfo>,
         store_root: &Path,
         env_root: &Path,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
-        // Submit download tasks first
-        let url_to_pkgkey = self.submit_download_tasks(packages_to_download_and_process)?;
-        let pending_urls: Vec<String> = url_to_pkgkey.keys().cloned().collect();
+    ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
+        // Submit download tasks first (includes both binary and AUR packages)
+        let url_to_pkgkeys = self.submit_download_tasks(packages_to_download_and_process)?;
+        let pending_urls: Vec<String> = url_to_pkgkeys.keys().cloned().collect();
 
         // While downloading, link packages that already exist in the store (have non-empty pkgline)
+        // Filter out AUR packages from packages_with_pkglines
         let mut completed_packages = HashMap::new();
+        let mut aur_packages = HashMap::new();
         for (pkgkey, package_info) in packages_with_pkglines {
-            // Link the package from store to env_root
-            let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-            self.link_package(&store_fs_dir, &env_root.to_path_buf())
-                .with_context(|| format!("Failed to link existing package {}", pkgkey))?;
+            if self.is_aur_package(pkgkey) {
+                aur_packages.insert(pkgkey.clone(), package_info.clone());
+            } else {
+                // Link the package from store to env_root
+                let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+                self.link_package(&store_fs_dir, &env_root.to_path_buf())
+                    .with_context(|| format!("Failed to link existing package {}", pkgkey))?;
 
-            // Add to completed packages
-            completed_packages.insert(pkgkey.clone(), package_info.clone());
+                // Add to completed packages
+                completed_packages.insert(pkgkey.clone(), package_info.clone());
+            }
         }
 
         // Process downloads for packages that needed to be downloaded
+        // wait_downloads_and_unpack_link will filter out AUR packages and return them separately
         let mut mutable_packages_for_processing = packages_to_download_and_process.clone();
-        let downloaded_packages = self.wait_downloads_and_unpack_link(
-            &url_to_pkgkey,
+        let (downloaded_packages, downloaded_aur_packages) = self.wait_downloads_and_unpack_link(
+            &url_to_pkgkeys,
             pending_urls,
             &mut mutable_packages_for_processing,
             store_root,
@@ -1407,14 +1429,15 @@ impl PackageManager {
 
         // Merge downloaded packages with already-linked packages
         completed_packages.extend(downloaded_packages);
+        aur_packages.extend(downloaded_aur_packages);
 
         utils::fixup_env_links(env_root)?;
 
-        Ok(completed_packages)
+        Ok((completed_packages, aur_packages))
     }
 
     /// Process installation results (upgrades and fresh installations)
-    fn process_installation_results(
+    pub(crate) fn process_installation_results(
         &mut self,
         plan: &InstallationPlan,
         completed_packages: &HashMap<String, InstalledPackageInfo>,
@@ -1576,34 +1599,55 @@ impl PackageManager {
     /// Process downloads and install packages as they complete
     fn wait_downloads_and_unpack_link(
         &mut self,
-        url_to_pkgkey: &HashMap<String, String>,
+        url_to_pkgkeys: &HashMap<String, Vec<String>>,
         mut pending_urls: Vec<String>,
         packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
         store_root: &Path,
         env_root: &Path,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+    ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         let mut completed_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        let mut aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
 
         // Process packages as downloads complete
         while !pending_urls.is_empty() {
             // Wait for any download to complete
             if let Some(completed_url) = download::wait_for_any_download_task(&pending_urls)? {
                 // Get the package key for this completed URL
-                let completed_pkgkey = url_to_pkgkey.get(&completed_url).cloned();
-
-                if let Some(pkgkey) = completed_pkgkey {
-                    // Remove from pending list
+                if let Some(pkgkeys) = url_to_pkgkeys.get(&completed_url) {
+                    // Remove from pending list (we only track URLs here)
                     pending_urls.retain(|url| *url != completed_url);
 
-                    // Process the downloaded package
-                    if let Some((actual_pkgkey, package_info)) = self.unpack_link_downloaded_package(
-                        &pkgkey,
-                        packages_to_install,
-                        store_root,
-                        env_root,
-                    )? {
-                        // Store completed package
-                        completed_packages.insert(actual_pkgkey, package_info);
+                    // Process all pkgkeys that share this URL (SPLITPKG or shared artifacts)
+                    for pkgkey in pkgkeys {
+                        let pkgkey = pkgkey.clone();
+
+                        // Check if this is an AUR package
+                        if self.is_aur_package(&pkgkey) {
+                            // For AUR packages, just add to aur_packages (they will be built later)
+                            if let Some(package_info) = packages_to_install.remove(&pkgkey) {
+                                aur_packages.insert(pkgkey, package_info);
+                            }
+                        } else {
+                            // For binary packages, unpack and link
+                            // Get the downloaded file path
+                            let file_path = self.get_package_file_path(&pkgkey)?;
+
+                            // Get package info from the map
+                            let package_info = packages_to_install.remove(&pkgkey)
+                                .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?;
+
+                            // Unpack and link the package
+                            let (actual_pkgkey, package_info) = self.unpack_and_link_package(
+                                &file_path,
+                                &pkgkey,
+                                package_info,
+                                store_root,
+                                env_root,
+                            )?;
+
+                            // Store completed package
+                            completed_packages.insert(actual_pkgkey, package_info);
+                        }
                     }
                 } else {
                     log::warn!("Could not find package key for completed URL: {}", completed_url);
@@ -1611,29 +1655,23 @@ impl PackageManager {
             }
         }
 
-        Ok(completed_packages)
+        Ok((completed_packages, aur_packages))
     }
 
     /// Process a downloaded package file
     ///
-    /// - Gets the file path for the package
-    /// - Unpacks the package
-    /// - Updates package info with the pkgline
-    /// - Links the package (exposure happens later)
-    ///
-    /// Returns the actual package key and updated package info if successful
-    fn unpack_link_downloaded_package(
+    /// Shared helper function to unpack and link a package from a file path
+    /// Returns the actual package key and updated package info
+    pub(crate) fn unpack_and_link_package(
         &mut self,
+        file_path: &str,
         pkgkey: &str,
-        packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
+        mut package_info: InstalledPackageInfo,
         store_root: &Path,
         env_root: &Path,
-    ) -> Result<Option<(String, InstalledPackageInfo)>> {
-        // Get the downloaded file path
-        let file_path = self.get_package_file_path(pkgkey)?;
-
+    ) -> Result<(String, InstalledPackageInfo)> {
         // Unpack the package
-        let final_dir = crate::store::unpack_mv_package(&file_path, Some(pkgkey))
+        let final_dir = crate::store::unpack_mv_package(file_path, Some(pkgkey))
             .with_context(|| format!("Failed to unpack package: {}", file_path))?;
 
         // Get the pkgline from the directory name
@@ -1649,9 +1687,6 @@ impl PackageManager {
         let actual_pkgkey = package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
 
         // Update the package info with the pkgline
-        let mut package_info = packages_to_install.remove(pkgkey)
-            .or_else(|| packages_to_install.remove(&actual_pkgkey))
-            .ok_or_else(|| eyre!("Package key not found: {} (or {})", pkgkey, actual_pkgkey))?;
         package_info.pkgline = pkgline.to_string();
 
         // Link new package immediately after unpacking
@@ -1659,9 +1694,7 @@ impl PackageManager {
         self.link_package(&store_fs_dir, &env_root.to_path_buf())
             .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
 
-        // Exposure will happen later in execute_installation_plan()
-
-        Ok(Some((actual_pkgkey, package_info)))
+        Ok((actual_pkgkey, package_info))
     }
 
     /// Process upgrade flow for packages
@@ -1742,7 +1775,7 @@ impl PackageManager {
         )?;
 
         // Step 3: Link new package files to env
-        // Done in unpack_link_downloaded_package() for now
+        // Done in wait_downloads_and_unpack_link() via unpack_and_link_package() for now
         // let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
         // self.link_package(&new_store_fs_dir, &env_root.to_path_buf())
         //     .with_context(|| format!("Failed to link new package {}", new_package_info.pkgline))?;
@@ -1888,7 +1921,7 @@ impl PackageManager {
         )?;
 
         // Step 2: Install files (link packages)
-        // This is moved earlier to unpack_link_downloaded_package(), so that scriptlets have command to run.
+        // This is moved earlier to wait_downloads_and_unpack_link() via unpack_and_link_package(), so that scriptlets have command to run.
         // for (_, package_info) in fresh_installs {
         //     let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
         //     self.link_package(&store_fs_dir, &env_root.to_path_buf())
@@ -2792,10 +2825,90 @@ impl PackageManager {
     }
 
     /// Update self.world from delta_world
+    /// Also automatically removes any delta_world keys from world['no-install']
     pub(crate) fn apply_delta_world(&mut self, delta_world: &HashMap<String, String>) {
+        // Remove delta_world keys from no-install if they exist
+        let packages_to_remove: Vec<String> = delta_world.keys().cloned().collect();
+        self.remove_from_no_install(packages_to_remove.iter());
+
+        // Add/update packages in world
         for (pkgname, constraint_str) in delta_world {
             self.world.insert(pkgname.clone(), constraint_str.clone());
         }
+    }
+
+    /// Remove packages from no-install list
+    /// Takes an iterator of package names to remove
+    pub fn remove_from_no_install<'a, I>(&mut self, packages_to_remove: I)
+    where
+        I: Iterator<Item = &'a String>,
+    {
+        let mut no_install_set = self.get_no_install_set();
+        let mut changed = false;
+
+        for pkgname in packages_to_remove {
+            if no_install_set.remove(pkgname) {
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.update_no_install_in_world(no_install_set);
+        }
+    }
+
+    /// Update world["no-install"] with the given HashSet of package names
+    /// Converts to space-separated string and updates or removes the key
+    fn update_no_install_in_world(&mut self, no_install_set: std::collections::HashSet<String>) {
+        let mut no_install_vec: Vec<String> = no_install_set.into_iter().collect();
+        no_install_vec.sort();
+
+        if no_install_vec.is_empty() {
+            // Remove "no-install" key if list is empty
+            self.world.remove("no-install");
+        } else {
+            // Update world with space-separated string
+            self.world.insert("no-install".to_string(), no_install_vec.join(" "));
+        }
+    }
+
+    /// Apply no-install changes from CLI to world.json
+    /// Parses config.install.no_install cmdline string (e.g., "pkg1,pkg2,-pkg3")
+    /// and updates world["no-install"] with space-separated package names
+    fn apply_no_install_changes(&mut self) -> Result<()> {
+        let config = crate::models::config();
+
+        // If no cmdline string provided, nothing to do
+        if config.install.no_install.is_empty() {
+            return Ok(());
+        }
+
+        // Get current no-install list from world
+        let mut no_install_set = self.get_no_install_set();
+
+        // Parse cmdline string: "pkg1,pkg2,-pkg3" format
+        for item in config.install.no_install.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+
+            if item.starts_with('-') {
+                // Remove from list: strip the leading -
+                let pkg = item[1..].trim().to_string();
+                if !pkg.is_empty() {
+                    no_install_set.remove(&pkg);
+                }
+            } else {
+                // Add to list
+                no_install_set.insert(item.to_string());
+            }
+        }
+
+        // Update world with the modified set
+        self.update_no_install_in_world(no_install_set);
+
+        Ok(())
     }
 
     /// Add essential packages to delta_world if not already in self.world

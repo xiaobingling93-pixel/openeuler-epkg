@@ -619,6 +619,8 @@ pub fn create_virtual_package(
         depends: Vec::new(),
         requires_pre: Vec::new(),
         requires: Vec::new(),
+        build_requires: Vec::new(),
+        check_requires: Vec::new(),
         provides: Vec::new(),
         recommends: Vec::new(),
         suggests: Vec::new(),

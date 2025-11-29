@@ -570,6 +570,10 @@ pub fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> 
     } else if repo.format == PackageFormat::Conda && (repo.index_url.ends_with("repodata.json") || repo.index_url.ends_with("repodata.json.gz") || repo.index_url.ends_with("repodata.json.bz2")) {
         crate::conda_repo::parse_repodata_json(repo, &release_path.parent().unwrap().to_path_buf())
             .with_context(|| format!("Failed to parse conda repodata.json for repository: {}", repo.repo_name))?
+    } else if repo.format == PackageFormat::Pacman && (repo.index_url.contains("packages-meta-ext-v1.json") || repo.repo_name == "aur") {
+        // AUR repository - use AUR-specific processing
+        crate::aur::parse_aur_metadata(repo, &release_path)
+            .with_context(|| format!("Failed to parse AUR metadata for repository: {}", repo.repo_name))?
     } else {
         sync_from_package_database(repo, &release_path)
             .with_context(|| format!("Failed to check packages file for repository: {}", repo.repo_name))?
@@ -835,7 +839,14 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
             PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location))?,
             PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location))?,
             PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location))?,
-            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location))?,
+            PackageFormat::Pacman => {
+                // Check if this is an AUR repository
+                if revise.location.contains("packages-meta-ext-v1.json") || revise.repo_revise.repo_name == "aur" {
+                    crate::aur::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process AUR packages content for {}", revise.location))?
+                } else {
+                    crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location))?
+                }
+            },
             PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.location))?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", revise.repo_revise.format)),
         };

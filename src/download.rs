@@ -3089,9 +3089,12 @@ fn parse_etag(response: &http::Response<ureq::Body>) -> Option<String> {
 impl PackageManager {
     /// Submit download tasks for packages without waiting for completion
     /// Returns a mapping from download URLs to their package keys for tracking
-    pub fn submit_download_tasks(&mut self, packages: &HashMap<String, InstalledPackageInfo>) -> Result<HashMap<String, String>> {
+    pub fn submit_download_tasks(
+        &mut self,
+        packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> Result<HashMap<String, Vec<String>>> {
         let output_dir = dirs().epkg_downloads_cache.clone();
-        let mut url_to_pkgkey = HashMap::new();
+        let mut url_to_pkgkeys: HashMap<String, Vec<String>> = HashMap::new();
 
         // Create output directory
         fs::create_dir_all(&output_dir)
@@ -3119,13 +3122,13 @@ impl PackageManager {
             let task = DownloadTask::with_size(url.clone(), output_dir.clone(), 6, size, package.repodata_name.clone());
             submit_download_task(task)
                 .with_context(|| format!("Failed to submit download task for {}", url))?;
-            url_to_pkgkey.insert(url, pkgkey.clone());
+            url_to_pkgkeys.entry(url).or_default().push(pkgkey.clone());
         }
 
         // Start processing download tasks
         DOWNLOAD_MANAGER.start_processing();
 
-        Ok(url_to_pkgkey)
+        Ok(url_to_pkgkeys)
     }
 
     /// Get the local file path for a downloaded package

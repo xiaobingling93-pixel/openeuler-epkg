@@ -193,6 +193,8 @@ impl TestCase {
                             ebin_exposure: true,
                             rdepends: Vec::new(),
                             depends: Vec::new(),
+                            bdepends: Vec::new(),
+                            rbdepends: Vec::new(),
                             ebin_links: Vec::new(),
                         },
                     );

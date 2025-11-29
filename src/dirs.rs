@@ -30,10 +30,15 @@ impl EPKGDirs {
 
     // Helper method to create dirs using proper path joining
     fn build_dirs(options: &EPKGConfig, home_epkg: &PathBuf, opt_epkg: &PathBuf) -> Result<Self> {
+        // Private cache is always under XDG cache (e.g. $HOME/.cache/epkg)
+        let private_cache = get_xdg_cache()?.join("epkg");
+
         let (store_root, cache_root) = if options.init.shared_store {
+            // Shared store/cache live under /opt/epkg, but AUR builds still use private_cache
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
-            (home_epkg.join("store"), get_xdg_cache()?.join("epkg"))
+            // Non-shared store uses user home, cache uses private_cache
+            (home_epkg.join("store"), private_cache.clone())
         };
 
         // Get username - if it fails, the error will propagate upward
@@ -49,6 +54,8 @@ impl EPKGDirs {
             epkg_cache: cache_root.clone(),
             epkg_downloads_cache: cache_root.join("downloads"),
             epkg_channel_cache: cache_root.join("channel"),
+            // AUR builds always go under the private cache, never under /opt/epkg
+            epkg_aur_builds: private_cache.join("aur_builds"),
         })
     }
 }

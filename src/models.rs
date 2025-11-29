@@ -100,6 +100,12 @@ pub struct Package {
     #[serde(default)]
     pub requires: Vec<String>,
     #[serde(default)]
+    #[serde(rename = "buildRequires")]
+    pub build_requires: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "checkRequires")]
+    pub check_requires: Vec<String>,
+    #[serde(default)]
     pub provides: Vec<String>,
     #[serde(default)]
     pub recommends: Vec<String>,
@@ -228,6 +234,10 @@ pub struct InstalledPackageInfo {
     pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
     #[serde(default)] // Default to empty Vec if missing during deserialization
     pub depends: Vec<String>, // Stores pkgkeys of packages this package depends on
+    #[serde(default)] // Default to empty Vec if missing during deserialization
+    pub bdepends: Vec<String>, // Stores pkgkeys of build dependencies (Pacman only)
+    #[serde(default)] // Default to empty Vec if missing during deserialization
+    pub rbdepends: Vec<String>, // Stores pkgkeys of packages that have this as a build dependency (Pacman only)
     #[serde(default)] // for backward compatibility with older installed-packages.json
     pub ebin_links: Vec<String>,
 }
@@ -670,7 +680,7 @@ pub struct InstallOptions {
     #[serde(default)]
     pub no_install_essentials: bool,
     #[serde(skip)]
-    pub assume_installed: Vec<String>,
+    pub no_install: String, // Original cmdline string for --no-install (e.g., "pkg1,pkg2,-pkg3")
     #[serde(default)]
     pub prefer_low_version: bool,
 }
@@ -749,6 +759,7 @@ pub struct EPKGDirs {
     pub epkg_cache: PathBuf,
     pub epkg_downloads_cache: PathBuf,
     pub epkg_channel_cache: PathBuf,
+    pub epkg_aur_builds: PathBuf,
 }
 
 #[derive(Default)]
@@ -772,6 +783,7 @@ pub struct PackageManager {
     // loaded from env world.json
     // `self.world` maintains top-level package constraints (name -> version_constraint)
     // where version_constraint is normally empty string, or e.g., "=version1", ">=version2"
+    // Special key "no-install" stores space-separated list of package names to exclude
     pub world: HashMap<String, String>, // key is pkgname, value is version constraint string
 
     pub has_worker_process: bool,

@@ -150,8 +150,11 @@ fn wait_for_child_with_timeout(child: nix::unistd::Pid, cmd_path: &Path, run_opt
 
 /// Execute command in child process with namespace setup
 fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> ! {
+    // Kkip namespace isolation when env_root is the system root
+    let skip_namespace_isolation = run_options.skip_namespace_isolation || env_root == Path::new("/");
+
     // Resolve command path (if namespace isolation is used, canonicalize before mounts)
-    let final_cmd_path = if run_options.skip_namespace_isolation {
+    let final_cmd_path = if skip_namespace_isolation {
         // No namespace isolation, use original path
         cmd_path.to_path_buf()
     } else {
@@ -201,8 +204,14 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
         rel_cmd_path
     };
 
+    // Prepare environment variables
+    let mut env_vars = run_options.env_vars.clone();
+
+    // Set locale to C to avoid Perl locale warnings
+    env_vars.insert("LANG".to_string(), "C".to_string());
+
     // Execute the command - this replaces the current process
-    if let Err(e) = exec_command(&final_cmd_path, &run_options.args, Some(&run_options.env_vars)) {
+    if let Err(e) = exec_command(&final_cmd_path, &run_options.args, Some(&env_vars)) {
         eprintln!("Failed to execute command '{}': {} (error: {:?})",
             cmd_path.display(), e, std::io::Error::last_os_error());
         std::process::exit(127);
@@ -266,7 +275,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
 }
 
 /// Check if a file is executable
-pub fn is_executable(path: &Path) -> Result<bool> {
+fn is_executable(path: &Path) -> Result<bool> {
     let metadata = fs::metadata(path)
         .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", path.display(), e))?;
 
@@ -304,7 +313,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
 }
 
 /// Set up namespace and bind mounts
-pub fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptions) -> Result<()> {
+fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptions) -> Result<()> {
     let euid = geteuid();
     let uid = getuid();
     let gid = getgid();
@@ -326,7 +335,7 @@ pub fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptions) -> 
 }
 
 /// Create namespaces following the C version logic
-pub fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<()> {
+fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<()> {
     // Check if user namespaces are available first (for better error messages)
     if let Err(e) = check_user_namespace_support() {
         warn!("User namespace check failed: {}", e);
@@ -397,7 +406,7 @@ fn unshare_with_error_handling(clone_flags: CloneFlags) -> Result<()> {
 }
 
 /// Check if user namespaces are supported on this system
-pub fn check_user_namespace_support() -> Result<()> {
+fn check_user_namespace_support() -> Result<()> {
     use std::fs;
 
     // Check if user namespaces are enabled in the kernel
@@ -441,7 +450,7 @@ pub fn check_user_namespace_support() -> Result<()> {
 }
 
 /// Make mount points private
-pub fn mount_make_rprivate() -> Result<()> {
+fn mount_make_rprivate() -> Result<()> {
     mount(
         Some("none"),
         "/",
@@ -455,7 +464,7 @@ pub fn mount_make_rprivate() -> Result<()> {
 
 /// Check if the host OS uses traditional directory layout (dirs) or usr-merge layout (symlinks).
 /// Returns true if the host uses traditional layout (e.g., Alpine < 3.22), false if usr-merge.
-pub fn host_uses_traditional_layout() -> bool {
+fn host_uses_traditional_layout() -> bool {
     // Check if /lib is a directory (traditional) or symlink (usr-merge)
     let lib_path = Path::new("/lib");
     if let Ok(metadata) = fs::symlink_metadata(lib_path) {
@@ -671,7 +680,7 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
 }
 
 /// Mount environment directories
-pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
+fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     // Handle traditional layout host compatibility (must be done BEFORE mounting /usr)
     mount_traditional_host_compatibility(env_root)?;
 
@@ -685,7 +694,7 @@ pub fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
 }
 
 /// Mount a single environment directory
-pub fn mount_env_dir(env_root: &Path, dir: &str) -> Result<()> {
+fn mount_env_dir(env_root: &Path, dir: &str) -> Result<()> {
     let src = env_root.join(dir.trim_start_matches('/'));
     let host_path = Path::new(dir);
 
@@ -705,7 +714,7 @@ pub fn mount_env_dir(env_root: &Path, dir: &str) -> Result<()> {
 }
 
 /// Mount additional directory specified by user
-pub fn mount_additional_dir(env_root: &Path, mount_dir: &str) -> Result<()> {
+fn mount_additional_dir(env_root: &Path, mount_dir: &str) -> Result<()> {
     let src = env_root.join(mount_dir.trim_start_matches('/'));
     let host_path = Path::new(mount_dir);
 
@@ -1051,11 +1060,8 @@ fn exec_builtin_command(cmd_name: &str, args: &[String]) -> Result<()> {
 }
 
 /// Execute the command with arguments and optional environment variables
-pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collections::HashMap<String, String>>) -> Result<()> {
+fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collections::HashMap<String, String>>) -> Result<()> {
     debug!("Executing: {} {:?}", cmd_path.display(), args);
-    if let Some(vars) = env_vars {
-        debug!("With environment variables: {:?}", vars);
-    }
 
     // Convert Path to CString for execvp
     let cmd_cstr = std::ffi::CString::new(cmd_path.to_str()
@@ -1077,6 +1083,7 @@ pub fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::col
 
     // Set environment variables if provided
     if let Some(vars) = env_vars {
+        debug!("With environment variables: {:?}", vars);
         for (key, value) in vars {
             if let Ok(key_cstr) = std::ffi::CString::new(key.as_str()) {
                 if let Ok(val_cstr) = std::ffi::CString::new(value.as_str()) {

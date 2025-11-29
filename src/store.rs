@@ -298,7 +298,7 @@ pub fn get_field_order() -> &'static [&'static str] {
     &[
         "pkgname", "source", "version", "release",
         "summary", "description", "homepage", "license", "arch", "maintainer",
-        "buildRequires", "requiresPre", "requires", "provides", "conflicts",
+        "buildRequires", "checkRequires", "requiresPre", "requires", "provides", "conflicts",
         "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "originUrl",
         "recipeMaintainers", "subdir", "constrains", "requirements", "commit", "caHash", "caHashVersion",
         "size", "installedSize", "section", "priority", "buildTime", "buildHost", "group", "cookie", "platform",

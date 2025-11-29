@@ -20,6 +20,30 @@ use crate::packages_stream;
 use crate::repo;
 use crate::utils;
 
+// wfg /c/os/archlinux/repodata/core.files% g -h '^%.*%$' */desc|sc
+//     266 %VERSION%
+//     266 %URL%
+//     266 %SHA256SUM%
+//     266 %PGPSIG%
+//     266 %PACKAGER%
+//     266 %NAME%
+//     266 %LICENSE%
+//     266 %ISIZE%
+//     266 %FILENAME%
+//     266 %DESC%
+//     266 %CSIZE%
+//     266 %BUILDDATE%
+//     266 %BASE%
+//     266 %ARCH%
+//     244 %DEPENDS%
+//     187 %MAKEDEPENDS%
+//     115 %PROVIDES%
+//      48 %OPTDEPENDS%
+//      47 %CHECKDEPENDS%
+//      40 %REPLACES%
+//      35 %MD5SUM%
+//      34 %CONFLICTS%
+
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
@@ -43,6 +67,7 @@ lazy_static! {
         m.insert("DEPENDS",         "requires");        // dependencies
         m.insert("OPTDEPENDS",      "suggests");        // optional dependencies
         m.insert("MAKEDEPENDS",     "buildRequires");   // build dependencies
+        m.insert("CHECKDEPENDS",    "checkRequires");   // check dependencies
         m.insert("PROVIDES",        "provides");        // provides
         m.insert("CONFLICTS",       "conflicts");       // conflicts
         m.insert("REPLACES",        "replaces");        // replaces

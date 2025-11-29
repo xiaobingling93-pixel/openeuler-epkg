@@ -188,6 +188,8 @@ impl CondaPackage {
             depends: Vec::new(), // Will be populated separately if needed
             requires_pre: Vec::new(),
             requires: self.depends.clone(), // Store dependencies as-is, let parse_requires handle them
+            build_requires: Vec::new(), // Conda doesn't have build dependencies in repodata
+            check_requires: Vec::new(), // Conda doesn't have check dependencies in repodata
             provides: vec![self.name.clone()], // Package provides itself
             recommends: Vec::new(),
             suggests: Vec::new(),

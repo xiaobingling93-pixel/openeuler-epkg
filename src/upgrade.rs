@@ -7,7 +7,7 @@ impl PackageManager {
         self.load_world()?;
 
         // Step 1: Create or load delta_world based on package_specs
-        let (delta_world, user_request_world) = if !package_specs.is_empty() {
+        let (mut delta_world, user_request_world) = if !package_specs.is_empty() {
             let user_request_world = Self::create_delta_world_from_specs(&package_specs);
             self.apply_delta_world(&user_request_world);
             (user_request_world.clone(), Some(user_request_world))
@@ -17,7 +17,7 @@ impl PackageManager {
 
         // Step 2: Resolve dependencies and perform installation
         self.resolve_and_install_packages(
-            &delta_world,
+            &mut delta_world,
             user_request_world.as_ref(),
         )
     }
