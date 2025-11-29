@@ -7,7 +7,7 @@
 epkg() {
     local env_base_dir="$HOME/.epkg/envs/base"
     [ -d "$env_base_dir" ] || env_base_dir="/opt/epkg/envs/root/base"
-    [ -d "$env_base_dir" ] || { echo "Cannot find base env, abort"; exit 1; }
+    [ -d "$env_base_dir" ] || { echo "epkg: cannot find base env, perhaps uninstalled"; return; }
 
     local epkg_rust="$env_base_dir/usr/bin/epkg"
 
