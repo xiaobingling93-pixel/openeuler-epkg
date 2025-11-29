@@ -291,7 +291,7 @@ impl PackageManager {
         let (mut env_export, channel_configs) = if let Some(config_path) = &config().env.import_file {
             self.import_environment_from_file(config_path)?
         } else {
-            self.create_default_environment_config(name)?
+            self.create_default_environment_config(name, &env_root)?
         };
 
         let mut env_config = env_export.env;
@@ -441,7 +441,7 @@ impl PackageManager {
         Ok((env_export, channel_configs))
     }
 
-    fn create_default_environment_config(&self, _name: &str) -> Result<(EnvExport, Vec<ChannelConfig>)> {
+    fn create_default_environment_config(&self, name: &str, env_root: &Path) -> Result<(EnvExport, Vec<ChannelConfig>)> {
         // Initialize channel from command line option or default
         let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
 
@@ -453,7 +453,13 @@ impl PackageManager {
             (channel.clone(), None)
         };
 
-        let epkg_src = get_epkg_src_path()?;
+        // If creating base environment, use env_root directly
+        // Otherwise, try to find the base environment's epkg_src path
+        let epkg_src = if name == BASE_ENV {
+            env_root.join("usr/src/epkg")
+        } else {
+            get_epkg_src_path()?
+        };
         let mut channel_configs = Vec::new();
 
         // Load main channel config
