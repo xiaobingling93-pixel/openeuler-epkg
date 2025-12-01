@@ -249,6 +249,35 @@ impl PackageManager {
         Ok(())
     }
 
+    fn create_default_world_json(&self, gen_1_dir: &Path, format: &PackageFormat) -> Result<()> {
+        let mut world = std::collections::HashMap::new();
+
+        // Set default no-install packages for Pacman/Rpm/Deb formats
+        match format {
+            PackageFormat::Pacman | PackageFormat::Rpm | PackageFormat::Deb => {
+                let mut no_install_packages = vec!["systemd", "dbus"];
+
+                // Add format-specific packages
+                match format {
+                    PackageFormat::Pacman => no_install_packages.push("pacman"),
+                    PackageFormat::Rpm => no_install_packages.push("dnf"),
+                    PackageFormat::Deb => no_install_packages.push("apt"),
+                    _ => {}
+                }
+
+                world.insert("no-install".to_string(), no_install_packages.join(" "));
+            }
+            _ => {}
+        }
+
+        // Write world.json
+        let world_path = gen_1_dir.join("world.json");
+        let world_json = serde_json::to_string_pretty(&world)?;
+        fs::write(&world_path, world_json)?;
+
+        Ok(())
+    }
+
     pub fn new_env_base(&self, name: &str) -> PathBuf {
         if config().env.public && name != MAIN_ENV {
             dirs().public_envs.join(name)
@@ -323,6 +352,11 @@ impl PackageManager {
         // Use the channel config that was just created and saved to env_channel_yaml
         let format = channel_configs[0].format.clone();
         self.create_environment_directories(&env_root, &format)?;
+
+        // Create world.json with default no-install packages
+        let generations_root = env_root.join("generations");
+        let gen_1_dir = generations_root.join("1");
+        self.create_default_world_json(&gen_1_dir, &format)?;
 
         // Install packages if any
         if !packages_to_install.is_empty() {
