@@ -275,6 +275,17 @@ pub fn run_scriptlet(
     old_version: Option<&str>,
     new_version: Option<&str>,
 ) -> Result<()> {
+    // Skip all fakeroot scriptlets as post_install runs ldconfig -r . which removes ld-linux-x86-64.so.2
+    let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
+    if pkgname == "fakeroot" {
+        log::info!(
+            "Skipping {:?} scriptlet for package {} (fakeroot scriptlets run ldconfig -r . which removes critical system files)",
+            scriptlet_type,
+            pkgkey
+        );
+        return Ok(());
+    }
+
     let script_base_path = store_root.join(&package_info.pkgline).join("info/install");
 
     // Get the script names to try for this scriptlet type
