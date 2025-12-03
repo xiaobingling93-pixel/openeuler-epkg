@@ -27,13 +27,25 @@ impl PackageManager {
                 .map_err(|e| eyre::eyre!("Failed to strip prefix from path: {}", e))?;
             let target_path = env_root.join(fhs_file);
 
-            // Skip dir
+            // Skip symlinks for top-level directories, some are manually created in create_environment_directories()
+            if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
+                continue;
+            }
+
+            // Skip dir in source
             if fs_file_info.is_dir() {
                 continue;
             }
 
-            // Remove file (include symlink)
-            if fs::symlink_metadata(&target_path).is_ok() {
+            // Check if target exists and get its metadata
+            if let Ok(target_metadata) = fs::symlink_metadata(&target_path) {
+                // Skip if target is a directory (directories are typically shared and shouldn't be removed)
+                if target_metadata.is_dir() {
+                    log::trace!("Skipping directory at target path: {}", target_path.display());
+                    continue;
+                }
+
+                // Remove file (include symlink)
                 log::trace!("Removing package file: {}", target_path.display());
                 fs::remove_file(&target_path)?;
             }
@@ -110,7 +122,7 @@ impl PackageManager {
 
         // Step 4: Auto-populate expose plan based on removal actions
         self.auto_populate_expose_plan(&mut plan);
-        
+
         Ok(plan)
     }
 
