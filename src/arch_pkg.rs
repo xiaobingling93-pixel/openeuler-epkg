@@ -217,6 +217,8 @@ fn extract_package_contents<R: Read>(
 
     let mut found_pkginfo = false;
     let mut entries_processed = 0;
+    // Collect hard links to create after all files are extracted
+    let mut hard_links: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
 
     for entry_result in entries {
         let mut entry = entry_result
@@ -239,6 +241,28 @@ fn extract_package_contents<R: Read>(
             store_tmp_dir.join("fs").join(&path)
         };
 
+        // Check if this is a hard link entry
+        let header = entry.header();
+        let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+
+        if is_hard_link {
+            // For hard links, get the link target and collect it for later processing
+            if let Ok(Some(link_path)) = entry.link_name() {
+                // Check if path starts with "." by converting to string
+                let link_path_str = link_path.to_string_lossy();
+                // Resolve the link target path within our extraction directory
+                let source_path = if link_path_str.starts_with(".") {
+                    store_tmp_dir.join("info/arch").join(link_path.as_ref())
+                } else {
+                    store_tmp_dir.join("fs").join(link_path.as_ref())
+                };
+
+                // Store the hard link for later processing
+                hard_links.push((source_path, target_path));
+                continue;
+            }
+        }
+
         // Ensure parent directory exists
         if let Some(parent) = target_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -255,6 +279,30 @@ fn extract_package_contents<R: Read>(
 
         // Fix up permissions after extraction to ensure files are readable/writable
         crate::utils::fixup_file_permissions(&target_path);
+    }
+
+    // Now create all hard links after all files have been extracted
+    for (source_path, target_path) in hard_links {
+        // Ensure parent directory exists for the hard link target
+        if let Some(parent) = target_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                log::warn!("Failed to create directory {} for hard link: {}", parent.display(), e);
+                continue;
+            }
+        }
+
+        // Create the hard link if the source file exists
+        if source_path.exists() {
+            if let Err(e) = fs::hard_link(&source_path, &target_path) {
+                log::warn!("Failed to create hard link from {} to {}: {}",
+                    source_path.display(), target_path.display(), e);
+            } else {
+                log::debug!("Created hard link: {} -> {}", target_path.display(), source_path.display());
+            }
+        } else {
+            log::warn!("Cannot create hard link {}: source file {} does not exist",
+                target_path.display(), source_path.display());
+        }
     }
 
     if !found_pkginfo {
