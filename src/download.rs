@@ -2514,13 +2514,28 @@ fn execute_download_request(
         }
         RangeRequest::None => {
             // is master task w/o chunking
-            if part_path.exists() {
-                if let Some(stored_etag) = task.load_etag() {
-                    log::debug!("Adding If-None-Match header with ETag '{}' for conditional request (chunk_path={})", stored_etag, part_path.display());
-                    request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
-                }
+            // For mutable files, check final_path; for others, check part_path
+            let file_to_check: Option<&Path> = if matches!(task.file_type, FileType::Mutable) && task.final_path.exists() {
+                Some(&task.final_path)
+            } else if part_path.exists() {
+                Some(part_path)
             } else {
                 log::debug!("Local file {} doesn't exist, skipping ETag header", part_path.display());
+                None
+            };
+
+            if let Some(file_to_check) = file_to_check {
+                // Check file size - don't use ETag for 0-byte files
+                let file_size = fs::metadata(file_to_check)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+
+                if file_size == 0 {
+                    log::debug!("File {} is 0 bytes, skipping ETag header to force fresh download", file_to_check.display());
+                } else if let Some(stored_etag) = task.load_etag() {
+                    log::debug!("Adding If-None-Match header with ETag '{}' for conditional request (file={})", stored_etag, file_to_check.display());
+                    request = request.header("If-None-Match", &format!("\"{}\"", stored_etag));
+                }
             }
         }
     }
@@ -2631,6 +2646,10 @@ fn handle_http_status_error(
         // For 416 errors, we should try a different mirror or restart the download
         log::warn!("HTTP 416 error indicates invalid range request - will retry with different mirror or restart");
         Err(DownloadError::UnexpectedResponse { code, details: format!("HTTP 416 Range Not Satisfiable: {}", error_msg) }.into())
+    } else if code == 502 {
+        // 502 Bad Gateway - server is temporarily unavailable (common with unreliable servers like AUR)
+        log::warn!("HTTP 502 Bad Gateway for {} (chunk_path={}) - server may be unreliable, will retry", resolved_url, task.chunk_path.display());
+        Err(DownloadError::UnexpectedResponse { code, details: format!("HTTP 502 Bad Gateway - server temporarily unavailable: {}", error_msg) }.into())
     } else if code >= HTTP_CLIENT_ERROR_START && code < HTTP_SERVER_ERROR_START {
         // For client errors (like 403, 404), create a simple DownloadError without verbose backtrace
         log::debug!("Client error {} for {} (chunk_path={})", code, resolved_url, task.chunk_path.display());
@@ -2732,6 +2751,9 @@ fn process_chunk_download_stream(
     // Setup file for writing
     let mut file = setup_download_file(task, existing_bytes)?;
 
+    log::debug!("process_chunk_download_stream: Starting to read response body for {} (existing_bytes={})",
+               task.chunk_path.display(), existing_bytes);
+
     loop {
         // Read data from network stream
         let bytes_read = read_chunk_from_stream(&mut reader, &mut buffer, task, chunk_append_offset)?;
@@ -2802,9 +2824,16 @@ fn read_chunk_from_stream(
     chunk_append_offset: u64,
 ) -> Result<usize> {
     match reader.read(buffer) {
-        Ok(0) => Ok(0), // EOF reached
-        Ok(n) => Ok(n),
+        Ok(0) => {
+            log::debug!("read_chunk_from_stream: EOF reached at offset {} for {}", chunk_append_offset, task.chunk_path.display());
+            Ok(0) // EOF reached
+        },
+        Ok(n) => {
+            log::trace!("read_chunk_from_stream: Read {} bytes at offset {} for {}", n, chunk_append_offset, task.chunk_path.display());
+            Ok(n)
+        },
         Err(e) => {
+            log::error!("read_chunk_from_stream: Read error at offset {} for {}: {}", chunk_append_offset, task.chunk_path.display(), e);
             if task.is_master_task() {
                 let error_msg = format!("Read error at {} bytes: {}", chunk_append_offset,
                     task.resolved_url.lock().map(|r| r.clone()).unwrap_or_else(|_| task.url.clone()));
@@ -2833,6 +2862,23 @@ fn finalize_chunk_download(
 
     log::debug!("download_content completed: {} total bytes ({} network bytes) written to {}",
                chunk_append_offset, network_bytes, task.chunk_path.display());
+
+    // Detect 0-byte downloads for mutable files (like AUR packages) - this indicates server issues
+    // Check BEFORE finalization so we can retry
+    if task.is_master_task() && chunk_append_offset == 0 && matches!(task.file_type, FileType::Mutable) {
+        log::info!("Download resulted in 0 bytes for {} - likely server issue (unreliable server like AUR), cleaning up and will retry", task.url);
+        // Clean up the 0-byte file before returning error to trigger retry
+        if task.chunk_path.exists() {
+            if let Err(e) = fs::remove_file(&task.chunk_path) {
+                log::warn!("Failed to remove 0-byte file {}: {}", task.chunk_path.display(), e);
+            } else {
+                log::debug!("Cleaned up 0-byte file: {}", task.chunk_path.display());
+            }
+        }
+        return Err(DownloadError::Network {
+            details: format!("Download resulted in 0 bytes for {} - server may be unreliable", task.url)
+        }.into());
+    }
 
     // Validate that the chunk file respects its designated boundaries
     validate_chunk_file_boundaries(task, chunk_append_offset)?;
@@ -4704,20 +4750,32 @@ fn should_redownload(
         .map_err(|e| eyre!("Failed to get local file modification time: {}", e))?;
     let local_last_modified: OffsetDateTime = local_last_modified_sys_time.into();
 
-            let remote_size = server_metadata.remote_size.unwrap_or(0);
+    let remote_size_opt = server_metadata.remote_size;
+    let remote_size = remote_size_opt.unwrap_or(0);
+
+    // Detect 0-byte files early - always redownload them
+    if local_size == 0 {
+        log::warn!("Local file {} is 0 bytes - triggering redownload", local_path.display());
+        return Ok(CacheDecision::RedownloadDueTo { reason: "Local file is 0 bytes".to_string() });
+    }
 
     // For immutable files, we already know beforehand whether to UseCache/AppendDownload
     // So these are double checks serving as validation
     if task.file_type == FileType::Immutable {
-        if local_size == remote_size {
-            return Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() });
-        }
-        if local_size < remote_size || remote_size == 0 {
-            return Ok(CacheDecision::AppendDownload { reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size) });
-        }
+        if let Some(remote_size_val) = remote_size_opt {
+            if local_size == remote_size_val {
+                return Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() });
+            }
+            if local_size < remote_size_val {
+                return Ok(CacheDecision::AppendDownload { reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size_val) });
+            }
 
-        // local_size > remote_size is a corruption case
-        return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size) });
+            // local_size > remote_size is a corruption case
+            return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size_val) });
+        } else {
+            // Remote size unknown - can't validate, so redownload
+            return Ok(CacheDecision::RedownloadDueTo { reason: "Remote size unknown, cannot validate immutable file".to_string() });
+        }
     }
 
     // For mutable files, check timestamps if available
@@ -4726,7 +4784,7 @@ fn should_redownload(
         .map(|st| OffsetDateTime::from(st));
 
     match remote_ts_opt {
-        Some(remote_ts) if remote_size == local_size => {
+        Some(remote_ts) if remote_size_opt.is_some() && remote_size == local_size => {
             let time_diff = if local_last_modified > remote_ts {
                 (local_last_modified - remote_ts).unsigned_abs()
             } else {
@@ -4758,8 +4816,12 @@ fn should_redownload(
         }
         Some(remote_ts) => {
             let mut reasons = Vec::new();
-            if remote_size != local_size {
-                reasons.push(format!("size mismatch: remote {}, local {}", remote_size, local_size));
+            if let Some(remote_size_val) = remote_size_opt {
+                if remote_size_val != local_size {
+                    reasons.push(format!("size mismatch: remote {}, local {}", remote_size_val, local_size));
+                }
+            } else {
+                reasons.push("remote size unknown".to_string());
             }
             let time_diff = if local_last_modified > remote_ts {
                 (local_last_modified - remote_ts).unsigned_abs()
@@ -4771,13 +4833,21 @@ fn should_redownload(
             }
             Ok(CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") })
         }
-        None if remote_size == local_size => {
+        None if remote_size_opt.is_some() && remote_size == local_size => {
+            // Only use cache if we actually know the remote size and it matches
             Ok(CacheDecision::UseCache { reason: "Size matches, no timestamp available".to_string() })
         }
         None => {
-            Ok(CacheDecision::RedownloadDueTo {
-                reason: format!("Size differs (remote {}, local {}) and no timestamp", remote_size, local_size)
-            })
+            // Remote size unknown or doesn't match - redownload
+            if remote_size_opt.is_none() {
+                Ok(CacheDecision::RedownloadDueTo {
+                    reason: "Remote size unknown and no timestamp available".to_string()
+                })
+            } else {
+                Ok(CacheDecision::RedownloadDueTo {
+                    reason: format!("Size differs (remote {}, local {}) and no timestamp", remote_size, local_size)
+                })
+            }
         }
     }
 }
