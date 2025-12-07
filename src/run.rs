@@ -2,10 +2,11 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::mem;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use nix::unistd::{Uid, Gid, getuid, getgid, geteuid};
+use nix::unistd::{Uid, Gid, getuid, getgid, geteuid, dup2, pipe, close, write};
 use nix::sys::signal::{self, Signal};
 
 use nix::sched::{unshare, CloneFlags};
@@ -24,6 +25,7 @@ pub struct RunOptions {
     pub command: String,
     pub args: Vec<String>,
     pub env_vars: std::collections::HashMap<String, String>,
+    pub stdin: Option<Vec<u8>>,
     pub no_exit: bool,
     pub chdir_to_env_root: bool,
     pub skip_namespace_isolation: bool,
@@ -214,13 +216,47 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
 /// If `run_options.skip_namespace_isolation` is true, executes without namespace setup (for conda environments).
 /// Otherwise, sets up namespace isolation before executing.
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
+    let stdin_bytes = run_options.stdin.as_ref().map(|v| v.as_slice());
+    let mut stdin_pipe = if stdin_bytes.is_some() {
+        Some(pipe().map_err(|e| eyre::eyre!("Failed to create stdin pipe: {}", e))?)
+    } else {
+        None
+    };
+
     // Fork a new process to handle namespace creation and command execution
     // This is necessary because multi-threaded processes cannot create user namespaces
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
+            if let (Some(bytes), Some((read_fd, write_fd))) = (stdin_bytes, stdin_pipe.take()) {
+                let _ = close(read_fd);
+                let mut written = 0;
+                while written < bytes.len() {
+                    match write(&write_fd, &bytes[written..]) {
+                        Ok(0) => break, // Should not happen, but avoid infinite loop
+                        Ok(n) => written += n,
+                        Err(e) => {
+                            let _ = close(write_fd);
+                            return Err(eyre::eyre!("Failed to write to child stdin: {}", e));
+                        }
+                    }
+                }
+                let _ = close(write_fd);
+            }
             wait_for_child_with_timeout(child, cmd_path, run_options)
         }
         Ok(nix::unistd::ForkResult::Child) => {
+            if let Some((read_fd, write_fd)) = stdin_pipe {
+                let _ = close(write_fd);
+                // Duplicate the pipe read end onto STDIN without closing STDIN prematurely.
+                // We create an OwnedFd for STDIN and forget it after dup2 so it isn't closed on drop.
+                let mut stdin_fd = unsafe { OwnedFd::from_raw_fd(libc::STDIN_FILENO) };
+                if let Err(e) = dup2(&read_fd, &mut stdin_fd) {
+                    eprintln!("Failed to set up stdin for child: {}", e);
+                    std::process::exit(1);
+                }
+                mem::forget(stdin_fd);
+                let _ = close(read_fd);
+            }
             execute_in_child(env_root, run_options, cmd_path)
         }
         Err(e) => {

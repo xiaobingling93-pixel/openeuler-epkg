@@ -1422,30 +1422,79 @@ impl PackageManager {
         env_root: &Path,
         package_format: PackageFormat,
     ) -> Result<()> {
-        // Process upgrades
+        // Load hooks for Arch Linux (Pacman format)
+        let hooks = if package_format == PackageFormat::Pacman {
+            match crate::hooks::load_hooks(env_root) {
+                Ok(hooks) => {
+                    log::debug!("Loaded {} hooks", hooks.len());
+                    Some(hooks)
+                }
+                Err(e) => {
+                    log::warn!("Failed to load hooks: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Build completed package maps once (reused for both PreTransaction and PostTransaction hooks)
+        let mut fresh_installs_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut upgrades_new_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
+
         for (pkgkey, info) in completed_packages {
+            if plan.fresh_installs.contains_key(pkgkey) {
+                fresh_installs_completed.insert(pkgkey.clone(), info.clone());
+            }
             if plan.upgrades_new.contains_key(pkgkey) {
                 upgrades_new_completed.insert(pkgkey.clone(), info.clone());
             }
         }
 
+        // Run PreTransaction hooks
+        if let Some(ref hooks) = hooks {
+            if !fresh_installs_completed.is_empty() || !upgrades_new_completed.is_empty() || !plan.old_removes.is_empty() {
+                crate::hooks::run_hooks(
+                    hooks,
+                    env_root,
+                    store_root,
+                    crate::hooks::HookWhen::PreTransaction,
+                    &fresh_installs_completed,
+                    &upgrades_new_completed,
+                    &plan.upgrades_old,
+                    &plan.old_removes,
+                    &self.installed_packages,
+                )?;
+            }
+        }
+
+        // Process upgrades
         if !upgrades_new_completed.is_empty() {
             log::info!("Processing {} upgrades", upgrades_new_completed.len());
             self.process_upgrades(&plan.upgrades_old, &upgrades_new_completed, store_root, env_root, package_format)?;
         }
 
         // Process fresh installations
-        let mut fresh_installs_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        for (pkgkey, info) in completed_packages {
-            if plan.fresh_installs.contains_key(pkgkey) {
-                fresh_installs_completed.insert(pkgkey.clone(), info.clone());
-            }
-        }
-
         if !fresh_installs_completed.is_empty() {
             log::info!("Processing {} fresh installations", fresh_installs_completed.len());
             self.process_fresh_installs(&fresh_installs_completed, store_root, env_root, package_format)?;
+        }
+
+        // Run PostTransaction hooks
+        if let Some(ref hooks) = hooks {
+            if !fresh_installs_completed.is_empty() || !upgrades_new_completed.is_empty() || !plan.old_removes.is_empty() {
+                crate::hooks::run_hooks(
+                    hooks,
+                    env_root,
+                    store_root,
+                    crate::hooks::HookWhen::PostTransaction,
+                    &fresh_installs_completed,
+                    &upgrades_new_completed,
+                    &plan.upgrades_old,
+                    &plan.old_removes,
+                    &self.installed_packages,
+                )?;
+            }
         }
 
         Ok(())

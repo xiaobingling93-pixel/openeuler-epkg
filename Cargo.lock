@@ -481,6 +481,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "shlex",
  "sys-info",
  "tar",
  "tempfile",

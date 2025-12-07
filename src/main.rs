@@ -40,6 +40,7 @@ mod index_html;
 mod epkg;
 mod version;
 mod scriptlets;
+mod hooks;
 mod run;
 mod info;
 mod search;

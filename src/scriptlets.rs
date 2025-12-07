@@ -340,6 +340,7 @@ pub fn run_scriptlet(
                     command: interpreter.to_string(),
                     args: script_args,
                     env_vars,
+                    stdin: None,
                     no_exit: true,           // Don't exit on scriptlet failures, just warn
                     chdir_to_env_root: true, // Scriptlets should run relative to environment root
                     skip_namespace_isolation: false,
