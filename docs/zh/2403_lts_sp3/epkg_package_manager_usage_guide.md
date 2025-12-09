@@ -96,7 +96,7 @@ Usage:
 
 返回示例：
 
-```
+```shell
 [root@2d785c36ee2e /]# epkg env activate t1
 Add common to path
 Add t1 to path
