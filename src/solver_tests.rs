@@ -121,16 +121,7 @@ impl TestCase {
     /// Parse format string to PackageFormat enum
     #[allow(dead_code)] // Used in test module
     fn parse_format(&self) -> Result<PackageFormat> {
-        match self.metadata.format.as_str() {
-            "rpm" => Ok(PackageFormat::Rpm),
-            "deb" => Ok(PackageFormat::Deb),
-            "apk" => Ok(PackageFormat::Apk),
-            "epkg" => Ok(PackageFormat::Epkg),
-            "conda" => Ok(PackageFormat::Conda),
-            "python" => Ok(PackageFormat::Python),
-            "pacman" => Ok(PackageFormat::Pacman),
-            _ => Err(eyre!("Unknown format: {}", self.metadata.format)),
-        }
+        PackageFormat::from_str(self.metadata.format.as_str())
     }
 
     /// Create and populate PackageManager with test data

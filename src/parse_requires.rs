@@ -1771,17 +1771,13 @@ pub fn parse_conda_requires(requires: &str) -> Result<AndDepends, ParseError> {
 #[allow(dead_code)]
 pub fn get_package_format(origin_url: &str) -> Option<PackageFormat> {
     let path = Path::new(origin_url);
-    let ext = path.extension().and_then(|s| s.to_str())?;
-
-    match ext {
-        "rpm" => Some(PackageFormat::Rpm),
-        "deb" => Some(PackageFormat::Deb),
-        "apk" => Some(PackageFormat::Apk),
-        "pkg.tar.zst" | "pkg.tar.xz" => Some(PackageFormat::Pacman),
-        "conda" => Some(PackageFormat::Conda),
-        "whl" | "tar.gz" => Some(PackageFormat::Python),
-        _ => Some(PackageFormat::Epkg),
-    }
+    // Get filename to handle multi-part extensions like .pkg.tar.xz
+    let file_name = path.file_name()
+        .and_then(|n| n.to_str())?;
+    
+    // Use from_suffix_opt which handles both full filenames and extensions
+    // Default to Epkg if format cannot be determined
+    PackageFormat::from_suffix(file_name).ok().or(Some(PackageFormat::Epkg))
 }
 
 #[cfg(test)]

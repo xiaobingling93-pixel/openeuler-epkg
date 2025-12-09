@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Unpacks an RPM package to the specified directory
-pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let rpm_file = rpm_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -48,7 +48,7 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P) -> Result<(
     create_scriptlets(&package, store_tmp_dir)?;
 
     // Create package.txt
-    create_package_txt(&package, rpm_file, store_tmp_dir)?;
+    create_package_txt(&package, rpm_file, store_tmp_dir, pkgkey)?;
 
     Ok(())
 }
@@ -345,7 +345,7 @@ fn format_rpm_dependencies(deps: &[rpm::Dependency]) -> String {
 }
 
 /// Extracts package metadata and creates package.txt with mapped field names
-pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let metadata = &package.metadata;
 
@@ -442,25 +442,27 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_
     }
 
     // Map field names using PACKAGE_KEY_MAPPING
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: HashMap<String, String> = HashMap::new();
 
     for (original_field, value) in raw_fields {
         if let Some(mapped_field) = PACKAGE_KEY_MAPPING.get(original_field.as_str()) {
-            package_fields.push((mapped_field.to_string(), value));
+            package_fields.insert(mapped_field.to_string(), value);
         } else {
             log::warn!("Field name '{}' not found in predefined mapping list", original_field);
             // Include unmapped fields with their original names
-            package_fields.push((original_field, value));
+            package_fields.insert(original_field, value);
         }
     }
 
     // Calculate SHA256 hash of the rpm file and add it to package_fields
     let sha256 = crate::store::calculate_file_sha256(rpm_file.as_ref())
         .wrap_err_with(|| format!("Failed to calculate SHA256 hash for rpm file: {}", rpm_file.as_ref().display()))?;
-    package_fields.push(("sha256".to_string(), sha256));
+    package_fields.insert("sha256".to_string(), sha256);
+
+    package_fields.insert("format".to_string(), "rpm".to_string());
 
     // Use the general store function to save the package.txt file
-    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
 
     Ok(())
 }

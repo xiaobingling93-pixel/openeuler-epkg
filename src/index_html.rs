@@ -136,14 +136,7 @@ fn parse_html_and_write_packages(
     let file_regex = Regex::new(r#"(?m)^([^\s]+\.(?:rpm|deb|pkg\.tar\.xz|apk))\s+(\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{1,2})\s+([0-9.]+\s*[kKmMgG]?[bB]?)"#)
         .map_err(|e| eyre::eyre!("Failed to compile regex: {}", e))?;
 
-    let suffix = match format {
-        PackageFormat::Rpm => "rpm",
-        PackageFormat::Deb => "deb",
-        PackageFormat::Apk => "apk",
-        PackageFormat::Pacman => "pkg.tar.xz",
-        PackageFormat::Conda => "conda",
-        _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format)),
-    };
+    let suffix = format.to_suffix()?;
 
     for captures in file_regex.captures_iter(html_content) {
         let filename = captures.get(1).unwrap().as_str();

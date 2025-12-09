@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::models::*;
 use crate::mmio;
 use color_eyre::Result;
@@ -452,14 +451,14 @@ impl PackageManager {
     /// Create a PackageListItem for an installed package
     fn create_installed_package_item(&mut self, pkgname: &str, pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<PackageListItem> {
         // Try to get package details from repository using pkgkey first
-        let (version, arch, summary, repodata_name) = match self.map_pkgkey2package(pkgkey) {
-            Ok(Some(pkg)) => (
+        let (version, arch, summary, repodata_name) = match mmio::map_pkgkey2package(pkgkey) {
+            Ok(pkg) => (
                 pkg.version.clone(),
                 pkg.arch.clone(),
                 pkg.summary.clone(),
                 pkg.repodata_name.clone(),
             ),
-            Ok(None) | Err(_) => {
+            Err(_) => {
                 // Fallback: try to get package details from local store using pkgline
                 match self.map_pkgline2package(&installed_info.pkgline) {
                     Ok(local_pkg) => (
@@ -638,24 +637,6 @@ impl PackageManager {
         Ok(())
     }
 
-    /// Get a specific package by pkgkey from repositories
-    /// First calls map_pkgname2packages() then selects the package matching pkgkey
-    fn map_pkgkey2package(&mut self, pkgkey: &str) -> Result<Option<Arc<Package>>> {
-        // Extract package name from pkgkey
-        let pkgname = crate::package::pkgkey2pkgname(pkgkey)?;
-
-        // Get all packages with this name
-        let packages = self.map_pkgname2packages(&pkgname)?;
-
-        // Find the specific package matching the pkgkey
-        for pkg in packages {
-            if pkg.pkgkey == pkgkey {
-                return Ok(Some(Arc::new(pkg)));
-            }
-        }
-
-        Ok(None)
-    }
 }
 
 /// Static version of matches_glob_pattern for use in threads

@@ -302,8 +302,8 @@ fn show_files_info(
 }
 
 /// Convert a Package struct to a vector of (field_name, field_value) pairs
-fn package_to_fields(package: &Package) -> Vec<(String, String)> {
-    let mut package_fields = Vec::new();
+fn package_to_fields(package: &Package) -> std::collections::HashMap<String, String> {
+    let mut package_fields = std::collections::HashMap::new();
 
     // Convert package to JSON Value to iterate over its fields
     let package_json = json!(package);
@@ -346,36 +346,32 @@ fn package_to_fields(package: &Package) -> Vec<(String, String)> {
                 continue;
             }
 
-            package_fields.push((key.clone(), formatted_value));
+            package_fields.insert(key.clone(), formatted_value);
         }
     }
-
-    // Add fields that might not be serialized properly
-    package_fields.push(("pkgkey".to_string(), package.pkgkey.clone()));
-    package_fields.push(("repodataName".to_string(), package.repodata_name.clone()));
 
     package_fields
 }
 
 /// Add installation status and related fields to the package fields
 fn add_installation_info(
-    package_fields: &mut Vec<(String, String)>,
+    package_fields: &mut std::collections::HashMap<String, String>,
     package_manager: &PackageManager,
     package: &Package,
     is_installed: bool,
 ) {
     if is_installed {
-        package_fields.push(("status".to_string(), "Installed".to_string()));
+        package_fields.insert("status".to_string(), "Installed".to_string());
 
         if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
             let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
-            package_fields.push(("storePath".to_string(), store_path.display().to_string()));
+            package_fields.insert("storePath".to_string(), store_path.display().to_string());
 
             // Add specific fields from installed_info
-            package_fields.push(("dependDepth".to_string(), installed_info.depend_depth.to_string()));
-            package_fields.push(("installTime".to_string(), installed_info.install_time.to_string()));
+            package_fields.insert("dependDepth".to_string(), installed_info.depend_depth.to_string());
+            package_fields.insert("installTime".to_string(), installed_info.install_time.to_string());
             if installed_info.ebin_exposure {
-                package_fields.push(("ebin".to_string(), "true".to_string()));
+                package_fields.insert("ebin".to_string(), "true".to_string());
             }
 
             // Try to load additional package info from store
@@ -385,13 +381,13 @@ fn add_installation_info(
             //     if let Ok(local_package) = crate::mmio::map_pkgline2package(&installed_info.pkgline) {
             //         // Ensure critical fields are always included
             //         if let Some(ca_hash) = &local_package.ca_hash {
-            //             package_fields.push(("caHash".to_string(), ca_hash.clone()));
+            //             package_fields.insert("caHash".to_string(), ca_hash.clone());
             //         }
             //     }
             // }
         }
     } else {
-        package_fields.push(("status".to_string(), "Available".to_string()));
+        package_fields.insert("status".to_string(), "Available".to_string());
     }
 }
 

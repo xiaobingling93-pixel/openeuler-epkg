@@ -353,6 +353,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         tag: None,
         origin_url: None,
         multi_arch: None,
+        format: PackageFormat::default(),
         pkgkey: String::new(),
         repodata_name: String::new(),
         package_baseurl: String::new(),
@@ -366,7 +367,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         if let Some((key, value)) = line.split_once(": ") {
             // If we have a previous key/value pair, process it before starting a new one
             if !current_key.is_empty() {
-                process_key_value(&mut package, &current_key, &current_value);
+                process_key_value(&mut package, &current_key, &current_value)?;
                 current_key.clear();
                 current_value.clear();
             }
@@ -383,7 +384,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
 
     // Process the last key/value pair if any
     if !current_key.is_empty() {
-        process_key_value(&mut package, &current_key, &current_value);
+        process_key_value(&mut package, &current_key, &current_value)?;
     }
     if package.location.is_empty() { // APKINDEX misses location field
         package.location = format!("{}-{}.apk", package.pkgname, package.version);
@@ -394,7 +395,15 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
 }
 
 // Helper function to process a key/value pair
-fn process_key_value(package: &mut Package, key: &str, value: &str) {
+fn process_key_value(package: &mut Package, key: &str, value: &str) -> Result<()> {
+    match key {
+        "format" => {
+            package.format = PackageFormat::from_str(value)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
     match key {
         "pkgname"           => package.pkgname      = value.to_string(),
         "version"           => package.version      = value.to_string(),
@@ -427,10 +436,13 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
         "files"             => package.files        = value.split(", ").map(|s| s.to_string()).collect(),
         "source"            => package.source       = Some(value.to_string()),
         "originUrl"         => package.origin_url   = Some(value.to_string()),
+        "repo"              => package.repodata_name = value.to_string(),
         _                   => {
             // Unknown field, ignore or log
         }
     }
+
+    Ok(())
 }
 
 pub fn ensure_pkgname2ranges_loaded(shard: &mut RepoShard) -> Result<()> {
@@ -446,6 +458,7 @@ fn lookup_in_packages(
     pkgname: &str,
     repodata_name: &str,
     package_baseurl: &str,
+    format: PackageFormat,
     shard: &mut RepoShard,
 ) -> Result<Vec<Package>> {
     ensure_pkgname2ranges_loaded(shard)?;
@@ -457,10 +470,16 @@ fn lookup_in_packages(
             for range in ranges {
                 if let Some(data) = mmap.checked_range(&range) {
                     if let Ok(paragraph) = std::str::from_utf8(data) {
-                        if let Ok(mut package) = deserialize_package(paragraph) {
-                            package.repodata_name = repodata_name.to_string();
-                            package.package_baseurl = package_baseurl.to_string();
-                            packages.push(package);
+                        match deserialize_package(paragraph) {
+                            Ok(mut package) => {
+                                package.repodata_name = repodata_name.to_string();
+                                package.package_baseurl = package_baseurl.to_string();
+                                package.format = format;
+                                packages.push(package);
+                            }
+                            Err(e) => {
+                                log::debug!("Failed to deserialize repodata '{}' for package '{}': {}", shard.packages.filename, pkgname, e);
+                            }
                         }
                     }
                 }
@@ -478,6 +497,7 @@ pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
             if let Ok(mut shard_packages) = lookup_in_packages(pkgname,
                         &repo_index.repodata_name,
                         &repo_index.package_baseurl,
+                        repo_index.format,
                         shard) {
                 packages.append(&mut shard_packages);
             }
@@ -574,7 +594,8 @@ pub fn map_pkgline2package(pkgline: &str) -> Result<Package> {
         .wrap_err_with(|| format!("Failed to read package info: {}", store_path.display()))?;
 
     // Reuse the existing deserialize_package function
-    let mut package = deserialize_package(&content)?;
+    let mut package = deserialize_package(&content)
+        .wrap_err_with(|| format!("Failed to deserialize package from store: {}", store_path.display()))?;
 
     // Set a default repodata_name for locally installed packages
     package.repodata_name = "local".to_string();

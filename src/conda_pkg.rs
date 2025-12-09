@@ -93,7 +93,7 @@ lazy_static! {
 /// 2. Modern .conda format (ZIP archive with separate info-*.tar.zst and pkg-*.tar.zst)
 ///
 /// Based on conda-package-streaming implementation
-pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let conda_file = conda_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -127,7 +127,7 @@ pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P) -> Result
 
     // Create package.txt from metadata
     log::debug!("Creating package.txt");
-    create_package_txt(store_tmp_dir)
+    create_package_txt(store_tmp_dir, pkgkey)
         .wrap_err_with(|| format!("Failed to create package.txt for {}", store_tmp_dir.display()))?;
 
     // Create scriptlets (if any)
@@ -350,7 +350,7 @@ fn extract_zstd_tar_stream<R: Read>(reader: R, target_dir: &Path, strip_prefix: 
 
 /// Creates package.txt from Conda metadata files (index.json, etc.)
 /// Based on conda-package-streaming metadata extraction approach
-fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let conda_info_dir = store_tmp_dir.join("info/conda");
 
@@ -366,7 +366,7 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let index_data: serde_json::Value = serde_json::from_str(&index_content)
         .wrap_err("Failed to parse index.json")?;
 
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     // Extract fields from index.json and map them
     // Following conda-package-streaming metadata extraction pattern
@@ -392,7 +392,7 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             };
 
             if !string_value.is_empty() {
-                package_fields.push((mapped_key, string_value));
+                package_fields.insert(mapped_key, string_value);
             }
         }
     }
@@ -411,9 +411,11 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         // Could extract additional recipe information here
     }
 
+    package_fields.insert("format".to_string(), "conda".to_string());
+
     // Save the package.txt file using the common store function
     // Following project pattern for package.txt generation
-    crate::store::save_package_txt(package_fields, store_tmp_dir)
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)
         .wrap_err("Failed to save package.txt")?;
 
     Ok(())
@@ -588,7 +590,7 @@ pub fn create_virtual_package(
     version: &str,
     build_string: Option<&str>,
 ) -> crate::models::Package {
-    use crate::models::Package;
+    use crate::models::{Package, PackageFormat};
     use crate::package;
 
     let arch = std::env::consts::ARCH.to_string();
@@ -642,6 +644,7 @@ pub fn create_virtual_package(
         tag: None,
         origin_url: None,
         multi_arch: None,
+        format: PackageFormat::Conda,
         pkgkey,
         repodata_name: "virtual".to_string(),
         package_baseurl: String::new(),

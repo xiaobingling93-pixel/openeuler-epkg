@@ -207,6 +207,7 @@ impl CondaPackage {
             tag: None,
             origin_url: None,
             multi_arch: None,
+            format: PackageFormat::Conda,
             pkgkey: String::new(), // Will be set later
             repodata_name: String::new(), // Will be set later
             package_baseurl: String::new(), // Will be set later

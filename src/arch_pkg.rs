@@ -153,7 +153,7 @@ lazy_static! {
 }
 
 /// Unpacks an Arch Linux package to the specified directory
-pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let pkg_file = pkg_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -200,7 +200,7 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<(
 
     // Create package.txt with metadata from .PKGINFO
     log::debug!("Creating package.txt");
-    create_package_txt(store_tmp_dir)
+    create_package_txt(store_tmp_dir, pkgkey)
         .wrap_err("Failed to create package.txt")?;
 
     log::debug!("Arch Linux package unpacking completed successfully");
@@ -226,7 +226,7 @@ fn extract_package_contents<R: Read>(
 
         let path = entry.path()?.to_string_lossy().to_string();
         entries_processed += 1;
-        log::debug!("Processing tar entry #{}: {}", entries_processed, path);
+        log::trace!("Processing tar entry #{}: {}", entries_processed, path);
 
         // Create the target path - for dot files use info/arch/, for others use fs/
         let target_path = if path.starts_with(".") {
@@ -371,7 +371,7 @@ source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
 }
 
 /// Create package.txt from .PKGINFO file in info/arch/
-fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
+fn create_package_txt(store_tmp_dir: &Path, pkgkey: Option<&str>) -> Result<()> {
     log::debug!("Creating package.txt from .PKGINFO");
 
     // Read the .PKGINFO file
@@ -409,7 +409,7 @@ fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
     }
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for (original_field, values) in raw_fields {
         let mapped_field = PACKAGE_KEY_MAPPING
@@ -417,14 +417,15 @@ fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
             .unwrap_or(&original_field.as_str())
             .to_string();
 
-        // For repeatable fields, add each value separately
-        for value in values {
-            package_fields.push((mapped_field.clone(), value));
-        }
+        // For repeatable fields, join values with comma
+        let value = values.join(", ");
+        package_fields.insert(mapped_field, value);
     }
 
+    package_fields.insert("format".to_string(), "pacman".to_string());
+
     // Use the general store function to save the package.txt file
-    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
 
     log::debug!("Successfully created package.txt");
     Ok(())

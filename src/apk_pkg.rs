@@ -429,7 +429,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
     fixup_inconsistent_arch(&mut raw_fields, pkgkey);
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: HashMap<String, String> = HashMap::new();
     let mut conflicts_values = Vec::new();
 
     for (original_field, values) in raw_fields {
@@ -463,7 +463,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
                 } else {
                     requires.into_iter().next().unwrap_or_default()
                 };
-                package_fields.push(("requires".to_string(), requires_value));
+                package_fields.insert("requires".to_string(), requires_value);
             }
 
             // Collect conflicts to add later
@@ -476,7 +476,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
                 values.into_iter().next().unwrap_or_default()
             };
 
-            package_fields.push((mapped_field, combined_value));
+            package_fields.insert(mapped_field, combined_value);
         }
     }
 
@@ -487,11 +487,13 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
         } else {
             conflicts_values.into_iter().next().unwrap_or_default()
         };
-        package_fields.push(("conflicts".to_string(), conflicts_value));
+        package_fields.insert("conflicts".to_string(), conflicts_value);
     }
 
+    package_fields.insert("format".to_string(), "apk".to_string());
+
     // Use the general store function to save the package.txt file
-    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
 
     Ok(())
 }

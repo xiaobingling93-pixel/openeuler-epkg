@@ -11,7 +11,7 @@ use color_eyre::eyre::{self, WrapErr};
 use crate::deb_repo::PACKAGE_KEY_MAPPING;
 
 /// Unpacks a Debian package to the specified directory
-pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let deb_file = deb_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -30,7 +30,7 @@ pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
     create_scriptlets(store_tmp_dir)?;
 
     // Create package.txt
-    create_package_txt(deb_file, store_tmp_dir)?;
+    create_package_txt(deb_file, store_tmp_dir, pkgkey)?;
 
     Ok(())
 }
@@ -166,7 +166,7 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 }
 
 /// Parses the control file and creates package.txt with mapped field names
-fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<()> {
+fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let deb_file = deb_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
     let control_path = store_tmp_dir.join("info/deb/control");
@@ -209,7 +209,7 @@ fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
     }
 
     // Map field names using PACKAGE_KEY_MAPPING
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: HashMap<String, String> = HashMap::new();
 
     for (original_field, value) in raw_fields {
         if original_field == "Description" {
@@ -217,7 +217,7 @@ fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
             let lines: Vec<&str> = value.lines().collect();
             if !lines.is_empty() {
                 // First line becomes summary
-                package_fields.push(("summary".to_string(), lines[0].to_string()));
+                package_fields.insert("summary".to_string(), lines[0].to_string());
 
                 // Remaining lines become description (if any)
                 if lines.len() > 1 {
@@ -225,7 +225,7 @@ fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
                     let description_content = description_lines.join("\n");
                     // Apply proper indentation for multi-line descriptions
                     let indented_description = description_content.replace("\n", "\n ");
-                    package_fields.push(("description".to_string(), indented_description));
+                    package_fields.insert("description".to_string(), indented_description);
                 }
             }
         } else if let Some(mapped_field) = PACKAGE_KEY_MAPPING.get(original_field.as_str()) {
@@ -235,21 +235,23 @@ fn create_package_txt<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
                 // Assuming current_value is a string representation of a number.
                 current_value.push_str("000");
             }
-            package_fields.push((mapped_field.to_string(), current_value));
+            package_fields.insert(mapped_field.to_string(), current_value);
         } else {
             log::warn!("Field name '{}' not found in predefined mapping list", original_field);
             // Include unmapped fields with their original names
-            package_fields.push((original_field, value));
+            package_fields.insert(original_field, value);
         }
     }
 
     // Calculate SHA256 hash of the deb file and add it to raw_fields
     let sha256 = crate::store::calculate_file_sha256(deb_file)
         .wrap_err_with(|| format!("Failed to calculate SHA256 hash for deb file: {}", deb_file.display()))?;
-    package_fields.push(("sha256".to_string(), sha256));
+    package_fields.insert("sha256".to_string(), sha256);
+
+    package_fields.insert("format".to_string(), "deb".to_string());
 
     // Use the general store function to save the package.txt file
-    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
 
     Ok(())
 }

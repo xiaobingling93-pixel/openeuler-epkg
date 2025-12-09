@@ -7,6 +7,8 @@ use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use std::sync::Arc;
 use crate::search::SearchOptions;
+use color_eyre::Result;
+use color_eyre::eyre;
 
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
@@ -144,11 +146,13 @@ pub struct Package {
     #[serde(rename = "multiArch")]
     pub multi_arch: Option<String>,
 
-    #[serde(skip)]
-    pub pkgkey: String, // != pkgline
-    #[serde(skip)]
-    #[serde(rename = "repodataName")]
+    #[serde(default)]
+    pub format: PackageFormat,
+    #[serde(rename = "repo")]
     pub repodata_name: String,
+
+    pub pkgkey: String, // != pkgline
+
     #[serde(skip)]
     #[serde(rename = "packageBaseurl")]
     pub package_baseurl: String,
@@ -242,6 +246,23 @@ pub struct InstalledPackageInfo {
     pub ebin_links: Vec<String>,
 }
 
+impl Default for InstalledPackageInfo {
+    fn default() -> Self {
+        InstalledPackageInfo {
+            pkgline: String::new(),
+            arch: default_arch(),
+            depend_depth: 0,
+            install_time: 0,
+            ebin_exposure: false,
+            rdepends: Vec::new(),
+            depends: Vec::new(),
+            bdepends: Vec::new(),
+            rbdepends: Vec::new(),
+            ebin_links: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct GenerationCommand {
@@ -312,6 +333,86 @@ pub struct EnvExport {
 impl Default for PackageFormat {
     fn default() -> Self {
         PackageFormat::Epkg
+    }
+}
+
+impl PackageFormat {
+    /// Convert PackageFormat to its string representation
+    pub fn to_str(self) -> &'static str {
+        match self {
+            PackageFormat::Epkg => "epkg",
+            PackageFormat::Deb => "deb",
+            PackageFormat::Rpm => "rpm",
+            PackageFormat::Apk => "apk",
+            PackageFormat::Pacman => "pacman",
+            PackageFormat::Conda => "conda",
+            PackageFormat::Python => "python",
+        }
+    }
+
+    /// Parse a string into PackageFormat, returning an error for unknown formats
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "epkg"      => Ok(PackageFormat::Epkg),
+            "deb"       => Ok(PackageFormat::Deb),
+            "rpm"       => Ok(PackageFormat::Rpm),
+            "apk"       => Ok(PackageFormat::Apk),
+            "pacman"    => Ok(PackageFormat::Pacman),
+            "conda"     => Ok(PackageFormat::Conda),
+            "python"    => Ok(PackageFormat::Python),
+            _ => Err(eyre::eyre!("Unknown format: {}", s)),
+        }
+    }
+
+    /// Convert PackageFormat to its file suffix/extension
+    #[allow(unreachable_patterns)]
+    pub fn to_suffix(self) -> Result<&'static str> {
+        match self {
+            PackageFormat::Rpm => Ok("rpm"),
+            PackageFormat::Deb => Ok("deb"),
+            PackageFormat::Apk => Ok("apk"),
+            PackageFormat::Pacman => Ok("pkg.tar.zst"),
+            PackageFormat::Conda => Ok("conda"),
+            PackageFormat::Epkg => Ok("epkg"),
+            PackageFormat::Python => Ok("whl"),
+            _ => unreachable!("All PackageFormat variants are covered"),
+        }
+    }
+
+    /// Parse a file suffix/extension into PackageFormat
+    /// Handles both full filenames (e.g., "package.deb", "package.pkg.tar.xz") and extensions (e.g., "deb", "pkg.tar.xz")
+    pub fn from_suffix(suffix: &str) -> Result<Self> {
+        // Normalize: remove leading dot if present
+        let suffix = suffix.strip_prefix('.').unwrap_or(suffix);
+
+        // Check multi-part suffixes first (longer matches first)
+        if suffix.ends_with("pkg.tar.zst") || suffix.ends_with("pkg.tar.xz") {
+            return Ok(PackageFormat::Pacman);
+        }
+        if suffix.ends_with("tar.bz2") {
+            return Ok(PackageFormat::Conda);
+        }
+        if suffix.ends_with("tar.gz") {
+            return Ok(PackageFormat::Python);
+        }
+
+        // For single-part extensions, check the last part after the last dot
+        // This handles both "package.deb" -> "deb" and just "deb" -> "deb"
+        let ext = if let Some(dot_pos) = suffix.rfind('.') {
+            &suffix[dot_pos + 1..]
+        } else {
+            suffix
+        };
+
+        match ext {
+            "deb"   => Ok(PackageFormat::Deb),
+            "rpm"   => Ok(PackageFormat::Rpm),
+            "epkg"  => Ok(PackageFormat::Epkg),
+            "apk"   => Ok(PackageFormat::Apk),
+            "conda" => Ok(PackageFormat::Conda),
+            "whl"   => Ok(PackageFormat::Python),
+            _ => Err(eyre::eyre!("Unknown package format suffix: {}", suffix)),
+        }
     }
 }
 

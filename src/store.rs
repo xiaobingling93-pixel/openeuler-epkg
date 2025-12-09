@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufReader, BufWriter, Read};
 use std::path::Path;
@@ -117,19 +118,19 @@ pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P,
 
     match format {
         PackageFormat::Deb => {
-            crate::deb_pkg::unpack_package(package_file, store_tmp_dir)?
+            crate::deb_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         PackageFormat::Rpm => {
-            crate::rpm_pkg::unpack_package(package_file, store_tmp_dir)?
+            crate::rpm_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         PackageFormat::Apk => {
             crate::apk_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         PackageFormat::Pacman => {
-            crate::arch_pkg::unpack_package(package_file, store_tmp_dir)?
+            crate::arch_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         PackageFormat::Conda => {
-            crate::conda_pkg::unpack_package(package_file, store_tmp_dir)?
+            crate::conda_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
         PackageFormat::Epkg => {
             // Handle existing .epkg format
@@ -149,23 +150,8 @@ pub fn detect_package_format(package_file: &Path) -> Result<PackageFormat> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| eyre::eyre!("Invalid package file name"))?;
 
-    if file_name.ends_with(".deb") {
-        Ok(PackageFormat::Deb)
-    } else if file_name.ends_with(".rpm") {
-        Ok(PackageFormat::Rpm)
-    } else if file_name.ends_with(".epkg") {
-        Ok(PackageFormat::Epkg)
-    } else if file_name.ends_with(".apk") {
-        Ok(PackageFormat::Apk)
-    } else if file_name.ends_with(".conda") {
-        Ok(PackageFormat::Conda)
-    } else if file_name.ends_with(".tar.bz2") {
-        Ok(PackageFormat::Conda)
-    } else if file_name.ends_with(".pkg.tar.xz") || file_name.ends_with(".pkg.tar.zst") {
-        Ok(PackageFormat::Pacman)
-    } else {
-        Err(eyre::eyre!("Unknown package format for file: {}", file_name))
-    }
+    PackageFormat::from_suffix(file_name)
+        .wrap_err_with(|| format!("Unknown package format for file: {}", file_name))
 }
 
 /// Creates filelist.txt in mtree format from the filesystem layout
@@ -296,7 +282,7 @@ pub fn calculate_file_sha256(path: &Path) -> Result<String> {
 /// Define the preferred order for common package fields
 pub fn get_field_order() -> &'static [&'static str] {
     &[
-        "pkgname", "source", "version", "release",
+        "pkgname", "source", "version", "release", "format", "repo",
         "summary", "description", "homepage", "license", "arch", "maintainer",
         "buildRequires", "checkRequires", "requiresPre", "requires", "provides", "conflicts",
         "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "originUrl",
@@ -311,22 +297,19 @@ pub fn get_field_order() -> &'static [&'static str] {
         "ghcPackage", "efiVendor", "cnfIgnoreCommands", "cnfVisiblePkgname", "cnfExtraCommands",
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
         "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
-        "pkgkey", "repodataName", "status",
+        "pkgkey", "status",
     ]
 }
 
 /// Formats package fields with consistent field ordering
-pub fn format_package_fields(package_fields: &[(String, String)]) -> String {
+pub fn format_package_fields(package_fields: &HashMap<String, String>) -> String {
     let mut output = String::new();
     let field_order = get_field_order();
 
     // First, write fields in the preferred order
     for preferred_field in field_order {
-        for (original_field, value) in package_fields {
-            if original_field == preferred_field {
-                output.push_str(&format!("{}: {}\n", original_field, value));
-                break;
-            }
+        if let Some(value) = package_fields.get(*preferred_field) {
+            output.push_str(&format!("{}: {}\n", preferred_field, value));
         }
     }
 
@@ -342,15 +325,28 @@ pub fn format_package_fields(package_fields: &[(String, String)]) -> String {
 }
 
 /// Saves package fields to package.txt file with consistent field ordering
-pub fn save_package_txt<P: AsRef<Path>>(package_fields: Vec<(String, String)>, store_tmp_dir: P) -> Result<()> {
+/// If pkgkey is provided, merges fields from repo package into the store package.txt
+pub fn save_package_txt<P: AsRef<Path>>(mut package_fields: HashMap<String, String>, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let package_txt_path = store_tmp_dir.join("info/package.txt");
+
+    // If pkgkey is provided, merge fields from repo package before writing
+    if let Some(pkgkey) = pkgkey {
+        if let Ok(repo_package) = crate::mmio::map_pkgkey2package(pkgkey) {
+            // First verify fields (read-only, logs warnings)
+            verify_repo_fields(&package_fields, &repo_package, &package_txt_path);
+
+            // Then add repo-only fields
+            add_repo_fields(&mut package_fields, &repo_package);
+        }
+    }
 
     // Format the package fields
     let output = format_package_fields(&package_fields);
 
     fs::write(&package_txt_path, output)
         .wrap_err_with(|| format!("Failed to write package.txt file: {}", package_txt_path.display()))?;
+
     Ok(())
 }
 
@@ -465,6 +461,148 @@ fn match_package_with_store(
 
     Ok(None)
 }
+
+/// Helper function to parse u32 from HashMap value
+fn parse_u32_from_fields(fields: &HashMap<String, String>, key: &str) -> u32 {
+    fields.get(key)
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// Helper function to parse Option<u32> from HashMap value
+fn parse_option_u32_from_fields(fields: &HashMap<String, String>, key: &str) -> Option<u32> {
+    fields.get(key)
+        .and_then(|v| v.parse::<u32>().ok())
+}
+
+/// Verify fields from repo package against store package fields
+/// Compares fields checked in packages_match() and logs warnings for mismatches
+/// This function is read-only and does not modify the package_fields
+fn verify_repo_fields(
+    package_fields: &HashMap<String, String>,
+    repo_package: &crate::models::Package,
+    package_txt_path: &Path,
+) {
+    // Verify size if both are non-zero
+    let store_size = parse_u32_from_fields(package_fields, "size");
+    if repo_package.size != 0 && store_size != 0 {
+        if repo_package.size != store_size {
+            log::warn!("Size mismatch: repo={}, store={} ({})",
+                repo_package.size, store_size, package_txt_path.display());
+        }
+    }
+
+    // Verify installed_size if both are non-zero
+    let store_installed_size = parse_u32_from_fields(package_fields, "installedSize");
+    if repo_package.installed_size != 0 && store_installed_size != 0 {
+        if repo_package.installed_size != store_installed_size {
+            log::warn!("Installed size mismatch: repo={}, store={} ({})",
+                repo_package.installed_size, store_installed_size, package_txt_path.display());
+        }
+    }
+
+    // Verify source if both are available
+    if let Some(ref repo_source) = &repo_package.source {
+        if let Some(store_source) = package_fields.get("source") {
+            if repo_source != store_source {
+                log::warn!("Source mismatch: repo={}, store={} ({})",
+                    repo_source, store_source, package_txt_path.display());
+            }
+        }
+    }
+
+    // Verify checksums if both are available
+    if let Some(ref repo_sha256) = &repo_package.sha256sum {
+        if let Some(store_sha256) = package_fields.get("sha256") {
+            if repo_sha256 != store_sha256 {
+                log::warn!("SHA256 mismatch: repo={}, store={} ({})",
+                    repo_sha256, store_sha256, package_txt_path.display());
+            }
+        }
+    }
+
+    if let Some(ref repo_sha1) = &repo_package.sha1sum {
+        if let Some(store_sha1) = package_fields.get("sha1") {
+            if repo_sha1 != store_sha1 {
+                log::warn!("SHA1 mismatch: repo={}, store={} ({})",
+                    repo_sha1, store_sha1, package_txt_path.display());
+            }
+        }
+    }
+
+    // Verify buildTime if both are available
+    if let Some(repo_build_time) = repo_package.build_time {
+        if let Some(store_build_time) = parse_option_u32_from_fields(package_fields, "buildTime") {
+            if repo_build_time != store_build_time {
+                log::warn!("Build time mismatch: repo={}, store={} ({})",
+                    repo_build_time, store_build_time, package_txt_path.display());
+            }
+        }
+    }
+}
+
+/// Add repo-only fields to store package fields HashMap
+/// Adds fields that are present in repo but missing in store
+fn add_repo_fields(
+    package_fields: &mut HashMap<String, String>,
+    repo_package: &crate::models::Package,
+) {
+    // Get store values for size and installed_size to check if they're zero
+    let store_size = parse_u32_from_fields(package_fields, "size");
+    let store_installed_size = parse_u32_from_fields(package_fields, "installedSize");
+
+    // Add repo field if not present in store
+    if !repo_package.repodata_name.is_empty() {
+        if !package_fields.contains_key("repo") {
+            package_fields.insert("repo".to_string(), repo_package.repodata_name.clone());
+        }
+    }
+    
+    // Add format if not present in store
+    if !package_fields.contains_key("format") {
+        let format_str = repo_package.format.to_str();
+        package_fields.insert("format".to_string(), format_str.to_string());
+    }
+
+    // Add source if only in repo
+    if repo_package.source.is_some() && !package_fields.contains_key("source") {
+        if let Some(ref source) = repo_package.source {
+            package_fields.insert("source".to_string(), source.clone());
+        }
+    }
+
+    // Add sha256sum if only in repo
+    if repo_package.sha256sum.is_some() && !package_fields.contains_key("sha256") {
+        if let Some(ref sha256) = repo_package.sha256sum {
+            package_fields.insert("sha256".to_string(), sha256.clone());
+        }
+    }
+
+    // Add sha1sum if only in repo
+    if repo_package.sha1sum.is_some() && !package_fields.contains_key("sha1") {
+        if let Some(ref sha1) = repo_package.sha1sum {
+            package_fields.insert("sha1".to_string(), sha1.clone());
+        }
+    }
+
+    // Add buildTime if only in repo
+    if repo_package.build_time.is_some() && !package_fields.contains_key("buildTime") {
+        if let Some(build_time) = repo_package.build_time {
+            package_fields.insert("buildTime".to_string(), build_time.to_string());
+        }
+    }
+
+    // Add size if only in repo (and non-zero)
+    if repo_package.size != 0 && store_size == 0 {
+        package_fields.insert("size".to_string(), repo_package.size.to_string());
+    }
+
+    // Add installed_size if only in repo (and non-zero)
+    if repo_package.installed_size != 0 && store_installed_size == 0 {
+        package_fields.insert("installedSize".to_string(), repo_package.installed_size.to_string());
+    }
+}
+
 
 /// Compare two Package structs to determine if they represent the same package
 /// Compares multiple fields: pkgname, version, arch, source, sha256sum, sha1sum, buildTime
