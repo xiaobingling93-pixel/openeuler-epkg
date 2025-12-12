@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::io::Read;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use color_eyre::eyre::{self, eyre, Result, WrapErr};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,12 @@ use crate::models::*;
 use crate::repo::{RepoReleaseItem, RepoRevise};
 use crate::packages_stream;
 use crate::dirs;
+
+/// AUR domain
+pub const AUR_DOMAIN: &str = "aur.archlinux.org";
+
+/// Base URL for AUR package snapshots
+pub const AUR_BASE_URL: &str = "https://aur.archlinux.org/cgit/aur.git/snapshot";
 
 // wfg /c/os/archlinux/repodata% grep -o '"[a-zA-Z]\+":' packages-meta-ext-v1.json|sc
 //  102350 "Version":
@@ -116,7 +122,7 @@ pub fn parse_aur_metadata(repo: &RepoRevise, _release_path: &PathBuf) -> Result<
         need_convert,
         arch: repo.arch.clone(),
         url,
-        package_baseurl: "https://aur.archlinux.org/cgit/aur.git/snapshot".to_string(),
+        package_baseurl: AUR_BASE_URL.to_string(),
         hash_type: "SHA256".to_string(),
         hash: String::new(),
         size: 0,
@@ -380,12 +386,12 @@ impl PackageManager {
     ) -> Result<PathBuf> {
         use std::fs::File;
 
-        // Extract tarball
-        let pkg_build_dir = build_dir.join(pkgname);
-        if pkg_build_dir.exists() {
-            std::fs::remove_dir_all(&pkg_build_dir)?;
+        // Extract tarball (tarball already contains a top-level pkgname/ directory)
+        let pkg_root_dir = build_dir.join(pkgname);
+        if pkg_root_dir.exists() {
+            std::fs::remove_dir_all(&pkg_root_dir)?;
         }
-        std::fs::create_dir_all(&pkg_build_dir)?;
+        std::fs::create_dir_all(build_dir)?;
 
         // Extract tar.gz with better diagnostics for corrupt downloads
         let tar_gz = File::open(tarball_path)
@@ -394,11 +400,11 @@ impl PackageManager {
         let tar = flate2::read::GzDecoder::new(tar_gz);
         let mut archive = tar::Archive::new(tar);
         archive
-            .unpack(&pkg_build_dir)
+            .unpack(build_dir)
             .with_context(|| format!("Failed to unpack tarball {}", tarball_path.display()))?;
 
         // Find PKGBUILD (usually in a subdirectory)
-        let pkgbuild_path = Self::find_pkgbuild(&pkg_build_dir)?;
+        let pkgbuild_path = Self::find_pkgbuild(&pkg_root_dir)?;
 
         // Return the directory containing the PKGBUILD file, not the file itself
         Ok(pkgbuild_path
@@ -483,19 +489,33 @@ impl PackageManager {
         build_dir: &Path,
         env_root: &Path,
     ) -> Result<Vec<std::path::PathBuf>> {
+        // Directory layout examples (keep sources/builds flat):
+        // - Downloaded tarball: ~/.cache/epkg/downloads/aur.archlinux.org/cgit/aur.git/snapshot/wget2.tar.gz
+        // - Downloaded git dir: ~/.cache/epkg/aur_builds/wget2 (same with Extracted build dir)
+        // - Extracted build dir: ~/.cache/epkg/aur_builds/wget2 (no extra nested wget2/)
         let package = self.load_package_info(pkgkey)?;
         log::info!("Building AUR package: {} ({})", package.pkgname, pkgkey);
 
-        // Get already-downloaded source tarball path using the download manager
-        let tarball_path_str = self.get_package_file_path(pkgkey)?;
-        let tarball_path = PathBuf::from(tarball_path_str);
-
-        // Extract tarball (use package.source as pkgbase when available to share builds)
+        // Extract pkgbase (use package.source as pkgbase when available to share builds)
         let pkgbase = package
             .source
             .as_deref()
             .unwrap_or_else(|| package.pkgname.as_str());
-        let pkg_build_dir = Self::extract_aur_source(&tarball_path, pkgbase, build_dir)?;
+
+        // Check if git directory already exists in build directory (from git download)
+        let git_dir_in_build = build_dir.join(pkgbase);
+        let pkg_build_dir = if git_dir_in_build.is_dir() && git_dir_in_build.join(".git").exists() {
+            // Git directory exists in build directory - use it directly
+            log::info!("Using git directory directly from build dir: {}", git_dir_in_build.display());
+            git_dir_in_build
+        } else {
+            // No git directory in build dir, check for tarball download
+            let source_path_str = self.get_package_file_path(pkgkey)?;
+            let source_path = PathBuf::from(source_path_str);
+
+            // It's a tarball - extract it
+            Self::extract_aur_source(&source_path, pkgbase, build_dir)?
+        };
 
         // Run makepkg to build the package
         let built_pkgs = Self::run_makepkg(&package.pkgname, &pkg_build_dir, build_dir, env_root)?;
@@ -607,17 +627,27 @@ impl PackageManager {
         Ok(completed_aur_packages)
     }
 
-    /// Find PKGBUILD in extracted directory
+    /// Find PKGBUILD in extracted directory (up to 3 levels deep)
     fn find_pkgbuild(dir: &Path) -> Result<PathBuf> {
-        // PKGBUILD is usually in the root of the extracted directory or one level deep
-        let candidates = vec![
-            dir.join("PKGBUILD"),
-            dir.join(format!("{}/PKGBUILD", dir.file_name().unwrap_or_default().to_string_lossy())),
-        ];
+        let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+        queue.push_back((dir.to_path_buf(), 0));
 
-        for candidate in candidates {
+        while let Some((current, depth)) = queue.pop_front() {
+            let candidate = current.join("PKGBUILD");
             if candidate.exists() {
                 return Ok(candidate);
+            }
+
+            if depth >= 3 {
+                continue;
+            }
+
+            for entry in std::fs::read_dir(&current)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    queue.push_back((path, depth + 1));
+                }
             }
         }
 

@@ -44,6 +44,8 @@ use crate::dirs;
 use crate::models::*;
 use crate::mirror;
 use crate::utils;
+use crate::run;
+use crate::aur::{AUR_BASE_URL, AUR_DOMAIN};
 
 /// Constants for chunking configuration
 // Using power of 2 for efficient bit operations
@@ -2147,6 +2149,11 @@ fn download_task(
         return handle_local_file(url, final_path, task);
     }
 
+    // Handle AUR git downloads if URL matches AUR pattern and git is available
+    if let Ok(()) = handle_aur_git_download(url) {
+        return Ok(());
+    }
+
     // Create PID file for process coordination
     let pid_file = create_pid_file(final_path)?;
 
@@ -2212,6 +2219,169 @@ fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Resul
 
     Ok(())
 }
+
+/// Handles AUR package downloads using git clone/fetch
+///
+/// Returns Ok(()) if URL is AUR and git download was successful.
+/// Returns Err if URL is not AUR or git is not available (caller should fall back to regular download).
+fn handle_aur_git_download(
+    url: &str,
+) -> Result<()> {
+    // Check if URL matches AUR pattern
+    if !url.starts_with(AUR_BASE_URL) {
+        return Err(eyre!("Not an AUR URL"));
+    }
+
+    // Extract package name from URL: https://aur.archlinux.org/cgit/aur.git/snapshot/{package}.tar.gz
+    let pkgbase = url
+        .strip_prefix(AUR_BASE_URL)
+        .ok_or_else(|| eyre!("Invalid AUR URL format: {}", url))?
+        .strip_prefix("/")
+        .ok_or_else(|| eyre!("Invalid AUR URL format: {}", url))?
+        .strip_suffix(".tar.gz")
+        .ok_or_else(|| eyre!("AUR URL should end with .tar.gz: {}", url))?;
+
+    // Check if git is available and determine which one to use
+    let (git_path, is_host_git) = find_git_command()?;
+
+    log::info!("Downloading AUR package {} using git", pkgbase);
+
+    // Place git directory in build directory (same location as extracted build dir)
+    // This matches the layout: ~/.cache/epkg/aur_builds/{pkgbase}
+    let build_dir = dirs().epkg_aur_builds.clone();
+    let clone_dir = build_dir.join(pkgbase);
+
+    // Create build directory if needed
+    fs::create_dir_all(&build_dir)
+        .with_context(|| format!("Failed to create build directory: {}", build_dir.display()))?;
+
+    // Clone or fetch the repository
+    clone_or_fetch_aur_repo(&git_path, pkgbase, &clone_dir, is_host_git)?;
+
+    log::info!("Successfully downloaded AUR package {} to git directory {}", pkgbase, clone_dir.display());
+    Ok(())
+}
+
+/// Find git command, preferring host OS over environment
+/// Returns (git_path, is_host_git)
+fn find_git_command() -> Result<(PathBuf, bool)> {
+    // Try host OS first
+    if let Some(git_path) = utils::find_command_in_paths("git") {
+        return Ok((git_path, true));
+    }
+
+    // Fall back to environment
+    let env_root = dirs::get_default_env_root()?;
+    let git_path = run::find_command_in_env_path("git", &env_root)
+        .map_err(|_| eyre!("git command not found in host OS or environment"))?;
+
+    Ok((git_path, false))
+}
+
+/// Clone or fetch AUR git repository
+fn clone_or_fetch_aur_repo(
+    git_path: &Path,
+    pkgbase: &str,
+    clone_dir: &Path,
+    is_host_git: bool,
+) -> Result<()> {
+    let git_url = format!("https://{}/{}.git", AUR_DOMAIN, pkgbase);
+    // If the target dir exists but is not a git repo (e.g., leftover from a failed extract),
+    // clean it up so clone can succeed.
+    if clone_dir.exists() && !clone_dir.join(".git").exists() {
+        log::warn!(
+            "Cleaning non-git directory before cloning AUR repo: {}",
+            clone_dir.display()
+        );
+        fs::remove_dir_all(clone_dir)
+            .with_context(|| format!("Failed to remove non-git dir {}", clone_dir.display()))?;
+    }
+    let repo_exists = clone_dir.join(".git").exists();
+
+    let env_root = dirs::get_default_env_root().unwrap_or_else(|_| PathBuf::from("/"));
+    let base_run_options = run::RunOptions {
+        mount_dirs: Vec::new(),
+        user: None,
+        command: "git".to_string(),
+        args: Vec::new(),
+        env_vars: std::collections::HashMap::new(),
+        stdin: None,
+        no_exit: false,
+        chdir_to_env_root: false,
+        skip_namespace_isolation: is_host_git,
+        timeout: 300, // 5 minute timeout
+        builtin: false,
+    };
+
+    if repo_exists {
+        log::info!("Git repository exists at {}, fetching updates", clone_dir.display());
+        // Fetch updates using -C to change directory
+        let fetch_options = run::RunOptions {
+            args: vec![
+                "-C".to_string(),
+                clone_dir.to_string_lossy().to_string(),
+                "fetch".to_string(),
+                "origin".to_string(),
+            ],
+            ..base_run_options.clone()
+        };
+        run::fork_and_execute(&env_root, &fetch_options, git_path)
+            .with_context(|| format!("Failed to fetch git repository: {}", git_url))?;
+
+        // Checkout HEAD using -C to change directory
+        let checkout_options = run::RunOptions {
+            args: vec![
+                "-C".to_string(),
+                clone_dir.to_string_lossy().to_string(),
+                "checkout".to_string(),
+                "HEAD".to_string(),
+            ],
+            ..base_run_options.clone()
+        };
+        if let Err(e) = run::fork_and_execute(&env_root, &checkout_options, git_path) {
+            log::warn!(
+                "Checkout HEAD failed in {}: {}. Trying git reset --hard + checkout.",
+                clone_dir.display(),
+                e
+            );
+            let reset_options = run::RunOptions {
+                args: vec![
+                    "-C".to_string(),
+                    clone_dir.to_string_lossy().to_string(),
+                    "reset".to_string(),
+                    "--hard".to_string(),
+                ],
+                ..base_run_options.clone()
+            };
+            run::fork_and_execute(&env_root, &reset_options, git_path)
+                .with_context(|| format!("Failed to reset repository: {}", clone_dir.display()))?;
+            run::fork_and_execute(&env_root, &checkout_options, git_path)
+                .with_context(|| format!("Failed to checkout HEAD in repository: {}", clone_dir.display()))?;
+        }
+    } else {
+        log::info!("Cloning git repository from {}", git_url);
+        // Clone repository - run from parent directory
+        let clone_parent = clone_dir.parent()
+            .ok_or_else(|| eyre!("clone_dir has no parent: {}", clone_dir.display()))?;
+        let clone_options = run::RunOptions {
+            args: vec![
+                "clone".to_string(),
+                "-q".to_string(),
+                "-c".to_string(),
+                "init.defaultBranch=master".to_string(),
+                git_url.clone(),
+                clone_dir.to_string_lossy().to_string(),
+            ],
+            chdir_to_env_root: true,
+            ..base_run_options
+        };
+        run::fork_and_execute(clone_parent, &clone_options, git_path)
+            .with_context(|| format!("Failed to clone git repository: {}", git_url))?;
+    }
+
+    Ok(())
+}
+
 
 // download_file():
 //   1. Download content (including chunk merging)
@@ -2705,14 +2875,33 @@ fn validate_response_content_type(
     log::debug!("Validating response content type for {} (chunk_path={})", url, task.chunk_path.display());
     if let Some(content_type) = response.headers().get("content-type").and_then(|v| v.to_str().ok()) {
         if content_type.contains("text/html") {
-            // Check if content is encoded (compressed) - this often indicates legitimate content
-            if let Some(content_encoding) = response.headers().get("content-encoding").and_then(|v| v.to_str().ok()) {
-                if content_encoding.contains("gzip") || content_encoding.contains("deflate") || content_encoding.contains("xz") {
-                    log::debug!("HTML content detected but with content-encoding '{}', allowing download from {}", content_encoding, url);
-                    return Ok(());
-                }
+            // Allow HTML for directory listings (URLs ending with /) and HTML files (.html)
+            // These are legitimate HTML downloads for index_html.rs
+            if url.ends_with('/') || url.ends_with(".html") {
+                log::debug!("Allowing HTML content for directory listing or HTML file: {}", url);
+                return Ok(());
             }
 
+            // Check if this is an AUR URL that might need git
+            // AUR downloads via HTTP are unreliable due to bot protection (Anubis),
+            // so git is recommended for AUR packages
+            if url.starts_with(AUR_BASE_URL) {
+                eprintln!("\nError: Received HTML page (likely bot protection) instead of file from {}", url);
+                eprintln!("AUR downloads via HTTP are unreliable due to bot protection systems.");
+                eprintln!("Git is recommended for downloading AUR packages.");
+                eprintln!("\nPlease retry after installing git in either:");
+                eprintln!("  - Host OS: Install git using your system package manager (e.g., 'apt-get install git')");
+                eprintln!("  - Environment: Run 'epkg -e {} install git' to install git in current environment", config().common.env);
+                let error_msg = format!(
+                    "AUR download failed: received HTML page (bot protection) instead of file. \
+                    AUR downloads via HTTP are unreliable. Please install git (in host OS or environment) and retry."
+                );
+                task.set_message(error_msg.clone());
+                return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg));
+            }
+
+            // Reject HTML content for other URLs - HTML can be gzip-compressed
+            // but that doesn't make it legitimate file content
             let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
             task.set_message(error_msg.to_string());
             return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg.to_string()));
