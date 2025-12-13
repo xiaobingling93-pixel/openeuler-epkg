@@ -205,55 +205,14 @@ fn handle_elf_with_loader(target_path: &Path, env_root: &Path, fs_file: &Path) -
             .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
     }
 
-    // First, try hardlink directly
-    match fs::hard_link(&elf_loader_path, target_path) {
-        Ok(_) => {
-            // Success, continue with symlink setup
-        }
-        Err(hardlink_err) => {
-            // Hardlink failed, check if it's cross-device error
-            if hardlink_err.raw_os_error() == Some(18) { // EXDEV - Cross-device link
-                // Copy elf-loader to env_root/ebin/.elf-loader if not already exists
-                let local_elf_loader = env_root.join("ebin/.elf-loader");
-
-                if !local_elf_loader.exists() {
-                    // Create ebin directory if it doesn't exist
-                    if let Some(parent) = local_elf_loader.parent() {
-                        fs::create_dir_all(parent)
-                            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
-                    }
-
-                    // Copy elf-loader to local location
-                    fs::copy(&elf_loader_path, &local_elf_loader)
-                        .with_context(|| format!(
-                            "Failed to copy elf-loader from {} to {}",
-                            elf_loader_path.display(),
-                            local_elf_loader.display()
-                        ))?;
-
-                    // Preserve permissions
-                    if let Ok(perms) = fs::metadata(&elf_loader_path) {
-                        fs::set_permissions(&local_elf_loader, perms.permissions())
-                            .with_context(|| format!("Failed to set permissions for {}", local_elf_loader.display()))?;
-                    }
-                }
-
-                // Hardlink from local copy to target
-                fs::hard_link(&local_elf_loader, target_path)
-                    .with_context(|| format!(
-                        "Failed to create hardlink from {} to {}",
-                        local_elf_loader.display(),
-                        target_path.display()
-                    ))?;
-            } else {
-                return Err(hardlink_err).with_context(|| format!(
-                    "Failed to create hardlink from {} to {}",
-                    elf_loader_path.display(),
-                    target_path.display()
-                ));
-            }
-        }
-    }
+    // Try hardlink first, fall back to copy if cross-device
+    // Preserve permissions when copying (important for elf-loader)
+    hard_link_or_copy(&elf_loader_path, target_path, true)
+        .with_context(|| format!(
+            "Failed to create hardlink or copy elf-loader from {} to {}",
+            elf_loader_path.display(),
+            target_path.display()
+        ))?;
 
     let has_symlink1 = replace_existing_symlink1(target_path, fs_file)
         .with_context(|| format!("Failed to ensure symlink1 for {}", target_path.display()))?;
@@ -382,12 +341,57 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
     Ok(())
 }
 
+/// Try to create a hardlink from source to target.
+/// If hardlink fails (cross-device or other error), fall back to copying the file.
+/// This is useful when files need to be actual files (not symlinks) for tools to work properly.
+///
+/// Parameters:
+/// - source: Path to the source file
+/// - target: Path to the target file
+/// - preserve_permissions: If true, preserve file permissions when copying (ignored for hardlinks)
+fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: bool) -> Result<()> {
+    match fs::hard_link(source, target) {
+        Ok(()) => {
+            log::trace!("Created hardlink from {} to {}", source.display(), target.display());
+            Ok(())
+        }
+        Err(hardlink_err) => {
+            // Check if it's a cross-device error (EXDEV = 18)
+            if hardlink_err.raw_os_error() == Some(18) {
+                log::debug!("Cross-device hardlink failed for {} -> {}, falling back to copy",
+                           source.display(), target.display());
+            } else {
+                // Other error, try copy as fallback
+                log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
+                           source.display(), target.display(), hardlink_err);
+            }
+            fs::copy(source, target)
+                .map(|_| ())
+                .with_context(|| format!("Failed to copy {} to {} (hardlink also failed: {})",
+                                        source.display(), target.display(), hardlink_err))?;
+
+            // Preserve permissions if requested
+            if preserve_permissions {
+                if let Ok(metadata) = fs::metadata(source) {
+                    fs::set_permissions(target, metadata.permissions())
+                        .with_context(|| format!("Failed to set permissions for {}", target.display()))?;
+                }
+            }
+
+            Ok(())
+        }
+    }
+}
+
 /// Handle symlink files in mirror_dir function
 ///
 /// This function processes symlinks that may point to either files or directories.
 /// For top-level directory symlinks (sbin, bin, lib, lib64, lib32), it skips them
 /// as they are handled by the environment setup process.
 /// For other symlinks pointing to files, it creates a shortcut symlink.
+///
+/// Note: Files in gconv-modules.d/ are handled as regular files (not symlinks) in
+/// mirror_regular_file(), so symlinks in that directory won't appear in the file list.
 ///
 /// Examples:
 /// - sbin -> usr/sbin (top-level dir symlink): skipped (handled by env setup)
@@ -398,6 +402,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
 /// Parameters:
 /// - fs_file: Path to the symlink in the store
 /// - target_path: Where to create the symlink in the environment
+/// - fhs_file: Relative path from store_fs_dir
 fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
     // Skip symlinks for top-level directories
     if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
@@ -416,10 +421,12 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
 ///
 /// This function processes regular files (not symlinks or directories).
 /// For files in /etc/, it copies the file content.
+/// For files in gconv-modules.d/, it hardlinks (if same device) or copies (if different device).
 /// For other files, it creates a symlink to the store location.
 ///
 /// Examples:
 /// - /etc/resolv.conf: copied to environment (preserves content)
+/// - /usr/lib/gconv/gconv-modules.d/gconv-modules-extra.conf: hardlinked or copied
 /// - /usr/bin/python3.11: symlinked to store location
 /// - /usr/lib/libpython3.11.so: symlinked to store location
 ///
@@ -450,6 +457,9 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
     if fhs_file.starts_with("etc/") {
         fs::copy(fs_file, target_path)
             .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
+    } else if fhs_file.to_string_lossy().contains("/gconv-modules.d/") {
+        // iconvconfig handles ONLY normal files, NOT symlinks
+        hard_link_or_copy(fs_file, target_path, false)?;
     } else {
         symlink(fs_file, target_path)
             .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
