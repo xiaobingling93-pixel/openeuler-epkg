@@ -148,7 +148,7 @@ pub struct MirrorStats {
     pub avg_throughput: Option<u32>, // cached average throughput for filtering
     pub no_range: bool,         // whether server supports Range requests
     pub no_online: bool,        // whether server is in service
-    pub no_content: bool,       // whether server has the files we requested in current run
+    pub no_content: u32,        // counter: how many times server returned 404 for files we requested
     pub old_content: bool,      // whether server has old/inconsistent content (integrity system)
     pub max_parallel_conns: Option<u32>, // Learned limit from 429 errors
     pub http_errors: HashMap<u16, u32>,
@@ -167,7 +167,7 @@ impl Default for MirrorStats {
             avg_throughput: None,
             no_range: false,
             no_online: false,
-            no_content: false,
+            no_content: 0,
             old_content: false,
             max_parallel_conns: None,
             http_errors: HashMap::new(),
@@ -1051,7 +1051,7 @@ fn update_mirror_http_event(http_log: &HttpLog) -> Result<()> {
                     *stats.http_errors.entry(*code).or_insert(0) += 1;
 
                     if *code == 404 {
-                        stats.no_content = true;
+                        stats.no_content += 1;
                     } else if *code == HTTP_FORBIDDEN || *code >= HTTP_SERVER_ERROR_START {
                         if should_mark_no_online(stats, total_mirrors, current_noonline_count) {
                             stats.no_online = true;
@@ -1188,7 +1188,7 @@ impl Mirrors {
         self.available_mirrors = self.mirrors.iter()
             .filter_map(|(site, mirror)| {
                 // Exclude mirrors with no_content, old_content, or no_online
-                if mirror.stats.no_content || mirror.stats.old_content || mirror.stats.no_online {
+                if mirror.stats.no_content >= 3 || mirror.stats.old_content || mirror.stats.no_online {
                     return None;
                 }
 
@@ -1563,7 +1563,7 @@ fn show_one_mirror(rank: usize, site: &str, mirror: &Mirror, pget_limit: usize) 
     if mirror.stats.no_range {
         status_flags.push("NoRange".to_string());
     }
-    if mirror.stats.no_content {
+    if mirror.stats.no_content >= 3 {
         status_flags.push("NoContent".to_string());
     }
     if mirror.stats.old_content {

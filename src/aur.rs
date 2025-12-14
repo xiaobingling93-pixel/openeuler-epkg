@@ -128,6 +128,7 @@ pub fn parse_aur_metadata(repo: &RepoRevise, _release_path: &PathBuf) -> Result<
         size: 0,
         location,
         is_packages: true,
+        is_adb: false,
         output_path,
         download_path,
     });

@@ -333,6 +333,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         size,
                         location,
                         is_packages,
+                        is_adb: false,
                         output_path,
                         download_path: download_path.to_path_buf(),
                     });

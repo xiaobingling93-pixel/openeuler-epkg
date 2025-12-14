@@ -202,6 +202,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 size: current_size,
                                 location: current_location.clone(),
                                 is_packages,
+                                is_adb: false,
                                 output_path,
                                 download_path,
                             });

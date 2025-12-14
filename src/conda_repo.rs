@@ -271,6 +271,7 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
         size: 0,
         location,
         is_packages: true,
+        is_adb: false,
         output_path,
         download_path,
     });

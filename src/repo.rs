@@ -53,6 +53,7 @@ pub struct RepoReleaseItem {
     pub size: usize,
     pub location: String,
     pub is_packages: bool,
+    pub is_adb: bool,                   // Whether this is an ADB (Alpine/Arch Database) file
     pub download_path: PathBuf,
     pub output_path: PathBuf,
 }
@@ -117,7 +118,8 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
         dirs().epkg_downloads_cache.clone(),
         6,
         None,
-        repodata_name.to_string()
+        repodata_name.to_string(),
+        false  // Not an ADB file
     );
     submit_download_task(task)
         .with_context(|| format!("Failed to submit download task for {}", url))?;
@@ -470,6 +472,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
         size: 0,
         location: location,
         is_packages: true,
+        is_adb: true,  // Mark as ADB file (Alpine/Arch Database)
         output_path: repo_dir.join("packages.txt"),
         download_path: packages_path.clone(),
     });
@@ -510,7 +513,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
  * Detection: URLs NOT ending with "/" or known metadata files
  * Examples:
  *   - Alpine: https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/APKINDEX.tar.gz
- *   - Custom: https://repo.example.com/packages/database.tar.xz
+ *   - Archlinux: https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.files.tar.gz
  *
  * Architecture:
  *   APKINDEX.tar.gz (direct package database)
@@ -660,7 +663,8 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
         dirs().epkg_downloads_cache.clone(),
         6,
         if revise.size > 0 { Some(revise.size as u64) } else { None },
-        revise.repo_revise.repodata_name.clone()
+        revise.repo_revise.repodata_name.clone(),
+        revise.is_adb
     ).with_data_channel(data_tx);
 
     // Submit download task

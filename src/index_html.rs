@@ -102,6 +102,7 @@ pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, relea
         size: 0,
         location: "index.html".to_string(),
         is_packages: true,
+        is_adb: false,
         download_path: index_html_path.clone(),
         output_path: output_path.clone(),
     };
