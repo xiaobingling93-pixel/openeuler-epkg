@@ -25,6 +25,8 @@ pub struct InstallationPlan {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub upgrades_old: HashMap<String, InstalledPackageInfo>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub upgrade_map_old_to_new: HashMap<String, String>, // old_pkgkey -> new_pkgkey
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub old_removes: HashMap<String, InstalledPackageInfo>,
@@ -49,6 +51,8 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             upgrades_new: HashMap<String, InstalledPackageInfo>,
             #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
             upgrades_old: HashMap<String, InstalledPackageInfo>,
+            #[serde(default)]
+            upgrade_map_old_to_new: HashMap<String, String>,
             #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
             skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
             #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
@@ -135,6 +139,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             fresh_installs: helper.fresh_installs,
             upgrades_new: helper.upgrades_new,
             upgrades_old: helper.upgrades_old,
+            upgrade_map_old_to_new: helper.upgrade_map_old_to_new,
             skipped_reinstalls: helper.skipped_reinstalls,
             old_removes: helper.old_removes,
             new_exposes: helper.new_exposes,
@@ -964,6 +969,37 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 
 impl PackageManager {
 
+    /// Build a mapping from old pkgkey to new pkgkey for upgrades using name+arch matching.
+    fn build_upgrade_map(
+        upgrades_new: &HashMap<String, InstalledPackageInfo>,
+        upgrades_old: &HashMap<String, InstalledPackageInfo>,
+    ) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        for old_pkgkey in upgrades_old.keys() {
+            // Exact match first
+            if upgrades_new.contains_key(old_pkgkey) {
+                map.insert(old_pkgkey.clone(), old_pkgkey.clone());
+                continue;
+            }
+
+            // Fallback to name + arch match
+            if let Ok((old_name, _, old_arch)) = package::parse_pkgkey(old_pkgkey) {
+                if let Some((new_pkgkey, _)) = upgrades_new.iter().find(|(new_key, _)| {
+                    if let Ok((new_name, _, new_arch)) = package::parse_pkgkey(new_key) {
+                        new_name == old_name && new_arch == old_arch
+                    } else {
+                        false
+                    }
+                }) {
+                    map.insert(old_pkgkey.clone(), new_pkgkey.clone());
+                }
+            }
+        }
+
+        map
+    }
+
     pub fn prepare_installation_plan(
         &self,
         all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
@@ -984,6 +1020,9 @@ impl PackageManager {
                 plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
             }
         }
+
+        // Build deterministic old->new mapping for upgrades (used in UI and processing)
+        plan.upgrade_map_old_to_new = Self::build_upgrade_map(&plan.upgrades_new, &plan.upgrades_old);
 
         // Find and add orphaned packages to removals
         self.add_orphans_to_removes(&mut plan)?;
@@ -1091,15 +1130,12 @@ impl PackageManager {
         if !plan.upgrades_new.is_empty() {
             actions_planned = true;
             println!("Packages to be upgraded:");
-            for (new_pkgkey, _) in &plan.upgrades_new {
-                let (new_name_parsed, _, new_arch_parsed) = package::parse_pkgkey(new_pkgkey).unwrap_or_default();
-                let old_pkgkey_display = plan.upgrades_old.iter()
-                    .find_map(|(old_key, _)| {
-                        let (old_name, _, old_arch) = package::parse_pkgkey(old_key).unwrap_or_default();
-                        if new_name_parsed == old_name && new_arch_parsed == old_arch { Some(old_key.as_str()) } else { None }
-                    })
-                    .unwrap_or("unknown previous version");
-                println!("- {} (replacing {})", new_pkgkey, old_pkgkey_display);
+            for (old_pkgkey, _) in &plan.upgrades_old {
+                let new_pkgkey_display = plan.upgrade_map_old_to_new
+                    .get(old_pkgkey)
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown new version");
+                println!("- {} (replacing {})", new_pkgkey_display, old_pkgkey);
             }
         }
 
@@ -1504,7 +1540,14 @@ impl PackageManager {
         // Process upgrades
         if !upgrades_new_completed.is_empty() {
             log::info!("Processing {} upgrades", upgrades_new_completed.len());
-            self.process_upgrades(&plan.upgrades_old, &upgrades_new_completed, store_root, env_root, package_format)?;
+            self.process_upgrades(
+                &plan.upgrades_old,
+                &upgrades_new_completed,
+                &plan.upgrade_map_old_to_new,
+                store_root,
+                env_root,
+                package_format,
+            )?;
         }
 
         // Process fresh installations
@@ -1712,16 +1755,21 @@ impl PackageManager {
         &mut self,
         old_packages: &HashMap<String, InstalledPackageInfo>,
         new_packages: &HashMap<String, InstalledPackageInfo>,
+        upgrade_map_old_to_new: &HashMap<String, String>,
         store_root: &Path,
         env_root: &Path,
         package_format: PackageFormat,
     ) -> Result<()> {
         // Process each package upgrade individually
-        for (pkgkey, new_package_info) in new_packages {
-            if let Some(old_package_info) = old_packages.get(pkgkey) {
-                log::info!("Upgrading package: {}", pkgkey);
+        for (old_pkgkey, old_package_info) in old_packages {
+            let new_pkgkey = upgrade_map_old_to_new.get(old_pkgkey);
+            let new_package_info = new_pkgkey.and_then(|k| new_packages.get(k));
+
+            if let (Some(new_pkgkey), Some(new_package_info)) = (new_pkgkey, new_package_info) {
+                log::info!("Upgrading package: {} (from {})", new_pkgkey, old_pkgkey);
                 self.process_single_package_upgrade(
-                    pkgkey,
+                    new_pkgkey,
+                    old_pkgkey,
                     old_package_info,
                     new_package_info,
                     store_root,
@@ -1729,7 +1777,7 @@ impl PackageManager {
                     package_format,
                 )?;
             } else {
-                log::warn!("Old package info not found for upgrade: {}", pkgkey);
+                log::warn!("New package info not found for upgrade from: {}", old_pkgkey);
             }
         }
         Ok(())
@@ -1738,7 +1786,8 @@ impl PackageManager {
     /// Process upgrade flow for a single package pair
     fn process_single_package_upgrade(
         &mut self,
-        pkgkey: &str,
+        new_pkgkey: &str,
+        old_pkgkey: &str,
         old_package_info: &InstalledPackageInfo,
         new_package_info: &InstalledPackageInfo,
         store_root: &Path,
@@ -1748,19 +1797,19 @@ impl PackageManager {
         use crate::scriptlets::{run_scriptlet, ScriptletType};
 
         // Extract version information
-        let old_version = crate::package::pkgkey2version(pkgkey).ok();
-        let new_version = crate::package::pkgkey2version(pkgkey).ok();
+        let old_version = crate::package::pkgkey2version(old_pkgkey).ok();
+        let new_version = crate::package::pkgkey2version(new_pkgkey).ok();
 
         log::debug!(
             "Processing upgrade for {}: {} -> {}",
-            pkgkey,
+            new_pkgkey,
             old_version.as_deref().unwrap_or("unknown"),
             new_version.as_deref().unwrap_or("unknown")
         );
 
         // Step 1: New package pre-upgrade (with old version info)
         run_scriptlet(
-            pkgkey,
+            new_pkgkey,
             new_package_info,
             store_root,
             env_root,
@@ -1773,7 +1822,7 @@ impl PackageManager {
 
         // Step 2: Old package pre-remove (with new version info)
         run_scriptlet(
-            pkgkey,
+            new_pkgkey,
             old_package_info,
             store_root,
             env_root,
@@ -1792,11 +1841,11 @@ impl PackageManager {
 
         // Step 4: Unlink old package unique files (files in old_pkg but not in new_pkg)
         self.unlink_package_diff(old_package_info, new_package_info, store_root, env_root)
-            .with_context(|| format!("Failed to unlink old package files for {}", pkgkey))?;
+            .with_context(|| format!("Failed to unlink old package files for {}", old_pkgkey))?;
 
         // Step 5: New package post-upgrade (with old version info)
         run_scriptlet(
-            pkgkey,
+            new_pkgkey,
             new_package_info,
             store_root,
             env_root,
@@ -1809,7 +1858,7 @@ impl PackageManager {
 
         // Step 6: Old package post-remove (with new version info)
         run_scriptlet(
-            pkgkey,
+            new_pkgkey,
             old_package_info,
             store_root,
             env_root,
@@ -1820,7 +1869,7 @@ impl PackageManager {
             new_version.as_deref(),
         )?;
 
-        log::info!("Successfully upgraded package: {}", pkgkey);
+        log::info!("Successfully upgraded package: {}", new_pkgkey);
         Ok(())
     }
 
@@ -2096,22 +2145,6 @@ impl PackageManager {
             }
         }
 
-        // Build a reverse map from old_pkgkey to new_pkgkey for efficient lookup
-        // Match by package name and architecture
-        let mut old_to_new: HashMap<String, String> = HashMap::new();
-        for (new_pkgkey, _) in &plan.upgrades_new {
-            if let Ok((new_pkgname, _, new_arch)) = crate::package::parse_pkgkey(new_pkgkey) {
-                for (old_pkgkey, _) in &plan.upgrades_old {
-                    if let Ok((old_pkgname, _, old_arch)) = crate::package::parse_pkgkey(old_pkgkey) {
-                        if new_pkgname == old_pkgname && new_arch == old_arch {
-                            old_to_new.insert(old_pkgkey.clone(), new_pkgkey.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
         // Track exposure changes for packages being upgraded (old versions)
         // Also ensure new versions inherit exposure from old versions
         for (old_pkgkey, old_pkg_info) in &plan.upgrades_old {
@@ -2120,7 +2153,7 @@ impl PackageManager {
                 plan.del_exposes.insert(old_pkgkey.clone(), old_pkg_info.clone());
 
                 // Find the corresponding new version and ensure it's also exposed
-                if let Some(new_pkgkey) = old_to_new.get(old_pkgkey) {
+                if let Some(new_pkgkey) = plan.upgrade_map_old_to_new.get(old_pkgkey) {
                     if let Some(new_pkg_info) = plan.upgrades_new.get(new_pkgkey) {
                         // Found matching new version - ensure it's exposed
                         plan.new_exposes.insert(new_pkgkey.clone(), new_pkg_info.clone());
