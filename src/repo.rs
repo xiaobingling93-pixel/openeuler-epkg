@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, Duration};
 use sha2::{Sha256, Sha512, Digest};
 use filetime;
@@ -605,7 +605,10 @@ fn process_revises_sequential(revises: Vec<RepoReleaseItem>) -> Result<()> {
 fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
     log::debug!("Starting with {} items", revises.len());
 
-    let (tx, rx) = mpsc::channel();
+    // Use a bounded channel so any future senders are naturally throttled
+    // by the receiver. Capacity is tied to the number of items to avoid
+    // unbounded growth if sends are added later.
+    let (tx, rx) = mpsc::sync_channel(revises.len().max(1));
     let mut handles = Vec::new();
 
     // Process each item in a separate thread
@@ -655,7 +658,11 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
 /// Download and process a single Debian release item
 fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Result<()> {
-    let (data_tx, data_rx) = channel();
+    // Use a bounded channel so the download side is naturally throttled
+    // by the processing side. Each message is a ~64KB chunk, so a small
+    // buffer keeps at most a few chunks in memory per item.
+    const DATA_CHANNEL_BUFFER: usize = 16;
+    let (data_tx, data_rx) = mpsc::sync_channel(DATA_CHANNEL_BUFFER);
 
     // Create and submit download task
     let task = DownloadTask::with_size(

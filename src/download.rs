@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering},
         Arc, Mutex,
         LazyLock,
-        mpsc::Sender,
+        mpsc::SyncSender as Sender,
     },
     thread,
     time::{SystemTime, UNIX_EPOCH, Duration},
@@ -78,12 +78,12 @@ const HTTP_CLIENT_ERROR_START: u16 = 400;                   // Start of 4xx clie
 const HTTP_SERVER_ERROR_START: u16 = 500;                   // Start of 5xx server errors
 
 impl DownloadTask {
-    /// Returns the path to the .meta.json file, which is based on the final file path.
+    /// Returns the path to the .etag.json file, which is based on the final file path.
     fn meta_json_path(&self) -> PathBuf {
-        utils::append_suffix(&self.final_path, "meta.json")
+        utils::append_suffix(&self.final_path, "etag.json")
     }
 
-    /// Saves download metadata to .meta.json file
+    /// Saves download metadata to .etag.json file
     fn save_remote_metadata(&self) -> Result<()> {
         if !self.is_master_task() ||
             self.file_type == FileType::Immutable {
@@ -124,7 +124,7 @@ impl DownloadTask {
         Ok(())
     }
 
-    /// Loads download metadata from .meta.json file
+    /// Loads download metadata from .etag.json file
     fn load_remote_metadata(&self) -> Result<Option<DownloadMetadata>> {
         if !self.is_master_task() ||
             self.file_type == FileType::Immutable {
@@ -145,13 +145,13 @@ impl DownloadTask {
                         Ok(Some(metadata))
                     }
                     Err(e) => {
-                        log::warn!("Failed to parse .meta.json file {}: {}", meta_path.display(), e);
+                        log::warn!("Failed to parse .etag.json file {}: {}", meta_path.display(), e);
                         Ok(None)
                     }
                 }
             }
             Err(e) => {
-                log::warn!("Failed to read .meta.json file {}: {}", meta_path.display(), e);
+                log::warn!("Failed to read .etag.json file {}: {}", meta_path.display(), e);
                 Ok(None)
             }
         }
@@ -492,7 +492,7 @@ pub struct DownloadTask {
 
     // Server metadata from response headers, stored for later application
     pub serving_metadata:     Mutex<Option<ServerMetadata>>,
-    pub servers_metadata:     Mutex<Vec<ServerMetadata>>,                 // All metadata responses from different mirrors (for is_adb files)
+    pub servers_metadata:     Mutex<Vec<ServerMetadata>>,                 // metadata responses from different mirrors
 
     // Repository information for mirror selection
     pub repodata_name:        String,                                     // Repository name for mirror selection
@@ -637,7 +637,7 @@ impl ServerMetadata {
     }
 }
 
-/// .meta.json file format for download metadata persistence
+/// .etag.json file format for download metadata persistence
 /// Replaces both .etag and .pget-status files with a unified format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadMetadata {
@@ -695,7 +695,9 @@ impl DownloadTask {
             file_size:         AtomicU64::new(file_size.unwrap_or(0)),
             attempt_number:    AtomicUsize::new(0),         // Initialize to 0 (first attempt)
             file_type,                                      // File type for integrity and metadata handling
+            is_adb:            is_adb,
             serving_metadata:  Mutex::new(None),            // Will store metadata in HTTP response
+            servers_metadata:  Mutex::new(Vec::new()),
             chunk_tasks:       Arc::new(Mutex::new(Vec::new())),
             chunk_path,
             chunk_offset:      AtomicU64::new(0),
@@ -712,8 +714,6 @@ impl DownloadTask {
             range_request:     Mutex::new(RangeRequest::None),
             mirror_inuse:      Arc::new(Mutex::new(None)),
             repodata_name:     repodata_name,
-            is_adb:            is_adb,
-            servers_metadata:  Mutex::new(Vec::new()),
         }
     }
 
@@ -819,7 +819,9 @@ impl DownloadTask {
             attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
             mirror_inuse:         Arc::new(Mutex::new(None)),           // No mirror selected yet for chunk tasks
             file_type:            self.file_type.clone(),               // Copy file type classification
+            is_adb:               self.is_adb,
             serving_metadata:     Mutex::new(self.serving_metadata.lock().unwrap().clone()),  // Each chunk's HTTP response must align with serving_metadata
+            servers_metadata:     Mutex::new(Vec::new()),
             chunk_tasks:          Arc::new(Mutex::new(Vec::new())),
             chunk_path:           PathBuf::from(chunk_path),
             chunk_offset:         AtomicU64::new(offset),
@@ -835,8 +837,6 @@ impl DownloadTask {
             duration_ms:          AtomicU64::new(0),
             range_request:        Mutex::new(RangeRequest::None),
             repodata_name:        self.repodata_name.clone(),
-            is_adb:               self.is_adb,
-            servers_metadata:     Mutex::new(Vec::new()),
         })
     }
 
@@ -871,8 +871,8 @@ impl DownloadTask {
     /// Get total progress bytes across all chunks (reused + network bytes)
     /// This represents the total download progress for display purposes
     fn get_total_progress_bytes(&self) -> (u64, u64, usize) {
-        let mut total_received = self.received_bytes.load(Ordering::Relaxed);
-        let mut total_reused = self.resumed_bytes.load(Ordering::Relaxed);
+        let mut total_received = 0u64;
+        let mut total_reused = 0u64;
         let mut downloading_chunks = 0;
 
         // Use iterate_task_levels for this single task to get all L2 and L3 chunks
@@ -914,15 +914,6 @@ impl DownloadTask {
         }
     }
 
-    /// Set progress bar message
-    fn set_message(&self, message: String) {
-        if let Ok(pb_guard) = self.progress_bar.lock() {
-            if let Some(ref pb) = *pb_guard {
-                pb.set_message(message);
-            }
-        }
-    }
-
     /// Clean helper to get data channel without repeated error handling
     fn get_data_channel(&self) -> Option<Sender<Vec<u8>>> {
         self.data_channels.lock().ok().and_then(|channels| channels.first().cloned())
@@ -951,6 +942,7 @@ impl DownloadTask {
 
     /// Set progress bar length
     fn set_length(&self, length: u64) {
+        log::debug!("pb.set_length [{}]: {}", self.url, length);
         if let Ok(pb_guard) = self.progress_bar.lock() {
             if let Some(ref pb) = *pb_guard {
                 pb.set_length(length);
@@ -960,6 +952,7 @@ impl DownloadTask {
 
     /// Set progress bar position
     fn set_position(&self, position: u64) {
+        log::debug!("pb.set_position [{}]: {}", self.url, position);
         if let Ok(pb_guard) = self.progress_bar.lock() {
             if let Some(ref pb) = *pb_guard {
                 pb.set_position(position);
@@ -967,8 +960,19 @@ impl DownloadTask {
         }
     }
 
+    /// Set progress bar message
+    fn set_message(&self, message: String) {
+        log::debug!("pb.set_message [{}]: {}", self.url, message);
+        if let Ok(pb_guard) = self.progress_bar.lock() {
+            if let Some(ref pb) = *pb_guard {
+                pb.set_message(message);
+            }
+        }
+    }
+
     /// Finish progress bar with message
     fn finish_with_message(&self, message: String) {
+        log::debug!("pb.finish_with_message [{}]: {}", self.url, message);
         if let Ok(pb_guard) = self.progress_bar.lock() {
             if let Some(ref pb) = *pb_guard {
                 pb.finish_with_message(message);
@@ -1053,14 +1057,6 @@ impl DownloadManager {
     fn get_task(&self, url: &str) -> Option<Arc<DownloadTask>> {
         let tasks = self.tasks.lock().ok()?;
         tasks.get(url).map(|task| Arc::clone(task))
-    }
-
-    /// Check if a task exists for the given URL and return its status
-    #[allow(dead_code)]
-    fn get_task_status(&self, url: &str) -> Option<DownloadStatus> {
-        let tasks = self.tasks.lock().ok()?;
-        let task = tasks.get(url)?;
-        task.status.lock().ok().map(|status| status.clone())
     }
 
     /// Check if a task exists for the given URL
@@ -2050,7 +2046,7 @@ pub fn download_urls(
 fn setup_progress_bar(task: &DownloadTask, multi_progress: &MultiProgress, url: &str) -> Result<()> {
     let pb = multi_progress.add(ProgressBar::new(0));
     pb.set_style(ProgressStyle::default_bar()
-        .template(&format!("[{{elapsed_precise}}] [{{bar:{}}}] {{bytes_per_sec:12}} ({{eta}}) {{msg}}", PROGRESS_BAR_WIDTH))
+        .template(&format!("[{{elapsed:>3}}] [{{bar:{}}}] {{bytes_per_sec:>12}} ({{bytes:>11}}) {{msg}}", PROGRESS_BAR_WIDTH))
         .map_err(|e| eyre!("Failed to parse HTTP response: {}", e))?
         .progress_chars("=> "));
     pb.set_message(url.to_string());
@@ -2082,30 +2078,32 @@ fn setup_progress_bar(task: &DownloadTask, multi_progress: &MultiProgress, url: 
 // Current Code Call Graph
 // download_task()
 // ├── handle_local_file()
-// │   └── (file copy operations)
+// │   └── (file copy operations + optional size verification)
+// ├── handle_aur_git_download()
+// │   └── (AUR git clone/fetch flow using find_git_command())
 // ├── create_pid_file()
 // ├── setup_progress_bar()
 // └── download_file_with_retries()
-//     └── validate_existing_file()
-//       ├── send_file_to_channel() for Immutable file
-//       └── handle_corruption_detection()
+//     ├── validate_existing_file()
+//     │   ├── send_file_to_channel() for existing full file
+//     │   └── handle_corruption_detection()
 //     ├── recover_parto_files()
 //     └── download_file()
 //         ├── create_chunk_tasks()
 //         ├── download_chunk_task()
 //         │   ├── check_existing_partfile()
-//         │   │   └── send_chunk_to_channel() for master task
+//         │   │   └── send_chunk_to_channel() for master task resume
 //         │   ├── resolve_mirror_and_update_task()
 //         │   ├── execute_download_request()
-//         │   │   ├── handle_http_status_error()
-//         │   │   ├── handle_network_io_error()
-//         │   │   └── handle_general_request_error()
 //         │   ├── process_download_response()
-//         │   │   ├── handle_304_not_modified_response()
-//         │   │   │   └── send_file_to_channel() for Mutable file
-//         │   │   ├── extract_server_metadata()
-//         │   │   ├── should_redownload() for Mutable file
-//         │   │   └── validate_response_content_type()
+//         │   │   ├── handle_304_and_extract_metadata()
+//         │   │   │   ├── extract_server_metadata()
+//         │   │   │   ├── handle_304_not_modified_response()
+//         │   │   │   └── should_redownload() for Mutable file
+//         │   │   ├── validate_range_request_response()
+//         │   │   ├── validate_response_content_type()
+//         │   │   ├── validate_metadata_consistency()
+//         │   │   └── setup_task_progress_tracking()
 //         │   ├── process_chunk_download_stream()
 //         │   │   ├── read_chunk_from_stream()
 //         │   │   ├── calculate_write_bytes()
@@ -2121,7 +2119,7 @@ fn setup_progress_bar(task: &DownloadTask, multi_progress: &MultiProgress, url: 
 //         │   ├── process_chunks_at_level()
 //         │   │   ├── merge_completed_chunk()
 //         │   │   │   ├── validate_chunk_file_boundaries()
-//         │   │   │   ├── send_chunk_to_channel() for chunk tasks
+//         │   │   │   ├── send_chunk_to_all_channels() for chunk tasks
 //         │   │   │   └── append_file_to_file()
 //         │   │   ├── handle_failed_chunk()
 //         │   │   └── update_chunk_progress()
@@ -2502,6 +2500,7 @@ fn download_file_with_retries(
                     cleanup_chunk_files(task)?;
                 }
 
+                task.attempt_number.fetch_add(1, Ordering::SeqCst);
                 retries += 1;
                 if retries < max_retries / 2 {
                     // no delay, to quickly try another mirror
@@ -2532,10 +2531,17 @@ fn send_file_to_channel(
         return Ok(()); // No channels to send to
     }
 
+    // Initialize progress bar message for processing existing file
+    let total_size = fs::metadata(&task.final_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    task.set_length(total_size);
+    task.set_message(format!("Processing {}", task.final_path.display()));
+
     // The channel receivers process_packages_content()/process_filelist_content() expect full file
     // to decompress and compute hash, so send the existing file content first. This fixes bug
     // "Decompression error: stream/file format not recognized"
-    send_chunk_to_all_channels(&task, &task.final_path, &data_channels)
+    send_chunk_to_all_channels(&task, &task.final_path, &data_channels, true)
 }
 
 /// Send a chunk file to all data channels (for broadcasting to duplicate downloads)
@@ -2543,6 +2549,7 @@ fn send_chunk_to_all_channels(
     task: &DownloadTask,
     part_path: &Path,
     data_channels: &[Sender<Vec<u8>>],
+    update_progress: bool,
 ) -> Result<()> {
     // Ensure we only stream the pre-existing file once per download_file_with_retries() lifetime
     if task.has_sent_existing.swap(true, Ordering::SeqCst) {
@@ -2555,6 +2562,8 @@ fn send_chunk_to_all_channels(
     let mut file = map_io_error(File::open(part_path), "open file for channel", part_path)?;
     let mut buffer = vec![0; 64 * 1024]; // 64KB buffer
     let mut chunks_sent = 0;
+    let mut total_bytes_sent = 0u64;
+    let mut last_update = std::time::Instant::now();
 
     loop {
         let bytes_read = map_io_error(file.read(&mut buffer), "read file for channel", part_path)?;
@@ -2563,6 +2572,7 @@ fn send_chunk_to_all_channels(
         }
 
         chunks_sent += 1;
+        total_bytes_sent += bytes_read as u64;
         let chunk_data = buffer[..bytes_read].to_vec();
 
         // Send to all data channels
@@ -2577,6 +2587,15 @@ fn send_chunk_to_all_channels(
                 }
             }
         }
+
+        // Update position with rate limiting when called from send_file_to_channel
+        if update_progress {
+            let now = std::time::Instant::now();
+            if now.duration_since(last_update) > Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
+                task.set_position(total_bytes_sent);
+                last_update = now;
+            }
+        }
     }
 
     Ok(())
@@ -2589,7 +2608,7 @@ fn send_chunk_to_channel(
     part_path: &Path,
     data_channel: &Sender<Vec<u8>>,
 ) -> Result<()> {
-    send_chunk_to_all_channels(task, part_path, &[data_channel.clone()])
+    send_chunk_to_all_channels(task, part_path, &[data_channel.clone()], false)
 }
 
 fn download_file(
@@ -2703,7 +2722,7 @@ fn execute_download_request(
                 if file_size == 0 {
                     log::debug!("File {} is 0 bytes, skipping ETag header to force fresh download", file_to_check.display());
                 } else {
-                    // Load ETag from .meta.json format
+                    // Load ETag from .etag.json format
                     if let Ok(Some(metadata)) = task.load_remote_metadata() {
                         if let Some(etag) = metadata.serving_metadata.and_then(|m| m.etag) {
                             log::debug!("Adding If-None-Match header with ETag '{}' for conditional request (file={})", etag, file_to_check.display());
@@ -2830,7 +2849,7 @@ fn handle_http_status_error(
         log::debug!("Client error {} for {} (chunk_path={})", code, resolved_url, task.chunk_path.display());
         // On 404, add URL to mirror skip list since it's likely only missing the current file
         if code == 404 {
-            add_url_to_mirror_skip_list(task);
+            add_url_to_mirror_skip_list(&task.url, resolved_url);
         }
         Err(DownloadError::Fatal { code, message: error_msg }.into())
     } else {
@@ -3050,13 +3069,6 @@ fn finalize_chunk_download(
     existing_bytes: u64,
 ) -> Result<u64> {
     let network_bytes = chunk_append_offset - existing_bytes;
-
-    // Final progress update
-    if task.is_master_task() {
-        let (total_received, total_reused, _downloading_chunks) = task.get_total_progress_bytes();
-        let total_progress = total_received + total_reused;
-        task.set_position(total_progress);
-    }
 
     log::debug!("download_content completed: {} total bytes ({} network bytes) written to {}",
                chunk_append_offset, network_bytes, task.chunk_path.display());
@@ -3823,56 +3835,42 @@ fn download_chunk_task(task: &DownloadTask) -> Result<()> {
 
 /// Process HTTP response and execute content download
 /// Level 4: Response Processing - handles HTTP response validation and content download
-fn process_download_response(
+/// Extract metadata and handle 304 Not Modified responses
+fn handle_304_and_extract_metadata(
     task: &DownloadTask,
     response: &http::Response<ureq::Body>,
     resolved_url: &str,
-    existing_bytes: u64
-) -> Result<()> {
-    // Check for unchanged file case
-    // Handle 304 Not Modified responses for ETag conditional requests
-    if response.status() == 304 {
-        return handle_304_not_modified_response(task);
-    }
-
+) -> Result<Option<ServerMetadata>> {
     let metadata = extract_server_metadata(task, response, resolved_url);
 
     log::debug!("process_download_response for {} chunk: {}, metadata: remote_size={:?}, etag={:?}, last_modified={:?}, response: {:?}",
                resolved_url, task.chunk_path.display(), metadata.remote_size, metadata.etag, metadata.last_modified, response);
 
-    // Record all metadata in servers_metadata for validation in
-    // check_for_more_recent_mirrors()
-    if let Ok(mut servers_metadata) = task.servers_metadata.lock() {
-        servers_metadata.push(metadata.clone());
-    }
-
-    // Store/validate metadata for consistency
+    // Check for unchanged file case
+    // Handle 304 Not Modified responses for ETag conditional requests
     if task.is_master_task() {
-        // For mutable files, check if we should redownload
+        if response.status() == 304 {
+            handle_304_not_modified_response(task)?;
+            return Ok(None);
+        }
         if matches!(task.file_type, FileType::Mutable) {
             let decision = should_redownload(task, &metadata)?;
             if matches!(decision, CacheDecision::UseCache { .. }) {
-                return handle_304_not_modified_response(task);
-            }
-        }
-    } else {
-        // For chunk tasks, validate against master metadata
-        if let Some(master_task) = DOWNLOAD_MANAGER.get_task(&task.url) {
-            if let Ok(master_metadata_guard) = master_task.serving_metadata.lock() {
-                if let Some(ref serving_metadata) = *master_metadata_guard {
-                    if !metadata.matches_with(serving_metadata) {
-                        add_url_to_mirror_skip_list(task);
-                        return Err(eyre!(
-                                "Chunk metadata conflicts with master metadata. Chunk: {:?}, Master: {:?}",
-                                metadata,
-                                serving_metadata
-                        ));
-                    }
-                }
+                handle_304_not_modified_response(task)?;
+                return Ok(None);
             }
         }
     }
 
+    Ok(Some(metadata))
+}
+
+/// Validate range request response status
+fn validate_range_request_response(
+    task: &DownloadTask,
+    response: &http::Response<ureq::Body>,
+    resolved_url: &str,
+) -> Result<()> {
     let range_request_type = task.get_range_request();
     log::debug!("process_download_response: range_request={:?}, response_status={}, chunk_path={}",
                range_request_type, response.status(), task.chunk_path.display());
@@ -3902,16 +3900,116 @@ fn process_download_response(
         log::debug!("process_download_response: No range request validation needed for {}", task.chunk_path.display());
     }
 
-    // Validate response and handle resume logic for master tasks
-    validate_response_content_type(response, resolved_url, task)?;
+    Ok(())
+}
 
-    if let Ok(mut serving_metadata) = task.serving_metadata.lock() {
-        *serving_metadata = Some(metadata.clone());
-    }
-    if let Ok(mut servers_metadata) = task.servers_metadata.lock() {
-        servers_metadata.pop();
+/// Validate metadata consistency between master and chunks
+///
+/// METADATA CONSISTENCY: Two synchronization dimensions
+///
+/// DIMENSION 1: vs old download (resume scenario)
+/// When resuming from part files, we validate:
+///   - parto_files' previous master etag.json (from disk, checked in recover_parto_files)
+///   - master task serving_metadata (prefilled in recover_parto_files from HEAD)
+///   - master response metadata (validated here against prefilled serving_metadata)
+///
+/// This ensures the resumed download continues from the same snapshot as the
+/// previous partial download, preventing corruption from mixing different mirror versions.
+///
+/// DIMENSION 2: in new download (parallel tasks scenario)
+/// During active download, we validate:
+///   - all tasks' response metadata (master + chunks from concurrent HTTP GETs)
+///   - master serving_metadata (may be prefilled if None from resume, or set by first response)
+///
+/// This ensures all chunks come from the same snapshot as the master, preventing
+/// corruption from mixing chunks from different mirrors/versions.
+///
+/// RACE CONDITION HANDLING:
+/// - recover_parto_files() pre-fills task.serving_metadata with HEAD metadata
+///   so master/chunk share a baseline before any GET starts (Dimension 1 + Dimension 2)
+/// - resolve_mirror_and_update_task() reuses that baseline URL instead of
+///   picking a new mirror on resume (Dimension 1)
+/// - Below we ensure:
+///   * master response validates against prefilled serving_metadata (Dimension 1)
+///   * first response establishes master serving_metadata baseline if None (Dimension 2)
+///   * each chunk validates against master serving_metadata (Dimension 2)
+fn validate_metadata_consistency(
+    task: &DownloadTask,
+    metadata: &ServerMetadata,
+    resolved_url: &str,
+) -> Result<()> {
+    // Prevent timestamp going backwards
+    if let Ok(Some(loaded_metadata)) = task.load_remote_metadata() {
+        if let Some(ref serving_metadata) = loaded_metadata.serving_metadata {
+            if metadata.timestamp < serving_metadata.timestamp {
+                return Err(eyre!(
+                    "Reject timestamp going backwards. Current response timestamp: {}, Loaded timestamp: {}",
+                    metadata.timestamp,
+                    serving_metadata.timestamp
+                ));
+            }
+        }
     }
 
+    // DIMENSION 1 + DIMENSION 2: Validate metadata consistency
+    if task.is_master_task() {
+        // DIMENSION 1: Validate master response against prefilled serving_metadata
+        // (from recover_parto_files or previous attempt_number or the first chunk).
+        if let Ok(mut guard) = task.serving_metadata.lock() {
+            if let Some(ref serving_metadata) = *guard {
+                // Dimension 1: master response must match prefilled baseline (resume scenario)
+                if !metadata.matches_with(serving_metadata) {
+                    record_conflict_mirror(&task, resolved_url, metadata);
+                    return Err(eyre!(
+                        "Master metadata conflicts with existing serving_metadata. New: {:?}, Existing: {:?}",
+                        metadata,
+                        serving_metadata
+                    ));
+                }
+            }
+            // Dimension 2: establish baseline for new download (no resume)
+            *guard = Some(metadata.clone());
+        }
+    } else {
+        // DIMENSION 2: Validate chunk response against master serving_metadata
+        // This ensures all chunks come from the same snapshot as the master.
+        if let Some(master_task) = DOWNLOAD_MANAGER.get_task(&task.url) {
+            if let Ok(mut master_metadata_guard) = master_task.serving_metadata.lock() {
+                if let Some(ref serving_metadata) = *master_metadata_guard {
+                    // Chunk must match master baseline
+                    if !metadata.matches_with(serving_metadata) {
+                        record_conflict_mirror(&task, resolved_url, metadata);
+                        return Err(eyre!(
+                            "Chunk metadata conflicts with master metadata. Chunk: {:?}, Master: {:?}",
+                            metadata,
+                            serving_metadata
+                        ));
+                    }
+                } else {
+                    // Edge case: chunk arrived before master response
+                    // Adopt this chunk's metadata as master baseline so subsequent chunks validate
+                    *master_metadata_guard = Some(metadata.clone());
+                }
+            }
+        } else {
+            log::warn!("Cannot find master task for {}", &task.url);
+        }
+
+        // Dimension 2: record for validation by validate_mirror_metadata()
+        if let Ok(mut serving_metadata) = task.serving_metadata.lock() {
+            *serving_metadata = Some(metadata.clone());
+        }
+    }
+
+    Ok(())
+}
+
+/// Setup file size and progress tracking for the task
+fn setup_task_progress_tracking(
+    task: &DownloadTask,
+    response: &http::Response<ureq::Body>,
+    existing_bytes: u64,
+) -> Result<()> {
     if task.is_master_task() {
         task.save_remote_metadata()?;
 
@@ -3924,11 +4022,13 @@ fn process_download_response(
             }
         }
 
-        let file_size_val = task.file_size.load(Ordering::Relaxed);
-        if file_size_val > 0 {
-            task.set_length(file_size_val);
+        if task.attempt_number.load(Ordering::SeqCst) == 0 {
+            let file_size_val = task.file_size.load(Ordering::Relaxed);
+            if file_size_val > 0 {
+                task.set_length(file_size_val);
+            }
+            task.set_position(existing_bytes);
         }
-        task.set_position(existing_bytes);
     }
 
     // Set start time for estimation
@@ -3943,6 +4043,33 @@ fn process_download_response(
             task.duration_ms.store(0, Ordering::Relaxed);
         }
     }
+
+    Ok(())
+}
+
+fn process_download_response(
+    task: &DownloadTask,
+    response: &http::Response<ureq::Body>,
+    resolved_url: &str,
+    existing_bytes: u64
+) -> Result<()> {
+    // Extract metadata and handle 304 responses
+    let metadata = match handle_304_and_extract_metadata(task, response, resolved_url)? {
+        None => return Ok(()), // 304 handled, early return
+        Some(m) => m,
+    };
+
+    // Validate range request response
+    validate_range_request_response(task, response, resolved_url)?;
+
+    // Validate response and handle resume logic for master tasks
+    validate_response_content_type(response, resolved_url, task)?;
+
+    // Validate metadata consistency
+    validate_metadata_consistency(task, &metadata, resolved_url)?;
+
+    // Setup progress tracking
+    setup_task_progress_tracking(task, response, existing_bytes)?;
 
     Ok(())
 }
@@ -3994,7 +4121,7 @@ fn merge_completed_chunk(
         if !data_channels.is_empty() {
             log::debug!("Streaming chunk {} data to {} channels from {}", chunk_index, data_channels.len(), chunk_task.chunk_path.display());
             // For chunk streaming, we bypass the guards since this is fresh data being streamed
-            send_chunk_to_all_channels(&chunk_task, &chunk_task.chunk_path, data_channels)?;
+            send_chunk_to_all_channels(&chunk_task, &chunk_task.chunk_path, data_channels, false)?;
         }
 
         // Decide whether we really need to append this chunk.
@@ -4082,25 +4209,6 @@ fn handle_failed_chunk(
     }
 }
 
-/// Update progress display for chunks that are still pending or downloading
-fn update_chunk_progress(
-    chunk_task: &DownloadTask,
-    master_task: &DownloadTask
-) {
-    // Update progress with current total
-    let (total_received, total_reused, downloading_chunks) = master_task.get_total_progress_bytes();
-    let total_progress = total_received + total_reused;
-
-    // Update progress bar message with chunk count if there are downloading chunks
-    let resolved_url = chunk_task.resolved_url.lock()
-        .map(|r| r.clone())
-        .unwrap_or_else(|_| chunk_task.url.clone());
-
-    master_task.set_message(format_progress_message(&resolved_url, downloading_chunks));
-    master_task.set_position(total_progress);
-    log::trace!("Chunk progress update: {} bytes received", total_received);
-}
-
 fn wait_for_chunks_and_merge(master_task: &DownloadTask) -> Result<()> {
     // Check if we have any chunks to process at all
     let chunk_count = {
@@ -4176,6 +4284,8 @@ fn process_chunks_at_level(
         let chunk = &chunks[0];
         let chunk_index = chunks.len() as i32; // For logging (chunks.len() - index from end)
 
+        update_chunk_progress(chunk, master_task);
+
         // Check chunk status without holding any locks
         match chunk.get_status() {
             DownloadStatus::Completed => {
@@ -4193,17 +4303,11 @@ fn process_chunks_at_level(
                     process_chunks_at_level(master_task, chunk, data_channels, last_merged_offset, any_fail, 3)?;
                 }
 
-                // Remove this chunk from the list
+                // Remove this chunk from the local processing list so we don't
+                // re-process it, but keep it in the parent's `chunk_tasks` so
+                // global progress accounting (get_total_progress_bytes) remains
+                // accurate and monotonic.
                 chunks.remove(0);
-
-                // Update the parent task's chunk list
-                {
-                    let mut chunks_guard = parent_task.chunk_tasks.lock()
-                        .map_err(|e| eyre!("Failed to lock chunk tasks for removal: {}", e))?;
-                    if !chunks_guard.is_empty() {
-                        chunks_guard.remove(0);
-                    }
-                }
             },
             DownloadStatus::Failed(ref err) => {
                 // Handle chunk failure and retry logic
@@ -4213,23 +4317,15 @@ fn process_chunks_at_level(
                     std::thread::sleep(std::time::Duration::from_millis(CHUNK_SLEEP_DURATION_MS));
                 } else {
                     // Max retries exceeded - record failure and remove chunk
+                    // from the local processing list. We intentionally keep the
+                    // failed chunk in the parent's `chunk_tasks` so that
+                    // progress calculations based on the master task's view of
+                    // all chunks do not suddenly drop when chunks are removed.
                     *any_fail = true;
                     chunks.remove(0);
-
-                    // Update the parent task's chunk list
-                    {
-                        let mut chunks_guard = parent_task.chunk_tasks.lock()
-                            .map_err(|e| eyre!("Failed to lock chunk tasks for removal: {}", e))?;
-                        if !chunks_guard.is_empty() {
-                            chunks_guard.remove(0);
-                        }
-                    }
                 }
             },
             DownloadStatus::Pending | DownloadStatus::Downloading => {
-                // Chunk is not ready yet, continue waiting
-                update_chunk_progress(chunk, master_task);
-
                 // Sleep WITHOUT holding any locks
                 std::thread::sleep(std::time::Duration::from_millis(CHUNK_SLEEP_DURATION_MS));
             }
@@ -4773,7 +4869,7 @@ fn recover_chunks_for_parto_files(
 /// Check if any mirror has more recent metadata than the current download
 /// This is useful for detecting when mirrors are out of sync
 /// Validates all level tasks' servers_metadata against master task's serving_metadata
-fn check_for_more_recent_mirrors(task: &DownloadTask) {
+fn validate_mirror_metadata(task: &DownloadTask) {
     if !task.is_adb || !task.is_master_task() {
         return;
     }
@@ -4792,6 +4888,29 @@ fn check_for_more_recent_mirrors(task: &DownloadTask) {
 
     // Use iterate_task_levels to validate all level tasks
     task.iterate_task_levels(|level_task, _level| {
+        // 1) Compare each level task's serving_metadata with the master's serving_metadata
+        if let Ok(level_serving_guard) = level_task.serving_metadata.lock() {
+            if let Some(ref level_serving_metadata) = *level_serving_guard {
+                if !level_serving_metadata.matches_with(master_serving_metadata) {
+                    log::warn!(
+                        "Level task {}: serving_metadata is inconsistent with master. \
+                         Level: remote_size={:?}, etag={:?}, last_modified={:?}, timestamp={}; \
+                         Master: remote_size={:?}, etag={:?}, last_modified={:?}, timestamp={}",
+                        level_task.url,
+                        level_serving_metadata.remote_size,
+                        level_serving_metadata.etag,
+                        level_serving_metadata.last_modified,
+                        level_serving_metadata.timestamp,
+                        master_serving_metadata.remote_size,
+                        master_serving_metadata.etag,
+                        master_serving_metadata.last_modified,
+                        master_serving_metadata.timestamp
+                    );
+                }
+            }
+        }
+
+        // 2) Detect mirrors that appear more recent than the master
         if let Ok(servers_metadata_guard) = level_task.servers_metadata.lock() {
             for server_metadata in servers_metadata_guard.iter() {
                 if server_metadata.timestamp > master_serving_metadata.timestamp {
@@ -4813,8 +4932,11 @@ fn check_for_more_recent_mirrors(task: &DownloadTask) {
 fn finalize_file(task: &DownloadTask) -> Result<()> {
     log::debug!("finalize_file starting for {} -> {}", task.chunk_path.display(), task.final_path.display());
 
+    // Final progress update
+    task.set_position(task.file_size.load(Ordering::Relaxed));
+
     // Check if any mirror has more recent metadata than the current download
-    check_for_more_recent_mirrors(task);
+    validate_mirror_metadata(task);
 
     // Check if the chunk file exists before attempting to rename
     if !task.chunk_path.exists() {
@@ -5142,6 +5264,44 @@ fn format_progress_message(resolved_url: &str, downloading_chunks: usize) -> Str
     }
 }
 
+fn update_master_task_progress(master_task: &DownloadTask, resolved_url: String) {
+    let (total_received, total_reused, downloading_chunks) = master_task.get_total_progress_bytes();
+
+    master_task.set_position(total_received + total_reused);
+    master_task.set_message(format_progress_message(&resolved_url, downloading_chunks));
+}
+
+/// Update progress when master chunk is downloading
+fn update_download_progress(
+    task: &DownloadTask,
+    last_update: &mut std::time::Instant
+) {
+    if !task.is_master_task() {
+        return;
+    }
+
+    let now = std::time::Instant::now();
+    if now.duration_since(*last_update) > Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
+        update_master_task_progress(task, task.get_resolved_url());
+        *last_update = now;
+    }
+}
+
+/// Update progress when master task is waiting for other chunks downloading
+fn update_chunk_progress(
+    chunk_task: &DownloadTask,
+    master_task: &DownloadTask
+) {
+    // Avoid redrawing completed/failed bars; repeated set_position/set_message on
+    // finished bars causes MultiProgress to reprint the line each refresh.
+    match master_task.get_status() {
+        DownloadStatus::Completed | DownloadStatus::Failed(_) => return,
+        _ => {}
+    }
+
+    update_master_task_progress(master_task, chunk_task.get_resolved_url());
+}
+
 /// Setup file for download content writing
 fn setup_download_file(task: &DownloadTask, existing_bytes: u64) -> Result<File> {
     let chunk_path = &task.chunk_path;
@@ -5260,29 +5420,6 @@ fn write_chunk_data(
     }
 
     return Ok(write_len);
-}
-
-/// Update progress tracking for download tasks
-fn update_download_progress(
-    task: &DownloadTask,
-    last_update: &mut std::time::Instant
-) {
-    let now = std::time::Instant::now();
-    if now.duration_since(*last_update) > Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
-        if task.is_master_task() {
-            // For master tasks, show total progress across all chunks (reused + network bytes)
-            let (total_received, total_reused, downloading_chunks) = task.get_total_progress_bytes();
-            task.set_position(total_received + total_reused);
-
-            // Update progress bar message with chunk count if there are downloading chunks
-            let resolved_url = task.resolved_url.lock()
-                .map(|r| r.clone())
-                .unwrap_or_else(|_| task.url.clone());
-            let message = format_progress_message(&resolved_url, downloading_chunks);
-            task.set_message(message);
-        }
-        *last_update = now;
-    }
 }
 
 /// Check for on-demand chunking execution (master tasks and L2 chunks)
@@ -5425,7 +5562,7 @@ fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)> {
  *    Mirrors are excluded when no_content >= 3, allowing temporary 404s without
  *    permanently blacklisting mirrors.
  *
- * 7. **Unified Metadata Storage**: Extended .etag file to .meta.json format that stores
+ * 7. **Unified Metadata Storage**: Extended .etag file to .etag.json format that stores
  *    both serving_metadata (from the serving mirror) and servers_metadata (from all
  *    probed mirrors) for easier debugging.
  *
@@ -5474,8 +5611,39 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
 
     log::debug!("resolve_mirror_and_update_task: Resolving mirror for URL {}", url);
 
+    // DIMENSION 1: vs old download (resume scenario)
+    // If this task already has serving_metadata with a fully-resolved URL
+    // (prefilled from recover_parto_files() on resume), reuse that URL
+    // instead of selecting a new mirror. This ensures the resumed download
+    // continues from the same mirror snapshot as the previous partial download,
+    // maintaining consistency across the "vs old download" dimension.
+    if let Ok(guard) = task.serving_metadata.lock() {
+        if let Some(ref sm) = *guard {
+            if sm.url.starts_with("http://") || sm.url.starts_with("https://") {
+                log::debug!(
+                    "resolve_mirror_and_update_task: Reusing resolved URL from serving_metadata (resume): {}",
+                    sm.url
+                );
+                if let Ok(mut resolved) = task.resolved_url.lock() {
+                    *resolved = sm.url.clone();
+                }
+                // Best-effort: set mirror_inuse by matching site key. Even if
+                // this fails, the resolved URL is enough for correctness.
+                if let Ok(mirrors) = mirror::MIRRORS.lock() {
+                    let site = mirror::url2site(&sm.url);
+                    if let Some(m) = mirrors.mirrors.get(&site) {
+                        if let Ok(mut mirror_guard) = task.mirror_inuse.lock() {
+                            *mirror_guard = Some(m.clone());
+                        }
+                    }
+                }
+                return Ok(sm.url.clone());
+            }
+        }
+    }
+
     // For is_adb files, use special mirror selection that checks metadata from multiple mirrors
-    if task.is_adb {
+    if task.is_adb && task.is_master_task() {
         return resolve_mirror_for_adb(task, url, need_range);
     }
 
@@ -5513,20 +5681,12 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
     Ok(resolved_url)
 }
 
-/// Resolve mirror for ADB (Alpine/Arch Database) files by checking metadata from multiple mirrors
-///
-/// This function:
-/// 1. Calls select_mirror_with_usage_tracking() up to 6 times to get 3 unique mirrors
-/// 2. For each mirror, calls fetch_server_metadata() to get Last-Modified/ETag
-/// 3. Selects the mirror with the most recent last_modified
-/// 4. Calls add_url_to_mirror_skip_list() for mirrors whose metadata doesn't match the selected one
-///
-/// Comment: 3 tries are good enough to find either the (maybe most) recent or most common repodata
-/// (which reduces 404 risk on fetching package files)
-fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> Result<String> {
-    log::debug!("resolve_mirror_for_adb: Resolving mirror for ADB file {}", url);
-
-    // Collect up to 3 unique mirrors by calling select_mirror_with_usage_tracking up to 6 times
+/// Collect unique mirrors for ADB files by calling select_mirror_with_usage_tracking up to 6 times
+fn collect_unique_mirrors_for_adb(
+    task: &DownloadTask,
+    url: &str,
+    need_range: bool,
+) -> Result<Vec<crate::mirror::Mirror>> {
     let mut unique_mirrors = Vec::new();
     let mut seen_sites = std::collections::HashSet::new();
     let mut attempts = 0;
@@ -5558,16 +5718,33 @@ fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> R
         return Err(eyre!("Failed to find any mirrors for ADB file {}", url));
     }
 
+    Ok(unique_mirrors)
+}
+
+/// Fetch metadata from each mirror for ADB files
+fn fetch_mirror_metadata_for_adb(
+    task: &DownloadTask,
+    unique_mirrors: Vec<crate::mirror::Mirror>,
+    url: &str,
+) -> Result<Vec<(crate::mirror::Mirror, String, ServerMetadata)>> {
     log::debug!("resolve_mirror_for_adb: Collected {} unique mirrors, fetching metadata", unique_mirrors.len());
 
-    // Fetch metadata from each mirror
     let mut mirror_metadata = Vec::new();
-    for mirror in &unique_mirrors {
+    let total_mirrors = unique_mirrors.len();
+    for (idx, mirror) in unique_mirrors.iter().enumerate() {
         let test_url = format_and_resolve_mirror_url(
             mirror,
             &task.repodata_name,
             url,
         )?;
+
+        // Surface progress to the user while we probe mirrors
+        task.set_message(format!(
+            "Probing mirror {}/{}: {}",
+            idx + 1,
+            total_mirrors,
+            mirror.url
+        ));
 
         match fetch_server_metadata(task, &test_url) {
             Ok(metadata) => {
@@ -5576,6 +5753,7 @@ fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> R
                 mirror_metadata.push((mirror.clone(), test_url, metadata));
             }
             Err(e) => {
+                task.set_message(format!("Probe failed for {}: {}", mirror.url, e));
                 log::debug!("resolve_mirror_for_adb: Failed to fetch metadata from {}: {}", mirror.url, e);
             }
         }
@@ -5585,6 +5763,14 @@ fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> R
         return Err(eyre!("Failed to fetch metadata from any mirror for ADB file {}", url));
     }
 
+    Ok(mirror_metadata)
+}
+
+/// Select the best mirror based on metadata and update the task
+fn select_and_update_mirror_for_adb(
+    task: &DownloadTask,
+    mirror_metadata: Vec<(crate::mirror::Mirror, String, ServerMetadata)>,
+) -> Result<String> {
     // Select mirror with most recent last_modified
     let (selected_mirror, selected_url, selected_metadata) = mirror_metadata.iter()
         .max_by_key(|(_, _, metadata)| metadata.timestamp)
@@ -5593,25 +5779,11 @@ fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> R
     log::debug!("resolve_mirror_for_adb: Selected mirror {} with timestamp {} (most recent)",
                selected_mirror.url, selected_metadata.timestamp);
 
-    // Add metadata to servers_metadata for debugging
-    if let Ok(mut servers_metadata) = task.servers_metadata.lock() {
-        for (_, _, metadata) in &mirror_metadata {
-            servers_metadata.push(metadata.clone());
-        }
-    }
-
     // Add URLs to skip list for mirrors whose metadata doesn't match the selected one
     for (mirror, test_url, metadata) in &mirror_metadata {
         if !metadata.matches_with(selected_metadata) {
             log::debug!("resolve_mirror_for_adb: Mirror {} has mismatched metadata, adding to skip list", mirror.url);
-            // Extract site and add URL to skip list
-            let site_key = mirror::url2site(test_url);
-            if let Ok(mut mirrors) = mirror::MIRRORS.lock() {
-                if let Some(mirror_in_collection) = mirrors.mirrors.get_mut(&site_key) {
-                    mirror_in_collection.add_skip_url(url);
-                    log::debug!("resolve_mirror_for_adb: Added {} to skip_urls for mirror site {}", url, site_key);
-                }
-            }
+            record_conflict_mirror(&task, test_url, &metadata);
         }
     }
 
@@ -5626,6 +5798,24 @@ fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> R
     }
 
     Ok(selected_url.clone())
+}
+
+/// Resolve mirror for ADB (Alpine/Arch Database) files by checking metadata from multiple mirrors
+///
+/// This function:
+/// 1. Calls select_mirror_with_usage_tracking() up to 6 times to get 3 unique mirrors
+/// 2. For each mirror, calls fetch_server_metadata() to get Last-Modified/ETag
+/// 3. Selects the mirror with the most recent last_modified
+/// 4. Calls add_url_to_mirror_skip_list() for mirrors whose metadata doesn't match the selected one
+///
+/// Comment: 3 tries are good enough to find either the (maybe most) recent or most common repodata
+/// (which reduces 404 risk on fetching package files)
+fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> Result<String> {
+    log::debug!("resolve_mirror_for_adb: Resolving mirror for ADB file {}", url);
+
+    let unique_mirrors = collect_unique_mirrors_for_adb(task, url, need_range)?;
+    let mirror_metadata = fetch_mirror_metadata_for_adb(task, unique_mirrors, url)?;
+    select_and_update_mirror_for_adb(task, mirror_metadata)
 }
 
 // ===========================
@@ -5780,7 +5970,23 @@ fn validate_immutable_file(
 }
 
 fn recover_parto_files(task: &DownloadTask) -> Result<ValidationResult> {
+    let parto_files = find_parto_files(task)?;
+
+    if parto_files.is_empty() {
+        return Ok(ValidationResult::StartFresh);
+    }
+
     let mut expected_size = task.file_size.load(Ordering::Relaxed);
+
+    // SYNC DIMENSION 1: vs old download (resume scenario)
+    // When resuming from part files, we need to validate:
+    //   - parto_files' previous master etag.json (from disk)
+    //   - master task serving_metadata (prefilled here)
+    //   - master response metadata (validated later in process_download_response)
+    //
+    // This ensures the resumed download continues from the same snapshot
+    // as the previous partial download, preventing corruption from mixing
+    // different mirror versions.
 
     // Mutable files have no expected_size beforehand
     if task.file_type != FileType::Immutable {
@@ -5788,11 +5994,21 @@ fn recover_parto_files(task: &DownloadTask) -> Result<ValidationResult> {
             if let Some(serving_metadata) = metadata.serving_metadata {
                 match fetch_server_metadata(task, &serving_metadata.url) {
                     Ok(server_metadata) => {
-                        // Check part files consistency using final_path since it's per-file not per-chunk info
+                        // Validate: server_metadata (current HEAD) matches serving_metadata (from etag.json)
+                        // This is the first check in the "vs old download" dimension
                         if !server_metadata.matches_with(&serving_metadata) {
-                            log::warn!("Server metadata conflicts with existing part files");
+                            log::info!("Server metadata conflicts with existing part files (etag.json vs current HEAD)");
                         } else {
                             expected_size = server_metadata.remote_size.unwrap_or(0);
+
+                            // Prefill serving_metadata so that resumed master and chunk
+                            // tasks share a stable baseline before any new HTTP GET starts.
+                            // This establishes the baseline for both:
+                            // - Dimension 1: master response will validate against this prefilled value
+                            // - Dimension 2: chunk responses will validate against master's serving_metadata
+                            if let Ok(mut guard) = task.serving_metadata.lock() {
+                                *guard = Some(server_metadata.clone());
+                            }
                         }
                     }
                     Err(e) => {
@@ -5811,14 +6027,8 @@ fn recover_parto_files(task: &DownloadTask) -> Result<ValidationResult> {
         return Ok(ValidationResult::StartFresh);
     }
 
-    let parto_files = find_parto_files(task)?;
-
-    if parto_files.is_empty() {
-        return Ok(ValidationResult::StartFresh);
-    }
-
     if let Err(e) = recover_chunks_for_parto_files(task, parto_files, expected_size) {
-        log::warn!("Failed to recover from part files: {}", e);
+        log::info!("Cannot recover from part files: {}", e);
         log::info!("Cleaning up invalid part files and starting fresh download");
         cleanup_related_part_files(task)?;
         return Ok(ValidationResult::StartFresh);
@@ -6306,29 +6516,26 @@ fn adjust_and_create_chunks(
     add_chunk_tasks(master_task, chunk_tasks, ChunkStatus::HasBeforehandChunk)
 }
 
-fn add_url_to_mirror_skip_list(task: &DownloadTask) {
-    // Get resolved URL; do not use task.mirror_inuse -- it's None at the call time
-    let resolved_url = {
-        if let Ok(resolved_guard) = task.resolved_url.lock() {
-            resolved_guard.clone()
-        } else {
-            log::warn!("Failed to lock resolved_url for task URL {}", task.url);
-            return;
-        }
-    };
+fn record_conflict_mirror(task: &DownloadTask, resolved_url: &str, metadata: &ServerMetadata) {
+    add_url_to_mirror_skip_list(&task.url, resolved_url);
 
-    // Return early if resolved URL is the same as original URL or still contains $mirror
-    if resolved_url == task.url || resolved_url.contains("$mirror") {
-        log::debug!("add_url_to_mirror_skip_list: No resolved URL found for task URL {}", task.url);
+    // Record different metadata in servers_metadata for validation in validate_mirror_metadata()
+    if let Ok(mut servers_metadata) = task.servers_metadata.lock() {
+        servers_metadata.push(metadata.clone());
+    }
+}
+
+fn add_url_to_mirror_skip_list(url: &str, resolved_url: &str) {
+    if url == resolved_url || resolved_url.contains("$mirror") {
+        log::debug!("add_url_to_mirror_skip_list: No resolved URL found for task URL {}", resolved_url);
         return;
     }
 
     // Extract mirror site from resolved URL
     let site_key = mirror::url2site(&resolved_url);
-    log::debug!("add_url_to_mirror_skip_list: task.url={}, resolved_url={}, site_key={}", task.url, resolved_url, site_key);
+    log::debug!("add_url_to_mirror_skip_list: resolved_url={}, site_key={}", resolved_url, site_key);
 
     // Add URL to mirror skip list
-    let url = &task.url;
     if let Ok(mut mirrors) = mirror::MIRRORS.lock() {
         if let Some(mirror_in_collection) = mirrors.mirrors.get_mut(&site_key) {
             mirror_in_collection.add_skip_url(url);
