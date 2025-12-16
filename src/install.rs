@@ -465,6 +465,18 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
     } else if fhs_file.to_string_lossy().contains("/gconv-modules.d/") {
         // iconvconfig handles ONLY normal files, NOT symlinks
         hard_link_or_copy(fs_file, target_path, false)?;
+    } else if fhs_file.to_string_lossy().starts_with("usr/lib/librustc_driver") {
+        // rustc determines its sysroot based on the location of librustc_driver*.so.
+        // If this .so is a symlink into the store and that path contains a colon
+        // (e.g. "__rust__1:1.92.0-1__x86_64"), then Cargo will see a sysroot
+        // under that store path and construct LD_LIBRARY_PATH entries that
+        // include a colon *inside* a path component, which std::env::join_paths
+        // rejects with "path segment contains separator `:`".
+        //
+        // To avoid this, make librustc_driver*.so an actual file in the env_root
+        // (via hardlink or copy) instead of a symlink into the store, so that
+        // `rustc --print=sysroot` returns the env_root-based sysroot.
+        hard_link_or_copy(fs_file, target_path, true)?;
     } else {
         symlink(fs_file, target_path)
             .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
