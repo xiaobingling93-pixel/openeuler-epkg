@@ -981,42 +981,16 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
 
 impl PackageManager {
 
-    /// Build a mapping from old pkgkey to new pkgkey for upgrades using name+arch matching.
-    fn build_upgrade_map(
-        upgrades_new: &HashMap<String, InstalledPackageInfo>,
-        upgrades_old: &HashMap<String, InstalledPackageInfo>,
-    ) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-
-        for old_pkgkey in upgrades_old.keys() {
-            // Exact match first
-            if upgrades_new.contains_key(old_pkgkey) {
-                map.insert(old_pkgkey.clone(), old_pkgkey.clone());
-                continue;
-            }
-
-            // Fallback to name + arch match
-            if let Ok((old_name, _, old_arch)) = package::parse_pkgkey(old_pkgkey) {
-                if let Some((new_pkgkey, _)) = upgrades_new.iter().find(|(new_key, _)| {
-                    if let Ok((new_name, _, new_arch)) = package::parse_pkgkey(new_key) {
-                        new_name == old_name && new_arch == old_arch
-                    } else {
-                        false
-                    }
-                }) {
-                    map.insert(old_pkgkey.clone(), new_pkgkey.clone());
-                }
-            }
-        }
-
-        map
-    }
-
     pub fn prepare_installation_plan(
-        &self,
+        &mut self,
         all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
     ) -> Result<InstallationPlan> {
         let mut plan = InstallationPlan::default();
+        // Take a snapshot of currently installed packages to avoid borrow-checker
+        // conflicts between &mut self and &self.installed_packages during upgrade
+        // detection, while still using the latest view of installed packages at
+        // the time this plan is prepared.
+        let installed_snapshot = self.installed_packages.clone();
 
         for (session_pkgkey, session_pkg_info) in all_packages_for_session {
             if self.installed_packages.contains_key(session_pkgkey) {
@@ -1024,17 +998,22 @@ impl PackageManager {
                 continue;
             }
 
-            let (is_upgrade, old_pkgkey) = find_upgrade_target(session_pkgkey, session_pkg_info, &self.installed_packages);
+            let (is_upgrade, old_pkgkey) = self.find_upgrade_target(
+                session_pkgkey,
+                session_pkg_info,
+                &installed_snapshot,
+            );
             if is_upgrade {
                 plan.upgrades_new.insert(session_pkgkey.clone(), session_pkg_info.clone());
                 plan.upgrades_old.insert(old_pkgkey.clone(), self.installed_packages[&old_pkgkey].clone());
+                // Directly build deterministic old->new mapping for upgrades (used in UI and processing).
+                // For AUR packages, find_upgrade_target() already applies AUR-aware matching logic
+                // (matching by pkgname+version and allowing arch changes from "any" to actual arch).
+                plan.upgrade_map_old_to_new.insert(old_pkgkey.clone(), session_pkgkey.clone());
             } else {
                 plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
             }
         }
-
-        // Build deterministic old->new mapping for upgrades (used in UI and processing)
-        plan.upgrade_map_old_to_new = Self::build_upgrade_map(&plan.upgrades_new, &plan.upgrades_old);
 
         // Find and add orphaned packages to removals
         self.add_orphans_to_removes(&mut plan)?;
@@ -1044,7 +1023,6 @@ impl PackageManager {
 
         Ok(plan)
     }
-
 
     // link files from env_root to store_fs_dir
     pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
@@ -1298,13 +1276,14 @@ impl PackageManager {
         self.execute_removals(&plan, &store_root, &env_root, package_format)?;
 
         // Execute installations and upgrades
-        self.execute_installations(&plan, &store_root, &env_root, package_format)?;
+        self.execute_installations(&mut plan, &store_root, &env_root, package_format)?;
 
         // Execute exposure changes
         self.execute_unexpose_operations(&plan, &env_root)?;
         self.execute_expose_operations(&plan, &store_root, &env_root)?;
 
-        // Update metadata for skipped reinstalls
+        // Update metadata for skipped reinstalls (uses plan.skipped_reinstalls as the source
+        // of session_info).
         self.update_skipped_reinstalls_metadata(&plan)?;
 
         self.record_history(&new_generation, Some(&plan))?;
@@ -1378,7 +1357,7 @@ impl PackageManager {
     }
 
     /// Execute package installations and upgrades
-    fn execute_installations(&mut self, plan: &InstallationPlan, store_root: &Path, env_root: &Path, package_format: PackageFormat) -> Result<()> {
+    fn execute_installations(&mut self, plan: &mut InstallationPlan, store_root: &Path, env_root: &Path, package_format: PackageFormat) -> Result<()> {
         if plan.fresh_installs.is_empty() && plan.upgrades_new.is_empty() {
             return Ok(());
         }
@@ -1408,7 +1387,7 @@ impl PackageManager {
             completed_packages.extend(aur_completed);
         }
 
-        // Step 4: Update installed packages metadata
+        // Step 5: Update installed packages metadata
         self.installed_packages.extend(completed_packages);
 
         Ok(())
@@ -1457,21 +1436,18 @@ impl PackageManager {
         let pending_urls: Vec<String> = url_to_pkgkeys.keys().cloned().collect();
 
         // While downloading, link packages that already exist in the store (have non-empty pkgline)
-        // Filter out AUR packages from packages_with_pkglines
+        // For AUR packages that already have a pkgline, we also treat them as completed here
+        // (they were built before and have a valid store path), so we don't rebuild them.
         let mut completed_packages = HashMap::new();
         let mut aur_packages = HashMap::new();
         for (pkgkey, package_info) in packages_with_pkglines {
-            if self.is_aur_package(pkgkey) {
-                aur_packages.insert(pkgkey.clone(), package_info.clone());
-            } else {
-                // Link the package from store to env_root
-                let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-                self.link_package(&store_fs_dir, &env_root.to_path_buf())
-                    .with_context(|| format!("Failed to link existing package {}", pkgkey))?;
+            // Link the package from store to env_root
+            let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+            self.link_package(&store_fs_dir, &env_root.to_path_buf())
+                .with_context(|| format!("Failed to link existing package {}", pkgkey))?;
 
-                // Add to completed packages
-                completed_packages.insert(pkgkey.clone(), package_info.clone());
-            }
+            // Add to completed packages (including AUR packages that already exist in the store)
+            completed_packages.insert(pkgkey.clone(), package_info.clone());
         }
 
         // Process downloads for packages that needed to be downloaded
@@ -1495,7 +1471,7 @@ impl PackageManager {
     }
 
     /// Process installation results (upgrades and fresh installations)
-    pub(crate) fn process_installation_results(
+    pub fn process_installation_results(
         &mut self,
         plan: &InstallationPlan,
         completed_packages: &HashMap<String, InstalledPackageInfo>,
@@ -1725,9 +1701,10 @@ impl PackageManager {
 
     /// Process a downloaded package file
     ///
-    /// Shared helper function to unpack and link a package from a file path
-    /// Returns the actual package key and updated package info
-    pub(crate) fn unpack_and_link_package(
+    /// Shared helper function to unpack and link a package from a file path.
+    /// Returns the actual package key and updated package info.
+    ///
+    pub fn unpack_and_link_package(
         &mut self,
         file_path: &str,
         pkgkey: &str,
@@ -2231,39 +2208,53 @@ impl PackageManager {
             }
         }
     }
-}
 
-/// Determine if a package is an upgrade by comparing package names and architectures
-/// Returns (is_upgrade, old_pkgkey) if it's an upgrade, (false, "") otherwise
-pub fn find_upgrade_target(
-    new_pkgkey: &str,
-    _new_pkg_info: &InstalledPackageInfo,
-    old_packages: &HashMap<String, InstalledPackageInfo>,
-) -> (bool, String) {
-    let (new_pkgname, _, new_arch) = match package::parse_pkgkey(new_pkgkey) {
-        Ok(parts) => parts,
-        Err(_) => return (false, String::new()),
-    };
+    /// Determine if a package is an upgrade by comparing package names and architectures
+    /// Returns (is_upgrade, old_pkgkey) if it's an upgrade, (false, "") otherwise
+    ///
+    /// For AUR packages, matches by pkgname+version only (ignoring arch).
+    /// For non-AUR packages, matches by pkgname+arch (version is compared separately if needed).
+    pub fn find_upgrade_target(
+        &mut self,
+        new_pkgkey: &str,
+        _new_pkg_info: &InstalledPackageInfo,
+        old_packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> (bool, String) {
+        let (new_pkgname, new_version, new_arch) = match package::parse_pkgkey(new_pkgkey) {
+            Ok(parts) => parts,
+            Err(_) => return (false, String::new()),
+        };
 
-    for (old_pkgkey, _old_pkg_info) in old_packages {
-        if old_pkgkey == new_pkgkey {
-            continue;
-        }
+        let is_aur = self.is_aur_package(new_pkgkey);
 
-        match package::parse_pkgkey(old_pkgkey) {
-            Ok((old_pkgname, _, old_arch)) => {
-                if new_pkgname == old_pkgname && new_arch == old_arch {
-                    return (true, old_pkgkey.clone());
-                }
-            }
-            Err(_) => {
-                // Skip invalid package keys
+        for (old_pkgkey, _old_pkg_info) in old_packages {
+            if old_pkgkey == new_pkgkey {
                 continue;
             }
-        }
-    }
 
-    (false, String::new())
+            match package::parse_pkgkey(old_pkgkey) {
+                Ok((old_pkgname, old_version, old_arch)) => {
+                    if is_aur {
+                        // For AUR packages: match by pkgname+version only (arch may change from "any" to actual arch)
+                        if new_pkgname == old_pkgname && new_version == old_version {
+                            return (true, old_pkgkey.clone());
+                        }
+                    } else {
+                        // For non-AUR packages: match by pkgname+arch (version comparison handled separately)
+                        if new_pkgname == old_pkgname && new_arch == old_arch {
+                            return (true, old_pkgkey.clone());
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Skip invalid package keys
+                    continue;
+                }
+            }
+        }
+
+        (false, String::new())
+    }
 }
 
 #[cfg(test)]
@@ -2856,7 +2847,7 @@ impl PackageManager {
 
     /// Create a delta_world HashMap from package specs
     /// Parses each spec and returns a map of package name -> version constraint
-    pub(crate) fn create_delta_world_from_specs(package_specs: &[String]) -> HashMap<String, String> {
+    pub fn create_delta_world_from_specs(package_specs: &[String]) -> HashMap<String, String> {
         use crate::parse_requires::{parse_package_spec_with_version, format_version_constraint_for_world};
         use crate::models::PackageFormat;
 
@@ -2881,7 +2872,7 @@ impl PackageManager {
 
     /// Update self.world from delta_world
     /// Also automatically removes any delta_world keys from world['no-install']
-    pub(crate) fn apply_delta_world(&mut self, delta_world: &HashMap<String, String>) {
+    pub fn apply_delta_world(&mut self, delta_world: &HashMap<String, String>) {
         // Remove delta_world keys from no-install if they exist
         let packages_to_remove: Vec<String> = delta_world.keys().cloned().collect();
         self.remove_from_no_install(packages_to_remove.iter());

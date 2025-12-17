@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufReader, BufWriter, Read};
+use std::io::{self, Read};
 use std::path::Path;
 use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
 use tar::Archive;
@@ -280,7 +280,7 @@ pub fn calculate_file_sha256(path: &Path) -> Result<String> {
 }
 
 /// Define the preferred order for common package fields
-pub fn get_field_order() -> &'static [&'static str] {
+fn get_field_order() -> &'static [&'static str] {
     &[
         "pkgname", "source", "version", "release", "format", "repo",
         "summary", "description", "homepage", "license", "arch", "maintainer",
@@ -297,6 +297,7 @@ pub fn get_field_order() -> &'static [&'static str] {
         "ghcPackage", "efiVendor", "cnfIgnoreCommands", "cnfVisiblePkgname", "cnfExtraCommands",
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
         "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
+        "xdata", "pkgbase", "backup",
         "pkgkey", "status",
     ]
 }
@@ -376,32 +377,9 @@ pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Resul
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn unzst(input_path: &str, output_path: &str) -> Result<()> {
-    let input_file = fs::File::open(input_path)
-        .wrap_err_with(|| format!("Failed to open input file: {}", input_path))?;
-    let reader = BufReader::new(input_file);
-
-    let parent_dir = Path::new(output_path).parent()
-        .ok_or_else(|| eyre::eyre!("Cannot determine parent directory for: {}", output_path))?;
-    fs::create_dir_all(parent_dir)
-        .wrap_err_with(|| format!("Failed to create directory: {}", parent_dir.display()))?;
-
-    let output_file = fs::File::create(output_path)
-        .wrap_err_with(|| format!("Failed to create output file: {}", output_path))?;
-    let mut writer = BufWriter::new(output_file);
-
-    let mut decoder = Decoder::new(reader)
-        .wrap_err_with(|| format!("Failed to create Zstandard decoder for file: {}", input_path))?;
-    io::copy(&mut decoder, &mut writer)
-        .wrap_err_with(|| format!("Failed to decompress {} to {}", input_path, output_path))?;
-
-    Ok(())
-}
-
 /// Collect all pkglines from the epkg store and organize them by pkgkey
 /// Returns a HashMap where key is pkgkey (pkgname__version__arch) and value is a list of matching pkglines
-pub fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String, Vec<String>>> {
+fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String, Vec<String>>> {
     use crate::models::dirs;
     use crate::package::pkgline2pkgkey;
     use std::fs;
@@ -557,7 +535,7 @@ fn add_repo_fields(
             package_fields.insert("repo".to_string(), repo_package.repodata_name.clone());
         }
     }
-    
+
     // Add format if not present in store
     if !package_fields.contains_key("format") {
         let format_str = repo_package.format.to_str();
@@ -604,9 +582,54 @@ fn add_repo_fields(
 }
 
 
+/// Match AUR packages using relaxed criteria: pkgname, version, homepage, summary, buildRequires
+fn packages_match_aur(repodata_pkg: &crate::models::Package, store_pkg: &crate::models::Package) -> bool {
+    // For AUR packages, use relaxed matching: pkgname, version, homepage, summary, buildRequires
+    if repodata_pkg.pkgname != store_pkg.pkgname
+        || repodata_pkg.version != store_pkg.version {
+        return false;
+    }
+
+    // Compare homepage if available
+    if !repodata_pkg.homepage.is_empty() && !store_pkg.homepage.is_empty() {
+        if repodata_pkg.homepage != store_pkg.homepage {
+            return false;
+        }
+    }
+
+    // Compare summary if available
+    if !repodata_pkg.summary.is_empty() && !store_pkg.summary.is_empty() {
+        if repodata_pkg.summary != store_pkg.summary {
+            return false;
+        }
+    }
+
+    // Compare buildRequires if available
+    if !repodata_pkg.build_requires.is_empty() && !store_pkg.build_requires.is_empty() {
+        if repodata_pkg.build_requires != store_pkg.build_requires {
+            return false;
+        }
+    }
+
+    // If we got here, all required fields match
+    true
+}
+
 /// Compare two Package structs to determine if they represent the same package
 /// Compares multiple fields: pkgname, version, arch, source, sha256sum, sha1sum, buildTime
+/// For AUR packages, uses relaxed matching: pkgname, version, homepage, summary, buildRequires
 fn packages_match(repodata_pkg: &crate::models::Package, store_pkg: &crate::models::Package) -> bool {
+    let common_matches = packages_match_aur(repodata_pkg, store_pkg);
+    if common_matches == false {
+        return false;
+    }
+
+    let is_aur = repodata_pkg.repodata_name == "aur" || store_pkg.repodata_name == "aur";
+    if is_aur && common_matches == true {
+        return true;
+    }
+
+    // For non-AUR packages, use the original strict matching logic
     // Only compare size if both are non-zero (some packages don't store size in package.txt)
     if repodata_pkg.size != 0 && store_pkg.size != 0 {
         if repodata_pkg.size != store_pkg.size {
@@ -621,9 +644,7 @@ fn packages_match(repodata_pkg: &crate::models::Package, store_pkg: &crate::mode
         }
     }
 
-    if repodata_pkg.pkgname != store_pkg.pkgname
-        || repodata_pkg.version != store_pkg.version
-        || repodata_pkg.arch != store_pkg.arch {
+    if repodata_pkg.arch != store_pkg.arch {
         return false;
     }
 
@@ -655,6 +676,46 @@ fn packages_match(repodata_pkg: &crate::models::Package, store_pkg: &crate::mode
     false
 }
 
+/// Collect candidate pkglines from store for a given pkgkey
+/// For AUR packages, also tries with arch replaced by std::env::consts::ARCH
+fn collect_candidate_pkglines(
+    pkgkey: &str,
+    repodata_package: &crate::models::Package,
+    store_pkglines_by_pkgkey: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    // Get candidate pkglines from store for this pkgkey
+    let mut candidate_pkglines = match store_pkglines_by_pkgkey.get(pkgkey) {
+        Some(pkglines) => pkglines.clone(),
+        None => Vec::new(),
+    };
+
+    // For AUR packages, also try with arch replaced by std::env::consts::ARCH
+    if repodata_package.repodata_name == "aur" {
+        // Parse pkgkey to extract pkgname, version, and arch
+        if let Ok((pkgname, version, _arch)) = crate::package::parse_pkgkey(pkgkey) {
+            // Create a new pkgkey with arch replaced by std::env::consts::ARCH
+            let arch_substituted_pkgkey = crate::package::format_pkgkey(&pkgname, &version, std::env::consts::ARCH);
+
+            // Get candidate pkglines for the arch-substituted pkgkey
+            if let Some(arch_pkglines) = store_pkglines_by_pkgkey.get(&arch_substituted_pkgkey) {
+                log::debug!(
+                    "Found {} candidate pkglines for arch-substituted pkgkey {}",
+                    arch_pkglines.len(),
+                    arch_substituted_pkgkey
+                );
+                // Combine with existing candidates (avoid duplicates)
+                for pkgline in arch_pkglines {
+                    if !candidate_pkglines.contains(pkgline) {
+                        candidate_pkglines.push(pkgline.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    candidate_pkglines
+}
+
 /// Try to match and fill pkgline for a single package entry
 /// Returns true if a match was found and pkgline was filled, false otherwise
 fn try_match_and_fill_pkgline(
@@ -668,12 +729,6 @@ fn try_match_and_fill_pkgline(
         return Ok(false);
     }
 
-    // Get candidate pkglines from store for this pkgkey
-    let candidate_pkglines = match store_pkglines_by_pkgkey.get(pkgkey) {
-        Some(pkglines) => pkglines,
-        None => return Ok(false),
-    };
-
     // Load Package from repodata
     let repodata_package = match package_manager.load_package_info(pkgkey) {
         Ok(pkg) => pkg,
@@ -683,8 +738,16 @@ fn try_match_and_fill_pkgline(
         }
     };
 
+    // Collect candidate pkglines from store
+    let candidate_pkglines = collect_candidate_pkglines(pkgkey, &repodata_package, store_pkglines_by_pkgkey);
+
+    // If no candidates found, return false
+    if candidate_pkglines.is_empty() {
+        return Ok(false);
+    }
+
     // Match with store packages
-    match match_package_with_store(&repodata_package, candidate_pkglines, package_manager) {
+    match match_package_with_store(&repodata_package, &candidate_pkglines, package_manager) {
         Ok(Some(matching_pkgline)) => {
             package_info.pkgline = matching_pkgline;
             Ok(true)

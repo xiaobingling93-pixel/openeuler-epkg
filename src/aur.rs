@@ -1,14 +1,17 @@
+use std::collections::{HashMap, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::io::Read;
-use std::collections::{HashMap, VecDeque};
+
 use color_eyre::eyre::{self, eyre, Result, WrapErr};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use crate::models::*;
-use crate::repo::{RepoReleaseItem, RepoRevise};
-use crate::packages_stream;
+
 use crate::dirs;
+use crate::install::InstallationPlan;
+use crate::models::*;
+use crate::packages_stream;
+use crate::repo::{RepoReleaseItem, RepoRevise};
 
 /// AUR domain
 pub const AUR_DOMAIN: &str = "aur.archlinux.org";
@@ -415,15 +418,15 @@ impl PackageManager {
     }
 
     /// Run makepkg to build the AUR package
-    /// Returns the paths to the built package files (handles SPLITPKG)
+    /// Returns Ok(()) on success, Err on failure
     fn run_makepkg(
-        pkgname: &str,
+        pkgbase: &str,
         pkg_build_dir: &Path,
         build_dir: &Path,
         env_root: &Path,
-    ) -> Result<Vec<PathBuf>> {
+    ) -> Result<()> {
         // Create build log file
-        let log_file = build_dir.join(format!("{}.log", pkgname));
+        let log_file = build_dir.join(format!("{}.log", pkgbase));
         std::fs::File::create(&log_file)?;
 
         // Build makepkg command with arguments
@@ -448,7 +451,7 @@ impl PackageManager {
                     sed 's/if (( EUID == 0 )); then/if test $USER = root; then/' /usr/bin/makepkg > /usr/local/bin/makepkg && chmod +x /usr/local/bin/makepkg;
             fi;
             export PACMAN=true
-            cd {} && /usr/local/bin/makepkg --nodeps --nosign --skippgpcheck --noconfirm --noprogressbar --nocheck --config /etc/makepkg.conf > {} 2>&1",
+            cd {} && /usr/local/bin/makepkg --force --nodeps --nosign --skippgpcheck --noconfirm --noprogressbar --nocheck --config /etc/makepkg.conf > {} 2>&1",
             pkg_build_dir_str,
             log_file_str
         );
@@ -465,75 +468,210 @@ impl PackageManager {
         // Run makepkg using fork_and_execute
         match crate::run::fork_and_execute(env_root, &run_options, &sh_path) {
             Ok(()) => {
-                // Success - find the built package files
-                let built_pkgs = Self::find_built_package(pkg_build_dir)?;
-                for built_pkg in &built_pkgs {
-                    log::info!("Built package: {}", built_pkg.display());
-                }
-                Ok(built_pkgs)
+                log::info!("makepkg completed successfully for {}", pkgbase);
+                Ok(())
             }
             Err(e) => {
-                eprintln!("makepkg failed for {}: {}", pkgname, e);
+                eprintln!("makepkg failed for {}: {}", pkgbase, e);
                 Err(eyre!(
                     "makepkg failed for {}: {}",
-                    pkgname, e
+                    pkgbase, e
                 ))
             }
         }
     }
 
-    /// Build a single AUR package using makepkg
-    /// Returns the paths to the built package files (handles SPLITPKG)
-    fn build_single_aur_package(
+
+    /// Prepare or extract the AUR source directory.
+    ///
+    /// Directory layout examples (keep sources/builds flat):
+    /// - Downloaded tarball: ~/.cache/epkg/downloads/aur.archlinux.org/cgit/aur.git/snapshot/wget2.tar.gz
+    /// - Downloaded git dir: ~/.cache/epkg/aur_builds/wget2 (same with Extracted build dir)
+    /// - Extracted build dir: ~/.cache/epkg/aur_builds/wget2 (no extra nested wget2/)
+    fn prepare_aur_source_dir(
         &mut self,
         pkgkey: &str,
+        pkgbase: &str,
         build_dir: &Path,
-        env_root: &Path,
-    ) -> Result<Vec<std::path::PathBuf>> {
-        // Directory layout examples (keep sources/builds flat):
-        // - Downloaded tarball: ~/.cache/epkg/downloads/aur.archlinux.org/cgit/aur.git/snapshot/wget2.tar.gz
-        // - Downloaded git dir: ~/.cache/epkg/aur_builds/wget2 (same with Extracted build dir)
-        // - Extracted build dir: ~/.cache/epkg/aur_builds/wget2 (no extra nested wget2/)
-        let package = self.load_package_info(pkgkey)?;
-        log::info!("Building AUR package: {} ({})", package.pkgname, pkgkey);
-
-        // Extract pkgbase (use package.source as pkgbase when available to share builds)
-        let pkgbase = package
-            .source
-            .as_deref()
-            .unwrap_or_else(|| package.pkgname.as_str());
-
+    ) -> Result<PathBuf> {
         // Check if git directory already exists in build directory (from git download)
         let git_dir_in_build = build_dir.join(pkgbase);
-        let pkg_build_dir = if git_dir_in_build.is_dir() && git_dir_in_build.join(".git").exists() {
+        if git_dir_in_build.is_dir() && git_dir_in_build.join(".git").exists() {
             // Git directory exists in build directory - use it directly
             log::info!("Using git directory directly from build dir: {}", git_dir_in_build.display());
-            git_dir_in_build
+            Ok(git_dir_in_build)
         } else {
             // No git directory in build dir, check for tarball download
             let source_path_str = self.get_package_file_path(pkgkey)?;
             let source_path = PathBuf::from(source_path_str);
 
             // It's a tarball - extract it
-            Self::extract_aur_source(&source_path, pkgbase, build_dir)?
-        };
-
-        // Run makepkg to build the package
-        let built_pkgs = Self::run_makepkg(&package.pkgname, &pkg_build_dir, build_dir, env_root)?;
-
-        Ok(built_pkgs)
+            Self::extract_aur_source(&source_path, pkgbase, build_dir)
+        }
     }
 
+    /// Find and verify all requested built packages, mapping them to planned entries.
+    ///
+    /// Returns Ok with mapped packages (path, original_key, info) if all
+    /// requested packages are found, or Err if any are missing.
+    ///
+    /// For pre-makepkg: returns Ok(empty vec) if not all found (proceed with makepkg),
+    ///                  returns Ok(mapped) if all found (skip makepkg).
+    /// For post-makepkg: returns Err if not all found (fail installation),
+    ///                   returns Ok(mapped) if all found (proceed with unpack_and_link).
+    fn find_and_verify_built_packages(
+        pkgbase: &str,
+        pkgkeys: &[String],
+        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        pkg_build_dir: &Path,
+        is_post_makepkg: bool,
+    ) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
+        use crate::package;
+
+        // Get version from the first pkgkey (all pkgkeys in a pkgbase should have the same version)
+        let version = pkgkeys.first()
+            .and_then(|pkgkey| package::parse_pkgkey(pkgkey).ok())
+            .map(|(_name, version, _arch)| version)
+            .ok_or_else(|| eyre!("Failed to parse version from pkgkey"))?;
+
+        // Find all built packages for this pkgbase (may include multiple pkgnames for split packages)
+        let all_built = match Self::find_built_package(pkg_build_dir, pkgbase, &version) {
+            Ok(packages) => packages,
+            Err(_) if !is_post_makepkg => {
+                // For pre-check, it's OK if no packages found yet - proceed with makepkg
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Map built packages to filter to only the ones we need
+        let mapped = Self::map_built_aur_packages(&all_built, pkgkeys, aur_packages)?;
+
+        // Check if we found all requested packages
+        let found_pkgkeys: std::collections::HashSet<String> = mapped
+            .iter()
+            .map(|(_path, original_key, _info)| original_key.clone())
+            .collect();
+
+        let mut missing = Vec::new();
+        for pkgkey in pkgkeys {
+            if !found_pkgkeys.contains(pkgkey) {
+                if let Ok((name, version, _)) = package::parse_pkgkey(pkgkey) {
+                    missing.push(format!("{} ({})", name, version));
+                }
+            }
+        }
+
+        if !missing.is_empty() {
+            if is_post_makepkg {
+                // For post-makepkg, fail installation if not all found
+                return Err(eyre!(
+                    "Missing built packages for: {}",
+                    missing.join(", ")
+                ));
+            } else {
+                // For pre-check, it's OK if not all packages found yet - proceed with makepkg
+                return Ok(Vec::new());
+            }
+        }
+
+        Ok(mapped)
+    }
+
+
     /// Build and install AUR packages using makepkg
+    ///
+    /// # AUR Package Architecture Handling
+    ///
+    /// ## Problem Background
+    ///
+    /// AUR packages have a unique architecture lifecycle that differs from binary packages:
+    ///
+    /// 1. **Initial State (Repodata)**: All AUR packages in repodata have `arch="any"`, which
+    ///    represents an "undetermined" or "source" state. This is because the actual architecture
+    ///    cannot be determined until the package is built with `makepkg`.
+    ///
+    /// 2. **After makepkg**: The built package will have a determined architecture - either:
+    ///    - `arch="any"` (if the package is truly architecture-independent), or
+    ///    - `arch="x86_64"` (or the current machine's `std::env::consts::ARCH` for architecture-specific packages)
+    ///
+    /// 3. **Previously Installed AUR Packages**: These have determined arch values in
+    ///    `self.installed_packages` (inherited from when they were built), e.g., `arch="x86_64"`.
+    ///
+    /// This creates an inconsistency: new AUR packages start with `arch="any"` in the installation
+    /// plan, but after building they may have `arch="x86_64"`. This affects:
+    ///
+    /// - **pkgkey**: Format is `{pkgname}__{version}__{arch}`, so `resto-rs__0.5.0-1__any` vs
+    ///   `resto-rs__0.5.0-1__x86_64` are different keys
+    /// - **pkgline**: Format includes arch, so pkglines differ based on arch
+    /// - **Upgrade detection**: Need to match old installed packages (with determined arch) to
+    ///   new packages (initially with `arch="any"`)
+    /// - **Plan keys**: `plan.upgrades_new`, `plan.fresh_installs`, `plan.new_exposes`, and
+    ///   `plan.upgrade_map_old_to_new` all use pkgkeys that need to be updated after arch is determined
+    ///
+    /// ## Solution
+    ///
+    /// The solution involves multiple coordinated fixes throughout the installation flow:
+    ///
+    /// 1. **Upgrade Detection** (`find_upgrade_target()` in `install.rs`):
+    ///    - For AUR packages, matches by `pkgname+version` only (ignoring arch differences)
+    ///    - For non-AUR packages, matches by `pkgname+arch` (existing behavior)
+    ///    - This allows matching `resto-rs__0.5.0-1__any` (new) to `resto-rs__0.5.0-1__x86_64` (old)
+    ///
+    /// 2. **Upgrade Map Building** (in `prepare_installation_plan()` / `find_upgrade_target()` in `install.rs`):
+    ///    - Uses AUR-aware matching logic while constructing the installation plan to build
+    ///      old->new pkgkey mappings (stored in `plan.upgrade_map_old_to_new`)
+    ///    - Handles cases where old package has determined arch but new package starts with `arch="any"`
+    ///
+    /// 3. **Plan Key Fixup** (`fixup_aur_plan_keys()` in `aur.rs`):
+    ///    - After all AUR packages are built and actual arch is determined, this function:
+    ///      - Maps original pkgkeys (with `arch="any"`) to actual pkgkeys (with determined arch)
+    ///      - Updates `plan.upgrades_new`, `plan.fresh_installs`, `plan.new_exposes`
+    ///      - Updates `plan.upgrade_map_old_to_new` (maps new_pkgkey only, old_pkgkey already has correct arch)
+    ///    - This ensures all subsequent operations use the correct pkgkeys
+    ///
+    /// 4. **AUR Plan Key Fixup** (in this module):
+    ///    - After AUR builds complete and actual architectures are known, `fixup_aur_plan_keys()`
+    ///      remaps plan keys from their pre-build `arch="any"` form to their post-build, real arch.
+    ///    - This keeps the installation plan consistent with what actually gets installed.
+    ///
+    /// ## Info Flow Verification
+    ///
+    /// Throughout `resolve_and_install_packages()` and related functions:
+    ///
+    /// - **resolve_dependencies_adding_makepkg_deps()**: Creates packages with `arch="any"` for AUR ✓
+    /// - **prepare_installation_plan()**: Uses AUR-aware `find_upgrade_target()` for upgrade detection ✓
+    /// - **fill_pkglines_in_plan()**: May not find matches for AUR with `arch="any"` (OK, they need building) ✓
+    /// - **prepare_packages_for_installation()**: Uses plan keys (still `arch="any"` for AUR) ✓
+    /// - **download_and_install_packages()**: Separates AUR packages, processes binary packages ✓
+    /// - **process_installation_results()**: For binary packages, uses plan keys directly ✓
+    /// - **build_and_install_aur_packages()**: Builds AUR, determines actual arch, fixes up plan ✓
+    /// - **process_installation_results()**: For AUR packages, uses fixed plan keys (actual arch) ✓
+    /// - **execute_expose_operations()**: Uses fixed plan keys that match `installed_packages` ✓
+    ///
+    /// This function and its helpers handle the "build AUR + plan key fixup + AUR result processing"
+    /// portion (steps 4-5) of the solution.
+    ///
+    /// ## Implementation Details
+    ///
     /// This function handles AUR packages specially by:
-    /// 1. Building AUR packages in DAG order based on depend_depth (already calculated in build_installed_package_info_map)
-    /// 2. Running makepkg inside the archlinux environment
-    /// 3. Unpacking and linking built packages
-    /// 4. Run install scripts
+    /// 1. Grouping AUR packages by pkgbase and DAG-ordering them using `depend_depth`
+    ///    (via `group_aur_packages_by_base()`).
+    /// 2. For each pkgbase, building all artifacts with makepkg (via `build_aur_packages_for_base()`)
+    ///    inside the archlinux environment.
+    /// 3. Unpacking and linking built packages, which determines their real pkgkeys/arches
+    ///    (via `unpack_and_link_package()` inside `build_aur_packages_for_base()`).
+    /// 4. Mapping pre-build AUR pkgkeys (`arch="any"`) to actual post-build pkgkeys, and fixing up
+    ///    the installation plan (`fixup_aur_plan_keys()` inside `postinstall_built_aur_round()`).
+    /// 5. Normalizing dependency fields and InstalledPackageInfo values in both newly built AUR
+    ///    packages and skipped reinstalls so they point at the post-build pkgkeys
+    ///    (`fixup_installed_packages_values()`).
+    /// 6. Processing AUR installation results so subsequent rounds and expose operations use pkgkeys
+    ///    that match what is stored in `self.installed_packages` (`postinstall_built_aur_round()`).
     pub fn build_and_install_aur_packages(
         &mut self,
         aur_packages: &HashMap<String, InstalledPackageInfo>,
-        plan: &crate::install::InstallationPlan,
+        plan: &mut crate::install::InstallationPlan,
         store_root: &Path,
         env_root: &Path,
         package_format: crate::models::PackageFormat,
@@ -544,21 +682,108 @@ impl PackageManager {
 
         log::info!("Building {} AUR packages", aur_packages.len());
 
+        // Group and sort AUR packages by pkgbase + minimum depend_depth
+        let (base_to_pkgkeys, sorted_bases) = self.group_aur_packages_by_base(aur_packages)?;
+
+        // Build package bases in DAG order (sorted by minimum depend_depth)
+        let mut completed_aur_packages = HashMap::new();
+        // Accumulated mapping of original (plan) AUR pkgkeys -> actual installed pkgkeys across all rounds.
+        let mut aur_mapping_all_rounds: HashMap<String, String> = HashMap::new();
+        let build_dir = dirs().epkg_aur_builds.clone();
+        std::fs::create_dir_all(&build_dir)?;
+
+        // Build package bases in DAG order (sorted by minimum depend_depth)
+        // For each pkgbase, we:
+        //   - build all artifacts for that base
+        //   - map each built package to its actual pkgkey
+        //   - fix up the plan keys for packages in this round
+        //   - normalize dependency fields for this round
+        //   - process installation results so subsequent rounds can depend on them
+        for (pkgbase, _depth) in sorted_bases {
+            if let Some(pkgkeys) = base_to_pkgkeys.get(&pkgbase) {
+                // 1) Build all artifacts for this pkgbase (may produce multiple SPLITPKG artifacts)
+                // 2) Map built artifacts to planned AUR entries
+                let mapped = self.build_aur_packages_for_base(
+                    &pkgbase,
+                    pkgkeys,
+                    aur_packages,
+                    &build_dir,
+                    env_root,
+                )?;
+
+                // 3) Unpack and link built packages
+                let (mut this_round_aur_packages, this_round_pkgkey_mapping) =
+                    self.unpack_link_built_aur_packages(
+                        &mapped,
+                        store_root,
+                        env_root,
+                    )?;
+
+                if !this_round_aur_packages.is_empty() {
+                    // 4) Install / process results for this round and normalize plan + dependencies
+                    self.postinstall_built_aur_round(
+                        plan,
+                        &mut this_round_aur_packages,
+                        &this_round_pkgkey_mapping,
+                        &mut aur_mapping_all_rounds,
+                        store_root,
+                        env_root,
+                        package_format,
+                    )?;
+
+                    // 5) Merge this round into overall completed_aur_packages
+                    completed_aur_packages.extend(this_round_aur_packages.into_iter());
+                }
+            }
+        }
+
+        // Normalize dependencies of skipped reinstalls using the accumulated
+        // AUR pkgkey mapping across all rounds, and keep their InstalledPackageInfo
+        // values consistent with their pkgkeys.
+        if !plan.skipped_reinstalls.is_empty() && !aur_mapping_all_rounds.is_empty() {
+            self.fixup_installed_packages_values(
+                &aur_mapping_all_rounds,
+                &mut plan.skipped_reinstalls,
+            )
+            .with_context(|| {
+                "Failed to normalize dependency fields for skipped reinstalls using AUR mappings"
+            })?;
+        }
+
+        Ok(completed_aur_packages)
+    }
+
+    fn group_aur_packages_by_base(
+        &mut self,
+        aur_packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> Result<(
+        HashMap<String, Vec<String>>,
+        Vec<(String, u16)>,
+    )> {
         // Group AUR packages by pkgbase (package.source set from AUR package_base),
-        // and sort groups by minimum depend_depth so build dependencies are built first.
+        // and compute the minimum depend_depth per group so build dependencies
+        // are built first.
         let mut base_to_pkgkeys: HashMap<String, Vec<String>> = HashMap::new();
         let mut base_min_depth: HashMap<String, u16> = HashMap::new();
 
         for (pkgkey, info) in aur_packages {
-            let package = self.load_package_info(pkgkey)
-                .with_context(|| format!("Failed to load package info for AUR pkgkey {}", pkgkey))?;
+            let package = self
+                .load_package_info(pkgkey)
+                .with_context(|| {
+                    format!("Failed to load package info for AUR pkgkey {}", pkgkey)
+                })?;
+
             let pkgbase = package
                 .source
                 .as_deref()
                 .unwrap_or_else(|| package.pkgname.as_str())
                 .to_string();
 
-            base_to_pkgkeys.entry(pkgbase.clone()).or_default().push(pkgkey.clone());
+            base_to_pkgkeys
+                .entry(pkgbase.clone())
+                .or_default()
+                .push(pkgkey.clone());
+
             base_min_depth
                 .entry(pkgbase)
                 .and_modify(|depth| {
@@ -569,63 +794,424 @@ impl PackageManager {
                 .or_insert(info.depend_depth);
         }
 
-        let mut sorted_bases: Vec<(String, u16)> = base_min_depth
-            .into_iter()
-            .collect();
+        let mut sorted_bases: Vec<(String, u16)> = base_min_depth.into_iter().collect();
         sorted_bases.sort_by_key(|(_, depth)| *depth);
 
-        // Build package bases in DAG order (sorted by minimum depend_depth)
-        let mut completed_aur_packages = HashMap::new();
-        let build_dir = dirs().epkg_aur_builds.clone();
-        std::fs::create_dir_all(&build_dir)?;
+        Ok((base_to_pkgkeys, sorted_bases))
+    }
 
-        for (pkgbase, _depth) in sorted_bases {
-            if let Some(pkgkeys) = base_to_pkgkeys.get(&pkgbase) {
-                // Use the first pkgkey in this pkgbase group as the representative for building
-                // (the tarball and pkgbase are shared across split packages).
-                let rep_pkgkey = &pkgkeys[0];
+    /// Build all AUR packages for a single pkgbase.
+    ///
+    /// This helper:
+    ///   - Uses the first pkgkey in the `pkgkeys` slice as the representative for driving the build
+    ///     (tarball and pkgbase are shared across split packages).
+    ///   - Builds all artifacts for this pkgbase.
+    ///
+    /// Returns:
+    ///   - `mapped`: Vec of (built_pkg_path, original_key, info) tuples for built packages
+    fn build_aur_packages_for_base(
+        &mut self,
+        pkgbase: &str,
+        pkgkeys: &[String],
+        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        build_dir: &Path,
+        env_root: &Path,
+    ) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
+        // Use the first pkgkey in this pkgbase group as the representative for building
+        // (the tarball and pkgbase are shared across split packages). This representative
+        // is only used to drive the build; we stop using it once artifacts are produced.
+        let rep_pkgkey = &pkgkeys[0];
+        log::info!(
+            "Building AUR pkgbase '{}' using representative pkgkey '{}'",
+            pkgbase,
+            rep_pkgkey
+        );
 
-                // Build the package(s) for this pkgbase (may produce multiple artifacts for SPLITPKG)
-                let built_pkg_paths = self.build_single_aur_package(rep_pkgkey, &build_dir, env_root)?;
+        // Prepare/extract source directory
+        let pkg_build_dir = self.prepare_aur_source_dir(rep_pkgkey, pkgbase, build_dir)?;
 
-                for built_pkg_path in built_pkg_paths {
-                    // Unpack and link each built package
-                    let built_pkg_path_str = built_pkg_path.to_str()
-                        .ok_or_else(|| eyre!("Invalid UTF-8 in built package path: {}", built_pkg_path.display()))?;
+        // Pre-check: try to find already built packages for all requested pkgkeys
+        // If all found, skip makepkg; if not all found, proceed with makepkg
+        let pre_check_mapped = Self::find_and_verify_built_packages(
+            pkgbase,
+            pkgkeys,
+            aur_packages,
+            &pkg_build_dir,
+            false, // is_post_makepkg = false for pre-check
+        )?;
 
-                    // Use a representative InstalledPackageInfo initially; we may override
-                    // selected fields based on the actual_pkgkey afterwards.
-                    let rep_info = aur_packages
-                        .get(rep_pkgkey)
-                        .cloned()
-                        .ok_or_else(|| eyre!("Representative AUR pkgkey {} not found in aur_packages", rep_pkgkey))?;
+        let mapped = if !pre_check_mapped.is_empty() {
+            // All packages already built, skip makepkg
+            log::info!("Found already built packages for pkgbase '{}', skipping build", pkgbase);
+            pre_check_mapped
+        } else {
+            // Not all packages found, run makepkg
+            Self::run_makepkg(pkgbase, &pkg_build_dir, build_dir, env_root)?;
 
-                    let (actual_pkgkey, mut completed_info) = self.unpack_and_link_package(
-                        built_pkg_path_str,
-                        rep_pkgkey,
-                        rep_info,
-                        store_root,
-                        env_root,
+            // After makepkg, verify all requested packages were built and get their paths
+            // This will fail the installation if not all found
+            Self::find_and_verify_built_packages(
+                pkgbase,
+                pkgkeys,
+                aur_packages,
+                &pkg_build_dir,
+                true, // is_post_makepkg = true after makepkg
+            )?
+        };
+
+        // Log built packages
+        for (built_pkg, _, _) in &mapped {
+            log::info!("Built package: {}", built_pkg.display());
+        }
+
+        Ok(mapped)
+    }
+
+    /// Unpack and link built AUR packages.
+    ///
+    /// Inputs:
+    ///   - `mapped_packages`: already mapped packages from `find_and_verify_built_packages()`
+    ///     (path, original_key, info)
+    ///
+    /// Returns:
+    ///   - `this_round_aur_packages`: actual_pkgkey -> InstalledPackageInfo
+    ///   - `this_round_pkgkey_mapping`: original_pkgkey (plan) -> actual_pkgkey (installed)
+    fn unpack_link_built_aur_packages(
+        &mut self,
+        mapped_packages: &[(PathBuf, String, InstalledPackageInfo)],
+        store_root: &Path,
+        env_root: &Path,
+    ) -> Result<(
+        HashMap<String, InstalledPackageInfo>,
+        HashMap<String, String>,
+    )> {
+        use crate::package;
+
+        // This round's completed AUR packages (actual_pkgkey -> info)
+        let mut this_round_aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        // Mapping from original (plan) pkgkeys to actual pkgkeys for this round
+        let mut this_round_pkgkey_mapping: HashMap<String, String> = HashMap::new();
+
+        for (built_pkg_path, original_key, info) in mapped_packages {
+            // Unpack and link the mapped package *after* we know its original planned key.
+            let built_pkg_path_str = built_pkg_path.to_str().ok_or_else(|| {
+                eyre!(
+                    "Invalid UTF-8 in built package path: {}",
+                    built_pkg_path.display()
+                )
+            })?;
+
+            let (actual_pkgkey, mut completed_info) = self
+                .unpack_and_link_package(
+                    built_pkg_path_str,
+                    &original_key,
+                    // Start from an empty InstalledPackageInfo; we'll fully populate fields
+                    // from the mapped planned AUR entry.
+                    InstalledPackageInfo::default(),
+                    store_root,
+                    env_root,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to unpack and link built package: {}",
+                        built_pkg_path.display()
                     )
-                    .with_context(|| format!("Failed to unpack and link built package: {}", built_pkg_path.display()))?;
+                })?;
 
-                    // If we have specific metadata for this actual_pkgkey in aur_packages
-                    // (e.g. depend_depth), propagate it into completed_info.
-                    if let Some(aur_info_for_actual) = aur_packages.get(&actual_pkgkey) {
-                        completed_info.depend_depth = aur_info_for_actual.depend_depth;
-                    }
+            // Infer name, version, and arch from the package filename for validation
+            let (act_name, act_version, act_arch) = Self::infer_name_version_from_arch_pkgfile(built_pkg_path)
+                .with_context(|| format!("Failed to infer package metadata from filename: {}", built_pkg_path.display()))?;
 
-                    // Process installation results for this package
-                    let mut single_package_map = HashMap::new();
-                    single_package_map.insert(actual_pkgkey.clone(), completed_info.clone());
-                    self.process_installation_results(plan, &single_package_map, store_root, env_root, package_format)?;
+            // Construct expected pkgkey from inferred name, version, and arch
+            let expected_pkgkey = package::format_pkgkey(&act_name, &act_version, &act_arch);
 
-                    completed_aur_packages.insert(actual_pkgkey, completed_info);
+            // Validate that the inferred pkgkey matches the actual pkgkey from the unpacked package
+            if expected_pkgkey != actual_pkgkey {
+                return Err(eyre!(
+                    "Package key mismatch for '{}': inferred '{}' but unpacked package has '{}'",
+                    built_pkg_path.display(),
+                    expected_pkgkey,
+                    actual_pkgkey
+                ));
+            }
+
+            // Copy metadata from the planned AUR entry
+            completed_info.depend_depth = info.depend_depth;
+            completed_info.depends = info.depends.clone();
+            completed_info.rdepends = info.rdepends.clone();
+            completed_info.bdepends = info.bdepends.clone();
+            completed_info.rbdepends = info.rbdepends.clone();
+
+            // Record mapping from original (plan) pkgkey to actual installed pkgkey
+            if original_key != &actual_pkgkey {
+                this_round_pkgkey_mapping.insert(original_key.clone(), actual_pkgkey.clone());
+            }
+
+            // From this point on, the round operates purely on actual_pkgkey
+            this_round_aur_packages.insert(actual_pkgkey.clone(), completed_info);
+        }
+
+        Ok((this_round_aur_packages, this_round_pkgkey_mapping))
+    }
+
+    /// Map built AUR artifacts back to planned entries.
+    ///
+    /// Builds the namever2entry mapping and maps each built package to its planned entry.
+    ///
+    /// Inputs:
+    ///   - `built_pkg_paths`: paths to built package files
+    ///   - `pkgkeys`: list of pkgkeys for this pkgbase
+    ///   - `aur_packages`: map of pkgkey -> InstalledPackageInfo
+    ///
+    /// Returns:
+    ///   - Vector of (built_pkg_path, original_key, info)
+    fn map_built_aur_packages(
+        built_pkg_paths: &[PathBuf],
+        pkgkeys: &[String],
+        aur_packages: &HashMap<String, InstalledPackageInfo>,
+    ) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
+        use crate::package;
+
+        // Pre-build a mapping from (pkgname, version) -> (original_pkgkey, info) for all
+        // planned AUR packages in this pkgbase group. This allows us to map built artifacts
+        // to planned entries without relying on the representative pkgkey used for the build.
+        let mut namever2entry: HashMap<(String, String), (String, InstalledPackageInfo)> =
+            HashMap::new();
+        for original_pkgkey in pkgkeys {
+            if let Some(info) = aur_packages.get(original_pkgkey) {
+                if let Ok((name, version, _)) = package::parse_pkgkey(original_pkgkey) {
+                    namever2entry
+                        .entry((name, version))
+                        .or_insert_with(|| (original_pkgkey.clone(), info.clone()));
                 }
             }
         }
 
-        Ok(completed_aur_packages)
+        let mut mapped = Vec::new();
+        for built_pkg_path in built_pkg_paths {
+            // Map built artifact to a planned AUR entry and extract metadata
+            if let Some((original_key, info)) =
+                Self::map_built_package_to_entry(built_pkg_path, &namever2entry)
+            {
+                mapped.push((
+                    built_pkg_path.clone(),
+                    original_key,
+                    info,
+                ));
+            }
+        }
+
+        Ok(mapped)
+    }
+
+    /// Map a built package file to its planned AUR entry.
+    ///
+    /// Returns `Some((original_key, info))` if the package can be mapped,
+    /// or `None` if it should be skipped (e.g., debug packages or unmapped artifacts).
+    fn map_built_package_to_entry(
+        built_pkg_path: &Path,
+        namever2entry: &HashMap<(String, String), (String, InstalledPackageInfo)>,
+    ) -> Option<(String, InstalledPackageInfo)> {
+        // First, infer (pkgname, version, arch) from the built package filename so we can
+        // determine which planned AUR entry this artifact corresponds to. We only
+        // unpack/link packages that we can successfully map.
+        let (act_name, act_version, _act_arch) =
+            match Self::infer_name_version_from_arch_pkgfile(built_pkg_path) {
+                Ok((name, version, arch)) => (name, version, arch),
+                Err(e) => {
+                    log::warn!(
+                        "AUR build produced package file '{}' with unrecognized filename format: {}",
+                        built_pkg_path.display(),
+                        e
+                    );
+                    return None;
+                }
+            };
+
+        // Map built artifact to a planned AUR pkgkey using the pre-built map:
+        // key: (pkgname, version) -> (original_pkgkey, info)
+        if let Some((original_key, info)) =
+            namever2entry.get(&(act_name.clone(), act_version.clone()))
+        {
+            Some((
+                original_key.clone(),
+                info.clone(),
+            ))
+        } else {
+            // Likely a debug or sub package not in install plan: skip unpacking/linking.
+            // Don't emit a warning for common debug split packages to avoid noisy logs.
+            log::info!(
+                "AUR build produced package '{}' ({}, {}), skipping -- not in install plan",
+                built_pkg_path.display(),
+                act_name,
+                act_version,
+            );
+            None
+        }
+    }
+
+    /// Install / process a single round of built AUR packages and normalize the plan.
+    ///
+    /// This helper:
+    ///   - Fixes up plan keys for this round using `this_round_pkgkey_mapping`.
+    ///   - Accumulates AUR pkgkey mappings across rounds in `aur_mapping_all_rounds`.
+    ///   - Normalizes dependency fields for this round and for skipped reinstalls.
+    ///   - Processes installation results so subsequent rounds can depend on them.
+    fn postinstall_built_aur_round(
+        &mut self,
+        plan: &mut InstallationPlan,
+        this_round_aur_packages: &mut HashMap<String, InstalledPackageInfo>,
+        this_round_pkgkey_mapping: &HashMap<String, String>,
+        aur_mapping_all_rounds: &mut HashMap<String, String>,
+        store_root: &Path,
+        env_root: &Path,
+        package_format: crate::models::PackageFormat,
+    ) -> Result<()> {
+        // Fixup plan keys for this round only (based on this_round_pkgkey_mapping)
+        if !this_round_pkgkey_mapping.is_empty() {
+            self.fixup_aur_plan_keys(plan, this_round_pkgkey_mapping)
+                .with_context(|| "Failed to fixup AUR plan keys for current round")?;
+            // Accumulate mapping across all rounds for use when normalizing
+            // skipped_reinstalls dependencies.
+            aur_mapping_all_rounds.extend(this_round_pkgkey_mapping.clone());
+        }
+
+        // Normalize dependency fields for this round before processing results:
+        // map any dependencies that still point at pre-build AUR pkgkeys to the
+        // actual pkgkeys produced in this round, and ensure InstalledPackageInfo
+        // values (e.g. arch) are consistent with their pkgkeys.
+        self.fixup_installed_packages_values(
+            this_round_pkgkey_mapping,
+            this_round_aur_packages,
+        )
+        .with_context(|| {
+            "Failed to normalize dependency fields for AUR packages in current round"
+        })?;
+
+        // Process installation results for this round so that subsequent rounds
+        // can depend on these newly installed AUR packages.
+        self.process_installation_results(
+            plan,
+            this_round_aur_packages,
+            store_root,
+            env_root,
+            package_format,
+        )?;
+
+        Ok(())
+    }
+
+    /// Fixup InstallationPlan keys for AUR packages after makepkg determines actual architecture.
+    /// Maps original pkgkeys (with arch="any") to actual pkgkeys (with determined arch).
+    /// Updates: upgrades_new, fresh_installs, new_exposes, and upgrade_map_old_to_new.
+    fn fixup_aur_plan_keys(
+        &mut self,
+        plan: &mut InstallationPlan,
+        pkgkey_mapping: &HashMap<String, String>, // original_pkgkey -> actual_pkgkey
+    ) -> Result<()> {
+        // Helper to remap keys of a HashMap<String, T> in place using pkgkey_mapping.
+        fn remap_plan_map<T>(
+            map: &mut HashMap<String, T>,
+            pkgkey_mapping: &HashMap<String, String>,
+        ) {
+            let mut new_map = HashMap::new();
+            for (original_pkgkey, info) in map.drain() {
+                if let Some(actual_pkgkey) = pkgkey_mapping.get(&original_pkgkey) {
+                    new_map.insert(actual_pkgkey.clone(), info);
+                } else {
+                    // Keep original if no mapping found (shouldn't happen for AUR, but be safe)
+                    new_map.insert(original_pkgkey, info);
+                }
+            }
+            *map = new_map;
+        }
+
+        // Fixup upgrades_new, fresh_installs, and new_exposes using the common helper.
+        remap_plan_map(&mut plan.upgrades_new, pkgkey_mapping);
+        remap_plan_map(&mut plan.fresh_installs, pkgkey_mapping);
+        remap_plan_map(&mut plan.new_exposes, pkgkey_mapping);
+
+        // Fixup upgrade_map_old_to_new
+        // old_pkgkey is from installed_packages (already has correct arch), so it doesn't need mapping
+        // new_pkgkey might have arch="any" and needs to be mapped to actual arch
+        let mut new_upgrade_map = HashMap::new();
+        for (old_pkgkey, new_pkgkey) in plan.upgrade_map_old_to_new.drain() {
+            // Map new_pkgkey if it changed (arch from "any" to actual)
+            let fixed_new_pkgkey = if let Some(mapped_new) = pkgkey_mapping.get(&new_pkgkey) {
+                mapped_new.clone()
+            } else {
+                new_pkgkey
+            };
+
+            new_upgrade_map.insert(old_pkgkey, fixed_new_pkgkey);
+        }
+        plan.upgrade_map_old_to_new = new_upgrade_map;
+
+        Ok(())
+    }
+
+    /// Normalize arch-related values in the given package map using a pre-built pkgkey mapping.
+    ///
+    /// The normalization works by:
+    ///   - Using the provided `pkgkey_mapping` (typically a mapping from pre-build AUR pkgkeys with
+    ///     `arch="any"` to post-build pkgkeys with the actual architecture).
+    ///   - Rewriting all dependency fields in `pkgs` to use the mapped pkgkeys when a mapping exists.
+    ///   - Ensuring `InstalledPackageInfo` values (in particular `arch`) are consistent with the
+    ///     pkgkeys that index `pkgs`.
+    fn fixup_installed_packages_values(
+        &mut self,
+        pkgkey_mapping: &HashMap<String, String>,
+        pkgs: &mut HashMap<String, InstalledPackageInfo>,
+    ) -> Result<()> {
+        use crate::package;
+
+        // Helper to rewrite a single dependency key using the provided mapping.
+        let rewrite_key = |k: &String, mapping: &HashMap<String, String>| -> String {
+            if let Some(mapped) = mapping.get(k) {
+                mapped.clone()
+            } else {
+                k.clone()
+            }
+        };
+
+        // Rewrite dependency fields and normalize InstalledPackageInfo values for each
+        // package in `pkgs`.
+        for (pkgkey, info) in pkgs.iter_mut() {
+            // Keep InstalledPackageInfo.arch in sync with the pkgkey that indexes this entry.
+            // This is important for AUR packages where the pkgkey arch is updated from "any"
+            // to the actual arch after makepkg has run.
+            if info.arch != std::env::consts::ARCH {
+                if let Ok((_name, _version, arch)) = package::parse_pkgkey(pkgkey) {
+                    info.arch = arch;
+                }
+            }
+
+            info.depends = info
+                .depends
+                .iter()
+                .map(|k| rewrite_key(k, pkgkey_mapping))
+                .collect();
+
+            info.rdepends = info
+                .rdepends
+                .iter()
+                .map(|k| rewrite_key(k, pkgkey_mapping))
+                .collect();
+
+            info.bdepends = info
+                .bdepends
+                .iter()
+                .map(|k| rewrite_key(k, pkgkey_mapping))
+                .collect();
+
+            info.rbdepends = info
+                .rbdepends
+                .iter()
+                .map(|k| rewrite_key(k, pkgkey_mapping))
+                .collect();
+        }
+
+        Ok(())
     }
 
     /// Find PKGBUILD in extracted directory (up to 3 levels deep)
@@ -656,23 +1242,108 @@ impl PackageManager {
     }
 
     /// Find built package files (handles SPLITPKG)
-    pub fn find_built_package(dir: &Path) -> Result<Vec<PathBuf>> {
+    pub fn find_built_package(dir: &Path, pkgbase: &str, version: &str) -> Result<Vec<PathBuf>> {
         let mut built = Vec::new();
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if let Some(ext) = path.extension() {
                 if ext == "zst" || ext == "xz" {
-                    if path.file_name().and_then(|n| n.to_str()).unwrap_or("").contains(".pkg.tar") {
-                        built.push(path);
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .contains(".pkg.tar")
+                    {
+                        // Parse the filename to extract pkgname and version
+                        match Self::infer_name_version_from_arch_pkgfile(&path) {
+                            Ok((_name, ver, _arch)) => {
+                                // Filter by version. For pkgbase filtering, we return all packages
+                                // in the directory since multiple pkgnames can share the same pkgbase (split packages).
+                                // The actual pkgbase filtering will be done by map_built_aur_packages().
+                                if ver == version {
+                                    built.push(path);
+                                }
+                            }
+                            Err(_) => {
+                                // Skip files that don't match the expected format
+                                continue;
+                            }
+                        }
                     }
                 }
             }
         }
         if built.is_empty() {
-            Err(eyre!("Built package not found in {}", dir.display()))
+            Err(eyre!("Built package not found in {} for pkgbase {} version {}", dir.display(), pkgbase, version))
         } else {
             Ok(built)
+        }
+    }
+
+    /// Infer (pkgname, version, arch) from an Arch Linux package filename.
+    ///
+    /// Examples:
+    ///   - "resto-rs-0.5.0-1-x86_64.pkg.tar.zst" -> ("resto-rs", "0.5.0-1", "x86_64")
+    ///   - "foo-bar-1.2.3-4-any.pkg.tar.zst"     -> ("foo-bar", "1.2.3-4", "any")
+    ///
+    /// Arch package format: pkgname-pkgver-pkgrel-arch.pkg.tar.zst
+    /// where version in pkgkeys is "pkgver-pkgrel"
+    fn infer_name_version_from_arch_pkgfile(path: &Path) -> Result<(String, String, String)> {
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| eyre!("Invalid UTF-8 in package filename: {}", path.display()))?;
+
+        // Strip known Pacman suffixes
+        let base = filename
+            .strip_suffix(".pkg.tar.zst")
+            .or_else(|| filename.strip_suffix(".pkg.tar.xz"))
+            .ok_or_else(|| eyre!("Unsupported Arch package filename (suffix): {}", filename))?;
+
+        // Arch package format: pkgname-pkgver-pkgrel-arch
+        // Split from the right: arch (last), pkgrel (second-to-last, numeric), then pkgname-pkgver
+        let parts: Vec<&str> = base.rsplitn(3, '-').collect();
+        if parts.len() < 3 {
+            return Err(eyre!(
+                "Invalid package filename format (expected at least 3 components): {}",
+                filename
+            ));
+        }
+
+        let arch = parts[0];
+        let pkgrel = parts[1];
+        let namever = parts[2];
+
+        // Validate that pkgrel is numeric
+        if !pkgrel.chars().all(|c| c.is_ascii_digit()) {
+            return Err(eyre!(
+                "Invalid pkgrel component (expected numeric): {}",
+                filename
+            ));
+        }
+
+        // Now we need to split namever into pkgname and pkgver
+        // Since both can contain dashes, we need to find the boundary
+        // The version is "pkgver-pkgrel", so we need to extract pkgver
+        // We'll split namever on the last dash to get pkgname and pkgver
+        if let Some(idx) = namever.rfind('-') {
+            let name = &namever[..idx];
+            let pkgver = &namever[idx + 1..];
+            if name.is_empty() || pkgver.is_empty() {
+                return Err(eyre!(
+                    "Failed to infer (name, version) from package filename: {}",
+                    filename
+                ));
+            }
+            // Version is "pkgver-pkgrel"
+            let version = format!("{}-{}", pkgver, pkgrel);
+            Ok((name.to_string(), version, arch.to_string()))
+        } else {
+            // No dash in namever, so the entire thing is pkgname and pkgver is empty
+            // This shouldn't happen in valid Arch packages, but handle it gracefully
+            let version = format!("-{}", pkgrel);
+            Ok((namever.to_string(), version, arch.to_string()))
         }
     }
 

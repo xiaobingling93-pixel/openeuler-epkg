@@ -13,9 +13,9 @@ impl PackageManager {
     /// Creates an InstallationPlan by diffing two generations' InstalledPackageInfo.
     /// This is used for rollback operations to determine what packages need to be
     /// added/removed to restore a previous generation state.
-    pub fn create_rollback_plan(&self,
-                                mut current_packages: HashMap<String, InstalledPackageInfo>,
-                                mut target_packages: HashMap<String, InstalledPackageInfo>) -> InstallationPlan {
+    fn create_rollback_plan(&mut self,
+                            mut current_packages: HashMap<String, InstalledPackageInfo>,
+                            mut target_packages: HashMap<String, InstalledPackageInfo>) -> InstallationPlan {
         let mut plan = InstallationPlan::default();
 
         // Find packages that exist in both collections and remove them as duplicates
@@ -36,7 +36,11 @@ impl PackageManager {
         // Now classify remaining packages using find_upgrade_target()
         for (pkgkey, pkg_info) in &target_packages {
             // Package exists in both filtered collections - check if it's an upgrade
-            let (is_upgrade, old_pkgkey) = crate::install::find_upgrade_target(pkgkey, pkg_info, &current_packages);
+            let (is_upgrade, old_pkgkey) = self.find_upgrade_target(
+                pkgkey,
+                pkg_info,
+                &current_packages,
+            );
             if is_upgrade {
                 // Different versions - this is an upgrade
                 plan.upgrades_old.insert(old_pkgkey.clone(), current_packages[&old_pkgkey].clone());
@@ -63,17 +67,6 @@ impl PackageManager {
         let generation_id = target.to_str().unwrap().parse::<u32>().with_context(||
             format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?;
         Ok(generation_id)
-    }
-
-    pub fn get_generation_path(&mut self, generation_id: u32) -> Result<PathBuf> {
-        let generations_root = crate::dirs::get_default_generations_root()?;
-        Ok(generations_root.join(generation_id.to_string()))
-    }
-
-    #[allow(dead_code)]
-    pub fn get_current_generation_path(&mut self) -> Result<PathBuf> {
-        let current_id = self.get_current_generation_id()?;
-        self.get_generation_path(current_id)
     }
 
     pub fn create_new_generation_with_root(&mut self, generations_root: &Path) -> Result<PathBuf> {
