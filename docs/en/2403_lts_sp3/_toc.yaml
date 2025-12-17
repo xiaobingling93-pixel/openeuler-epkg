@@ -1,6 +1,0 @@
-label: epkg User Guide
-isManual: true
-description: Use epkg to manage packages.
-sections:
-  - label: epkg User Guide
-    href: ./epkg_package_manager_usage_guide.md
