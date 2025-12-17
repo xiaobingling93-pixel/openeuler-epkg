@@ -385,7 +385,6 @@ Installation successful - Total packages: 65, ebin packages: 1
 | epkg deinit              | 卸载epkg包管理器                       |
 | epkg repo list           | 列出所有repo源                         |
 | epkg hash                | 计算指定目录的hash                     |
-| epkg build               | 基于源码构建软件包（开发中）           |
 | epkg convert             | 将 rpm/deb/apk/... 转换为epkg包        |
 | epkg unpack              | 解epkg包                               |
 | epkg run \<pkg> -- [args] | 运行某个包中提供的程序                 |
@@ -631,11 +630,9 @@ epkg 支持多环境隔离管理，方便进行不同架构/依赖的管理。
 | epkg env unregister \<env> | 注销指定环境              |
 | epkg env activate \<env>   | 激活指定环境              |
 | epkg env deactivate       | 退出当前激活环境          |
-| epkg env export \<env>     | 导出环境配置 **(开发中)** |
 | epkg env path             | 查看当前env下的PATH       |
 | epkg env config           | 查看或配置当前环境        |
 | epkg history              | 查看环境历史              |
-| epkg restore              | 回退环境 **(开发中)**     |
 
 ### epkg env list：列出所有环境
 
