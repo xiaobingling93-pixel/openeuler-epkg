@@ -471,7 +471,7 @@ yk65hht5o4hvpmrdwk5m3543owekwa5n
 ### epkg convert：将 rpm/deb/apk/... 转换为epkg包
 
 ```bash
-[root@51bc2f1c8444 tmp]# epkg convert  --origin-url  "https://repo.openeuler.org/openEuler-24.03-LTS-SP3/OS/aarch64/Packages/" tree-2.1.1-1.oe2403sp2.aarch64.rpm
+[root@51bc2f1c8444 tmp]# epkg convert  --origin-url  "https://repo.openeuler.org/openEuler-24.03-LTS-SP2/OS/aarch64/Packages/" tree-2.1.1-1.oe2403sp2.aarch64.rpm
 ./pt555455keitr5pvgmivmaixr7zb3e45__tree__2.1.1-1.oe2403sp2__aarch64.epkg
 
 [root@51bc2f1c8444 tmp]# file ./pt555455keitr5pvgmivmaixr7zb3e45__tree__2.1.1-1.oe2403sp2__aarch64.epkg
