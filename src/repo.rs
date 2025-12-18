@@ -71,7 +71,7 @@ impl HashType {
         }
     }
 
-    pub fn finalize(self) -> Vec<u8> {
+    fn finalize(self) -> Vec<u8> {
         match self {
             HashType::Sha256(hasher) => hasher.finalize().to_vec(),
             HashType::Sha512(hasher) => hasher.finalize().to_vec(),
@@ -130,7 +130,7 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
     Ok(())
 }
 
-pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
+fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
     let mut all_repos: Vec<RepoRevise> = Vec::new();
 
     for (repo_name, repo_config) in &config.repos {
@@ -215,14 +215,79 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
 fn revise_repos(all_repos: Vec<RepoRevise>) -> Result<()> {
     log::debug!("Starting with {} repositories", all_repos.len());
 
-    // Collect all release items from all repositories in parallel
-    let mut all_release_items = Vec::new();
+    // Collect all release items from all repositories
+    let all_release_items = if all_repos.len() > 1 && config().common.parallel_processing {
+        let items = collect_all_repo_metadata_parallel(all_repos)?;
+        items
+    } else {
+        let mut items = Vec::new();
+        for repo in all_repos {
+            let release_items = collect_repo_metadata(&repo)?;
+            items.extend(release_items);
+        }
+        items
+    };
+
+    process_all_release_items(all_release_items)
+}
+
+fn collect_all_repo_metadata_parallel(all_repos: Vec<RepoRevise>) -> Result<Vec<RepoReleaseItem>> {
+    let (tx, rx) = mpsc::channel();
+    let mut handles = Vec::new();
 
     for repo in all_repos {
-        let release_items = collect_repo_metadata(&repo)?;
-        all_release_items.extend(release_items);
+        let tx = tx.clone();
+        let repo_clone = repo.clone();
+
+        let handle = std::thread::spawn(move || {
+            let result = collect_repo_metadata(&repo_clone);
+            if let Err(ref e) = result {
+                log::error!("Failed to collect metadata for repo {}: {:#}", repo_clone.repo_name, e);
+            }
+
+            if let Err(e) = tx.send(result) {
+                log::error!("Failed to send metadata collection result for repo {}: {}", repo_clone.repo_name, e);
+            }
+        });
+
+        handles.push(handle);
     }
 
+    // Drop the original sender so the receiver loop will exit once all
+    // worker threads have finished sending their results.
+    drop(tx);
+
+    let mut all_succeed = true;
+    let mut all_release_items = Vec::new();
+
+    while let Ok(result) = rx.recv() {
+        match result {
+            Ok(mut items) => {
+                all_release_items.append(&mut items);
+            }
+            Err(e) => {
+                all_succeed = false;
+                log::error!("Error while collecting repository metadata in parallel: {:#}", e);
+            }
+        }
+    }
+
+    // Ensure all worker threads have completed successfully
+    for handle in handles {
+        if let Err(e) = handle.join() {
+            log::error!("Metadata collection thread panicked: {:?}", e);
+            all_succeed = false;
+        }
+    }
+
+    if !all_succeed {
+        return Err(eyre::eyre!("Failed to collect repository metadata for one or more repositories"));
+    }
+
+    Ok(all_release_items)
+}
+
+fn process_all_release_items(all_release_items: Vec<RepoReleaseItem>) -> Result<()> {
     log::debug!("Collected {} total release items", all_release_items.len());
 
     // Deduplicate release items based on URL to prevent downloading the same file multiple times
@@ -394,7 +459,7 @@ pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<
     Ok(ReleaseStatus::NeedUpdate)
 }
 
-pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     let status = should_refresh_release_file(path, repo)
         .with_context(|| format!("Failed to check if release file needs refreshing: {}", path.display()))?;
 
@@ -552,7 +617,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
  */
 
 /// Collect repository metadata and return release items without processing them
-pub fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
+fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
     log::debug!("Starting for repo: {} with index_url: {}", repo.repo_name, repo.index_url);
 
     let repo_dir = dirs::get_repo_dir(&repo)
@@ -745,7 +810,7 @@ fn collect_save_repoindex(repo: &RepoRevise, _repo_dir: &PathBuf, release_items:
 
 // When to call: RepoIndex.json not exist, or at least one packages metafile changed
 // What to pass: ALL packages metafiles, including the revised AND not changed ones
-pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> Result<RepoIndex> {
+fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> Result<RepoIndex> {
     log::debug!("save_repo_index_json for {:#?}", packages_metafiles);
 
     // Check if we have any packages metafiles
@@ -844,7 +909,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
     Ok(repo_index)
 }
 
-pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
+fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
     if revise.is_packages {
         match revise.repo_revise.format {
             PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location))?,
@@ -887,7 +952,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
  * respective `filelists` formats.
  */
 /// Process filelists content by verifying hash, creating symlinks, and generating metadata
-pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FilelistsFileInfo> {
+fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FilelistsFileInfo> {
     log::debug!("Processing filelists content for arch: {:?}", revise);
 
     // Step 1: Verify the hash of the received data
