@@ -43,6 +43,7 @@ mod version;
 mod scriptlets;
 mod hooks;
 mod run;
+mod applets;
 mod info;
 mod search;
 mod gc;

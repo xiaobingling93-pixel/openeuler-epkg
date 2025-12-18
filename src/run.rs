@@ -989,76 +989,6 @@ fn write_id_map_for_pid(pid: nix::unistd::Pid, path_template: &str, content: &st
     Ok(())
 }
 
-/// Execute a built-in command
-/// Returns an error if the command is not a built-in command
-fn exec_builtin_command(cmd_name: &str, args: &[String]) -> Result<()> {
-    match cmd_name {
-        "sleep" => {
-            if args.is_empty() {
-                return Err(eyre::eyre!("sleep: missing operand"));
-            }
-            let duration = args[0].parse::<u64>()
-                .map_err(|e| eyre::eyre!("sleep: invalid time interval '{}': {}", args[0], e))?;
-            std::thread::sleep(Duration::from_secs(duration));
-            Ok(())
-        }
-        "true" => {
-            Ok(())
-        }
-        "false" => {
-            std::process::exit(1);
-        }
-        "echo" => {
-            println!("{}", args.join(" "));
-            Ok(())
-        }
-        "cat" => {
-            use std::io::{self, Read};
-            if args.is_empty() {
-                // Read from stdin
-                let mut buffer = String::new();
-                io::stdin().read_to_string(&mut buffer)
-                    .map_err(|e| eyre::eyre!("cat: failed to read from stdin: {}", e))?;
-                print!("{}", buffer);
-            } else {
-                // Read from files
-                for file_path in args {
-                    let content = fs::read_to_string(file_path)
-                        .map_err(|e| eyre::eyre!("cat: {}: {}", file_path, e))?;
-                    print!("{}", content);
-                }
-            }
-            Ok(())
-        }
-        "ls" => {
-            let path = if args.is_empty() {
-                Path::new(".")
-            } else {
-                Path::new(&args[0])
-            };
-
-            let entries = fs::read_dir(path)
-                .map_err(|e| eyre::eyre!("ls: {}: {}", path.display(), e))?;
-
-            let mut names: Vec<String> = entries
-                .filter_map(|entry| {
-                    entry.ok().map(|e| {
-                        e.file_name().to_string_lossy().to_string()
-                    })
-                })
-                .collect();
-
-            names.sort();
-            let output = names.join("\n");
-            println!("{}", output);
-            Ok(())
-        }
-        _ => {
-            Err(eyre::eyre!("Cannot run: {} {:?}", cmd_name, args))
-        }
-    }
-}
-
 /// Execute the command with arguments and optional environment variables
 fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collections::HashMap<String, String>>) -> Result<()> {
     debug!("Executing: {} {:?}", cmd_path.display(), args);
@@ -1113,7 +1043,7 @@ impl PackageManager {
         debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
 
         if run_options.builtin {
-            return exec_builtin_command(&run_options.command, &run_options.args);
+            return crate::applets::exec_builtin_command(&run_options.command, &run_options.args);
         }
 
         let env_root = crate::dirs::get_default_env_root()?;
