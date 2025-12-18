@@ -462,26 +462,101 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
     if fhs_file.starts_with("etc/") {
         fs::copy(fs_file, target_path)
             .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
-    } else if fhs_file.to_string_lossy().contains("/gconv-modules.d/") {
-        // iconvconfig handles ONLY normal files, NOT symlinks
-        hard_link_or_copy(fs_file, target_path, false)?;
-    } else if fhs_file.to_string_lossy().starts_with("usr/lib/librustc_driver") {
-        // rustc determines its sysroot based on the location of librustc_driver*.so.
-        // If this .so is a symlink into the store and that path contains a colon
-        // (e.g. "__rust__1:1.92.0-1__x86_64"), then Cargo will see a sysroot
-        // under that store path and construct LD_LIBRARY_PATH entries that
-        // include a colon *inside* a path component, which std::env::join_paths
-        // rejects with "path segment contains separator `:`".
-        //
-        // To avoid this, make librustc_driver*.so an actual file in the env_root
-        // (via hardlink or copy) instead of a symlink into the store, so that
-        // `rustc --print=sysroot` returns the env_root-based sysroot.
-        hard_link_or_copy(fs_file, target_path, true)?;
+    } else if let Some(preserve_permissions) = needs_hard_link_or_copy(fhs_file) {
+        // Certain paths (script-language trees, gconv modules, rustc driver) must be
+        // materialized as real files in env_root (via hardlink or copy) so that
+        // their consumers behave correctly when resolving modules or sysroots.
+        hard_link_or_copy(fs_file, target_path, preserve_permissions)?;
     } else {
         symlink(fs_file, target_path)
             .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
     }
     Ok(())
+}
+
+/// Decide whether a regular file should be materialized via hardlink-or-copy
+/// instead of left as a symlink into the store, and if so whether permissions
+/// should be preserved.
+///
+/// Returns:
+/// - Some(false) -> use hard_link_or_copy(..., preserve_permissions = false)
+/// - Some(true)  -> use hard_link_or_copy(..., preserve_permissions = true)
+/// - None        -> caller should fall back to symlink()
+fn needs_hard_link_or_copy(fhs_file: &Path) -> Option<bool> {
+    let rel = fhs_file.to_string_lossy();
+
+    // Many script runtimes (Node.js, Python, Ruby, Perl, Lua, PHP, Tcl, Guile, OCaml,
+    // R, Haskell, Julia, Erlang, etc.) derive their
+    // module search paths from the real path of the interpreter or library tree. If
+    // these trees are left as symlinks into the store (whose paths may contain colons
+    // or other special characters), the runtime can end up resolving modules relative
+    // to the store path instead of env_root, and miss dependencies that are properly
+    // mirrored only under env_root.
+    //
+    // For known "well-known" library roots, we therefore materialize real files
+    // (via hardlink or copy) in env_root so that module resolution stays within
+    // env_root.
+    // Node.js global modules (various distro layouts)
+    if rel.starts_with("usr/lib/node_modules/")
+        || rel.starts_with("usr/share/nodejs/")
+    // Python site/dist-packages under common prefixes
+        || rel.contains("/site-packages/")
+        || rel.contains("/dist-packages/")
+    // Ruby standard libs and gems
+        || rel.starts_with("usr/lib/ruby/")
+        || rel.contains("/gems/")
+    // Perl libs
+        || rel.starts_with("usr/share/perl5/")
+        || rel.starts_with("usr/lib/perl5/")
+        || rel.contains("/site_perl/")
+    // Lua modules
+        || rel.starts_with("usr/share/lua/")
+        || rel.starts_with("usr/lib/lua/")
+    // PHP common library tree in distros
+        || rel.starts_with("usr/share/php/")
+    // Tcl / Tk modules
+        || rel.starts_with("usr/lib/tcl")
+        || rel.starts_with("usr/share/tcltk/")
+        || rel.starts_with("usr/lib/tk")
+    // Guile scheme modules
+        || rel.starts_with("usr/share/guile/")
+        || rel.starts_with("usr/lib/guile/")
+    // OCaml libraries (findlib / compiler libs)
+        || rel.starts_with("usr/lib/ocaml/")
+    // R libraries
+        || rel.starts_with("usr/lib/R/library/")
+    // Haskell / GHC libraries
+        || rel.starts_with("usr/lib/ghc/")
+        || rel.starts_with("usr/lib/haskell-packages/")
+    // Julia modules
+        || rel.starts_with("usr/share/julia/")
+        || rel.starts_with("usr/lib/julia/")
+    // Erlang / Elixir beam libraries
+        || rel.starts_with("usr/lib/erlang/lib/")
+    {
+        return Some(true);
+    }
+
+    // rustc determines its sysroot based on the location of librustc_driver*.so.
+    // If this .so is a symlink into the store and that path contains a colon
+    // (e.g. "__rust__1:1.92.0-1__x86_64"), then Cargo will see a sysroot
+    // under that store path and construct LD_LIBRARY_PATH entries that
+    // include a colon *inside* a path component, which std::env::join_paths
+    // rejects with "path segment contains separator `:`".
+    //
+    // To avoid this, make librustc_driver*.so an actual file in the env_root
+    // (via hardlink or copy) instead of a symlink into the store, so that
+    // `rustc --print=sysroot` returns the env_root-based sysroot.
+    if rel.starts_with("usr/lib/librustc_driver") {
+        return Some(true);
+    }
+
+    // iconvconfig handles ONLY normal files, NOT symlinks
+    if rel.contains("/gconv-modules.d/") {
+        return Some(false);
+    }
+
+    None
 }
 
 // Like symlink() but try to remove one level of indirection
