@@ -575,8 +575,20 @@ pub fn mark_file_bad<P: AsRef<Path>>(file_path: P) -> Result<PathBuf> {
             .with_context(|| format!("Failed to remove existing bad file: {}", part_path.display()))?;
     }
 
+    // If the original file no longer exists, treat this as a no-op.
+    // This can happen if another component (or an earlier attempt) has
+    // already renamed the file to .bad or otherwise removed it.
     if !file_path.exists() {
-        return Err(eyre::eyre!("File not exist: {}", file_path.display()));
+        log::warn!(
+            "mark_file_bad: file already missing, skipping rename: {}",
+            file_path.display()
+        );
+        eprintln!(
+            "Corrupted file already handled or missing: {}",
+            file_path.display()
+        );
+        eprintln!("Please retry, the file should be auto redownloaded.");
+        return Ok(bad_path);
     }
 
     // Remove existing .bad file
@@ -876,6 +888,12 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
         // These are optional and will fail due to no "dpkg -L" output
         ("usr/local/bin/py3compile", ["/usr/bin/true", "/bin/true"]),
         ("usr/local/bin/py3clean", ["/usr/bin/true", "/bin/true"]),
+
+        // Pacman-style dbus reload hook expects this helper. Many minimal
+        // Arch-like environments don't ship it, so we point it to a no-op
+        // true(1) to avoid hard failures while still allowing the
+        // transaction to complete.
+        ("usr/share/libalpm/scripts/systemd-hook", ["/usr/bin/true", "/bin/true"]),
     ];
 
     for (link_name, possible_targets) in &symlinks {
