@@ -817,6 +817,9 @@ pub fn fixup_env_links(env_root: &Path) -> Result<()> {
     // Create common symlinks for shells and utilities
     create_common_symlinks(env_root)?;
 
+    // Create quiet makepkg DLAGENTS config
+    create_makepkg_download_conf(env_root)?;
+
     // Remove files based on glob patterns
     remove_files_by_patterns(env_root)?;
 
@@ -926,6 +929,31 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// Create a quiet `makepkg` DLAGENTS configuration
+fn create_makepkg_download_conf(env_root: &Path) -> Result<()> {
+    // Only relevant for Pacman-style channels
+    if crate::models::channel_config().format != crate::models::PackageFormat::Pacman {
+        return Ok(());
+    }
+
+    let conf_dir = env_root.join("etc/makepkg.conf.d");
+    if !conf_dir.exists() {
+        return Ok(());
+    }
+
+    let conf_path = conf_dir.join("download.conf");
+    let content = r#"DLAGENTS=('file::/usr/bin/curl -sS -qgC - -o %o %u'
+          'ftp::/usr/bin/curl -sS -qgfC - --ftp-pasv --retry 3 --retry-delay 3 -o %o %u'
+          'http::/usr/bin/curl -sS -qgb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
+          'https::/usr/bin/curl -sS -qgb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
+          'rsync::/usr/bin/rsync --no-motd -z %u %o'
+          'scp::/usr/bin/scp -C %u %o')
+"#;
+
+    fs::write(&conf_path, content)?;
     Ok(())
 }
 
