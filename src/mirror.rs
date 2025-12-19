@@ -251,30 +251,8 @@ impl Drop for Mirror {
 }
 
 impl Mirror {
-    // Helper method to check if a protocol is supported
-    #[allow(dead_code)]
-    pub fn supports_protocol(&self, protocol: u8) -> bool {
-        self.protocols & protocol != 0
-    }
-
-    // Helper method to get supported protocols as strings (if needed)
-    #[allow(dead_code)]
-    pub fn protocol_list(&self) -> Vec<String> {
-        let mut protocols = Vec::new();
-        if self.supports_protocol(PROTO_HTTP) {
-            protocols.push("http".to_string());
-        }
-        if self.supports_protocol(PROTO_HTTPS) {
-            protocols.push("https".to_string());
-        }
-        if self.supports_protocol(PROTO_RSYNC) {
-            protocols.push("rsync".to_string());
-        }
-        protocols
-    }
-
     // Helper method to update performance metrics
-    pub fn record_performance(&mut self, throughput: u32, latency: u32) {
+    fn record_performance(&mut self, throughput: u32, latency: u32) {
         const MAX_HISTORY: usize = 10;  // Keep last 10 measurements
 
         // Add new throughput if non-zero
@@ -328,7 +306,7 @@ impl Mirror {
     //  2025-07-05.16:48:03 offset=48234496 bytes=1048576 dur=1585 tput=677439 ok=1
     //  2025-07-05.16:48:05 offset=49283072 bytes=1048576 dur=1059 tput=1013920 ok=1
     //  2025-07-05.16:48:10 offset=51380224 bytes=1048576 dur=4856 tput=221116 ok=1
-    pub fn avg_throughput(&self) -> Option<u32> {
+    fn avg_throughput(&self) -> Option<u32> {
         if self.stats.throughputs.is_empty() {
             None
         } else {
@@ -346,7 +324,7 @@ impl Mirror {
     }
 
     // Helper method to calculate median latency
-    pub fn avg_latency(&self) -> Option<u32> {
+    fn avg_latency(&self) -> Option<u32> {
         if self.stats.latencies.is_empty() {
             None
         } else {
@@ -367,7 +345,7 @@ impl Mirror {
     }
 
     /// Start tracking usage for this mirror
-    pub fn start_usage_tracking(&mut self) {
+    fn start_usage_tracking(&mut self) {
         self.shared_usage.active_downloads.fetch_add(1, Ordering::Relaxed);
         self.shared_usage.total_uses.fetch_add(1, Ordering::Relaxed);
         self.shared_usage.last_used.store(
@@ -377,7 +355,7 @@ impl Mirror {
     }
 
     /// Stop tracking usage for this mirror
-    pub fn stop_usage_tracking(&mut self) {
+    fn stop_usage_tracking(&mut self) {
         // Prevent underflow by checking current value before subtracting
         let current = self.shared_usage.active_downloads.load(Ordering::Relaxed);
         if current > 0 {
@@ -385,20 +363,12 @@ impl Mirror {
         }
     }
 
-    /// Reset usage tracking counters (useful for debugging corrupted counters)
-    #[allow(dead_code)]
-    pub fn reset_usage_tracking(&mut self) {
-        self.shared_usage.active_downloads.store(0, Ordering::Relaxed);
-        self.shared_usage.total_uses.store(0, Ordering::Relaxed);
-        self.shared_usage.last_used.store(0, Ordering::Relaxed);
-    }
-
     pub fn add_skip_url(&mut self, url: &str) {
         self.skip_urls.insert(url.to_string());
         log::debug!("Added {} to skip_urls for mirror {} (total skip_urls: {})", url, self.url, self.skip_urls.len());
     }
 
-    pub fn should_skip_url(&self, url: &str) -> bool {
+    fn should_skip_url(&self, url: &str) -> bool {
         self.skip_urls.contains(url)
     }
 
@@ -430,7 +400,7 @@ impl Mirror {
     /// - Squared latency penalty amplifies the preference for low-latency mirrors
     ///
     /// **Returns:** Calculated score (higher values indicate better mirrors)
-    pub fn calculate_performance_score(&mut self) -> u64 {
+    fn calculate_performance_score(&mut self) -> u64 {
         let avg_latency = self.avg_latency().unwrap_or(DEFAULT_LATENCY_MS) as u64;
         let avg_throughput = self.avg_throughput().unwrap_or(
                             self.bandwidth.unwrap_or(DEFAULT_BANDWIDTH_MBPS) * (1024*1024/8/1024)) as u64; // Mbps => B/s; the last /1024 is total_site_bw => my_connection_throughput
@@ -1136,6 +1106,13 @@ pub fn url2site(url: &str) -> String {
  * - All available mirrors are guaranteed compatible
  */
 
+/// Protocol type detected from URL or path
+#[derive(Debug, Clone, PartialEq)]
+pub enum UrlProtocol {
+    Http,
+    Local,
+}
+
 impl Mirrors {
 
     /// Select mirror with automatic usage tracking
@@ -1441,68 +1418,192 @@ impl Mirrors {
         Ok(url)
     }
 
-    pub fn url_to_cache_path(url: &str, repodata_name: &str) -> Result<PathBuf> {
-        let cache_root = dirs().epkg_downloads_cache.clone();
-        log::debug!("url_to_cache_path {} {}", url, repodata_name);
-        Ok(Self::resolve_mirror_path(url, &cache_root, repodata_name))
+    /// Validate a PathBuf for security issues by checking its string representation.
+    ///
+    /// This is used for paths that are constructed programmatically (e.g., from URLs).
+    ///
+    /// Performs security checks:
+    /// - Rejects paths containing '../' or '..\\' (directory traversal)
+    /// - Validates that the path has a file name component
+    /// - Validates that the file name is not empty
+    ///
+    /// Returns an error if the path fails any security check.
+    fn validate_path_security(path: &Path, context: &str) -> Result<()> {
+        let path_str = path.to_string_lossy();
+
+        // Security check: reject paths with directory traversal
+        if path_str.contains("../") || path_str.contains("..\\") {
+            return Err(eyre!("Invalid path: directory traversal detected in '{}' ({})", path_str, context));
+        }
+
+        // Validate file name
+        if let Some(file_name) = path.file_name() {
+            if file_name.to_string_lossy().is_empty() {
+                return Err(eyre!("Invalid path: empty file name in '{}' ({})", path_str, context));
+            }
+        } else {
+            return Err(eyre!("Invalid path: no file name component in '{}' ({})", path_str, context));
+        }
+
+        Ok(())
     }
 
-    pub fn resolve_mirror_path(url: &str, output_dir: &Path, repodata_name: &str) -> PathBuf {
-        let final_path = if let Some((_, str_b)) = url.split_once("$mirror/") {
+    /// Resolve remote URL (HTTP/HTTPS) or special mirror patterns to a cache path.
+    ///
+    /// Handles:
+    /// - Special patterns: `$mirror/` and `///`
+    /// - HTTP/HTTPS URLs
+    ///
+    /// Note: Security validation is performed by the caller (detect_url_proto_path).
+    ///
+    /// Returns an error if the URL is not a remote URL or special pattern.
+    pub fn remote_url_to_path(url: &str, output_dir: &Path, repodata_name: &str) -> Result<PathBuf> {
+        // Check for special mirror patterns first
+        if let Some((_, str_b)) = url.split_once("$mirror/") {
             let distro_dirs = get_distro_dirs_for_repodata_name(repodata_name);
             let local_subdir = distro_dirs.last().unwrap().clone();
-            if local_subdir != "debian" {
+            let path = if local_subdir != "debian" {
                 output_dir.join(&local_subdir).join(str_b)
             } else {
                 output_dir.join(str_b)
-            }
-        } else if let Some((_, str_b)) = url.split_once("///") {
-            output_dir.join(str_b)
-        } else {
-            Self::resolve_http_url_path(url, output_dir)
-        };
+            };
+            return Ok(path);
+        }
 
-        final_path
+        if let Some((_, str_b)) = url.split_once("///") {
+            let path = output_dir.join(str_b);
+            return Ok(path);
+        }
+
+        // Check for HTTP/HTTPS URLs
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Ok(Self::resolve_http_url_path(url, output_dir));
+        }
+
+        // Not a remote URL or special pattern
+        Err(eyre!("Not a supported remote URL: '{}'", url))
     }
 
-    /// Resolve HTTP(S) URL to a cache path that includes host and path segments.
-    /// This prevents collisions when the same filename appears in different URL paths.
+    /// Resolve local path to a PathBuf.
+    ///
+    /// Handles:
+    /// - `file://` URLs
+    /// - Absolute paths (leading `/`)
+    /// - Relative paths (leading `./`)
+    /// - Existing files (unknown pattern but file exists)
+    ///
+    /// Note: Security validation is performed by the caller (detect_url_proto_path).
+    ///
+    /// Returns an error if the path is not a valid local path.
+    pub fn local_url_to_path(spec: &str) -> Result<PathBuf> {
+        // Check for file:// URLs or relative paths (./)
+        if let Some(local_path) = spec.strip_prefix("file://")
+            .or_else(|| spec.strip_prefix("./"))
+        {
+            return Ok(PathBuf::from(local_path));
+        }
+
+        // Check for absolute paths (leading /)
+        if spec.starts_with('/') {
+            return Ok(PathBuf::from(spec));
+        }
+
+        // Check if it's an existing file (unknown pattern but file exists)
+        let path = Path::new(spec);
+        if path.exists() && path.is_file() {
+            return Ok(path.to_path_buf());
+        }
+
+        // Not a valid local path
+        Err(eyre!("Not a valid local path: '{}'", spec))
+    }
+
+    /// Detect URL protocol and resolve to path by trying remote_url_to_path() first, then local_url_to_path().
+    ///
+    /// Performs security validation on all resolved paths before returning them.
+    ///
+    /// Returns:
+    /// - `(UrlProtocol::Http, PathBuf)` for remote URLs or special patterns
+    /// - `(UrlProtocol::Local, PathBuf)` for local paths
+    pub fn detect_url_proto_path(url: &str, repodata_name: &str) -> Result<(UrlProtocol, PathBuf)> {
+        let output_dir = dirs().epkg_downloads_cache.clone();
+        // Try remote URL first
+        match Self::remote_url_to_path(url, &output_dir, repodata_name) {
+            Ok(path) => {
+                // Validate path security before returning
+                Self::validate_path_security(&path, "detect_url_proto_path: remote URL")?;
+                Ok((UrlProtocol::Http, path))
+            }
+            Err(_) => {
+                // Try local path
+                match Self::local_url_to_path(url) {
+                    Ok(path) => {
+                        // Validate path security before returning
+                        Self::validate_path_security(&path, "detect_url_proto_path: local path")?;
+                        Ok((UrlProtocol::Local, path))
+                    }
+                    Err(_) => {
+                        // Handle case like DNS/path/to/file where DNS contains at least one '.'
+                        // e.g. dl-cdn.alpinelinux.org/MIRRORS.txt
+                        // in which case add 'https://' prefix and try resolve_http_url_path()
+                        if let Some(first_slash) = url.find('/') {
+                            let dns_part = &url[..first_slash];
+                            if dns_part.contains('.') {
+                                // Looks like a DNS name, try adding https:// prefix
+                                let https_url = format!("https://{}", url);
+                                let path = Self::resolve_http_url_path(&https_url, &output_dir);
+                                // Validate the generated path
+                                Self::validate_path_security(&path, "detect_url_proto_path: DNS pattern")?;
+                                return Ok((UrlProtocol::Http, path));
+                            }
+                        }
+
+                        Err(eyre!("Unsupport URL: '{}'", url))
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn url_to_cache_path(url: &str, repodata_name: &str) -> Result<PathBuf> {
+        log::debug!("url_to_cache_path {} {}", url, repodata_name);
+        let (_, path) = Self::detect_url_proto_path(url, repodata_name)?;
+        Ok(path)
+    }
+
+    /// Resolve HTTP(S) URL to a cache path by substituting protocol prefix with output_dir.
+    ///
+    /// Simply replaces "http://" or "https://" with "$output_dir/", preserving the rest of the path.
+    /// If URL ends with '/', appends 'index.html'.
+    ///
+    /// Note: Security validation is performed by the caller (detect_url_proto_path).
     ///
     /// Examples:
     /// - `https://example.com/path/to/file.txt` -> `output_dir/example.com/path/to/file.txt`
     /// - `https://mirror.com/repo/linux-64/file.gz` -> `output_dir/mirror.com/repo/linux-64/file.gz`
-    /// - `https://mirror.com/repo/noarch/file.gz` -> `output_dir/mirror.com/repo/noarch/file.gz`
-    pub(crate) fn resolve_http_url_path(url: &str, output_dir: &Path) -> PathBuf {
-        // For regular URLs, include host and path segments to avoid collisions
-        // when the same filename appears in different paths
-        if let Some(url_stripped) = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) {
-            let parts: Vec<&str> = url_stripped.split('/').collect();
-            if parts.len() > 1 {
-                // Include host and path segments (excluding the filename)
-                let host = parts[0];
-                let path_segments = &parts[1..];
-                let file_name = path_segments.last().copied().unwrap_or("unknown_file");
+    /// - `https://example.com/path/` -> `output_dir/example.com/path/index.html`
+    fn resolve_http_url_path(url: &str, output_dir: &Path) -> PathBuf {
+        let url_stripped = match url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) {
+            Some(stripped) => stripped,
+            None => url
+        };
 
-                // Build path: output_dir/host/path_segments.../filename
-                let mut path = output_dir.join(host);
-                // Include all path segments except the last one (which is the filename)
-                for segment in path_segments.iter().take(path_segments.len().saturating_sub(1)) {
-                    if !segment.is_empty() {
-                        path = path.join(segment);
-                    }
-                }
-                path.join(file_name)
-            } else {
-                // Fallback: just use filename if URL structure is unexpected
-                let file_name = url.split('/').last()
-                    .unwrap_or("unknown_file");
-                output_dir.join(file_name)
-            }
+        // Check if URL ends with / (directory)
+        let ends_with_slash = url.ends_with('/');
+
+        // Build path by joining output_dir with the stripped URL path segments
+        // Split the stripped URL into parts and join them properly
+        let parts: Vec<&str> = url_stripped.split('/').filter(|s| !s.is_empty()).collect();
+        let mut path = output_dir.to_path_buf();
+        for part in parts {
+            path = path.join(part);
+        }
+
+        // If URL ends with /, add index.html
+        if ends_with_slash {
+            path.join("index.html")
         } else {
-            // Not an HTTP(S) URL, fallback to filename only
-            let file_name = url.split('/').last()
-                .unwrap_or("unknown_file");
-            output_dir.join(file_name)
+            path
         }
     }
 
@@ -1618,19 +1719,15 @@ pub fn dump_mirror_performance_stats(mirrors: &Mirrors, show_all: bool) {
 
     if show_all {
         println!("");
-        println!("=== Unavailable Mirrors ===");
+        println!("=== Available Mirrors ===");
 
         // Show mirrors not in available_mirrors
-        let mut unavailable_count = 0;
+        let mut available_count = 0;
         for (site, mirror) in &mirrors.mirrors {
             if !mirrors.available_mirrors.contains(site) {
-                unavailable_count += 1;
-                show_one_mirror(unavailable_count, site, mirror, mirrors.pget_limit);
+                available_count += 1;
+                show_one_mirror(available_count, site, mirror, mirrors.pget_limit);
             }
-        }
-
-        if unavailable_count == 0 {
-            println!("No unavailable mirrors found.");
         }
     }
 
@@ -2064,7 +2161,7 @@ fn generate_recent_month_strings(timestamp: u64, months_back: usize) -> Vec<Stri
 
 
 // Helper to deserialize bools that may be represented as 0/1 numbers in JSON
-pub fn bool_from_number<'de, D>(deserializer: D) -> Result<bool, D::Error>
+fn bool_from_number<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -2131,7 +2228,7 @@ pub fn extend_repodata_name2distro_dirs(channel_config: &crate::models::ChannelC
 }
 
 /// Get distro_dirs for a specific repodata_name
-pub fn get_distro_dirs_for_repodata_name(repodata_name: &str) -> Vec<String> {
+fn get_distro_dirs_for_repodata_name(repodata_name: &str) -> Vec<String> {
     if let Ok(hashmap) = REPODATA_NAME2DISTRO_DIRS.lock() {
         if let Some(distro_dirs) = hashmap.get(repodata_name) {
             return distro_dirs.clone();
@@ -2197,15 +2294,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_http_url_path_no_path() {
-        let output_dir = PathBuf::from("/cache");
-        let url = "https://example.com";
-        let result = Mirrors::resolve_http_url_path(url, &output_dir);
-        // Should fallback to filename only
-        assert_eq!(result, PathBuf::from("/cache/example.com"));
-    }
-
-    #[test]
     fn test_resolve_http_url_path_non_http() {
         let output_dir = PathBuf::from("/cache");
         let url = "file:///path/to/file.txt";
@@ -2232,15 +2320,15 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_mirror_path_integration() {
+    fn test_remote_url_to_path_integration() {
         let output_dir = PathBuf::from("/cache");
 
-        // Test that resolve_mirror_path uses resolve_http_url_path for regular URLs
+        // Test that remote_url_to_path uses resolve_http_url_path for regular URLs
         let url1 = "https://mirror.com/repo/linux-64/file.gz";
         let url2 = "https://mirror.com/repo/noarch/file.gz";
 
-        let result1 = Mirrors::resolve_mirror_path(url1, &output_dir, "test");
-        let result2 = Mirrors::resolve_mirror_path(url2, &output_dir, "test");
+        let result1 = Mirrors::remote_url_to_path(url1, &output_dir, "test").unwrap();
+        let result2 = Mirrors::remote_url_to_path(url2, &output_dir, "test").unwrap();
 
         assert_ne!(result1, result2, "Different paths should produce different cache paths");
     }

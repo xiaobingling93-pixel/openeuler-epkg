@@ -112,11 +112,12 @@ impl PackageManager {
 
 /// Download a single file using DownloadTask with repodata_name
 pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Result<()> {
+    use crate::download::DownloadFlags;
     let task = DownloadTask::with_size(
         url.to_string(),
         None,
         repodata_name.to_string(),
-        false  // Not an ADB file
+        DownloadFlags::empty()  // Not an ADB file
     );
     submit_download_task(task)
         .with_context(|| format!("Failed to submit download task for {}", url))?;
@@ -730,11 +731,17 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     let (data_tx, data_rx) = mpsc::sync_channel(DATA_CHANNEL_BUFFER);
 
     // Create and submit download task
+    use crate::download::DownloadFlags;
+    let flags = if revise.is_adb {
+        DownloadFlags::ADB
+    } else {
+        DownloadFlags::empty()
+    };
     let task = DownloadTask::with_size(
         revise.url.clone(),
         if revise.size > 0 { Some(revise.size as u64) } else { None },
         revise.repo_revise.repodata_name.clone(),
-        revise.is_adb
+        flags
     ).with_data_channel(data_tx);
 
     // Submit download task

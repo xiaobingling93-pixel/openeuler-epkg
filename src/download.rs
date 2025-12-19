@@ -46,6 +46,39 @@ use crate::utils;
 use crate::run;
 use crate::aur::{AUR_BASE_URL, AUR_DOMAIN};
 
+/// Download task flags for various characteristics
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadFlags(u8);
+
+impl DownloadFlags {
+    pub const ADB: DownloadFlags = DownloadFlags(1 << 0);  // Alpine/Arch Database file
+    pub const LOCAL: DownloadFlags = DownloadFlags(1 << 1); // Local file (no download needed)
+
+    pub const fn empty() -> Self {
+        DownloadFlags(0)
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+}
+
+impl std::ops::BitOr for DownloadFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        DownloadFlags(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitAnd for DownloadFlags {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        DownloadFlags(self.0 & rhs.0)
+    }
+}
+
 /// Constants for chunking configuration
 // Using power of 2 for efficient bit operations
 const PGET_CHUNK_SIZE: u64 = 1 << 20;                       // 1MB chunks
@@ -496,7 +529,7 @@ pub struct DownloadTask {
 
     // Repository information for mirror selection
     pub repodata_name:        String,                                     // Repository name for mirror selection
-    pub is_adb:               bool,                                       // Whether this is an ADB (Alpine/Arch Database) file
+    pub flags:                DownloadFlags,                              // Download task flags (ADB, LOCAL, etc.)
 
     // Chunking semantics rules:
     // 1. chunk_offset - decided on initial allocation, won't change over time; 0 for master task
@@ -642,6 +675,7 @@ impl ServerMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadMetadata {
     pub serving_metadata: Option<ServerMetadata>,  // Metadata from the mirror that served the download
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers_metadata: Vec<ServerMetadata>,     // All metadata responses from different mirrors (for debugging)
 }
 
@@ -668,16 +702,27 @@ fn update_download_status(task: &DownloadTask, new_status: DownloadStatus) -> Re
 
 impl DownloadTask {
     fn new(url: String) -> Self {
-        Self::with_size(url, None, "".to_string(), false)
+        Self::with_size(url, None, "".to_string(), DownloadFlags::empty())
     }
 
-    pub fn with_size(url: String, file_size: Option<u64>, repodata_name: String, is_adb: bool) -> Self {
-        let output_dir = dirs().epkg_downloads_cache.clone();
-        let final_path = mirror::Mirrors::resolve_mirror_path(&url, &output_dir, &repodata_name);
-        Self::with_path(url, final_path, file_size, repodata_name, is_adb)
+    pub fn with_size(url: String, file_size: Option<u64>, repodata_name: String, mut flags: DownloadFlags) -> Self {
+        // Use detect_url_proto_path to determine if this is a local file
+        let (protocol, final_path) = mirror::Mirrors::detect_url_proto_path(&url, &repodata_name)
+            .unwrap_or_else(|e| {
+                panic!("Failed to detect URL protocol and resolve path for '{}': {}", url, e);
+            });
+
+        // Set LOCAL flag if the protocol is Local
+        // Note: in with_size() we already set task.final_path pointing to the original local file url
+        // (detect_url_proto_path/local_url_to_path's behavior), so can avoid the extra copy
+        if protocol == mirror::UrlProtocol::Local {
+            flags = flags | DownloadFlags::LOCAL;
+        }
+
+        Self::with_path(url, final_path, file_size, repodata_name, flags)
     }
 
-    fn with_path(url: String, final_path: PathBuf, file_size: Option<u64>, repodata_name: String, is_adb: bool) -> Self {
+    fn with_path(url: String, final_path: PathBuf, file_size: Option<u64>, repodata_name: String, flags: DownloadFlags) -> Self {
         let max_retries = config().common.nr_retry;
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = utils::append_suffix(&final_path, "part");
@@ -697,7 +742,7 @@ impl DownloadTask {
             file_size:         AtomicU64::new(file_size.unwrap_or(0)),
             attempt_number:    AtomicUsize::new(0),         // Initialize to 0 (first attempt)
             file_type,                                      // File type for integrity and metadata handling
-            is_adb:            is_adb,
+            flags:             flags,
             serving_metadata:  Mutex::new(None),            // Will store metadata in HTTP response
             servers_metadata:  Mutex::new(Vec::new()),
             chunk_tasks:       Arc::new(Mutex::new(Vec::new())),
@@ -810,7 +855,9 @@ impl DownloadTask {
 
         Arc::new(DownloadTask {
             url:                  self.url.clone(),
-            resolved_url:         Mutex::new(self.get_resolved_url()),
+            // Chunks should start with empty resolved_url so they can select their own mirror
+            // This enables parallel downloads from multiple mirrors for better performance
+            resolved_url:         Mutex::new(String::new()),  // Empty = will use self.url in get_resolved_url()
             output_dir:           self.output_dir.clone(),
             max_retries:          self.max_retries,
             client:               Arc::new(Mutex::new(None)),           // Initialize with no client
@@ -821,8 +868,10 @@ impl DownloadTask {
             attempt_number:       AtomicUsize::new(0),                  // Initialize to 0 (first attempt)
             mirror_inuse:         Arc::new(Mutex::new(None)),           // No mirror selected yet for chunk tasks
             file_type:            self.file_type.clone(),               // Copy file type classification
-            is_adb:               self.is_adb,
-            serving_metadata:     Mutex::new(self.serving_metadata.lock().unwrap().clone()),  // Each chunk's HTTP response must align with serving_metadata
+            flags:                self.flags,
+            // Chunks should start with None serving_metadata so they select their own mirror
+            // Metadata validation will ensure ETag/timestamp consistency across mirrors
+            serving_metadata:     Mutex::new(None),  // Will be set when chunk downloads and validates against master
             servers_metadata:     Mutex::new(Vec::new()),
             chunk_tasks:          Arc::new(Mutex::new(Vec::new())),
             chunk_path:           PathBuf::from(chunk_path),
@@ -2222,9 +2271,12 @@ fn download_task(
 
     log::debug!("download_task starting for {}, has_channel: {}, expected_size: {:?}", url, task.get_data_channel().is_some(), expected_size);
 
-    // Handle local file URLs (file:// or starting with /)
-    if url.starts_with("file://") || url.starts_with("/") {
-        return handle_local_file(url, final_path, task);
+    // Handle local files - in with_size() we already set task.final_path pointing to the original local file url
+    // (detect_url_proto_path/local_url_to_path's behavior), so can avoid the extra copy
+    if task.flags.contains(DownloadFlags::LOCAL) {
+        // For local files, final_path already points to the canonicalized local file path
+        // No download needed
+        return Ok(());
     }
 
     // Handle AUR git downloads if URL matches AUR pattern and git is available
@@ -2253,49 +2305,6 @@ fn download_task(
     }
 
     result
-}
-
-/// Handles local file URLs by copying them to the destination
-///
-/// - Supports file:// URLs and absolute paths starting with /
-/// - Creates parent directories as needed
-/// - Marks the download task as completed
-/// - Verifies file size if expected size is provided
-fn handle_local_file(url: &str, final_path: &Path, task: &DownloadTask) -> Result<()> {
-    let source_path = if url.starts_with("file://") {
-        Path::new(&url[7..])
-    } else {
-        Path::new(url)
-    };
-
-    if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create parent directory for {}: {}", final_path.display(), parent.display()))?;
-    }
-
-    fs::copy(source_path, final_path)
-        .with_context(|| format!("Failed to copy file from {} to {}", source_path.display(), final_path.display()))?;
-
-    // Verify file size if expected size is provided
-    let file_size_val = task.file_size.load(Ordering::Relaxed);
-    if file_size_val > 0 {
-        if let Ok(metadata) = fs::metadata(final_path) {
-            let actual_size = metadata.len();
-            if actual_size != file_size_val {
-                let error_msg = format!(
-                    "Local file size mismatch: expected {} bytes, got {} bytes",
-                    file_size_val, actual_size
-                );
-                log::warn!("{} for {}", error_msg, url);
-                // Note: We could make this a hard error, but for now just warn
-                // since size information might not always be accurate
-            } else {
-                log::debug!("Local file size verified: {} bytes for {}", actual_size, url);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Handles AUR package downloads using git clone/fetch
@@ -3393,7 +3402,7 @@ impl PackageManager {
             };
 
             // Submit download task with size information (handles both local and remote files)
-            let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), false);
+            let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), DownloadFlags::empty());
             submit_download_task(task)
                 .with_context(|| format!("Failed to submit download task for {}", url))?;
             url_to_pkgkeys.entry(url).or_default().push(pkgkey.clone());
@@ -4951,7 +4960,7 @@ fn recover_chunks_for_parto_files(
 /// This is useful for detecting when mirrors are out of sync
 /// Validates all level tasks' servers_metadata against master task's serving_metadata
 fn validate_mirror_metadata(task: &DownloadTask) {
-    if !task.is_adb || !task.is_master_task() {
+    if !task.flags.contains(DownloadFlags::ADB) || !task.is_master_task() {
         return;
     }
 
@@ -5620,9 +5629,9 @@ fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)> {
  *
  * 1. **ADB File Special Handling**: Files downloaded via sync_from_package_database()
  *    (Alpine APKINDEX.tar.gz, Arch Linux core.files.tar.gz, etc.) are marked with
- *    is_adb=true. These files use a special mirror selection algorithm.
+ *    DownloadFlags::ADB. These files use a special mirror selection algorithm.
  *
- * 2. **Multi-Mirror Metadata Checking**: For is_adb files, we:
+ * 2. **Multi-Mirror Metadata Checking**: For ADB files, we:
  *    - Call select_mirror_with_usage_tracking() up to 6 times to get 3 unique mirrors
  *    - Fetch server metadata (HEAD request) from each mirror to get Last-Modified/ETag
  *    - Select the mirror with the most recent last_modified timestamp
@@ -5723,8 +5732,8 @@ fn resolve_mirror_and_update_task(task: &DownloadTask) -> Result<String> {
         }
     }
 
-    // For is_adb files, use special mirror selection that checks metadata from multiple mirrors
-    if task.is_adb && task.is_master_task() {
+    // For ADB files, use special mirror selection that checks metadata from multiple mirrors
+    if task.flags.contains(DownloadFlags::ADB) && task.is_master_task() {
         return resolve_mirror_for_adb(task, url, need_range);
     }
 

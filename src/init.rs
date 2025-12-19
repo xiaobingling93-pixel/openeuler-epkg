@@ -853,11 +853,11 @@ fn check_for_updates() -> Result<InitPlan> {
 
     // Set up file paths using the same resolution logic as the download system
     // This ensures paths match where files are actually downloaded
-    let epkg_binary_path      = mirror::Mirrors::resolve_mirror_path(&epkg_binary_url,       &epkg_download_dir, "epkg");
-    let epkg_binary_sha_path  = mirror::Mirrors::resolve_mirror_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg");
-    let epkg_src_path         = mirror::Mirrors::resolve_mirror_path(&epkg_src_url,          &epkg_download_dir, "epkg");
-    let elf_loader_path       = mirror::Mirrors::resolve_mirror_path(&elf_loader_url,        &epkg_download_dir, "epkg");
-    let elf_loader_sha_path   = mirror::Mirrors::resolve_mirror_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg");
+    let epkg_binary_path      = mirror::Mirrors::remote_url_to_path(&epkg_binary_url,       &epkg_download_dir, "epkg")?;
+    let epkg_binary_sha_path  = mirror::Mirrors::remote_url_to_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg")?;
+    let epkg_src_path         = mirror::Mirrors::remote_url_to_path(&epkg_src_url,          &epkg_download_dir, "epkg")?;
+    let elf_loader_path       = mirror::Mirrors::remote_url_to_path(&elf_loader_url,        &epkg_download_dir, "epkg")?;
+    let elf_loader_sha_path   = mirror::Mirrors::remote_url_to_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg")?;
 
     // Determine what needs to be downloaded
     let need_download_epkg_binary = is_upgrade;

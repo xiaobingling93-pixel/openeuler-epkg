@@ -2752,12 +2752,6 @@ mod tests {
 // LOCAL PACKAGE FILE AND URL HANDLING
 // ============================================================================
 
-/// Check if a spec is a remote URL (http://, https://)
-pub fn is_remote_url(spec: &str) -> bool {
-    spec.starts_with("http://") || spec.starts_with("https://")
-}
-
-
 impl PackageManager {
 
     /// Process local package files: unpack packages, load metadata, and add to cache
@@ -2839,6 +2833,7 @@ impl PackageManager {
     /// Process package specs: separate regular specs from files/URLs, download URLs, process local files
     fn process_url_package_specs(&mut self, package_specs: Vec<String>) -> Result<Vec<String>> {
         use crate::store::detect_package_format;
+        use crate::mirror::{Mirrors, UrlProtocol};
 
         // Separate package specs into regular package names and local files/URLs
         let mut regular_specs = Vec::new();
@@ -2846,25 +2841,28 @@ impl PackageManager {
         let mut local_files = Vec::new();
 
         for spec in package_specs {
-            if is_remote_url(&spec) {
-                remote_urls.push(spec);
-            } else if spec.starts_with("file://") {
-                // Handle file:// URLs - convert to local path
-                let local_path = spec.strip_prefix("file://")
-                    .unwrap_or(&spec)
-                    .to_string();
-                local_files.push(local_path);
-            } else {
-                // Check if it's a local package file by trying to detect format
-                let path = std::path::Path::new(&spec);
-                if path.exists() && path.is_file() {
-                    // Use detect_package_format to check if it's a supported package file
-                    if detect_package_format(path).is_ok() {
-                        local_files.push(spec);
+            // Use detect_url_proto_path to determine if it's a remote URL or local path
+            match Mirrors::detect_url_proto_path(&spec, "") {
+                Ok((UrlProtocol::Http, _)) => {
+                    // It's a remote URL (HTTP/HTTPS or special patterns)
+                    remote_urls.push(spec);
+                }
+                Ok((UrlProtocol::Local, local_path)) => {
+                    // It's a local path - verify it's a valid package file
+                    let path = std::path::Path::new(&local_path);
+                    if path.exists() && path.is_file() {
+                        // Use detect_package_format to check if it's a supported package file
+                        if detect_package_format(path).is_ok() {
+                            local_files.push(local_path.to_string_lossy().to_string());
+                        } else {
+                            regular_specs.push(spec);
+                        }
                     } else {
                         regular_specs.push(spec);
                     }
-                } else {
+                }
+                Err(_) => {
+                    // Neither remote nor local - treat as regular spec
                     regular_specs.push(spec);
                 }
             }
