@@ -8,13 +8,12 @@ use std::time::{SystemTime, Duration};
 use sha2::{Sha256, Sha512, Digest};
 use filetime;
 use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
 use crate::models::*;
 use crate::dirs;
 
 use crate::download::DownloadTask;
-use crate::download::{submit_download_task, has_download_task};
+use crate::download::{submit_download_task, has_download_task, DownloadStatus};
 use crate::download::DOWNLOAD_MANAGER;
 use crate::mmio;
 
@@ -115,8 +114,6 @@ impl PackageManager {
 pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Result<()> {
     let task = DownloadTask::with_size(
         url.to_string(),
-        dirs().epkg_downloads_cache.clone(),
-        6,
         None,
         repodata_name.to_string(),
         false  // Not an ADB file
@@ -125,8 +122,11 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
         .with_context(|| format!("Failed to submit download task for {}", url))?;
     DOWNLOAD_MANAGER.start_processing();
     // Wait for the download to complete
-    DOWNLOAD_MANAGER.wait_for_task(url.to_string())
+    let (status, _) = DOWNLOAD_MANAGER.wait_for_task(url.to_string())
         .with_context(|| format!("Failed to wait for download from {}", url))?;
+    if let DownloadStatus::Failed(err_msg) = status {
+        return Err(eyre::eyre!("Download failed for {}: {}", url, err_msg));
+    }
     Ok(())
 }
 
@@ -732,8 +732,6 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     // Create and submit download task
     let task = DownloadTask::with_size(
         revise.url.clone(),
-        dirs().epkg_downloads_cache.clone(),
-        6,
         if revise.size > 0 { Some(revise.size as u64) } else { None },
         revise.repo_revise.repodata_name.clone(),
         revise.is_adb

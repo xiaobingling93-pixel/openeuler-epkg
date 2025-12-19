@@ -1507,7 +1507,7 @@ impl PackageManager {
         env_root: &Path,
     ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         // Submit download tasks first (includes both binary and AUR packages)
-        let url_to_pkgkeys = self.submit_download_tasks(packages_to_download_and_process)?;
+        let url_to_pkgkeys = self.enqueue_package_downloads(packages_to_download_and_process)?;
         let pending_urls: Vec<String> = url_to_pkgkeys.keys().cloned().collect();
 
         // While downloading, link packages that already exist in the store (have non-empty pkgline)
@@ -2759,41 +2759,6 @@ pub fn is_remote_url(spec: &str) -> bool {
 
 
 impl PackageManager {
-    /// Download remote package URLs to local paths in parallel
-    fn download_remote_package_urls(&self, urls: Vec<String>) -> Result<Vec<String>> {
-        use crate::download::download_urls;
-        use crate::models::dirs;
-        use crate::mirror;
-
-        if urls.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Create output directory
-        let output_dir = dirs().epkg_downloads_cache.clone();
-        std::fs::create_dir_all(&output_dir)
-            .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
-
-        // Download all URLs in parallel (download_urls waits for completion when async_mode=false)
-        download_urls(urls.clone(), &output_dir, 6, false)
-            .with_context(|| format!("Failed to download URLs"))?;
-
-        // Get the local file paths - construct from URL using mirror cache path logic
-        let mut local_paths = Vec::new();
-        for url in urls {
-            // Use mirror URL to cache path conversion (same logic as get_package_file_path)
-            let cache_path = mirror::Mirrors::url_to_cache_path(&url, "local")
-                .unwrap_or_else(|_| {
-                    // Fallback: use filename from URL
-                    let filename = url.split('/').last()
-                        .unwrap_or("package");
-                    output_dir.join(filename)
-                });
-            local_paths.push(cache_path.to_string_lossy().to_string());
-        }
-
-        Ok(local_paths)
-    }
 
     /// Process local package files: unpack packages, load metadata, and add to cache
     /// Returns package specs that can be used with install_packages()
@@ -2907,8 +2872,14 @@ impl PackageManager {
 
         // Download all remote URLs in parallel (if any)
         if !remote_urls.is_empty() {
-            let downloaded_paths = self.download_remote_package_urls(remote_urls)?;
-            local_files.extend(downloaded_paths);
+            use crate::download::download_urls;
+            let download_results = download_urls(remote_urls);
+            for result in download_results {
+                match result {
+                    Ok(path) => local_files.push(path),
+                    Err(e) => return Err(e).with_context(|| format!("Failed to download remote package URLs")),
+                }
+            }
         }
 
         // Process local package files (unpack, load metadata, add to cache)

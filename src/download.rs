@@ -667,16 +667,18 @@ fn update_download_status(task: &DownloadTask, new_status: DownloadStatus) -> Re
 }
 
 impl DownloadTask {
-    fn new(url: String, output_dir: PathBuf, max_retries: usize) -> Self {
-        Self::with_size(url, output_dir, max_retries, None, "".to_string(), false)
+    fn new(url: String) -> Self {
+        Self::with_size(url, None, "".to_string(), false)
     }
 
-    pub fn with_size(url: String, output_dir: PathBuf, max_retries: usize, file_size: Option<u64>, repodata_name: String, is_adb: bool) -> Self {
+    pub fn with_size(url: String, file_size: Option<u64>, repodata_name: String, is_adb: bool) -> Self {
+        let output_dir = dirs().epkg_downloads_cache.clone();
         let final_path = mirror::Mirrors::resolve_mirror_path(&url, &output_dir, &repodata_name);
-        Self::with_path(url, final_path, max_retries, file_size, repodata_name, is_adb)
+        Self::with_path(url, final_path, file_size, repodata_name, is_adb)
     }
 
-    fn with_path(url: String, final_path: PathBuf, max_retries: usize, file_size: Option<u64>, repodata_name: String, is_adb: bool) -> Self {
+    fn with_path(url: String, final_path: PathBuf, file_size: Option<u64>, repodata_name: String, is_adb: bool) -> Self {
+        let max_retries = config().common.nr_retry;
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = utils::append_suffix(&final_path, "part");
 
@@ -1068,7 +1070,7 @@ impl DownloadManager {
         }
     }
 
-    pub fn wait_for_task(&self, task_url: String) -> Result<DownloadStatus> {
+    pub fn wait_for_task(&self, task_url: String) -> Result<(DownloadStatus, Option<PathBuf>)> {
         loop {
             // Check for cancellation first
             if self.cancelled.load(Ordering::Relaxed) {
@@ -1080,7 +1082,13 @@ impl DownloadManager {
             if let Some(task) = tasks.get(&task_url) {
                 let status = task.get_status();
                 match status {
-                    DownloadStatus::Completed | DownloadStatus::Failed(_) => return Ok(status),
+                    DownloadStatus::Completed => {
+                        let final_path = Some(task.final_path.clone());
+                        return Ok((status, final_path));
+                    }
+                    DownloadStatus::Failed(_) => {
+                        return Ok((status, None));
+                    }
                     _ => {}
                 }
             } else {
@@ -1984,7 +1992,7 @@ enum CacheDecision {
  */
 
 pub static DOWNLOAD_MANAGER: LazyLock<DownloadManager> = LazyLock::new(|| {
-    DownloadManager::new(config().common.nr_parallel)
+    DownloadManager::new(config().common.nr_parallel_download)
         .expect("Failed to initialize download manager")
 });
 
@@ -2007,43 +2015,116 @@ pub fn cancel_downloads() {
     DOWNLOAD_MANAGER.cancel();
 }
 
+/// Download multiple URLs in parallel and wait for all downloads to complete.
+///
+/// This function submits download tasks for all provided URLs, starts the download manager,
+/// and waits for each download to complete. It returns a vector of results where each element
+/// corresponds to the URL at the same index in the input vector.
+///
+/// # Parameters
+///
+/// * `urls` - Vector of URLs to download. All downloads are performed in parallel.
+///
+/// # Returns
+///
+/// Returns `Vec<Result<String>>` where:
+/// - `Ok(String)` contains the final file path of a successfully downloaded file
+/// - `Err(...)` contains an error message if the download failed
+///
+/// The results vector has the same length as the input `urls` vector, with each result
+/// corresponding to the URL at the same index.
+///
+/// # Behavior
+///
+/// - Creates the output directory (`epkg_downloads_cache`) if it doesn't exist
+/// - Submits all download tasks before starting processing (parallel submission)
+/// - Waits for each task to complete sequentially
+/// - Each download uses the global `nr_retry` setting from `CommonOptions`
+/// - All downloads are stored in `epkg_downloads_cache` directory
+///
+/// # Errors
+///
+/// Individual download failures are returned as `Err` in the results vector.
+/// The function does not fail early - all downloads are attempted and all results
+/// (successful or failed) are returned.
 pub fn download_urls(
     urls: Vec<String>,
-    output_dir: &Path,
-    max_retries: usize,
-    async_mode: bool,
-) -> Result<Vec<DownloadTask>> {
+) -> Vec<Result<String>> {
+    let output_dir = dirs().epkg_downloads_cache.clone();
+    if let Err(e) = fs::create_dir_all(&output_dir)
+        .with_context(|| format!("Failed to create output directory: {}", output_dir.display())) {
+        let error_msg = format!("{}", e);
+        return urls.into_iter().map(|_| Err(eyre!("{}", error_msg))).collect();
+    }
+
     let mut task_urls = Vec::new();
-    for url in urls {
+    let mut submit_errors = Vec::new();
+
+    for url in &urls {
         let url_for_context = url.clone();
-        let task = DownloadTask::new(url.clone(), output_dir.to_path_buf(), max_retries);
+        let task = DownloadTask::new(url.clone());
 
         // Submit the task - if URL already exists, it will just replace/reuse
-        submit_download_task(task)
-            .with_context(|| format!("Failed to submit download task for {}", url_for_context))?;
-        task_urls.push(url);
+        if let Err(e) = submit_download_task(task)
+            .with_context(|| format!("Failed to submit download task for {}", url_for_context)) {
+            submit_errors.push(Some(e));
+            task_urls.push(None);
+        } else {
+            submit_errors.push(None);
+            task_urls.push(Some(url.clone()));
+        }
     }
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
     DOWNLOAD_MANAGER.start_processing();
 
-    if !async_mode {
-        // Wait for each task using the URLs
-        for (i, task_url) in task_urls.iter().enumerate() {
-            let status = DOWNLOAD_MANAGER.wait_for_task(task_url.clone())
-                .with_context(|| format!("Failed to wait for download task {} (URL: {})", i, task_url))?;
-            if let DownloadStatus::Failed(err_msg) = status {
-                return Err(eyre!("Download failed for {}: {}", task_url, err_msg));
+    // Wait for each task using the URLs and collect results
+    let mut results = Vec::new();
+    for (i, task_url_opt) in task_urls.iter().enumerate() {
+        if let Some(ref task_url) = task_url_opt {
+            match DOWNLOAD_MANAGER.wait_for_task(task_url.clone())
+                .with_context(|| format!("Failed to wait for download task {} (URL: {})", i, task_url)) {
+                Ok((status, final_path_opt)) => {
+                    match status {
+                        DownloadStatus::Completed => {
+                            if let Some(final_path) = final_path_opt {
+                                results.push(Ok(final_path.to_string_lossy().to_string()));
+                            } else {
+                                results.push(Err(eyre!("Download completed but no final path available for {}", task_url)));
+                            }
+                        }
+                        DownloadStatus::Failed(err_msg) => {
+                            results.push(Err(eyre!("Download failed for {}: {}", task_url, err_msg)));
+                        }
+                        _ => {
+                            results.push(Err(eyre!("Unexpected status for {}: {:?}", task_url, status)));
+                        }
+                    }
+                }
+                Err(e) => {
+                    results.push(Err(e));
+                }
+            }
+        } else {
+            // Use the submit error if available
+            if let Some(err) = submit_errors[i].take() {
+                results.push(Err(err));
+            } else {
+                results.push(Err(eyre!("Failed to submit download task for URL at index {}", i)));
             }
         }
-        Ok(Vec::new())
-    } else {
-        Ok(Vec::new()) // Return empty vec in async mode since tasks are managed by DownloadManager
     }
+    results
 }
 
 /// Setup progress bar for download
 fn setup_progress_bar(task: &DownloadTask, multi_progress: &MultiProgress, url: &str) -> Result<()> {
+    // Skip creating progress bar if quiet mode is enabled
+    if config().common.quiet {
+        if let Ok(mut pb_guard) = task.progress_bar.lock() {
+            *pb_guard = None;
+        }
+        return Ok(());
+    }
+
     let pb = multi_progress.add(ProgressBar::new(0));
     pb.set_style(ProgressStyle::default_bar()
         .template(&format!("[{{elapsed:>3}}] [{{bar:{}}}] {{bytes_per_sec:>12}} ({{bytes:>11}}) {{msg}}", PROGRESS_BAR_WIDTH))
@@ -3280,9 +3361,9 @@ fn parse_etag(response: &http::Response<ureq::Body>) -> Option<String> {
 // ============================================================================
 
 impl PackageManager {
-    /// Submit download tasks for packages without waiting for completion
+    /// Enqueue download tasks for packages without waiting for completion
     /// Returns a mapping from download URLs to their package keys for tracking
-    pub fn submit_download_tasks(
+    pub fn enqueue_package_downloads(
         &mut self,
         packages: &HashMap<String, InstalledPackageInfo>,
     ) -> Result<HashMap<String, Vec<String>>> {
@@ -3312,7 +3393,7 @@ impl PackageManager {
             };
 
             // Submit download task with size information (handles both local and remote files)
-            let task = DownloadTask::with_size(url.clone(), output_dir.clone(), 6, size, package.repodata_name.clone(), false);
+            let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), false);
             submit_download_task(task)
                 .with_context(|| format!("Failed to submit download task for {}", url))?;
             url_to_pkgkeys.entry(url).or_default().push(pkgkey.clone());

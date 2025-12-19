@@ -170,7 +170,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn download_required_files(&self, _env_root: &Path, init_plan: &InitPlan) -> Result<()> {
+    fn download_package_manager_files(&self, init_plan: &InitPlan) -> Result<()> {
         // Collect urls for downloading in parallel
         let mut urls = Vec::new();
 
@@ -226,9 +226,10 @@ impl PackageManager {
 
         // Download to the new epkg subdirectory within downloads cache
         // Use the base directory - download_urls will construct nested paths internally
-        let epkg_download_dir = dirs().epkg_downloads_cache.join("epkg");
-        download_urls(urls, &epkg_download_dir, 6, false)
-            .context("Failed to download required files")?;
+        let download_results = download_urls(urls);
+        for result in download_results {
+            result.with_context(|| "Failed to download package manager files")?;
+        }
 
         // Verify checksums
         if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
@@ -251,7 +252,7 @@ impl PackageManager {
     fn download_setup_files(&mut self, init_plan: &InitPlan) -> Result<()> {
         let base_env_root = self.new_env_base(BASE_ENV);
 
-        self.download_required_files(&base_env_root, init_plan)
+        self.download_package_manager_files(init_plan)
             .context("Failed to download required files for base environment")?;
 
         self.setup_epkg_src(&base_env_root, init_plan)?;

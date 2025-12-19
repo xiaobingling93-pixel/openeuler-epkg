@@ -338,7 +338,8 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .arg(arg!(-m --"ignore-missing" "Ignore missing packages").hide(true).global(true))
         .arg(arg!(--"metadata-expire" <SECONDS> "Metadata expiration time in seconds (0=never, -1=always)").value_parser(clap::value_parser!(i32)).hide(true).global(true))
         .arg(arg!(--proxy <URL> "HTTP proxy URL (e.g., http://proxy.example.com:8080)").hide(true).global(true))
-        .arg(arg!(--"nr-parallel" <NUMBER> "Number of parallel download threads").value_parser(clap::value_parser!(usize)).hide(true).global(true))
+        .arg(arg!(--"retry" <NUMBER> "Number of retries for download tasks").value_parser(clap::value_parser!(usize)).hide(true).global(true))
+        .arg(arg!(--"parallel-download" <NUMBER> "Number of parallel download threads").value_parser(clap::value_parser!(usize)).hide(true).global(true))
         .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)).hide(true).global(true))
 		.override_usage("epkg [OPTIONS] <COMMAND>")
 		.help_template(
@@ -358,7 +359,8 @@ OPTIONS:
   -m, --ignore-missing              Ignore missing packages
       --metadata-expire <SECONDS>   Metadata expiration time in seconds (0=never, -1=always)
       --proxy <URL>                 HTTP proxy URL (e.g., http://proxy.example.com:8080)
-      --nr-parallel <NUMBER>        Number of parallel download threads
+      --retry <NUMBER>              Number of retries for download tasks
+      --parallel-download <NUMBER>  Number of parallel download threads
       --parallel-processing <BOOL>  Enable parallel processing for metadata updates (true/false) [possible values: true, false]
   -h, --help                        Print help
   -V, --version                     Print version")
@@ -670,18 +672,23 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
 
 /// Setup parallel processing parameters based on command line arguments and system capabilities
 fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
-    // Handle nr_parallel parameter
-    if let Some(nr_parallel) = matches.get_one::<usize>("nr-parallel") {
-        // Ensure nr_parallel is at least 1
-        config.common.nr_parallel = if *nr_parallel == 0 { 1 } else { *nr_parallel };
+    // Handle nr_retry parameter
+    if let Some(nr_retry) = matches.get_one::<usize>("retry") {
+        config.common.nr_retry = *nr_retry;
+    }
+
+    // Handle nr_parallel_download parameter
+    if let Some(nr) = matches.get_one::<usize>("parallel-download") {
+        // Ensure nr is at least 1
+        config.common.nr_parallel_download = if *nr == 0 { 1 } else { *nr };
     }
 
     // Handle parallel_processing parameter
     if let Some(parallel_processing) = matches.get_one::<bool>("parallel-processing") {
         // User explicitly set parallel_processing
         config.common.parallel_processing = *parallel_processing;
-    } else if config.common.nr_parallel <= 1 {
-        // Auto-disable if nr_parallel <= 1, overriding the default
+    } else if config.common.nr_parallel_download <= 1 {
+        // Auto-disable if nr_parallel_download <= 1, overriding the default
         config.common.parallel_processing = false;
     }
     // Otherwise, use the default value set by default_parallel_processing()

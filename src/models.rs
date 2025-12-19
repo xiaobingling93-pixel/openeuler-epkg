@@ -729,10 +729,14 @@ pub struct CommonOptions {
     #[serde(default)]
     pub proxy: String,
 
+    // Default: 6 retries for download tasks
+    #[serde(default = "default_nr_retry")]
+    pub nr_retry: usize,
+
     // Default: 6 parallel download threads
     // If user sets <= 0, it gets adjusted to at least 1 in the implementation
-    #[serde(default = "default_nr_parallel")]
-    pub nr_parallel: usize,
+    #[serde(default = "default_nr_parallel_download")]
+    pub nr_parallel_download: usize,
 
     // Default: auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
     // If user specifies nr_parallel <= 1, this gets auto-disabled
@@ -744,6 +748,14 @@ pub struct CommonOptions {
 // Default function for arch
 pub fn default_arch() -> String {
     std::env::consts::ARCH.to_string()
+}
+
+fn default_nr_retry() -> usize {
+    6
+}
+
+fn default_nr_parallel_download() -> usize {
+    6
 }
 
 // Default function for parallel_processing
@@ -766,10 +778,6 @@ fn default_parallel_processing() -> bool {
     };
 
     has_enough_cpus && has_enough_memory
-}
-
-fn default_nr_parallel() -> usize {
-    6
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
