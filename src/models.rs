@@ -231,18 +231,18 @@ pub struct InstalledPackageInfo {
     // (1) package is user-requested (depend_depth == 0), OR
     // (2) package is a dependency whose 'source' package matches the 'source' of any user-requested package.
     // Otherwise, false. Set by `record_appbin_source`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub ebin_exposure: bool,
 
-    #[serde(default)] // Default to empty Vec if missing during deserialization
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
-    #[serde(default)] // Default to empty Vec if missing during deserialization
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>, // Stores pkgkeys of packages this package depends on
-    #[serde(default)] // Default to empty Vec if missing during deserialization
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bdepends: Vec<String>, // Stores pkgkeys of build dependencies (Pacman only)
-    #[serde(default)] // Default to empty Vec if missing during deserialization
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rbdepends: Vec<String>, // Stores pkgkeys of packages that have this as a build dependency (Pacman only)
-    #[serde(default)] // for backward compatibility with older installed-packages.json
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] // for backward compatibility with older installed-packages.json
     pub ebin_links: Vec<String>,
 }
 
@@ -269,17 +269,17 @@ pub struct GenerationCommand {
     pub timestamp: String,
     pub action: String,
     pub command_line: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fresh_installs: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upgrades_new: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upgrades_old: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub old_removes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub new_exposes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub del_exposes: Vec<String>,
 }
 
@@ -291,15 +291,15 @@ pub struct EnvConfig {
     pub env_base: String,
     pub env_root: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub public: bool,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub register_to_path: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub register_priority: i32,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env_vars: HashMap<String, String>,
 }
 
@@ -420,43 +420,41 @@ impl PackageFormat {
 #[derive(Default)]
 #[derive(Clone)]
 pub struct ChannelConfig {
-    #[serde(default)]
     pub format: PackageFormat,
-    #[serde(default)]
     pub distro: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub distro_dirs: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub arch: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub channel: String,
     #[serde(default)]
     pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub app_version: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub app_versions: Vec<String>,
 
     pub index_url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_url_noarch: Option<String>, // conda https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r/noarch/
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_url_updates: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_url_security: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_url_nonfree: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_url_nonfree_updates: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>, // filename for repos.d configs
     #[serde(skip_serializing, skip_deserializing)]
     #[serde(default)]
@@ -778,6 +776,15 @@ fn default_parallel_processing() -> bool {
     };
 
     has_enough_cpus && has_enough_memory
+}
+
+// Helper function for skip_serializing_if to skip false boolean values
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero(value: &i32) -> bool {
+    *value == 0
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
