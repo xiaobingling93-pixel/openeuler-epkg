@@ -263,7 +263,7 @@ impl GenericDependencyProvider {
         let packages = self.lookup_packages(name, pm)?;
 
         if packages.is_empty() {
-            log::warn!("[RESOLVO] No packages found for name/capability: {}", name);
+            log::info!("[RESOLVO] No packages found for name/capability: {}", name);
             self.cache_empty_packages(name);
             return Ok(Vec::new());
         }
@@ -389,7 +389,7 @@ impl GenericDependencyProvider {
                 pkgs
             }
             Err(e) => {
-                log::debug!(
+                log::info!(
                     "[RESOLVO] No packages found for lookup '{}': {}",
                     lookup_name,
                     e
@@ -772,7 +772,7 @@ impl GenericDependencyProvider {
     ///
     /// This ensures that packages providing bundled libraries can satisfy dependencies
     /// that require the unbundled capability name.
-    fn package_provides_capability(&self, pkgkey: &str, capability: &str) -> bool {
+    pub fn package_provides_capability(&self, pkgkey: &str, capability: &str) -> bool {
         // Try to load package info
         let package = match self.load_package_for_solvable(pkgkey) {
             Ok(pkg) => pkg,
@@ -783,13 +783,6 @@ impl GenericDependencyProvider {
         // This preserves cap_with_arch (e.g., "libfoo(x86-64)=2.0" -> "libfoo(x86-64)")
         let (cap_without_version, _) =
             crate::parse_requires::parse_package_spec_with_version(capability, self.format);
-
-        log::debug!(
-            "[RESOLVO] package_provides_capability: checking if {} provides '{}' (cap_without_version='{}')",
-            pkgkey,
-            capability,
-            cap_without_version
-        );
 
         // Check if any provide matches the capability
         // provide_map from parse_provides contains cap_with_arch keys (atomic, never split)
@@ -838,7 +831,7 @@ impl GenericDependencyProvider {
             }
         }
 
-        log::debug!(
+        log::trace!(
             "[RESOLVO] package_provides_capability: {} does NOT provide '{}'",
             pkgkey,
             cap_without_version
@@ -1315,7 +1308,7 @@ impl GenericDependencyProvider {
                 let final_constraints = non_conditional_constraints;
 
                 // Intern the normalized package name (without arch suffix)
-                log::debug!(
+                log::trace!(
                     "[RESOLVO] Processing requirement: original='{}', normalized='{}'",
                     capability,
                     normalized_capability
@@ -1595,7 +1588,7 @@ impl DependencyProvider for GenericDependencyProvider {
         }
 
         if candidates_vec.is_empty() {
-            log::warn!("[RESOLVO] No candidates found for '{}' (name_id: {:?})! This might indicate a bug in package association.",
+            log::info!("[RESOLVO] No candidates found for '{}' (name_id: {:?})! This might indicate a bug in package association.",
                 name_string, name);
         }
 

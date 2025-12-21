@@ -995,9 +995,16 @@ impl PackageManager {
                 let dep_name = provider_ref.display_name(dep_name_id).to_string();
 
                 // Find the solvable that satisfies this requirement
+                // Check both direct pkgname match and provides
                 for other_solvable_id in solvables {
                     let other_record = &provider_ref.pool.resolve_solvable(*other_solvable_id).record;
+                    // Check direct pkgname match
                     if other_record.pkgname == dep_name {
+                        dep_pkgkeys.push(other_record.pkgkey.clone());
+                        break;
+                    }
+                    // Check if package provides the capability
+                    if provider_ref.package_provides_capability(&other_record.pkgkey, &dep_name) {
                         dep_pkgkeys.push(other_record.pkgkey.clone());
                         break;
                     }
