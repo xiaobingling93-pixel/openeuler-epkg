@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Error;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -320,7 +319,7 @@ fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<()> {
 }
 
 /// Recursively removes a directory, fixing permission issues if needed.
-fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<(), Error> {
+pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
 
     // First, try normal deletion
@@ -339,7 +338,7 @@ fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<(), Error> {
                 e
             );
         }
-        return initial_result;
+        return initial_result.map_err(|e| eyre::eyre!("{}", e));
     }
 
     println!("Some directories are read-only and cannot be removed automatically.");
@@ -363,13 +362,13 @@ fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<(), Error> {
         }
         Err(e) => {
             eprintln!("Failed to remove directory even after permission fix: {}", e);
-            Err(e)
+            Err(eyre::eyre!("{}", e))
         }
     }
 }
 
 /// Finds all read-only directories within the given path
-fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>, Error> {
+fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
     let mut readonly_dirs = Vec::new();
     let mut dir_stack = vec![root.as_ref().to_path_buf()];
 

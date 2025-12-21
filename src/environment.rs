@@ -13,6 +13,7 @@ use serde_yaml;
 use crate::models::*;
 use crate::dirs::*;
 use crate::utils::force_symlink;
+use crate::deinit::force_remove_dir_all;
 use log::warn;
 
 // epkg stores persistent PATH registration metadata inside each environment's
@@ -622,7 +623,7 @@ impl PackageManager {
         // Unregister if registered
         self.unregister_environment(name)?;
 
-        fs::remove_dir_all(&env_path)
+        force_remove_dir_all(&env_path)
             .with_context(|| format!("Failed to remove environment directory '{}'", env_path.display()))?;
 
         println!("# Environment '{}' has been removed.", name);
