@@ -63,7 +63,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::privdrop_on_suid;
-use crate::dirs::get_epkg_src_path;
+use crate::dirs::{get_epkg_src_path, find_env_root};
 use color_eyre::Result;
 use color_eyre::eyre::{self};
 use clap::{arg, Command};
@@ -95,8 +95,7 @@ fn main() -> Result<()> {
 
     let matches = &CLAP_MATCHES;
     match matches.subcommand() {
-        Some(("deinit",     sub_matches))  =>  package_manager.command_deinit(sub_matches)?,
-        Some(("init",      _sub_matches))  =>  package_manager.command_init()?,
+        Some(("self",       sub_matches))  =>  package_manager.command_self(sub_matches)?,
         Some(("env",        sub_matches))  =>  package_manager.command_env(sub_matches)?,
         Some(("list",       sub_matches))  =>  package_manager.command_list(sub_matches)?,
         Some(("info",       sub_matches))  =>  package_manager.command_info(sub_matches)?,
@@ -366,26 +365,34 @@ OPTIONS:
   -h, --help                        Print help
   -V, --version                     Print version")
         .subcommand(
-            Command::new("deinit")
-                .about("Deinitialize epkg installation")
-                .arg(
-                    arg!(--scope <SCOPE> "Scope of deinitialization: 'personal' (current user only) or 'global' (all users)")
-                        .default_value("personal")
-                        .value_parser(["personal", "global"])
+            Command::new("self")
+                .about("Manage epkg installation")
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("install")
+                        .about("Install epkg")
+                        .arg(arg!(--commit <COMMIT>).help(format!("Source commit of epkg to install [default: {}]", DEFAULT_COMMIT)))
+                        .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
+                        .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
+                        .arg(
+                            arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
+                                .default_value("auto")
+                                .value_parser(["shared", "private", "auto"]),
+                        )
                 )
-        )
-        .subcommand(
-            Command::new("init")
-                .about("Initialize personal epkg dir layout")
-                .arg(arg!(--commit <COMMIT>).help(format!("Source commit of epkg to install [default: {}]", DEFAULT_COMMIT)))
-                .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
-                .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
-                .arg(
-                    arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
-                        .default_value("auto")
-                        .value_parser(["shared", "private", "auto"]),
+                .subcommand(
+                    Command::new("upgrade")
+                        .about("Upgrade epkg installation")
                 )
-                .arg(arg!(--upgrade "Upgrade epkg installation by re-downloading epkg files"))
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove epkg installation")
+                        .arg(
+                            arg!(--scope <SCOPE> "Scope of removal: 'personal' (current user only) or 'global' (all users)")
+                                .default_value("personal")
+                                .value_parser(["personal", "global"])
+                        )
+                )
         )
         .subcommand(
             Command::new("env")
@@ -651,7 +658,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     };
     config.command_line = command_line;
     config.subcommand = EpkgCommand::from(matches.subcommand_name().unwrap_or(""));
-    if config.subcommand != EpkgCommand::Init {
+    if config.subcommand != EpkgCommand::SelfInstall {
         config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/cache").exists();
     }
 
@@ -698,8 +705,7 @@ fn setup_parallel_params(config: &mut EPKGConfig, matches: &clap::ArgMatches) {
 
 pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConfig) -> Result<EPKGConfig> {
     match matches.subcommand() {
-        Some(("deinit",     sub_matches))  =>  parse_options_deinit(&mut config, sub_matches).expect("Failed to parse deinit options"),
-        Some(("init",       sub_matches))  =>  parse_options_init(&mut config, sub_matches).expect("Failed to parse init options"),
+        Some(("self",       sub_matches))  =>  parse_options_self(&mut config, sub_matches).expect("Failed to parse self options"),
         Some(("env",        sub_matches))  =>  parse_options_env(&mut config, sub_matches).expect("Failed to parse env options"),
         Some(("list",       sub_matches))  =>  parse_options_list(&mut config, sub_matches).expect("Failed to parse list options"),
         Some(("info",       sub_matches))  =>  parse_options_info(&mut config, sub_matches).expect("Failed to parse info options"),
@@ -722,58 +728,69 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
     Ok(config)
 }
 
-fn parse_options_deinit(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    if let Some(scope) = sub_matches.get_one::<String>("scope") {
-        match scope.as_str() {
-            "personal" => {
-                config.common.env = BASE_ENV.to_string();
-                config.init.shared_store = false;
-                config.env.public = false;
+fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    use crate::utils;
+    match sub_matches.subcommand() {
+        Some(("install", sub_matches)) => {
+            config.subcommand = EpkgCommand::SelfInstall;
+            // Parse install options (same as init but without upgrade flag)
+            config.init.shared_store = sub_matches.get_one::<String>("store")
+                .map(|s| match s.as_str() {
+                    "shared" => true,
+                    "private" => false,
+                    "auto" => utils::is_running_as_root(),
+                    _ => false
+                })
+                .unwrap_or_else(|| utils::is_running_as_root());
+
+            if let Some(commit) = sub_matches.get_one::<String>("commit") {
+                config.init.commit = commit.to_string();
+            } else if config.init.commit.is_empty() {
+                config.init.commit = models::default_commit();
+                eprintln!("commit was configured to empty, using default commit: {}", config.init.commit);
             }
-            "global" => {
-                config.common.env = BASE_ENV.to_string();
-                config.init.shared_store = true;
-                config.env.public = true;
+
+            // No upgrade flag for self install
+            config.init.upgrade = false;
+
+            // compose options for creating BASE_ENV
+            config.common.env = BASE_ENV.to_string();
+            config.env.public = config.init.shared_store;
+            if let Some(channel) = sub_matches.get_one::<String>("channel") {
+                config.env.channel = Some(channel.to_string());
             }
-            _ => return Err(eyre::eyre!("Invalid scope for deinitialization: {}", scope)),
+            if let Some(repos) = sub_matches.get_many::<String>("repo") {
+                config.env.repos = repos.map(|s| s.to_string()).collect();
+            }
         }
+        Some(("upgrade", _sub_matches)) => {
+            config.subcommand = EpkgCommand::SelfUpgrade;
+            config.init.upgrade = true;
+            config.common.env = BASE_ENV.to_string();
+        }
+        Some(("remove", sub_matches)) => {
+            config.subcommand = EpkgCommand::SelfRemove;
+            if let Some(scope) = sub_matches.get_one::<String>("scope") {
+                match scope.as_str() {
+                    "personal" => {
+                        config.common.env = BASE_ENV.to_string();
+                        config.init.shared_store = false;
+                        config.env.public = false;
+                    }
+                    "global" => {
+                        config.common.env = BASE_ENV.to_string();
+                        config.init.shared_store = true;
+                        config.env.public = true;
+                    }
+                    _ => return Err(eyre::eyre!("Invalid scope for removal: {}", scope)),
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
 
-fn parse_options_init(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    config.init.shared_store = sub_matches.get_one::<String>("store")
-        .map(|s| match s.as_str() {
-            "shared" => true,
-            "private" => false,
-            "auto" => utils::is_running_as_root(),
-            _ => false
-        })
-        .unwrap_or_else(|| utils::is_running_as_root());
-
-    if let Some(commit) = sub_matches.get_one::<String>("commit") {
-        config.init.commit = commit.to_string();
-    } else if config.init.commit.is_empty() {
-        config.init.commit = models::default_commit();
-        eprintln!("commit was configured to empty, using default commit: {}", config.init.commit);
-    }
-
-    // Set upgrade flag
-    config.init.upgrade = sub_matches.get_flag("upgrade");
-
-    // compose options for creating BASE_ENV, must be done here since
-    // config() content will freeze after first call, and some routines rely on it.
-    config.common.env = BASE_ENV.to_string();
-    config.env.public = config.init.shared_store;
-    if let Some(channel) = sub_matches.get_one::<String>("channel") {
-        config.env.channel = Some(channel.to_string());
-    }
-    if let Some(repos) = sub_matches.get_many::<String>("repo") {
-        config.env.repos = repos.map(|s| s.to_string()).collect();
-    }
-
-    Ok(())
-}
 
 fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
@@ -1279,9 +1296,31 @@ impl PackageManager {
         Ok(())
     }
 
-    fn command_deinit(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(scope) = sub_matches.get_one::<String>("scope") {
-            deinit::deinit_epkg(scope)?;
+    fn command_self(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        match sub_matches.subcommand() {
+            Some(("install", _sub_matches)) => {
+                // Self install: same as init but without upgrade flag handling
+                if find_env_root(BASE_ENV).is_none() {
+                    self.install_epkg()?;
+                }
+
+                // Check if already initialized
+                if find_env_root(MAIN_ENV).is_some() {
+                    eprintln!("epkg was already initialized for current user");
+                    return Ok(());
+                }
+
+                self.light_init()?;
+            }
+            Some(("upgrade", _sub_matches)) => {
+                self.upgrade_epkg()?;
+            }
+            Some(("remove", sub_matches)) => {
+                if let Some(scope) = sub_matches.get_one::<String>("scope") {
+                    deinit::deinit_epkg(scope)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }

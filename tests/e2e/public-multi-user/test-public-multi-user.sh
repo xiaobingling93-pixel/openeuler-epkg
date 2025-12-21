@@ -53,13 +53,13 @@ mkdir -p "$USER_A_HOME/.epkg/envs" "$USER_B_HOME/.epkg/envs"
 mount -t tmpfs tmpfs "$USER_A_HOME/.epkg/envs"
 mount -t tmpfs tmpfs "$USER_B_HOME/.epkg/envs"
 
-# For user A: init with shared store
-log "Initializing epkg for user A with shared store"
-run_as_user "$USER_A" "epkg init --store shared" || error "Failed to init for user A"
+# For user A: install with shared store
+log "Installing epkg for user A with shared store"
+run_as_user "$USER_A" "epkg self install --store shared" || error "Failed to install for user A"
 
-# For user B: init with shared store
-log "Initializing epkg for user B with shared store"
-run_as_user "$USER_B" "epkg init --store shared" || error "Failed to init for user B"
+# For user B: install with shared store
+log "Installing epkg for user B with shared store"
+run_as_user "$USER_B" "epkg self install --store shared" || error "Failed to install for user B"
 
 # For user A: create public environment and install jq
 log "User A: creating public environment and installing jq"

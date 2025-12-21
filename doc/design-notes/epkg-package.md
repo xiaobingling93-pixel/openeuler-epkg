@@ -263,8 +263,8 @@ CMD python3 schedule_main.py
     wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-installer.sh
     sh epkg-installer.sh
 
-    # 初始化epkg
-    epkg init --url=https://tmp/epkg-repo
+    # 安装epkg
+    epkg self install --url=https://tmp/epkg-repo
     bash // 重新执行.bashrc, 获得新的PATH
 
     # 创建epkg的测试环境1

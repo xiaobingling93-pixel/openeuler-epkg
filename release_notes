@@ -21,8 +21,8 @@
 ## [v0.1.0] - 2025-08-15
 **主要特性**：
 - epkg全局命令
-  - epkg init：初始化epkg包管理器（安装脚本自动执行） 
-  - epkg deinit：卸载epkg包管理器 
+  - epkg self install：安装epkg包管理器（安装脚本自动执行） 
+  - epkg self remove：卸载epkg包管理器 
   - epkg repo list：列出所有repo源
   - epkg hash：计算指定目录的hash
   - epkg build：基于源码构建软件包（开发中）

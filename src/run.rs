@@ -499,7 +499,7 @@ fn host_uses_traditional_layout() -> bool {
  *   ===================================================================
  *   dirs        dirs            bind mount /bin /sbin /lib to $env_root/usr/bin .. on 'epkg run'
  *   dirs        symlinks        bind mount /bin /sbin /lib to $env_root/usr/bin .. on 'epkg run';
- *                               check and create the '/lib64 -> usr/lib64' symlink in host os on 'epkg init', if it's run by root.
+ *                               check and create the '/lib64 -> usr/lib64' symlink in host os on 'epkg self install', if it's run by root.
  *                               archlinux host has '/lib64 -> usr/lib' which can be safely fixed pointing to usr/lib64
  *   symlinks    dirs            current code works, no more fixup
  *   symlinks    symlinks        current code works, no more fixup

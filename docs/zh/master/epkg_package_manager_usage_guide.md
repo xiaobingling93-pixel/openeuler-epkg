@@ -381,8 +381,8 @@ Installation successful - Total packages: 65, ebin packages: 1
 
 | **命令**                 | **描述**                               |
 | ------------------------ | -------------------------------------- |
-| epkg init                | 初始化epkg包管理器（安装脚本自动执行） |
-| epkg deinit              | 卸载epkg包管理器                       |
+| epkg self install        | 安装epkg包管理器（安装脚本自动执行） |
+| epkg self remove         | 卸载epkg包管理器                       |
 | epkg repo list           | 列出所有repo源                         |
 | epkg hash                | 计算指定目录的hash                     |
 | epkg build               | 基于源码构建软件包（开发中）           |
@@ -392,19 +392,19 @@ Installation successful - Total packages: 65, ebin packages: 1
 | epkg help                | 帮助信息                               |
 | epkg --version           | 查看 epkg 当前版本                     |
 
-### epkg init：初始化epkg包管理器
+### epkg self install：安装epkg包管理器
 
 此脚本在执行`epkg-installer.sh`脚本时会被默认执行，重复执行会提示`已初始化`。
 
 ```bash
-[root@51bc2f1c8444 /]#  epkg init
+[root@51bc2f1c8444 /]#  epkg self install
 epkg was already initialized for current user
 ```
 
-### epkg deinit：卸载epkg包管理器
+### epkg self remove：卸载epkg包管理器
 
 ```bash
-[root@51bc2f1c8444 yk65hht5o4hvpmrdwk5m3543owekwa5n__htop__3.4.1-4__arm64]# epkg deinit
+[root@51bc2f1c8444 yk65hht5o4hvpmrdwk5m3543owekwa5n__htop__3.4.1-4__arm64]# epkg self remove
 
 === Epkg Deinitialization Plan (personal) ===
 

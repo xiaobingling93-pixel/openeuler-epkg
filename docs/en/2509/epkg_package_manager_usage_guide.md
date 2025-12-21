@@ -20,8 +20,8 @@ sh epkg-installer.sh
 wget https://repo.oepkgs.net/openeuler/epkg/rootfs/epkg-uninstaller.sh
 sh epkg-uninstaller.sh
 
-# Initialize epkg.
-epkg init
+# Install epkg.
+epkg self install
 bash // Re-execute .bashrc to update the PATH
 
 # Create environment 1.

@@ -8,7 +8,7 @@
 
 安装：yum install epkg
 
-初始化： epkg init
+初始化： epkg self install
 
 使能：bash
 
@@ -52,7 +52,7 @@ yum install epkg
 
 ### 初始化
 
-epkg init
+epkg self install
 
 ```
 创建epkg默认环境，修改bashrc

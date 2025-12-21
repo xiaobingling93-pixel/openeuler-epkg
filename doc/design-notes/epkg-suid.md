@@ -19,7 +19,7 @@ epkg install
   - store
 - so need `epkg_helper` prefix, or in future, `epkg-store` suid cmd
 
-epkg init
+epkg self install
 - run by normal user
 - only setup files in $HOME
 - so dont need `epkg_helper` prefix

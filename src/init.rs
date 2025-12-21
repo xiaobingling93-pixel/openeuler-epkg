@@ -57,7 +57,7 @@ fn pre_populate_country_cache() {
 
 impl PackageManager {
 
-    // After root run `epkg init --store=shared`, /usr/local/bin/epkg will be created and exposed
+    // After root run `epkg self install --store=shared`, /usr/local/bin/epkg will be created and exposed
     // to normal users. Then everyone can run "epkg install". To make it user friendly, here we'll
     // auto trigger light_init() seemlessly at first invocation.
     pub fn try_light_init(&mut self) -> Result<()> {
@@ -66,8 +66,9 @@ impl PackageManager {
             | EpkgCommand::Convert
             | EpkgCommand::Hash
             | EpkgCommand::Repo
-            | EpkgCommand::Init
-            | EpkgCommand::Deinit
+            | EpkgCommand::SelfInstall
+            | EpkgCommand::SelfUpgrade
+            | EpkgCommand::SelfRemove
             | EpkgCommand::Run
             | EpkgCommand::None
         ) {
@@ -83,7 +84,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn light_init(&mut self) -> Result<()> {
+    pub fn light_init(&mut self) -> Result<()> {
         // Create main environment
         self.create_environment(MAIN_ENV)?;
 
@@ -98,30 +99,10 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn command_init(&mut self) -> Result<()> {
-        if config().init.upgrade {
-            self.upgrade_epkg()?;
-            return Ok(());
-        }
-
-        if find_env_root(BASE_ENV).is_none() {
-            self.install_epkg()?;
-        }
-
-        // Check if already initialized
-        if find_env_root(MAIN_ENV).is_some() {
-            eprintln!("epkg was already initialized for current user");
-            return Ok(());
-        }
-
-        self.light_init()?;
-        Ok(())
-    }
-
     pub fn upgrade_epkg(&mut self) -> Result<()> {
         // Check if base environment exists
         if find_env_root(BASE_ENV).is_none() {
-            eprintln!("epkg is not installed. Please run 'epkg init' first.");
+            eprintln!("epkg is not installed. Please run 'epkg self install' first.");
             return Ok(());
         }
 

@@ -150,7 +150,7 @@ FHS files
 
 ## 'base' env layout
 
-- on `epkg init --store=shared`, auto run `epkg env create base --public`
+- on `epkg self install --store=shared`, auto run `epkg env create base --public`
   (store is shared == base env is public)
 
 - when there are public base env, normal user may still create personal
@@ -376,7 +376,7 @@ $env_root=/
 
 系统创建：
 ```
-epkg init --store=shared
+epkg self install --store=shared
 epkg env create system --public --path /
 epkg switch system <generation-id>
 ```

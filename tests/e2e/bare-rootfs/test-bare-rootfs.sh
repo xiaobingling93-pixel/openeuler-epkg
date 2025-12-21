@@ -65,9 +65,9 @@ exec_epkg() {
 
 exec_epkg run --builtin ls /
 exec_epkg run --builtin ls /etc
-# Initialize epkg in the running container
-log "Initializing epkg in container"
-exec_epkg init -c alpine
+# Install epkg in the running container
+log "Installing epkg in container"
+exec_epkg self install -c alpine
 
 # Setup bare rootfs environment using epkg's environment feature with --path /
 log "Creating sys environment with --path /"

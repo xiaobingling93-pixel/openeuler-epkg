@@ -14,7 +14,7 @@ use color_eyre::eyre;
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"debian";
-pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg init will download this commit from gitee
+pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg self install will download this commit from gitee
 
 pub const BASE_ENV: &str = &"base"; // holds epkg, elf-loader, package-manager source files
 pub const MAIN_ENV: &str = &"main"; // the default env for most operations, must be private
@@ -316,7 +316,7 @@ pub struct EnvExport {
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
-// # On `epkg init`, may copy from $EPKG_SRC/channel/${channel}.yaml
+// # On `epkg self install`, may copy from $EPKG_SRC/channel/${channel}.yaml
 // distro: "openeuler"
 // version: "24.03-lts"
 // index_url: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-$VERSION/$repo/$arch/repodata/repomd.xml"
@@ -609,8 +609,6 @@ pub struct RepoShard {
 pub enum EpkgCommand {
     #[default]
     None,
-    Deinit,
-    Init,
     Env,
     List,
     Info,
@@ -628,13 +626,14 @@ pub enum EpkgCommand {
     Run,
     Search,
     Gc,
+    SelfInstall,
+    SelfUpgrade,
+    SelfRemove,
 }
 
 impl From<&str> for EpkgCommand {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "deinit" => EpkgCommand::Deinit,
-            "init" => EpkgCommand::Init,
             "env" => EpkgCommand::Env,
             "list" => EpkgCommand::List,
             "info" => EpkgCommand::Info,
@@ -652,6 +651,7 @@ impl From<&str> for EpkgCommand {
             "run" => EpkgCommand::Run,
             "search" => EpkgCommand::Search,
             "gc" => EpkgCommand::Gc,
+            "self" => EpkgCommand::None, // Handled separately for nested subcommands
             _ => EpkgCommand::None, // Default for empty or unrecognized strings
         }
     }
