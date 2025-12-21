@@ -5,11 +5,11 @@
 # keep clean and minimal -- it's sourced by every user terminal
 
 epkg() {
-    local env_base_dir="$HOME/.epkg/envs/base"
-    [ -d "$env_base_dir" ] || env_base_dir="/opt/epkg/envs/root/base"
-    [ -d "$env_base_dir" ] || { echo "epkg: cannot find base env, perhaps uninstalled"; return; }
+    local env_self_dir="$HOME/.epkg/envs/self"
+    [ -d "$env_self_dir" ] || env_self_dir="/opt/epkg/envs/root/self"
+    [ -d "$env_self_dir" ] || { echo "epkg: cannot find self env, perhaps uninstalled"; return; }
 
-    local epkg_rust="$env_base_dir/usr/bin/epkg"
+    local epkg_rust="$env_self_dir/usr/bin/epkg"
 
     # issue[IB8I93]: A user create new environment, su other user, error reported that the activated environment does not exist
     if [ -n "$EPKG_ACTIVE_ENV" ] && [ ! -d "$HOME/.epkg/envs/$EPKG_ACTIVE_ENV" ]; then

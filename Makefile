@@ -33,16 +33,16 @@ build:
 	@cd $(PROJECT_ROOT) && cargo build $(if $(filter 1,$(RELEASE)),--release,)
 	@echo "$(if $(filter 1,$(RELEASE)),Release,Development) build completed. Binary is in $(PROJECT_ROOT)/target/$(BUILD_TYPE)/$(BINARY_NAME)"
 	@# for quick develop-debug loop
-	@if [ -d "$$HOME/.epkg/envs/base/usr/bin" ]; then \
-		if [ ! -L "$$HOME/.epkg/envs/base/usr/src/epkg" ] || [ "$$(readlink "$$HOME/.epkg/envs/base/usr/src/epkg")" != "$$(pwd)" ]; then \
-			cp --update $(PROJECT_ROOT)/lib/epkg-rc.sh "$$HOME/.epkg/envs/base/usr/src/epkg/lib/epkg-rc.sh"; \
+	@if [ -d "$$HOME/.epkg/envs/self/usr/bin" ]; then \
+		if [ ! -L "$$HOME/.epkg/envs/self/usr/src/epkg" ] || [ "$$(readlink "$$HOME/.epkg/envs/self/usr/src/epkg")" != "$$(pwd)" ]; then \
+			cp --update $(PROJECT_ROOT)/lib/epkg-rc.sh "$$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh"; \
 		fi; \
-		cp_err=$$(cp --update $(PROJECT_ROOT)/target/$(BUILD_TYPE)/epkg "$$HOME/.epkg/envs/base/usr/bin/epkg" 2>&1); \
+		cp_err=$$(cp --update $(PROJECT_ROOT)/target/$(BUILD_TYPE)/epkg "$$HOME/.epkg/envs/self/usr/bin/epkg" 2>&1); \
 		cp_status=$$?; \
 		if [ $$cp_status -ne 0 ]; then \
 			if echo "$$cp_err" | grep -q "Text file busy"; then \
-				rm -f "$$HOME/.epkg/envs/base/usr/bin/epkg" && \
-				cp --update $(PROJECT_ROOT)/target/$(BUILD_TYPE)/epkg "$$HOME/.epkg/envs/base/usr/bin/epkg"; \
+				rm -f "$$HOME/.epkg/envs/self/usr/bin/epkg" && \
+				cp --update $(PROJECT_ROOT)/target/$(BUILD_TYPE)/epkg "$$HOME/.epkg/envs/self/usr/bin/epkg"; \
 			else \
 				echo "$$cp_err" >&2; \
 				exit $$cp_status; \

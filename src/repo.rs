@@ -1115,9 +1115,9 @@ fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FilelistsFil
 
 
 pub fn list_repos() -> Result<()> {
-    let base_env_root = dirs::find_env_root(BASE_ENV)
-                .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
-    let manager_channel_dir = base_env_root.join("usr/src/epkg/channel");
+    let self_env_root = dirs::find_env_root(SELF_ENV)
+                .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
+    let manager_channel_dir = self_env_root.join("usr/src/epkg/channel");
     if !manager_channel_dir.exists() {
         return Ok(());
     }

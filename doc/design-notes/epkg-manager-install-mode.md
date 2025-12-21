@@ -6,7 +6,7 @@ e.g. # yum install epkg.rpm (means --install-mode global)
 # curl installer.sh --install-mode [global|user]
 
 global mode:
-	env base (epkg manager): shared
+	env self (epkg manager): shared
 	/opt/epkg/store: shared
 
 	env: per-user
@@ -22,12 +22,12 @@ HOME_EPKG=$HOME/.epkg
 OPT_EPKG=/opt/epkg
 PUB_EPKG=$OPT_EPKG/users/public
 
-if EPKG_INSTALL_MODE==global and EPKG_ENV_NAME==base:
+if EPKG_INSTALL_MODE==global and EPKG_ENV_NAME==self:
     EPKG_USER_DIR=$HOME_EPKG
 else:
     EPKG_USER_DIR=$PUB_EPKG
 
-EPKG_BASE_ENV_ROOT: base env根目录
+EPKG_SELF_ENV_ROOT: self env根目录
 	global | user: $PUB_EPKG/envs
 EPKG_ENV_ROOT:
 	global | user: $EPKG_USER_DIR/envs

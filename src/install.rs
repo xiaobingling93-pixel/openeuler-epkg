@@ -193,10 +193,10 @@ fn handle_elf_conda(target_path: &Path, env_root: &Path, fs_file: &Path) -> Resu
 
 /// Handle ELF binary with elf-loader wrapper (non-conda environments)
 fn handle_elf_with_loader(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
-    let base_env_root = dirs::find_env_root(BASE_ENV)
-        .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
+    let self_env_root = dirs::find_env_root(SELF_ENV)
+        .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
 
-    let elf_loader_path = base_env_root.join("usr/bin/elf-loader");
+    let elf_loader_path = self_env_root.join("usr/bin/elf-loader");
 
     // Create hardlink from elf-loader to target path (replace copy&replace)
     if target_path.exists() {
@@ -1100,7 +1100,7 @@ impl PackageManager {
     }
 
     // link files from env_root to store_fs_dir
-    pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
+    fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
         let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
             .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
         mirror_dir(env_root, store_fs_dir, &fs_files)
@@ -1111,7 +1111,7 @@ impl PackageManager {
     // - run post-install scriptlets
     // - create ebin wrappers
     // Returns a list of relative paths to the created ebin wrappers (relative to env_root).
-    pub fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
+    fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
         log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
         let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
         let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;

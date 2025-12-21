@@ -317,9 +317,9 @@ Downloading epkg source code from https://gitee.com/openeuler/epkg/repository/ar
 Downloading elf-loader from https://repo.oepkgs.net/openeuler/epkg/rootfs/
 [00:00:00] [==========] 425 B/s      (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64.sha256
 [00:00:02] [==========] 0 B/s        (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/master.tar.gz
-[00:00:00] [==========] 258.65 KiB/s (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64                                                                                                         Extracting epkg source code to: /home/duan/.epkg/envs/base/usr/src
-Creating symlink: /home/duan/.epkg/envs/base/main/usr/ebin/epkg -> /home/duan/.epkg/envs/base/usr/bin/epkg
-Creating environment 'base' in /home/duan/.epkg/envs/base
+[00:00:00] [==========] 258.65 KiB/s (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64                                                                                                         Extracting epkg source code to: /home/duan/.epkg/envs/self/usr/src
+Creating symlink: /home/duan/.epkg/envs/self/main/usr/ebin/epkg -> /home/duan/.epkg/envs/self/usr/bin/epkg
+Creating environment 'self' in /home/duan/.epkg/envs/self
 Creating environment 'main' in /home/duan/.epkg/envs/main
 # Registering environment 'main' with priority 10
 export PATH="/home/duan/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -736,15 +736,15 @@ id  | timestamp                  | action     | new_packages | del_packages | co
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
 1   | 2025-07-14 21:44:02 +0800  | create     | 0            | 0            | ./epkg-aarch64 init --store=auto
 2   | 2025-07-15 09:06:22 +0800  | install    | 65           | 0            | epkg install tree
-3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/base/usr/bin/epkg install htop
+3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/self/usr/bin/epkg install htop
 
 # 查看指定环境历史
 [root@51bc2f1c8444 ~]# epkg history -e t1
 --------------------------------------------------  t1 env history  --------------------------------------------------
 id  | timestamp                  | action     | new_packages | del_packages | command line
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
-1   | 2025-07-15 09:12:37 +0800  | create     | 0            | 0            | /opt/epkg/envs/root/base/usr/bin/epkg env create t1
-2   | 2025-07-15 09:30:04 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/base/usr/bin/epkg install htop
+1   | 2025-07-15 09:12:37 +0800  | create     | 0            | 0            | /opt/epkg/envs/root/self/usr/bin/epkg env create t1
+2   | 2025-07-15 09:30:04 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/self/usr/bin/epkg install htop
 ```
 
 ### epkg restore：回退环境
@@ -762,8 +762,8 @@ id  | timestamp                  | action     | new_packages | del_packages | co
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
 1   | 2025-07-14 21:44:02 +0800  | create     | 0            | 0            | ./epkg-aarch64 init --store=auto
 2   | 2025-07-15 09:06:22 +0800  | install    | 65           | 0            | epkg install tree
-3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/base/usr/bin/epkg install htop
-4   | 2025-07-15 09:34:23 +0800  | rollback   | 0            | 2            | /opt/epkg/envs/root/base/usr/bin/epkg restore 2
+3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/self/usr/bin/epkg install htop
+4   | 2025-07-15 09:34:23 +0800  | rollback   | 0            | 2            | /opt/epkg/envs/root/self/usr/bin/epkg restore 2
 ```
 
 ## 4. 软件包管理命令

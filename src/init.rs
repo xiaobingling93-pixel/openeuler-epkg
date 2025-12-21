@@ -100,8 +100,8 @@ impl PackageManager {
     }
 
     pub fn upgrade_epkg(&mut self) -> Result<()> {
-        // Check if base environment exists
-        if find_env_root(BASE_ENV).is_none() {
+        // Check if self environment exists
+        if find_env_root(SELF_ENV).is_none() {
             eprintln!("epkg is not installed. Please run 'epkg self install' first.");
             return Ok(());
         }
@@ -146,7 +146,7 @@ impl PackageManager {
         let init_plan = check_for_updates()?;
         self.download_setup_files(&init_plan)?;
 
-        self.create_environment(BASE_ENV)?;
+        self.create_environment(SELF_ENV)?;
 
         Ok(())
     }
@@ -231,13 +231,13 @@ impl PackageManager {
     }
 
     fn download_setup_files(&mut self, init_plan: &InitPlan) -> Result<()> {
-        let base_env_root = self.new_env_base(BASE_ENV);
+        let self_env_root = self.new_env_base(SELF_ENV);
 
         self.download_package_manager_files(init_plan)
-            .context("Failed to download required files for base environment")?;
+            .context("Failed to download required files for self environment")?;
 
-        self.setup_epkg_src(&base_env_root, init_plan)?;
-        self.setup_common_binaries(&base_env_root, init_plan)?;
+        self.setup_epkg_src(&self_env_root, init_plan)?;
+        self.setup_common_binaries(&self_env_root, init_plan)?;
 
         Ok(())
     }
@@ -462,7 +462,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        let base_env_root = get_env_root(BASE_ENV.to_string())?;
+        let self_env_root = get_env_root(SELF_ENV.to_string())?;
 
         for shell_rc_info in shell_rc_infos {
             let rc_content = format!(r#"
@@ -471,7 +471,7 @@ epkg_rc='{base_path}/usr/src/epkg/lib/{script_name}'
 test -r "$epkg_rc" && . "$epkg_rc"
 # epkg end
 "#,
-                base_path = base_env_root.display(),
+                base_path = self_env_root.display(),
                 script_name = shell_rc_info.source_script_name
             );
 
@@ -545,21 +545,21 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
         return Ok(repo_root);
     }
 
-    // Fallback: Check if base environment has a symlink to the repo
+    // Fallback: Check if self environment has a symlink to the repo
     // This handles the case where root installed epkg and created a symlink at
-    // /opt/epkg/envs/root/base/usr/src/epkg -> /c/epkg, but normal users
+    // /opt/epkg/envs/root/self/usr/src/epkg -> /c/epkg, but normal users
     // running the installed epkg don't have the repo in their executable path.
-    // We need to check both the current user's base env and root's base env.
-    let possible_base_envs = vec![
-        find_env_root(BASE_ENV),
-        // Also check root's base environment directly
-        Some(dirs().opt_epkg.join("envs").join("root").join(BASE_ENV))
+    // We need to check both the current user's self env and root's self env.
+    let possible_self_envs = vec![
+        find_env_root(SELF_ENV),
+        // Also check root's self environment directly
+        Some(dirs().opt_epkg.join("envs").join("root").join(SELF_ENV))
             .filter(|p| p.exists()),
     ];
 
-    for base_env_root_opt in possible_base_envs {
-        if let Some(base_env_root) = base_env_root_opt {
-            let epkg_src_symlink = base_env_root.join("usr/src/epkg");
+    for self_env_root_opt in possible_self_envs {
+        if let Some(self_env_root) = self_env_root_opt {
+            let epkg_src_symlink = self_env_root.join("usr/src/epkg");
             if epkg_src_symlink.exists() {
                 // Check if it's a symlink
                 if let Ok(metadata) = fs::symlink_metadata(&epkg_src_symlink) {
@@ -767,7 +767,7 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
 
     // Try to find elf-loader in common locations
-    let env_root = find_env_root(BASE_ENV);
+    let env_root = find_env_root(SELF_ENV);
     let possible_elf_loader_paths = [
         env_root.as_ref().map(|root| root.join("usr/bin/elf-loader")).unwrap_or_else(|| PathBuf::new()),
         dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),

@@ -80,10 +80,10 @@ impl PackageManager {
         Ok(priority)
     }
 
-    /// Get list of all environment names except 'base'
+    /// Get list of all environment names except 'self'
     ///
     /// This function lists all environment directories in both private and public
-    /// locations, excluding the special 'base' environment.
+    /// locations, excluding the special 'self' environment.
     ///
     /// Returns a Vec of (env_name, is_public, owner) tuples.
     pub fn get_all_env_names(&self) -> Result<Vec<(String, bool, String)>> {
@@ -95,7 +95,7 @@ impl PackageManager {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let name = entry.file_name().into_string().unwrap_or_default();
-                    if name != BASE_ENV  && !name.starts_with('.') {
+                    if name != SELF_ENV  && !name.starts_with('.') {
                         all_envs.push((name, false, current_user.clone()));
                     }
                 }
@@ -112,7 +112,7 @@ impl PackageManager {
                         for owner_entry in owner_entries {
                             if let Ok(owner_entry) = owner_entry {
                                 let name = owner_entry.file_name().into_string().unwrap_or_default();
-                                if name != BASE_ENV {
+                                if name != SELF_ENV {
                                     all_envs.push((name, true, owner.clone()));
                                 }
                             }
@@ -128,7 +128,7 @@ impl PackageManager {
     }
 
     pub fn list_environments(&self) -> Result<()> {
-        // Get all environments except base
+        // Get all environments except self
         let all_envs = self.get_all_env_names()?;
         let registered_envs: Vec<String> = self.get_registered_env_names()?;
 
@@ -198,7 +198,7 @@ impl PackageManager {
         let generations_root = env_root.join("generations");
         let gen_1_dir = generations_root.join("1");
 
-        // Create base directories
+        // Create basic directories
         fs::create_dir_all(&gen_1_dir)?;
         fs::create_dir_all(env_root.join("root"))?;
         fs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
@@ -488,9 +488,9 @@ impl PackageManager {
             (channel.clone(), None)
         };
 
-        // If creating base environment, use env_root directly
-        // Otherwise, try to find the base environment's epkg_src path
-        let epkg_src = if name == BASE_ENV {
+        // If creating self environment, use env_root directly
+        // Otherwise, try to find the self environment's epkg_src path
+        let epkg_src = if name == SELF_ENV {
             env_root.join("usr/src/epkg")
         } else {
             get_epkg_src_path()?
@@ -590,7 +590,7 @@ impl PackageManager {
 
     pub fn remove_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
-        if name == BASE_ENV || name == MAIN_ENV {
+        if name == SELF_ENV || name == MAIN_ENV {
             return Err(eyre::eyre!("Environment cannot be removed: '{}'", name));
         }
 
@@ -632,8 +632,8 @@ impl PackageManager {
 
     pub fn activate_environment(&mut self, name: &str) -> Result<()> {
         // Validate environment name
-        if name == BASE_ENV {
-            return Err(eyre::eyre!("Environment 'base' cannot be activated"));
+        if name == SELF_ENV {
+            return Err(eyre::eyre!("Environment 'self' cannot be activated"));
         }
 
         // Check if environment exists
@@ -761,8 +761,8 @@ impl PackageManager {
 
     pub fn register_environment_for(&mut self, name: &str, mut env_config: EnvConfig) -> Result<()> {
         // Validate environment name
-        if name == BASE_ENV {
-            return Err(eyre::eyre!("Environment 'base' cannot be registered"));
+        if name == SELF_ENV {
+            return Err(eyre::eyre!("Environment 'self' cannot be registered"));
         }
 
         if env_config.register_to_path {
@@ -989,7 +989,7 @@ fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
             Err(_) => continue,
         };
 
-        if env_name == BASE_ENV || env_name.starts_with('.') {
+        if env_name == SELF_ENV || env_name.starts_with('.') {
             continue;
         }
 

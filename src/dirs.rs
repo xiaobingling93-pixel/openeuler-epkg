@@ -167,12 +167,12 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
 }
 
 /// Find the first existing dir:
-/// - $HOME/.epkg/envs/base/usr/src/epkg
-/// - /opt/epkg/envs/root/base/usr/src/epkg
+/// - $HOME/.epkg/envs/self/usr/src/epkg
+/// - /opt/epkg/envs/root/self/usr/src/epkg
 pub fn get_epkg_src_path() -> Result<PathBuf> {
-    let base_env_root = find_env_root(BASE_ENV)
-                .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
-    Ok(base_env_root.join("usr/src/epkg"))
+    let self_env_root = find_env_root(SELF_ENV)
+                .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
+    Ok(self_env_root.join("usr/src/epkg"))
 }
 
 /// Retrieves the home directory path, trying multiple methods.

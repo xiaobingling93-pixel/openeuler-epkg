@@ -4,13 +4,13 @@ epkg-installer.sh in global mode:
 - run by root, or sudo
 - create global
   - store
-  - base env
+  - self env
 - so dont need `epkg_helper` prefix
 
-epkg update base env in global mode:
+epkg update self env in global mode:
 - run by root, or sudo
 - update global
-  - base env
+  - self env
 - so dont need `epkg_helper` prefix
 
 epkg install

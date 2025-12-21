@@ -753,8 +753,8 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
             // No upgrade flag for self install
             config.init.upgrade = false;
 
-            // compose options for creating BASE_ENV
-            config.common.env = BASE_ENV.to_string();
+            // compose options for creating SELF_ENV
+            config.common.env = SELF_ENV.to_string();
             config.env.public = config.init.shared_store;
             if let Some(channel) = sub_matches.get_one::<String>("channel") {
                 config.env.channel = Some(channel.to_string());
@@ -766,19 +766,19 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         Some(("upgrade", _sub_matches)) => {
             config.subcommand = EpkgCommand::SelfUpgrade;
             config.init.upgrade = true;
-            config.common.env = BASE_ENV.to_string();
+            config.common.env = SELF_ENV.to_string();
         }
         Some(("remove", sub_matches)) => {
             config.subcommand = EpkgCommand::SelfRemove;
             if let Some(scope) = sub_matches.get_one::<String>("scope") {
                 match scope.as_str() {
                     "personal" => {
-                        config.common.env = BASE_ENV.to_string();
+                        config.common.env = SELF_ENV.to_string();
                         config.init.shared_store = false;
                         config.env.public = false;
                     }
                     "global" => {
-                        config.common.env = BASE_ENV.to_string();
+                        config.common.env = SELF_ENV.to_string();
                         config.init.shared_store = true;
                         config.env.public = true;
                     }
@@ -1300,7 +1300,7 @@ impl PackageManager {
         match sub_matches.subcommand() {
             Some(("install", _sub_matches)) => {
                 // Self install: same as init but without upgrade flag handling
-                if find_env_root(BASE_ENV).is_none() {
+                if find_env_root(SELF_ENV).is_none() {
                     self.install_epkg()?;
                 }
 

@@ -20,7 +20,7 @@
 - export: export to env-$name.yaml (EnvConfig + ChannelConfig + installed-packages.json)
 - convert to container image
 - convert to VM image
-- 'base' env: auto created for holding epkg manager files
+- 'self' env: auto created for holding epkg manager files
 - 'main' env: auto created as default env
 - 3rd party integration: direnv, IDE
 
@@ -148,28 +148,28 @@ FHS files
 - put in `$env_root` instead of `$env_root/generations/current` to be more user friendly and efficient
 - only keep history records in some past generations for / env, for GRUB boot menu selection, to save inode space
 
-## 'base' env layout
+## 'self' env layout
 
-- on `epkg self install --store=shared`, auto run `epkg env create base --public`
-  (store is shared == base env is public)
+- on `epkg self install --store=shared`, auto run `epkg env create self --public`
+  (store is shared == self env is public)
 
-- when there are public base env, normal user may still create personal
-  base env with explicit command `epkg env create base`
+- when there are public self env, normal user may still create personal
+  self env with explicit command `epkg env create self`
 
 - runtime search path is
-  - first try find private base env
-  - then try find public base env
+  - first try find private self env
+  - then try find public self env
 
-Example private base env dir layout:
+Example private self env dir layout:
 ```
-~/.epkg/envs/base/usr/bin/epkg
-~/.epkg/envs/base/usr/bin/init -> epkg
-~/.epkg/envs/base/usr/bin/x2epkg -> epkg
-~/.epkg/envs/base/usr/bin/create-repo -> epkg
-~/.epkg/envs/base/usr/bin/elf-loader
-~/.epkg/envs/base/usr/src/epkg -> epkg-master
-~/.epkg/envs/base/usr/src/epkg-master  # general form: epkg-$version, source code in epkg.git
-~/.epkg/envs/base/usr/src/epkg-master/lib/epkg-rc.sh # sourced by .bashrc/.zshrc
+~/.epkg/envs/self/usr/bin/epkg
+~/.epkg/envs/self/usr/bin/init -> epkg
+~/.epkg/envs/self/usr/bin/x2epkg -> epkg
+~/.epkg/envs/self/usr/bin/create-repo -> epkg
+~/.epkg/envs/self/usr/bin/elf-loader
+~/.epkg/envs/self/usr/src/epkg -> epkg-master
+~/.epkg/envs/self/usr/src/epkg-master  # general form: epkg-$version, source code in epkg.git
+~/.epkg/envs/self/usr/src/epkg-master/lib/epkg-rc.sh # sourced by .bashrc/.zshrc
 ```
 
 ## ebin/ entry-point executable wrappers
@@ -213,7 +213,7 @@ coreutils binaries) in the environment. So `epkg install` will
 
 rustc example setup:
 ```
-cp ~/.epkg/envs/base/usr/bin/elf-loader ~/.epkg/envs/main/usr/ebin/rustc
+cp ~/.epkg/envs/self/usr/bin/elf-loader ~/.epkg/envs/main/usr/ebin/rustc
 binary replace content of env_root="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 ..." to env_root="~/.epkg/envs/main"
 binary replace content of target_elf_path="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 ..." to target_elf_path="/opt/epkg/store/0a0tk9nvmydhpebc4jwnwbhzvaz21s74__rust__1.77.0__3.oe2403/fs/usr/bin/rustc"
 ```
@@ -388,7 +388,7 @@ epkg switch system <generation-id>
 title epkg OS generation 5
 linux /generations/5/boot/vmlinuz
 initrd /generations/5/boot/initrd
-options root=/dev/sda1 init=/opt/epkg/envs/root/base/usr/bin/init generation=5
+options root=/dev/sda1 init=/opt/epkg/envs/root/self/usr/bin/init generation=5
 ```
 
 系统切换：
