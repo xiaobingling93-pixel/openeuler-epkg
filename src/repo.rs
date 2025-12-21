@@ -288,6 +288,12 @@ fn collect_all_repo_metadata_parallel(all_repos: Vec<RepoRevise>) -> Result<Vec<
     Ok(all_release_items)
 }
 
+/// Determine if filelists are needed based on the current command and options
+pub fn need_filelists() -> bool {
+    (config().subcommand == EpkgCommand::Update && config().update.need_files) ||
+    (config().subcommand == EpkgCommand::Search && (config().search.files || config().search.paths))
+}
+
 fn process_all_release_items(all_release_items: Vec<RepoReleaseItem>) -> Result<()> {
     log::debug!("Collected {} total release items", all_release_items.len());
 
@@ -297,8 +303,7 @@ fn process_all_release_items(all_release_items: Vec<RepoReleaseItem>) -> Result<
     log::debug!("Unique revises: {:#?}", deduplicated_items);
 
     // Filter out items that don't need revision
-    let need_filelists = config().subcommand == EpkgCommand::Update ||
-                         config().subcommand == EpkgCommand::Search && (config().search.files || config().search.paths);
+    let need_filelists = need_filelists();
 
     let revises: Vec<_> = deduplicated_items.iter()
         .filter(|revise| revise.need_download || revise.need_convert)
@@ -505,11 +510,24 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
     let repo_dir = dirs::get_repo_dir(&repo)
         .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
 
+    // For Pacman format, conditionally modify index_url based on need_filelists
+    let mut index_url = repo.index_url.clone();
+    if repo.format == PackageFormat::Pacman {
+        let need_filelists = need_filelists();
+        if need_filelists {
+            // Change .db.tar to .files.tar
+            index_url = index_url.replace(".db.tar", ".files.tar");
+        } else {
+            // Change .files.tar to .db.tar
+            index_url = index_url.replace(".files.tar", ".db.tar");
+        }
+    }
+
     // Extract package base URL by removing last filename part
-    let package_baseurl = if let Some(parent_url) = repo.index_url.rsplitn(2, '/').nth(1) {
+    let package_baseurl = if let Some(parent_url) = index_url.rsplitn(2, '/').nth(1) {
         parent_url.to_string()
     } else {
-        repo.index_url.clone()
+        index_url.clone()
     };
 
     // Get the filename from the packages_path
@@ -531,7 +549,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
         need_download: need_download,
         need_convert: need_convert,
         arch: repo.arch.clone(),
-        url: repo.index_url.clone(),
+        url: index_url,
         package_baseurl: package_baseurl,
         hash_type: "".to_string(),
         hash: "".to_string(),

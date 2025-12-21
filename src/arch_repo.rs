@@ -132,11 +132,16 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     // Validate download path
     validate_download_path(revise)?;
 
-    // Initialize files
+    // Check if filelists are needed
+    let need_filelists = repo::need_filelists();
+
+    // Initialize files - only remove/create filelists file if needed
     let filelists_path = repo_dir.join("filelists.txt.zst");
-    if filelists_path.exists() {
-        std::fs::remove_file(&filelists_path)
-            .map_err(|e| eyre::eyre!("Failed to remove existing filelists.txt.zst: {}", e))?;
+    if need_filelists {
+        if filelists_path.exists() {
+            std::fs::remove_file(&filelists_path)
+                .map_err(|e| eyre::eyre!("Failed to remove existing filelists.txt.zst: {}", e))?;
+        }
     }
 
     let mut derived_files = packages_stream::PackagesStreamline::new(revise, repo_dir, process_line)
@@ -159,15 +164,18 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
     let mut archive = Archive::new(decoder);
     archive.set_ignore_zeros(true);
 
-    // Create zstd encoder for filelists compression
-    let filelists_file_handle = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&filelists_path)
-        .map_err(|e| eyre::eyre!("Failed to open filelists.txt.zst: {}", e))?;
-
-    let mut filelists_encoder = ZstdEncoder::new(filelists_file_handle, 3)?; // compression level 3
+    // Create zstd encoder for filelists compression only if needed
+    let mut filelists_encoder: Option<ZstdEncoder<std::fs::File>> = if need_filelists {
+        let filelists_file_handle = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&filelists_path)
+            .map_err(|e| eyre::eyre!("Failed to open filelists.txt.zst: {}", e))?;
+        Some(ZstdEncoder::new(filelists_file_handle, 3)?) // compression level 3
+    } else {
+        None
+    };
 
     // Process tar entries
     let mut packages: std::collections::HashMap<String, PackageFiles> = std::collections::HashMap::new();
@@ -178,7 +186,6 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
         if package_files.desc.is_some() {
             process_complete_package(&package_files, &mut filelists_encoder, &mut derived_files)
                 .map_err(|e| eyre::eyre!("Failed to process remaining package {}: {}", package_name, e))?;
-            log::debug!("Processed remaining package: {}", package_name);
         }
     }
 
@@ -239,7 +246,7 @@ fn validate_download_path(revise: &RepoReleaseItem) -> Result<()> {
 fn process_tar_entries(
     archive: &mut Archive<GenericDecoder<packages_stream::ReceiverHasher>>,
     packages: &mut std::collections::HashMap<String, PackageFiles>,
-    filelists_encoder: &mut ZstdEncoder<std::fs::File>,
+    filelists_encoder: &mut Option<ZstdEncoder<std::fs::File>>,
     derived_files: &mut packages_stream::PackagesStreamline,
     revise: &RepoReleaseItem,
 ) -> Result<()> {
@@ -327,8 +334,6 @@ fn process_tar_entries(
                     }
                 }
             }
-        } else {
-            log::trace!("Skipping entry (doesn't match pattern): {}", path);
         }
     }
 
@@ -344,21 +349,21 @@ fn process_tar_entries(
 /// 1. **Last package indexing**: Ensures any remaining package in the pipeline gets
 ///    properly indexed and written to packages.txt
 /// 2. **Compression finalization**: Closes the zstd encoder, finalizing the compressed
-///    filelists.txt.zst file
+///    filelists.txt.zst file (only if filelists were needed)
 /// 3. **Hash calculation**: Computes SHA-256 hash of the final filelists.txt.zst file
-///    for integrity verification
+///    for integrity verification (only if filelists were needed)
 /// 4. **Metadata generation**: Creates and writes filelists metadata file containing
-///    hash and other repository metadata
+///    hash and other repository metadata (only if filelists were needed)
 /// 5. **Pipeline completion**: Calls the derived_files.on_finish() to complete the
 ///    packages.txt processing and cleanup
 ///
 /// **Outputs generated:**
 /// - `packages.txt.zst`: Compressed package metadata in standard repository format
-/// - `filelists.txt.zst`: Compressed file listings for all packages
+/// - `filelists.txt.zst`: Compressed file listings for all packages (only if needed)
 ///
 /// **Returns:** PackagesFileInfo containing details about the processed repository files
 fn finalize_processing(
-    filelists_encoder: ZstdEncoder<std::fs::File>,
+    filelists_encoder: Option<ZstdEncoder<std::fs::File>>,
     derived_files: &mut packages_stream::PackagesStreamline,
     repo_dir: &PathBuf,
     revise: &RepoReleaseItem
@@ -371,21 +376,25 @@ fn finalize_processing(
 
     log::debug!("Finalizing processing for {}", revise.location);
 
-    // Finish compression and get the file handle back
-    filelists_encoder.finish()
-        .map_err(|e| eyre::eyre!("Failed to finish filelists compression: {}", e))?;
+    // Finish compression and calculate hash only if filelists were needed
+    if let Some(encoder) = filelists_encoder {
+        encoder.finish()
+            .map_err(|e| eyre::eyre!("Failed to finish filelists compression: {}", e))?;
 
-    // Calculate SHA-256 hash of the filelists file
-    let filelists_path = repo_dir.join("filelists.txt.zst");
-    let filelists_content = fs::read(&filelists_path)
-        .map_err(|e| eyre::eyre!("Failed to read filelists file for hash calculation: {}", e))?;
-    let mut hasher = Sha256::new();
-    hasher.update(&filelists_content);
-    let calculated_hash = hex::encode(hasher.finalize());
+        // Calculate SHA-256 hash of the filelists file
+        let filelists_path = repo_dir.join("filelists.txt.zst");
+        let filelists_content = fs::read(&filelists_path)
+            .map_err(|e| eyre::eyre!("Failed to read filelists file for hash calculation: {}", e))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&filelists_content);
+        let calculated_hash = hex::encode(hasher.finalize());
 
-    // Generate and write metadata for filelists
-    repo::generate_and_write_filelists_metadata(&filelists_path, calculated_hash)
-        .map_err(|e| eyre::eyre!("Failed to generate filelists metadata: {}", e))?;
+        // Generate and write metadata for filelists
+        repo::generate_and_write_filelists_metadata(&filelists_path, calculated_hash)
+            .map_err(|e| eyre::eyre!("Failed to generate filelists metadata: {}", e))?;
+    } else {
+        log::debug!("Skipping filelists finalization (not needed)");
+    }
 
     // Finalize processing
     derived_files.on_finish(revise)
@@ -401,7 +410,7 @@ struct PackageFiles {
 /// Process a complete package
 fn process_complete_package(
     package_files: &PackageFiles,
-    filelists_encoder: &mut ZstdEncoder<std::fs::File>,
+    filelists_encoder: &mut Option<ZstdEncoder<std::fs::File>>,
     derived_files: &mut packages_stream::PackagesStreamline
 ) -> Result<()> {
     // Extract actual package name from desc content
@@ -413,10 +422,12 @@ fn process_complete_package(
         actual_package_name = derived_files.current_pkgname.clone();
     }
 
-    // Process files content for filelists.txt
+    // Process files content for filelists.txt only if encoder is available
     if let Some(files_content) = &package_files.files {
         if !actual_package_name.is_empty() {
-            process_files_to_filelists(&actual_package_name, files_content, filelists_encoder)?;
+            if let Some(encoder) = filelists_encoder.as_mut() {
+                process_files_to_filelists(&actual_package_name, files_content, encoder)?;
+            }
         }
     }
 

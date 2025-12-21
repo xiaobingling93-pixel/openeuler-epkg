@@ -666,6 +666,8 @@ pub struct EPKGConfig {
     #[serde(default)]
     pub upgrade: UpgradeOptions,
     #[serde(default)]
+    pub update: UpdateOptions,
+    #[serde(default)]
     pub list: ListOptions,
     #[serde(default)]
     pub env: EnvOptions,
@@ -807,6 +809,13 @@ pub struct UpgradeOptions {
     /// When true and command is Upgrade, get_candidates() won't favor any packages
     #[serde(skip)]
     pub full_upgrade: bool,
+}
+
+#[derive(Default, Debug, Clone, Deserialize)]
+pub struct UpdateOptions {
+    /// Whether to download filelists (needed for file/path search)
+    #[serde(skip)]
+    pub need_files: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]

@@ -515,6 +515,7 @@ OPTIONS:
         .subcommand(
             Command::new("update")
                 .about("Update package metadata")
+                .arg(arg!(--"need-files" "Download filelists (needed for file/path search)"))
         )
         .subcommand(
             Command::new("repo")
@@ -889,8 +890,8 @@ fn parse_options_restore(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatc
     Ok(())
 }
 
-fn parse_options_update(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatches) -> Result<()> {
-    // Update command doesn't have any options to parse
+fn parse_options_update(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    config.update.need_files = sub_matches.get_flag("need-files");
     Ok(())
 }
 
