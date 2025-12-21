@@ -170,8 +170,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             let need_download = !download_path.exists();
 
                             let is_packages = current_data_type == "primary";
-                            let repo_dir = dirs::get_repo_dir(&repo)
-                                .map_err(|e| eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
+                            let repo_dir = dirs::get_repo_dir(&repo);
                             let output_path = if is_packages {
                                 repo_dir.join(format!("packages.txt"))
                             } else {

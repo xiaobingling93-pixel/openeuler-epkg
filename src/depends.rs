@@ -674,7 +674,7 @@ impl PackageManager {
     }
 
     /// Extract no-install list from world (space-separated string)
-    pub(crate) fn get_no_install_set(&self) -> std::collections::HashSet<String> {
+    pub fn get_no_install_set(&self) -> std::collections::HashSet<String> {
         self.world
             .get("no-install")
             .map(|s| {
@@ -1224,7 +1224,7 @@ impl PackageManager {
     /// # Returns
     ///
     /// A HashMap mapping package keys to their calculated dependency depths
-    pub(crate) fn calculate_pkgkey_to_depth(
+    pub fn calculate_pkgkey_to_depth(
         &self,
         pkgkey_to_depends: &HashMap<String, Vec<String>>,
         pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
@@ -1494,7 +1494,7 @@ impl PackageManager {
     }
 
     /// Helper to add a package to cache and update indexes
-    pub(crate) fn add_package_to_cache(&mut self, package: Arc<Package>, format: PackageFormat) {
+    pub fn add_package_to_cache(&mut self, package: Arc<Package>, format: PackageFormat) {
         let pkgkey = package.pkgkey.clone();
         let pkgname = package.pkgname.clone();
 
@@ -1601,7 +1601,7 @@ impl PackageManager {
     /// - "< 2.1~~" and ">= 2.2" are mutually exclusive if 2.1~~ <= 2.2
     /// - "< 2.3" and "> 2.3" are mutually exclusive (no version can satisfy both)
     /// - "<= 2.3" and ">= 2.3" are NOT mutually exclusive (version 2.3 satisfies both)
-    pub(crate) fn are_constraints_logically_mutually_exclusive(
+    pub fn are_constraints_logically_mutually_exclusive(
         &self,
         constraint1: &VersionConstraint,
         constraint2: &VersionConstraint,
@@ -1739,7 +1739,7 @@ impl PackageManager {
     ///
     /// The remainder_trimmed, provide_entry vars and everything in this function will never
     /// contain >=, >, <=, < operators, so we only need to handle the "=" operator.
-    pub(crate) fn extract_version_from_remainder<'a>(remainder: &'a str, provide_entry: &'a str) -> Option<(&'a str, &'a str)> {
+    fn extract_version_from_remainder<'a>(remainder: &'a str, provide_entry: &'a str) -> Option<(&'a str, &'a str)> {
         if remainder.starts_with('=') {
             // Alpine format: "=version" (no spaces)
             Some(("=", &remainder[1..]))
@@ -1790,7 +1790,7 @@ impl PackageManager {
     }
 
     /// Check if a version satisfies a set of constraints
-    pub(crate) fn check_version_satisfies_constraints(
+    fn check_version_satisfies_constraints(
         &mut self,
         version: &str,
         constraints: &Vec<VersionConstraint>,
@@ -1915,7 +1915,7 @@ impl PackageManager {
 
     /// Check if a package implicitly provides a capability (i.e., the capability name matches the package name)
     /// In Alpine and most package managers, a package implicitly provides its own name.
-    pub(crate) fn check_implicit_provide(
+    fn check_implicit_provide(
         &mut self,
         provider_pkgkey: &str,
         base_capability: &str,
@@ -1948,7 +1948,7 @@ impl PackageManager {
     }
 
     /// Check if a provider package's provides satisfy version constraints for a capability
-    pub(crate) fn check_provider_satisfies_constraints(
+    pub fn check_provider_satisfies_constraints(
         &mut self,
         provider_pkgkey: &str,
         capability: &str,
@@ -2020,14 +2020,14 @@ impl PackageManager {
                 // IMPORTANT: Package 'provides' fields only support cap_with_arch or cap_with_arch EQUALS cap_version.
                 //
                 // Operators like >=, >, <=, < are artifacts from metadata parsing and should be ignored.
-                // wfg /c/epkg% gr -c '^provides: .*>' ~/.cache/epkg/channel/|g -v ':0$'
-                // /home/wfg/.cache/epkg/channel/opensuse:16.0/oss/x86_64/packages.txt:10
-                // /home/wfg/.cache/epkg/channel/fedora:42/Everything-updates/x86_64/packages.txt:11
-                // /home/wfg/.cache/epkg/channel/fedora:42/Everything/x86_64/packages.txt:12
-                // wfg /c/epkg% gr -c '^provides: .*<' ~/.cache/epkg/channel/|g -v ':0$'
-                // /home/wfg/.cache/epkg/channel/opensuse:16.0/oss/x86_64/packages.txt:10
-                // /home/wfg/.cache/epkg/channel/fedora:42/Everything-updates/x86_64/packages.txt:5
-                // /home/wfg/.cache/epkg/channel/fedora:42/Everything/x86_64/packages.txt:22
+                // wfg /c/epkg% gr -c '^provides: .*>' ~/.cache/epkg/channels/|g -v ':0$'
+                // /home/wfg/.cache/epkg/channels/opensuse:16.0/oss/x86_64/packages.txt:10
+                // /home/wfg/.cache/epkg/channels/fedora:42/Everything-updates/x86_64/packages.txt:11
+                // /home/wfg/.cache/epkg/channels/fedora:42/Everything/x86_64/packages.txt:12
+                // wfg /c/epkg% gr -c '^provides: .*<' ~/.cache/epkg/channels/|g -v ':0$'
+                // /home/wfg/.cache/epkg/channels/opensuse:16.0/oss/x86_64/packages.txt:10
+                // /home/wfg/.cache/epkg/channels/fedora:42/Everything-updates/x86_64/packages.txt:5
+                // /home/wfg/.cache/epkg/channels/fedora:42/Everything/x86_64/packages.txt:22
                 //
                 // Also handle library aliases like "lib.so=lib.so-64" for Arch Linux
                 let remainder = &provide_entry_trimmed[matched_capability.len()..];

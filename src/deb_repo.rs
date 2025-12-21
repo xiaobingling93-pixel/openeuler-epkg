@@ -236,7 +236,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         ..repo.clone()
                     };
 
-                    let repo_dir = dirs::get_repo_dir(&component_repo).unwrap();
+                    let repo_dir = dirs::get_repo_dir(&component_repo);
                     let output_path = if is_packages {
                         repo_dir.join(format!("packages-{}.txt", arch))
                     } else {

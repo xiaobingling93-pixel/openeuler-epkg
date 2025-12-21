@@ -92,7 +92,7 @@ pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBu
 }
 
 pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> Result<()> {
-    let repo_dir = crate::dirs::get_repo_dir(&repo)?;
+    let repo_dir = crate::dirs::get_repo_dir(&repo);
 
     let load_mappings = crate::models::config().subcommand != EpkgCommand::Search;
 

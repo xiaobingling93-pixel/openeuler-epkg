@@ -56,7 +56,7 @@ pub struct PackageRange {
     pub len: usize,
 }
 
-// $HOME/.cache/epkg/channel/debian:trixie/main/x86_64/packages-all.txt
+// $HOME/.cache/epkg/channels/debian:trixie/main/x86_64/packages-all.txt
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Package {
     pub pkgname: String,
@@ -876,15 +876,19 @@ pub struct EPKGDirs {
     pub home_epkg: PathBuf,
 
     // Subdirectories
-    pub private_envs: PathBuf,
-    pub public_envs: PathBuf,
 
-    // Subdirectories depend on EPKGOptions
+    // Per-User dirs
+    // - If  shared_store:  /opt/epkg/envs/$USER
+    // - If !shared_store:  $HOME/.epkg/envs
+    pub user_envs: PathBuf,
+    // - If  shared_store:  /opt/epkg/cache/aur_builds/$USER
+    // - If !shared_store:  $HOME/.cache/epkg/aur_builds
+    pub user_aur_builds: PathBuf,
+
     pub epkg_store: PathBuf,
     pub epkg_cache: PathBuf,
     pub epkg_downloads_cache: PathBuf,
-    pub epkg_channel_cache: PathBuf,
-    pub epkg_aur_builds: PathBuf,
+    pub epkg_channels_cache: PathBuf,
 }
 
 #[derive(Default)]
@@ -895,9 +899,9 @@ pub struct PackageManager {
 
     // Performance indexes for fast lookups (maintained when packages are added to pkgkey2package)
     // Index: pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
-    pub(crate) pkgname2packages: HashMap<String, Vec<Arc<Package>>>,
+    pub pkgname2packages: HashMap<String, Vec<Arc<Package>>>,
     // Index: provide_name -> HashSet<pkgname> for O(1) provider lookup
-    pub(crate) provide2pkgnames: HashMap<String, HashSet<String>>,
+    pub provide2pkgnames: HashMap<String, HashSet<String>>,
 
     // loaded from env installed-packages.json
     // `self.installed_packages` (loaded from installed-packages.json) is the
@@ -976,9 +980,7 @@ static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
 });
 
 static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
-    EPKGDirs::builder()
-        .with_options(config().clone())
-        .build()
+    EPKGDirs::build_dirs(&config())
         .expect("Failed to initialize EPKGDirs")
 });
 

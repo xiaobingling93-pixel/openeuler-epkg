@@ -14,6 +14,10 @@ use zstd;
 use std::os::unix::fs::PermissionsExt; // For checking execute permissions
 use std::os::unix::fs::symlink;
 use nix::unistd;
+#[cfg(unix)]
+use users::{get_current_uid, get_effective_uid};
+#[cfg(unix)]
+use libc;
 use crate::models;
 
 #[derive(Debug, PartialEq)]
@@ -476,6 +480,68 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
 
 pub fn is_running_as_root() -> bool {
     unistd::geteuid().is_root()
+}
+
+/// Check if the process is running with setuid privileges
+/// Returns true if effective UID differs from real UID
+#[cfg(unix)]
+pub fn is_suid() -> bool {
+    get_current_uid() != get_effective_uid()
+}
+
+#[cfg(not(unix))]
+pub fn is_suid() -> bool {
+    false
+}
+
+/// Get username from real UID (for setuid security)
+#[cfg(unix)]
+pub fn get_username_from_uid() -> Result<String> {
+    use color_eyre::eyre;
+    let uid = get_current_uid();
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .map_err(|e| eyre::eyre!("Failed to get user info for real UID {}: {}", uid, e))?
+        .ok_or_else(|| eyre::eyre!("No user found for real UID {}", uid))?;
+    Ok(user.name)
+}
+
+#[cfg(not(unix))]
+pub fn get_username_from_uid() -> Result<String> {
+    Err(color_eyre::eyre::eyre!("get_username_from_uid() not supported on this platform"))
+}
+
+/// Get home directory from real UID (for setuid security)
+#[cfg(unix)]
+pub fn get_home_from_uid() -> Result<String> {
+    use std::ffi::CStr;
+    use std::os::raw::{c_char, c_int};
+    use color_eyre::eyre;
+
+    extern "C" {
+        fn getuid() -> c_int;
+        fn getpwuid(uid: c_int) -> *mut libc::passwd;
+    }
+
+    unsafe {
+        let uid = getuid();
+        let passwd = getpwuid(uid);
+        if passwd.is_null() {
+            return Err(eyre::eyre!("getpwuid returned null for real UID {}", uid));
+        }
+        let home_dir = (*passwd).pw_dir as *const c_char;
+        if home_dir.is_null() {
+            return Err(eyre::eyre!("Home directory is null for real UID {}", uid));
+        }
+        let home = CStr::from_ptr(home_dir)
+            .to_str()
+            .map_err(|e| eyre::eyre!("Failed to convert home directory to string: {}", e))?;
+        Ok(home.to_string())
+    }
+}
+
+#[cfg(not(unix))]
+pub fn get_home_from_uid() -> Result<String> {
+    Err(color_eyre::eyre::eyre!("get_home_from_uid() not supported on this platform"))
 }
 
 pub fn command_exists(command_name: &str) -> bool {

@@ -58,8 +58,7 @@ use crate::packages_stream;
 
 // index_url: https://some/dir/  (must end with /)
 pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, release_path: &PathBuf) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     // Download index.html
     let index_html_url = format!("{}index.html", repo.index_url);

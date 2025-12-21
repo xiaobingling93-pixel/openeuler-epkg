@@ -17,6 +17,7 @@ use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn};
 use crate::models::*;
 use crate::utils;
+use crate::dirs;
 
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
@@ -623,13 +624,16 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
          * mount loop, leading to ELOOP (Too many levels of symbolic links) errors when resolving paths.
          *
          * To avoid this, if the current env_root is a public environment (i.e., starts with /opt/epkg),
-         * we use the corresponding private environment root for the backup. This ensures the backup is
-         * outside the tree being bind-mounted, breaking the loop. For private environments, we can safely
-         * use env_root.join("opt_real") as before.
+         * we use a temporary directory outside /opt/epkg (in /run/user/{euid}/epkg-opt_real/{uid}-{env_name})
+         * for the backup. This ensures the backup is outside the tree being bind-mounted, breaking the loop.
+         * For private environments, we can safely use env_root.join("opt_real") as before.
          */
         let env_name = config().common.env.clone();
-        let private_env_root = dirs().private_envs.join(&env_name);
-        private_env_root.join("opt_real")
+        use nix::unistd::getuid;
+        use nix::unistd::geteuid;
+        let uid = getuid().as_raw();
+        let euid = geteuid().as_raw();
+        PathBuf::from(format!("/run/user/{}/epkg-opt_real/{}-{}", euid, uid, env_name))
     } else {
         env_root.join("opt_real")
     };
@@ -644,9 +648,6 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
     let opt_epkg_existed = opt_epkg_path.exists();
 
     if opt_epkg_existed {
-        // For root, will bind mount /opt/epkg to
-        // /root/.epkg/envs/main/opt_real, instead of
-        // /opt/epkg/envs/root/main/opt_real
         debug!("Bind mounting {} -> {}", opt_epkg_path.display(), opt_real_path.display());
         mount(
             Some(opt_epkg_path),
@@ -735,24 +736,6 @@ fn mount_additional_dir(env_root: &Path, mount_dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Get current username
-fn get_current_username() -> Result<String> {
-    let uid = getuid();
-
-    // Try to get username from environment first
-    if let Ok(username) = env::var("USER") {
-        if !username.is_empty() {
-            return Ok(username);
-        }
-    }
-
-    // Fallback to looking up by UID
-    let user = nix::unistd::User::from_uid(uid)
-        .map_err(|e| eyre::eyre!("Failed to get user info for UID {}: {}", uid.as_raw(), e))?
-        .ok_or_else(|| eyre::eyre!("No user found for UID {}", uid.as_raw()))?;
-
-    Ok(user.name)
-}
 
 /// Read subuid/subgid ranges for a user
 fn read_subid_ranges(username: &str, subid_file: &str) -> Result<Vec<(u32, u32)>> {
@@ -861,7 +844,7 @@ fn sync_with_idmap_child(child_pid: nix::unistd::Pid, sync_fd: OwnedFd) -> Resul
 /// Execute ID mapping for the parent process using newuidmap/newgidmap
 fn execute_idmap_for_parent(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<()> {
     let parent_pid = nix::unistd::getppid();
-    let username = get_current_username()?;
+    let username = dirs::get_username()?;
     let uid_raw = uid.as_raw();
     let gid_raw = gid.as_raw();
 

@@ -17,8 +17,7 @@ pub fn deserialize_env_config() -> Result<EnvConfig> {
 }
 
 pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
-    let config_path = crate::dirs::find_env_config_path(&env_name)
-        .ok_or_else(|| eyre::eyre!("Environment config not found for: {}", env_name))?;
+    let config_path = crate::dirs::get_env_config_path(&env_name);
     let (env_config, _): (EnvConfig, _) = read_yaml_file(&config_path)?;
     Ok(env_config)
 }
@@ -342,7 +341,7 @@ fn map_to_conda_repofile(repo_name: &str) -> String {
 
 /// Save environment configuration to file
 pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
-    let config_path = get_env_config_path(&env_config);
+    let config_path = get_env_config_path(&env_config.name);
 
     // Serialize the EnvConfig to YAML
     let yaml = serde_yaml::to_string(&env_config)
@@ -448,7 +447,7 @@ impl PackageManager {
     /// Edit environment configuration file
     pub fn edit_environment_config(&self) -> Result<()> {
         let env_config = crate::models::env_config();
-        let config_path = get_env_config_path(&env_config);
+        let config_path = get_env_config_path(&env_config.name);
 
         // Open editor
         let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());

@@ -354,8 +354,7 @@ fn create_repository_indexes(revises: Vec<RepoReleaseItem>, deduplicated_items: 
         if let Some(first_item) = release_items.first() {
             let repo = &first_item.repo_revise;
             // Use the standard get_repo_dir() - repo.arch is already set correctly (e.g., "all" for noarch)
-            let repo_dir = dirs::get_repo_dir(repo)
-                .with_context(|| format!("Failed to get repository directory for: {}", repodata_name))?;
+            let repo_dir = dirs::get_repo_dir(repo);
             let no_revises = !revises_map.contains_key(&repodata_name);
             create_load_repoindex(repo, no_revises, &repo_dir, release_items.clone())
                 .with_context(|| format!("Failed to create and load repository index for: {}", repodata_name))?;
@@ -437,8 +436,7 @@ pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<
         return Ok(ReleaseStatus::NeedDownload);
     }
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
     let index_path = repo_dir.join("RepoIndex.json");
     if !index_path.exists() {
         return Ok(ReleaseStatus::NeedConvert);
@@ -507,8 +505,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
     let should_update = should_refresh_release_file(packages_path, repo)?;
     let mut release_items = Vec::new();
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     // For Pacman format, conditionally modify index_url based on need_filelists
     let mut index_url = repo.index_url.clone();
@@ -639,8 +636,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
 fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
     log::debug!("Starting for repo: {} with index_url: {}", repo.repo_name, repo.index_url);
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
     log::debug!("Got repo_dir: {:?}", repo_dir);
 
     let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url, &repo.repodata_name)
@@ -676,8 +672,7 @@ fn process_revises_sequential(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
     // Process each item sequentially
     for revise in &revises {
-        let repo_dir = dirs::get_repo_dir(&revise.repo_revise)
-            .with_context(|| format!("Failed to get repository directory for item: {}", revise.location))?;
+        let repo_dir = dirs::get_repo_dir(&revise.repo_revise);
         download_and_process_item(revise, &repo_dir)
             .with_context(|| format!("Failed to download and process item: {}", revise.location))?;
     }
@@ -698,11 +693,7 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
     // Process each item in a separate thread
     for revise in revises {
         let _tx = tx.clone();
-        let repo_dir = dirs::get_repo_dir(&revise.repo_revise)
-            .unwrap_or_else(|e| {
-                log::error!("Failed to get repository directory for item {}: {}", revise.location, e);
-                PathBuf::from("/tmp") // Last resort fallback
-            });
+        let repo_dir = dirs::get_repo_dir(&revise.repo_revise);
         let handle = std::thread::spawn(move || {
             match download_and_process_item(&revise, &repo_dir) {
                 Ok(_) => {
@@ -1050,7 +1041,7 @@ fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
 /// Create symbolic link from download path to output path
 fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> Result<()> {
     // Create symbolic link
-    // /home/wfg/.cache/epkg/channel/debian:trixie/contrib/x86_64/filelists-all.gz =>
+    // /home/wfg/.cache/epkg/channels/debian:trixie/contrib/x86_64/filelists-all.gz =>
     // /home/wfg/.cache/epkg/downloads/debian/dists/trixie/contrib/by-hash/SHA256/9cc88157988a1ccc1240aa749a311bd6c445ecc890d16c431816a409303f3f51
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
 

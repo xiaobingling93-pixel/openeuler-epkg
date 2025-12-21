@@ -3,6 +3,7 @@ use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::collections::HashSet;
+use std::os::unix::fs::PermissionsExt;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use color_eyre::Result;
@@ -10,6 +11,7 @@ use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use serde_json;
 use serde_yaml;
+use nix::unistd::chown;
 use crate::models::*;
 use crate::dirs::*;
 use crate::utils::force_symlink;
@@ -85,46 +87,68 @@ impl PackageManager {
     /// This function lists all environment directories in both private and public
     /// locations, excluding the special 'self' environment.
     ///
-    /// Returns a Vec of (env_name, is_public, owner) tuples.
-    pub fn get_all_env_names(&self) -> Result<Vec<(String, bool, String)>> {
-        let mut all_envs = Vec::new();
-        let current_user = env::var("USER").unwrap_or_default();
+    /// Returns a Vec of (env_name, is_public) tuples.
+    pub fn get_all_env_names(&self) -> Result<Vec<(String, bool)>> {
+        let mut my_envs = Vec::new();
+        let mut other_envs = Vec::new();
+        let current_user = get_username()?;
+        let shared_store = config().init.shared_store;
 
-        // Get private environments
-        if let Ok(entries) = fs::read_dir(&dirs().private_envs) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let name = entry.file_name().into_string().unwrap_or_default();
-                    if name != SELF_ENV  && !name.starts_with('.') {
-                        all_envs.push((name, false, current_user.clone()));
-                    }
+        // Walk environments based on shared_store setting
+        walk_environments(|env_path, owner| {
+            let name = env_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if name != SELF_ENV && !name.starts_with('.') {
+                // An environment is considered "public" when:
+                // - shared_store is enabled (environments live under /opt/epkg/envs)
+                // - the environment directory does NOT have private-only (700) permissions
+                //
+                // Private environments are explicitly created with mode 0o700
+                // in create_environment_directories().
+                let is_public = if !shared_store {
+                    // In non-shared-store mode all envs are private; avoid extra fs ops.
+                    false
+                } else {
+                    let mode = fs::metadata(env_path)?
+                        .permissions()
+                        .mode() & 0o777;
+                    let is_private = mode == 0o700;
+                    !is_private
+                };
+
+                // Decide ownership: any env under the personal store (owner == None)
+                // or with owner == current user is considered "mine".
+                let is_mine = match owner {
+                    None => true,
+                    Some(o) => o == current_user.as_str(),
+                };
+
+                // For environments owned by another user in shared_store mode,
+                // prefix with "$owner/" to match the directory layout.
+                let env_display_name = if is_mine {
+                    name.clone()
+                } else {
+                    format!("{}/{}", owner.unwrap(), name)
+                };
+
+                if is_mine {
+                    my_envs.push((env_display_name, is_public));
+                } else {
+                    other_envs.push((env_display_name, is_public));
                 }
             }
-        }
+            Ok(())
+        })?;
 
-        // Get public environments
-        let public_envs_parent = dirs().public_envs.parent().unwrap_or_else(||Path::new("."));
-        if let Ok(entries) = fs::read_dir(public_envs_parent) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    if let Ok(owner_entries) = fs::read_dir(entry.path()) {
-                        let owner = entry.file_name().into_string().unwrap_or_default();
-                        for owner_entry in owner_entries {
-                            if let Ok(owner_entry) = owner_entry {
-                                let name = owner_entry.file_name().into_string().unwrap_or_default();
-                                if name != SELF_ENV {
-                                    all_envs.push((name, true, owner.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Sort by name within each group and then return "mine" first, others second.
+        my_envs.sort_by(|a, b| a.0.cmp(&b.0));
+        other_envs.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // Sort by name
-        all_envs.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(all_envs)
+        my_envs.extend(other_envs.into_iter());
+        Ok(my_envs)
     }
 
     pub fn list_environments(&self) -> Result<()> {
@@ -138,12 +162,12 @@ impl PackageManager {
             .map(|active| active.split(':').map(String::from).collect())
             .unwrap_or_default();
 
-        // Print table header
-        println!("{:<15}  {:<10}  {:<10}  {:<20}", "Environment", "Type", "Owner", "Status");
+        // Print table header (no separate Owner column; owner is encoded in env name when needed)
+        println!("{:<20}  {:<10}  {:<20}", "Environment", "Type", "Status");
         println!("{}", "-".repeat(55));
 
         // Print each environment with its status
-        for (env, is_public, owner) in all_envs {
+        for (env, is_public) in all_envs {
             let mut status = Vec::new();
 
             // Check if environment is in active list - O(1) lookup
@@ -156,10 +180,9 @@ impl PackageManager {
             }
 
             let env_type = if is_public { "public" } else { "private" };
-            println!("{:<15}  {:<10}  {:<10}  {:<20}",
+            println!("{:<20}  {:<10}  {:<20}",
                 env,
                 env_type,
-                owner,
                 status.join(",")
             );
         }
@@ -194,7 +217,7 @@ impl PackageManager {
         Ok(())
     }
 
-    fn create_environment_directories(&self, env_root: &Path, format: &PackageFormat) -> Result<()> {
+    fn create_environment_directories(&self, env_root: &Path, format: &PackageFormat, env_config: &EnvConfig) -> Result<()> {
         let generations_root = env_root.join("generations");
         let gen_1_dir = generations_root.join("1");
 
@@ -247,6 +270,22 @@ impl PackageManager {
                 .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
         }
 
+        // Set owner and permissions if environment is private (public = false)
+        if !env_config.public {
+            // Get current user's UID and GID (effective, handles suid)
+            let uid = nix::unistd::geteuid();
+            let gid = nix::unistd::getegid();
+
+            // Set owner to current user
+            chown(env_root, Some(uid), Some(gid))
+                .wrap_err_with(|| format!("Failed to set owner for {}", env_root.display()))?;
+
+            // Set mode to 700 (rwx------)
+            let perms = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(env_root, perms)
+                .wrap_err_with(|| format!("Failed to set permissions for {}", env_root.display()))?;
+        }
+
         Ok(())
     }
 
@@ -279,16 +318,8 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn new_env_base(&self, name: &str) -> PathBuf {
-        if config().env.public && name != MAIN_ENV {
-            dirs().public_envs.join(name)
-        } else {
-            dirs().private_envs.join(name)
-        }
-    }
-
     pub fn create_environment(&mut self, name: &str) -> Result<()> {
-        let env_base = self.new_env_base(name);
+        let env_base = dirs().user_envs.join(name);
 
         let env_root = if let Some(path) = &config().env.env_path {
             PathBuf::from(path)
@@ -330,14 +361,17 @@ impl PackageManager {
         env_config.name = name.to_string();
         env_config.env_base = env_base.to_string_lossy().to_string();
         env_config.env_root = env_root.to_string_lossy().to_string();
+        // Note: env_config.public controls visibility/permissions, not location
+        // Location is determined by InitOptions.shared_store (handled via dirs().user_envs)
         env_config.public = config().env.public;
         env_config.register_to_path = false;
         env_config.register_priority = 0;
 
-        // 'main' is the default environment for many actions, so enforce it be private,
+        // 'main' is the default environment for many actions, so enforce it be private visibility,
         // to avoid careless daily installs be exposed to others.
+        // Note: This only affects visibility/permissions, not location.
         if env_config.public && name == MAIN_ENV {
-            println!("Notice: environment 'main' is always created private");
+            println!("Notice: environment 'main' is always created with private visibility");
             env_config.public = false;
         }
 
@@ -345,14 +379,14 @@ impl PackageManager {
         let packages_to_install = std::mem::take(&mut env_export.packages);
 
         // Save environment config
-        crate::io::serialize_env_config(env_config)?;
+        crate::io::serialize_env_config(env_config.clone())?;
 
         // Save channel configs
         self.save_channel_configs(&env_root, &channel_configs)?;
 
         // Use the channel config that was just created and saved to env_channel_yaml
         let format = channel_configs[0].format.clone();
-        self.create_environment_directories(&env_root, &format)?;
+        self.create_environment_directories(&env_root, &format, &env_config)?;
 
         // Create world.json with default no-install packages
         let generations_root = env_root.join("generations");
@@ -950,10 +984,9 @@ impl PackageManager {
     }
 }
 
-pub(crate) fn registered_env_configs() -> Vec<EnvConfig> {
+pub fn registered_env_configs() -> Vec<EnvConfig> {
     let mut configs = Vec::new();
-    collect_registered_envs_from_dir(&dirs().private_envs, &mut configs);
-    collect_registered_envs_from_dir(&dirs().public_envs, &mut configs);
+    collect_registered_envs_from_dir(&dirs().user_envs, &mut configs);
     configs
 }
 

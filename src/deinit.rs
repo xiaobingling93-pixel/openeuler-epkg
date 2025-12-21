@@ -25,60 +25,33 @@ impl DeinitPlan {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.dirs_to_remove.is_empty() && self.shell_rc_files.is_empty() && self.symlinks_to_remove.is_empty()
+        self.dirs_to_remove.is_empty() &&
+        self.shell_rc_files.is_empty() &&
+        self.symlinks_to_remove.is_empty()
     }
 }
 
 pub fn deinit_epkg(scope: &str) -> Result<()> {
-    // Validate scope and permissions
-    match scope {
-        "personal" => deinit_personal()?,
-        "global" => deinit_global()?,
+    let mut plan = match scope {
+        "personal" => collect_user_personal_plan()?,
+        "global" => collect_global_deinit_plan()?,
         _ => return Err(eyre::eyre!("Invalid scope: {}. Must be 'personal' or 'global'", scope)),
-    }
-    Ok(())
-}
+    };
 
-fn deinit_personal() -> Result<()> {
     let home_dir = get_home()?;
-    let mut plan = collect_user_personal_plan(&PathBuf::from(&home_dir))?;
+    let user_shell_rcs = get_user_shell_rc(&PathBuf::from(&home_dir))?;
+    plan.shell_rc_files.extend(user_shell_rcs);
 
-    // Add $HOME/bin/epkg symlink to removal list
-    let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");
-    if home_bin_epkg.exists() {
-        plan.symlinks_to_remove.push(home_bin_epkg);
-    }
-
-    execute_deinit_with_plan(plan, "personal", "No epkg installation found for current user.")
+    execute_deinit_with_plan(plan, scope)
 }
 
-fn deinit_global() -> Result<()> {
-    // We'll deinit every user! So check if running as real root
-    if !unistd::getuid().is_root() {
-        eprintln!("Global deinitialization requires root user.");
-        exit(1);
-    }
-
-    let mut plan = collect_global_deinit_plan()?;
-
-    // Add /usr/local/bin/epkg symlink to removal list
-    let usr_local_bin_epkg = PathBuf::from("/usr/local/bin/epkg");
-    if usr_local_bin_epkg.exists() {
-        plan.symlinks_to_remove.push(usr_local_bin_epkg);
-    }
-
-    execute_deinit_with_plan(plan, "global", "No global epkg installation found.")
-}
-
-fn execute_deinit_with_plan(plan: DeinitPlan, scope: &str, empty_message: &str) -> Result<()> {
+fn execute_deinit_with_plan(plan: DeinitPlan, scope: &str) -> Result<()> {
     if plan.is_empty() {
-        println!("{}", empty_message);
         return Ok(());
     }
 
     // Display plan and confirm
     display_deinit_plan(&plan, scope)?;
-
     if !confirm_deinit()? {
         println!("Deinitialization cancelled by user.");
         return Ok(());
@@ -93,79 +66,73 @@ fn execute_deinit_with_plan(plan: DeinitPlan, scope: &str, empty_message: &str) 
 }
 
 fn collect_global_deinit_plan() -> Result<DeinitPlan> {
+    // We'll deinit every user! So check if running by root (effective UID)
+    if !unistd::geteuid().is_root() {
+        eprintln!("Global deinitialization requires root user.");
+        exit(1);
+    }
+
     let mut plan = DeinitPlan::new();
     let opt_epkg = dirs().opt_epkg.clone();
 
     if !opt_epkg.exists() {
         println!("Global epkg directory {} does not exist.", opt_epkg.display());
-        return Ok(plan);
+        exit(1);
     }
 
-    // Get all users and clean their personal epkg directories
-    let all_users = get_all_users()?;
-    for (_username, home_dir) in all_users {
-        let user_plan = collect_user_personal_plan(&home_dir)?;
-        plan.dirs_to_remove.extend(user_plan.dirs_to_remove);
-        plan.shell_rc_files.extend(user_plan.shell_rc_files);
-    }
-
+    // Remove global /opt/epkg/
     plan.dirs_to_remove.push(opt_epkg);
 
+    // Remove /usr/local/bin/epkg symlink
+    let usr_local_bin_epkg = PathBuf::from("/usr/local/bin/epkg");
+    if usr_local_bin_epkg.exists() {
+        plan.symlinks_to_remove.push(usr_local_bin_epkg);
+    }
+
     Ok(plan)
 }
 
-fn collect_user_personal_plan(home_dir: &Path) -> Result<DeinitPlan> {
+fn collect_user_personal_plan() -> Result<DeinitPlan> {
     let mut plan = DeinitPlan::new();
-    let home_epkg = home_dir.join(".epkg");
 
-    // Add cache directory (but preserve downloads)
-    let cache_dir = home_dir.join(".cache/epkg");
-    if cache_dir.exists() {
-        let channel_dir = cache_dir.join("channel");
-        if channel_dir.exists() {
-            plan.dirs_to_remove.push(channel_dir);
+    if config().init.shared_store {
+        // Remove /opt/epkg/envs/$USER/
+        let user_public_envs_path = dirs().user_envs.clone();
+        if user_public_envs_path.exists() {
+            plan.dirs_to_remove.push(user_public_envs_path);
         }
+
+        // Remove /opt/epkg/cache/aur_builds/$USER/
+        let user_aur_builds_path = dirs().user_aur_builds.clone();
+        if user_aur_builds_path.exists() {
+            plan.dirs_to_remove.push(user_aur_builds_path);
+        }
+    } else {
+        // Remove .epkg/
+        let home_epkg = dirs().home_epkg.clone();
+        if home_epkg.exists() {
+            plan.dirs_to_remove.push(home_epkg);
+        }
+
+        // Remove .cache/epkg/channels/
+        let channels_cache_dir = dirs().epkg_channels_cache.clone();
+        if channels_cache_dir.exists() {
+            plan.dirs_to_remove.push(channels_cache_dir);
+        }
+
+        // Preserve downloads, handy for development test cycles
     }
 
-    if home_epkg.exists() {
-        plan.dirs_to_remove.push(home_epkg);
+    // Remove $HOME/bin/epkg symlink
+    let home_dir = get_home()?;
+    let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");
+    if home_bin_epkg.exists() {
+        plan.symlinks_to_remove.push(home_bin_epkg);
     }
-
-    // Get shell RC files for this user
-    let user_shell_rcs = get_user_shell_rc(home_dir)?;
-    plan.shell_rc_files.extend(user_shell_rcs);
 
     Ok(plan)
 }
 
-pub fn get_all_users() -> Result<Vec<(String, PathBuf)>> {
-    let mut users = Vec::new();
-
-    // Try to get all users from /etc/passwd
-    if let Ok(content) = fs::read_to_string("/etc/passwd") {
-        for line in content.lines() {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 6 {
-                let username = parts[0];
-                let uid: u32 = parts[2].parse().unwrap_or(0);
-                let home_dir = parts[5];
-
-                // Skip system users (UID < 1000) and special users
-                if uid >= 1000 && username != "nobody" && !home_dir.is_empty() {
-                    let home_path = PathBuf::from(home_dir);
-                    if home_path.exists() {
-                        users.push((username.to_string(), home_path));
-                    }
-                }
-            }
-        }
-    }
-
-    // Add root user
-    users.push(("root".to_string(), PathBuf::from("/root")));
-
-    Ok(users)
-}
 
 fn get_user_shell_rc(home_dir: &Path) -> Result<Vec<ShellRcInfo>> {
     let mut shell_rcs = Vec::new();

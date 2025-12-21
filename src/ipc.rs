@@ -14,6 +14,7 @@ use users::{get_current_uid, get_effective_uid};
 use color_eyre::eyre::{self, Result};
 use serde_json::{json, Value};
 use crate::models::*;
+use crate::utils::is_suid;
 
 // ======================================================================================
 // Design Document: SUID Worker/Master Architecture for `epkg`
@@ -240,10 +241,6 @@ impl Drop for PackageManager {
             }
         }
     }
-}
-
-fn is_suid() -> bool {
-    get_current_uid() != get_effective_uid()
 }
 
 fn create_random_socket_path() -> PathBuf {

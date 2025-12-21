@@ -219,20 +219,20 @@ repos:
 首次安装epkg软件包（epkg install xxx），或者手动执行epkg update cache，默认在本地初始化/更新epkg软件源cache，其目录结构与服务侧软件源类似，但内容已经被解压:
 
 ```
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/repodata/index.json
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/repodata/index.json
 
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/repodata/store-paths-{filehash}.txt
 ...
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/pkg-info/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.json
 ...
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-files/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.files.txt
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/pkg-files/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.files.txt
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/pkg-files/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.files.txt
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/pkg-files/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.files.txt
 ...
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/store/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
-$HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/store/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/store/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
+$HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/store/{2-char-prefix}/${pkghash}__${pkgname}__${pkgver}__${pkgrel}.epkg
 ...
 ```
 
@@ -286,7 +286,7 @@ or one-shot grep for substring or regex pattern.
 
 The depend/rdepend lookup yamls size may be ~3MB for 30k packages.
 
-Files under dir: $HOME/.cache/epkg/channel/${osv}/${repo}/${arch}/repodata/pkg-info-{filehash}/
+Files under dir: $HOME/.cache/epkg/channels/${osv}/${repo}/${arch}/repodata/pkg-info-{filehash}/
 - provide2pkgnames.yaml     # depend lookup
 ```
 libcunit.so.1()(64bit): CUnit

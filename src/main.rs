@@ -52,7 +52,7 @@ mod gc;
 mod rpm_verify;
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::io::Write;
 use std::sync::Arc;
@@ -600,7 +600,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     let mut config: EPKGConfig = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
-            let default_config_path = dirs::get_home_epkg_path()?.join("config").join("options.yaml");
+            let default_config_path = PathBuf::from(dirs::get_home()?).join(".epkg/config/options.yaml");
             if default_config_path.exists() {
                 parse_yaml_config(default_config_path.to_str().expect("Default config path is not valid UTF-8"))
             } else {
@@ -755,6 +755,8 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
 
             // compose options for creating SELF_ENV
             config.common.env = SELF_ENV.to_string();
+            // Note: public controls visibility/permissions, shared_store controls location
+            // For self install, default public to match shared_store, but they are independent
             config.env.public = config.init.shared_store;
             if let Some(channel) = sub_matches.get_one::<String>("channel") {
                 config.env.channel = Some(channel.to_string());
@@ -775,11 +777,15 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
                     "personal" => {
                         config.common.env = SELF_ENV.to_string();
                         config.init.shared_store = false;
+                        // Note: public and shared_store are independent, but for removal scope
+                        // we set both to match the expected behavior
                         config.env.public = false;
                     }
                     "global" => {
                         config.common.env = SELF_ENV.to_string();
                         config.init.shared_store = true;
+                        // Note: public and shared_store are independent, but for removal scope
+                        // we set both to match the expected behavior
                         config.env.public = true;
                     }
                     _ => return Err(eyre::eyre!("Invalid scope for removal: {}", scope)),

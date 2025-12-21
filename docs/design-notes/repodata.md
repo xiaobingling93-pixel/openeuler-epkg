@@ -109,9 +109,9 @@ repodata locally.
 
 - the repo index file (store-paths.txt) will be ~100MB for 1M packages, according to this:
 ```
-wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/repodata% wc -l store-paths
+wfg ~/.cache/epkg/channels/openeuler:24.03-lts/everything/x86_64/repodata% wc -l store-paths
 18688 store-paths
-wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/repodata% du store-paths
+wfg ~/.cache/epkg/channels/openeuler:24.03-lts/everything/x86_64/repodata% du store-paths
 1.3M    store-paths
 ```
 
@@ -226,11 +226,11 @@ is_essential_pkgname()
 
 ```shell
 # packages.json size expectation
-wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/pkg-info% du -s .
+wfg ~/.cache/epkg/channels/openeuler:24.03-lts/everything/x86_64/pkg-info% du -s .
 79M     .
 
 # others size expectation
-wfg ~/.cache/epkg/channel/openeuler:24.03-lts/everything/x86_64/repodata% du *
+wfg ~/.cache/epkg/channels/openeuler:24.03-lts/everything/x86_64/repodata% du *
 0       essential_pkgnames.txt
 4.0K    index.json
 3.8M    pkg-info.zst

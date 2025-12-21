@@ -891,19 +891,6 @@ impl DownloadTask {
         })
     }
 
-    #[allow(dead_code)]
-    fn final_append_offset(&self) -> u64 {
-        let offset = self.chunk_offset.load(Ordering::Relaxed);
-        offset + self.progress()
-    }
-
-    #[allow(dead_code)]
-    fn download_start_offset(&self) -> u64 {
-        let offset = self.chunk_offset.load(Ordering::Relaxed);
-        let reused = self.resumed_bytes.load(Ordering::Relaxed);
-        offset + reused
-    }
-
     fn progress(&self) -> u64 {
         let received = self.received_bytes.load(Ordering::Relaxed);
         let reused = self.resumed_bytes.load(Ordering::Relaxed);
@@ -1705,47 +1692,6 @@ impl DownloadManager {
         }
     }
 
-    #[allow(dead_code)]
-    fn wait_for_all_tasks(&self) -> Result<()> {
-        while self.is_processing.load(Ordering::Relaxed) {
-            // Check for cancellation
-            if self.cancelled.load(Ordering::Relaxed) {
-                return Err(eyre!("Download cancelled by user"));
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-
-        // Check for any failed tasks
-        let tasks = match self.tasks.lock() {
-            Ok(guard) => guard,
-            Err(e) => {
-                log::error!("Failed to lock tasks mutex: {}", e);
-                return Err(eyre!("Failed to lock tasks mutex: {}", e));
-            }
-        };
-        let errors: Vec<String> = tasks.iter()
-            .filter_map(|(_, t)| {
-                if let DownloadStatus::Failed(e) = t.get_status() {
-                    Some(format!("Failed to download {}: {}", t.url, e))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if !errors.is_empty() {
-            let error_count = errors.len();
-            let error_details = errors.join("\n");
-            return Err(eyre!(
-                "{} downloads failed:\n{}",
-                error_count,
-                error_details
-            ));
-        }
-
-        Ok(())
-    }
-
     /// Dump comprehensive information about all download tasks in a tree-like structure.
     ///
     /// Each master (L1) task is treated as the root of a tree (one file per tree).
@@ -2335,7 +2281,7 @@ fn handle_aur_git_download(
 
     // Place git directory in build directory (same location as extracted build dir)
     // This matches the layout: ~/.cache/epkg/aur_builds/{pkgbase}
-    let build_dir = dirs().epkg_aur_builds.clone();
+    let build_dir = dirs().user_aur_builds.clone();
     let clone_dir = build_dir.join(pkgbase);
 
     // Create build directory if needed
@@ -6357,7 +6303,7 @@ fn validate_chunk_file_boundaries(task: &DownloadTask, chunk_append_offset: u64)
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ChunkInfo {
+pub struct ChunkInfo {
     offset: u64,
     size: u64,      // Total chunk size (from offset to end of chunk)
     filesize: u64,  // Existing file size (bytes already downloaded)
@@ -6377,7 +6323,7 @@ pub(crate) struct ChunkInfo {
 /// - New chunks created are aligned to PGET_CHUNK_SIZE boundaries
 /// - New chunks' to_download area is normally exact PGET_CHUNK_SIZE, or around it (for the first/last ones)
 /// - New chunks' filesize = 0 (no existing files for them, so no filesize)
-pub(crate) fn split_download_areas(
+pub fn split_download_areas(
     input_chunks: &[&ChunkInfo],
 ) -> Vec<ChunkInfo> {
     let mut result = Vec::new();

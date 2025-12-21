@@ -232,8 +232,7 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
     };
 
     // Use the standard get_repo_dir() - it now works correctly because repo.arch is "all" for noarch
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .map_err(|e| eyre::eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     let output_path = repo_dir.join(format!("packages-{}.txt", effective_arch));
 

@@ -102,8 +102,7 @@ pub struct AurPackage {
 pub fn parse_aur_metadata(repo: &RepoRevise, _release_path: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
     let mut release_items = Vec::new();
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .map_err(|e| eyre::eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     let output_path = repo_dir.join("packages.txt");
 
@@ -689,7 +688,7 @@ impl PackageManager {
         let mut completed_aur_packages = HashMap::new();
         // Accumulated mapping of original (plan) AUR pkgkeys -> actual installed pkgkeys across all rounds.
         let mut aur_mapping_all_rounds: HashMap<String, String> = HashMap::new();
-        let build_dir = dirs().epkg_aur_builds.clone();
+        let build_dir = dirs().user_aur_builds.clone();
         std::fs::create_dir_all(&build_dir)?;
 
         // Build package bases in DAG order (sorted by minimum depend_depth)

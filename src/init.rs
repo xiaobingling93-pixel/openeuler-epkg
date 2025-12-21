@@ -231,7 +231,7 @@ impl PackageManager {
     }
 
     fn download_setup_files(&mut self, init_plan: &InitPlan) -> Result<()> {
-        let self_env_root = self.new_env_base(SELF_ENV);
+        let self_env_root = dirs().user_envs.join(SELF_ENV);
 
         self.download_package_manager_files(init_plan)
             .context("Failed to download required files for self environment")?;

@@ -10,31 +10,21 @@ use crate::utils;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 
-#[derive(Debug, Clone, PartialEq)] // Reverted derives
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShellRcInfo {
     pub rc_file_path: String,
     pub source_script_name: String,
 }
 
-#[derive(Default)]
-pub struct EPKGDirsBuilder {
-    options: Option<EPKGConfig>,
-    custom_home: Option<PathBuf>,
-    custom_opt: Option<PathBuf>,
-}
-
 impl EPKGDirs {
-    pub fn builder() -> EPKGDirsBuilder {
-        EPKGDirsBuilder::default()
-    }
+    pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
+        let opt_epkg = PathBuf::from("/opt/epkg");
+        let home = get_home()?;
+        let home_epkg = PathBuf::from(&home).join(".epkg");
+        let private_cache = PathBuf::from(&home).join(".cache/epkg");
 
-    // Helper method to create dirs using proper path joining
-    fn build_dirs(options: &EPKGConfig, home_epkg: &PathBuf, opt_epkg: &PathBuf) -> Result<Self> {
-        // Private cache is always under XDG cache (e.g. $HOME/.cache/epkg)
-        let private_cache = get_xdg_cache()?.join("epkg");
-
-        let (store_root, cache_root) = if options.init.shared_store {
-            // Shared store/cache live under /opt/epkg, but AUR builds still use private_cache
+        let (epkg_store, epkg_cache) = if options.init.shared_store {
+            // Shared store/cache live under /opt/epkg
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
             // Non-shared store uses user home, cache uses private_cache
@@ -43,46 +33,33 @@ impl EPKGDirs {
 
         // Get username - if it fails, the error will propagate upward
         let username = get_username()?;
-        let user_pubenvs = opt_epkg.join(format!("envs/{}", username));
 
-        Ok(Self {
-            opt_epkg: opt_epkg.clone(),
-            home_epkg: home_epkg.clone(),
-            private_envs: home_epkg.join("envs"),
-            public_envs: user_pubenvs,
-            epkg_store: store_root,
-            epkg_cache: cache_root.clone(),
-            epkg_downloads_cache: cache_root.join("downloads"),
-            epkg_channel_cache: cache_root.join("channel"),
-            // AUR builds always go under the private cache, never under /opt/epkg
-            epkg_aur_builds: private_cache.join("aur_builds"),
-        })
-    }
-}
-
-impl EPKGDirsBuilder {
-    pub fn with_options(mut self, options: EPKGConfig) -> Self {
-        self.options = Some(options);
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_custom_home(mut self, path: PathBuf) -> Self {
-        self.custom_home = Some(path);
-        self
-    }
-
-    pub fn build(self) -> Result<EPKGDirs> {
-        let options = self.options.unwrap();
-
-        let home_epkg = match self.custom_home {
-            Some(path) => path,
-            None => get_home_epkg_path()?
+        let user_envs = if options.init.shared_store {
+            // /opt/epkg/envs/$USER
+            opt_epkg.join(format!("envs/{}", username))
+        } else {
+            // $HOME/.epkg/envs
+            home_epkg.join("envs")
         };
 
-        let opt_epkg = self.custom_opt.unwrap_or_else(|| PathBuf::from("/opt/epkg"));
+        let user_aur_builds = if options.init.shared_store {
+            // /opt/epkg/cache/aur_builds/$USER
+            epkg_cache.join("aur_builds").join(&username)
+        } else {
+            // $HOME/.cache/epkg/aur_builds
+            private_cache.join("aur_builds")
+        };
 
-        EPKGDirs::build_dirs(&options, &home_epkg, &opt_epkg)
+        Ok(Self {
+            opt_epkg,
+            home_epkg,
+            user_envs,
+            user_aur_builds,
+            epkg_downloads_cache: epkg_cache.join("downloads"),
+            epkg_channels_cache: epkg_cache.join("channels"),
+            epkg_store,
+            epkg_cache,
+        })
     }
 }
 
@@ -110,50 +87,27 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 }
 
 /// Get the base path for an environment
-///   - private: $HOME/.epkg/envs/$env_name
-///   - public: /opt/epkg/envs/$username/$env_name
-pub fn get_env_base_path(env_name: &str, public: bool) -> Result<PathBuf> {
-    if public {
-        let username = get_username()?;
-        Ok(dirs().opt_epkg.join("envs").join(username).join(env_name))
-    } else {
-        Ok(dirs().home_epkg.join("envs").join(env_name))
-    }
-}
-
-pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
-    // Check private env first
-    let private_env_base = dirs().home_epkg.join("envs").join(env_name);
-    // Checking $private_env_base is not enough: `epkg run` could mkdir $private_env_base/opt_real/
-    if private_env_base.join("etc/epkg/env.yaml").exists() {
-        return Some(private_env_base);
-    }
-
-    // Check public envs - search through all users' public environment directories
-    let public_envs_parent = dirs().opt_epkg.join("envs");
-    if let Ok(entries) = fs::read_dir(&public_envs_parent) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let public_env_base = entry.path().join(env_name);
-                if public_env_base.join("etc/epkg/env.yaml").exists() {
-                    return Some(public_env_base);
-                }
-            }
-        }
-    }
-
-    None
-}
-
-pub fn find_env_config_path(env_name: &str) -> Option<PathBuf> {
-    find_env_base(env_name).map(|base| base.join("etc/epkg/env.yaml"))
+/// Location is determined by InitOptions.shared_store:
+///   - shared_store=false: $HOME/.epkg/envs/$env_name
+///   - shared_store=true:  /opt/epkg/envs/$USER/$env_name
+/// Note: EnvConfig.public only controls visibility/permissions, not location
+fn get_env_base_path(env_name: &str) -> PathBuf {
+    dirs().user_envs.join(env_name)
 }
 
 /// Get the path to an environment's configuration file
-pub fn get_env_config_path(env_config: &EnvConfig) -> PathBuf {
-    get_env_base_path(&env_config.name, env_config.public)
-        .expect("Failed to get env base path")
+pub fn get_env_config_path(env_name: &str) -> PathBuf {
+    get_env_base_path(&env_name)
         .join("etc/epkg/env.yaml")
+}
+
+pub fn find_env_base(env_name: &str) -> Option<PathBuf> {
+    // Find environment based on current shared_store setting
+    let base = get_env_base_path(env_name);
+    if base.join("etc/epkg/env.yaml").exists() {
+        return Some(base);
+    }
+    None
 }
 
 /// Find the root directory for an environment by searching both private and public locations
@@ -176,8 +130,33 @@ pub fn get_epkg_src_path() -> Result<PathBuf> {
 }
 
 /// Retrieves the home directory path, trying multiple methods.
+/// When running as setuid, validates environment variables against real UID for security.
 pub fn get_home() -> Result<String> {
-    // Try HOME environment variable first
+    // Security check: if running as setuid, get home from real UID and validate env vars
+    #[cfg(unix)]
+    if utils::is_suid() {
+        let real_home = utils::get_home_from_uid()?;
+
+        // Validate HOME environment variable if set
+        if let Ok(env_home) = env::var("HOME") {
+            if env_home != real_home {
+                return Err(eyre::eyre!(
+                    "Security violation: HOME environment variable ('{}') does not match real UID home ('{}'). \
+                    Environment variables cannot be trusted when running as setuid.",
+                    env_home, real_home
+                ));
+            }
+        }
+
+        // fixup bare docker HOME=/
+        if real_home == "/" && utils::is_running_as_root() {
+            return Ok("/root".to_string());
+        }
+
+        return Ok(real_home);
+    }
+
+    // Try HOME environment variable first (only when not setuid)
     if let Ok(home) = env::var("HOME") {
         // fixup bare docker HOME=/
         if home == "/" && utils::is_running_as_root() {
@@ -204,7 +183,7 @@ pub fn get_home() -> Result<String> {
         }
 
         unsafe {
-            let uid = getuid();
+            let uid = getuid(); // Use UID in case epkg is suid
             let passwd = getpwuid(uid);
             if !passwd.is_null() {
                 let home_dir = (*passwd).pw_dir as *const c_char;
@@ -237,26 +216,12 @@ pub fn get_home() -> Result<String> {
     Err(eyre::eyre!("Could not determine home directory"))
 }
 
-pub fn get_repo_dir(repo: &RepoRevise) -> Result<PathBuf> {
-    let channel_dir = dirs().epkg_cache.join("channel");
-    let repo_dir = channel_dir.join(&repo.channel).join(repo.repodata_name.clone()).join(repo.arch.clone());
-    Ok(repo_dir)
-}
-
-/// $HOME/.epkg
-pub fn get_home_epkg_path() -> Result<PathBuf> {
-    let home = get_home().wrap_err("Failed to get HOME directory for .epkg path")?;
-    Ok(PathBuf::from(home).join(".epkg"))
-}
-
-fn get_xdg_cache() -> Result<PathBuf> {
-    match env::var("XDG_CACHE_HOME") {
-        Ok(path_str) if !path_str.is_empty() => Ok(PathBuf::from(path_str)),
-        _ => { // Covers Err cases and empty Ok string
-            let home_str = get_home().wrap_err("XDG_CACHE_HOME not found or invalid, and failed to get HOME directory for fallback cache")?;
-            Ok(PathBuf::from(home_str).join(".cache"))
-        }
-    }
+pub fn get_repo_dir(repo: &RepoRevise) -> PathBuf {
+    dirs()
+        .epkg_channels_cache
+        .join(&repo.channel)
+        .join(repo.repodata_name.clone())
+        .join(repo.arch.clone())
 }
 
 /// Check if a shell binary is installed and executable
@@ -366,15 +331,36 @@ pub fn get_shell_rc() -> Result<Vec<ShellRcInfo>> {
     Ok(infos)
 }
 
+/// Get username, with security validation when running as setuid.
+/// When running as setuid, validates environment variables against real UID for security.
 pub fn get_username() -> Result<String> {
-    // Try USER environment variable first (common on Unix/Linux)
+    // Security check: if running as setuid, get username from real UID and validate env vars
+    #[cfg(unix)]
+    if utils::is_suid() {
+        let real_username = utils::get_username_from_uid()?;
+
+        // Validate USER environment variable if set
+        if let Ok(env_user) = env::var("USER") {
+            if !env_user.is_empty() && env_user != real_username {
+                return Err(eyre::eyre!(
+                    "Security violation: USER environment variable ('{}') does not match real UID username ('{}'). \
+                    Environment variables cannot be trusted when running as setuid.",
+                    env_user, real_username
+                ));
+            }
+        }
+
+        return Ok(real_username);
+    }
+
+    // Try USER environment variable first (common on Unix/Linux) - only when not setuid
     if let Ok(username) = env::var("USER") {
         if !username.is_empty() {
             return Ok(username);
         }
     }
 
-    // Try USERNAME environment variable (common on Windows)
+    // Try USERNAME environment variable (common on Windows) - only when not setuid
     if let Ok(username) = env::var("USERNAME") {
         if !username.is_empty() {
             return Ok(username);
@@ -390,16 +376,70 @@ pub fn get_username() -> Result<String> {
         }
     }
 
+    // Fallback: try to get username from real UID (Unix only)
+    #[cfg(unix)]
+    {
+        if let Ok(username) = utils::get_username_from_uid() {
+            return Ok(username);
+        }
+    }
+
     // If all else fails, return a descriptive error
     Err(eyre::eyre!("Could not determine username. Please ensure either USER or USERNAME environment variables are set. This is required to set up the public environments directory."))
 }
 
-/// Get the path to user's private environments directory
-pub fn user_private_envs(user_home: &str) -> PathBuf {
-    PathBuf::from(user_home).join(".epkg/envs")
+/// Get the base path to users' public environments directories
+fn public_envs_path() -> PathBuf {
+    dirs().opt_epkg.join("envs")
 }
 
-/// Get the path to user's public environments directory
-pub fn user_public_envs(username: &str) -> PathBuf {
-    dirs().opt_epkg.join("envs").join(username)
+/// Walk all directories in the given parent directory and call the callback for each.
+///
+/// This helper function walks the "bottom" directory level, calling the callback
+/// for each subdirectory found with (env_path, owner_opt).
+pub fn walk_bottom_dir<F>(parent_path: &Path, owner_opt: Option<&str>, callback: &mut F) -> Result<()>
+where
+    F: FnMut(&Path, Option<&str>) -> Result<()>,
+{
+    if let Ok(entries) = fs::read_dir(parent_path) {
+        for entry in entries.flatten() {
+            let env_path = entry.path();
+            if env_path.is_dir() {
+                callback(&env_path, owner_opt)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk environments based on shared_store setting:
+/// - If !shared_store: walk $HOME/.epkg/envs/*
+/// - If  shared_store: walk /opt/epkg/envs/*/*
+///
+/// Calls the callback for each environment found with (env_path, owner_opt).
+/// owner_opt is Some(owner) for shared_store, None for private.
+pub fn walk_environments<F>(mut callback: F) -> Result<()>
+where
+    F: FnMut(&Path, Option<&str>) -> Result<()>,
+{
+    if config().init.shared_store {
+        // Walk /opt/epkg/envs/*/*
+        let allusers_envs_base = public_envs_path();
+        if let Ok(entries) = fs::read_dir(&allusers_envs_base) {
+            for entry in entries.flatten() {
+                let owner_path = entry.path();
+                if owner_path.is_dir() {
+                    let owner = owner_path.file_name()
+                        .and_then(|n| n.to_str());
+                    walk_bottom_dir(&owner_path, owner, &mut callback)?;
+                }
+            }
+        }
+    } else {
+        // Walk $HOME/.epkg/envs/*
+        let personal_envs_root = &dirs().user_envs;
+        walk_bottom_dir(personal_envs_root, None, &mut callback)?;
+    }
+
+    Ok(())
 }
