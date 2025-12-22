@@ -527,12 +527,12 @@ impl PackageManager {
         let epkg_src = if name == SELF_ENV {
             env_root.join("usr/src/epkg")
         } else {
-            get_epkg_src_path()?
+            get_epkg_src_path()
         };
         let mut channel_configs = Vec::new();
 
-        // Load main channel config
-        let channel_path = epkg_src.join("channel");
+        // Load main channel config from the built-in sources directory
+        let channel_path = epkg_src.join("sources");
         let mut src_channel_yaml_path = channel_path.join(format!("{}.yaml", channel));
         if !src_channel_yaml_path.exists() {
             src_channel_yaml_path = channel_path.join(format!("{}.yaml", channel_name));

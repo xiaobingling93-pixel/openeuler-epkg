@@ -78,7 +78,7 @@ Based on processing thousands of mirror URLs, the most common failure categories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LS_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
 NEW_MIRRORS_PATH = os.path.join(BASE_DIR, 'new-mirrors.json')
-EXISTING_MIRRORS_PATH = os.path.join(BASE_DIR, '../../channel/mirrors.json')
+EXISTING_MIRRORS_PATH = os.path.join(BASE_DIR, '../../sources/mirrors.json')
 INDEX_HTML_CACHE_DIR = os.path.join(BASE_DIR, 'index')
 FAILED_MIRRORS_LOG_PATH = os.path.join(BASE_DIR, 'failed-mirrors.log')
 
@@ -784,7 +784,7 @@ def parse_lftp_output(lftp_output, mirror_url):
     if redirect_url:
         print(f"\n### REDIRECTION DETECTED via LFTP")
         print(f"Mirror {mirror_url} redirects to: {redirect_url}")
-        print(f"### RECOMMENDED: Add the redirect URL to channel/manual-mirrors.json:")
+        print(f"### RECOMMENDED: Add the redirect URL to sources/manual-mirrors.json:")
         redirect_url_json = json.dumps(redirect_url)
         entry_data = {}
         if directories:
@@ -1032,7 +1032,7 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
                 if new_url in mirrors_data:
                     continue
 
-                print("\n### RECOMMENDED CONFIGURATION for channel/manual-mirrors.json")
+                print("\n### RECOMMENDED CONFIGURATION for sources/manual-mirrors.json")
                 new_url_json = json.dumps(new_url)
                 # Filter valid_dir entries to only include those in VALID_DIRS
                 filtered_ls_entries = [valid_dir for valid_dir, _ in matches if valid_dir.lower() in VALID_DIRS]

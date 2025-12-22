@@ -316,7 +316,7 @@ pub struct EnvExport {
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
-// # On `epkg self install`, may copy from $EPKG_SRC/channel/${channel}.yaml
+// # On `epkg self install`, may copy from $EPKG_SRC/sources/${channel}.yaml
 // distro: "openeuler"
 // version: "24.03-lts"
 // index_url: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-$VERSION/$repo/$arch/repodata/repomd.xml"

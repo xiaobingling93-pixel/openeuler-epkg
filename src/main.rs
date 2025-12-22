@@ -1188,8 +1188,7 @@ impl PackageManager {
         if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
             privdrop_on_suid();
 
-            let epkg_src_path = get_epkg_src_path()
-                .map_err(|_| eyre::eyre!("epkg not installed"))?;
+            let epkg_src_path = get_epkg_src_path();
             let build_script = epkg_src_path.join("build/scripts/generic-build.sh");
             if !build_script.exists() {
                 return Err(eyre::eyre!("Build script not found"));

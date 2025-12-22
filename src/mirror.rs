@@ -612,11 +612,11 @@ fn apply_channel_config_filtering(
     Ok(filtered_mirrors)
 }
 
-/// Load channel/mirrors.json with filtering by channel_config().distro OR channel_config().distro_dirs
+/// Load sources/mirrors.json with filtering by channel_config().distro OR channel_config().distro_dirs
 fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
-    let manager_path = crate::dirs::get_epkg_src_path()?;
-    let mirrors_file_path = manager_path.join("channel/mirrors.json");
-    let manual_mirrors_file_path = manager_path.join("channel/manual-mirrors.json");
+    let manager_path = crate::dirs::get_epkg_src_path();
+    let mirrors_file_path = manager_path.join("sources/mirrors.json");
+    let manual_mirrors_file_path = manager_path.join("sources/manual-mirrors.json");
 
     // Load primary mirrors.json
     let mut all_mirrors_raw = load_primary_mirrors(&mirrors_file_path)?;
