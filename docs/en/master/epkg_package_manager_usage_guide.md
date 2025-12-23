@@ -208,8 +208,38 @@ Create a new environment. After successful creation, the new environment is acti
 Command:
 
 ```shell
-epkg env create ${env_name}
+epkg env create ${env_name} [--public]
 ```
+
+Options:
+- `--public`: Make the environment public (usable by all users). Only meaningful in shared store mode.
+
+**Shared Store Mode Rules: (`epkg self install --store=shared|private|auto`)**
+
+The shared store mode is determined automatically based on:
+1. private if not running as root
+2. private if current executable starts with `/home/`
+3. public  if current executable starts with `/opt/epkg/`
+4. public  if running as root and `/opt/epkg/store/` exists
+5. private if `$HOME/.epkg/store/` exists
+6. public  if `/opt/epkg/store/` exists
+7. error and abort otherwise (run `epkg self install` first)
+
+**Environment Public Attribute Rules:**
+
+- `self` environment: always created as public
+- `main` environment: always created as private
+- Other environments: public/private is determined by the `--public` option on `epkg env create`
+
+**Environment Access Rules:**
+
+- In SHARED store mode:
+  - Users can access their own public/private environments
+  - Users can access all other users' public environments using `-e owner/env_name` format
+  - PATH includes: user's own public/private registered envs + all other users' public registered envs
+- In PRIVATE store mode:
+  - Users can only access their own (private) environments
+  - PATH includes: user's own (private) registered envs
 
 Example output:
 
@@ -219,6 +249,24 @@ YUM --installroot directory structure created successfully in: /root/.epkg/envs/
 Environment 'work1' added to PATH.
 Environment 'work1' activated.
 Environment 'work1' created.
+```
+
+**Visiting Other Users' Public Environments:**
+
+In shared store mode, you can read-only visit another user's public environment using the `owner/env_name` format:
+
+```shell
+# List environments (shows own envs + other users' public envs)
+epkg env list
+
+# Run command in another user's public environment
+epkg -e alice/pubenv run jq --version
+
+# Search packages in another user's public environment
+epkg -e alice/pubenv search package_name
+
+# Get package info in another user's public environment
+epkg -e alice/pubenv info package_name
 ```
 
 ### Activating an Environment

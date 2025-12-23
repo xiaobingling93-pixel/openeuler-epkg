@@ -2,16 +2,18 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use nix::unistd;
-use color_eyre::Result;
+
 use color_eyre::eyre::{self, WrapErr};
-use crate::models::*;
+use color_eyre::Result;
+use nix::unistd;
+
 use crate::dirs::*;
+use crate::models::*;
 
 #[derive(Debug)]
 pub struct DeinitPlan {
     pub dirs_to_remove: Vec<PathBuf>,
-    pub shell_rc_files: Vec<ShellRcInfo>,
+    pub shell_rc_files: Vec<String>,
     pub symlinks_to_remove: Vec<PathBuf>,
 }
 
@@ -32,15 +34,11 @@ impl DeinitPlan {
 }
 
 pub fn deinit_epkg(scope: &str) -> Result<()> {
-    let mut plan = match scope {
+    let plan = match scope {
         "personal" => collect_user_personal_plan()?,
         "global" => collect_global_deinit_plan()?,
         _ => return Err(eyre::eyre!("Invalid scope: {}. Must be 'personal' or 'global'", scope)),
     };
-
-    let home_dir = get_home()?;
-    let user_shell_rcs = get_user_shell_rc(&PathBuf::from(&home_dir))?;
-    plan.shell_rc_files.extend(user_shell_rcs);
 
     execute_deinit_with_plan(plan, scope)
 }
@@ -89,6 +87,10 @@ fn collect_global_deinit_plan() -> Result<DeinitPlan> {
         plan.symlinks_to_remove.push(usr_local_bin_epkg);
     }
 
+    // Update global shell rc files
+    let global_shell_rcs = crate::dirs::get_global_shell_rc()?;
+    plan.shell_rc_files.extend(global_shell_rcs);
+
     Ok(plan)
 }
 
@@ -120,44 +122,21 @@ fn collect_user_personal_plan() -> Result<DeinitPlan> {
             plan.dirs_to_remove.push(channels_cache_dir);
         }
 
-        // Preserve downloads, handy for development test cycles
-    }
+        // Preserve downloads cache, handy for development test cycles
 
-    // Remove $HOME/bin/epkg symlink
-    let home_dir = get_home()?;
-    let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");
-    if home_bin_epkg.exists() {
-        plan.symlinks_to_remove.push(home_bin_epkg);
+        // Remove $HOME/bin/epkg symlink
+        let home_dir = get_home()?;
+        let home_bin_epkg = PathBuf::from(&home_dir).join("bin/epkg");
+        if home_bin_epkg.exists() {
+            plan.symlinks_to_remove.push(home_bin_epkg);
+        }
+
+        // Update user shell rc files
+        let user_shell_rcs = crate::dirs::get_user_shell_rc(&PathBuf::from(&home_dir))?;
+        plan.shell_rc_files.extend(user_shell_rcs);
     }
 
     Ok(plan)
-}
-
-
-fn get_user_shell_rc(home_dir: &Path) -> Result<Vec<ShellRcInfo>> {
-    let mut shell_rcs = Vec::new();
-
-    // Check common shell RC files
-    let rc_files = [
-        (".bashrc", "bash"),
-        (".zshrc", "zsh"),
-        (".kshrc", "ksh"),
-        (".cshrc", "csh"),
-        (".tcshrc", "tcsh"),
-        (".config/fish/config.fish", "fish"),
-    ];
-
-    for (rc_file, _shell_name) in rc_files.iter() {
-        let rc_path = home_dir.join(rc_file);
-        if rc_path.exists() {
-            shell_rcs.push(ShellRcInfo {
-                rc_file_path: rc_path.to_string_lossy().into_owned(),
-                source_script_name: "epkg-rc.sh".to_string(),
-            });
-        }
-    }
-
-    Ok(shell_rcs)
 }
 
 fn display_deinit_plan(plan: &DeinitPlan, scope: &str) -> Result<()> {
@@ -180,7 +159,7 @@ fn display_deinit_plan(plan: &DeinitPlan, scope: &str) -> Result<()> {
     if !plan.shell_rc_files.is_empty() {
         println!("\nShell configuration files to modify:");
         for rc_file in &plan.shell_rc_files {
-            println!("  {}", rc_file.rc_file_path);
+            println!("  {}", rc_file);
         }
     }
 
@@ -227,7 +206,7 @@ fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
 
     // Modify shell RC files
     for rc_file in &plan.shell_rc_files {
-        remove_epkg_from_rc_file(&rc_file.rc_file_path)?;
+        remove_epkg_from_rc_file(rc_file)?;
     }
 
     // Remove directories in the end

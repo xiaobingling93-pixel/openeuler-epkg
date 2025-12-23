@@ -482,6 +482,66 @@ pub fn is_running_as_root() -> bool {
     unistd::geteuid().is_root()
 }
 
+/// Determine shared_store mode based on the decision sequence:
+/// 1. private if !is_running_as_root
+/// 2. private if current_exe starts with /home/
+/// 3. public  if current_exe starts with /opt/epkg/
+/// 4. public  if running as root and /opt/epkg/store/ exists
+/// 5. private if $HOME/.epkg/store/ exists
+/// 6. public  if /opt/epkg/store/ exists
+/// 7. error and abort otherwise
+pub fn determine_shared_store() -> Result<bool> {
+    use std::env;
+    use std::path::Path;
+    use crate::dirs::get_home;
+    use color_eyre::eyre;
+
+    let is_root = is_running_as_root();
+
+    // Rule 1: If !is_running_as_root, set to private
+    if !is_root {
+        return Ok(false);
+    }
+
+    // Rule 2: If current_exe starts with /home/, set to private
+    let current_exe = env::current_exe()
+        .wrap_err("Failed to get current executable path")?;
+    let current_exe_str = current_exe.to_string_lossy();
+    if current_exe_str.starts_with("/home/") {
+        return Ok(false);
+    }
+
+    // Rule 3: If current_exe starts with /opt/epkg/, set to public
+    if current_exe_str.starts_with("/opt/epkg/") {
+        return Ok(true);
+    }
+
+    // Rule 4: If running as root and /opt/epkg/store/ exists, set to public
+    let opt_store = Path::new("/opt/epkg/store");
+    let has_opt_store = opt_store.exists();
+    if is_root && has_opt_store {
+        return Ok(true);
+    }
+
+    // Rule 5: If $HOME/.epkg/store/ exists, set to private
+    let home = get_home()?;
+    let home_store = Path::new(&home).join(".epkg/store");
+    if home_store.exists() {
+        return Ok(false);
+    }
+
+    // Rule 6: If /opt/epkg/store/ exists, set to public
+    if has_opt_store {
+        return Ok(true);
+    }
+
+    // Rule 7: Otherwise: print error and abort
+    Err(eyre::eyre!(
+        "Cannot determine shared_store mode. Neither $HOME/.epkg/store/ nor /opt/epkg/store/ exists. \
+         Please run 'epkg self install' first to set up the store."
+    ))
+}
+
 /// Check if the process is running with setuid privileges
 /// Returns true if effective UID differs from real UID
 #[cfg(unix)]

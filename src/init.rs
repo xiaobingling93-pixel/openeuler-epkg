@@ -1,23 +1,24 @@
-use std::fs;
 use std::env;
-use std::path::Path;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::symlink;
-use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
-use color_eyre::eyre;
-use crate::models::*;
-use crate::download::download_urls;
-use crate::utils;
-use crate::dirs::{find_env_root, get_env_root};
-use crate::models::dirs;
-use crate::mirror;
-use crate::deinit::remove_epkg_from_rc_file;
+use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre;
+use color_eyre::Result;
 use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
+
+use crate::deinit::remove_epkg_from_rc_file;
+use crate::dirs::{find_env_root, get_env_root};
+use crate::download::download_urls;
+use crate::mirror;
+use crate::models::*;
+use crate::models::dirs;
+use crate::utils;
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -67,9 +68,12 @@ impl PackageManager {
             | EpkgCommand::Convert
             | EpkgCommand::Hash
             | EpkgCommand::Repo
+            | EpkgCommand::List
             | EpkgCommand::SelfInstall
             | EpkgCommand::SelfUpgrade
             | EpkgCommand::SelfRemove
+            | EpkgCommand::Upgrade
+            | EpkgCommand::Remove
             | EpkgCommand::Run
             | EpkgCommand::None
         ) {
@@ -300,7 +304,7 @@ impl PackageManager {
         let target_epkg = usr_bin.join("epkg");
 
         // Determine epkg binary source based on whether we're upgrading or installing
-        let epkg_source = if config().init.upgrade {
+        let epkg_source = if config().subcommand == EpkgCommand::SelfUpgrade {
             // Use downloaded epkg binary for upgrades
             if !init_plan.epkg_binary_path.exists() {
                 return Err(eyre::eyre!("Downloaded epkg binary not found at {}", init_plan.epkg_binary_path.display()));
@@ -403,29 +407,40 @@ impl PackageManager {
         }
     }
 
-    /// Create symlinks to the epkg binary for user convenience and system-wide access.
+    /// Create a symlink to the epkg binary for user convenience and system-wide access.
     ///
-    /// This function ensures that the 'epkg' binary is easily accessible from the command line by creating symlinks in multiple locations:
+    /// This function ensures that the 'epkg' binary is easily accessible from the command line.
+    /// The behavior depends on the installation mode:
     ///
-    /// 1. Always creates a symlink in the main environment's 'usr/ebin' directory:
-    ///    - This directory is prepended to the user's PATH by default, ensuring 'epkg' is available in new shells.
-    ///    - This provides a reliable entry point for the binary.
+    /// - **Upgrade mode** (`epkg self upgrade`): Returns immediately without creating any symlinks (upgrades preserve existing symlinks).
     ///
-    /// 2. Best-effort symlink in $HOME/bin (if present in PATH):
-    ///    - If the user's PATH contains $HOME/bin, a symlink is created there.
-    ///    - This allows immediate access to 'epkg' in the current shell session without requiring a shell restart.
-    ///    - Only attempts to create $HOME/bin if it does not already exist.
+    /// - **Shared store mode** (`--store=shared`):
+    ///   - Creates a symlink in `/usr/local/bin/epkg` pointing to the epkg binary.
+    ///   - Creates the `/usr/local/bin` directory if it does not exist.
+    ///   - This makes 'epkg' available system-wide for all users.
     ///
-    /// 3. Best-effort symlink in /usr/local/bin (if running as root):
-    ///    - If the process is running as root and /usr/local/bin exists, a symlink is created there.
-    ///    - This makes 'epkg' available system-wide for all users.
-    ///    - Does not attempt to create /usr/local/bin if it does not exist.
+    /// - **User store mode** (default):
+    ///   - Creates a symlink in `$HOME/bin/epkg` if `$HOME/bin` exists and is present in PATH.
+    ///   - This allows immediate access to 'epkg' in the current shell session without requiring a shell restart.
+    ///   - Does not create `$HOME/bin` if it does not exist.
     fn create_epkg_symlink(&self, epkg_binary_path: &Path) -> Result<()> {
-        if config().init.upgrade {
+        if config().subcommand == EpkgCommand::SelfUpgrade {
             return Ok(());
         }
 
-        // Try to create symlink in $HOME/bin if it's in PATH
+        // Symlink to /usr/local/bin
+        if config().init.shared_store {
+            let usr_local_bin = PathBuf::from("/usr/local/bin");
+            fs::create_dir_all(&usr_local_bin)
+                .context(format!("Failed to create /usr/local/bin directory at {}", usr_local_bin.display()))?;
+            println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
+            if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
+                log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
+            }
+            return Ok(());
+        }
+
+        // Symlink to $HOME/bin if in PATH
         let home = crate::dirs::get_home().wrap_err("Failed to get HOME directory")?;
         let home_bin = PathBuf::from(&home).join("bin");
         let path_var = env::var("PATH")
@@ -440,63 +455,81 @@ impl PackageManager {
             }
         }
 
-        // Try to create symlink in /usr/local/bin if running as root
-        if utils::is_running_as_root() {
-            let usr_local_bin = PathBuf::from("/usr/local/bin");
-            fs::create_dir_all(&usr_local_bin)
-                .context(format!("Failed to create /usr/local/bin directory at {}", usr_local_bin.display()))?;
-            println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
-            if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
-                log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
-            }
+        Ok(())
+    }
+
+    fn update_shell_rc(&mut self) -> Result<()> {
+        let self_env_root = get_env_root(SELF_ENV.to_string())?;
+        let shell_rc_files = Self::shell_rc_files_for_current_mode()?;
+
+        if shell_rc_files.is_empty() {
+            return Ok(());
+        }
+
+        let rc_content = Self::build_epkg_rc_block(&self_env_root);
+
+        for rc_file_path in shell_rc_files {
+            Self::append_epkg_block_to_rc_file(&rc_file_path, &rc_content)?;
         }
 
         Ok(())
     }
 
-    fn update_shell_rc(&mut self) -> Result<()> {
-        let shell_rc_infos = crate::dirs::get_shell_rc()?;
-
-        if shell_rc_infos.is_empty() {
-            // No specific shell found via SHELL var, and no common rc files detected.
-            // A warning would have been printed by get_shell_rc in this case.
-            return Ok(());
+    /// Determine which shell rc files should be updated based on the current installation mode.
+    fn shell_rc_files_for_current_mode() -> Result<Vec<String>> {
+        if config().init.shared_store {
+            crate::dirs::get_global_shell_rc()
+        } else {
+            let home_path_str =
+                crate::dirs::get_home().wrap_err("Failed to get home directory.")?;
+            let home_dir = PathBuf::from(home_path_str);
+            crate::dirs::get_user_shell_rc(&home_dir)
         }
+    }
 
-        let self_env_root = get_env_root(SELF_ENV.to_string())?;
-
-        for shell_rc_info in shell_rc_infos {
-            let rc_content = format!(r#"
+    /// Build the epkg rc block that will be appended to rc files.
+    fn build_epkg_rc_block(self_env_root: &Path) -> String {
+        format!(
+            r#"
 # epkg begin
-epkg_rc='{base_path}/usr/src/epkg/lib/{script_name}'
+epkg_rc='{base_path}/usr/src/epkg/lib/epkg-rc.sh'
 test -r "$epkg_rc" && . "$epkg_rc"
 # epkg end
 "#,
-                base_path = self_env_root.display(),
-                script_name = shell_rc_info.source_script_name
-            );
+            base_path = self_env_root.display(),
+        )
+    }
 
-            // Remove any existing epkg configuration and get the cleaned content
-            let existing_content = remove_epkg_from_rc_file(&shell_rc_info.rc_file_path)?;
+    /// Append the epkg rc block to a given rc file, ensuring any previous epkg block is removed
+    /// and newline formatting remains tidy.
+    fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<()> {
+        // Remove any existing epkg configuration and get the cleaned content
+        let existing_content = remove_epkg_from_rc_file(rc_file_path)?;
 
-            // Append the new configuration
-            println!("Adding epkg to shell RC file: {}", shell_rc_info.rc_file_path);
+        // Append the new configuration
+        println!("Adding epkg to shell RC file: {}", rc_file_path);
 
-            let mut file = OpenOptions::new()
-                .append(true)
-                .create(true) // Create if it doesn't exist
-                .open(&shell_rc_info.rc_file_path)
-                .with_context(|| format!("Failed to open or create shell rc file: {}", shell_rc_info.rc_file_path))?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true) // Create if it doesn't exist
+            .open(rc_file_path)
+            .with_context(|| {
+                format!("Failed to open or create shell rc file: {}", rc_file_path)
+            })?;
 
-            // If the file was empty or didn't end with a newline, add one before our content for neatness.
-            if !existing_content.is_empty() && !existing_content.ends_with('\n') {
-                file.write_all(b"\n")
-                    .with_context(|| format!("Failed to write newline to shell rc file: {}", shell_rc_info.rc_file_path))?;
-            }
-
-            file.write_all(rc_content.as_bytes())
-                .with_context(|| format!("Failed to write to shell rc file: {}", shell_rc_info.rc_file_path))?;
+        // If the file was empty or didn't end with a newline, add one before our content for neatness.
+        if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+            file.write_all(b"\n").with_context(|| {
+                format!(
+                    "Failed to write newline to shell rc file: {}",
+                    rc_file_path
+                )
+            })?;
         }
+
+        file.write_all(rc_content.as_bytes()).with_context(|| {
+            format!("Failed to write to shell rc file: {}", rc_file_path)
+        })?;
 
         Ok(())
     }
@@ -780,7 +813,7 @@ fn check_for_updates() -> Result<InitPlan> {
     let current_version = get_current_epkg_version_info()?;
 
     // Determine if this is an upgrade or fresh install
-    let is_upgrade = config().init.upgrade;
+    let is_upgrade = config().subcommand == EpkgCommand::SelfUpgrade;
     let arch = &config().common.arch;
     let dirs = dirs();
     let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");

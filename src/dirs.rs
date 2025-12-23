@@ -1,20 +1,14 @@
 use std::env;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::utils;
+use color_eyre::eyre::{self};
 use color_eyre::Result;
-use color_eyre::eyre::{self, WrapErr};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShellRcInfo {
-    pub rc_file_path: String,
-    pub source_script_name: String,
-}
 
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
@@ -90,8 +84,28 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 /// Location is determined by InitOptions.shared_store:
 ///   - shared_store=false: $HOME/.epkg/envs/$env_name
 ///   - shared_store=true:  /opt/epkg/envs/$USER/$env_name
+/// Supports both 'env_name' and 'owner/env_name' formats
 /// Note: EnvConfig.public only controls visibility/permissions, not location
 fn get_env_base_path(env_name: &str) -> PathBuf {
+    // Visit other's /opt/epkg/envs/$owner/$name
+    if let Some(slash_pos) = env_name.find('/') {
+        if !matches!(config().subcommand,
+              EpkgCommand::Run
+            | EpkgCommand::Info
+            | EpkgCommand::List
+            | EpkgCommand::Search
+        ) {
+            use std::process::exit;
+            eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
+            exit(1);
+        }
+
+        let owner = &env_name[..slash_pos];
+        let name = &env_name[slash_pos + 1..];
+        return dirs().opt_epkg.join("envs").join(owner).join(name);
+    }
+
+    // Visit my own env
     dirs().user_envs.join(env_name)
 }
 
@@ -250,83 +264,58 @@ fn is_shell_installed(shell_name: &str) -> bool {
     false
 }
 
-fn determine_rc_and_script_for_shell(shell_name: &str, home_dir: &Path) -> Option<ShellRcInfo> {
-    // First check if the shell binary is actually installed
-    if !is_shell_installed(shell_name) {
-        return None; // Shell is not installed, don't update its config
+/// Common helper to collect shell RC file paths for both global and user scopes.
+/// It first checks if the shell binary is installed via `is_shell_installed()`,
+/// then verifies that the RC file actually exists before returning the path.
+/// If `home_dir` is `None`, treats paths as global (absolute). Otherwise, treats them as relative to `home_dir`.
+fn collect_shell_rc_paths(
+    entries: &[(&str, &str)],
+    home_dir: Option<&Path>,
+) -> Vec<String> {
+    let mut rc_paths = Vec::new();
+
+    for (rc_sub_path, shell_name) in entries {
+        if !is_shell_installed(shell_name) {
+            continue;
+        }
+
+        let rc_path = if let Some(home) = home_dir {
+            home.join(rc_sub_path)
+        } else {
+            PathBuf::from(rc_sub_path)
+        };
+
+        if rc_path.exists() {
+            rc_paths.push(rc_path.to_string_lossy().into_owned());
+        }
     }
 
-    let (rc_file_sub_path, script_name_str) = match shell_name {
-        "bash" => (".bashrc", "epkg-rc.sh"),
-        "zsh" => (".zshrc", "epkg-rc.sh"),
-        "ksh" => (".kshrc", "epkg-rc.sh"),
-        "csh" => (".cshrc", "epkg-rc.csh"),
-        "tcsh" => (".tcshrc", "epkg-rc.csh"),
-        "fish" => (".config/fish/config.fish", "epkg-rc.sh"), // Assuming epkg-rc.sh is fish-compatible
-        _ => return None, // Shell name not supported
-    };
-
-    let full_rc_path = home_dir.join(rc_file_sub_path.trim_start_matches('/'));
-
-    if full_rc_path.exists() {
-        Some(ShellRcInfo {
-            rc_file_path: full_rc_path.to_string_lossy().into_owned(),
-            source_script_name: script_name_str.to_string(),
-        })
-    } else {
-        None // RC file does not exist for this supported shell
-    }
+    rc_paths
 }
 
-pub fn get_shell_rc() -> Result<Vec<ShellRcInfo>> {
-    let home_path_str = get_home().wrap_err("Failed to get home directory.")?;
-    let home_dir = PathBuf::from(home_path_str);
-    let mut infos: Vec<ShellRcInfo> = Vec::new(); // Use Vec
+/// Get global shell RC files (e.g., `/etc/bash.bashrc`, `/etc/zsh/zshrc`)
+/// for installed shells only.
+pub fn get_global_shell_rc() -> Result<Vec<String>> {
+    let entries = [
+        ("/etc/bash.bashrc", "bash"),
+        ("/etc/zsh/zshrc", "zsh"),
+    ];
 
-    match env::var("SHELL") {
-        Ok(shell_env_var) => {
-            if let Some(detected_shell_name_str) = Path::new(&shell_env_var).file_name().and_then(|s| s.to_str()) {
-                if let Some(shell_rc_info) = determine_rc_and_script_for_shell(detected_shell_name_str, &home_dir) {
-                    // SHELL var is valid, points to a supported shell, and its rc file exists.
-                    // Use it exclusively and return early.
-                    infos.push(shell_rc_info);
-                    return Ok(infos); // Early return with Vec
-                } else {
-                    // SHELL var specified a shell, but it was unsupported or its rc file didn't exist.
-                    // Print warning and proceed to fallback scan.
-                    println!(
-                        "Notice: SHELL variable is '{}'. Could not derive a valid, existing rc file from it (either unsupported shell type or its specific rc file was not found). Falling back to scanning for common rc files.",
-                        shell_env_var
-                    );
-                }
-            } else {
-                // SHELL var path was invalid. Print warning and proceed to fallback scan.
-                println!(
-                    "Notice: SHELL variable ('{}') has an invalid path. Could not extract filename. Falling back to scanning for common rc files.",
-                    shell_env_var
-                );
-            }
-        }
-        Err(_) => {
-            // SHELL var not set. Print warning and proceed to fallback scan.
-            println!("Notice: SHELL environment variable not set. Attempting to detect common shell configuration files.");
-        }
-    }
+    Ok(collect_shell_rc_paths(&entries, None))
+}
 
-    // If we reach here, it means either SHELL var was not set, was invalid,
-    // or didn't lead to a usable rc file. So, perform fallback scan.
-    let common_shell_names = ["bash", "zsh", "fish", "ksh", "csh", "tcsh"];
-    for shell_name_str in common_shell_names.iter() {
-        if let Some(shell_rc_info) = determine_rc_and_script_for_shell(shell_name_str, &home_dir) {
-            infos.push(shell_rc_info);
-        }
-    }
+/// Get per-user shell RC files under `home_dir` for installed shells only.
+pub fn get_user_shell_rc(home_dir: &Path) -> Result<Vec<String>> {
+    let entries = [
+        (".bashrc", "bash"),
+        (".zshrc", "zsh"),
+        (".kshrc", "ksh"),
+        (".cshrc", "csh"),
+        (".tcshrc", "tcsh"),
+        (".config/fish/config.fish", "fish"),
+    ];
 
-    if infos.is_empty() {
-        eprintln!("Warning: Could not identify any usable shell configuration files to update.");
-    }
-
-    Ok(infos)
+    Ok(collect_shell_rc_paths(&entries, Some(home_dir)))
 }
 
 /// Get username, with security validation when running as setuid.

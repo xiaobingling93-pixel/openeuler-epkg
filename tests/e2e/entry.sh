@@ -18,7 +18,9 @@ mount -t tmpfs tmpfs /opt/epkg/envs 2>/dev/null || true
 mkdir -p /root/.epkg/envs /opt/epkg/envs /root/.cache/epkg /opt/epkg/cache /opt/epkg/store
 
 # Initialize epkg
-"$EPKG_BINARY" init
+"$EPKG_BINARY" --version
+"$EPKG_BINARY" self install
+ls -l /opt/epkg/envs/root/self/usr/bin/epkg
 
 # Source vars and lib
 . "$E2E_DIR/vars.sh"

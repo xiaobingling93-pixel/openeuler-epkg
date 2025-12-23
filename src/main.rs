@@ -52,7 +52,7 @@ mod gc;
 mod rpm_verify;
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::exit;
 use std::io::Write;
 use std::sync::Arc;
@@ -65,7 +65,7 @@ use crate::models::*;
 use crate::ipc::privdrop_on_suid;
 use crate::dirs::{get_epkg_src_path, find_env_root};
 use color_eyre::Result;
-use color_eyre::eyre::{self};
+use color_eyre::eyre::{self, WrapErr};
 use clap::{arg, Command};
 use ctrlc;
 use env_logger;
@@ -659,7 +659,8 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     config.command_line = command_line;
     config.subcommand = EpkgCommand::from(matches.subcommand_name().unwrap_or(""));
     if config.subcommand != EpkgCommand::SelfInstall {
-        config.init.shared_store = utils::is_running_as_root() && Path::new("/opt/epkg/cache").exists();
+        config.init.shared_store = utils::determine_shared_store()
+            .wrap_err("Failed to determine shared_store mode")?;
     }
 
     // Parse new common options
@@ -730,10 +731,10 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
 
 fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
     use crate::utils;
+    config.common.env = SELF_ENV.to_string();
     match sub_matches.subcommand() {
         Some(("install", sub_matches)) => {
             config.subcommand = EpkgCommand::SelfInstall;
-            // Parse install options (same as init but without upgrade flag)
             config.init.shared_store = sub_matches.get_one::<String>("store")
                 .map(|s| match s.as_str() {
                     "shared" => true,
@@ -750,14 +751,7 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
                 eprintln!("commit was configured to empty, using default commit: {}", config.init.commit);
             }
 
-            // No upgrade flag for self install
-            config.init.upgrade = false;
-
             // compose options for creating SELF_ENV
-            config.common.env = SELF_ENV.to_string();
-            // Note: public controls visibility/permissions, shared_store controls location
-            // For self install, default public to match shared_store, but they are independent
-            config.env.public = config.init.shared_store;
             if let Some(channel) = sub_matches.get_one::<String>("channel") {
                 config.env.channel = Some(channel.to_string());
             }
@@ -767,30 +761,9 @@ fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -
         }
         Some(("upgrade", _sub_matches)) => {
             config.subcommand = EpkgCommand::SelfUpgrade;
-            config.init.upgrade = true;
-            config.common.env = SELF_ENV.to_string();
         }
-        Some(("remove", sub_matches)) => {
+        Some(("remove", _sub_matches)) => {
             config.subcommand = EpkgCommand::SelfRemove;
-            if let Some(scope) = sub_matches.get_one::<String>("scope") {
-                match scope.as_str() {
-                    "personal" => {
-                        config.common.env = SELF_ENV.to_string();
-                        config.init.shared_store = false;
-                        // Note: public and shared_store are independent, but for removal scope
-                        // we set both to match the expected behavior
-                        config.env.public = false;
-                    }
-                    "global" => {
-                        config.common.env = SELF_ENV.to_string();
-                        config.init.shared_store = true;
-                        // Note: public and shared_store are independent, but for removal scope
-                        // we set both to match the expected behavior
-                        config.env.public = true;
-                    }
-                    _ => return Err(eyre::eyre!("Invalid scope for removal: {}", scope)),
-                }
-            }
         }
         _ => {}
     }

@@ -363,17 +363,22 @@ impl PackageManager {
         env_config.env_root = env_root.to_string_lossy().to_string();
         // Note: env_config.public controls visibility/permissions, not location
         // Location is determined by InitOptions.shared_store (handled via dirs().user_envs)
-        env_config.public = config().env.public;
+
+        // SELF_ENV.public = (always) true
+        // This simplifies setting and works better in case $HOME is accessible to others,
+        // so other users can still manually access it.
+        if name == SELF_ENV {
+            env_config.public = true;
+        } else if name == MAIN_ENV {
+            // 'main' is always private
+            env_config.public = false;
+        } else {
+            // Other normal envs: decided by '--public' option on 'epkg env create'
+            env_config.public = config().env.public;
+        }
+
         env_config.register_to_path = false;
         env_config.register_priority = 0;
-
-        // 'main' is the default environment for many actions, so enforce it be private visibility,
-        // to avoid careless daily installs be exposed to others.
-        // Note: This only affects visibility/permissions, not location.
-        if env_config.public && name == MAIN_ENV {
-            println!("Notice: environment 'main' is always created with private visibility");
-            env_config.public = false;
-        }
 
         // Get packages before saving config (since env_config will be moved)
         let packages_to_install = std::mem::take(&mut env_export.packages);
@@ -986,7 +991,85 @@ impl PackageManager {
 
 pub fn registered_env_configs() -> Vec<EnvConfig> {
     let mut configs = Vec::new();
+    let shared_store = config().init.shared_store;
+    let current_user = get_username().unwrap_or_default();
+
+    // Collect own environments
     collect_registered_envs_from_dir(&dirs().user_envs, &mut configs);
+
+    // In shared_store mode: also collect other users' public registered envs
+    if shared_store {
+        let allusers_envs_base = dirs().opt_epkg.join("envs");
+        if let Ok(entries) = fs::read_dir(&allusers_envs_base) {
+            for entry in entries.flatten() {
+                let owner_path = entry.path();
+                if !owner_path.is_dir() {
+                    continue;
+                }
+
+                let owner = owner_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+
+                // Skip own environments (already collected)
+                if owner == current_user {
+                    continue;
+                }
+
+                // Walk this owner's environments and collect public registered ones
+                if let Ok(env_entries) = fs::read_dir(&owner_path) {
+                    for env_entry in env_entries.flatten() {
+                        let env_path = env_entry.path();
+                        if !env_path.is_dir() {
+                            continue;
+                        }
+
+                        let env_name = env_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default();
+
+                        if env_name == SELF_ENV || env_name.starts_with('.') {
+                            continue;
+                        }
+
+                        // Check if environment is public (not 0o700)
+                        let is_public = match fs::metadata(&env_path) {
+                            Ok(metadata) => {
+                                let mode = metadata.permissions().mode() & 0o777;
+                                mode != 0o700
+                            }
+                            Err(_) => false,
+                        };
+
+                        if !is_public {
+                            continue;
+                        }
+
+                        // Check if registered
+                        let config_path = env_path.join("etc/epkg/env.yaml");
+                        if !config_path.exists() {
+                            continue;
+                        }
+
+                        if let Ok(contents) = fs::read_to_string(&config_path) {
+                            if let Ok(mut config) = serde_yaml::from_str::<EnvConfig>(&contents) {
+                                if config.register_to_path {
+                                    // Set name to owner/env_name format
+                                    if config.name.is_empty() {
+                                        config.name = format!("{}/{}", owner, env_name);
+                                    } else {
+                                        config.name = format!("{}/{}", owner, config.name);
+                                    }
+                                    configs.push(config);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     configs
 }
 

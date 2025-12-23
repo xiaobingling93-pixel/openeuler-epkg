@@ -653,6 +653,51 @@ main             private                 registered
 Creating environment 't1' in /root/.epkg/envs/t1
 ```
 
+**共享存储模式规则： (`epkg self install --store=shared|private|auto`)**
+
+共享存储模式根据以下规则自动确定：
+1. 私有，如果不是以 root 运行
+2. 私有，如果当前可执行文件以 `/home/` 开头
+3. 共享，如果当前可执行文件以 `/opt/epkg/` 开头
+4. 共享，如果以 root 运行且 `/opt/epkg/store/` 存在
+5. 私有，如果 `$HOME/.epkg/store/` 存在
+6. 共享，如果 `/opt/epkg/store/` 存在
+7. 否则：错误并中止（请先运行 `epkg self install`）
+
+**环境公共属性规则：**
+
+- `self` 环境：始终创建为公共
+- `main` 环境：始终创建为私有
+- 其他环境：公共/私有由 `epkg env create` 上的 `--public` 选项决定
+
+**环境访问规则：**
+
+- 在共享存储模式下：
+  - 用户可以访问自己的公共/私有环境
+  - 用户可以使用 `-e owner/env_name` 格式访问所有其他用户的公共环境
+  - PATH 包括：用户自己的公共/私有注册环境 + 所有其他用户的公共注册环境
+- 在私有存储模式下：
+  - 用户只能访问自己的（私有）环境
+  - PATH 包括：用户自己的（私有）注册环境
+
+**访问其他用户的公共环境：**
+
+在共享存储模式下，您可以使用 `owner/env_name` 格式，只读访问另一个用户的公共环境：
+
+```bash
+# 列出环境（显示自己的环境 + 其他用户的公共环境）
+epkg env list
+
+# 在另一个用户的公共环境中运行命令
+epkg -e alice/pubenv run jq --version
+
+# 在另一个用户的公共环境中搜索包
+epkg -e alice/pubenv search package_name
+
+# 在另一个用户的公共环境中获取包信息
+epkg -e alice/pubenv info package_name
+```
+
 ### epkg env remove：删除指定环境
 
 ```bash

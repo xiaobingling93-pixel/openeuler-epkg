@@ -861,8 +861,6 @@ pub struct InitOptions {
     pub shared_store: bool,
     #[serde(default = "default_commit")]
     pub commit: String,
-    #[serde(skip)]
-    pub upgrade: bool,
 }
 
 pub fn default_commit() -> String {
