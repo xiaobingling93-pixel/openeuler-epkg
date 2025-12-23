@@ -35,7 +35,11 @@ build:
 	@# for quick develop-debug loop
 	@if [ -d "$$HOME/.epkg/envs/self/usr/bin" ]; then \
 		if [ ! -L "$$HOME/.epkg/envs/self/usr/src/epkg" ] || [ "$$(readlink "$$HOME/.epkg/envs/self/usr/src/epkg")" != "$$(pwd)" ]; then \
-			cp --update $(PROJECT_ROOT)/lib/epkg-rc.sh "$$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh"; \
+			src_rc="$(PROJECT_ROOT)/lib/epkg-rc.sh"; \
+			dst_rc="$$HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh"; \
+			if [ "$$(readlink -f "$$src_rc")" != "$$(readlink -f "$$dst_rc")" ]; then \
+				cp --update "$$src_rc" "$$dst_rc"; \
+			fi; \
 		fi; \
 		cp_err=$$(cp --update $(PROJECT_ROOT)/target/$(BUILD_TYPE)/epkg "$$HOME/.epkg/envs/self/usr/bin/epkg" 2>&1); \
 		cp_status=$$?; \
