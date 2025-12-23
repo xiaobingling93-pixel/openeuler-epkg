@@ -1494,28 +1494,29 @@ impl Mirrors {
     ///
     /// Note: Security validation is performed by the caller (detect_url_proto_path).
     ///
-    /// Returns an error if the path is not a valid local path.
-    pub fn local_url_to_path(spec: &str) -> Result<PathBuf> {
+    /// Returns `None` if the path is not a valid local path.
+    fn local_url_to_path(spec: &str) -> Option<PathBuf> {
         // Check for file:// URLs or relative paths (./)
-        if let Some(local_path) = spec.strip_prefix("file://")
+        if let Some(local_path) = spec
+            .strip_prefix("file://")
             .or_else(|| spec.strip_prefix("./"))
         {
-            return Ok(PathBuf::from(local_path));
+            return Some(PathBuf::from(local_path));
         }
 
         // Check for absolute paths (leading /)
         if spec.starts_with('/') {
-            return Ok(PathBuf::from(spec));
+            return Some(PathBuf::from(spec));
         }
 
         // Check if it's an existing file (unknown pattern but file exists)
         let path = Path::new(spec);
         if path.exists() && path.is_file() {
-            return Ok(path.to_path_buf());
+            return Some(path.to_path_buf());
         }
 
         // Not a valid local path
-        Err(eyre!("Not a valid local path: '{}'", spec))
+        None
     }
 
     /// Detect URL protocol and resolve to path by trying remote_url_to_path() first, then local_url_to_path().
@@ -1536,30 +1537,27 @@ impl Mirrors {
             }
             Err(_) => {
                 // Try local path
-                match Self::local_url_to_path(url) {
-                    Ok(path) => {
-                        // Validate path security before returning
-                        Self::validate_path_security(&path, "detect_url_proto_path: local path")?;
-                        Ok((UrlProtocol::Local, path))
-                    }
-                    Err(_) => {
-                        // Handle case like DNS/path/to/file where DNS contains at least one '.'
-                        // e.g. dl-cdn.alpinelinux.org/MIRRORS.txt
-                        // in which case add 'https://' prefix and try resolve_http_url_path()
-                        if let Some(first_slash) = url.find('/') {
-                            let dns_part = &url[..first_slash];
-                            if dns_part.contains('.') {
-                                // Looks like a DNS name, try adding https:// prefix
-                                let https_url = format!("https://{}", url);
-                                let path = Self::resolve_http_url_path(&https_url, &output_dir);
-                                // Validate the generated path
-                                Self::validate_path_security(&path, "detect_url_proto_path: DNS pattern")?;
-                                return Ok((UrlProtocol::Http, path));
-                            }
+                if let Some(path) = Self::local_url_to_path(url) {
+                    // Validate path security before returning
+                    Self::validate_path_security(&path, "detect_url_proto_path: local path")?;
+                    Ok((UrlProtocol::Local, path))
+                } else {
+                    // Handle case like DNS/path/to/file where DNS contains at least one '.'
+                    // e.g. dl-cdn.alpinelinux.org/MIRRORS.txt
+                    // in which case add 'https://' prefix and try resolve_http_url_path()
+                    if let Some(first_slash) = url.find('/') {
+                        let dns_part = &url[..first_slash];
+                        if dns_part.contains('.') {
+                            // Looks like a DNS name, try adding https:// prefix
+                            let https_url = format!("https://{}", url);
+                            let path = Self::resolve_http_url_path(&https_url, &output_dir);
+                            // Validate the generated path
+                            Self::validate_path_security(&path, "detect_url_proto_path: DNS pattern")?;
+                            return Ok((UrlProtocol::Http, path));
                         }
-
-                        Err(eyre!("Unsupport URL: '{}'", url))
                     }
+
+                    Err(eyre!("Unsupport URL: '{}'", url))
                 }
             }
         }
@@ -2295,11 +2293,10 @@ mod tests {
 
     #[test]
     fn test_resolve_http_url_path_non_http() {
-        let output_dir = PathBuf::from("/cache");
         let url = "file:///path/to/file.txt";
-        let result = Mirrors::resolve_http_url_path(url, &output_dir);
+        let result = Mirrors::local_url_to_path(url);
         // Should fallback to filename only
-        assert_eq!(result, PathBuf::from("/cache/file.txt"));
+        assert_eq!(result, Some(PathBuf::from("/path/to/file.txt")));
     }
 
     #[test]

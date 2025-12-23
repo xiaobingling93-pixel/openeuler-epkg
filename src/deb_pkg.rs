@@ -295,7 +295,7 @@ Architecture: all
 
         // Run the function - both arguments must be the same type
         let store_tmp_dir_buf = store_tmp_dir.to_path_buf();
-        create_package_txt(&mock_deb_file, &store_tmp_dir_buf).unwrap();
+        create_package_txt(&mock_deb_file, &store_tmp_dir_buf, None).unwrap();
 
         // Read the generated package.txt file
         let package_txt_path = store_tmp_dir.join("info/package.txt");

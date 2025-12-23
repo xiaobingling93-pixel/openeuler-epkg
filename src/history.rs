@@ -63,9 +63,18 @@ impl PackageManager {
     pub fn get_current_generation_id(&mut self) -> Result<u32> {
         let generations_root = crate::dirs::get_default_generations_root()?;
         let current_link = generations_root.join("current");
-        let target = fs::read_link(&current_link).with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
-        let generation_id = target.to_str().unwrap().parse::<u32>().with_context(||
-            format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?;
+        // If the "current" symlink doesn't exist yet, default to generation 1.
+        if !current_link.exists() {
+            return Ok(1);
+        }
+
+        let target = fs::read_link(&current_link)
+            .with_context(|| format!("Failed to read symlink: {}", current_link.display()))?;
+        let generation_id = target
+            .to_str()
+            .unwrap()
+            .parse::<u32>()
+            .with_context(|| format!("Failed to parse generation id from '{}'", target.to_str().unwrap()))?;
         Ok(generation_id)
     }
 

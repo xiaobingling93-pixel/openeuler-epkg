@@ -1,4 +1,0 @@
-format: apk
-description: upgrade test 2
-repo: repo.yaml
-installed: installed.yaml

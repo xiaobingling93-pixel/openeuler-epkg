@@ -148,9 +148,12 @@ pub struct Package {
 
     #[serde(default)]
     pub format: PackageFormat,
+
+    #[serde(default)] // necessary for solver_tests::tests
     #[serde(rename = "repo")]
     pub repodata_name: String,
 
+    #[serde(default)] // necessary for solver_tests::tests
     pub pkgkey: String, // != pkgline
 
     #[serde(skip)]
@@ -938,8 +941,22 @@ pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
             .arg(Arg::new("ignore-missing").short('m').long("ignore-missing").action(ArgAction::SetTrue))
             .arg(Arg::new("metadata-expire").long("metadata-expire"))
             .arg(Arg::new("proxy").long("proxy"))
-            .arg(Arg::new("nr-parallel").long("nr-parallel"))
-            .arg(Arg::new("parallel-processing").long("parallel-processing"))
+            // Keep test ArgMatches in sync with options used in parse_options_common/setup_parallel_params
+            .arg(
+                Arg::new("retry")
+                    .long("retry")
+                    .value_parser(clap::value_parser!(usize)),
+            )
+            .arg(
+                Arg::new("parallel-download")
+                    .long("parallel-download")
+                    .value_parser(clap::value_parser!(usize)),
+            )
+            .arg(
+                Arg::new("parallel-processing")
+                    .long("parallel-processing")
+                    .value_parser(clap::value_parser!(bool)),
+            )
             // Add a dummy subcommand so parsing doesn't fail
             .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
             .arg_required_else_help(false) // Don't require subcommand during tests
