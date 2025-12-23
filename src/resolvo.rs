@@ -9,6 +9,7 @@
 //! - Supports multiple dependency fields (Requires, BuildRequires, Recommends, Suggests)
 //! - Format-aware version comparison and constraint checking
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -23,7 +24,7 @@ use resolvo::{
     SolverCache, StringId, VersionSetId, VersionSetUnionId,
 };
 
-use crate::models::config;
+use crate::models::{config, channel_config};
 use crate::models::{EpkgCommand, Package, PackageFormat, PackageManager};
 use crate::parse_requires::{AndDepends, Operator, PkgDepend};
 use crate::parse_provides::parse_provides;
@@ -931,14 +932,19 @@ impl GenericDependencyProvider {
     ///
     /// This function detects such cases and filters out the self-contradictory constraint,
     /// preventing resolvo from panicking with "watched_literals[0] != watched_literals[1]".
-    fn filter_self_contradictory_constraints(
+    fn filter_self_contradictory_constraints<'a>(
         &self,
-        and_depends: &crate::parse_requires::AndDepends,
+        and_depends: &'a crate::parse_requires::AndDepends,
         pkgkey: &str,
-    ) -> crate::parse_requires::AndDepends {
+    ) -> Cow<'a, crate::parse_requires::AndDepends> {
         use crate::parse_requires::PkgDepend;
 
-        and_depends
+        // Only apply the filtering for OpenEuler; other distros keep constraints unchanged.
+        if channel_config().distro != "openeuler" {
+            return Cow::Borrowed(and_depends);
+        }
+
+        let filtered = and_depends
             .iter()
             .map(|or_depends| {
                 or_depends
@@ -1042,7 +1048,9 @@ impl GenericDependencyProvider {
                     .collect()
             })
             .filter(|or_depends: &Vec<PkgDepend>| !or_depends.is_empty()) // Remove empty OR groups
-            .collect()
+            .collect();
+
+        Cow::Owned(filtered)
     }
 
 
