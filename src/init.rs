@@ -12,6 +12,7 @@ use crate::utils;
 use crate::dirs::{find_env_root, get_env_root};
 use crate::models::dirs;
 use crate::mirror;
+use crate::deinit::remove_epkg_from_rc_file;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
@@ -475,39 +476,26 @@ test -r "$epkg_rc" && . "$epkg_rc"
                 script_name = shell_rc_info.source_script_name
             );
 
-            // Read existing content
-            let existing_content = match fs::read_to_string(&shell_rc_info.rc_file_path) {
-                Ok(content) => content,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // If the rc file doesn't exist, it will be created by OpenOptions
-                    String::new()
-                }
-                Err(e) => {
-                    return Err(eyre::eyre!("Failed to read shell rc file {}: {}", shell_rc_info.rc_file_path, e));
-                }
-            };
+            // Remove any existing epkg configuration and get the cleaned content
+            let existing_content = remove_epkg_from_rc_file(&shell_rc_info.rc_file_path)?;
 
-            // Only append if epkg begin line doesn't exist
-            if !existing_content.contains("# epkg begin") {
-                println!("Updating shell RC file: {}", shell_rc_info.rc_file_path);
+            // Append the new configuration
+            println!("Adding epkg to shell RC file: {}", shell_rc_info.rc_file_path);
 
-                let mut file = OpenOptions::new()
-                    .append(true)
-                    .create(true) // Create if it doesn't exist
-                    .open(&shell_rc_info.rc_file_path)
-                    .with_context(|| format!("Failed to open or create shell rc file: {}", shell_rc_info.rc_file_path))?;
+            let mut file = OpenOptions::new()
+                .append(true)
+                .create(true) // Create if it doesn't exist
+                .open(&shell_rc_info.rc_file_path)
+                .with_context(|| format!("Failed to open or create shell rc file: {}", shell_rc_info.rc_file_path))?;
 
-                // If the file was empty or didn't end with a newline, add one before our content for neatness.
-                if !existing_content.is_empty() && !existing_content.ends_with('\n') {
-                    file.write_all(b"\n")
-                        .with_context(|| format!("Failed to write newline to shell rc file: {}", shell_rc_info.rc_file_path))?;
-                }
-
-                file.write_all(rc_content.as_bytes())
-                    .with_context(|| format!("Failed to write to shell rc file: {}", shell_rc_info.rc_file_path))?;
-            } else {
-                println!("epkg configuration already present in {}. Skipping.", shell_rc_info.rc_file_path);
+            // If the file was empty or didn't end with a newline, add one before our content for neatness.
+            if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+                file.write_all(b"\n")
+                    .with_context(|| format!("Failed to write newline to shell rc file: {}", shell_rc_info.rc_file_path))?;
             }
+
+            file.write_all(rc_content.as_bytes())
+                .with_context(|| format!("Failed to write to shell rc file: {}", shell_rc_info.rc_file_path))?;
         }
 
         Ok(())

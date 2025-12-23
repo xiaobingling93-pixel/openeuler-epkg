@@ -242,10 +242,10 @@ fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
     Ok(())
 }
 
-fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<()> {
+pub fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<String> {
     let path = Path::new(rc_file_path);
     if !path.exists() {
-        return Ok(());
+        return Ok(String::new());
     }
 
     let content = fs::read_to_string(path)
@@ -253,7 +253,7 @@ fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<()> {
 
     // Check if epkg configuration is present
     if !content.contains("# epkg begin") || !content.contains("# epkg end") {
-        return Ok(());
+        return Ok(content);
     }
 
     // Remove epkg configuration block
@@ -278,11 +278,11 @@ fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<()> {
     let new_content = new_lines.join("\n");
 
     // Write back the modified content
-    fs::write(path, new_content)
+    fs::write(path, &new_content)
         .wrap_err_with(|| format!("Failed to write RC file: {}", rc_file_path))?;
 
-    println!("Modified shell configuration: {}", rc_file_path);
-    Ok(())
+    println!("Removed epkg from shell RC file: {}", rc_file_path);
+    Ok(new_content)
 }
 
 /// Recursively removes a directory, fixing permission issues if needed.
