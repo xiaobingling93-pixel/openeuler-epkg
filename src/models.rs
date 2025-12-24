@@ -307,7 +307,7 @@ pub struct EnvConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct EnvExport {
+pub struct EnvImport {
     #[serde(flatten)]
     pub env: EnvConfig,
 
@@ -316,6 +316,18 @@ pub struct EnvExport {
 
     #[serde(default)]
     pub world: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct EnvExport {
+    #[serde(flatten)]
+    pub env: EnvConfig,
+
+    #[serde(default)]
+    pub packages: BTreeMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
+
+    #[serde(default)]
+    pub world: BTreeMap<String, String>,
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml

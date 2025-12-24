@@ -4,7 +4,7 @@ use log;
 use std::fs;
 use std::env;
 use std::path::PathBuf;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::{self, *};
@@ -415,8 +415,11 @@ impl PackageManager {
         // Construct the file path
         let file_path = new_generation.join("installed-packages.json");
 
-        // Serialize the installed packages to JSON
-        let json = serde_json::to_string_pretty(&self.installed_packages)?;
+        // Convert HashMap to BTreeMap to ensure keys are sorted
+        let sorted_packages: BTreeMap<_, _> = self.installed_packages.iter().collect();
+
+        // Serialize the installed packages to JSON (keys will be in sorted order)
+        let json = serde_json::to_string_pretty(&sorted_packages)?;
 
         // Write the JSON to the file
         fs::write(&file_path, json)?;
@@ -451,8 +454,11 @@ impl PackageManager {
         // Construct the file path
         let file_path = new_generation.join("world.json");
 
-        // Serialize the world to JSON
-        let json = serde_json::to_string_pretty(&self.world)?;
+        // Convert HashMap to BTreeMap to ensure keys are sorted
+        let sorted_world: BTreeMap<_, _> = self.world.iter().collect();
+
+        // Serialize the world to JSON (keys will be in sorted order)
+        let json = serde_json::to_string_pretty(&sorted_world)?;
 
         // Write the JSON to the file
         fs::write(&file_path, json)?;

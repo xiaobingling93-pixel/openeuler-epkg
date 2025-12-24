@@ -472,20 +472,20 @@ impl PackageManager {
      * index_url: https://deb.debian.org/debian
      *
      * Parsing Logic:
-     * 1. First document is always parsed as EnvExport (EnvConfig plus packages/world)
+     * 1. First document is always parsed as EnvImport (EnvConfig plus packages/world)
      * 2. Subsequent documents are parsed as ChannelConfig
      * 3. Documents with "file_name:" field are from repos.d and are skipped
      * 4. If no ChannelConfig documents found, try parsing entire content as single ChannelConfig
      *
-     * Returns: (EnvExport, Vec<ChannelConfig>) tuple
+     * Returns: (EnvImport, Vec<ChannelConfig>) tuple
      */
-    fn import_environment_from_file(&self, config_path: &str) -> Result<(EnvExport, Vec<ChannelConfig>)> {
+    fn import_environment_from_file(&self, config_path: &str) -> Result<(EnvImport, Vec<ChannelConfig>)> {
         let config_contents = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path))?;
 
         // Parse channel configs
         let mut channel_configs = Vec::new();
-        let mut env_export: Option<EnvExport> = None;
+        let mut env_import: Option<EnvImport> = None;
 
         // Split the content by "---" to handle multiple YAML documents
         let documents: Vec<&str> = config_contents.split("---").collect();
@@ -496,10 +496,10 @@ impl PackageManager {
                 continue;
             }
 
-            // Parse first document as EnvExport
+            // Parse first document as EnvImport
             if i == 0 {
-                env_export = Some(serde_yaml::from_str(doc)
-                    .with_context(|| format!("Failed to parse env export from file: {}", config_path))?);
+                env_import = Some(serde_yaml::from_str(doc)
+                    .with_context(|| format!("Failed to parse env import from file: {}", config_path))?);
                 continue;
             }
 
@@ -511,11 +511,11 @@ impl PackageManager {
             }
         }
 
-        let env_export = env_export.ok_or_else(|| eyre::eyre!("No environment config found in file: {}", config_path))?;
-        Ok((env_export, channel_configs))
+        let env_import = env_import.ok_or_else(|| eyre::eyre!("No environment config found in file: {}", config_path))?;
+        Ok((env_import, channel_configs))
     }
 
-    fn create_default_environment_config(&self, name: &str, env_root: &Path) -> Result<(EnvExport, Vec<ChannelConfig>)> {
+    fn create_default_environment_config(&self, name: &str, env_root: &Path) -> Result<(EnvImport, Vec<ChannelConfig>)> {
         // Initialize channel from command line option or default
         let channel = config().env.channel.clone().unwrap_or(DEFAULT_CHANNEL.to_string());
 
@@ -572,7 +572,7 @@ impl PackageManager {
             crate::io::load_and_process_channel_config(&src_repo_yaml_path, &mut channel_configs, true)?;
         }
 
-        Ok((EnvExport::default(), channel_configs))
+        Ok((EnvImport::default(), channel_configs))
     }
 
     /// Update version line in YAML contents
@@ -879,8 +879,7 @@ impl PackageManager {
         let installed_packages_path = generations_root.join(current_gen.clone()).join("installed-packages.json");
 
         if installed_packages_path.exists() {
-            let contents = fs::read_to_string(&installed_packages_path)?;
-            env_export.packages = serde_json::from_str(&contents)?;
+            env_export.packages = crate::io::read_json_file(&installed_packages_path)?;
         } else {
             warn!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display());
             return Err(eyre::eyre!("No installed packages found for environment '{}' at {}", name, installed_packages_path.display()));
@@ -888,10 +887,8 @@ impl PackageManager {
 
         // Load world.json content
         let world_path = generations_root.join(current_gen).join("world.json");
-        let world_contents = fs::read_to_string(&world_path)
+        env_export.world = crate::io::read_json_file(&world_path)
             .with_context(|| format!("Failed to read world.json from {}", world_path.display()))?;
-        env_export.world = serde_json::from_str(&world_contents)
-            .with_context(|| format!("Failed to parse world.json at {}", world_path.display()))?;
 
         // Serialize env_export
         let combined_yaml = serde_yaml::to_string(&env_export)?;
