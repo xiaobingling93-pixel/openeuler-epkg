@@ -356,15 +356,7 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) ->
 
     // Try to read index.json (primary metadata file)
     let index_json_path = conda_info_dir.join("index.json");
-    if !index_json_path.exists() {
-        return Err(eyre::eyre!("index.json not found in Conda package: {}", index_json_path.display()));
-    }
-
-    let index_content = fs::read_to_string(&index_json_path)
-        .wrap_err_with(|| format!("Failed to read index.json: {}", index_json_path.display()))?;
-
-    let index_data: serde_json::Value = serde_json::from_str(&index_content)
-        .wrap_err("Failed to parse index.json")?;
+    let index_data: serde_json::Value = crate::io::read_json_file(&index_json_path)?;
 
     let mut package_fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 

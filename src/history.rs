@@ -180,10 +180,8 @@ impl PackageManager {
                 if let Ok(id) = gen_name.parse::<u32>() {
                     let command_json = path.join("command.json");
                     if command_json.exists() {
-                        if let Ok(contents) = fs::read_to_string(command_json) {
-                            if let Ok(command) = serde_json::from_str(&contents) {
-                                history_entries.push((id, command));
-                            }
+                        if let Ok(command) = crate::io::read_json_file(&command_json) {
+                            history_entries.push((id, command));
                         }
                     }
                 }

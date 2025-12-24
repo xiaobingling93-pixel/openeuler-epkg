@@ -524,25 +524,16 @@ fn load_and_merge_manual_mirrors(
     if manual_mirrors_file_path.exists() {
         log::debug!("Loading manual mirrors from {}", manual_mirrors_file_path.display());
 
-        match fs::read_to_string(manual_mirrors_file_path) {
-            Ok(manual_contents) => {
-                match serde_json::from_str::<HashMap<String, Mirror>>(&manual_contents) {
-                    Ok(manual_mirrors) => {
-                        log::debug!("Loaded {} manual mirrors", manual_mirrors.len());
+        match crate::io::read_json_file::<HashMap<String, Mirror>>(manual_mirrors_file_path) {
+            Ok(manual_mirrors) => {
+                log::debug!("Loaded {} manual mirrors", manual_mirrors.len());
 
-                        // Merge manual mirrors into all_mirrors_raw
-                        for (url, manual_mirror) in manual_mirrors {
-                            merge_single_manual_mirror(all_mirrors_raw, url, manual_mirror);
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("Failed to parse manual-mirrors.json: {}", e);
-                    }
+                // Merge manual mirrors into all_mirrors_raw
+                for (url, manual_mirror) in manual_mirrors {
+                    merge_single_manual_mirror(all_mirrors_raw, url, manual_mirror);
                 }
             },
-            Err(e) => {
-                log::debug!("Could not read manual-mirrors.json: {}", e);
-            }
+            Err(_) => { }
         }
     } else {
         log::debug!("manual-mirrors.json not found, skipping manual mirror loading");
@@ -551,16 +542,6 @@ fn load_and_merge_manual_mirrors(
     Ok(())
 }
 
-/// Load primary mirrors.json file
-fn load_primary_mirrors(mirrors_file_path: &std::path::Path) -> Result<HashMap<String, Mirror>> {
-    let contents = fs::read_to_string(mirrors_file_path)
-        .with_context(|| format!("Failed to read file: {}", mirrors_file_path.display()))?;
-
-    let all_mirrors_raw: HashMap<String, Mirror> = serde_json::from_str(&contents)
-        .with_context(|| format!("Failed to parse JSON from file: {}", mirrors_file_path.display()))?;
-
-    Ok(all_mirrors_raw)
-}
 
 /// Convert URL keys to site keys and merge distros and ls_dirs into distro_dirs
 fn convert_mirror_data_structure(all_mirrors_raw: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
@@ -619,7 +600,7 @@ fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
     let manual_mirrors_file_path = manager_path.join("sources/manual-mirrors.json");
 
     // Load primary mirrors.json
-    let mut all_mirrors_raw = load_primary_mirrors(&mirrors_file_path)?;
+    let mut all_mirrors_raw: HashMap<String, Mirror> = crate::io::read_json_file(&mirrors_file_path)?;
 
     // Load and merge manual-mirrors.json if it exists
     load_and_merge_manual_mirrors(&mut all_mirrors_raw, &manual_mirrors_file_path)?;

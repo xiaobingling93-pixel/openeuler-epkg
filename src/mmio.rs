@@ -70,16 +70,6 @@ impl FileMapper {
 //     Ok(())
 // }
 
-/// Deserializes essential package names from a file
-pub fn deserialize_repoindex(file_path: &PathBuf) -> Result<RepoIndex> {
-    let contents = fs::read_to_string(&file_path)
-        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-
-    let repoindex: RepoIndex = serde_json::from_str(&contents)
-        .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
-
-    Ok(repoindex)
-}
 
 /// Get standard package-related paths based on a base packages path
 pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {

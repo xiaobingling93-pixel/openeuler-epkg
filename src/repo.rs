@@ -776,7 +776,7 @@ pub fn create_load_repoindex(
 ) -> Result<()> {
     let mut repo_index: RepoIndex =
         if no_revises {
-            mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))
+            crate::io::read_json_file(&repo_dir.join("RepoIndex.json"))
                 .with_context(|| format!("Failed to deserialize RepoIndex.json for repository: {}", repo.repo_name))?
         } else {
             collect_save_repoindex(&repo, repo_dir, &release_items)
@@ -851,10 +851,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
         }
 
         // Load packages info
-        let packages_info_str = fs::read_to_string(&packages_metafile)
-            .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read packages metafile: {}", packages_metafile.display()))?;
-        let packages_info: PackagesFileInfo = serde_json::from_str(&packages_info_str)
-            .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse packages info from: {}", packages_metafile.display()))?;
+        let packages_info: PackagesFileInfo = crate::io::read_json_file(&packages_metafile)?;
 
         // Try to load corresponding filelists if it exists
         let mut filelists_info = None;
@@ -863,10 +860,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
             .replace(".packages", ".filelists");
         if Path::new(&filelists_metafile).exists() {
             log::debug!("[collect_save_repoindex] Found filelists metafile: {}", filelists_metafile);
-            let filelists_content = fs::read_to_string(&filelists_metafile)
-                .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read filelists: {}", filelists_metafile))?;
-            let filelists: FilelistsFileInfo = serde_json::from_str(&filelists_content)
-                .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse filelists info from: {}", filelists_metafile))?;
+            let filelists: FilelistsFileInfo = crate::io::read_json_file(Path::new(&filelists_metafile))?;
             filelists_info = Some(filelists);
         } else {
             log::debug!("[collect_save_repoindex] Filelists metafile does not exist: {}", filelists_metafile);

@@ -170,21 +170,13 @@ impl DownloadTask {
             return Ok(None);
         }
 
-        match std::fs::read_to_string(&meta_path) {
-            Ok(content) => {
-                match serde_json::from_str::<DownloadMetadata>(&content) {
-                    Ok(metadata) => {
-                        log::debug!("Loaded metadata from {}", meta_path.display());
-                        Ok(Some(metadata))
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse .etag.json file {}: {}", meta_path.display(), e);
-                        Ok(None)
-                    }
-                }
+        match crate::io::read_json_file::<DownloadMetadata>(&meta_path) {
+            Ok(metadata) => {
+                log::debug!("Loaded metadata from {}", meta_path.display());
+                Ok(Some(metadata))
             }
             Err(e) => {
-                log::warn!("Failed to read .etag.json file {}: {}", meta_path.display(), e);
+                log::warn!("Failed to parse .etag.json file {}: {}", meta_path.display(), e);
                 Ok(None)
             }
         }

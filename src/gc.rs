@@ -180,11 +180,9 @@ fn collect_env_configs(
             // Load installed packages
             let packages_path = env_path.join("generations/current/installed-packages.json");
             if packages_path.exists() {
-                if let Ok(contents) = fs::read_to_string(&packages_path) {
-                    if let Ok(packages) = serde_json::from_str::<HashMap<String, InstalledPackageInfo>>(&contents) {
-                        for (_pkgkey, pkg_info) in &packages {
-                            in_use_packages.insert(pkg_info.pkgline.clone());
-                        }
+                if let Ok(packages) = crate::io::read_json_file::<HashMap<String, InstalledPackageInfo>>(&packages_path) {
+                    for (_pkgkey, pkg_info) in &packages {
+                        in_use_packages.insert(pkg_info.pkgline.clone());
                     }
                 }
             }

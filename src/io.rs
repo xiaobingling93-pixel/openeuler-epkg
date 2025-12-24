@@ -83,6 +83,17 @@ where
     Ok((config, contents))
 }
 
+pub fn read_json_file<T>(file_path: &std::path::Path) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let contents = fs::read_to_string(file_path)
+        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+    let value: T = serde_json::from_str(&contents)
+        .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
+    Ok(value)
+}
+
 pub fn load_and_process_channel_config(file_path: &std::path::Path, channel_configs: &mut Vec<ChannelConfig>, record_file_info: bool) -> Result<()> {
     let (mut channel_config, contents): (ChannelConfig, String) = read_yaml_file(file_path)?;
 
@@ -385,12 +396,7 @@ impl PackageManager {
             return Ok(HashMap::new());
         }
 
-        let contents = fs::read_to_string(&file_path)
-            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-
-        let packages: HashMap<String, InstalledPackageInfo> = serde_json::from_str(&contents)
-            .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
-
+        let packages: HashMap<String, InstalledPackageInfo> = read_json_file(&file_path)?;
         Ok(packages)
     }
 
@@ -431,12 +437,7 @@ impl PackageManager {
             return Ok(HashMap::new());
         }
 
-        let contents = fs::read_to_string(&file_path)
-            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-
-        let world: HashMap<String, String> = serde_json::from_str(&contents)
-            .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
-
+        let world: HashMap<String, String> = read_json_file(&file_path)?;
         Ok(world)
     }
 
