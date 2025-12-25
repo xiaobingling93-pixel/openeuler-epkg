@@ -2390,6 +2390,8 @@ fn clone_or_fetch_aur_repo(
             .ok_or_else(|| eyre!("clone_dir has no parent: {}", clone_dir.display()))?;
         let clone_options = run::RunOptions {
             args: vec![
+                "-C".to_string(),
+                clone_parent.to_string_lossy().to_string(),
                 "clone".to_string(),
                 "-q".to_string(),
                 "-c".to_string(),
@@ -2397,10 +2399,9 @@ fn clone_or_fetch_aur_repo(
                 git_url.clone(),
                 clone_dir.to_string_lossy().to_string(),
             ],
-            chdir_to_env_root: true,
             ..base_run_options
         };
-        run::fork_and_execute(clone_parent, &clone_options, git_path)
+        run::fork_and_execute(&env_root, &clone_options, git_path)
             .with_context(|| format!("Failed to clone git repository: {}", git_url))?;
     }
 
