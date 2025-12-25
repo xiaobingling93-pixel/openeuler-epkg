@@ -193,9 +193,11 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
             // This ensures that scriptlets and other commands run relative to the environment root
             // rather than the current working directory, which is important for commands like
             // "chown etc/shadow" that expect to operate on files within the environment.
-            debug!("Changing working directory to environment root: {}", env_root.display());
-            if let Err(e) = std::env::set_current_dir(env_root) {
-                eprintln!("Failed to change to environment root directory {}: {}", env_root.display(), e);
+            //
+            // We used to `cd $env_root`, however /opt/epkg/envs/ dir can be empty if it's
+            // standalone mounted, so now we simply do `cd /`.
+            if let Err(e) = std::env::set_current_dir("/") {
+                eprintln!("Failed to change dir to / (env_root={}): {}", env_root.display(), e);
                 std::process::exit(1);
             }
         }
