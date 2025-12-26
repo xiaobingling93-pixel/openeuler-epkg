@@ -1046,8 +1046,6 @@ impl PackageManager {
     }
 
     fn command_list(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        privdrop_on_suid();
-
         // Determine scope - only one should be true, with installed as default
         let scope = if sub_matches.get_flag("all") {
             ListScope::All
@@ -1064,15 +1062,15 @@ impl PackageManager {
             .unwrap_or("");
 
         self.sync_channel_metadata()?;
+        privdrop_on_suid();
         self.list_packages_with_scope(scope, pattern)?;
         Ok(())
     }
 
     fn command_info(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        privdrop_on_suid();
-
         // First call sync_channel_metadata to prepare data
         self.sync_channel_metadata()?;
+        privdrop_on_suid();
 
         // Load installed packages info
         self.load_installed_packages()?;
@@ -1188,9 +1186,6 @@ impl PackageManager {
         if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
             let files: Vec<String> = package_files_iter.cloned().collect();
 
-            // PACKAGE_FILE is required by clap, so files should not be empty if this block is reached.
-            privdrop_on_suid(); // Drop privileges if running as SUID
-
             match crate::store::unpack_packages(files) {
                 Ok(final_dirs) => {
                     if final_dirs.is_empty() {
@@ -1225,9 +1220,6 @@ impl PackageManager {
             let origin_url = sub_matches.get_one::<String>("origin-url")
                 .map(|s| s.as_str())
                 .unwrap_or("default_url");
-
-            // PACKAGE_FILE is required by clap, so files should not be empty if this block is reached.
-            privdrop_on_suid(); // Drop privileges if running as SUID
 
             match crate::store::unpack_packages(files) {
                 Ok(final_dirs) => {
