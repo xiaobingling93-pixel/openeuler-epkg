@@ -3960,19 +3960,6 @@ fn validate_metadata_consistency(
     metadata: &ServerMetadata,
     resolved_url: &str,
 ) -> Result<()> {
-    // Prevent timestamp going backwards
-    if let Ok(Some(loaded_metadata)) = task.load_remote_metadata() {
-        if let Some(ref serving_metadata) = loaded_metadata.serving_metadata {
-            if metadata.timestamp < serving_metadata.timestamp {
-                return Err(eyre!(
-                    "Reject timestamp going backwards. Current response timestamp: {}, Loaded timestamp: {}",
-                    metadata.timestamp,
-                    serving_metadata.timestamp
-                ));
-            }
-        }
-    }
-
     // DIMENSION 1 + DIMENSION 2: Validate metadata consistency
     if task.is_master_task() {
         // DIMENSION 1: Validate master response against prefilled serving_metadata
@@ -5102,7 +5089,6 @@ fn should_redownload(
     task: &DownloadTask,
     server_metadata: &ServerMetadata
 ) -> Result<CacheDecision> {
-    use std::time::Duration;
 
     let local_path = &task.final_path;
     if !local_path.exists() {
@@ -5127,21 +5113,9 @@ fn should_redownload(
 
     // For immutable files, we already know beforehand whether to UseCache/AppendDownload
     // So these are double checks serving as validation
-    if task.file_type == FileType::Immutable {
-        if let Some(remote_size_val) = remote_size_opt {
-            if local_size == remote_size_val {
-                return Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() });
-            }
-            if local_size < remote_size_val {
-                return Ok(CacheDecision::AppendDownload { reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size_val) });
-            }
-
-            // local_size > remote_size is a corruption case
-            return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size_val) });
-        } else {
-            // Remote size unknown - can't validate, so redownload
-            return Ok(CacheDecision::RedownloadDueTo { reason: "Remote size unknown, cannot validate immutable file".to_string() });
-        }
+    if task.file_type == FileType::Immutable ||
+       task.file_type == FileType::AppendOnly {
+        return check_immutable_file(task, local_size, remote_size_opt);
     }
 
     // For mutable files, check timestamps if available
@@ -5150,71 +5124,143 @@ fn should_redownload(
         .map(|st| OffsetDateTime::from(st));
 
     match remote_ts_opt {
-        Some(remote_ts) if remote_size_opt.is_some() && remote_size == local_size => {
-            let time_diff = if local_last_modified > remote_ts {
-                (local_last_modified - remote_ts).unsigned_abs()
-            } else {
-                (remote_ts - local_last_modified).unsigned_abs()
-            };
-
-            // If local time is more recent than remote time, assume local file is newer
-            if local_last_modified > remote_ts {
-                Ok(CacheDecision::UseCache {
-                    reason: format!("Local file is newer than remote (local: {}, remote: {})", local_last_modified, remote_ts)
-                })
-            }
-            // If timestamps are within 10 minutes of each other, consider them the same
-            else if time_diff <= Duration::from_secs(600) {
-                Ok(CacheDecision::UseCache {
-                    reason: format!("Size and timestamp match within 10min tolerance (remote: {}, local: {})", remote_ts, local_last_modified)
-                })
-            }
-            else {
-                let mut reasons = Vec::new();
-                if remote_size != local_size {
-                    reasons.push(format!("size mismatch: remote {}, local {}", remote_size, local_size));
-                }
-                if time_diff > Duration::from_secs(600) {
-                    reasons.push(format!("timestamp mismatch (tolerance: 10min): remote {}, local {}", remote_ts, local_last_modified));
-                }
-                Ok(CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") })
-            }
-        }
         Some(remote_ts) => {
-            let mut reasons = Vec::new();
-            if let Some(remote_size_val) = remote_size_opt {
-                if remote_size_val != local_size {
-                    reasons.push(format!("size mismatch: remote {}, local {}", remote_size_val, local_size));
-                }
-            } else {
-                reasons.push("remote size unknown".to_string());
-            }
-            let time_diff = if local_last_modified > remote_ts {
-                (local_last_modified - remote_ts).unsigned_abs()
-            } else {
-                (remote_ts - local_last_modified).unsigned_abs()
-            };
-            if time_diff > Duration::from_secs(600) {
-                reasons.push(format!("timestamp mismatch (tolerance: 10min): remote {}, local {}", remote_ts, local_last_modified));
-            }
-            Ok(CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") })
-        }
-        None if remote_size_opt.is_some() && remote_size == local_size => {
-            // Only use cache if we actually know the remote size and it matches
-            Ok(CacheDecision::UseCache { reason: "Size matches, no timestamp available".to_string() })
+            check_mutable_file_with_timestamp(
+                task,
+                server_metadata,
+                local_size,
+                local_last_modified,
+                remote_size_opt,
+                remote_size,
+                remote_ts
+            )
         }
         None => {
-            // Remote size unknown or doesn't match - redownload
-            if remote_size_opt.is_none() {
-                Ok(CacheDecision::RedownloadDueTo {
-                    reason: "Remote size unknown and no timestamp available".to_string()
-                })
+            check_mutable_file_without_timestamp(remote_size_opt, remote_size, local_size, local_last_modified)
+        }
+    }
+}
+
+fn check_immutable_file(
+    task: &DownloadTask,
+    local_size: u64,
+    remote_size_opt: Option<u64>
+) -> Result<CacheDecision> {
+    if let Some(remote_size_val) = remote_size_opt {
+        if local_size == remote_size_val {
+            return Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() });
+        }
+        if local_size < remote_size_val {
+            if task.file_type == FileType::AppendOnly {
+                return Ok(CacheDecision::AppendDownload { reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size_val) });
             } else {
-                Ok(CacheDecision::RedownloadDueTo {
-                    reason: format!("Size differs (remote {}, local {}) and no timestamp", remote_size, local_size)
-                })
+                return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} < remote_size {}", local_size, remote_size_val) });
             }
         }
+
+        // local_size > remote_size is a corruption case
+        return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size_val) });
+    } else {
+        // Remote size unknown - can't validate, so redownload
+        return Ok(CacheDecision::RedownloadDueTo { reason: "Remote size unknown, cannot validate immutable file".to_string() });
+    }
+}
+
+fn check_mutable_file_with_timestamp(
+    task: &DownloadTask,
+    server_metadata: &ServerMetadata,
+    local_size: u64,
+    local_last_modified: OffsetDateTime,
+    remote_size_opt: Option<u64>,
+    remote_size: u64,
+    remote_ts: OffsetDateTime
+) -> Result<CacheDecision> {
+    use std::time::Duration;
+
+    // Case 1a) If local time is more recent than remote time, assume local file is newer
+    if local_last_modified > remote_ts {
+        return Ok(CacheDecision::UseCache {
+            reason: format!("Local file is newer than remote (local: {}, remote: {})", local_last_modified, remote_ts)
+        });
+    }
+
+    // Case 1b) Compare with saved etag.json, prevent timestamp going backwards
+    if let Ok(Some(loaded_metadata)) = task.load_remote_metadata() {
+        if let Some(ref serving_metadata) = loaded_metadata.serving_metadata {
+            if server_metadata.timestamp < serving_metadata.timestamp {
+                return Ok(CacheDecision::UseCache {
+                    reason: format!(
+                        "Prevent timestamp going backwards. Current response timestamp: {}, Loaded timestamp: {}",
+                        server_metadata.timestamp,
+                        serving_metadata.timestamp
+                    )
+                });
+            }
+        }
+    }
+
+    let time_diff = if local_last_modified > remote_ts {
+        (local_last_modified - remote_ts).unsigned_abs()
+    } else {
+        (remote_ts - local_last_modified).unsigned_abs()
+    };
+
+    let size_matches = remote_size_opt.is_some() && remote_size == local_size;
+
+    // Case 2) If timestamps are within 10 minutes of each other, consider them the same
+    if size_matches && time_diff <= Duration::from_secs(600) {
+        return Ok(CacheDecision::UseCache {
+            reason: format!("Size and timestamp match within 10min tolerance (remote: {}, local: {})", remote_ts, local_last_modified)
+        });
+    }
+
+    // Case 3) Otherwise, collect reasons for redownload
+    let mut reasons = Vec::new();
+    if let Some(remote_size_val) = remote_size_opt {
+        if remote_size_val != local_size {
+            reasons.push(format!("size mismatch: remote {}, local {}", remote_size_val, local_size));
+        }
+    } else {
+        reasons.push("remote size unknown".to_string());
+    }
+    if time_diff > Duration::from_secs(600) {
+        reasons.push(format!("timestamp mismatch (tolerance: 10min): remote {}, local {}", remote_ts, local_last_modified));
+    }
+    Ok(CacheDecision::RedownloadDueTo { reason: reasons.join(" and ") })
+}
+
+fn check_mutable_file_without_timestamp(
+    remote_size_opt: Option<u64>,
+    remote_size: u64,
+    local_size: u64,
+    local_last_modified: OffsetDateTime
+) -> Result<CacheDecision> {
+    use std::time::Duration;
+
+    // Only use cache if we actually know the remote size and it matches
+    // AND the local file was modified within the last day
+    if remote_size_opt.is_some() && remote_size == local_size {
+        let now = OffsetDateTime::now_utc();
+        let time_since_modification = (now - local_last_modified).unsigned_abs();
+
+        if time_since_modification <= Duration::from_secs(86400) {
+            return Ok(CacheDecision::UseCache { reason: "Size matches, no timestamp available".to_string() });
+        } else {
+            return Ok(CacheDecision::RedownloadDueTo {
+                reason: format!("Size matches but local file is older than 1 day ({} seconds old)", time_since_modification.as_secs())
+            });
+        }
+    }
+
+    // Remote size unknown or doesn't match - redownload
+    if remote_size_opt.is_none() {
+        Ok(CacheDecision::RedownloadDueTo {
+            reason: "Remote size unknown and no timestamp available".to_string()
+        })
+    } else {
+        Ok(CacheDecision::RedownloadDueTo {
+            reason: format!("Size differs (remote {}, local {}) and no timestamp", remote_size, local_size)
+        })
     }
 }
 
