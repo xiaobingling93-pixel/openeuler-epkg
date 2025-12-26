@@ -13,7 +13,7 @@ use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
 
 use crate::deinit::remove_epkg_from_rc_file;
-use crate::dirs::{find_env_root, get_env_root};
+use crate::dirs::{find_env_base, find_env_root, get_env_root, public_envs_path};
 use crate::download::download_urls;
 use crate::mirror;
 use crate::models::*;
@@ -59,10 +59,14 @@ fn pre_populate_country_cache() {
 
 impl PackageManager {
 
-    // After root run `epkg self install --store=shared`, /usr/local/bin/epkg will be created and exposed
-    // to normal users. Then everyone can run "epkg install". To make it user friendly, here we'll
-    // auto trigger light_init() seemlessly at first invocation.
+    // After root run `epkg self install --store=shared`, /usr/local/bin/epkg will be created and
+    // exposed to normal users. Then everyone can run "epkg install". To make it user friendly,
+    // here we'll auto trigger light_init() seemlessly at first invocation.
     pub fn try_light_init(&mut self) -> Result<()> {
+        if !config().init.shared_store {
+            return Ok(());
+        }
+
         if matches!(config().subcommand,
               EpkgCommand::Unpack
             | EpkgCommand::Convert
@@ -75,16 +79,15 @@ impl PackageManager {
             | EpkgCommand::Upgrade
             | EpkgCommand::Remove
             | EpkgCommand::Run
+            | EpkgCommand::Busybox
             | EpkgCommand::None
         ) {
             return Ok(());
         }
 
-        if find_env_root(MAIN_ENV).is_some() {
-            return Ok(());
+        if find_env_base(MAIN_ENV).is_none() {
+            self.light_init()?;
         }
-
-        self.light_init()?;
 
         Ok(())
     }
@@ -106,7 +109,7 @@ impl PackageManager {
 
     pub fn upgrade_epkg(&mut self) -> Result<()> {
         // Check if self environment exists
-        if find_env_root(SELF_ENV).is_none() {
+        if find_env_base(SELF_ENV).is_none() {
             eprintln!("epkg is not installed. Please run 'epkg self install' first.");
             return Ok(());
         }
@@ -236,7 +239,7 @@ impl PackageManager {
     }
 
     fn download_setup_files(&mut self, init_plan: &InitPlan) -> Result<()> {
-        let self_env_root = dirs().user_envs.join(SELF_ENV);
+        let self_env_root = public_envs_path().join("root").join(SELF_ENV);
 
         self.download_package_manager_files(init_plan)
             .context("Failed to download required files for self environment")?;

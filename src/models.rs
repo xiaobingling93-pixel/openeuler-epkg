@@ -639,6 +639,7 @@ pub enum EpkgCommand {
     Unpack,
     Convert,
     Run,
+    Busybox,
     Search,
     Gc,
     SelfInstall,
@@ -664,6 +665,7 @@ impl From<&str> for EpkgCommand {
             "unpack" => EpkgCommand::Unpack,
             "convert" => EpkgCommand::Convert,
             "run" => EpkgCommand::Run,
+            "busybox" => EpkgCommand::Busybox,
             "search" => EpkgCommand::Search,
             "gc" => EpkgCommand::Gc,
             "self" => EpkgCommand::None, // Handled separately for nested subcommands

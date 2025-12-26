@@ -63,7 +63,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::privdrop_on_suid;
-use crate::dirs::{get_epkg_src_path, find_env_root};
+use crate::dirs::{get_epkg_src_path, find_env_base};
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use clap::{arg, Command};
@@ -1286,18 +1286,15 @@ impl PackageManager {
     fn command_self(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
         match sub_matches.subcommand() {
             Some(("install", _sub_matches)) => {
-                // Self install: same as init but without upgrade flag handling
-                if find_env_root(SELF_ENV).is_none() {
+                if find_env_base(SELF_ENV).is_none() {
                     self.install_epkg()?;
                 }
 
-                // Check if already initialized
-                if find_env_root(MAIN_ENV).is_some() {
+                if find_env_base(MAIN_ENV).is_none() {
+                    self.light_init()?;
+                } else {
                     eprintln!("epkg was already initialized for current user");
-                    return Ok(());
                 }
-
-                self.light_init()?;
             }
             Some(("upgrade", _sub_matches)) => {
                 self.upgrade_epkg()?;

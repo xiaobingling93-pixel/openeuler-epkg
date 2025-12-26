@@ -83,26 +83,34 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 /// Get the base path for an environment
 /// Location is determined by InitOptions.shared_store:
 ///   - shared_store=false: $HOME/.epkg/envs/$env_name
-///   - shared_store=true:  /opt/epkg/envs/$USER/$env_name
+///   - shared_store=true:
+///     - self:   /opt/epkg/envs/root/self
+///     - others: /opt/epkg/envs/$USER/$env_name
 /// Supports both 'env_name' and 'owner/env_name' formats
 /// Note: EnvConfig.public only controls visibility/permissions, not location
 fn get_env_base_path(env_name: &str) -> PathBuf {
-    // Visit other's /opt/epkg/envs/$owner/$name
-    if let Some(slash_pos) = env_name.find('/') {
-        if !matches!(config().subcommand,
-              EpkgCommand::Run
-            | EpkgCommand::Info
-            | EpkgCommand::List
-            | EpkgCommand::Search
-        ) {
-            use std::process::exit;
-            eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
-            exit(1);
+    if config().init.shared_store {
+        if env_name == SELF_ENV {
+            return public_envs_path().join("root").join(SELF_ENV);
         }
 
-        let owner = &env_name[..slash_pos];
-        let name = &env_name[slash_pos + 1..];
-        return dirs().opt_epkg.join("envs").join(owner).join(name);
+        // Visit other's /opt/epkg/envs/$owner/$name
+        if let Some(slash_pos) = env_name.find('/') {
+            if !matches!(config().subcommand,
+                  EpkgCommand::Run
+                | EpkgCommand::Info
+                | EpkgCommand::List
+                | EpkgCommand::Search
+            ) {
+                use std::process::exit;
+                eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
+                exit(1);
+            }
+
+            let owner = &env_name[..slash_pos];
+            let name = &env_name[slash_pos + 1..];
+            return dirs().opt_epkg.join("envs").join(owner).join(name);
+        }
     }
 
     // Visit my own env
@@ -376,7 +384,7 @@ pub fn get_username() -> Result<String> {
 }
 
 /// Get the base path to users' public environments directories
-fn public_envs_path() -> PathBuf {
+pub fn public_envs_path() -> PathBuf {
     dirs().opt_epkg.join("envs")
 }
 
