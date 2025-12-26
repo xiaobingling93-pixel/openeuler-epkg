@@ -402,8 +402,7 @@ impl PackageManager {
         if !packages_to_install.is_empty() {
             // Clear installed_packages since this is a new environment with no packages installed yet
             self.installed_packages.clear();
-            let mut plan = self.prepare_installation_plan(&packages_to_install)?;
-            plan.env_name = Some(name.to_string());
+            let plan = self.prepare_installation_plan(&packages_to_install)?;
             self.execute_installation_plan(plan)?;
         } else {
             // Create metadata files
