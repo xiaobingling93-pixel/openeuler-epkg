@@ -31,7 +31,6 @@ pub struct RunOptions {
     pub chdir_to_env_root: bool,
     pub skip_namespace_isolation: bool,
     pub timeout: u64, // Timeout in seconds, 0 means no timeout
-    pub builtin: bool, // Use built-in command implementation
 }
 
 /// Kill child process when timeout occurs
@@ -1027,10 +1026,6 @@ impl PackageManager {
         debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
         debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
 
-        if run_options.builtin {
-            return crate::applets::exec_builtin_command(&run_options.command, &run_options.args);
-        }
-
         let env_root = crate::dirs::get_default_env_root()?;
         info!("Using environment root: {}", env_root.display());
 
@@ -1046,6 +1041,19 @@ impl PackageManager {
         fork_and_execute(&env_root, &run_options, &cmd_path)?;
 
         Ok(())
+    }
+
+    /// Execute built-in command (busybox-style)
+    pub fn command_busybox(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
+        match sub_matches.subcommand() {
+            Some((cmd_name, cmd_matches)) => {
+                debug!("Running built-in command: {}", cmd_name);
+                crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+            }
+            None => {
+                Err(eyre::eyre!("No command specified"))
+            }
+        }
     }
 
     /// Parse command line options for run command
@@ -1075,15 +1083,12 @@ impl PackageManager {
             0 // Default: no timeout
         };
 
-        let builtin = sub_matches.get_flag("builtin");
-
         Ok(RunOptions {
             mount_dirs,
             user,
             command,
             args,
             timeout,
-            builtin,
             ..Default::default()
         })
     }

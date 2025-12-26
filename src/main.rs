@@ -111,6 +111,7 @@ fn main() -> Result<()> {
         Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(&sub_matches)?,
         Some(("convert",    sub_matches))  =>  package_manager.command_convert(&sub_matches)?,
         Some(("run",        sub_matches))  =>  package_manager.command_run(sub_matches)?,
+        Some(("busybox",    sub_matches))  =>  package_manager.command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  package_manager.command_search(sub_matches)?,
         Some(("gc",         sub_matches))  =>  package_manager.command_gc(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
@@ -326,7 +327,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .about("The EPKG package manager")
         .version(env!("EPKG_VERSION_INFO"))
         .arg_required_else_help(true) // This will show help if no args are provided
-        .arg(arg!(-C --config <FILE> "Configuration file to use").hide(true).global(true))
+        .arg(arg!(--config <FILE> "Configuration file to use").hide(true).global(true))
         .arg(arg!(-e --env <ENV> "Select the environment").hide(true).global(true))
         .arg(arg!(--arch <ARCH> "Select the CPU architecture").default_value(std::env::consts::ARCH).hide(true).global(true))
         .arg(arg!(--"dry-run" "Simulated run without changing the system").hide(true).global(true))
@@ -347,7 +348,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
 USAGE: {usage}\n\n\
 COMMANDS:\n{subcommands}\n\n\
 OPTIONS:
-  -C, --config <FILE>               Configuration file to use
+      --config <FILE>               Configuration file to use
   -e, --env <ENV>                   Select the environment
       --arch <ARCH>                 Select the CPU architecture
       --dry-run                     Simulated run without changing the system
@@ -560,12 +561,20 @@ OPTIONS:
                 .arg(arg!(-M --mount <DIRS> "Comma-separated list of additional directories to mount"))
                 .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
-                .arg(arg!(--builtin "Use built-in command implementation (cat, ls, echo, sleep, true, false)"))
                 .arg(arg!(<command> "Command to execute"))
                 .arg(arg!([args] ... "Arguments to pass to the command (use '--' to separate from epkg options)"))
                 .allow_hyphen_values(true)
                 .trailing_var_arg(true)
         )
+        .subcommand({
+            let mut busybox_cmd = Command::new("busybox")
+                .about("Run built-in command implementations")
+                .arg_required_else_help(true);
+            for subcmd in crate::applets::busybox_subcommands() {
+                busybox_cmd = busybox_cmd.subcommand(subcmd);
+            }
+            busybox_cmd
+        })
         .subcommand(
             Command::new("search")
                 .about("Search for packages and files")

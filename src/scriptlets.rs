@@ -330,17 +330,13 @@ pub fn run_scriptlet(
                 }
 
                 let run_options = crate::run::RunOptions {
-                    mount_dirs: Vec::new(),  // No additional mounts needed for scriptlets
-                    user: None,              // Run as current user
                     command: interpreter.to_string(),
                     args: script_args,
                     env_vars,
-                    stdin: None,
                     no_exit: true,           // Don't exit on scriptlet failures, just warn
                     chdir_to_env_root: true, // Scriptlets should run relative to environment root
-                    skip_namespace_isolation: false,
                     timeout: 60,             // 60 second timeout for scriptlets
-                    builtin: false,          // Scriptlets are not builtin commands
+                    ..Default::default()
                 };
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation

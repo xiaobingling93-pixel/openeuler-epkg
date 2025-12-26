@@ -2325,17 +2325,10 @@ fn clone_or_fetch_aur_repo(
 
     let env_root = dirs::get_default_env_root().unwrap_or_else(|_| PathBuf::from("/"));
     let base_run_options = run::RunOptions {
-        mount_dirs: Vec::new(),
-        user: None,
         command: "git".to_string(),
-        args: Vec::new(),
-        env_vars: std::collections::HashMap::new(),
-        stdin: None,
-        no_exit: false,
-        chdir_to_env_root: false,
         skip_namespace_isolation: is_host_git,
         timeout: 300, // 5 minute timeout
-        builtin: false,
+        ..Default::default()
     };
 
     if repo_exists {

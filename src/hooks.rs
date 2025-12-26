@@ -904,17 +904,14 @@ fn execute_hook(
 
     // Execute the hook
     let run_options = crate::run::RunOptions {
-        mount_dirs: Vec::new(),
-        user: None,
         command: command.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
         env_vars,
         stdin: stdin_data,
         no_exit: !hook.action.abort_on_fail,
         chdir_to_env_root: true,
-        skip_namespace_isolation: false,
         timeout: 300, // 5 minute timeout for hooks
-        builtin: false,
+        ..Default::default()
     };
 
     match crate::run::fork_and_execute(env_root, &run_options, &command_path) {
