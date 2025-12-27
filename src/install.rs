@@ -174,6 +174,8 @@ pub struct InstallationPlan {
     pub link: crate::models::LinkType,
     #[serde(default)]
     pub can_reflink: bool,
+    #[serde(skip)]
+    pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl<'de> serde::Deserialize<'de> for InstallationPlan {
@@ -286,6 +288,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             del_exposes: helper.del_exposes,
             link: helper.link,
             can_reflink: helper.can_reflink,
+            store_pkglines_by_pkgname: std::collections::HashMap::new(),
         })
     }
 }
@@ -1645,6 +1648,7 @@ impl PackageManager {
             env_root,
             plan.link,
             plan.can_reflink,
+            &plan.store_pkglines_by_pkgname,
         )?;
 
         // Step 3: Process upgrades and fresh installations
@@ -1701,6 +1705,7 @@ impl PackageManager {
         env_root: &Path,
         link_type: LinkType,
         can_reflink: bool,
+        store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         // Submit download tasks first (includes both binary and AUR packages)
         let url_to_pkgkeys = self.enqueue_package_downloads(packages_to_download_and_process)?;
@@ -1732,6 +1737,7 @@ impl PackageManager {
             env_root,
             link_type,
             can_reflink,
+            store_pkglines_by_pkgname,
         )?;
 
         // Merge downloaded packages with already-linked packages
@@ -1920,6 +1926,7 @@ impl PackageManager {
         env_root: &Path,
         link_type: LinkType,
         can_reflink: bool,
+        store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         let mut completed_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
@@ -1961,6 +1968,7 @@ impl PackageManager {
                                 env_root,
                                 link_type,
                                 can_reflink,
+                                store_pkglines_by_pkgname,
                             )?;
 
                             // Store completed package
@@ -1990,9 +1998,10 @@ impl PackageManager {
         env_root: &Path,
         link_type: LinkType,
         can_reflink: bool,
+        store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     ) -> Result<(String, InstalledPackageInfo)> {
         // Unpack the package
-        let final_dir = crate::store::unpack_mv_package(file_path, Some(pkgkey))
+        let final_dir = crate::store::unpack_mv_package(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname))
             .with_context(|| format!("Failed to unpack package: {}", file_path))?;
 
         // Get the pkgline from the directory name
@@ -2979,7 +2988,7 @@ impl PackageManager {
             }
 
             // Unpack the package to the store
-            let final_dir = crate::store::unpack_mv_package(&package_file, None)
+            let final_dir = crate::store::unpack_mv_package(&package_file, None, None)
                 .with_context(|| format!("Failed to unpack package: {}", package_file))?;
 
             // Extract caHash from the pkgline (directory name)

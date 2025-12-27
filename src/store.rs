@@ -19,16 +19,193 @@ use log;
 pub fn unpack_packages(package_files: Vec<String>) -> Result<Vec<std::path::PathBuf>> {
     let mut final_dirs = Vec::new();
     for package_file in package_files {
-        let final_dir = unpack_mv_package(&package_file, None)
+        let final_dir = unpack_mv_package(&package_file, None, None)
             .wrap_err_with(|| format!("Failed to unpack package: {}", package_file))?;
         final_dirs.push(final_dir);
     }
     Ok(final_dirs)
 }
 
+/// Build sha256 mapping for a single package
+/// Returns a HashMap where key is sha256 and value is (relative_filename, pkgline)
+fn build_sha256_mapping_for_package(
+    fs_dir: &Path,
+    pkgline: &str,
+) -> Result<HashMap<String, (String, String)>> {
+    use crate::utils::list_package_files_with_info;
+
+    let mut sha256_to_file: HashMap<String, (String, String)> = HashMap::new();
+
+    // Use list_package_files_with_info to parse filelist.txt
+    let fs_dir_str = fs_dir.to_str()
+        .ok_or_else(|| eyre::eyre!("Invalid UTF-8 in fs_dir path: {}", fs_dir.display()))?;
+
+    let file_infos = match list_package_files_with_info(fs_dir_str) {
+        Ok(infos) => infos,
+        Err(_) => {
+            // If filelist.txt doesn't exist or parsing fails, return empty mapping
+            return Ok(sha256_to_file);
+        }
+    };
+
+    for file_info in file_infos {
+        // Only process regular files with sha256
+        if file_info.file_type != crate::utils::MtreeFileType::File {
+            continue;
+        }
+
+        if let Some(sha256_val) = file_info.sha256 {
+            // Get relative path from fs_dir
+            if let Ok(relative_path) = file_info.path.strip_prefix(fs_dir) {
+                let relative_filename = relative_path.to_string_lossy().to_string();
+                // Only store the first occurrence (one is enough for de-duplication)
+                sha256_to_file.entry(sha256_val).or_insert_with(|| (relative_filename, pkgline.to_string()));
+            }
+        }
+    }
+
+    Ok(sha256_to_file)
+}
+
+/// Build sha256 mapping from other packages with the same pkgname
+fn build_sha256_mapping_from_other_packages(
+    pkgname: &str,
+    current_pkgline: &str,
+    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+) -> Result<HashMap<String, (String, String)>> {
+    let mut sha256_mapping: HashMap<String, (String, String)> = HashMap::new();
+
+    // Get all pkglines for this pkgname
+    if let Some(pkglines) = store_pkglines_by_pkgname.get(pkgname) {
+        for pkgline in pkglines {
+            // Skip the current package
+            if pkgline == current_pkgline {
+                continue;
+            }
+
+            // Read filelist.txt from this package
+            let package_dir = dirs().epkg_store.join(pkgline);
+            let fs_dir = package_dir.join("fs");
+
+            // Only process if fs directory exists
+            if !fs_dir.exists() {
+                continue;
+            }
+
+            // Build sha256 mapping for this package and add to combined mapping
+            let file_mapping = build_sha256_mapping_for_package(&fs_dir, pkgline)?;
+            for (sha256, (filename, _)) in file_mapping {
+                // Only store the first occurrence (one is enough for de-duplication)
+                sha256_mapping.entry(sha256).or_insert_with(|| (filename, pkgline.clone()));
+            }
+        }
+    }
+
+    Ok(sha256_mapping)
+}
+
+/// De-duplicate files by creating hardlinks to existing files with the same sha256
+fn deduplicate_files_by_hardlink(
+    store_tmp_dir: &Path,
+    other_packages_mapping: &HashMap<String, (String, String)>,
+) -> Result<()> {
+    let fs_dir = store_tmp_dir.join("fs");
+    if !fs_dir.exists() {
+        return Ok(());
+    }
+
+    // Build sha256 mapping for the current package using the helper
+    // Use empty string for pkgline since we don't need it for current package comparison
+    let current_package_mapping = build_sha256_mapping_for_package(&fs_dir, "")?;
+
+    let mut dedup_count = 0;
+
+    // Operate on both mappings: for each file in current package, check if it exists in other packages
+    for (sha256_val, (current_filename, _)) in &current_package_mapping {
+        // Check if there's a matching file in other packages
+        if let Some((existing_filename, existing_pkgline)) = other_packages_mapping.get(sha256_val) {
+            // Build paths
+            let current_file_path = fs_dir.join(current_filename);
+            let existing_package_dir = dirs().epkg_store.join(existing_pkgline);
+            let existing_file_path = existing_package_dir.join("fs").join(existing_filename);
+
+            // Check if both files exist
+            if current_file_path.exists() && existing_file_path.exists() {
+                // Double check their file sizes match before creating hardlink
+                let current_metadata = match fs::metadata(&current_file_path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log::debug!("Failed to get metadata for {}: {}", current_file_path.display(), e);
+                        continue;
+                    }
+                };
+
+                let existing_metadata = match fs::metadata(&existing_file_path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log::debug!("Failed to get metadata for {}: {}", existing_file_path.display(), e);
+                        continue;
+                    }
+                };
+
+                if current_metadata.len() != existing_metadata.len() {
+                    log::warn!("Skipping hardlink for {} - file sizes don't match (current: {}, existing: {})",
+                               current_file_path.display(), current_metadata.len(), existing_metadata.len());
+                    continue;
+                }
+
+                // Rename current file to temporary name first
+                let temp_file_path = {
+                    let mut temp_path = current_file_path.clone();
+                    let file_name = temp_path.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| format!("{}.tmp", s))
+                        .unwrap_or_else(|| format!("{}.tmp", Uuid::new_v4()));
+                    temp_path.set_file_name(&file_name);
+                    temp_path
+                };
+
+                if let Err(e) = fs::rename(&current_file_path, &temp_file_path) {
+                    log::debug!("Failed to rename file {} for hardlink: {}", current_file_path.display(), e);
+                    continue;
+                }
+
+                // Try to create hardlink
+                if let Err(e) = fs::hard_link(&existing_file_path, &current_file_path) {
+                    log::debug!("Failed to create hardlink from {} to {}: {}",
+                               existing_file_path.display(), current_file_path.display(), e);
+                    // If hardlink fails, rename back
+                    if let Err(rename_err) = fs::rename(&temp_file_path, &current_file_path) {
+                        log::warn!("Failed to restore file {} after hardlink failure: {}",
+                                  current_file_path.display(), rename_err);
+                    }
+                } else {
+                    // Hardlink succeeded, remove the temporary file
+                    if let Err(e) = fs::remove_file(&temp_file_path) {
+                        log::debug!("Failed to remove temporary file {}: {}", temp_file_path.display(), e);
+                    }
+                    dedup_count += 1;
+                    log::debug!("De-duplicated file {} by hardlink to {}",
+                               current_file_path.display(), existing_file_path.display());
+                }
+            }
+        }
+    }
+
+    if dedup_count > 0 {
+        log::info!("De-duplicated {} files by hardlink", dedup_count);
+    }
+
+    Ok(())
+}
+
 /// Unpacks a single package and moves it to the final store location
 /// Returns the path to the final directory where the package was unpacked
-pub fn unpack_mv_package(package_file: &str, pkgkey: Option<&str>) -> Result<std::path::PathBuf> {
+pub fn unpack_mv_package(
+    package_file: &str,
+    pkgkey: Option<&str>,
+    store_pkglines_by_pkgname: Option<&HashMap<String, Vec<String>>>,
+) -> Result<std::path::PathBuf> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = dirs().epkg_cache.join("unpack").join(&temp_name);
@@ -88,6 +265,17 @@ pub fn unpack_mv_package(package_file: &str, pkgkey: Option<&str>) -> Result<std
     // Create final package directory name with architecture
     let pkgline = crate::package::format_pkgline(&ca_hash_real, &pkgname, &version, &arch);
     let final_dir = dirs().epkg_store.join(&pkgline);
+
+    // De-duplicate files by hardlink if store_pkglines_by_pkgname is provided
+    if let Some(store_pkglines_by_pkgname) = store_pkglines_by_pkgname {
+        // Build sha256 mapping from other packages with the same pkgname
+        if let Ok(sha256_mapping) = build_sha256_mapping_from_other_packages(&pkgname, &pkgline, store_pkglines_by_pkgname) {
+            // De-duplicate files by creating hardlinks
+            if let Err(e) = deduplicate_files_by_hardlink(&store_tmp_dir, &sha256_mapping) {
+                log::warn!("Failed to de-duplicate files for package {}: {}", pkgname, e);
+            }
+        }
+    }
 
     // Move to final location
     if final_dir.exists() {
@@ -377,22 +565,26 @@ pub fn untar_zst(file_path: &str, output_dir: &str, package_flag: bool) -> Resul
     Ok(())
 }
 
-/// Collect all pkglines from the epkg store and organize them by pkgkey
-/// Returns a HashMap where key is pkgkey (pkgname__version__arch) and value is a list of matching pkglines
-fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String, Vec<String>>> {
+/// Collect all pkglines from the epkg store and organize them by pkgkey and pkgname
+/// Returns a tuple of (store_pkglines_by_pkgkey, store_pkglines_by_pkgname)
+/// where:
+/// - store_pkglines_by_pkgkey: key is pkgkey (pkgname__version__arch), value is list of matching pkglines
+/// - store_pkglines_by_pkgname: key is pkgname, value is list of matching pkglines
+fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<String>>, std::collections::HashMap<String, Vec<String>>)> {
     use crate::models::dirs;
-    use crate::package::pkgline2pkgkey;
+    use crate::package::{pkgline2pkgkey, parse_pkgline};
     use std::fs;
     use std::collections::HashMap;
 
     let store_dir = dirs().epkg_store.clone();
     let mut store_pkglines_by_pkgkey: HashMap<String, Vec<String>> = HashMap::new();
+    let mut store_pkglines_by_pkgname: HashMap<String, Vec<String>> = HashMap::new();
 
     if !store_dir.exists() {
-        return Ok(store_pkglines_by_pkgkey);
+        return Ok((store_pkglines_by_pkgkey, store_pkglines_by_pkgname));
     }
 
-    // Collect all pkglines from the store and organize by pkgkey
+    // Collect all pkglines from the store and organize by both pkgkey and pkgname in a single pass
     if let Ok(entries) = fs::read_dir(&store_dir) {
         for entry in entries.flatten() {
             let package_path = entry.path();
@@ -405,10 +597,17 @@ fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String
                 }
 
                 if let Some(pkgline) = package_path.file_name().and_then(|name| name.to_str()) {
-                    // Parse the pkgline to extract pkgkey
+                    // Parse the pkgline to extract both pkgkey and pkgname
                     if let Ok(pkgkey) = pkgline2pkgkey(pkgline) {
                         store_pkglines_by_pkgkey
                             .entry(pkgkey)
+                            .or_insert_with(Vec::new)
+                            .push(pkgline.to_string());
+                    }
+
+                    if let Ok(parsed) = parse_pkgline(pkgline) {
+                        store_pkglines_by_pkgname
+                            .entry(parsed.pkgname)
                             .or_insert_with(Vec::new)
                             .push(pkgline.to_string());
                     }
@@ -417,7 +616,7 @@ fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String
         }
     }
 
-    Ok(store_pkglines_by_pkgkey)
+    Ok((store_pkglines_by_pkgkey, store_pkglines_by_pkgname))
 }
 
 /// Match a package from repodata with packages in the store by comparing Package fields
@@ -773,8 +972,9 @@ pub fn fill_pkglines_in_plan(
     plan: &mut crate::install::InstallationPlan,
     package_manager: &mut crate::models::PackageManager,
 ) -> Result<usize> {
-    // Collect store pkglines organized by pkgkey
-    let store_pkglines_by_pkgkey = collect_store_pkglines_by_pkgkey()?;
+    // Collect store pkglines organized by both pkgkey (for matching) and pkgname (for reuse in unpack_mv_package)
+    let (store_pkglines_by_pkgkey, store_pkglines_by_pkgname) = collect_store_pkglines()?;
+    plan.store_pkglines_by_pkgname = store_pkglines_by_pkgname;
 
     if store_pkglines_by_pkgkey.is_empty() {
         return Ok(0);

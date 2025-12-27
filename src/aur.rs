@@ -718,6 +718,7 @@ impl PackageManager {
                         env_root,
                         plan.link,
                         plan.can_reflink,
+                        &plan.store_pkglines_by_pkgname,
                     )?;
 
                 if !this_round_aur_packages.is_empty() {
@@ -884,6 +885,7 @@ impl PackageManager {
         env_root: &Path,
         link_type: crate::models::LinkType,
         can_reflink: bool,
+        store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     ) -> Result<(
         HashMap<String, InstalledPackageInfo>,
         HashMap<String, String>,
@@ -915,6 +917,7 @@ impl PackageManager {
                     env_root,
                     link_type,
                     can_reflink,
+                    store_pkglines_by_pkgname,
                 )
                 .with_context(|| {
                     format!(
