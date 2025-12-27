@@ -677,7 +677,7 @@ fn create_script_wrapper(
     first_line: &str,
 ) -> Result<()> {
     // Try to create shebang line, but handle errors gracefully
-    let env_shell_bang_line = match create_shebang_line(env_root, first_line) {
+    let env_shell_bang_line = match create_shebang_line(env_root, first_line, fs_file) {
         Ok(line) => line,
         Err(e) => {
             let root_cause = e.root_cause().to_string();
@@ -801,7 +801,7 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
             let b_name = b.file_name().unwrap_or_default().to_string_lossy();
             a_name.cmp(&b_name)
         })
-        .ok_or_else(|| eyre::eyre!("No suitable interpreter found for {}", interpreter_basename))?;
+        .ok_or_else(|| eyre::eyre!("No suitable interpreter found for '{}'", interpreter_basename))?;
 
     // Create a symlink from the found interpreter to the expected location
     symlink(&target, interpreter_in_env)
@@ -812,7 +812,7 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
 }
 
 /// Create the wrapper for the interpreter in the ebin directory
-fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpreter_basename: &str) -> Result<String> {
+fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpreter_basename: &str, script_path: &Path) -> Result<String> {
     // Example: env_interpreter_path = "/home/wfg/.epkg/envs/main/ebin/sh"
     let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
     let env_interpreter = Path::new(&env_interpreter_path);
@@ -828,8 +828,8 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         match find_link_interpreter(interpreter_in_env, interpreter_basename) {
             Ok(()) => {},
             Err(e) => {
-                eprintln!("WARNING: script interpreter {} is not found in environment. Please install it later.\n env_path: {}, error: {}",
-                    interpreter_basename, interpreter_in_env.display(), e);
+                eprintln!("WARNING: script interpreter not found. Please install '{}' to make below script work:\n script_path: {}\n env_path: {}, error: {}",
+                    interpreter_path, script_path.display(), interpreter_in_env.display(), e);
                 return Ok("".to_string());
             }
         }
@@ -853,10 +853,10 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
     Ok(env_interpreter_path)
 }
 
-fn create_shebang_line(env_root: &Path, first_line: &str) -> Result<String> {
+fn create_shebang_line(env_root: &Path, first_line: &str, script_path: &Path) -> Result<String> {
     let shebang_info = parse_shebang_for_wrapper(first_line)?;
 
-    let env_interpreter_path = match create_interpreter_wrapper(env_root, &shebang_info.interpreter_path, &shebang_info.interpreter_basename)
+    let env_interpreter_path = match create_interpreter_wrapper(env_root, &shebang_info.interpreter_path, &shebang_info.interpreter_basename, script_path)
         .with_context(|| format!("Failed to create interpreter wrapper for {} with basename {}", shebang_info.interpreter_path, shebang_info.interpreter_basename))
     {
         Ok(path) => {
