@@ -7,6 +7,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, Duration};
 use sha2::{Sha256, Sha512, Digest};
 use filetime;
+use glob;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::*;
@@ -424,42 +425,74 @@ fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> 
 }
 
 pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<ReleaseStatus> {
-    let expire_secs = config().common.metadata_expire;
-
     // Check if this URL is already being processed by the download manager
     if has_download_task(&repo.index_url) {
-        log::debug!("URL {} is already being processed, skipping duplicate download", repo.index_url);
+        log::debug!("should_refresh_release_file: URL {} already being processed, returning FineRecent", repo.index_url);
         return Ok(ReleaseStatus::FineRecent);
     }
 
     if !path.exists() {
+        log::debug!("should_refresh_release_file: path does not exist: {}, returning NeedDownload", path.display());
         return Ok(ReleaseStatus::NeedDownload);
     }
 
     let repo_dir = dirs::get_repo_dir(&repo);
     let index_path = repo_dir.join("RepoIndex.json");
     if !index_path.exists() {
+        log::debug!("should_refresh_release_file: RepoIndex.json does not exist: {}, returning NeedConvert", index_path.display());
         return Ok(ReleaseStatus::NeedConvert);
     }
 
-    // if never auto update
-    if expire_secs == 0 && config().subcommand != EpkgCommand::Update {
-        return Ok(ReleaseStatus::FineExist);
+    // Check if filelists are needed and collect .filelists.*.json files
+    let need_filelists = need_filelists();
+    let filelists_paths = if need_filelists {
+        let filelists_pattern = repo_dir.join("filelists.*");
+        let pattern_str = filelists_pattern.to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid filelists pattern path"))?;
+        glob::glob(pattern_str)
+            .map_err(|_| eyre::eyre!("Failed to glob filelists pattern"))?
+            .filter_map(|p| p.ok())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    if need_filelists && filelists_paths.is_empty() {
+        log::debug!("should_refresh_release_file: need_filelists=true but no filelists.* files found in {}, returning NeedUpdate", repo_dir.display());
+        return Ok(ReleaseStatus::NeedUpdate);
     }
 
-    // if not always update
-    if !(expire_secs < 0 || config().subcommand == EpkgCommand::Update) {
-        let duration = std::time::Duration::from_secs(expire_secs.try_into()
-            .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
-        // Check if release file is recent
-        if is_file_recent(path, duration)? {
-            // If release file is recent, check repo index age
-            if check_repo_index_age(&index_path, duration)? {
-                return Ok(ReleaseStatus::FineRecent);
+    if config().subcommand != EpkgCommand::Update {
+        let expire_secs = config().common.metadata_expire;
+
+        if expire_secs == 0 {
+            log::debug!("should_refresh_release_file: never auto update, returning FineExist");
+            return Ok(ReleaseStatus::FineExist);
+        }
+
+        if expire_secs > 0 {
+            let duration = std::time::Duration::from_secs(expire_secs.try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
+            // Check if release file download cache is recent
+            if is_file_recent(path, duration)? {
+                if check_repo_index_age(&index_path, duration)? {
+                    // Check all filelists download cache are recent
+                    let mut all_filelists_recent = true;
+                    for filelists_path in &filelists_paths {
+                        if !is_file_recent(filelists_path, duration)? {
+                            all_filelists_recent = false;
+                            break;
+                        }
+                    }
+                    if all_filelists_recent {
+                        log::debug!("should_refresh_release_file: all files are recent, returning FineRecent");
+                        return Ok(ReleaseStatus::FineRecent);
+                    }
+                }
             }
         }
     }
 
+    log::debug!("should_refresh_release_file: returning NeedUpdate");
     Ok(ReleaseStatus::NeedUpdate)
 }
 
@@ -500,12 +533,7 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
 }
 
 // index_url: $mirror/v$version/$repo/$arch/APKINDEX.tar.gz
-fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
-
-    let should_update = should_refresh_release_file(packages_path, repo)?;
-    let mut release_items = Vec::new();
-
-    let repo_dir = dirs::get_repo_dir(&repo);
+fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) -> Result<Vec<RepoReleaseItem>> {
 
     // For Pacman format, conditionally modify index_url based on need_filelists
     let mut index_url = repo.index_url.clone();
@@ -514,11 +542,20 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
         if need_filelists {
             // Change .db.tar to .files.tar
             index_url = index_url.replace(".db.tar", ".files.tar");
+            let path_str = packages_path.to_string_lossy().to_string();
+            *packages_path = PathBuf::from(path_str.replace(".db.tar", ".files.tar"));
         } else {
             // Change .files.tar to .db.tar
             index_url = index_url.replace(".files.tar", ".db.tar");
+            let path_str = packages_path.to_string_lossy().to_string();
+            *packages_path = PathBuf::from(path_str.replace(".files.tar", ".db.tar"));
         }
     }
+
+    let should_update = should_refresh_release_file(packages_path, repo)?;
+    let mut release_items = Vec::new();
+
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     // Extract package base URL by removing last filename part
     let package_baseurl = if let Some(parent_url) = index_url.rsplitn(2, '/').nth(1) {
@@ -639,7 +676,7 @@ fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
     let repo_dir = dirs::get_repo_dir(&repo);
     log::debug!("Got repo_dir: {:?}", repo_dir);
 
-    let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url, &repo.repodata_name)
+    let mut release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
     log::debug!("Got release_path: {:?}", release_path);
 
@@ -658,7 +695,7 @@ fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
         crate::aur::parse_aur_metadata(repo, &release_path)
             .with_context(|| format!("Failed to parse AUR metadata for repository: {}", repo.repo_name))?
     } else {
-        sync_from_package_database(repo, &release_path)
+        sync_from_package_database(repo, &mut release_path)
             .with_context(|| format!("Failed to check packages file for repository: {}", repo.repo_name))?
     };
     log::debug!("Got {} release_items", release_items.len());
