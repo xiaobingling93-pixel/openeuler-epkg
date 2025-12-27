@@ -32,7 +32,8 @@ fi
 # Mount E2E_DIR at the same path inside docker for easier debugging
 # Mount entire /opt/epkg/ as a single mount to avoid cross-device link errors
 # Sync timezone to prevent timestamp-related download conflicts
-docker run --name epkg-e2e --privileged --rm $DOCKER_FLAGS \
+CONTAINER_NAME="epkg-e2e"
+docker run --name $CONTAINER_NAME --privileged --rm $DOCKER_FLAGS \
     -v "$PROJECT_ROOT:$PROJECT_ROOT:ro" \
     -v "$PERSISTENT_OPT_EPKG:/opt/epkg:rw" \
     -v "$PERSISTENT_CACHE:/root/.cache/epkg:rw" \
@@ -40,6 +41,7 @@ docker run --name epkg-e2e --privileged --rm $DOCKER_FLAGS \
     -v "$TMPFS_ENVS_ROOT:/root/.epkg/envs:rw" \
     ${HOST_TZ:+-e TZ="$HOST_TZ"} \
     ${LIGHT_TEST:+-e LIGHT_TEST="$LIGHT_TEST"} \
+    -e CONTAINER_NAME="$CONTAINER_NAME" \
     -e E2E_DIR="$E2E_DIR" \
     -e EPKG_BINARY=$EPKG_BINARY \
     -e TEST_REL_PATH="$TEST_REL_PATH" \

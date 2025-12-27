@@ -2,11 +2,13 @@
 # Test public mode and multi-user functionality
 
 set -e
+set -o pipefail
 
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
 log "Starting public multi-user test"
+[ -n "$INTERACTIVE" ] && set -x
 
 # For root: create public environment and install ripgrep and busybox-static
 log "Root: creating public environment and installing ripgrep and busybox-static"
@@ -157,17 +159,17 @@ fi
 
 # Test info command on other user's public env
 log "User B: testing info command on user A's public env"
-if ! run_as_user "$USER_B" "epkg -e ${USER_A}/puba info jq" | grep -q "jq"; then
+if ! run_as_user "$USER_B" "epkg -e ${USER_A}/puba info jq" | grep -q "jq$"; then
     error "User B cannot get info about jq from user A's public env"
 fi
 
 log "User A: testing info command on root's public env"
-if ! run_as_user "$USER_A" "epkg -e root/alpine info ripgrep" | grep -q "ripgrep"; then
+if ! run_as_user "$USER_A" "epkg -e root/alpine info ripgrep" | grep -q "ripgrep$"; then
     error "User A cannot get info about ripgrep from root's public env"
 fi
 
 log "Root: testing info command on user A's public env"
-if ! epkg -e "${USER_A}/puba" info jq | grep -q "jq"; then
+if ! epkg -e "${USER_A}/puba" info jq | grep -q "jq$"; then
     error "Root cannot get info about jq from user A's public env"
 fi
 
@@ -195,20 +197,20 @@ fi
 
 # Test search command on other user's public env
 log "User B: testing search command on user A's public env"
-if ! run_as_user "$USER_B" "epkg -e ${USER_A}/puba search jq" | grep -q "jq"; then
+if ! run_as_user "$USER_B" "epkg -e ${USER_A}/puba search jq" | grep '^jq'; then
     error "User B cannot search for jq in user A's public env"
 fi
 
 log "User A: testing search command on root's public env"
-if ! run_as_user "$USER_A" "epkg -e root/alpine search ripgrep" | grep -q "ripgrep"; then
+if ! run_as_user "$USER_A" "epkg -e root/alpine search ripgrep" | grep '^ripgrep'; then
     error "User A cannot search for ripgrep in root's public env"
 fi
-if ! run_as_user "$USER_A" "epkg -e root/alpine search busybox" | grep -q "busybox"; then
+if ! run_as_user "$USER_A" "epkg -e root/alpine search busybox" | grep '^busybox'; then
     error "User A cannot search for busybox in root's public env"
 fi
 
 log "Root: testing search command on user A's public env"
-if ! epkg -e "${USER_A}/puba" search jq | grep -q "jq"; then
+if ! epkg -e "${USER_A}/puba" search jq | grep '^jq'; then
     error "Root cannot search for jq in user A's public env"
 fi
 
