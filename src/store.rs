@@ -108,7 +108,7 @@ pub fn unpack_mv_package(package_file: &str, pkgkey: Option<&str>) -> Result<std
 }
 
 /// Generic package unpacking function that detects format and delegates to appropriate handler
-pub fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
+fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let package_file = package_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -397,6 +397,13 @@ fn collect_store_pkglines_by_pkgkey() -> Result<std::collections::HashMap<String
         for entry in entries.flatten() {
             let package_path = entry.path();
             if package_path.is_dir() {
+                let fs_dir = package_path.join("fs");
+                if !fs_dir.exists() {
+                    // on LinkType::Move, files were moved into env
+                    log::debug!("Skipping package {} - 'fs' directory does not exist", package_path.display());
+                    continue;
+                }
+
                 if let Some(pkgline) = package_path.file_name().and_then(|name| name.to_str()) {
                     // Parse the pkgline to extract pkgkey
                     if let Ok(pkgkey) = pkgline2pkgkey(pkgline) {

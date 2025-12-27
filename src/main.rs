@@ -186,6 +186,16 @@ fn setup_ctrlc() {
     }).expect("Failed to set Ctrl-C handler");
 }
 
+fn parse_link_type(link_str: &str) -> Result<LinkType> {
+    match link_str {
+        "hardlink"  => Ok(LinkType::Hardlink),
+        "symlink"   => Ok(LinkType::Symlink),
+        "move"      => Ok(LinkType::Move),
+        "runpath"   => Ok(LinkType::Runpath),
+        _ => Err(eyre::eyre!("Invalid link type: '{}'. Valid options are: hardlink, symlink, move, runpath", link_str)),
+    }
+}
+
 fn print_all_thread_backtraces() {
     // DON'T capture the useless signal handler backtrace - it shows nothing useful
     // Instead, get the actual kernel stack traces of all threads
@@ -412,6 +422,7 @@ OPTIONS:
                         .arg(arg!(-P --public "Usable by all users in the machine"))
                         .arg(arg!(-p --path <PATH> "Specify custom path for the environment"))
                         .arg(arg!(-i --import <FILE> "Import from config file"))
+                        .arg(arg!(--link <LINK> "Link type: hardlink, symlink, move, or runpath").value_parser(["hardlink", "symlink", "move", "runpath"]))
                 )
                 .subcommand(
                     Command::new("remove")
@@ -797,6 +808,9 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             }
             config.env.env_path = sub_matches.get_one::<String>("path").cloned();
             config.env.import_file = sub_matches.get_one::<String>("import").cloned();
+            if let Some(link_str) = sub_matches.get_one::<String>("link") {
+                config.env.link = parse_link_type(link_str.as_str())?;
+            }
         }
         Some(("remove", sub_matches)) => {
             if let Some(env_name) = sub_matches.get_one::<String>("ENV_NAME") {

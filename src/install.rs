@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, MetadataExt};
 use std::time::SystemTime;
+#[cfg(target_os = "linux")]
+use libc;
 
 use color_eyre::eyre::{self, Result, WrapErr, eyre};
 use crate::models::*;
@@ -15,6 +17,140 @@ use crate::scriptlets::{run_scriptlets, ScriptletType};
 use std::io::Write;
 use regex;
 use glob;
+
+/// Check if two paths are on the same filesystem by comparing device IDs
+fn same_filesystem(path1: &Path, path2: &Path) -> Result<bool> {
+    let meta1 = fs::metadata(path1)
+        .with_context(|| format!("Failed to get metadata for {}", path1.display()))?;
+    let meta2 = fs::metadata(path2)
+        .with_context(|| format!("Failed to get metadata for {}", path2.display()))?;
+    Ok(meta1.dev() == meta2.dev())
+}
+
+/// Check if reflink (copy-on-write) is supported on the filesystem
+/// This is done by attempting a test reflink operation using reflink_copy()
+#[cfg(target_os = "linux")]
+fn check_reflink_support(store_root: &Path, env_root: &Path) -> bool {
+    use std::io::Write;
+
+    // Only check if paths are on the same filesystem
+    if same_filesystem(store_root, env_root).unwrap_or(false) {
+        // Create a temporary test file
+        let test_file = env_root.join(".epkg_reflink_test");
+
+        // Create a small test file
+        if let Ok(mut file) = fs::File::create(&test_file) {
+            if file.write_all(b"test").is_ok() {
+                file.sync_all().ok();
+
+                // Try to create a reflink using reflink_copy()
+                let test_target = env_root.join(".epkg_reflink_test_target");
+                let result = reflink_copy(&test_file, &test_target).is_ok();
+
+                // Clean up test files
+                let _ = fs::remove_file(&test_file);
+                let _ = fs::remove_file(&test_target);
+
+                return result;
+            } else {
+                let _ = fs::remove_file(&test_file);
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_reflink_support(_store_root: &Path, _env_root: &Path) -> bool {
+    false
+}
+
+/// Create a reflink (copy-on-write) copy of a file
+#[cfg(target_os = "linux")]
+fn reflink_copy(source: &Path, target: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    // Open source file for reading
+    let src_file = fs::File::open(source)
+        .with_context(|| format!("Failed to open source file {}", source.display()))?;
+
+    // Create target file
+    let dst_file = fs::File::create(target)
+        .with_context(|| format!("Failed to create target file {}", target.display()))?;
+
+    // FICLONE ioctl request value
+    // libc::Ioctl is a type alias that's c_int on musl and c_ulong on GNU
+    const FICLONE: libc::Ioctl = 0x4004_9409;
+    unsafe {
+        let result = libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd());
+        if result != 0 {
+            return Err(eyre!("ioctl FICLONE failed: {}", std::io::Error::last_os_error()));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reflink_copy(_source: &Path, _target: &Path) -> Result<()> {
+    Err(eyre!("Reflink not supported on this platform"))
+}
+
+/// Compute link type and reflink support for installation plan
+/// Returns (link_type, can_reflink)
+fn compute_link_type_and_reflink(
+    env_link: LinkType,
+    store_root: &Path,
+    env_root: &Path,
+) -> Result<(LinkType, bool)> {
+    let mut link_type = env_link;
+    let mut can_reflink = false;
+
+    if link_type == LinkType::Hardlink {
+        match same_filesystem(store_root, env_root) {
+            Ok(true) => {
+                // Same filesystem, keep hardlink and check for reflink support
+                can_reflink = check_reflink_support(store_root, env_root);
+                if can_reflink {
+                    log::debug!("Reflink support detected on filesystem");
+                }
+            }
+            Ok(false) => {
+                // Different filesystems, downgrade to symlink
+                log::debug!("Store root and env root are on different filesystems, downgrading hardlink to symlink");
+                link_type = LinkType::Symlink;
+            }
+            Err(e) => {
+                log::warn!("Failed to check filesystem compatibility: {}, downgrading hardlink to symlink", e);
+                link_type = LinkType::Symlink;
+            }
+        }
+    } else if link_type == LinkType::Move || link_type == LinkType::Runpath {
+        match same_filesystem(store_root, env_root) {
+            Ok(true) => {
+                // Same filesystem, rename() will work
+            }
+            Ok(false) => {
+                // Different filesystems, rename() will fail
+                return Err(eyre::eyre!(
+                    "Link type {:?} requires store and environment to be on the same filesystem, but they are on different filesystems (store: {}, env: {})",
+                    link_type,
+                    store_root.display(),
+                    env_root.display()
+                ));
+            }
+            Err(e) => {
+                return Err(eyre::eyre!(
+                    "Failed to check filesystem compatibility for {:?} link type: {}",
+                    link_type,
+                    e
+                ));
+            }
+        }
+    }
+
+    Ok((link_type, can_reflink))
+}
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct InstallationPlan {
@@ -34,6 +170,10 @@ pub struct InstallationPlan {
     pub new_exposes: HashMap<String, InstalledPackageInfo>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub del_exposes: HashMap<String, InstalledPackageInfo>,
+    #[serde(default)]
+    pub link: crate::models::LinkType,
+    #[serde(default)]
+    pub can_reflink: bool,
 }
 
 impl<'de> serde::Deserialize<'de> for InstallationPlan {
@@ -59,6 +199,10 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             new_exposes: HashMap<String, InstalledPackageInfo>,
             #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
             del_exposes: HashMap<String, InstalledPackageInfo>,
+            #[serde(default)]
+            link: crate::models::LinkType,
+            #[serde(default)]
+            can_reflink: bool,
         }
 
         fn deserialize_pkgkey_map<'de, D>(
@@ -140,6 +284,8 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             old_removes: helper.old_removes,
             new_exposes: helper.new_exposes,
             del_exposes: helper.del_exposes,
+            link: helper.link,
+            can_reflink: helper.can_reflink,
         })
     }
 }
@@ -304,7 +450,7 @@ fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     Ok(())
 }
 
-fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::MtreeFileInfo]) -> Result<()> {
+fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
     for fs_file_info in fs_files {
         let fs_file = &fs_file_info.path;
         let fhs_file = fs_file.strip_prefix(store_fs_dir)
@@ -330,11 +476,13 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::Mt
         //         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
         // }
 
-        if fs_file_info.is_link() {
-            mirror_symlink_file(fs_file, &target_path, fhs_file)
+        if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
+            // No modify top-level directories/symlinks created by create_environment_directories()
+        } else if fs_file_info.is_link() {
+            mirror_symlink_file(fs_file, &target_path)
                 .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))?;
         } else {
-            mirror_regular_file(fs_file, &target_path, fhs_file)
+            mirror_regular_file(fs_file, &target_path, fhs_file, link_type, can_reflink)
                 .with_context(|| format!("Failed to handle regular file {}", fs_file.display()))?;
         }
     }
@@ -402,13 +550,8 @@ fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: bool) -
 /// Parameters:
 /// - fs_file: Path to the symlink in the store
 /// - target_path: Where to create the symlink in the environment
-/// - fhs_file: Relative path from store_fs_dir
-fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
-    // Skip symlinks for top-level directories
-    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
-        return Ok(());
-    }
-
+/// - _fhs_file: Relative path from store_fs_dir (unused, kept for consistency)
+fn mirror_symlink_file(fs_file: &Path, target_path: &Path) -> Result<()> {
     utils::remove_any_existing_file(target_path, true)?;
 
     // Handle regular symlink (not pointing to directory)
@@ -420,26 +563,25 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
 /// Handle regular files in mirror_dir function
 ///
 /// This function processes regular files (not symlinks or directories).
-/// For files in /etc/, it copies the file content.
-/// For files in gconv-modules.d/, it hardlinks (if same device) or copies (if different device).
-/// For other files, it creates a symlink to the store location.
+/// Behavior depends on link_type:
+/// - hardlink: prefer hardlink, fall back to symlink
+/// - symlink: prefer symlink, use hard_link_or_copy for special files
+/// - move: prefer mv (moves file from store to env)
+/// - runpath: not supported for now
 ///
 /// Examples:
 /// - /etc/resolv.conf: copied to environment (preserves content)
 /// - /usr/lib/gconv/gconv-modules.d/gconv-modules-extra.conf: hardlinked or copied
-/// - /usr/bin/python3.11: symlinked to store location
-/// - /usr/lib/libpython3.11.so: symlinked to store location
+/// - /usr/bin/python3.11: symlinked to store location (or hardlinked/moved based on link_type)
+/// - /usr/lib/libpython3.11.so: symlinked to store location (or hardlinked/moved based on link_type)
 ///
 /// Parameters:
 /// - fs_file: Path to the file in the store
 /// - target_path: Where to create the file/symlink in the environment
 /// - fhs_file: Relative path from store_fs_dir (used to determine if file is in /etc/)
-fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
-    // Skip symlinks for top-level directories
-    if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
-        return Ok(());
-    }
-
+/// - link_type: Link type to use (hardlink, symlink, move, runpath)
+/// - can_reflink: Whether reflink (copy-on-write) is supported
+fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
     // Remove any existing file/dirs
     if fs::symlink_metadata(target_path).is_ok() {
         // On upgrade, it's normal to overwrite old files from previous version
@@ -454,18 +596,69 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
         }
     }
 
+    // /etc/ files: use reflink if supported and link_type is hardlink, otherwise copy
     if fhs_file.starts_with("etc/") {
+        if can_reflink {
+            // Try to use reflink (copy-on-write) for /etc/ files
+            if reflink_copy(fs_file, target_path).is_ok() {
+                log::trace!("Created reflink from {} to {}", fs_file.display(), target_path.display());
+                return Ok(());
+            }
+            // Fall back to regular copy if reflink fails
+            log::debug!("Reflink failed for {} -> {}, falling back to copy", fs_file.display(), target_path.display());
+        }
         fs::copy(fs_file, target_path)
             .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
-    } else if let Some(preserve_permissions) = needs_hard_link_or_copy(fhs_file) {
+        return Ok(());
+    }
+
+    // Apply link_type for regular files
+    match link_type {
+        LinkType::Hardlink => {
+            // Try hardlink first, fall back to symlink on failure
+            match fs::hard_link(fs_file, target_path) {
+                Ok(()) => {
+                    log::trace!("Created hardlink from {} to {}", fs_file.display(), target_path.display());
+                }
+                Err(e) => {
+                    // Fall back to symlink if hardlink fails
+                    log::debug!("Hardlink failed for {} -> {}: {}, falling back to symlink",
+                               fs_file.display(), target_path.display(), e);
+                    symlink_or_copy(fs_file, target_path, fhs_file)?;
+                }
+            }
+        }
+        LinkType::Symlink => {
+            // Current behavior: prefer symlink
+            symlink_or_copy(fs_file, target_path, fhs_file)?;
+        }
+        LinkType::Move => {
+            // Move file from store to env (will be removed from store later)
+            fs::rename(fs_file, target_path)
+                .with_context(|| format!("Failed to move {} to {}", fs_file.display(), target_path.display()))?;
+        }
+        LinkType::Runpath => {
+            // Move file from store to env (will be removed from store later)
+            // Same as Move - requires same filesystem (checked in compute_link_type_and_reflink)
+            fs::rename(fs_file, target_path)
+                .with_context(|| format!("Failed to move {} to {}", fs_file.display(), target_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn symlink_or_copy(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
+    if let Some(preserve_permissions) = needs_hard_link_or_copy(fhs_file) {
         // Certain paths (script-language trees, gconv modules, rustc driver) must be
         // materialized as real files in env_root (via hardlink or copy) so that
         // their consumers behave correctly when resolving modules or sysroots.
         hard_link_or_copy(fs_file, target_path, preserve_permissions)?;
-    } else {
-        symlink(fs_file, target_path)
-            .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
+        return Ok(());
     }
+
+    symlink(fs_file, target_path)
+        .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
+
     Ok(())
 }
 
@@ -1095,11 +1288,26 @@ impl PackageManager {
     }
 
     // link files from env_root to store_fs_dir
-    fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<()> {
+    fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, link_type: LinkType, can_reflink: bool) -> Result<()> {
         let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
             .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
-        mirror_dir(env_root, store_fs_dir, &fs_files)
+        mirror_dir(env_root, store_fs_dir, &fs_files, link_type, can_reflink)
             .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), env_root.display()))?;
+
+        // For link=move, remove the 'fs' dir after moving all files
+        if link_type == LinkType::Move {
+            // Remove the fs directory after all files have been moved
+            if store_fs_dir.exists() {
+                // Try to remove the directory (should be empty or nearly empty after moves)
+                if let Err(e) = fs::remove_dir_all(store_fs_dir) {
+                    log::warn!("Failed to remove fs directory {} after move: {}", store_fs_dir.display(), e);
+                    // Don't fail the entire operation if we can't remove the dir
+                } else {
+                    log::debug!("Removed fs directory {} after move", store_fs_dir.display());
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1315,6 +1523,18 @@ impl PackageManager {
         // Load channel config from the environment
         let package_format = channel_config().format;
 
+        // Copy link type from EnvConfig to InstallationPlan
+        // Downgrade hardlink to symlink if store and env are on different filesystems
+        // Check for reflink support if using hardlink
+        // Fail early if Move or Runpath link types require cross-filesystem rename
+        let (link_type, can_reflink) = compute_link_type_and_reflink(
+            env_config().link,
+            &store_root,
+            &env_root,
+        )?;
+        plan.link = link_type;
+        plan.can_reflink = can_reflink;
+
         // Fill pkglines for packages that already exist in the store
         crate::store::fill_pkglines_in_plan(&mut plan, self)
             .with_context(|| "Failed to find existing packages in store")?;
@@ -1423,6 +1643,8 @@ impl PackageManager {
             &packages_with_pkglines,
             store_root,
             env_root,
+            plan.link,
+            plan.can_reflink,
         )?;
 
         // Step 3: Process upgrades and fresh installations
@@ -1477,6 +1699,8 @@ impl PackageManager {
         packages_with_pkglines: &HashMap<String, InstalledPackageInfo>,
         store_root: &Path,
         env_root: &Path,
+        link_type: LinkType,
+        can_reflink: bool,
     ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         // Submit download tasks first (includes both binary and AUR packages)
         let url_to_pkgkeys = self.enqueue_package_downloads(packages_to_download_and_process)?;
@@ -1490,7 +1714,7 @@ impl PackageManager {
         for (pkgkey, package_info) in packages_with_pkglines {
             // Link the package from store to env_root
             let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-            self.link_package(&store_fs_dir, &env_root.to_path_buf())
+            self.link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
                 .with_context(|| format!("Failed to link existing package {}", pkgkey))?;
 
             // Add to completed packages (including AUR packages that already exist in the store)
@@ -1506,6 +1730,8 @@ impl PackageManager {
             &mut mutable_packages_for_processing,
             store_root,
             env_root,
+            link_type,
+            can_reflink,
         )?;
 
         // Merge downloaded packages with already-linked packages
@@ -1692,6 +1918,8 @@ impl PackageManager {
         packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
         store_root: &Path,
         env_root: &Path,
+        link_type: LinkType,
+        can_reflink: bool,
     ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         let mut completed_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
@@ -1731,6 +1959,8 @@ impl PackageManager {
                                 package_info,
                                 store_root,
                                 env_root,
+                                link_type,
+                                can_reflink,
                             )?;
 
                             // Store completed package
@@ -1758,6 +1988,8 @@ impl PackageManager {
         mut package_info: InstalledPackageInfo,
         store_root: &Path,
         env_root: &Path,
+        link_type: LinkType,
+        can_reflink: bool,
     ) -> Result<(String, InstalledPackageInfo)> {
         // Unpack the package
         let final_dir = crate::store::unpack_mv_package(file_path, Some(pkgkey))
@@ -1780,7 +2012,7 @@ impl PackageManager {
 
         // Link new package immediately after unpacking
         let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-        self.link_package(&store_fs_dir, &env_root.to_path_buf())
+        self.link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
             .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
 
         Ok((actual_pkgkey, package_info))

@@ -380,6 +380,9 @@ impl PackageManager {
         env_config.register_to_path = false;
         env_config.register_priority = 0;
 
+        // Set link type from CLI option if provided
+        env_config.link = config().env.link;
+
         // Get packages before saving config (since env_config will be moved)
         let packages_to_install = std::mem::take(&mut env_export.packages);
 

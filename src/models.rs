@@ -19,6 +19,25 @@ pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg self instal
 pub const SELF_ENV: &str = &"self"; // holds epkg, elf-loader, package-manager source files
 pub const MAIN_ENV: &str = &"main"; // the default env for most operations, must be private
 
+// Link type for mirroring files from store to environment
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub enum LinkType {
+    #[serde(rename = "hardlink")]
+    Hardlink,
+    #[serde(rename = "symlink")]
+    Symlink,
+    #[serde(rename = "move")]
+    Move,
+    #[serde(rename = "runpath")]
+    Runpath,
+}
+
+impl Default for LinkType {
+    fn default() -> Self {
+        LinkType::Hardlink
+    }
+}
+
 // Package format types
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub enum PackageFormat {
@@ -304,6 +323,9 @@ pub struct EnvConfig {
 
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env_vars: HashMap<String, String>,
+
+    #[serde(default)]
+    pub link: LinkType,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -857,6 +879,8 @@ pub struct EnvOptions {
     pub pure: bool,
     #[serde(default)]
     pub stack: bool,
+    #[serde(default)]
+    pub link: LinkType,
     #[serde(default)]
     pub repos: Vec<String>,
 

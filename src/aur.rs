@@ -716,6 +716,8 @@ impl PackageManager {
                         &mapped,
                         store_root,
                         env_root,
+                        plan.link,
+                        plan.can_reflink,
                     )?;
 
                 if !this_round_aur_packages.is_empty() {
@@ -880,6 +882,8 @@ impl PackageManager {
         mapped_packages: &[(PathBuf, String, InstalledPackageInfo)],
         store_root: &Path,
         env_root: &Path,
+        link_type: crate::models::LinkType,
+        can_reflink: bool,
     ) -> Result<(
         HashMap<String, InstalledPackageInfo>,
         HashMap<String, String>,
@@ -909,6 +913,8 @@ impl PackageManager {
                     InstalledPackageInfo::default(),
                     store_root,
                     env_root,
+                    link_type,
+                    can_reflink,
                 )
                 .with_context(|| {
                     format!(
