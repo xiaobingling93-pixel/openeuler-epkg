@@ -162,6 +162,140 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         }
     }
 
+    // Parse and store DEB triggers
+    parse_deb_triggers(store_tmp_dir)?;
+
+    Ok(())
+}
+
+/// Parse DEB triggers file and store trigger information
+/// Reference: man deb-triggers, /usr/share/doc/dpkg/spec/triggers.txt
+/// Supports all trigger directive variants: interest, interest-await, interest-noawait,
+/// activate, activate-await, activate-noawait
+fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let deb_dir = store_tmp_dir.join("info/deb");
+    let install_dir = store_tmp_dir.join("info/install");
+    let triggers_path = deb_dir.join("triggers");
+
+    if !triggers_path.exists() {
+        return Ok(());
+    }
+
+    let triggers_content = fs::read_to_string(&triggers_path)?;
+
+    #[derive(Debug, Clone)]
+    struct TriggerEntry {
+        name: String,
+        await_mode: bool, // true = await, false = noawait
+    }
+
+    let mut interest_triggers: Vec<TriggerEntry> = Vec::new();
+    let mut activate_triggers: Vec<TriggerEntry> = Vec::new();
+
+    for (line_num, line) in triggers_content.lines().enumerate() {
+        let line = line.trim();
+        let line_num = line_num + 1; // 1-based line numbers
+
+        // Skip comments and empty lines
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Parse trigger directives
+        // Format: "<directive> <trigger-name>"
+        // Directives: interest, interest-await, interest-noawait, activate, activate-await, activate-noawait
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let directive = parts[0];
+        let trigger_name = if parts.len() > 1 {
+            parts[1..].join(" ")
+        } else {
+            // Legacy: simple trigger name without directive (treated as interest)
+            if !line.contains(' ') {
+                interest_triggers.push(TriggerEntry {
+                    name: line.to_string(),
+                    await_mode: true, // Default to await
+                });
+            } else {
+                // Format: "<package> <path-pattern>" - file trigger interest
+                interest_triggers.push(TriggerEntry {
+                    name: line.to_string(),
+                    await_mode: true,
+                });
+            }
+            continue;
+        };
+
+        match directive {
+            "interest" | "interest-await" => {
+                interest_triggers.push(TriggerEntry {
+                    name: trigger_name,
+                    await_mode: true,
+                });
+            }
+            "interest-noawait" => {
+                interest_triggers.push(TriggerEntry {
+                    name: trigger_name,
+                    await_mode: false,
+                });
+            }
+            "activate" | "activate-await" => {
+                activate_triggers.push(TriggerEntry {
+                    name: trigger_name,
+                    await_mode: true,
+                });
+            }
+            "activate-noawait" => {
+                activate_triggers.push(TriggerEntry {
+                    name: trigger_name,
+                    await_mode: false,
+                });
+            }
+            _ => {
+                return Err(eyre::eyre!(
+                    "Unknown trigger directive '{}' in triggers file '{}' at line {}",
+                    directive,
+                    triggers_path.display(),
+                    line_num
+                ));
+            }
+        }
+    }
+
+    // Write trigger metadata files with await mode information
+    // Format: "<trigger-name>[/noawait]" (similar to dpkg's format)
+    if !interest_triggers.is_empty() {
+        let metadata_path = install_dir.join("deb_interest.triggers");
+        let content: Vec<String> = interest_triggers.iter()
+            .map(|t| {
+                if t.await_mode {
+                    t.name.clone()
+                } else {
+                    format!("{}/noawait", t.name)
+                }
+            })
+            .collect();
+        fs::write(&metadata_path, content.join("\n"))?;
+    }
+
+    if !activate_triggers.is_empty() {
+        let metadata_path = install_dir.join("deb_activate.triggers");
+        let content: Vec<String> = activate_triggers.iter()
+            .map(|t| {
+                if t.await_mode {
+                    t.name.clone()
+                } else {
+                    format!("{}/noawait", t.name)
+                }
+            })
+            .collect();
+        fs::write(&metadata_path, content.join("\n"))?;
+    }
+
     Ok(())
 }
 

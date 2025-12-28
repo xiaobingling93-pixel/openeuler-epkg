@@ -187,6 +187,9 @@ impl TestCase {
                             bdepends: Vec::new(),
                             rbdepends: Vec::new(),
                             ebin_links: Vec::new(),
+                            pending_triggers: Vec::new(),
+                            triggers_awaited: false,
+                            config_failed: false,
                         },
                     );
                 }

@@ -16,6 +16,7 @@ use crate::models::*;
 use crate::dirs::*;
 use crate::utils::force_symlink;
 use crate::deinit::force_remove_dir_all;
+use crate::deb_triggers::ensure_triggers_dir;
 use log::warn;
 
 // epkg stores persistent PATH registration metadata inside each environment's
@@ -268,6 +269,22 @@ impl PackageManager {
         if !systemctl_path.exists() {
             force_symlink("/usr/bin/true", &systemctl_path)
                 .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
+        }
+
+        // Debian-specific setup
+        if format == &PackageFormat::Deb {
+            // Create symlink from dpkg-trigger to epkg executable
+            let dpkg_trigger_path = env_root.join("usr/local/bin/dpkg-trigger");
+            let dpkg_query_path = env_root.join("usr/local/bin/dpkg-query");
+            let epkg_exe = std::env::current_exe()
+                .with_context(|| "Failed to get current executable path")?;
+            force_symlink(&epkg_exe, &dpkg_trigger_path)
+                .with_context(|| format!("Failed to create dpkg-trigger symlink in {}", dpkg_trigger_path.display()))?;
+            force_symlink(&epkg_exe, &dpkg_query_path)
+                .with_context(|| format!("Failed to create dpkg-trigger symlink in {}", dpkg_query_path.display()))?;
+
+            // Ensure triggers directory exists
+            ensure_triggers_dir(env_root)?;
         }
 
         // Set owner and permissions if environment is private (public = false)

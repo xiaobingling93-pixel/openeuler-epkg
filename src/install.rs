@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{symlink, MetadataExt};
 use std::time::SystemTime;
 #[cfg(target_os = "linux")]
@@ -8,12 +8,22 @@ use libc;
 
 use color_eyre::eyre::{self, Result, WrapErr, eyre};
 use crate::models::*;
+use crate::models;
 use crate::dirs;
+use crate::run;
+use crate::mmio;
+use crate::store;
+use crate::hooks;
 use crate::utils;
 use crate::utils::FileType;
 use crate::package;
 use crate::download;
+use crate::scriptlets;
 use crate::scriptlets::{run_scriptlets, ScriptletType};
+use crate::rpm_triggers;
+use crate::deb_triggers;
+use crate::transaction;
+use crate::transaction::*;
 use std::io::Write;
 use regex;
 use glob;
@@ -25,6 +35,61 @@ fn same_filesystem(path1: &Path, path2: &Path) -> Result<bool> {
     let meta2 = fs::metadata(path2)
         .with_context(|| format!("Failed to get metadata for {}", path2.display()))?;
     Ok(meta1.dev() == meta2.dev())
+}
+
+/// Helper function to process DEB triggers for packages
+/// Handles the common pattern: incorporate interests (loop) -> build index -> activate triggers (loop)
+/// Takes a slice of (pkgkey, package_info) tuples
+fn process_deb_triggers(
+    packages: &[(&str, &InstalledPackageInfo)],
+    store_root: &Path,
+    env_root: &Path,
+) -> Result<()> {
+    // Step 1: Incorporate trigger interests for all packages
+    for (pkgkey, package_info) in packages {
+        let install_dir = store_root.join(&package_info.pkgline).join("info/install");
+        let interest_file = install_dir.join("deb_interest.triggers");
+        if interest_file.exists() {
+            if let Err(e) = deb_triggers::incorporate_package_trigger_interests(
+                pkgkey,
+                store_root,
+                env_root,
+                false, // is_removal
+            ) {
+                log::warn!("Failed to incorporate trigger interests for {}: {}", pkgkey, e);
+            }
+        }
+    }
+
+    // Step 2: Build file trigger index once (shared across all packages)
+    let trigger_index = deb_triggers::build_file_trigger_index(env_root)
+        .unwrap_or_else(|e| {
+            log::debug!("Failed to build file trigger index: {}", e);
+            std::collections::HashSet::new()
+        });
+
+    // Step 3: Activate file triggers for all packages
+    if !trigger_index.is_empty() {
+        for (pkgkey, package_info) in packages {
+            let pkgname = package::pkgkey2pkgname(pkgkey).ok();
+            if let Ok(rel_files) = utils::get_package_files(store_root, package_info) {
+                for rel_path in &rel_files {
+                    // Convert relative path to absolute path for trigger matching
+                    let file_path = format!("/{}", rel_path.to_string_lossy());
+                    if let Err(e) = deb_triggers::activate_file_trigger(
+                        env_root,
+                        &file_path,
+                        pkgname.as_deref(),
+                        &trigger_index,
+                    ) {
+                        log::debug!("Failed to activate file trigger for {}: {}", file_path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Check if reflink (copy-on-write) is supported on the filesystem
@@ -171,7 +236,7 @@ pub struct InstallationPlan {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub del_exposes: HashMap<String, InstalledPackageInfo>,
     #[serde(default)]
-    pub link: crate::models::LinkType,
+    pub link: models::LinkType,
     #[serde(default)]
     pub can_reflink: bool,
     #[serde(skip)]
@@ -202,7 +267,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
             del_exposes: HashMap<String, InstalledPackageInfo>,
             #[serde(default)]
-            link: crate::models::LinkType,
+            link: models::LinkType,
             #[serde(default)]
             can_reflink: bool,
         }
@@ -249,6 +314,9 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
                                     bdepends: Vec::new(),
                                     rbdepends: Vec::new(),
                                     ebin_links: Vec::new(),
+                                    pending_triggers: Vec::new(),
+                                    triggers_awaited: false,
+                                    config_failed: false,
                                 }
                             }
                             Err(_) => {
@@ -264,6 +332,9 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
                                     bdepends: Vec::new(),
                                     rbdepends: Vec::new(),
                                     ebin_links: Vec::new(),
+                                    pending_triggers: Vec::new(),
+                                    triggers_awaited: false,
+                                    config_failed: false,
                                 }
                             }
                         };
@@ -295,7 +366,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     // Check if this is a conda environment - conda ELF binaries can run directly
-    let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
+    let is_conda = models::channel_config().format == models::PackageFormat::Conda;
 
     if is_conda {
         handle_elf_conda(target_path, env_root, fs_file)
@@ -453,7 +524,7 @@ fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     Ok(())
 }
 
-fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::utils::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
+fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
     for fs_file_info in fs_files {
         let fs_file = &fs_file_info.path;
         let fhs_file = fs_file.strip_prefix(store_fs_dir)
@@ -585,8 +656,66 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path) -> Result<()> {
 /// - link_type: Link type to use (hardlink, symlink, move, runpath)
 /// - can_reflink: Whether reflink (copy-on-write) is supported
 fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
-    // Remove any existing file/dirs
-    if fs::symlink_metadata(target_path).is_ok() {
+    // Check if this is a config file (in /etc/)
+    let is_config_file = transaction::is_config_file_path(fhs_file);
+
+    // For config files, use transaction module to decide file action
+    // For now, we'll infer NOREPLACE from common patterns (can be enhanced later with RPM metadata)
+    let is_noreplace = is_config_file && target_path.exists() &&
+        (target_path.file_name().and_then(|n| n.to_str())
+            .map(|s| s.contains("config") || s.contains("conf") || s.contains(".cfg"))
+            .unwrap_or(false));
+
+    if is_config_file && target_path.exists() {
+        // Use transaction module to decide config file fate
+        let action = transaction::get_config_file_action(target_path, fs_file, is_noreplace);
+
+        match action {
+            transaction::FileAction::Skip => {
+                log::debug!("Skipping config file {} (identical to existing)", target_path.display());
+                return Ok(());
+            }
+            transaction::FileAction::AltName => {
+                // Create .rpmnew file for NOREPLACE configs
+                let rpmnew_path = target_path.with_extension(format!(
+                    "{}.rpmnew",
+                    target_path.extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                ));
+                log::info!("Creating .rpmnew file for config {}: {}", target_path.display(), rpmnew_path.display());
+                if can_reflink {
+                    if reflink_copy(fs_file, &rpmnew_path).is_err() {
+                        fs::copy(fs_file, &rpmnew_path)
+                            .with_context(|| format!("Failed to copy config to .rpmnew: {}", rpmnew_path.display()))?;
+                    }
+                } else {
+                    fs::copy(fs_file, &rpmnew_path)
+                        .with_context(|| format!("Failed to copy config to .rpmnew: {}", rpmnew_path.display()))?;
+                }
+                return Ok(());
+            }
+            transaction::FileAction::Backup => {
+                // Backup existing config file
+                let backup_path = target_path.with_extension(format!(
+                    "{}.rpmsave",
+                    target_path.extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                ));
+                log::info!("Backing up config {} to {}", target_path.display(), backup_path.display());
+                fs::copy(target_path, &backup_path)
+                    .with_context(|| format!("Failed to backup config: {}", backup_path.display()))?;
+                // Continue to create new file below
+            }
+            _ => {
+                // Create or overwrite (default behavior)
+            }
+        }
+    }
+
+    // Remove any existing file/dirs (if not already handled by config logic)
+    if fs::symlink_metadata(target_path).is_ok() && !is_config_file {
         // On upgrade, it's normal to overwrite old files from previous version
         log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
         // Check if target path is a directory and handle accordingly
@@ -597,10 +726,17 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
             fs::remove_file(target_path)
                 .with_context(|| format!("Failed to remove file {} for mirror_dir", target_path.display()))?;
         }
+    } else if is_config_file && target_path.exists() {
+        // For config files, remove old file before creating new one (unless we're creating .rpmnew)
+        if !matches!(transaction::get_config_file_action(target_path, fs_file, is_noreplace),
+                     transaction::FileAction::AltName) {
+            fs::remove_file(target_path)
+                .with_context(|| format!("Failed to remove old config file {} for mirror_dir", target_path.display()))?;
+        }
     }
 
     // /etc/ files: use reflink if supported and link_type is hardlink, otherwise copy
-    if fhs_file.starts_with("etc/") {
+    if is_config_file {
         if can_reflink {
             // Try to use reflink (copy-on-write) for /etc/ files
             if reflink_copy(fs_file, target_path).is_ok() {
@@ -797,7 +933,7 @@ fn normalize_join(base: &Path, subpath: &Path) -> PathBuf {
     components.iter().collect()
 }
 
-fn create_ebin_wrappers(env_root: &Path, fs_files: &[crate::utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
+fn create_ebin_wrappers(env_root: &Path, fs_files: &[utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
     let mut created_ebin_paths: Vec<PathBuf> = Vec::new();
     log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
     for fs_file_info in fs_files {
@@ -1222,9 +1358,9 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
         log::info!("Library cache needs updating, running ldconfig");
 
         // Check if ldconfig exists in the environment before trying to run it
-        match crate::run::find_command_in_env_path("ldconfig", env_root) {
+        match run::find_command_in_env_path("ldconfig", env_root) {
             Ok(ldconfig_path) => {
-                let run_options = crate::run::RunOptions {
+                let run_options = run::RunOptions {
                     command: "ldconfig".to_string(),
                     no_exit: true,
                     chdir_to_env_root: true, // ldconfig should run relative to environment root
@@ -1232,7 +1368,7 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
                 };
 
                 // Execute ldconfig
-                crate::run::fork_and_execute(env_root, &run_options, &ldconfig_path)?;
+                run::fork_and_execute(env_root, &run_options, &ldconfig_path)?;
             }
             Err(_) => {
                 log::warn!("ldconfig command not found in environment, skipping library cache update");
@@ -1359,7 +1495,7 @@ impl PackageManager {
 
         // Add essential packages to delta_world if not already in self.world
         // this extended delta_world won't be saved to disk
-        if !crate::models::config().install.no_install_essentials {
+        if !models::config().install.no_install_essentials {
             self.add_essential_packages_to_delta_world(&mut delta_world)?;
         }
 
@@ -1501,6 +1637,126 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Validate transaction using transaction module (disk space, conflicts, etc.)
+    fn validate_transaction(
+        &self,
+        plan: &InstallationPlan,
+        store_root: &Path,
+        env_root: &Path,
+    ) -> Result<()> {
+        use transaction::ProblemFilterFlags;
+
+        // Create filter flags from config (placeholder - would read from config)
+        let filter_flags = ProblemFilterFlags {
+            ignore_arch: false,
+            ignore_os: false,
+            replace_pkg: false,
+            force_relocate: false,
+            replace_new_files: false,
+            replace_old_files: false,
+            old_package: false,
+            diskspace: false,
+            disknodes: false,
+            verify: false,
+        };
+
+        let mut transaction = Transaction::new(filter_flags);
+
+        // Prepare transaction (initialize DSI and load installed files)
+        prepare_transaction(&mut transaction, store_root, env_root, &self.installed_packages)?;
+
+        // Check disk space and conflicts for each package being installed
+        for (pkgkey, pkg_info) in plan.fresh_installs.iter().chain(plan.upgrades_new.iter()) {
+            // Get package files from store
+            let pkg_store_path = store_root.join(&pkg_info.pkgline).join("fs");
+            if pkg_store_path.exists() {
+                // Get file list with metadata
+                let file_list = if let Ok(files_info) = utils::list_package_files_with_info(pkg_store_path.to_str().unwrap()) {
+                    files_info
+                } else if let Ok(files) = utils::list_package_files(pkg_store_path.to_str().unwrap()) {
+                    // Fallback to simple file list - create MtreeFileInfo with File type
+                    files.iter().map(|f| utils::MtreeFileInfo {
+                        path: PathBuf::from(f),
+                        file_type: utils::MtreeFileType::File,
+                        mode: None,
+                        sha256: None,
+                        link_target: None,
+                        uname: None,
+                        gname: None,
+                    }).collect()
+                } else {
+                    Vec::new()
+                };
+
+                for (file_index, file_info) in file_list.iter().enumerate() {
+                    let store_file = &file_info.path;
+                    let env_file_path = env_root.join(store_file.strip_prefix(&pkg_store_path)
+                        .unwrap_or(store_file));
+
+                    // Skip directories for conflict/disk space checks
+                    if file_info.is_dir() {
+                        continue;
+                    }
+
+                    // Check for file conflicts
+                    if let Ok(conflicts) = transaction.check_file_conflicts(
+                        &env_file_path,
+                        pkgkey,
+                        file_index,
+                        store_file,
+                    ) {
+                        for conflict in conflicts {
+                            transaction.add_problem(conflict);
+                        }
+                    }
+
+                    // Check disk space (only for regular files, not symlinks)
+                    if !file_info.is_link() {
+                        if let Ok(metadata) = fs::metadata(store_file) {
+                            let file_size = metadata.len();
+                            let dev = metadata.dev();
+                            let dir = env_file_path.parent().unwrap_or(Path::new("/"));
+
+                            // Account for hardlinks (only count last file in hardlink set)
+                            // For now, we'll use a simple approach - in the future we can
+                            // track hardlink sets from filelist.txt
+                            let accounted_size = file_size; // TODO: integrate hardlink accounting
+
+                            // Update DSI for file creation
+                            transaction.update_dsi(
+                                dev,
+                                dir,
+                                accounted_size,
+                                0, // prev_size
+                                0, // fixup_size
+                                transaction::FileAction::Create,
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            // Check for disk space problems
+            transaction.check_dsi_problems(pkgkey);
+        }
+
+        // Validate and report problems
+        let critical_problems = validate_transaction(&transaction)?;
+        if !critical_problems.is_empty() {
+            log::warn!("Transaction validation found {} problem(s):", critical_problems.len());
+            for problem in &critical_problems {
+                log::warn!("  {}", format_problem(problem));
+            }
+            // Return error if there are critical problems
+            return Err(eyre::eyre!(
+                "Transaction validation failed with {} critical problem(s)",
+                critical_problems.len()
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Execute an InstallationPlan by performing the actual installation/removal operations.
     /// This function can be reused by both install and remove operations.
     /// If config().common.dry_run is true, will return the plan without executing it.
@@ -1512,12 +1768,12 @@ impl PackageManager {
             return Ok(plan);
         }
 
-        if crate::models::config().common.env.is_empty() {
+        if models::config().common.env.is_empty() {
             return Err(eyre::eyre!("Environment name not specified for installation plan"));
         }
 
-        let env_root = crate::dirs::get_default_env_root()?;
-        let generations_root = crate::dirs::get_default_generations_root()?;
+        let env_root = dirs::get_default_env_root()?;
+        let generations_root = dirs::get_default_generations_root()?;
 
         let new_generation = self.create_new_generation_with_root(&generations_root)?;
         let env_root = env_root.clone();
@@ -1539,14 +1795,163 @@ impl PackageManager {
         plan.can_reflink = can_reflink;
 
         // Fill pkglines for packages that already exist in the store
-        crate::store::fill_pkglines_in_plan(&mut plan, self)
+        store::fill_pkglines_in_plan(&mut plan, self)
             .with_context(|| "Failed to find existing packages in store")?;
+
+        // Validate transaction (disk space, conflicts, etc.) for RPM packages
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = self.validate_transaction(&plan, &store_root, &env_root) {
+                log::warn!("Transaction validation failed: {}", e);
+                // Continue anyway - validation is advisory for now
+            }
+        }
+
+        // Execute transaction scriptlets at transaction boundaries (RPM behavior)
+        // Order: %pretrans of new, then %preuntrans of old (before any file operations)
+        if package_format == PackageFormat::Rpm {
+            // %pretrans of packages being installed/upgraded
+            let mut pretrans_packages = plan.fresh_installs.clone();
+            for (k, v) in &plan.upgrades_new {
+                pretrans_packages.insert(k.clone(), v.clone());
+            }
+            if !pretrans_packages.is_empty() {
+                if let Err(e) = scriptlets::run_scriptlets_with_context(
+                    &pretrans_packages,
+                    &store_root,
+                    &env_root,
+                    package_format,
+                    scriptlets::ScriptletType::PreTrans,
+                    !plan.upgrades_new.is_empty(), // is_upgrade if there are upgrades
+                    Some(&self.installed_packages),
+                    Some(&plan.fresh_installs),
+                    Some(&plan.old_removes),
+                ) {
+                    log::warn!("Failed to run %pretrans scriptlets: {}", e);
+                }
+            }
+
+            // %preuntrans of packages being removed (runs after %pretrans, before removals)
+            if !plan.old_removes.is_empty() {
+                if let Err(e) = scriptlets::run_scriptlets_with_context(
+                    &plan.old_removes,
+                    &store_root,
+                    &env_root,
+                    package_format,
+                    scriptlets::ScriptletType::PreUnTrans,
+                    false, // is_upgrade - removals are separate from upgrades
+                    Some(&self.installed_packages),
+                    Some(&plan.fresh_installs),
+                    Some(&plan.old_removes),
+                ) {
+                    log::warn!("Failed to run %preuntrans scriptlets: {}", e);
+                }
+            }
+
+            // RPM transaction file triggers (transfiletriggerun) - after %preuntrans, before removals
+            // Runs ONCE per transaction for all matching removed files
+            if !plan.old_removes.is_empty() {
+                if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
+                    "transfiletriggerun",
+                    &self.installed_packages,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &plan.old_removes,
+                    &store_root,
+                    &env_root,
+                ) {
+                    log::warn!("Failed to run RPM transfiletriggerun triggers: {}", e);
+                }
+            }
+        }
 
         // Execute removals
         self.execute_removals(&plan, &store_root, &env_root, package_format)?;
 
         // Execute installations and upgrades
         self.execute_installations(&mut plan, &store_root, &env_root, package_format)?;
+
+        // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
+        // This runs AFTER all file operations complete (RPM behavior)
+        if package_format == PackageFormat::Rpm {
+            let mut posttrans_packages = plan.fresh_installs.clone();
+            for (k, v) in &plan.upgrades_new {
+                posttrans_packages.insert(k.clone(), v.clone());
+            }
+            if !posttrans_packages.is_empty() {
+                if let Err(e) = scriptlets::run_scriptlets_with_context(
+                    &posttrans_packages,
+                    &store_root,
+                    &env_root,
+                    package_format,
+                    scriptlets::ScriptletType::PostTrans,
+                    !plan.upgrades_new.is_empty(), // is_upgrade if there are upgrades
+                    Some(&self.installed_packages),
+                    Some(&plan.fresh_installs),
+                    Some(&plan.old_removes),
+                ) {
+                    log::warn!("Failed to run %posttrans scriptlets: {}", e);
+                }
+            }
+
+            // Execute transaction scriptlets: %postuntrans of packages being removed
+            // This runs AFTER %posttrans, AFTER uninstall transaction completes (RPM behavior)
+            // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
+            if !plan.old_removes.is_empty() {
+                if let Err(e) = scriptlets::run_scriptlets_with_context(
+                    &plan.old_removes,
+                    &store_root,
+                    &env_root,
+                    package_format,
+                    scriptlets::ScriptletType::PostUnTrans,
+                    false, // is_upgrade - removals are separate from upgrades
+                    Some(&self.installed_packages),
+                    Some(&plan.fresh_installs),
+                    Some(&plan.old_removes),
+                ) {
+                    log::warn!("Failed to run %postuntrans scriptlets: {}", e);
+                }
+            }
+
+            // RPM transaction file triggers (transfiletriggerpostun) - after %posttrans and %postuntrans
+            // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
+            if !plan.old_removes.is_empty() {
+                if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
+                    "transfiletriggerpostun",
+                    &self.installed_packages,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &plan.old_removes,
+                    &store_root,
+                    &env_root,
+                ) {
+                    log::warn!("Failed to run RPM transfiletriggerpostun triggers: {}", e);
+                }
+            }
+
+            // RPM transaction file triggers (transfiletriggerin) - LAST, after %posttrans, %postuntrans, and %transfiletriggerpostun
+            // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
+            let mut posttrans_packages = plan.fresh_installs.clone();
+            for (k, v) in &plan.upgrades_new {
+                posttrans_packages.insert(k.clone(), v.clone());
+            }
+            if !posttrans_packages.is_empty() {
+                let mut all_installed = self.installed_packages.clone();
+                for (k, v) in &posttrans_packages {
+                    all_installed.insert(k.clone(), v.clone());
+                }
+                if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
+                    "transfiletriggerin",
+                    &all_installed,
+                    &plan.fresh_installs,
+                    &plan.upgrades_new,
+                    &HashMap::new(),
+                    &store_root,
+                    &env_root,
+                ) {
+                    log::warn!("Failed to run RPM transfiletriggerin triggers: {}", e);
+                }
+            }
+        }
 
         // Execute exposure changes
         self.execute_unexpose_operations(&plan, &env_root)?;
@@ -1570,6 +1975,8 @@ impl PackageManager {
             return Ok(());
         }
 
+        // Note: %preuntrans is executed earlier in execute_installation_plan, before removals start
+
         // Update rdepends of packages that depended on the removed packages
         for (removed_pkg_key, removed_pkg_info) in &plan.old_removes {
             for dep_on_key in &removed_pkg_info.depends {
@@ -1589,6 +1996,38 @@ impl PackageManager {
             }
         }
 
+        // RPM file triggers (filetriggerun, high priority) - BEFORE preun
+        // RPM execution order: filetriggerun (high) -> triggerun -> preun -> filetriggerun (low) -> remove files
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &plan.old_removes,
+                store_root,
+                env_root,
+                1, // High priority (>= 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerun triggers (high priority): {}", e);
+            }
+        }
+
+        // RPM package triggers (triggerun) - before preun
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = rpm_triggers::run_rpm_package_triggers(
+                "triggerun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &plan.old_removes,
+                store_root,
+                env_root,
+            ) {
+                log::warn!("Failed to run RPM triggerun triggers: {}", e);
+            }
+        }
+
         // Run pre-remove scriptlets
         run_scriptlets(
             &plan.old_removes,
@@ -1599,6 +2038,22 @@ impl PackageManager {
             false, // is_upgrade
         )?;
 
+        // RPM file triggers (filetriggerun, low priority) - AFTER preun, BEFORE file removal
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &plan.old_removes,
+                store_root,
+                env_root,
+                2, // Low priority (< 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerun triggers (low priority): {}", e);
+            }
+        }
+
         // Unlink packages
         for (pkgkey, pkg_info) in &plan.old_removes {
             // Ensure pkgline is valid for path construction
@@ -1608,9 +2063,42 @@ impl PackageManager {
             }
             let pkg_store_path = store_root.join(&pkg_info.pkgline);
             log::info!("Unlinking files for package: {} from store path {}", pkgkey, pkg_store_path.display());
+
+            // Remove DEB trigger interests before unlinking
+            // Check if this is a DEB package by looking for trigger interest file
+            let install_dir = store_root.join(&pkg_info.pkgline).join("info/install");
+            let interest_file = install_dir.join("deb_interest.triggers");
+            if interest_file.exists() {
+                if let Err(e) = deb_triggers::incorporate_package_trigger_interests(
+                    pkgkey,
+                    store_root,
+                    env_root,
+                    true, // is_removal
+                ) {
+                    log::warn!("Failed to remove trigger interests for {}: {}", pkgkey, e);
+                }
+            }
+
             self.unlink_package(&pkg_store_path, &env_root.to_path_buf())
                 .with_context(|| format!("Failed to unlink package {} (store path: {})", pkgkey, pkg_store_path.display()))?;
             self.installed_packages.remove(pkgkey);
+        }
+
+        // RPM file triggers (filetriggerpostun, high priority) - AFTER file removal, BEFORE postun
+        // RPM execution order: remove files -> filetriggerpostun (high) -> postun -> triggerpostun -> filetriggerpostun (low)
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerpostun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &plan.old_removes,
+                store_root,
+                env_root,
+                1, // High priority (>= 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerpostun triggers (high priority): {}", e);
+            }
         }
 
         // Run post-remove scriptlets
@@ -1622,6 +2110,37 @@ impl PackageManager {
             ScriptletType::PostRemove,
             false, // is_upgrade
         )?;
+
+        // RPM package triggers (triggerpostun) - after triggering package is removed
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = rpm_triggers::run_rpm_package_triggers(
+                "triggerpostun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &plan.old_removes,
+                store_root,
+                env_root,
+            ) {
+                log::warn!("Failed to run RPM triggerpostun triggers: {}", e);
+            }
+        }
+
+        // RPM file triggers (filetriggerpostun, low priority) - AFTER postun
+        if package_format == PackageFormat::Rpm {
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerpostun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &plan.old_removes,
+                store_root,
+                env_root,
+                2, // Low priority (< 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerpostun triggers (low priority): {}", e);
+            }
+        }
 
         Ok(())
     }
@@ -1750,6 +2269,7 @@ impl PackageManager {
     }
 
     /// Process installation results (upgrades and fresh installations)
+    /// https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7#EXECUTION_ORDER
     pub fn process_installation_results(
         &mut self,
         plan: &InstallationPlan,
@@ -1760,7 +2280,7 @@ impl PackageManager {
     ) -> Result<()> {
         // Load hooks for Arch Linux (Pacman format)
         let hooks = if package_format == PackageFormat::Pacman {
-            match crate::hooks::load_hooks(env_root) {
+            match hooks::load_hooks(env_root) {
                 Ok(hooks) => {
                     log::debug!("Loaded {} hooks", hooks.len());
                     Some(hooks)
@@ -1790,11 +2310,11 @@ impl PackageManager {
         // Run PreTransaction hooks
         if let Some(ref hooks) = hooks {
             if !fresh_installs_completed.is_empty() || !upgrades_new_completed.is_empty() || !plan.old_removes.is_empty() {
-                crate::hooks::run_hooks(
+                hooks::run_hooks(
                     hooks,
                     env_root,
                     store_root,
-                    crate::hooks::HookWhen::PreTransaction,
+                    hooks::HookWhen::PreTransaction,
                     &fresh_installs_completed,
                     &upgrades_new_completed,
                     &plan.upgrades_old,
@@ -1826,11 +2346,11 @@ impl PackageManager {
         // Run PostTransaction hooks
         if let Some(ref hooks) = hooks {
             if !fresh_installs_completed.is_empty() || !upgrades_new_completed.is_empty() || !plan.old_removes.is_empty() {
-                crate::hooks::run_hooks(
+                hooks::run_hooks(
                     hooks,
                     env_root,
                     store_root,
-                    crate::hooks::HookWhen::PostTransaction,
+                    hooks::HookWhen::PostTransaction,
                     &fresh_installs_completed,
                     &upgrades_new_completed,
                     &plan.upgrades_old,
@@ -1839,6 +2359,7 @@ impl PackageManager {
                 )?;
             }
         }
+
 
         Ok(())
     }
@@ -2004,7 +2525,7 @@ impl PackageManager {
         store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     ) -> Result<(String, InstalledPackageInfo)> {
         // Unpack the package
-        let final_dir = crate::store::unpack_mv_package(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname))
+        let final_dir = store::unpack_mv_package(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname))
             .with_context(|| format!("Failed to unpack package: {}", file_path))?;
 
         // Get the pkgline from the directory name
@@ -2069,11 +2590,11 @@ impl PackageManager {
         env_root: &Path,
         package_format: PackageFormat,
     ) -> Result<()> {
-        use crate::scriptlets::{run_scriptlet, ScriptletType};
+        use scriptlets::{run_scriptlet, ScriptletType};
 
         // Extract version information
-        let old_version = crate::package::pkgkey2version(old_pkgkey).ok();
-        let new_version = crate::package::pkgkey2version(new_pkgkey).ok();
+        let old_version = package::pkgkey2version(old_pkgkey).ok();
+        let new_version = package::pkgkey2version(new_pkgkey).ok();
 
         log::debug!(
             "Processing upgrade for {}: {} -> {}",
@@ -2095,6 +2616,59 @@ impl PackageManager {
             new_version.as_deref(),
         )?;
 
+        // Step 1.5: RPM package triggers (triggerprein) for upgrade
+        if package_format == PackageFormat::Rpm {
+            let mut upgrades_new_map = HashMap::new();
+            upgrades_new_map.insert(new_pkgkey.to_string(), new_package_info.clone());
+            if let Err(e) = rpm_triggers::run_rpm_package_triggers(
+                "triggerprein",
+                &self.installed_packages,
+                &upgrades_new_map,
+                &HashMap::new(),
+                &HashMap::new(),
+                store_root,
+                env_root,
+            ) {
+                log::warn!("Failed to run RPM triggerprein triggers during upgrade: {}", e);
+            }
+        }
+
+        // Step 1.6: RPM package triggers (triggerun) for upgrade - BEFORE preun
+        // RPM execution order: triggerun (old) -> triggerun (rpmdb) -> filetriggerun (high) -> preun
+        if package_format == PackageFormat::Rpm {
+            let mut old_removes_map = HashMap::new();
+            old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            if let Err(e) = rpm_triggers::run_rpm_package_triggers(
+                "triggerun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &old_removes_map,
+                store_root,
+                env_root,
+            ) {
+                log::warn!("Failed to run RPM triggerun triggers during upgrade: {}", e);
+            }
+        }
+
+        // Step 1.7: RPM file triggers (filetriggerun, high priority) - BEFORE preun
+        if package_format == PackageFormat::Rpm {
+            let mut old_removes_map = HashMap::new();
+            old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &old_removes_map,
+                store_root,
+                env_root,
+                1, // High priority (>= 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerun triggers (high priority) during upgrade: {}", e);
+            }
+        }
+
         // Step 2: Old package pre-remove (with new version info)
         run_scriptlet(
             new_pkgkey,
@@ -2108,11 +2682,36 @@ impl PackageManager {
             new_version.as_deref(),
         )?;
 
+        // Step 2.5: RPM file triggers (filetriggerun, low priority) - AFTER preun, BEFORE file removal
+        if package_format == PackageFormat::Rpm {
+            let mut old_removes_map = HashMap::new();
+            old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &old_removes_map,
+                store_root,
+                env_root,
+                2, // Low priority (< 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerun triggers (low priority) during upgrade: {}", e);
+            }
+        }
+
         // Step 3: Link new package files to env
         // Done in wait_downloads_and_unpack_link() via unpack_package() for now
         // let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
         // self.link_package(&new_store_fs_dir, &env_root.to_path_buf())
         //     .with_context(|| format!("Failed to link new package {}", new_package_info.pkgline))?;
+
+        // Step 3.5: DEB trigger handling (incorporate interests, build index, activate file triggers)
+        if package_format == PackageFormat::Deb {
+            // Use helper function for single package
+            let packages = [(new_pkgkey, new_package_info)];
+            process_deb_triggers(&packages, store_root, env_root)?;
+        }
 
         // Step 4: Unlink old package unique files (files in old_pkg but not in new_pkg)
         self.unlink_package_diff(old_package_info, new_package_info, store_root, env_root)
@@ -2131,6 +2730,23 @@ impl PackageManager {
             new_version.as_deref(),
         )?;
 
+        // Step 5.5: RPM package triggers (triggerin) for upgrade
+        if package_format == PackageFormat::Rpm {
+            let mut upgrades_new_map = HashMap::new();
+            upgrades_new_map.insert(new_pkgkey.to_string(), new_package_info.clone());
+            if let Err(e) = rpm_triggers::run_rpm_package_triggers(
+                "triggerin",
+                &self.installed_packages,
+                &upgrades_new_map,
+                &HashMap::new(),
+                &HashMap::new(),
+                store_root,
+                env_root,
+            ) {
+                log::warn!("Failed to run RPM triggerin triggers during upgrade: {}", e);
+            }
+        }
+
         // Step 6: Old package post-remove (with new version info)
         run_scriptlet(
             new_pkgkey,
@@ -2143,6 +2759,23 @@ impl PackageManager {
             old_version.as_deref(),
             new_version.as_deref(),
         )?;
+
+        // Step 6.5: RPM package triggers (triggerpostun) for upgrade
+        if package_format == PackageFormat::Rpm {
+            let mut old_removes_map = HashMap::new();
+            old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            if let Err(e) = rpm_triggers::run_rpm_package_triggers(
+                "triggerpostun",
+                &self.installed_packages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &old_removes_map,
+                store_root,
+                env_root,
+            ) {
+                log::warn!("Failed to run RPM triggerpostun triggers during upgrade: {}", e);
+            }
+        }
 
         log::info!("Successfully upgraded package: {}", new_pkgkey);
         Ok(())
@@ -2237,12 +2870,55 @@ impl PackageManager {
         env_root: &Path,
         package_format: PackageFormat,
     ) -> Result<()> {
-        use crate::scriptlets::{run_scriptlets, ScriptletType};
-
         // Fresh install flow:
-        // 1. pre_install  (check dependencies/conflicts)
-        // 2. install files (link packages)
-        // 3. post_install (start services/update config)
+        // 1. triggerprein (RPM package triggers)
+        // 2. pre_install  (check dependencies/conflicts)
+        // 3. install files (link packages)
+        // 4. filetriggerin (high priority)
+        // 5. post_install (start services/update config)
+        // 6. triggerin
+        // 7. filetriggerin (low priority)
+
+        // Step 0.5: RPM package triggers (triggerprein) - BEFORE pre
+        // RPM execution order: sysusers -> triggerprein (rpmdb) -> triggerprein (new) -> pre
+        // Pre-compute trigger data once for reuse across multiple trigger calls in this function
+        let rpm_trigger_data = if package_format == PackageFormat::Rpm {
+            // Include both installed packages and fresh installs to check for triggers
+            let mut all_installed = self.installed_packages.clone();
+            for (k, v) in fresh_installs {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            Some(rpm_triggers::prepare_rpm_trigger_data(
+                &all_installed,
+                fresh_installs,
+                &HashMap::new(),
+                &HashMap::new(),
+            ))
+        } else {
+            None
+        };
+
+        if package_format == PackageFormat::Rpm {
+            let mut all_installed = self.installed_packages.clone();
+            for (k, v) in fresh_installs {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            if let Some((ref triggering_packages, ref all_packages)) = rpm_trigger_data {
+                if let Err(e) = rpm_triggers::run_rpm_package_triggers_with_data(
+                    "triggerprein",
+                    &all_installed,
+                    fresh_installs,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    triggering_packages,
+                    all_packages,
+                    store_root,
+                    env_root,
+                ) {
+                    log::warn!("Failed to run RPM triggerprein triggers: {}", e);
+                }
+            }
+        }
 
         // Step 1: Pre-install
         run_scriptlets(
@@ -2254,6 +2930,26 @@ impl PackageManager {
             false, // is_upgrade
         )?;
 
+        // Step 1.5: Activate DEB activate triggers (status-change activation)
+        // These are triggers declared with "activate" directive that fire on package status changes
+        if package_format == PackageFormat::Deb {
+            for (pkgkey, _pkg_info) in fresh_installs {
+                let activate_triggers = deb_triggers::read_package_activate_triggers(pkgkey, store_root)
+                    .unwrap_or_default();
+                let pkgname = package::pkgkey2pkgname(pkgkey).ok();
+                for (trigger_name, await_mode) in activate_triggers {
+                    if let Err(e) = deb_triggers::activate_trigger(
+                        env_root,
+                        &trigger_name,
+                        pkgname.as_deref(),
+                        !await_mode, // no_await is inverse of await_mode
+                    ) {
+                        log::warn!("Failed to activate trigger {} for package {}: {}", trigger_name, pkgkey, e);
+                    }
+                }
+            }
+        }
+
         // Step 2: Install files (link packages)
         // This is moved earlier to wait_downloads_and_unpack_link() via unpack_package(), so that scriptlets have command to run.
         // for (_, package_info) in fresh_installs {
@@ -2261,6 +2957,37 @@ impl PackageManager {
         //     self.link_package(&store_fs_dir, &env_root.to_path_buf())
         //         .with_context(|| format!("Failed to link package {}", package_info.pkgline))?;
         // }
+
+        // Step 2.3: DEB trigger handling (incorporate interests, build index, activate file triggers)
+        if package_format == PackageFormat::Deb {
+            // Collect packages into a Vec for the helper function
+            let packages: Vec<_> = fresh_installs
+                .iter()
+                .map(|(pkgkey, package_info)| (pkgkey.as_str(), package_info))
+                .collect();
+            process_deb_triggers(&packages, store_root, env_root)?;
+        }
+
+        // Step 2.5: RPM file triggers (filetriggerin, high priority) - AFTER file unpack, BEFORE postin
+        // RPM execution order: unpack -> filetriggerin (high) -> postin -> triggerin -> filetriggerin (low)
+        if package_format == PackageFormat::Rpm {
+            let mut all_installed = self.installed_packages.clone();
+            for (k, v) in fresh_installs {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerin",
+                &all_installed,
+                fresh_installs,
+                &HashMap::new(),
+                &HashMap::new(),
+                store_root,
+                env_root,
+                1, // High priority (>= 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerin triggers (high priority): {}", e);
+            }
+        }
 
         // Step 3: Post-install
         run_scriptlets(
@@ -2271,6 +2998,193 @@ impl PackageManager {
             ScriptletType::PostInstall,
             false, // is_upgrade
         )?;
+
+        // Step 3.3: RPM package triggers (triggerin) - after triggering package is installed
+        // Also runs when your package is installed and target is already installed
+        if package_format == PackageFormat::Rpm {
+            // Include both installed packages and fresh installs to check for triggers
+            let mut all_installed = self.installed_packages.clone();
+            for (k, v) in fresh_installs {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            // Reuse pre-computed trigger data from earlier
+            if let Some((ref triggering_packages, ref all_packages)) = rpm_trigger_data {
+                if let Err(e) = rpm_triggers::run_rpm_package_triggers_with_data(
+                    "triggerin",
+                    &all_installed,
+                    fresh_installs,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    triggering_packages,
+                    all_packages,
+                    store_root,
+                    env_root,
+                ) {
+                    log::warn!("Failed to run RPM triggerin triggers: {}", e);
+                }
+            }
+        }
+
+        // Step 3.4: RPM file triggers (filetriggerin, low priority) - AFTER postin
+        if package_format == PackageFormat::Rpm {
+            let mut all_installed = self.installed_packages.clone();
+            for (k, v) in fresh_installs {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            if let Err(e) = rpm_triggers::run_rpm_file_triggers(
+                "filetriggerin",
+                &all_installed,
+                fresh_installs,
+                &HashMap::new(),
+                &HashMap::new(),
+                store_root,
+                env_root,
+                2, // Low priority (< 10000)
+            ) {
+                log::warn!("Failed to run RPM filetriggerin triggers (low priority): {}", e);
+            }
+        }
+
+        // Step 3.5: Incorporate and process DEB triggers
+        // Incorporate triggers from Unincorp into package status, then process pending triggers
+        if package_format == PackageFormat::Deb {
+            let mut all_packages = self.installed_packages.clone();
+            for (k, v) in fresh_installs {
+                all_packages.insert(k.clone(), v.clone());
+            }
+
+            // Incorporate triggers from Unincorp
+            let incorporation_result = deb_triggers::incorporate_triggers(env_root, &all_packages, store_root)
+                .unwrap_or_else(|_| deb_triggers::TriggerIncorporationResult {
+                    pending_triggers: HashMap::new(),
+                    awaiting_packages: HashSet::new(),
+                });
+
+            // Update package states based on incorporation results
+            // Mark packages with pending triggers
+            // Collect pkgkeys first to avoid borrow checker issues
+            let mut pending_pkgkeys: Vec<(String, Vec<String>)> = Vec::new();
+            for (pkgname, trigger_names) in &incorporation_result.pending_triggers {
+                if let Some((pkgkey, _)) = all_packages.iter()
+                    .find(|(k, _)| package::pkgkey2pkgname(k).unwrap_or_default() == *pkgname) {
+                    pending_pkgkeys.push((pkgkey.clone(), trigger_names.clone()));
+                }
+            }
+            for (pkgkey, trigger_names) in pending_pkgkeys {
+                if let Some(info) = all_packages.get_mut(&pkgkey) {
+                    info.pending_triggers = trigger_names.clone();
+                }
+                if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                    info.pending_triggers = trigger_names.clone();
+                }
+                let pkgname = package::pkgkey2pkgname(&pkgkey).unwrap_or_default();
+                log::debug!("Package {} has pending triggers: {:?}", pkgname, trigger_names);
+            }
+
+            // Mark packages that should await trigger processing
+            // Collect pkgkeys first to avoid borrow checker issues
+            let mut awaiting_pkgkeys: Vec<String> = Vec::new();
+            for pkgname in &incorporation_result.awaiting_packages {
+                if let Some((pkgkey, _)) = all_packages.iter()
+                    .find(|(k, _)| package::pkgkey2pkgname(k).unwrap_or_default() == *pkgname) {
+                    awaiting_pkgkeys.push(pkgkey.clone());
+                }
+            }
+            for pkgkey in awaiting_pkgkeys {
+                if let Some(info) = all_packages.get_mut(&pkgkey) {
+                    info.triggers_awaited = true;
+                }
+                if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                    info.triggers_awaited = true;
+                }
+                let pkgname = package::pkgkey2pkgname(&pkgkey).unwrap_or_default();
+                log::debug!("Package {} is awaiting trigger processing", pkgname);
+            }
+
+            // Process triggers for packages with pending triggers
+            // Reset cycle detection at start
+            deb_triggers::reset_cycle_detection();
+
+            // Collect pkgkeys first to avoid borrow checker issues
+            let mut processing_queue: Vec<(String, String, Vec<String>)> = Vec::new();
+            for (pkgname, trigger_names) in incorporation_result.pending_triggers {
+                if let Some((pkgkey, _)) = all_packages.iter()
+                    .find(|(k, _)| package::pkgkey2pkgname(k).unwrap_or_default() == pkgname) {
+                    // Skip packages that are already in config-failed state
+                    if let Some(info) = all_packages.get(pkgkey) {
+                        if info.config_failed {
+                            log::debug!("Skipping package {} - already in config-failed state", pkgname);
+                            continue;
+                        }
+                    }
+                    processing_queue.push((pkgkey.clone(), pkgname.clone(), trigger_names));
+                }
+            }
+
+            // Process triggers with cycle detection
+            for (pkgkey, pkgname, trigger_names) in processing_queue {
+                // Build map of all pending triggers for cycle detection
+                let mut all_pending_triggers: HashMap<String, Vec<String>> = HashMap::new();
+                for (k, info) in all_packages.iter() {
+                    if !info.pending_triggers.is_empty() && !info.config_failed {
+                        all_pending_triggers.insert(k.clone(), info.pending_triggers.clone());
+                    }
+                }
+
+                // Check for cycles before processing
+                if let Some(cycle_pkgkey) = deb_triggers::check_trigger_cycle(&pkgkey, &all_pending_triggers) {
+                    log::warn!("Trigger cycle detected! Marking package {} as config-failed to break cycle", cycle_pkgkey);
+                    // Mark the cycle-breaking package as config-failed
+                    if let Some(info) = all_packages.get_mut(&cycle_pkgkey) {
+                        info.config_failed = true;
+                        info.pending_triggers.clear(); // Clear pending triggers
+                    }
+                    if let Some(info) = self.installed_packages.get_mut(&cycle_pkgkey) {
+                        info.config_failed = true;
+                        info.pending_triggers.clear();
+                    }
+                    // Skip processing this package if it's the one we're marking as failed
+                    if cycle_pkgkey == pkgkey {
+                        continue;
+                    }
+                }
+
+                if let Some(pkg_info) = all_packages.get(&pkgkey).cloned() {
+                    match deb_triggers::process_package_triggers(
+                        &pkgkey,
+                        &pkg_info,
+                        &trigger_names,
+                        store_root,
+                        env_root,
+                    ) {
+                        Ok(_) => {
+                            // Clear pending triggers after successful processing
+                            if let Some(info) = all_packages.get_mut(&pkgkey) {
+                                info.pending_triggers.clear();
+                                info.config_failed = false; // Clear config-failed if processing succeeded
+                            }
+                            if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                                info.pending_triggers.clear();
+                                info.config_failed = false;
+                            }
+                            log::debug!("Successfully processed triggers for package {}", pkgname);
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to process triggers for package {}: {}", pkgname, e);
+                            // Set package to config-failed state
+                            if let Some(info) = all_packages.get_mut(&pkgkey) {
+                                info.config_failed = true;
+                                // Keep pending triggers - they won't be reattempted until explicitly requested
+                            }
+                            if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                                info.config_failed = true;
+                            }
+                            log::warn!("Package {} marked as config-failed due to trigger processing failure", pkgname);
+                        }
+                    }
+                }
+            }
+        }
 
         // Run ldconfig if needed
         run_ldconfig_if_needed(env_root)?;
@@ -2289,8 +3203,8 @@ impl PackageManager {
     ) -> Result<()> {
         // Helper function to check if a package is essential
         let is_essential = |pkgkey: &str| -> bool {
-            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
-                crate::mmio::is_essential_pkgname(&pkgname)
+            if let Ok(pkgname) = package::pkgkey2pkgname(pkgkey) {
+                mmio::is_essential_pkgname(&pkgname)
             } else {
                 false
             }
@@ -2969,8 +3883,8 @@ impl PackageManager {
     /// Returns package specs that can be used with install_packages()
     fn process_local_package_files(&mut self, local_files: Vec<String>) -> Result<Vec<String>> {
         use std::sync::Arc;
-        use crate::store::detect_package_format;
-        use crate::mmio::deserialize_package;
+        use store::detect_package_format;
+        use mmio::deserialize_package;
 
         let mut package_specs = Vec::new();
 
@@ -2986,7 +3900,7 @@ impl PackageManager {
             }
 
             // Unpack the package to the store
-            let final_dir = crate::store::unpack_mv_package(&package_file, None, None)
+            let final_dir = store::unpack_mv_package(&package_file, None, None)
                 .with_context(|| format!("Failed to unpack package: {}", package_file))?;
 
             // Extract caHash from the pkgline (directory name)
@@ -2994,7 +3908,7 @@ impl PackageManager {
             let pkgline = final_dir.file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| eyre::eyre!("Invalid package directory name: {}", final_dir.display()))?;
-            let parsed_pkgline = crate::package::parse_pkgline(pkgline)
+            let parsed_pkgline = package::parse_pkgline(pkgline)
                 .with_context(|| format!("Failed to parse pkgline: {}", pkgline))?;
 
             // Read package.txt from the unpacked package
@@ -3023,7 +3937,7 @@ impl PackageManager {
             package.package_baseurl = String::new(); // Empty baseurl indicates local file
 
             // Generate pkgkey from package metadata (using caHash from pkgline)
-            package.pkgkey = crate::package::pkgline2pkgkey(pkgline)
+            package.pkgkey = package::pkgline2pkgkey(pkgline)
                 .unwrap_or_else(|_| format!("{}={}", package.pkgname, package.version));
 
             // Detect package format from file extension
@@ -3043,7 +3957,7 @@ impl PackageManager {
 
     /// Process package specs: separate regular specs from files/URLs, download URLs, process local files
     fn process_url_package_specs(&mut self, package_specs: Vec<String>) -> Result<Vec<String>> {
-        use crate::store::detect_package_format;
+        use store::detect_package_format;
         use crate::mirror::{Mirrors, UrlProtocol};
 
         // Separate package specs into regular package names and local files/URLs
@@ -3081,7 +3995,7 @@ impl PackageManager {
 
         // Download all remote URLs in parallel (if any)
         if !remote_urls.is_empty() {
-            use crate::download::download_urls;
+            use download::download_urls;
             let download_results = download_urls(remote_urls);
             for result in download_results {
                 match result {
@@ -3104,12 +4018,11 @@ impl PackageManager {
     /// Parses each spec and returns a map of package name -> version constraint
     pub fn create_delta_world_from_specs(package_specs: &[String]) -> HashMap<String, String> {
         use crate::parse_requires::{parse_package_spec_with_version, format_version_constraint_for_world};
-        use crate::models::PackageFormat;
 
         let mut delta_world = HashMap::new();
 
         for spec in package_specs {
-            let (pkgname, constraints) = parse_package_spec_with_version(spec, PackageFormat::Apk);
+            let (pkgname, constraints) = parse_package_spec_with_version(spec, models::PackageFormat::Apk);
 
             // Format the constraint string
             let constraint_str = if let Some(ref constraints) = constraints {
@@ -3177,7 +4090,7 @@ impl PackageManager {
     /// Parses config.install.no_install cmdline string (e.g., "pkg1,pkg2,-pkg3")
     /// and updates world["no-install"] with space-separated package names
     fn apply_no_install_changes(&mut self) -> Result<()> {
-        let config = crate::models::config();
+        let config = models::config();
 
         // If no cmdline string provided, nothing to do
         if config.install.no_install.is_empty() {
@@ -3214,7 +4127,7 @@ impl PackageManager {
 
     /// Add essential packages to delta_world if not already in self.world
     fn add_essential_packages_to_delta_world(&mut self, delta_world: &mut HashMap<String, String>) -> Result<()> {
-        let essential_pkgnames = crate::mmio::get_essential_pkgnames()?;
+        let essential_pkgnames = mmio::get_essential_pkgnames()?;
         for essential_pkgname in &essential_pkgnames {
             // Only add if not already in self.world or delta_world
             if !self.world.contains_key(essential_pkgname) && !delta_world.contains_key(essential_pkgname) {

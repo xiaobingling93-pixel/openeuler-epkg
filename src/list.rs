@@ -640,7 +640,8 @@ impl PackageManager {
 }
 
 /// Static version of matches_glob_pattern for use in threads
-fn matches_glob_pattern(name: &str, pattern: &str) -> bool {
+/// Also exported for use in other modules like dpkg_query
+pub fn matches_glob_pattern(name: &str, pattern: &str) -> bool {
     // Handle simple cases
     if pattern.is_empty() || pattern == "*" {
         return true; // matches everything

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
 use crate::models::InstalledPackageInfo;
-use crate::utils::list_package_files;
+use crate::utils::get_package_files;
 use shlex;
 use glob::Pattern;
 
@@ -799,25 +799,6 @@ fn match_package_trigger(
     Ok((matched, install_pkgs, upgrade_pkgs, remove_pkgs))
 }
 
-/// Get all files from a package
-fn get_package_files(
-    store_root: &Path,
-    package_info: &InstalledPackageInfo,
-) -> Result<Vec<PathBuf>> {
-    let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-    if !store_fs_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let files = list_package_files(store_fs_dir.to_str()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Invalid store fs path"))?)?;
-
-    // Convert to relative paths (without leading /)
-    Ok(files.iter()
-        .filter_map(|p| p.strip_prefix(&store_fs_dir).ok())
-        .map(|p| p.to_path_buf())
-        .collect())
-}
 
 /// Check if a package dependency is satisfied
 /// Reference: _alpm_hook_run_hook uses alpm_find_satisfier
