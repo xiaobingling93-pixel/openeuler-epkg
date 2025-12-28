@@ -631,7 +631,7 @@ pub struct RepoShard {
     pub filelists: Option<FilelistsFileInfo>,
 
     #[serde(skip)]
-    pub provide2pkgnames: HashMap<String, Vec<String>>,
+    pub provide2pkgnames: Option<crate::mmio::Provide2PkgNamesMapper>,
     #[serde(skip)]
     pub essential_pkgnames: HashSet<String>,
     #[serde(skip)]

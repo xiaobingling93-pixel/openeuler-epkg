@@ -1,18 +1,51 @@
 use std::fs;
 use std::fs::File;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::Mmap;
 use color_eyre::eyre::{Result, WrapErr};
 use color_eyre::eyre;
+// Use Archived type alias from rkyv
+// When HashMap<String, Vec<String>> is archived, it becomes Archived<HashMap<String, Vec<String>>>
+// which internally uses ArchivedHashMap<ArchivedString, ArchivedVec<ArchivedString>>
+use rkyv::Archived;
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::package;
 
 // Global status to track if provide2pkgnames data has been loaded
 static PROVIDE2PKGNAMES_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Memory-mapped wrapper for Archived<HashMap<String, Vec<String>>>
+#[derive(Debug)]
+pub struct Provide2PkgNamesMapper {
+    #[allow(dead_code)]
+    file: File,
+    mmap: Mmap,
+}
+
+impl Provide2PkgNamesMapper {
+    pub fn new(file_path: &PathBuf) -> std::io::Result<Self> {
+        let file = File::open(file_path)?;
+        // Memory map the file (unsafe because we must ensure the file isn't modified externally)
+        let mmap = unsafe { Mmap::map(&file)? };
+        Ok(Self { file, mmap })
+    }
+
+    /// Get the Archived<HashMap> from the memory-mapped data
+    /// The archived type is Archived<HashMap<String, String>>
+    /// which internally uses ArchivedHashMap<ArchivedString, ArchivedString>
+    pub fn get(&self) -> Result<&Archived<HashMap<String, String>>> {
+        // Use rkyv's access_unchecked for zero-copy access
+        // The memory-mapped file is read-only, so this is safe
+        // access_unchecked is re-exported at rkyv root level
+        Ok(unsafe {
+            rkyv::access_unchecked::<Archived<HashMap<String, String>>>(&self.mmap)
+        })
+    }
+}
 
 #[derive(Debug)]
 pub struct FileMapper {
@@ -74,7 +107,7 @@ impl FileMapper {
 /// Get standard package-related paths based on a base packages path
 pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let packages_path = repo_dir.join(packages_filename);
-    let provide2pkgnames_path = repo_dir.join(packages_filename.replace("packages", "provide2pkgnames")).with_extension("yaml");
+    let provide2pkgnames_path = repo_dir.join(packages_filename.replace("packages", "provide2pkgnames")).with_extension("rkyv");
     let essential_pkgnames_path = repo_dir.join(packages_filename.replace("packages", "essential_pkgnames"));
     let pkgname2ranges_path = packages_path.with_extension("idx");
 
@@ -135,14 +168,14 @@ pub fn ensure_provide2pkgnames_loaded() -> Result<()> {
                 get_package_paths(&repo_dir, &filename);
 
             // Load provide2pkgnames data from file
-            match deserialize_provide2pkgnames(&provide2pkgnames_path) {
-                Ok(provide2pkgnames) => {
-                    shard.provide2pkgnames = provide2pkgnames;
+            match Provide2PkgNamesMapper::new(&provide2pkgnames_path) {
+                Ok(mapper) => {
+                    shard.provide2pkgnames = Some(mapper);
                 },
                 Err(e) => {
                     log::warn!("Failed to load provide2pkgnames from {}: {}", provide2pkgnames_path.display(), e);
-                    // Set empty HashMap if loading fails
-                    shard.provide2pkgnames = std::collections::HashMap::new();
+                    // Set None if loading fails
+                    shard.provide2pkgnames = None;
                 }
             }
         }
@@ -183,68 +216,36 @@ pub fn deserialize_essential_pkgnames(file_path: &PathBuf) -> Result<HashSet<Str
     Ok(hashset)
 }
 
-/// Serializes package provides mapping to a file
+/// Serializes package provides mapping to a file using rkyv
 pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<String, Vec<String>>) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-
-    let mut sorted_names: Vec<_> = provide2pkgnames.iter().collect();
-    sorted_names.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (key, values) in sorted_names {
-        // Filter out trivial entries where key equals value
-        // Also filter out values that equal the key
-        // Deduplicate values using HashSet
-        let filtered_values: HashSet<String> = values.iter()
+    // Filter out trivial entries where key equals value
+    // Convert Vec<String> to space-separated String for more compact storage
+    let mut filtered_map: HashMap<String, String> = HashMap::new();
+    for (key, values) in provide2pkgnames {
+        let filtered_values: Vec<String> = values.iter()
             .filter(|value| *value != key)
             .cloned()
             .collect();
 
-        // Only write the line if there are non-trivial values
+        // Only include if there are non-trivial values
+        // Join with spaces for compact storage (package names don't contain spaces)
         if !filtered_values.is_empty() {
-            // Convert to sorted Vec for consistent output
-            let mut sorted_values: Vec<String> = filtered_values.into_iter().collect();
-            sorted_values.sort();
-            let line = format!("{}: {}", key, sorted_values.join(" "));
-            writeln!(writer, "{}", line)?;
+            filtered_map.insert(key.clone(), filtered_values.join(" "));
         }
     }
+
+    // Serialize using rkyv
+    // HashMap will be archived as Archived<HashMap<...>>
+    use rancor::Error;
+    let aligned_vec = rkyv::to_bytes::<Error>(&filtered_map)
+        .map_err(|e| eyre::eyre!("Failed to serialize provide2pkgnames: {:?}", e))?;
+    // AlignedVec implements AsRef<[u8]>, convert to Vec for fs::write
+    let bytes: Vec<u8> = aligned_vec.as_ref().to_vec();
+
+    fs::write(path, bytes)
+        .with_context(|| format!("Failed to write provide2pkgnames to {}", path.display()))?;
 
     Ok(())
-}
-
-/// Estimate the number of lines in a file based on its size and an average bytes-per-line value
-fn estimate_lines_from_file_size(file_path: &std::path::Path, bytes_per_line: u64, fallback: usize) -> usize {
-    let file_size = std::fs::metadata(file_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    if file_size > 0 {
-        (file_size / bytes_per_line) as usize
-    } else {
-        fallback
-    }
-}
-
-/// Deserializes package provides mapping from a file
-pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<String, Vec<String>>> {
-    log::debug!("deserialize_provide2pkgnames for {}", file_path.display());
-
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-
-    // Estimate number of entries based on file size and average bytes per line (46 bytes/line)
-    let estimated_lines = estimate_lines_from_file_size(file_path, 46, 64);
-    let mut map: HashMap<String, Vec<String>> = HashMap::with_capacity(estimated_lines);
-
-    for (line_num, line_result) in reader.lines().enumerate() {
-        let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path.display()))?;
-        if let Some((key, values)) = line.split_once(": ") {
-            let values: Vec<String> = values.split(" ").map(|s| s.to_string()).collect();
-            map.insert(key.to_string(), values);
-        }
-    }
-
-    Ok(map)
 }
 
 // Function to serialize pkgname2ranges to a file
@@ -530,8 +531,24 @@ pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
     for repo_index in repodata_indice.values() {
         for shard in repo_index.repo_shards.values() {
             // capability is cap_with_arch (atomic, never split)
-            if let Some(shard_pkgnames) = shard.provide2pkgnames.get(capability) {
-                pkgnames.extend(shard_pkgnames.clone());
+            if let Some(ref mapper) = shard.provide2pkgnames {
+                match mapper.get() {
+                    Ok(archived_map) => {
+                        if let Some(shard_pkgnames) = archived_map.get(capability) {
+                            // ArchivedString contains space-separated package names
+                            // Split and convert to Vec<String> (package names don't contain spaces)
+                            let pkgnames_vec: Vec<String> = shard_pkgnames
+                                .as_str()
+                                .split(' ')
+                                .map(|s| s.to_string())
+                                .collect();
+                            pkgnames.extend(pkgnames_vec);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to access provide2pkgnames: {}", e);
+                    }
+                }
             }
         }
     }

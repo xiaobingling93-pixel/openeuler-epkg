@@ -912,7 +912,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
             packages: packages_info,
             filelists: filelists_info,
             essential_pkgnames: std::collections::HashSet::new(),
-            provide2pkgnames:   std::collections::HashMap::new(),
+            provide2pkgnames:   None,
             pkgname2ranges:     std::collections::BTreeMap::new(),
             packages_mmap:      None,
             pkgname2ranges_path: None,

@@ -57,6 +57,8 @@ num_cpus = "1.17"
 sys-info = "0.9"
 tempfile = "3.23"
 versions = "6.3"
+rkyv = { version = "0.8", features = ["std", "alloc", "bytecheck"] }
+rancor = "0.1"
 resolvo = { version = "0.10.1", path = "resolvo" }
 
 # Optional but recommended for better progress bars
