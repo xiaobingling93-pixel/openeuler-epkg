@@ -1291,7 +1291,7 @@ impl PackageManager {
     }
 
     // link files from env_root to store_fs_dir
-    fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, link_type: LinkType, can_reflink: bool) -> Result<()> {
+    pub fn link_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf, link_type: LinkType, can_reflink: bool) -> Result<()> {
         let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
             .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
         mirror_dir(env_root, store_fs_dir, &fs_files, link_type, can_reflink)
@@ -1930,8 +1930,10 @@ impl PackageManager {
     ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
         let mut completed_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
         let mut aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        // Collect unpacked packages that need linking after all downloads complete
+        let mut packages_to_link: Vec<(String, InstalledPackageInfo)> = Vec::new();
 
-        // Process packages as downloads complete
+        // Unpack packages as downloads complete
         while !pending_urls.is_empty() {
             // Wait for any download to complete
             if let Some(completed_url) = download::wait_for_any_download_task(&pending_urls)? {
@@ -1951,7 +1953,7 @@ impl PackageManager {
                                 aur_packages.insert(pkgkey, package_info);
                             }
                         } else {
-                            // For binary packages, unpack and link
+                            // For binary packages, unpack (but don't link yet)
                             // Get the downloaded file path
                             let file_path = self.get_package_file_path(&pkgkey)?;
 
@@ -1959,19 +1961,17 @@ impl PackageManager {
                             let package_info = packages_to_install.remove(&pkgkey)
                                 .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?;
 
-                            // Unpack and link the package
-                            let (actual_pkgkey, package_info) = self.unpack_and_link_package(
+                            // Unpack the package (without linking)
+                            let (actual_pkgkey, package_info) = self.unpack_package(
                                 &file_path,
                                 &pkgkey,
                                 package_info,
-                                store_root,
-                                env_root,
-                                link_type,
-                                can_reflink,
                                 store_pkglines_by_pkgname,
                             )?;
 
-                            // Store completed package
+                            // Store for later linking (clone package_info since we need it in both places)
+                            packages_to_link.push((actual_pkgkey.clone(), package_info.clone()));
+                            // Also store in completed_packages for return value
                             completed_packages.insert(actual_pkgkey, package_info);
                         }
                     }
@@ -1981,23 +1981,26 @@ impl PackageManager {
             }
         }
 
+        // Now that all downloads have completed successfully, link all unpacked packages
+        for (actual_pkgkey, package_info) in packages_to_link {
+            let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
+            self.link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
+                .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
+        }
+
         Ok((completed_packages, aur_packages))
     }
 
-    /// Process a downloaded package file
+    /// Unpack a package file
     ///
-    /// Shared helper function to unpack and link a package from a file path.
-    /// Returns the actual package key and updated package info.
+    /// Unpacks a package from a file path and returns the actual package key and updated package info.
+    /// Does not link the package - linking must be done separately via link_package().
     ///
-    pub fn unpack_and_link_package(
+    pub fn unpack_package(
         &mut self,
         file_path: &str,
         pkgkey: &str,
         mut package_info: InstalledPackageInfo,
-        store_root: &Path,
-        env_root: &Path,
-        link_type: LinkType,
-        can_reflink: bool,
         store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
     ) -> Result<(String, InstalledPackageInfo)> {
         // Unpack the package
@@ -2018,11 +2021,6 @@ impl PackageManager {
 
         // Update the package info with the pkgline
         package_info.pkgline = pkgline.to_string();
-
-        // Link new package immediately after unpacking
-        let store_fs_dir = store_root.join(package_info.pkgline.clone()).join("fs");
-        self.link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
-            .with_context(|| format!("Failed to link package {}", actual_pkgkey))?;
 
         Ok((actual_pkgkey, package_info))
     }
@@ -2111,7 +2109,7 @@ impl PackageManager {
         )?;
 
         // Step 3: Link new package files to env
-        // Done in wait_downloads_and_unpack_link() via unpack_and_link_package() for now
+        // Done in wait_downloads_and_unpack_link() via unpack_package() for now
         // let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
         // self.link_package(&new_store_fs_dir, &env_root.to_path_buf())
         //     .with_context(|| format!("Failed to link new package {}", new_package_info.pkgline))?;
@@ -2257,7 +2255,7 @@ impl PackageManager {
         )?;
 
         // Step 2: Install files (link packages)
-        // This is moved earlier to wait_downloads_and_unpack_link() via unpack_and_link_package(), so that scriptlets have command to run.
+        // This is moved earlier to wait_downloads_and_unpack_link() via unpack_package(), so that scriptlets have command to run.
         // for (_, package_info) in fresh_installs {
         //     let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
         //     self.link_package(&store_fs_dir, &env_root.to_path_buf())

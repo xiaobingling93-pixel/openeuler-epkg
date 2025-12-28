@@ -659,7 +659,7 @@ impl PackageManager {
     /// 2. For each pkgbase, building all artifacts with makepkg (via `build_aur_packages_for_base()`)
     ///    inside the archlinux environment.
     /// 3. Unpacking and linking built packages, which determines their real pkgkeys/arches
-    ///    (via `unpack_and_link_package()` inside `build_aur_packages_for_base()`).
+    ///    (via `unpack_package()` and `link_package()` inside `unpack_link_built_aur_packages()`).
     /// 4. Mapping pre-build AUR pkgkeys (`arch="any"`) to actual post-build pkgkeys, and fixing up
     ///    the installation plan (`fixup_aur_plan_keys()` inside `postinstall_built_aur_round()`).
     /// 5. Normalizing dependency fields and InstalledPackageInfo values in both newly built AUR
@@ -906,22 +906,29 @@ impl PackageManager {
                 )
             })?;
 
+            // Unpack the package
             let (actual_pkgkey, mut completed_info) = self
-                .unpack_and_link_package(
+                .unpack_package(
                     built_pkg_path_str,
                     &original_key,
                     // Start from an empty InstalledPackageInfo; we'll fully populate fields
                     // from the mapped planned AUR entry.
                     InstalledPackageInfo::default(),
-                    store_root,
-                    env_root,
-                    link_type,
-                    can_reflink,
                     store_pkglines_by_pkgname,
                 )
                 .with_context(|| {
                     format!(
-                        "Failed to unpack and link built package: {}",
+                        "Failed to unpack built package: {}",
+                        built_pkg_path.display()
+                    )
+                })?;
+
+            // Link the package
+            let store_fs_dir = store_root.join(completed_info.pkgline.clone()).join("fs");
+            self.link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
+                .with_context(|| {
+                    format!(
+                        "Failed to link built package: {}",
                         built_pkg_path.display()
                     )
                 })?;
