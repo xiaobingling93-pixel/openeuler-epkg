@@ -87,6 +87,13 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    // Check if invoked as an applet (via symlink/hardlink)
+    // If so, handle it and return early
+    match crate::applets::handle_applet_invocation()? {
+        Some(_) => return Ok(()), // Handled as applet, exit
+        None => {} // Not an applet, continue with normal flow
+    }
+
     // 第一次访问会触发命令行解析和配置初始化
     log::trace!("Application starting with config: {:#?}", config());
 
