@@ -52,7 +52,7 @@ mod gc;
 mod rpm_verify;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::io::Write;
 use std::sync::Arc;
@@ -642,7 +642,25 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     )?;
 
     config.common.env = matches.get_one::<String>("env").map_or_else(
-        || env::var("EPKG_ACTIVE_ENV").map(|s| s.trim_end_matches(':').to_string()).unwrap_or_else(|_| MAIN_ENV.to_string()),
+        || {
+            // Prefer EPKG_ACTIVE_ENV if set
+            if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
+                return active_env.trim_end_matches(':').to_string();
+            }
+
+            // epkg may be run inside an env, try /etc/epkg/env.yaml
+            let env_yaml_path = Path::new("/etc/epkg/env.yaml");
+            if env_yaml_path.exists() {
+                if let Ok((env_config, _)) = crate::io::read_yaml_file::<EnvConfig>(env_yaml_path) {
+                    // ENV_CONFIG will be loaded later via LazyLock when first accessed
+                    // It will use config.common.env which we're setting here
+                    return env_config.name;
+                }
+            }
+
+            // Fall back to MAIN_ENV
+            MAIN_ENV.to_string()
+        },
         |s| s.to_string()
     );
     if let Some(arch) = matches.get_one::<String>("arch") {
