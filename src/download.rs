@@ -3306,7 +3306,7 @@ impl PackageManager {
     /// Returns a mapping from download URLs to their package keys for tracking
     pub fn enqueue_package_downloads(
         &mut self,
-        packages: &HashMap<String, InstalledPackageInfo>,
+        packages: &InstalledPackagesMap,
     ) -> Result<HashMap<String, Vec<String>>> {
         let output_dir = dirs().epkg_downloads_cache.clone();
         let mut url_to_pkgkeys: HashMap<String, Vec<String>> = HashMap::new();
@@ -3317,7 +3317,7 @@ impl PackageManager {
 
         // Submit download tasks for each package (handles both local and remote)
         for pkgkey in packages.keys() {
-            let package = self.load_package_info(pkgkey)
+            let package = crate::package_cache::load_package_info(pkgkey)
                 .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
             let url = format!(
                 "{}/{}",
@@ -3348,7 +3348,7 @@ impl PackageManager {
 
     /// Get the local file path for a downloaded package
     pub fn get_package_file_path(&mut self, pkgkey: &str) -> Result<String> {
-        let package = self.load_package_info(pkgkey)
+        let package = crate::package_cache::load_package_info(pkgkey)
             .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
         let url = format!(
             "{}/{}",

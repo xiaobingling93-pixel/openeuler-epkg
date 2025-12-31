@@ -658,12 +658,11 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
 fn match_package_with_store(
     repodata_package: &Package,
     store_pkglines: &[String],
-    package_manager: &mut PackageManager,
 ) -> Result<Option<String>> {
     // Try each candidate pkgline from the store
     for store_pkgline in store_pkglines {
         // Load Package from store
-        match package_manager.map_pkgline2package(store_pkgline) {
+        match crate::package_cache::map_pkgline2package(store_pkgline) {
             Ok(store_package) => {
                 // Compare Package fields
                 if packages_match(repodata_package, &store_package) {
@@ -962,7 +961,6 @@ fn try_match_and_fill_pkgline(
     pkgkey: &str,
     package_info: &mut InstalledPackageInfo,
     store_pkglines_by_pkgkey: &std::collections::HashMap<String, Vec<String>>,
-    package_manager: &mut PackageManager,
 ) -> Result<bool> {
     // Skip if pkgline is already filled
     if !package_info.pkgline.is_empty() {
@@ -970,7 +968,7 @@ fn try_match_and_fill_pkgline(
     }
 
     // Load Package from repodata
-    let repodata_package = match package_manager.load_package_info(pkgkey) {
+    let repodata_package = match crate::package_cache::load_package_info(pkgkey) {
         Ok(pkg) => pkg,
         Err(e) => {
             log::debug!("Failed to load package info for {}: {}", pkgkey, e);
@@ -987,7 +985,7 @@ fn try_match_and_fill_pkgline(
     }
 
     // Match with store packages
-    match match_package_with_store(&repodata_package, &candidate_pkglines, package_manager) {
+    match match_package_with_store(&repodata_package, &candidate_pkglines) {
         Ok(Some(matching_pkgline)) => {
             package_info.pkgline = matching_pkgline;
             Ok(true)
@@ -1004,7 +1002,7 @@ fn try_match_and_fill_pkgline(
 /// Returns the number of packages that were matched and filled
 pub fn fill_pkglines_in_plan(
     plan: &mut crate::plan::InstallationPlan,
-    package_manager: &mut PackageManager,
+    _package_manager: &mut PackageManager,
 ) -> Result<usize> {
     // Collect store pkglines organized by both pkgkey (for matching) and pkgname (for reuse in unpack_mv_package)
     let (store_pkglines_by_pkgkey, store_pkglines_by_pkgname) = collect_store_pkglines()?;
@@ -1018,14 +1016,14 @@ pub fn fill_pkglines_in_plan(
 
     // Process fresh_installs
     for (pkgkey, package_info) in plan.fresh_installs.iter_mut() {
-        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey, package_manager)? {
+        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey)? {
             matched_count += 1;
         }
     }
 
     // Process upgrades_new
     for (pkgkey, package_info) in plan.upgrades_new.iter_mut() {
-        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey, package_manager)? {
+        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey)? {
             matched_count += 1;
         }
     }

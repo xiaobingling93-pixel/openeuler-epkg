@@ -6,6 +6,7 @@ use crate::models::{PackageManager, InstalledPackageInfo, Package};
 use crate::mmio;
 use crate::list;
 use crate::models::dirs;
+use crate::models::PACKAGE_CACHE;
 
 pub struct DpkgQueryOptions {
     pub list: bool,
@@ -230,7 +231,7 @@ fn list_packages(pattern: Option<&str>) -> Result<()> {
 
     let mut packages: Vec<(String, String, String, String, String)> = Vec::new();
 
-    for (pkgkey, installed_info) in &pm.installed_packages {
+    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
         // Get package info
         let package = match mmio::map_pkgline2package(&installed_info.pkgline) {
             Ok(pkg) => pkg,
@@ -302,11 +303,11 @@ fn load_package_info(pkgkey: &str, installed_info: &InstalledPackageInfo) -> Res
 /// Helper function to find installed package by name (with optional arch suffix)
 /// Returns (Package, InstalledPackageInfo) if found
 fn find_installed_package_by_name(
-    pm: &PackageManager,
+    _pm: &PackageManager,
     pkgname: &str,
     arch_suffix: Option<&str>,
 ) -> Option<(Package, InstalledPackageInfo)> {
-    for (pkgkey, installed_info) in &pm.installed_packages {
+    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
         let package = match load_package_info(pkgkey, installed_info) {
             Ok(pkg) => pkg,
             Err(_) => continue,
@@ -406,7 +407,7 @@ fn search_files(pattern: &str) -> Result<()> {
     let pattern_path = Path::new(pattern);
     let mut found_any = false;
 
-    for (pkgkey, installed_info) in &pm.installed_packages {
+    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
         let package = match load_package_info(pkgkey, installed_info) {
             Ok(pkg) => pkg,
             Err(_) => continue,

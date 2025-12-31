@@ -6,6 +6,7 @@ use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
 use crate::models::*;
 use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 #[cfg(test)]
 use env_logger;
 
@@ -71,7 +72,7 @@ struct TestCase {
     /// Available packages in repository (merged from all repo files)
     packages: Vec<Package>,
     /// Installed packages
-    installed: HashMap<String, InstalledPackageInfo>,
+    installed: InstalledPackagesMap,
 }
 
 impl TestCase {
@@ -101,7 +102,7 @@ impl TestCase {
         }
 
         // Load installed packages (optional)
-        let installed: HashMap<String, InstalledPackageInfo> = if let Some(installed_file) = &metadata.installed {
+        let installed: InstalledPackagesMap = if let Some(installed_file) = &metadata.installed {
             let installed_path = test_dir.join(installed_file);
             if installed_path.exists() {
                 let content = fs::read_to_string(&installed_path)?;
@@ -135,18 +136,17 @@ impl TestCase {
     fn setup_package_manager(&self) -> PackageManager {
         // Create a fresh PackageManager with empty caches
         // This ensures each test starts with a clean state
-        let mut pm = PackageManager {
-            world: HashMap::new(),
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: self.installed.clone(),
+        let pm = PackageManager {
             has_worker_process: false,
             ipc_socket: String::new(),
             ipc_stream: None,
             child_pid: None,
         };
+        
+        // Populate installed packages into cache
+        for (k, v) in &self.installed {
+            PACKAGE_CACHE.installed_packages.write().unwrap().insert(k.clone(), v.clone());
+        }
 
         // Populate packages into pkgkey2package and update indexes
         // build_provider_list in depends.rs now checks provide2pkgnames index for test data
@@ -157,7 +157,7 @@ impl TestCase {
             if pkg.pkgkey.is_empty() {
                 pkg.pkgkey = format!("{}__{}__{}", pkg.pkgname, pkg.version, pkg.arch);
             }
-            pm.add_package_to_cache(Arc::new(pkg), format);
+            crate::package_cache::add_package_to_cache(Arc::new(pkg), format);
         }
 
         pm
@@ -165,13 +165,13 @@ impl TestCase {
 
     /// Create initial packages map from install request (for fallback compatibility)
     #[allow(dead_code)] // Used in test module
-    fn create_initial_packages(&self, pm: &mut PackageManager) -> HashMap<String, InstalledPackageInfo> {
-        let mut initial_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+    fn create_initial_packages(&self, _pm: &mut PackageManager) -> InstalledPackagesMap {
+        let mut initial_packages: InstalledPackagesMap = HashMap::new();
 
         // For each requested package, try to find it and add to initial packages
         for req in &self.metadata.install {
             // Try to resolve the package name to find matching packages
-            if let Ok(packages) = pm.map_pkgname2packages(req) {
+            if let Ok(packages) = crate::package_cache::map_pkgname2packages(req) {
                 if let Some(pkg) = packages.first() {
                     let pkgkey = pkg.pkgkey.clone();
                     initial_packages.insert(
@@ -208,9 +208,9 @@ impl TestCase {
     fn validate_plan(&self, plan_result: Result<InstallationPlan>) -> Result<()> {
         match plan_result {
             Ok(plan) => {
-                println!("  Fresh installs: {:?}", plan.fresh_installs.keys().collect::<Vec<_>>());
-                println!("  Upgrades: {:?}", plan.upgrades_new.keys().collect::<Vec<_>>());
-                println!("  Removals: {:?}", plan.old_removes.keys().collect::<Vec<_>>());
+                println!("  Fresh installs: {:?}", plan.fresh_installs.keys().cloned().collect::<Vec<_>>());
+                println!("  Upgrades: {:?}", plan.upgrades_new.keys().cloned().collect::<Vec<_>>());
+                println!("  Removals: {:?}", plan.old_removes.keys().cloned().collect::<Vec<_>>());
 
                 // Check if expected plan has any content
                 let expected_plan = &self.metadata.plan;

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use color_eyre::eyre::{self, Result};
 use crate::models::*;
 use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 
 impl PackageManager {
 
@@ -138,7 +139,7 @@ impl PackageManager {
             let (pkgname, _) = parse_package_spec_with_version(spec, PackageFormat::Rpm);
 
             // Remove from world.json
-            self.world.remove(&pkgname);
+            PACKAGE_CACHE.world.write().unwrap().remove(&pkgname);
         }
 
         Ok(())
@@ -151,13 +152,14 @@ impl PackageManager {
 
         for spec in package_specs {
             // Try exact match first
-            if self.installed_packages.contains_key(spec) {
+            if PACKAGE_CACHE.installed_packages.read().unwrap().contains_key(spec) {
                 explicitly_requested_keys.insert(spec.clone());
                 continue;
             }
             // Try prefix match (e.g., spec is 'name' and key is 'name__version__arch')
             let mut found_prefix_match = false;
-            for installed_key in self.installed_packages.keys() {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            for (installed_key, _) in installed.iter() {
                 if installed_key.starts_with(&(spec.clone() + "__")) {
                     log::info!("Interpreting spec '{}' as '{}' for removal.", spec, installed_key);
                     explicitly_requested_keys.insert(installed_key.clone());
@@ -213,14 +215,15 @@ impl PackageManager {
     ) -> HashMap<String, Vec<String>> {
         let mut prevented_removals: HashMap<String, Vec<String>> = HashMap::new();
 
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
         for requested_key in explicitly_requested_keys {
-            if let Some(requested_pkg_info) = self.installed_packages.get(requested_key) {
+            if let Some(requested_pkg_info) = installed.get(requested_key) {
                 let mut can_remove_requested_key = true;
                 let mut blocking_rdepends = Vec::new();
 
                 for rdep_key in &requested_pkg_info.rdepends {
                     // Check if this rdepend is an installed package AND is NOT also being explicitly requested for removal
-                    if self.installed_packages.contains_key(rdep_key) && !explicitly_requested_keys.contains(rdep_key) {
+                    if installed.contains_key(rdep_key) && !explicitly_requested_keys.contains(rdep_key) {
                         can_remove_requested_key = false;
                         blocking_rdepends.push(rdep_key.clone());
                     }
@@ -293,7 +296,8 @@ impl PackageManager {
                 continue;
             }
 
-            let current_pkg_info = match self.installed_packages.get(&pkgkey_being_removed) {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            let current_pkg_info = match installed.get(&pkgkey_being_removed) {
                 Some(info) => info.clone(),
                 None => continue,
             };
@@ -304,7 +308,7 @@ impl PackageManager {
                 }
 
                 log::debug!("[Orphan Check] Considering dependency '{}' of package '{}' being removed.", dep_pkgkey, pkgkey_being_removed);
-                let dep_info = match self.installed_packages.get(dep_pkgkey) {
+                let dep_info = match installed.get(dep_pkgkey) {
                     Some(info) => info,
                     None => {
                         log::warn!("Dependency '{}' of '{}' not found in installed_packages. Skipping orphan check.", dep_pkgkey, pkgkey_being_removed);

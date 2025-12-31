@@ -1,5 +1,6 @@
 use crate::models::*;
 use crate::mmio;
+use crate::models::PACKAGE_CACHE;
 use color_eyre::Result;
 use memchr::{memchr, memmem::Finder};
 
@@ -82,7 +83,7 @@ impl PackageManager {
                 let installed_count = self.process_installed_packages(pattern, false, "Installed Packages")?;
                 packages_found_overall += installed_count;
 
-                self.pkgkey2package.clear();
+                PACKAGE_CACHE.pkgkey2package.write().unwrap().clear();
                 // Then display available packages
                 let available_count = self.process_available_packages(pattern)?;
                 packages_found_overall += available_count;
@@ -105,9 +106,11 @@ impl PackageManager {
         let mut local_items = Vec::new();
 
         // Collect keys and info to avoid borrowing conflicts
-        let installed_data: Vec<(String, InstalledPackageInfo)> = self.installed_packages
+        let installed_data: Vec<(String, InstalledPackageInfo)> = PACKAGE_CACHE.installed_packages
+            .read()
+            .unwrap()
             .iter()
-            .map(|(key, info)| (key.clone(), info.clone()))
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
         for (pkgkey, installed_info) in installed_data {
@@ -168,7 +171,7 @@ impl PackageManager {
                 Ok(packages) => {
                     for pkg in packages {
                         // Skip if package is already installed (for Available scope)
-                        if self.installed_packages.contains_key(&pkg.pkgkey) {
+                        if PACKAGE_CACHE.installed_packages.read().unwrap().contains_key(&pkg.pkgkey) {
                             continue;
                         }
 
@@ -394,7 +397,7 @@ impl PackageManager {
             let arch_str = std::str::from_utf8(arch)?.trim();
             let summary_str = std::str::from_utf8(summary).unwrap_or("").trim();
             let pkgkey = crate::package::format_pkgkey(pkgname_str, version_str, arch_str);
-            if !self.installed_packages.contains_key(&pkgkey) {
+            if !PACKAGE_CACHE.installed_packages.read().unwrap().contains_key(&pkgkey) {
                 let item = self.create_available_package_item_from_data_borrowed(
                     pkgname_str,
                     version_str,
@@ -460,7 +463,7 @@ impl PackageManager {
             ),
             Err(_) => {
                 // Fallback: try to get package details from local store using pkgline
-                match self.map_pkgline2package(&installed_info.pkgline) {
+                match crate::package_cache::map_pkgline2package(&installed_info.pkgline) {
                     Ok(local_pkg) => (
                         local_pkg.version.clone(),
                         local_pkg.arch.clone(),
@@ -552,7 +555,7 @@ impl PackageManager {
         let installed_version = self.extract_version_from_installed_info(installed_info)?;
 
         // Get available packages with the same name
-        let available_packages = self.map_pkgname2packages(pkgname)?;
+        let available_packages = crate::package_cache::map_pkgname2packages(pkgname)?;
 
         for pkg in available_packages {
             // Check if same architecture or compatible

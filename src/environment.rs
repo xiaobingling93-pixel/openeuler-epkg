@@ -14,6 +14,7 @@ use serde_yaml;
 use nix::unistd::chown;
 use crate::models::*;
 use crate::dirs::*;
+use crate::models::PACKAGE_CACHE;
 use crate::utils::force_symlink;
 use crate::deinit::force_remove_dir_all;
 use crate::deb_triggers::ensure_triggers_dir;
@@ -421,7 +422,7 @@ impl PackageManager {
         // Install packages if any
         if !packages_to_install.is_empty() {
             // Clear installed_packages since this is a new environment with no packages installed yet
-            self.installed_packages.clear();
+            PACKAGE_CACHE.installed_packages.write().unwrap().clear();
             let plan = self.prepare_installation_plan(&packages_to_install)?;
             self.execute_installation_plan(plan)?;
         } else {

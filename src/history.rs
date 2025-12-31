@@ -4,9 +4,8 @@ use std::os::unix::fs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr};
 use time::OffsetDateTime;
 use time::macros::format_description;
-use crate::models::*;
+use crate::models::{*, InstalledPackagesMap};
 use crate::plan::InstallationPlan;
-use std::collections::HashMap;
 
 impl PackageManager {
 
@@ -14,8 +13,8 @@ impl PackageManager {
     /// This is used for rollback operations to determine what packages need to be
     /// added/removed to restore a previous generation state.
     fn create_rollback_plan(&mut self,
-                            mut current_packages: HashMap<String, InstalledPackageInfo>,
-                            mut target_packages: HashMap<String, InstalledPackageInfo>) -> InstallationPlan {
+                            mut current_packages: InstalledPackagesMap,
+                            mut target_packages: InstalledPackagesMap) -> InstallationPlan {
         let mut plan = InstallationPlan::default();
 
         // Find packages that exist in both collections and remove them as duplicates
@@ -34,6 +33,7 @@ impl PackageManager {
         }
 
         // Now classify remaining packages using find_upgrade_target()
+        // Use current_packages directly for find_upgrade_target (now accepts HashMap)
         for (pkgkey, pkg_info) in &target_packages {
             // Package exists in both filtered collections - check if it's an upgrade
             let (is_upgrade, old_pkgkey) = self.find_upgrade_target(
@@ -52,7 +52,8 @@ impl PackageManager {
             }
         }
 
-        plan.old_removes = current_packages;
+        // Remaining packages are already HashMap
+        plan.old_removes = current_packages.into_iter().collect();
 
         // Auto-populate expose plan based on rollback actions
         self.auto_populate_expose_plan(&mut plan);

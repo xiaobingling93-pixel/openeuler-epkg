@@ -1,7 +1,6 @@
 use std::path::Path;
 use color_eyre::eyre::Result;
-use crate::models::{InstalledPackageInfo, PackageFormat};
-use std::collections::HashMap;
+use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::rpm_triggers::{setup_rpm_env_vars, count_installed_packages_by_name};
 
@@ -232,7 +231,7 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
 
 /// Run scriptlets for multiple packages
 pub fn run_scriptlets(
-    completed_packages: &HashMap<String, InstalledPackageInfo>,
+    completed_packages: &InstalledPackagesMap,
     store_root: &Path,
     env_root: &Path,
     package_format: PackageFormat,
@@ -254,19 +253,19 @@ pub fn run_scriptlets(
 
 /// Run scriptlets for multiple packages with package count context
 pub fn run_scriptlets_with_context(
-    completed_packages: &HashMap<String, InstalledPackageInfo>,
+    completed_packages: &InstalledPackagesMap,
     store_root: &Path,
     env_root: &Path,
     package_format: PackageFormat,
     scriptlet_type: ScriptletType,
     is_upgrade: bool,
-    installed_packages: Option<&HashMap<String, InstalledPackageInfo>>,
-    fresh_installs: Option<&HashMap<String, InstalledPackageInfo>>,
-    old_removes: Option<&HashMap<String, InstalledPackageInfo>>,
+    installed_packages: Option<&InstalledPackagesMap>,
+    fresh_installs: Option<&InstalledPackagesMap>,
+    old_removes: Option<&InstalledPackagesMap>,
 ) -> Result<()> {
     // Convert HashMap to a Vec of tuples (pkgkey, info) and sort by depend_depth in descending order
     // This ensures packages with higher depend_depth are processed first
-    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = completed_packages.iter().collect();
+    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = completed_packages.iter().map(|(k, v)| (k, v)).collect();
     packages_vec.sort_by(|a, b| b.1.depend_depth.cmp(&a.1.depend_depth));
 
     // Process packages in sorted order

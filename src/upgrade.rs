@@ -1,5 +1,6 @@
 use crate::models::*;
 use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 use color_eyre::Result;
 
 impl PackageManager {
@@ -12,7 +13,7 @@ impl PackageManager {
             self.apply_delta_world(&user_request_world);
             (user_request_world.clone(), Some(user_request_world))
         } else {
-            (self.world.clone(), None)
+            (PACKAGE_CACHE.world.read().unwrap().clone(), None)
         };
 
         // Step 2: Resolve dependencies and perform installation

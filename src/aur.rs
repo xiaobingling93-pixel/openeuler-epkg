@@ -373,7 +373,7 @@ impl PackageManager {
 
     /// Check if a package is an AUR package
     pub fn is_aur_package(&mut self, pkgkey: &str) -> bool {
-        if let Ok(package) = self.load_package_info(pkgkey) {
+        if let Ok(package) = crate::package_cache::load_package_info(pkgkey) {
             package.repodata_name == "aur"
         } else {
             false
@@ -521,7 +521,7 @@ impl PackageManager {
     fn find_and_verify_built_packages(
         pkgbase: &str,
         pkgkeys: &[String],
-        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        aur_packages: &InstalledPackagesMap,
         pkg_build_dir: &Path,
         is_post_makepkg: bool,
     ) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
@@ -669,12 +669,12 @@ impl PackageManager {
     ///    that match what is stored in `self.installed_packages` (`postinstall_built_aur_round()`).
     pub fn build_and_install_aur_packages(
         &mut self,
-        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        aur_packages: &InstalledPackagesMap,
         plan: &mut crate::plan::InstallationPlan,
         store_root: &Path,
         env_root: &Path,
         package_format: crate::models::PackageFormat,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+    ) -> Result<InstalledPackagesMap> {
         if aur_packages.is_empty() {
             return Ok(HashMap::new());
         }
@@ -757,7 +757,7 @@ impl PackageManager {
 
     fn group_aur_packages_by_base(
         &mut self,
-        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        aur_packages: &InstalledPackagesMap,
     ) -> Result<(
         HashMap<String, Vec<String>>,
         Vec<(String, u16)>,
@@ -769,8 +769,7 @@ impl PackageManager {
         let mut base_min_depth: HashMap<String, u16> = HashMap::new();
 
         for (pkgkey, info) in aur_packages {
-            let package = self
-                .load_package_info(pkgkey)
+            let package = crate::package_cache::load_package_info(pkgkey)
                 .with_context(|| {
                     format!("Failed to load package info for AUR pkgkey {}", pkgkey)
                 })?;
@@ -815,7 +814,7 @@ impl PackageManager {
         &mut self,
         pkgbase: &str,
         pkgkeys: &[String],
-        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        aur_packages: &InstalledPackagesMap,
         build_dir: &Path,
         env_root: &Path,
     ) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
@@ -888,13 +887,13 @@ fn unpack_link_built_aur_packages(
     can_reflink: bool,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
 ) -> Result<(
-    HashMap<String, InstalledPackageInfo>,
+    InstalledPackagesMap,
     HashMap<String, String>,
 )> {
     use crate::package;
 
     // This round's completed AUR packages (actual_pkgkey -> info)
-    let mut this_round_aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+    let mut this_round_aur_packages = std::collections::HashMap::new();
     // Mapping from original (plan) pkgkeys to actual pkgkeys for this round
     let mut this_round_pkgkey_mapping: HashMap<String, String> = HashMap::new();
 
@@ -985,7 +984,7 @@ impl PackageManager {
     fn map_built_aur_packages(
         built_pkg_paths: &[PathBuf],
         pkgkeys: &[String],
-        aur_packages: &HashMap<String, InstalledPackageInfo>,
+        aur_packages: &InstalledPackagesMap,
     ) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
         use crate::package;
 
@@ -1077,7 +1076,7 @@ impl PackageManager {
     fn postinstall_built_aur_round(
         &mut self,
         plan: &mut InstallationPlan,
-        this_round_aur_packages: &mut HashMap<String, InstalledPackageInfo>,
+        this_round_aur_packages: &mut InstalledPackagesMap,
         this_round_pkgkey_mapping: &HashMap<String, String>,
         aur_mapping_all_rounds: &mut HashMap<String, String>,
         store_root: &Path,
@@ -1109,7 +1108,7 @@ impl PackageManager {
         // can depend on these newly installed AUR packages.
         self.process_installation_results(
             plan,
-            this_round_aur_packages,
+            &this_round_aur_packages,
             store_root,
             env_root,
             package_format,
@@ -1178,7 +1177,7 @@ impl PackageManager {
     fn fixup_installed_packages_values(
         &mut self,
         pkgkey_mapping: &HashMap<String, String>,
-        pkgs: &mut HashMap<String, InstalledPackageInfo>,
+        pkgs: &mut InstalledPackagesMap,
     ) -> Result<()> {
         use crate::package;
 

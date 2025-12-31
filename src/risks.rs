@@ -11,8 +11,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
-use crate::models::{PackageManager, InstalledPackageInfo};
+use crate::models::{PackageManager, InstalledPackagesMap};
 use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 use crate::utils;
 
 /// File state types (matching RPM's RPMFILE_STATE_*)
@@ -424,13 +425,13 @@ impl Transaction {
     /// This populates the installed_files map for conflict detection
     pub fn load_installed_files(
         &mut self,
-        packages: &HashMap<String, InstalledPackageInfo>,
+        packages: &InstalledPackagesMap,
         store_root: &Path,
         env_root: &Path,
     ) -> Result<()> {
         self.installed_files.clear();
 
-        for (pkgkey, pkg_info) in packages {
+        for (pkgkey, pkg_info) in packages.iter() {
             // Read filelist.txt from package store (at store_root/pkgline/info/filelist.txt)
             let filelist_path = store_root
                 .join(&pkg_info.pkgline)
@@ -841,7 +842,7 @@ pub fn prepare_transaction(
     transaction: &mut Transaction,
     store_root: &Path,
     env_root: &Path,
-    packages: &HashMap<String, InstalledPackageInfo>,
+    packages: &InstalledPackagesMap,
 ) -> Result<()> {
     transaction.init_dsi();
 
@@ -888,7 +889,10 @@ impl PackageManager {
         let mut transaction = Transaction::new(filter_flags);
 
         // Prepare transaction (initialize DSI and load installed files)
-        prepare_transaction(&mut transaction, store_root, env_root, &self.installed_packages)?;
+        {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            prepare_transaction(&mut transaction, store_root, env_root, &installed)?;
+        }
 
         // Check disk space and conflicts for each package being installed
         for (pkgkey, pkg_info) in plan.fresh_installs.iter().chain(plan.upgrades_new.iter()) {

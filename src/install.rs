@@ -13,6 +13,7 @@ use crate::download;
 use crate::scriptlets;
 use crate::rpm_triggers;
 use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
 
 impl PackageManager {
@@ -179,7 +180,7 @@ impl PackageManager {
                 .with_context(|| format!("Failed to detect package format for: {}", package_file))?;
 
             // Add package to cache
-            self.add_package_to_cache(Arc::new(package.clone()), format);
+            crate::package_cache::add_package_to_cache(Arc::new(package.clone()), format);
 
             // Create package spec (pkgname=version)
             let spec = format!("{}={}", package.pkgname, package.version);
@@ -226,10 +227,6 @@ impl PackageManager {
         plan.link = link_type;
         plan.can_reflink = can_reflink;
 
-        // Fill pkglines for packages that already exist in the store
-        store::fill_pkglines_in_plan(&mut plan, self)
-            .with_context(|| "Failed to find existing packages in store")?;
-
         // Validate transaction (disk space, conflicts, etc.) for RPM packages
         if package_format == PackageFormat::Rpm {
             if let Err(e) = self.validate_transaction(&plan, &store_root, &env_root) {
@@ -242,11 +239,15 @@ impl PackageManager {
         // Order: %pretrans of new, then %preuntrans of old (before any file operations)
         if package_format == PackageFormat::Rpm {
             // %pretrans of packages being installed/upgraded
-            let mut pretrans_packages = plan.fresh_installs.clone();
-            for (k, v) in &plan.upgrades_new {
+            let mut pretrans_packages = HashMap::new();
+            for (k, v) in plan.fresh_installs.iter() {
+                pretrans_packages.insert(k.clone(), v.clone());
+            }
+            for (k, v) in plan.upgrades_new.iter() {
                 pretrans_packages.insert(k.clone(), v.clone());
             }
             if !pretrans_packages.is_empty() {
+                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
                 if let Err(e) = scriptlets::run_scriptlets_with_context(
                     &pretrans_packages,
                     &store_root,
@@ -254,16 +255,18 @@ impl PackageManager {
                     package_format,
                     scriptlets::ScriptletType::PreTrans,
                     !plan.upgrades_new.is_empty(), // is_upgrade if there are upgrades
-                    Some(&self.installed_packages),
+                    Some(&installed),
                     Some(&plan.fresh_installs),
                     Some(&plan.old_removes),
                 ) {
+                    drop(installed);
                     log::warn!("Failed to run %pretrans scriptlets: {}", e);
                 }
             }
 
             // %preuntrans of packages being removed (runs after %pretrans, before removals)
             if !plan.old_removes.is_empty() {
+                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
                 if let Err(e) = scriptlets::run_scriptlets_with_context(
                     &plan.old_removes,
                     &store_root,
@@ -271,10 +274,11 @@ impl PackageManager {
                     package_format,
                     scriptlets::ScriptletType::PreUnTrans,
                     false, // is_upgrade - removals are separate from upgrades
-                    Some(&self.installed_packages),
+                    Some(&installed),
                     Some(&plan.fresh_installs),
                     Some(&plan.old_removes),
                 ) {
+                    drop(installed);
                     log::warn!("Failed to run %preuntrans scriptlets: {}", e);
                 }
             }
@@ -282,9 +286,10 @@ impl PackageManager {
             // RPM transaction file triggers (transfiletriggerun) - after %preuntrans, before removals
             // Runs ONCE per transaction for all matching removed files
             if !plan.old_removes.is_empty() {
+                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
                 if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
                     "transfiletriggerun",
-                    &self.installed_packages,
+                    &installed,
                     &HashMap::new(),
                     &HashMap::new(),
                     &plan.old_removes,
@@ -305,11 +310,15 @@ impl PackageManager {
         // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
         // This runs AFTER all file operations complete (RPM behavior)
         if package_format == PackageFormat::Rpm {
-            let mut posttrans_packages = plan.fresh_installs.clone();
-            for (k, v) in &plan.upgrades_new {
+            let mut posttrans_packages = HashMap::new();
+            for (k, v) in plan.fresh_installs.iter() {
+                posttrans_packages.insert(k.clone(), v.clone());
+            }
+            for (k, v) in plan.upgrades_new.iter() {
                 posttrans_packages.insert(k.clone(), v.clone());
             }
             if !posttrans_packages.is_empty() {
+                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
                 if let Err(e) = scriptlets::run_scriptlets_with_context(
                     &posttrans_packages,
                     &store_root,
@@ -317,10 +326,11 @@ impl PackageManager {
                     package_format,
                     scriptlets::ScriptletType::PostTrans,
                     !plan.upgrades_new.is_empty(), // is_upgrade if there are upgrades
-                    Some(&self.installed_packages),
+                    Some(&installed),
                     Some(&plan.fresh_installs),
                     Some(&plan.old_removes),
                 ) {
+                    drop(installed);
                     log::warn!("Failed to run %posttrans scriptlets: {}", e);
                 }
             }
@@ -329,6 +339,7 @@ impl PackageManager {
             // This runs AFTER %posttrans, AFTER uninstall transaction completes (RPM behavior)
             // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
             if !plan.old_removes.is_empty() {
+                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
                 if let Err(e) = scriptlets::run_scriptlets_with_context(
                     &plan.old_removes,
                     &store_root,
@@ -336,10 +347,11 @@ impl PackageManager {
                     package_format,
                     scriptlets::ScriptletType::PostUnTrans,
                     false, // is_upgrade - removals are separate from upgrades
-                    Some(&self.installed_packages),
+                    Some(&installed),
                     Some(&plan.fresh_installs),
                     Some(&plan.old_removes),
                 ) {
+                    drop(installed);
                     log::warn!("Failed to run %postuntrans scriptlets: {}", e);
                 }
             }
@@ -347,9 +359,10 @@ impl PackageManager {
             // RPM transaction file triggers (transfiletriggerpostun) - after %posttrans and %postuntrans
             // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
             if !plan.old_removes.is_empty() {
+                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
                 if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
                     "transfiletriggerpostun",
-                    &self.installed_packages,
+                    &installed,
                     &HashMap::new(),
                     &HashMap::new(),
                     &plan.old_removes,
@@ -362,13 +375,19 @@ impl PackageManager {
 
             // RPM transaction file triggers (transfiletriggerin) - LAST, after %posttrans, %postuntrans, and %transfiletriggerpostun
             // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
-            let mut posttrans_packages = plan.fresh_installs.clone();
-            for (k, v) in &plan.upgrades_new {
+            let mut posttrans_packages = HashMap::new();
+            for (k, v) in plan.fresh_installs.iter() {
+                posttrans_packages.insert(k.clone(), v.clone());
+            }
+            for (k, v) in plan.upgrades_new.iter() {
                 posttrans_packages.insert(k.clone(), v.clone());
             }
             if !posttrans_packages.is_empty() {
-                let mut all_installed = self.installed_packages.clone();
-                for (k, v) in &posttrans_packages {
+                let mut all_installed = HashMap::new();
+                for (k, v) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
+                    all_installed.insert(k.clone(), v.clone());
+                }
+                for (k, v) in posttrans_packages.iter() {
                     all_installed.insert(k.clone(), v.clone());
                 }
                 if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
@@ -408,9 +427,11 @@ impl PackageManager {
         }
 
         // Remove old versions of upgraded packages from self.installed_packages *before* downloads
-        for old_pkgkey_to_remove in plan.upgrades_old.keys() {
-            self.installed_packages.remove(old_pkgkey_to_remove);
+        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+        for (old_pkgkey_to_remove, _) in plan.upgrades_old.iter() {
+            installed.remove(old_pkgkey_to_remove);
         }
+        drop(installed);
 
         // Step 1: Prepare packages for download and processing
         let (packages_to_download_and_process, packages_with_pkglines) = self.prepare_packages_for_installation(plan)?;
@@ -427,30 +448,37 @@ impl PackageManager {
         )?;
 
         // Step 3: Process upgrades and fresh installations
+        // Pass HashMap directly to process_installation_results
         self.process_installation_results(plan, &completed_packages, store_root, env_root, package_format)?;
 
         // Step 4: Build and install AUR packages (build with makepkg)
         if !aur_packages.is_empty() {
             let aur_completed = self.build_and_install_aur_packages(&aur_packages, plan, store_root, env_root, package_format)?;
-            completed_packages.extend(aur_completed);
+            for (k, v) in aur_completed {
+                completed_packages.insert(k, v);
+            }
         }
 
         // Step 5: Update installed packages metadata
-        self.installed_packages.extend(completed_packages);
+        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+        for (k, v) in completed_packages.iter() {
+            installed.insert(k.clone(), v.clone());
+        }
+        drop(installed);
 
         Ok(())
     }
 
     /// Prepare packages for download and processing
     /// Returns: (packages_to_download, packages_with_pkglines)
-    fn prepare_packages_for_installation(&mut self, plan: &InstallationPlan) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
+    fn prepare_packages_for_installation(&mut self, plan: &InstallationPlan) -> Result<(InstalledPackagesMap, InstalledPackagesMap)> {
         // Separate packages into those with pkglines (already in store) and those without (need download)
         // AUR packages are included in both categories and will be filtered later
         let mut packages_to_download = HashMap::new();
         let mut packages_with_pkglines = HashMap::new();
 
         // Process fresh_installs
-        for (pkgkey, package_info) in &plan.fresh_installs {
+        for (pkgkey, package_info) in plan.fresh_installs.iter() {
             if !package_info.pkgline.is_empty() {
                 packages_with_pkglines.insert(pkgkey.clone(), package_info.clone());
             } else {
@@ -459,7 +487,7 @@ impl PackageManager {
         }
 
         // Process upgrades_new
-        for (pkgkey, package_info) in &plan.upgrades_new {
+        for (pkgkey, package_info) in plan.upgrades_new.iter() {
             if !package_info.pkgline.is_empty() {
                 packages_with_pkglines.insert(pkgkey.clone(), package_info.clone());
             } else {
@@ -474,14 +502,14 @@ impl PackageManager {
     /// Returns: (completed_packages, aur_packages)
     fn download_and_install_packages(
         &mut self,
-        packages_to_download_and_process: &HashMap<String, InstalledPackageInfo>,
-        packages_with_pkglines: &HashMap<String, InstalledPackageInfo>,
+        packages_to_download_and_process: &InstalledPackagesMap,
+        packages_with_pkglines: &InstalledPackagesMap,
         store_root: &Path,
         env_root: &Path,
         link_type: LinkType,
         can_reflink: bool,
         store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-    ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
+    ) -> Result<(InstalledPackagesMap, InstalledPackagesMap)> {
         // Submit download tasks first (includes both binary and AUR packages)
         let url_to_pkgkeys = self.enqueue_package_downloads(packages_to_download_and_process)?;
         let pending_urls: Vec<String> = url_to_pkgkeys.keys().cloned().collect();
@@ -526,8 +554,9 @@ impl PackageManager {
 
     /// Update metadata for packages that were already installed but involved in this session
     fn update_skipped_reinstalls_metadata(&mut self, plan: &InstallationPlan) -> Result<()> {
-        for (pkgkey, session_info) in &plan.skipped_reinstalls {
-            if let Some(installed_info) = self.installed_packages.get_mut(pkgkey) {
+        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+        for (pkgkey, session_info) in plan.skipped_reinstalls.iter() {
+            if let Some(installed_info) = installed.get_mut(pkgkey) {
                 // Only update fields that can change between sessions.
                 // Crucially, DO NOT overwrite `pkgline` or `install_time`.
                 installed_info.depend_depth = session_info.depend_depth;
@@ -544,15 +573,15 @@ impl PackageManager {
         &mut self,
         url_to_pkgkeys: &HashMap<String, Vec<String>>,
         mut pending_urls: Vec<String>,
-        packages_to_install: &mut HashMap<String, InstalledPackageInfo>,
+        packages_to_install: &mut InstalledPackagesMap,
         store_root: &Path,
         env_root: &Path,
         link_type: LinkType,
         can_reflink: bool,
         store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-    ) -> Result<(HashMap<String, InstalledPackageInfo>, HashMap<String, InstalledPackageInfo>)> {
-        let mut completed_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        let mut aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+    ) -> Result<(InstalledPackagesMap, InstalledPackagesMap)> {
+        let mut completed_packages: InstalledPackagesMap = HashMap::new();
+        let mut aur_packages: InstalledPackagesMap = HashMap::new();
         // Collect unpacked packages that need linking after all downloads complete
         let mut packages_to_link: Vec<(String, InstalledPackageInfo)> = Vec::new();
 

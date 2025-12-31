@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
-use crate::models::InstalledPackageInfo;
+use crate::models::{InstalledPackageInfo, InstalledPackagesMap};
 use crate::package::pkgkey2pkgname;
+use crate::models::PACKAGE_CACHE;
 use crate::utils::get_package_files;
 use shlex;
 use glob::Pattern;
@@ -530,10 +531,10 @@ where
 /// Returns (matched, aggregated_targets)
 fn match_path_trigger(
     trigger: &HookTrigger,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    upgrades_old: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     store_root: &Path,
     needs_targets: bool,
 ) -> Result<(bool, Vec<String>)> {
@@ -579,10 +580,10 @@ fn match_path_trigger(
 /// Fast-path match for path triggers when targets are not needed. Short-circuits
 /// as soon as any matching condition is detected to avoid full set construction.
 fn match_path_trigger_no_targets(
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    upgrades_old: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     store_root: &Path,
     positive_patterns: &[Pattern],
     negative_patterns: &[Pattern],
@@ -590,8 +591,8 @@ fn match_path_trigger_no_targets(
     wants_upgrade: bool,
     wants_remove: bool,
 ) -> Result<bool> {
-    let file_matches = |packages: &HashMap<String, InstalledPackageInfo>| -> Result<bool> {
-        for info in packages.values() {
+    let file_matches = |packages: &InstalledPackagesMap| -> Result<bool> {
+        for (_pkgkey, info) in packages.iter() {
             for file in get_package_files(store_root, info)? {
                 let file_str = file.to_string_lossy();
                 if matches_patterns(&file_str, &positive_patterns, &negative_patterns) {
@@ -614,7 +615,7 @@ fn match_path_trigger_no_targets(
     // return early as soon as a decisive condition is found.
     let mut upgrades_old_set = HashSet::new();
     if wants_upgrade || wants_remove || wants_install {
-        for info in upgrades_old.values() {
+        for (_pkgkey, info) in upgrades_old.iter() {
             for file in get_package_files(store_root, info)? {
                 let file_str = file.to_string_lossy();
                 if matches_patterns(&file_str, &positive_patterns, &negative_patterns) {
@@ -626,7 +627,7 @@ fn match_path_trigger_no_targets(
 
     let mut upgrades_new_set = HashSet::new();
     if wants_upgrade || wants_remove || wants_install {
-        for info in upgrades_new.values() {
+        for (_pkgkey, info) in upgrades_new.iter() {
             for file in get_package_files(store_root, info)? {
                 let file_str = file.to_string_lossy();
                 if matches_patterns(&file_str, &positive_patterns, &negative_patterns) {
@@ -659,10 +660,10 @@ fn match_path_trigger_no_targets(
 
 /// Full match path trigger when targets are required; collects and returns them.
 fn match_path_trigger_with_targets(
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    upgrades_old: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     store_root: &Path,
     positive_patterns: &[Pattern],
     negative_patterns: &[Pattern],
@@ -741,10 +742,10 @@ fn match_path_trigger_with_targets(
 /// Match Package trigger (reference: _alpm_hook_trigger_match_pkg)
 fn match_package_trigger(
     trigger: &HookTrigger,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    _upgrades_old: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    _upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
 ) -> Result<(bool, Vec<String>, Vec<String>, Vec<String>)> {
     let mut install_pkgs = Vec::new();
     let mut upgrade_pkgs = Vec::new();
@@ -756,7 +757,7 @@ fn match_package_trigger(
 
     // Check install/upgrade operations
     if trigger.operations.contains(&HookOperation::Install) || trigger.operations.contains(&HookOperation::Upgrade) {
-        for (pkgkey, _) in fresh_installs {
+        for (pkgkey, _pkg_info) in fresh_installs.iter() {
             if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     if trigger.operations.contains(&HookOperation::Install) {
@@ -766,7 +767,7 @@ fn match_package_trigger(
             }
         }
 
-        for (pkgkey, _) in upgrades_new {
+        for (pkgkey, _pkg_info) in upgrades_new.iter() {
             if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     if trigger.operations.contains(&HookOperation::Upgrade) {
@@ -779,7 +780,7 @@ fn match_package_trigger(
 
     // Check remove operations (reference: excludes packages being upgraded)
     if trigger.operations.contains(&HookOperation::Remove) {
-        for (pkgkey, _) in old_removes {
+        for (pkgkey, _pkg_info) in old_removes.iter() {
             // Exclude packages that are being upgraded (reference: checks if in add list)
             if upgrades_new.contains_key(pkgkey) {
                 continue;
@@ -804,8 +805,7 @@ fn match_package_trigger(
 /// Check if a package dependency is satisfied
 /// Reference: _alpm_hook_run_hook uses alpm_find_satisfier
 fn check_dependency(
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
     dep: &str,
 ) -> bool {
     // Check installed and freshly installed package names for the dependency
@@ -815,7 +815,8 @@ fn check_dependency(
         matches!(pkgkey2pkgname(pkgkey), Ok(pkgname) if pkgname == dep)
     }
 
-    installed_packages.keys().any(|pkgkey| pkgkey_matches_dep(pkgkey, dep))
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    installed.iter().any(|(pkgkey, _)| pkgkey_matches_dep(pkgkey, dep))
         || fresh_installs.keys().any(|pkgkey| pkgkey_matches_dep(pkgkey, dep))
 }
 
@@ -825,12 +826,11 @@ fn execute_hook(
     hook: &Hook,
     env_root: &Path,
     matched_targets: &[String],
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
 ) -> Result<()> {
     // Check dependencies (reference: checks before execution)
     for dep in &hook.action.depends {
-        if !check_dependency(installed_packages, fresh_installs, dep) {
+        if !check_dependency(fresh_installs, dep) {
             return Err(color_eyre::eyre::eyre!(
                 "unable to run hook {}: could not satisfy dependencies",
                 hook.file_name
@@ -1013,11 +1013,10 @@ pub fn run_hooks(
     env_root: &Path,
     store_root: &Path,
     when: HookWhen,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    upgrades_old: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
 ) -> Result<()> {
     let should_reduce_path_triggers = fresh_installs.len() + upgrades_new.len() >= 20;
     let recent_cutoff = if should_reduce_path_triggers {
@@ -1114,7 +1113,6 @@ pub fn run_hooks(
             hook,
             env_root,
             &matched_targets,
-            installed_packages,
             fresh_installs,
         ) {
             if hook.action.abort_on_fail {

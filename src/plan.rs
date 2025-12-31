@@ -5,28 +5,29 @@
 
 use std::collections::HashMap;
 use color_eyre::Result;
-use crate::models::{PackageManager, InstalledPackageInfo, LinkType};
+use crate::models::{PackageManager, InstalledPackageInfo, InstalledPackagesMap, LinkType};
 use crate::package;
+use crate::models::PACKAGE_CACHE;
 use crate::mmio;
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct InstallationPlan {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub fresh_installs: HashMap<String, InstalledPackageInfo>,
+    pub fresh_installs: InstalledPackagesMap,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub upgrades_new: HashMap<String, InstalledPackageInfo>,
+    pub upgrades_new: InstalledPackagesMap,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub upgrades_old: HashMap<String, InstalledPackageInfo>,
+    pub upgrades_old: InstalledPackagesMap,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub upgrade_map_old_to_new: HashMap<String, String>, // old_pkgkey -> new_pkgkey
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
+    pub skipped_reinstalls: InstalledPackagesMap,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub old_removes: HashMap<String, InstalledPackageInfo>,
+    pub old_removes: InstalledPackagesMap,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub new_exposes: HashMap<String, InstalledPackageInfo>,
+    pub new_exposes: InstalledPackagesMap,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub del_exposes: HashMap<String, InstalledPackageInfo>,
+    pub del_exposes: InstalledPackagesMap,
     #[serde(default)]
     pub link: LinkType,
     #[serde(default)]
@@ -42,41 +43,41 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
     {
         #[derive(serde::Deserialize)]
         struct Helper {
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            fresh_installs: HashMap<String, InstalledPackageInfo>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            upgrades_new: HashMap<String, InstalledPackageInfo>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            upgrades_old: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            fresh_installs: InstalledPackagesMap,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            upgrades_new: InstalledPackagesMap,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            upgrades_old: InstalledPackagesMap,
             #[serde(default)]
             upgrade_map_old_to_new: HashMap<String, String>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            skipped_reinstalls: HashMap<String, InstalledPackageInfo>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            old_removes: HashMap<String, InstalledPackageInfo>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            new_exposes: HashMap<String, InstalledPackageInfo>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_map")]
-            del_exposes: HashMap<String, InstalledPackageInfo>,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            skipped_reinstalls: InstalledPackagesMap,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            old_removes: InstalledPackagesMap,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            new_exposes: InstalledPackagesMap,
+            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
+            del_exposes: InstalledPackagesMap,
             #[serde(default)]
             link: LinkType,
             #[serde(default)]
             can_reflink: bool,
         }
 
-        fn deserialize_pkgkey_map<'de, D>(
+        fn deserialize_pkgkey_hashmap<'de, D>(
             deserializer: D,
-        ) -> Result<HashMap<String, InstalledPackageInfo>, D::Error>
+        ) -> Result<InstalledPackagesMap, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
             use serde::de::{MapAccess, Visitor};
             use std::fmt;
 
-            struct PkgkeyMapVisitor;
+            struct PkgkeyHashMapVisitor;
 
-            impl<'de> Visitor<'de> for PkgkeyMapVisitor {
-                type Value = HashMap<String, InstalledPackageInfo>;
+            impl<'de> Visitor<'de> for PkgkeyHashMapVisitor {
+                type Value = InstalledPackagesMap;
 
                 fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                     formatter.write_str("a map of pkgkey to InstalledPackageInfo or null")
@@ -136,7 +137,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
                 }
             }
 
-            deserializer.deserialize_map(PkgkeyMapVisitor)
+            deserializer.deserialize_map(PkgkeyHashMapVisitor)
         }
 
         let helper = Helper::deserialize(deserializer)?;
@@ -156,20 +157,16 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
     }
 }
 
+
 impl PackageManager {
     pub fn prepare_installation_plan(
         &mut self,
-        all_packages_for_session: &HashMap<String, InstalledPackageInfo>,
+        all_packages_for_session: &InstalledPackagesMap,
     ) -> Result<InstallationPlan> {
         let mut plan = InstallationPlan::default();
-        // Take a snapshot of currently installed packages to avoid borrow-checker
-        // conflicts between &mut self and &self.installed_packages during upgrade
-        // detection, while still using the latest view of installed packages at
-        // the time this plan is prepared.
-        let installed_snapshot = self.installed_packages.clone();
-
         for (session_pkgkey, session_pkg_info) in all_packages_for_session {
-            if self.installed_packages.contains_key(session_pkgkey) {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            if installed.contains_key(session_pkgkey) {
                 plan.skipped_reinstalls.insert(session_pkgkey.clone(), session_pkg_info.clone());
                 continue;
             }
@@ -177,11 +174,11 @@ impl PackageManager {
             let (is_upgrade, old_pkgkey) = self.find_upgrade_target(
                 session_pkgkey,
                 session_pkg_info,
-                &installed_snapshot,
+                &installed,
             );
             if is_upgrade {
                 plan.upgrades_new.insert(session_pkgkey.clone(), session_pkg_info.clone());
-                plan.upgrades_old.insert(old_pkgkey.clone(), self.installed_packages[&old_pkgkey].clone());
+                plan.upgrades_old.insert(old_pkgkey.clone(), installed.get(&old_pkgkey).unwrap().clone());
                 // Directly build deterministic old->new mapping for upgrades (used in UI and processing).
                 // For AUR packages, find_upgrade_target() already applies AUR-aware matching logic
                 // (matching by pkgname+version and allowing arch changes from "any" to actual arch).
@@ -220,7 +217,8 @@ impl PackageManager {
 
         // Calculate possible orphans: installed packages that are not being skipped or upgraded
         // Exclude packages with depend_depth=0 (user-requested packages) and essential packages
-        let possible_orphans: Vec<String> = self.installed_packages
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        let possible_orphans: Vec<String> = installed
             .iter()
             .filter(|(pkgkey, pkg_info)| {
                 !plan.skipped_reinstalls.contains_key(*pkgkey) &&
@@ -238,17 +236,20 @@ impl PackageManager {
         // Build pkgkey_to_depends for possible orphans
         let mut pkgkey_to_depends: HashMap<String, Vec<String>> = HashMap::new();
         for pkgkey in &possible_orphans {
-            if let Some(pkg_info) = self.installed_packages.get(pkgkey) {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            if let Some(pkg_info) = installed.get(pkgkey.as_str()) {
                 pkgkey_to_depends.insert(pkgkey.clone(), pkg_info.depends.clone());
             }
+            drop(installed);
         }
 
         // Build remaining_rdepends for each possible orphan
         // Filter out rdepends that are being removed or upgraded (old version)
         // Keep rdepends that are staying installed (skipped_reinstalls, upgrades_new, fresh_installs)
         let mut remaining_rdepends: HashMap<String, Vec<String>> = HashMap::new();
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
         for pkgkey in &possible_orphans {
-            if let Some(pkg_info) = self.installed_packages.get(pkgkey) {
+            if let Some(pkg_info) = installed.get(pkgkey.as_str()) {
                 let filtered_rdepends: Vec<String> = pkg_info.rdepends
                     .iter()
                     .filter(|rdep_pkgkey| {
@@ -263,13 +264,14 @@ impl PackageManager {
                         // - fresh_installs: being installed
                         // Also ensure the rdepend is still in installed_packages (not already removed)
                         !is_being_removed && !is_old_upgrade &&
-                        self.installed_packages.contains_key(*rdep_pkgkey)
+                        installed.contains_key(*rdep_pkgkey)
                     })
                     .cloned()
                     .collect();
                 remaining_rdepends.insert(pkgkey.clone(), filtered_rdepends);
             }
         }
+        drop(installed);
 
         // Ensure all possible orphans have an entry in remaining_rdepends
         for pkgkey in &possible_orphans {
@@ -278,6 +280,7 @@ impl PackageManager {
 
         // Loop to find orphans recursively (similar to calculate_pkgkey_to_depth)
         loop {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             // Find packages with empty remaining_rdepends => these are orphans
             // Exclude packages with depend_depth=0 (user-requested packages) and essential packages
             let orphan_pkgkeys: Vec<String> = remaining_rdepends
@@ -285,7 +288,7 @@ impl PackageManager {
                 .filter(|(pkgkey, rdepends)| {
                     rdepends.is_empty() && {
                         // Double-check that it's not a user-requested package or essential package
-                        if let Some(pkg_info) = self.installed_packages.get(*pkgkey) {
+                        if let Some(pkg_info) = installed.get(*pkgkey) {
                             pkg_info.depend_depth > 0 && !is_essential(pkgkey)
                         } else {
                             false
@@ -294,6 +297,7 @@ impl PackageManager {
                 })
                 .map(|(pkgkey, _)| pkgkey.clone())
                 .collect();
+            drop(installed);
 
             if orphan_pkgkeys.is_empty() {
                 // No more orphans found
@@ -303,12 +307,14 @@ impl PackageManager {
             log::debug!("Found {} orphaned packages", orphan_pkgkeys.len());
 
             // Add orphans to plan.old_removes
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             for orphan_pkgkey in &orphan_pkgkeys {
-                if let Some(pkg_info) = self.installed_packages.get(orphan_pkgkey) {
+                if let Some(pkg_info) = installed.get(orphan_pkgkey) {
                     plan.old_removes.insert(orphan_pkgkey.clone(), pkg_info.clone());
                     log::debug!("Added orphaned package '{}' to old_removes", orphan_pkgkey);
                 }
             }
+            drop(installed);
 
             // Remove orphan nodes from remaining_rdepends and update reverse dependencies
             for orphan_pkgkey in &orphan_pkgkeys {
@@ -335,7 +341,7 @@ impl PackageManager {
     /// This function automatically populates the expose fields based on the installation/removal plan
     pub fn auto_populate_expose_plan(&self, plan: &mut InstallationPlan) {
         // Track exposure changes for packages being removed
-        for (pkgkey, pkg_info) in &plan.old_removes {
+        for (pkgkey, pkg_info) in plan.old_removes.iter() {
             if pkg_info.ebin_exposure {
                 // Package being removed was exposed - will be unexposed
                 plan.del_exposes.insert(pkgkey.clone(), pkg_info.clone());
@@ -344,7 +350,7 @@ impl PackageManager {
 
         // Track exposure changes for packages being upgraded (old versions)
         // Also ensure new versions inherit exposure from old versions
-        for (old_pkgkey, old_pkg_info) in &plan.upgrades_old {
+        for (old_pkgkey, old_pkg_info) in plan.upgrades_old.iter() {
             if old_pkg_info.ebin_exposure {
                 // Old version being upgraded was exposed - will be unexposed
                 plan.del_exposes.insert(old_pkgkey.clone(), old_pkg_info.clone());
@@ -360,7 +366,7 @@ impl PackageManager {
         }
 
         // Track exposure changes for new packages being installed
-        for (pkgkey, pkg_info) in &plan.fresh_installs {
+        for (pkgkey, pkg_info) in plan.fresh_installs.iter() {
             if pkg_info.ebin_exposure {
                 // New package being installed should be exposed
                 plan.new_exposes.insert(pkgkey.clone(), pkg_info.clone());
@@ -369,7 +375,7 @@ impl PackageManager {
 
         // Track exposure changes for packages being upgraded (new versions)
         // Note: This handles cases where new version has ebin_exposure set but old version didn't
-        for (pkgkey, pkg_info) in &plan.upgrades_new {
+        for (pkgkey, pkg_info) in plan.upgrades_new.iter() {
             if pkg_info.ebin_exposure {
                 // New version being upgraded should be exposed
                 plan.new_exposes.insert(pkgkey.clone(), pkg_info.clone());
@@ -397,7 +403,8 @@ impl PackageManager {
                 (new_info.ebin_exposure, new_info.clone())
             };
 
-            if let Some(old_info) = self.installed_packages.get(&pkgkey) {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            if let Some(old_info) = installed.get(&pkgkey) {
                 // Package exists in both - check for exposure changes
                 // For skipped reinstalls (same version), preserve existing exposure status
                 // The new_ebin_exposure might be false due to resolution logic (e.g., user_request_world=None),
@@ -426,7 +433,7 @@ impl PackageManager {
         &mut self,
         new_pkgkey: &str,
         _new_pkg_info: &InstalledPackageInfo,
-        old_packages: &HashMap<String, InstalledPackageInfo>,
+        old_packages: &InstalledPackagesMap,
     ) -> (bool, String) {
         let (new_pkgname, new_version, new_arch) = match package::parse_pkgkey(new_pkgkey) {
             Ok(parts) => parts,
@@ -435,7 +442,7 @@ impl PackageManager {
 
         let is_aur = self.is_aur_package(new_pkgkey);
 
-        for (old_pkgkey, _old_pkg_info) in old_packages {
+        for (old_pkgkey, _) in old_packages.iter() {
             if old_pkgkey == new_pkgkey {
                 continue;
             }
@@ -496,7 +503,7 @@ impl PackageManager {
         if !plan.upgrades_new.is_empty() {
             actions_planned = true;
             println!("Packages to be upgraded:");
-            for (old_pkgkey, _) in &plan.upgrades_old {
+            for (old_pkgkey, _pkg_info) in plan.upgrades_old.iter() {
                 let new_pkgkey_display = plan.upgrade_map_old_to_new
                     .get(old_pkgkey)
                     .map(|s| s.as_str())
@@ -508,7 +515,7 @@ impl PackageManager {
         if !plan.old_removes.is_empty() {
             actions_planned = true;
             println!("Packages to be removed:");
-            for pkgkey in plan.old_removes.keys() {
+            for (pkgkey, _pkg_info) in plan.old_removes.iter() {
                 println!("- {}", pkgkey);
             }
         }
@@ -516,7 +523,7 @@ impl PackageManager {
         if !plan.new_exposes.is_empty() {
             actions_planned = true;
             println!("Packages to be exposed:");
-            for pkgkey in plan.new_exposes.keys() {
+            for (pkgkey, _pkg_info) in plan.new_exposes.iter() {
                 println!("- {}", pkgkey);
             }
         }
@@ -524,7 +531,7 @@ impl PackageManager {
         if !plan.del_exposes.is_empty() {
             actions_planned = true;
             println!("Packages to be unexposed:");
-            for pkgkey in plan.del_exposes.keys() {
+            for (pkgkey, _pkg_info) in plan.del_exposes.iter() {
                 println!("- {}", pkgkey);
             }
         }
@@ -532,9 +539,9 @@ impl PackageManager {
         actions_planned
     }
 
-    fn print_packages_by_depend_depth(&mut self, packages: &HashMap<String, InstalledPackageInfo>) {
+    fn print_packages_by_depend_depth(&mut self, packages: &InstalledPackagesMap) {
         // Convert HashMap to a Vec of tuples (pkgkey, info)
-        let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().collect();
+        let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().map(|(k, v)| (k, v)).collect();
 
         // Sort by depend_depth
         packages_vec.sort_by(|a, b| a.1.depend_depth.cmp(&b.1.depend_depth));
@@ -545,7 +552,7 @@ impl PackageManager {
         // Print each package
         for (pkgkey, info) in packages_vec {
             // Try to load package info to get size
-            let size_str = match self.load_package_info(pkgkey) {
+            let size_str = match crate::package_cache::load_package_info(pkgkey) {
                 Ok(package) => {
                     format!("{}", crate::utils::format_size(package.size as u64))
                 }
@@ -576,7 +583,7 @@ impl PackageManager {
         let mut total_download: u64 = 0;
         let mut total_install: u64 = 0;
         for pkgkey in plan.fresh_installs.keys().chain(plan.upgrades_new.keys()) {
-            if let Ok(pkginfo) = self.load_package_info(pkgkey) {
+            if let Ok(pkginfo) = crate::package_cache::load_package_info(pkgkey) {
                 total_download += pkginfo.size as u64;
                 total_install += pkginfo.installed_size as u64;
             }

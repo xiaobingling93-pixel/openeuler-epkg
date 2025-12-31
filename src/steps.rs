@@ -9,7 +9,8 @@ use std::fs;
 use std::time::SystemTime;
 use color_eyre::Result;
 use color_eyre::eyre::{eyre, WrapErr};
-use crate::models::{PackageManager, PackageFormat, InstalledPackageInfo};
+use crate::models::{PackageManager, PackageFormat, InstalledPackageInfo, InstalledPackagesMap};
+use crate::models::PACKAGE_CACHE;
 use crate::plan::InstallationPlan;
 use crate::hooks;
 use crate::rpm_triggers;
@@ -20,6 +21,7 @@ use crate::package;
 use crate::run;
 use log;
 
+
 impl PackageManager {
 
     /// Process installation results (upgrades and fresh installations)
@@ -27,7 +29,7 @@ impl PackageManager {
     pub fn process_installation_results(
         &mut self,
         plan: &InstallationPlan,
-        completed_packages: &HashMap<String, InstalledPackageInfo>,
+        completed_packages: &InstalledPackagesMap,
         store_root: &Path,
         env_root: &Path,
         package_format: PackageFormat,
@@ -49,10 +51,10 @@ impl PackageManager {
         };
 
         // Build completed package maps once (reused for both PreTransaction and PostTransaction hooks)
-        let mut fresh_installs_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        let mut upgrades_new_completed: HashMap<String, InstalledPackageInfo> = HashMap::new();
+        let mut fresh_installs_completed = HashMap::new();
+        let mut upgrades_new_completed = HashMap::new();
 
-        for (pkgkey, info) in completed_packages {
+        for (pkgkey, info) in completed_packages.iter() {
             if plan.fresh_installs.contains_key(pkgkey) {
                 fresh_installs_completed.insert(pkgkey.clone(), info.clone());
             }
@@ -73,7 +75,6 @@ impl PackageManager {
                     &upgrades_new_completed,
                     &plan.upgrades_old,
                     &plan.old_removes,
-                    &self.installed_packages,
                 )?;
             }
         }
@@ -109,7 +110,6 @@ impl PackageManager {
                     &upgrades_new_completed,
                     &plan.upgrades_old,
                     &plan.old_removes,
-                    &self.installed_packages,
                 )?;
             }
         }
@@ -127,12 +127,13 @@ impl PackageManager {
         // Note: %preuntrans is executed earlier in execute_installation_plan, before removals start
 
         // Update rdepends of packages that depended on the removed packages
-        for (removed_pkg_key, removed_pkg_info) in &plan.old_removes {
+        for (removed_pkg_key, removed_pkg_info) in plan.old_removes.iter() {
             for dep_on_key in &removed_pkg_info.depends {
                 // If the dependency itself is NOT being removed
                 if !plan.old_removes.contains_key(dep_on_key) {
                     // Get the mutable info of this dependency from the main installed_packages map
-                    if let Some(dep_pkg_info_mut) = self.installed_packages.get_mut(dep_on_key) {
+                    let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+                    if let Some(dep_pkg_info_mut) = installed.get_mut(dep_on_key) {
                         let initial_rdep_count = dep_pkg_info_mut.rdepends.len();
                         dep_pkg_info_mut.rdepends.retain(|r| r != removed_pkg_key);
                         if dep_pkg_info_mut.rdepends.len() < initial_rdep_count {
@@ -148,9 +149,10 @@ impl PackageManager {
         // RPM file triggers (filetriggerun, high priority) - BEFORE preun
         // RPM execution order: filetriggerun (high) -> triggerun -> preun -> filetriggerun (low) -> remove files
         if package_format == PackageFormat::Rpm {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &plan.old_removes,
@@ -164,9 +166,10 @@ impl PackageManager {
 
         // RPM package triggers (triggerun) - before preun
         if package_format == PackageFormat::Rpm {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_package_triggers(
                 "triggerun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &plan.old_removes,
@@ -189,9 +192,10 @@ impl PackageManager {
 
         // RPM file triggers (filetriggerun, low priority) - AFTER preun, BEFORE file removal
         if package_format == PackageFormat::Rpm {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &plan.old_removes,
@@ -204,7 +208,7 @@ impl PackageManager {
         }
 
         // Unlink packages
-        for (pkgkey, pkg_info) in &plan.old_removes {
+        for (pkgkey, pkg_info) in plan.old_removes.iter() {
             // Ensure pkgline is valid for path construction
             if pkg_info.pkgline.is_empty() || pkg_info.pkgline.contains("/") || pkg_info.pkgline.contains("..") {
                 log::error!("Invalid pkgline for {}: '{}'. Skipping unlink.", pkgkey, pkg_info.pkgline);
@@ -230,15 +234,16 @@ impl PackageManager {
 
             self.unlink_package(&pkg_store_path, &env_root.to_path_buf())
                 .with_context(|| format!("Failed to unlink package {} (store path: {})", pkgkey, pkg_store_path.display()))?;
-            self.installed_packages.remove(pkgkey);
+            PACKAGE_CACHE.installed_packages.write().unwrap().remove(pkgkey);
         }
 
         // RPM file triggers (filetriggerpostun, high priority) - AFTER file removal, BEFORE postun
         // RPM execution order: remove files -> filetriggerpostun (high) -> postun -> triggerpostun -> filetriggerpostun (low)
         if package_format == PackageFormat::Rpm {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerpostun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &plan.old_removes,
@@ -262,9 +267,10 @@ impl PackageManager {
 
         // RPM package triggers (triggerpostun) - after triggering package is removed
         if package_format == PackageFormat::Rpm {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_package_triggers(
                 "triggerpostun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &plan.old_removes,
@@ -277,9 +283,10 @@ impl PackageManager {
 
         // RPM file triggers (filetriggerpostun, low priority) - AFTER postun
         if package_format == PackageFormat::Rpm {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerpostun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &plan.old_removes,
@@ -297,17 +304,17 @@ impl PackageManager {
     /// Process upgrade flow for packages
     fn process_upgrades(
         &mut self,
-        old_packages: &HashMap<String, InstalledPackageInfo>,
-        new_packages: &HashMap<String, InstalledPackageInfo>,
+        old_packages: &InstalledPackagesMap,
+        new_packages: &InstalledPackagesMap,
         upgrade_map_old_to_new: &HashMap<String, String>,
         store_root: &Path,
         env_root: &Path,
         package_format: PackageFormat,
     ) -> Result<()> {
         // Process each package upgrade individually
-        for (old_pkgkey, old_package_info) in old_packages {
+        for (old_pkgkey, old_package_info) in old_packages.iter() {
             let new_pkgkey = upgrade_map_old_to_new.get(old_pkgkey);
-            let new_package_info = new_pkgkey.and_then(|k| new_packages.get(k));
+            let new_package_info = new_pkgkey.and_then(|k| new_packages.get(k.as_str()));
 
             if let (Some(new_pkgkey), Some(new_package_info)) = (new_pkgkey, new_package_info) {
                 log::info!("Upgrading package: {} (from {})", new_pkgkey, old_pkgkey);
@@ -368,9 +375,10 @@ impl PackageManager {
         if package_format == PackageFormat::Rpm {
             let mut upgrades_new_map = HashMap::new();
             upgrades_new_map.insert(new_pkgkey.to_string(), new_package_info.clone());
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_package_triggers(
                 "triggerprein",
-                &self.installed_packages,
+                    &installed,
                 &upgrades_new_map,
                 &HashMap::new(),
                 &HashMap::new(),
@@ -386,9 +394,10 @@ impl PackageManager {
         if package_format == PackageFormat::Rpm {
             let mut old_removes_map = HashMap::new();
             old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_package_triggers(
                 "triggerun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &old_removes_map,
@@ -403,9 +412,10 @@ impl PackageManager {
         if package_format == PackageFormat::Rpm {
             let mut old_removes_map = HashMap::new();
             old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &old_removes_map,
@@ -434,9 +444,10 @@ impl PackageManager {
         if package_format == PackageFormat::Rpm {
             let mut old_removes_map = HashMap::new();
             old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &old_removes_map,
@@ -482,9 +493,10 @@ impl PackageManager {
         if package_format == PackageFormat::Rpm {
             let mut upgrades_new_map = HashMap::new();
             upgrades_new_map.insert(new_pkgkey.to_string(), new_package_info.clone());
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_package_triggers(
                 "triggerin",
-                &self.installed_packages,
+                    &installed,
                 &upgrades_new_map,
                 &HashMap::new(),
                 &HashMap::new(),
@@ -512,9 +524,10 @@ impl PackageManager {
         if package_format == PackageFormat::Rpm {
             let mut old_removes_map = HashMap::new();
             old_removes_map.insert(old_pkgkey.to_string(), old_package_info.clone());
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_package_triggers(
                 "triggerpostun",
-                &self.installed_packages,
+                    &installed,
                 &HashMap::new(),
                 &HashMap::new(),
                 &old_removes_map,
@@ -532,7 +545,7 @@ impl PackageManager {
     /// Process fresh install flow for packages
     fn process_fresh_installs(
         &mut self,
-        fresh_installs: &HashMap<String, InstalledPackageInfo>,
+        fresh_installs: &InstalledPackagesMap,
         store_root: &Path,
         env_root: &Path,
         package_format: PackageFormat,
@@ -551,8 +564,12 @@ impl PackageManager {
         // Pre-compute trigger data once for reuse across multiple trigger calls in this function
         let rpm_trigger_data = if package_format == PackageFormat::Rpm {
             // Include both installed packages and fresh installs to check for triggers
-            let mut all_installed = self.installed_packages.clone();
-            for (k, v) in fresh_installs {
+            // Create a temporary HashMap for the merged data
+            let mut all_installed = HashMap::new();
+            for (k, v) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            for (k, v) in fresh_installs.iter() {
                 all_installed.insert(k.clone(), v.clone());
             }
             Some(rpm_triggers::prepare_rpm_trigger_data(
@@ -566,8 +583,11 @@ impl PackageManager {
         };
 
         if package_format == PackageFormat::Rpm {
-            let mut all_installed = self.installed_packages.clone();
-            for (k, v) in fresh_installs {
+            let mut all_installed = HashMap::new();
+            for (k, v) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            for (k, v) in fresh_installs.iter() {
                 all_installed.insert(k.clone(), v.clone());
             }
             if let Some((ref triggering_packages, ref all_packages)) = rpm_trigger_data {
@@ -600,7 +620,7 @@ impl PackageManager {
         // Step 1.5: Activate DEB activate triggers (status-change activation)
         // These are triggers declared with "activate" directive that fire on package status changes
         if package_format == PackageFormat::Deb {
-            for (pkgkey, _pkg_info) in fresh_installs {
+            for (pkgkey, _pkg_info) in fresh_installs.iter() {
                 let activate_triggers = deb_triggers::read_package_activate_triggers(pkgkey, store_root)
                     .unwrap_or_default();
                 let pkgname = package::pkgkey2pkgname(pkgkey).ok();
@@ -630,7 +650,7 @@ impl PackageManager {
             // Collect packages into a Vec for the helper function
             let packages: Vec<_> = fresh_installs
                 .iter()
-                .map(|(pkgkey, package_info)| (pkgkey.as_str(), package_info))
+                .map(|(k, v)| (k.as_str(), v))
                 .collect();
             process_deb_triggers(&packages, store_root, env_root)?;
         }
@@ -638,10 +658,15 @@ impl PackageManager {
         // Step 2.5: RPM file triggers (filetriggerin, high priority) - AFTER file unpack, BEFORE postin
         // RPM execution order: unpack -> filetriggerin (high) -> postin -> triggerin -> filetriggerin (low)
         if package_format == PackageFormat::Rpm {
-            let mut all_installed = self.installed_packages.clone();
-            for (k, v) in fresh_installs {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            let mut all_installed = HashMap::new();
+            for (k, v) in installed.iter() {
                 all_installed.insert(k.clone(), v.clone());
             }
+            for (k, v) in fresh_installs.iter() {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            drop(installed);
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerin",
                 &all_installed,
@@ -670,10 +695,15 @@ impl PackageManager {
         // Also runs when your package is installed and target is already installed
         if package_format == PackageFormat::Rpm {
             // Include both installed packages and fresh installs to check for triggers
-            let mut all_installed = self.installed_packages.clone();
-            for (k, v) in fresh_installs {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            let mut all_installed = HashMap::new();
+            for (k, v) in installed.iter() {
                 all_installed.insert(k.clone(), v.clone());
             }
+            for (k, v) in fresh_installs.iter() {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            drop(installed);
             // Reuse pre-computed trigger data from earlier
             if let Some((ref triggering_packages, ref all_packages)) = rpm_trigger_data {
                 if let Err(e) = rpm_triggers::run_rpm_package_triggers_with_data(
@@ -694,10 +724,15 @@ impl PackageManager {
 
         // Step 3.4: RPM file triggers (filetriggerin, low priority) - AFTER postin
         if package_format == PackageFormat::Rpm {
-            let mut all_installed = self.installed_packages.clone();
-            for (k, v) in fresh_installs {
+            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+            let mut all_installed = HashMap::new();
+            for (k, v) in installed.iter() {
                 all_installed.insert(k.clone(), v.clone());
             }
+            for (k, v) in fresh_installs.iter() {
+                all_installed.insert(k.clone(), v.clone());
+            }
+            drop(installed);
             if let Err(e) = rpm_triggers::run_rpm_file_triggers(
                 "filetriggerin",
                 &all_installed,
@@ -715,8 +750,8 @@ impl PackageManager {
         // Step 3.5: Incorporate and process DEB triggers
         // Incorporate triggers from Unincorp into package status, then process pending triggers
         if package_format == PackageFormat::Deb {
-            let mut all_packages = self.installed_packages.clone();
-            for (k, v) in fresh_installs {
+            let mut all_packages: InstalledPackagesMap = PACKAGE_CACHE.installed_packages.read().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            for (k, v) in fresh_installs.iter() {
                 all_packages.insert(k.clone(), v.clone());
             }
 
@@ -741,7 +776,7 @@ impl PackageManager {
                 if let Some(info) = all_packages.get_mut(&pkgkey) {
                     info.pending_triggers = trigger_names.clone();
                 }
-                if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&pkgkey) {
                     info.pending_triggers = trigger_names.clone();
                 }
                 let pkgname = package::pkgkey2pkgname(&pkgkey).unwrap_or_default();
@@ -761,7 +796,7 @@ impl PackageManager {
                 if let Some(info) = all_packages.get_mut(&pkgkey) {
                     info.triggers_awaited = true;
                 }
-                if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&pkgkey) {
                     info.triggers_awaited = true;
                 }
                 let pkgname = package::pkgkey2pkgname(&pkgkey).unwrap_or_default();
@@ -806,7 +841,7 @@ impl PackageManager {
                         info.config_failed = true;
                         info.pending_triggers.clear(); // Clear pending triggers
                     }
-                    if let Some(info) = self.installed_packages.get_mut(&cycle_pkgkey) {
+                    if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&cycle_pkgkey) {
                         info.config_failed = true;
                         info.pending_triggers.clear();
                     }
@@ -830,7 +865,7 @@ impl PackageManager {
                                 info.pending_triggers.clear();
                                 info.config_failed = false; // Clear config-failed if processing succeeded
                             }
-                            if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                            if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&pkgkey) {
                                 info.pending_triggers.clear();
                                 info.config_failed = false;
                             }
@@ -843,7 +878,7 @@ impl PackageManager {
                                 info.config_failed = true;
                                 // Keep pending triggers - they won't be reattempted until explicitly requested
                             }
-                            if let Some(info) = self.installed_packages.get_mut(&pkgkey) {
+                            if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&pkgkey) {
                                 info.config_failed = true;
                             }
                             log::warn!("Package {} marked as config-failed due to trigger processing failure", pkgname);

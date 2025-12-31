@@ -8,6 +8,7 @@ use std::collections::{HashMap, BTreeMap};
 use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::{self, *};
+use crate::models::PACKAGE_CACHE;
 
 /// Deserialize environment configuration from disk
 #[allow(dead_code)] // quiet warning in cargo test calls
@@ -386,7 +387,7 @@ pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
 
 impl PackageManager {
 
-    pub fn read_installed_packages(&mut self, env: &str, generation_id: u32) -> Result<HashMap<String, InstalledPackageInfo>> {
+    pub fn read_installed_packages(&mut self, env: &str, generation_id: u32) -> Result<InstalledPackagesMap> {
         let generations_root = get_generations_root(env)?;
         let file_path = generations_root.join(generation_id.to_string()).join("installed-packages.json");
 
@@ -396,18 +397,22 @@ impl PackageManager {
             return Ok(HashMap::new());
         }
 
-        let packages: HashMap<String, InstalledPackageInfo> = read_json_file(&file_path)?;
+        let packages: InstalledPackagesMap = read_json_file(&file_path)?;
         Ok(packages)
     }
 
     pub fn load_installed_packages(&mut self) -> Result<()> {
         // If installed_packages is already populated (e.g., in test mode), skip loading
         // This preserves test-set installed packages and avoids overwriting them
-        if !self.installed_packages.is_empty() {
+        if !PACKAGE_CACHE.installed_packages.read().unwrap().is_empty() {
             return Ok(());
         }
         let generation_id = self.get_current_generation_id()?;
-        self.installed_packages = self.read_installed_packages(&config().common.env, generation_id)?;
+        let packages = self.read_installed_packages(&config().common.env, generation_id)?;
+        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+        for (k, v) in packages {
+            installed.insert(k, v);
+        }
         Ok(())
     }
 
@@ -416,7 +421,7 @@ impl PackageManager {
         let file_path = new_generation.join("installed-packages.json");
 
         // Convert HashMap to BTreeMap to ensure keys are sorted
-        let sorted_packages: BTreeMap<_, _> = self.installed_packages.iter().collect();
+        let sorted_packages: BTreeMap<_, _> = PACKAGE_CACHE.installed_packages.read().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         // Serialize the installed packages to JSON (keys will be in sorted order)
         let json = serde_json::to_string_pretty(&sorted_packages)?;
@@ -446,7 +451,12 @@ impl PackageManager {
 
     pub fn load_world(&mut self) -> Result<()> {
         let generation_id = self.get_current_generation_id()?;
-        self.world = self.read_world(&config().common.env, generation_id)?;
+        let world = self.read_world(&config().common.env, generation_id)?;
+        let mut cache_world = PACKAGE_CACHE.world.write().unwrap();
+        cache_world.clear();
+        for (k, v) in world {
+            cache_world.insert(k, v);
+        }
         Ok(())
     }
 
@@ -455,7 +465,8 @@ impl PackageManager {
         let file_path = new_generation.join("world.json");
 
         // Convert HashMap to BTreeMap to ensure keys are sorted
-        let sorted_world: BTreeMap<_, _> = self.world.iter().collect();
+        let world = PACKAGE_CACHE.world.read().unwrap();
+        let sorted_world: BTreeMap<_, _> = world.iter().collect();
 
         // Serialize the world to JSON (keys will be in sorted order)
         let json = serde_json::to_string_pretty(&sorted_world)?;

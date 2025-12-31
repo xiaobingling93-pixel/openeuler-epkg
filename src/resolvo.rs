@@ -18,6 +18,7 @@ use std::ops::{BitOr, BitOrAssign};
 
 use color_eyre::Result;
 use resolvo::utils::VersionSet;
+use crate::models::PACKAGE_CACHE;
 use resolvo::{
     Candidates, Condition, ConditionId, ConditionalRequirement, Dependencies, DependencyProvider,
     HintDependenciesAvailable, Interner, KnownDependencies, LogicalOperator, NameId, SolvableId,
@@ -293,10 +294,10 @@ impl GenericDependencyProvider {
     fn get_installed_pkgname2keys(&self) -> Result<HashMap<String, Vec<String>>> {
         let mut cache = self.installed_pkgname2keys.borrow_mut();
         if cache.is_none() {
-            let pm = self.get_package_manager()?;
+            let _pm = self.get_package_manager()?;
             let mut installed_map: HashMap<String, Vec<String>> = HashMap::new();
-            for pkgkey in pm.installed_packages.keys() {
-                if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
+            for (pkgkey, _) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
+                if let Ok(pkgname) = pkgkey2pkgname(pkgkey.as_str()) {
                     installed_map.entry(pkgname).or_insert_with(Vec::new).push(pkgkey.clone());
                 }
             }
@@ -349,7 +350,7 @@ impl GenericDependencyProvider {
     /// NEVER be split. The provide2pkgnames index is keyed by cap_with_arch, not
     /// by cap alone. We use the original name for capability lookups to preserve
     /// cap_with_arch integrity.
-    fn lookup_packages(&self, name: &str, pm: &mut PackageManager) -> Result<Vec<Package>> {
+    fn lookup_packages(&self, name: &str, _pm: &mut PackageManager) -> Result<Vec<Package>> {
         // Parse potential architecture suffixes (e.g., python3:any, wine(x86-64))
         // This is only used for package name lookups and arch filtering, NOT for
         // capability lookups (which must use the original name to preserve cap_with_arch)
@@ -368,7 +369,7 @@ impl GenericDependencyProvider {
         );
 
         // Try direct package name lookup first (using base_capability for package names)
-        let mut packages = match pm.map_pkgname2packages(&lookup_name) {
+        let mut packages = match crate::package_cache::map_pkgname2packages(&lookup_name) {
             Ok(pkgs) => {
                 log::debug!(
                     "[RESOLVO] Found {} packages for lookup '{}'",
@@ -401,7 +402,7 @@ impl GenericDependencyProvider {
         // cap_with_arch, which is atomic and should never be split.
         let found_via_capability = packages.is_empty();
         if found_via_capability {
-            packages = self.lookup_packages_by_capability(name, pm)?;
+            packages = self.lookup_packages_by_capability(name)?;
         }
 
         // Apply architecture-specific filtering when required (e.g., :any, :amd64)
@@ -476,7 +477,6 @@ impl GenericDependencyProvider {
     fn lookup_packages_by_capability(
         &self,
         name: &str,
-        pm: &mut PackageManager,
     ) -> Result<Vec<Package>> {
         let mut packages = Vec::new();
         let mut found_pkgnames = std::collections::HashSet::new();
@@ -523,13 +523,13 @@ impl GenericDependencyProvider {
         // Also check PackageManager's in-memory index (for tests and in-memory packages)
         // name is cap_with_arch (atomic, never split)
         for variant in &capability_variants {
-            if let Some(provider_pkgnames) = pm.provide2pkgnames.get(variant) {
+            if let Some(provider_pkgnames) = PACKAGE_CACHE.provide2pkgnames.read().unwrap().get(variant) {
                 log::debug!(
                     "[RESOLVO] Found {} provider names in PackageManager cache for '{}'",
                     provider_pkgnames.len(),
                     variant
                 );
-                for provider_pkgname in provider_pkgnames {
+                for provider_pkgname in provider_pkgnames.iter() {
                     found_pkgnames.insert(provider_pkgname.clone());
                 }
             }
@@ -557,7 +557,7 @@ impl GenericDependencyProvider {
         let mut success_count = 0;
         let mut fail_count = 0;
         for (idx, provider_pkgname) in provider_list.iter().enumerate() {
-            match pm.map_pkgname2packages(provider_pkgname) {
+            match crate::package_cache::map_pkgname2packages(provider_pkgname) {
                 Ok(mut provider_packages) => {
                     success_count += 1;
                     log::debug!(
@@ -729,7 +729,7 @@ impl GenericDependencyProvider {
 
     /// Load package info for a solvable, returning StringId for error message if failed
     fn load_package_for_solvable(&self, pkgkey: &str) -> Result<Package, StringId> {
-        let pm = match self.get_package_manager() {
+        let _pm = match self.get_package_manager() {
             Ok(pm) => pm,
             Err(_) => {
                 let reason = self
@@ -739,7 +739,7 @@ impl GenericDependencyProvider {
             }
         };
 
-        match pm.load_package_info(pkgkey) {
+        match crate::package_cache::load_package_info(pkgkey) {
             Ok(pkg) => Ok((*pkg).clone()),
             Err(e) => {
                 let reason = self
@@ -990,7 +990,7 @@ impl GenericDependencyProvider {
                         }
 
                         // Check if the package's provided version satisfies the constraints
-                        let pm = match self.get_package_manager() {
+                        let _pm = match self.get_package_manager() {
                             Ok(pm) => pm,
                             Err(_) => return Some(pkg_dep.clone()), // Can't check, allow it
                         };
@@ -1009,7 +1009,7 @@ impl GenericDependencyProvider {
                         }
 
                         // Load the provider package to check its version
-                        let provider_pkg = match pm.load_package_info(pkgkey) {
+                        let provider_pkg = match crate::package_cache::load_package_info(pkgkey) {
                             Ok(pkg) => pkg,
                             Err(_) => return Some(pkg_dep.clone()), // Can't load package, allow constraint
                         };
@@ -1749,8 +1749,8 @@ impl DependencyProvider for GenericDependencyProvider {
                                     // This checks the provided capability's version (if specified),
                                     // not the provider's version
                                     match self.get_package_manager() {
-                                        Ok(pm) => {
-                                            match pm.load_package_info(&record.pkgkey) {
+                                        Ok(_pm) => {
+                                            match crate::package_cache::load_package_info(&record.pkgkey) {
                                                 Ok(provider_pkg) => {
                                                     match crate::provides::check_provider_satisfies_constraints(
                                                         &provider_pkg,

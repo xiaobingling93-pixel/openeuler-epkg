@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use color_eyre::Result;
 use crate::models::PackageManager;
+use crate::models::PACKAGE_CACHE;
 
 impl PackageManager {
 
@@ -41,8 +42,9 @@ impl PackageManager {
         self.remove_from_no_install(packages_to_remove.iter());
 
         // Add/update packages in world
+        let mut world = PACKAGE_CACHE.world.write().unwrap();
         for (pkgname, constraint_str) in delta_world {
-            self.world.insert(pkgname.clone(), constraint_str.clone());
+            world.insert(pkgname.clone(), constraint_str.clone());
         }
     }
 
@@ -72,12 +74,13 @@ impl PackageManager {
         let mut no_install_vec: Vec<String> = no_install_set.into_iter().collect();
         no_install_vec.sort();
 
+        let mut world = PACKAGE_CACHE.world.write().unwrap();
         if no_install_vec.is_empty() {
             // Remove "no-install" key if list is empty
-            self.world.remove("no-install");
+            world.remove("no-install");
         } else {
             // Update world with space-separated string
-            self.world.insert("no-install".to_string(), no_install_vec.join(" "));
+            world.insert("no-install".to_string(), no_install_vec.join(" "));
         }
     }
 
@@ -123,9 +126,10 @@ impl PackageManager {
     /// Add essential packages to delta_world if not already in self.world
     pub fn add_essential_packages_to_delta_world(&mut self, delta_world: &mut HashMap<String, String>) -> Result<()> {
         let essential_pkgnames = crate::mmio::get_essential_pkgnames()?;
+        let world = PACKAGE_CACHE.world.read().unwrap();
         for essential_pkgname in &essential_pkgnames {
             // Only add if not already in self.world or delta_world
-            if !self.world.contains_key(essential_pkgname) && !delta_world.contains_key(essential_pkgname) {
+            if !world.contains_key(essential_pkgname) && !delta_world.contains_key(essential_pkgname) {
                 // Add with empty constraint string (no version constraint)
                 delta_world.insert(essential_pkgname.clone(), String::new());
             }
@@ -135,7 +139,7 @@ impl PackageManager {
 
     /// Extract no-install list from world (space-separated string)
     pub fn get_no_install_set(&self) -> std::collections::HashSet<String> {
-        self.world
+        PACKAGE_CACHE.world.read().unwrap()
             .get("no-install")
             .map(|s| {
                 s.split_whitespace()

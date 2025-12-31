@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet, BTreeMap};
 use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, RwLock};
+use std::sync::Arc;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
-use std::sync::Arc;
 use crate::search::SearchOptions;
 use color_eyre::Result;
 use color_eyre::eyre;
@@ -348,7 +348,7 @@ pub struct EnvImport {
     pub env: EnvConfig,
 
     #[serde(default)]
-    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
+    pub packages: InstalledPackagesMap,        // key is pkgkey (!= pkgline)
 
     #[serde(default)]
     pub world: HashMap<String, String>,
@@ -946,33 +946,48 @@ pub struct EPKGDirs {
 
 #[derive(Default)]
 pub struct PackageManager {
-    // cache need to installing packages info
-    pub pkgkey2package: HashMap<String, Arc<Package>>,
-    pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages
-
-    // Performance indexes for fast lookups (maintained when packages are added to pkgkey2package)
-    // Index: pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
-    pub pkgname2packages: HashMap<String, Vec<Arc<Package>>>,
-    // Index: provide_name -> HashSet<pkgname> for O(1) provider lookup
-    pub provide2pkgnames: HashMap<String, HashSet<String>>,
-
-    // loaded from env installed-packages.json
-    // `self.installed_packages` (loaded from installed-packages.json) is the
-    // authoritative data source. If a pkgkey is not found here, the package
-    // is treated as not installed.
-    pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey (!= pkgline)
-
-    // loaded from env world.json
-    // `self.world` maintains top-level package constraints (name -> version_constraint)
-    // where version_constraint is normally empty string, or e.g., "=version1", ">=version2"
-    // Special key "no-install" stores space-separated list of package names to exclude
-    pub world: HashMap<String, String>, // key is pkgname, value is version constraint string
-
     pub has_worker_process: bool,
     pub ipc_socket: String,
     pub ipc_stream: Option<UnixStream>,
     pub child_pid: Option<nix::unistd::Pid>,
 }
+
+/// Type alias for installed packages map
+pub type InstalledPackagesMap = HashMap<String, InstalledPackageInfo>;
+
+/// Type alias for package cache map (pkgkey/pkgline -> Arc<Package>)
+pub type PackageMap = RwLock<HashMap<String, Arc<Package>>>;
+
+/// Type alias for package name to packages map (pkgname -> Vec<Arc<Package>>)
+pub type PackageNameMap = RwLock<HashMap<String, Vec<Arc<Package>>>>;
+
+/// Package cache structure using RwLock<HashMap> for concurrent access
+/// RwLock is better for iteration operations compared to DashMap or flurry/papaya HashMap
+/// === 测试大小: 50000 个元素 ===
+/// 基础 HashMap:    插入:  7.993181ms  读取(命中): 4.876557ms  迭代 + 求和(1249975000): 105.795µs
+/// RwLock<HashMap>: 插入:  9.224321ms  读取(命中): 5.867523ms  迭代 + 求和(1249975000): 107.649µs
+/// papaya:          插入:  9.193559ms  读取(命中): 4.676922ms  迭代 + 求和(1249975000): 256.431µs
+/// DashMap:         插入:  7.084404ms  读取(命中): 5.762309ms  迭代 + 求和(1249975000): 1.313438ms
+/// flurry:          插入: 24.144055ms  读取(命中): 7.081608ms  迭代 + 求和(1249975000): 3.891455ms
+pub struct PackageCache {
+    /// Maps pkgkey -> Arc<Package>
+    pub pkgkey2package: PackageMap,
+    /// Maps pkgline -> Arc<Package> (cache for locally installed packages)
+    pub pkgline2package: PackageMap,
+    /// Maps pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
+    pub pkgname2packages: PackageNameMap,
+    /// Maps provide_name -> HashSet<pkgname> for O(1) provider lookup
+    pub provide2pkgnames: RwLock<HashMap<String, HashSet<String>>>,
+    /// Maps pkgkey -> InstalledPackageInfo (loaded from env installed-packages.json)
+    /// key is pkgkey (!= pkgline)
+    pub installed_packages: RwLock<InstalledPackagesMap>,
+    /// Maps pkgname -> version constraint string (loaded from env world.json)
+    /// Special key "no-install" stores space-separated list of package names to exclude
+    pub world: RwLock<HashMap<String, String>>,
+}
+
+/// Global package cache instance
+pub static PACKAGE_CACHE: LazyLock<PackageCache> = LazyLock::new(|| PackageCache::new());
 
 pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
     // During tests, create a minimal ArgMatches to avoid command-line parsing errors

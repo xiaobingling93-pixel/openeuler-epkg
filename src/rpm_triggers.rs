@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
 use color_eyre::Result;
-use crate::models::{InstalledPackageInfo, PackageFormat};
+use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::utils::get_package_files;
 use crate::package::pkgkey2pkgname;
 use crate::parse_provides::parse_provides;
@@ -229,9 +229,9 @@ fn read_trigger_paths(trigger_metadata: &Path) -> Option<Vec<String>> {
 /// Calculate arg1 (number of installed instances of triggered package) for trigger scriptlets
 fn calculate_trigger_arg1(
     pkgkey: &str,
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
 ) -> u32 {
     let triggered_pkgname = pkgkey2pkgname(pkgkey).unwrap_or_default();
     count_installed_packages_by_name(
@@ -279,9 +279,9 @@ pub fn setup_rpm_env_vars(
 /// Returns: (pkgkey, pkg_info, script_path, trigger_index, triggering_pkgname, triggering_pkgkey)
 fn find_matching_triggers(
     trigger_type: &str,
-    candidate_packages: &HashMap<String, InstalledPackageInfo>,
+    candidate_packages: &InstalledPackagesMap,
     triggering_packages: &HashMap<String, (String, String)>, // name -> (version, pkgkey)
-    all_packages: &HashMap<String, InstalledPackageInfo>, // All packages for provides checking
+    all_packages: &InstalledPackagesMap, // All packages for provides checking
     store_root: &Path,
 ) -> Vec<(String, InstalledPackageInfo, PathBuf, usize, String, String)> {
     use crate::parse_requires::parse_requires;
@@ -458,9 +458,9 @@ fn package_provides_capability(
 /// Count installed instances of a package by name
 pub fn count_installed_packages_by_name(
     pkgname: &str,
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
 ) -> u32 {
     let mut count = 0u32;
 
@@ -497,41 +497,41 @@ pub fn count_installed_packages_by_name(
 /// Pre-compute reusable data structures for RPM package triggers
 /// This can be called once and reused across multiple trigger type calls
 pub fn prepare_rpm_trigger_data(
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
 ) -> (
     HashMap<String, (String, String)>, // triggering_packages: name -> (version, pkgkey)
-    HashMap<String, InstalledPackageInfo>, // all_packages: merged map for provides checking
+    InstalledPackagesMap, // all_packages: merged map for provides checking
 ) {
     // Collect all package names and versions that are being installed/upgraded/removed
     let mut triggering_packages: HashMap<String, (String, String)> = HashMap::new(); // name -> (version, pkgkey)
-    for pkgkey in fresh_installs.keys() {
+    for (pkgkey, _) in fresh_installs.iter() {
         if let (Ok(pkgname), Ok(version)) = (pkgkey2pkgname(pkgkey), crate::package::pkgkey2version(pkgkey)) {
             triggering_packages.insert(pkgname, (version, pkgkey.clone()));
         }
     }
-    for pkgkey in upgrades_new.keys() {
+    for (pkgkey, _) in upgrades_new.iter() {
         if let (Ok(pkgname), Ok(version)) = (pkgkey2pkgname(pkgkey), crate::package::pkgkey2version(pkgkey)) {
             triggering_packages.insert(pkgname, (version, pkgkey.clone()));
         }
     }
-    for pkgkey in old_removes.keys() {
+    for (pkgkey, _) in old_removes.iter() {
         if let (Ok(pkgname), Ok(version)) = (pkgkey2pkgname(pkgkey), crate::package::pkgkey2version(pkgkey)) {
             triggering_packages.insert(pkgname, (version, pkgkey.clone()));
         }
     }
 
     // Build all_packages map for provides checking
-    let mut all_packages = installed_packages.clone();
-    for (k, v) in fresh_installs {
+    let mut all_packages: InstalledPackagesMap = installed_packages.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    for (k, v) in fresh_installs.iter() {
         all_packages.insert(k.clone(), v.clone());
     }
-    for (k, v) in upgrades_new {
+    for (k, v) in upgrades_new.iter() {
         all_packages.insert(k.clone(), v.clone());
     }
-    for (k, v) in old_removes {
+    for (k, v) in old_removes.iter() {
         all_packages.insert(k.clone(), v.clone());
     }
 
@@ -549,10 +549,10 @@ pub fn prepare_rpm_trigger_data(
 /// use `run_rpm_package_triggers_with_data` and pre-compute the data once.
 pub fn run_rpm_package_triggers(
     trigger_type: &str, // "triggerprein", "triggerin", "triggerun", "triggerpostun"
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     store_root: &Path,
     env_root: &Path,
 ) -> Result<()> {
@@ -581,12 +581,12 @@ pub fn run_rpm_package_triggers(
 /// Use this when calling multiple times with the same parameters to avoid recomputing.
 pub fn run_rpm_package_triggers_with_data(
     trigger_type: &str, // "triggerprein", "triggerin", "triggerun", "triggerpostun"
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     triggering_packages: &HashMap<String, (String, String)>, // Pre-computed: name -> (version, pkgkey)
-    all_packages: &HashMap<String, InstalledPackageInfo>,    // Pre-computed: merged map for provides checking
+    all_packages: &InstalledPackagesMap,    // Pre-computed: merged map for provides checking
     store_root: &Path,
     env_root: &Path,
 ) -> Result<()> {
@@ -609,7 +609,7 @@ pub fn run_rpm_package_triggers_with_data(
         .collect();
 
     // Build other_packages more efficiently by filtering instead of cloning and removing
-    let other_packages: HashMap<String, InstalledPackageInfo> = installed_packages.iter()
+    let other_packages: InstalledPackagesMap = installed_packages.iter()
         .filter(|(k, _)| !transaction_pkgkeys.contains(k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
@@ -625,8 +625,11 @@ pub fn run_rpm_package_triggers_with_data(
     // Phase 2: Triggers in THIS package (equivalent to RPM's runImmedTriggers)
     // These are packages that ARE being installed/removed in this transaction
     let mut this_packages = HashMap::new();
-    for pkgkey in fresh_installs.keys().chain(upgrades_new.keys()) {
-        if let Some(pkg_info) = fresh_installs.get(pkgkey).or_else(|| upgrades_new.get(pkgkey)) {
+    for (pkgkey, pkg_info) in fresh_installs.iter() {
+        this_packages.insert(pkgkey.clone(), pkg_info.clone());
+    }
+    for (pkgkey, pkg_info) in upgrades_new.iter() {
+        if !this_packages.contains_key(pkgkey) {
             this_packages.insert(pkgkey.clone(), pkg_info.clone());
         }
     }
@@ -737,10 +740,10 @@ pub fn run_rpm_package_triggers_with_data(
 /// - priority_class = 0: All triggers (default, for backward compatibility)
 pub fn run_rpm_file_triggers(
     trigger_type: &str, // "filetriggerin", "filetriggerun", "filetriggerpostun"
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     store_root: &Path,
     env_root: &Path,
     priority_class: u32, // 0 = all, 1 = high (>= 10000), 2 = low (< 10000)
@@ -756,14 +759,14 @@ pub fn run_rpm_file_triggers(
             // Files from packages being installed/upgraded
             collect_package_files_to_map(
                 store_root,
-                fresh_installs.iter().chain(upgrades_new.iter()),
+                fresh_installs.iter().map(|(k, v)| (k, v)).chain(upgrades_new.iter().map(|(k, v)| (k, v))),
             )
         }
         "filetriggerun" | "filetriggerpostun" => {
             // Files from packages being removed
             collect_package_files_to_map(
                 store_root,
-                old_removes.iter(),
+                old_removes.iter().map(|(k, v)| (k, v)),
             )
         }
         _ => return Ok(()),
@@ -774,6 +777,7 @@ pub fn run_rpm_file_triggers(
     let mut triggered_packages: Vec<(String, InstalledPackageInfo, PathBuf, String, Vec<String>, u32)> = Vec::new();
     // Structure: (triggered_pkgkey, triggered_pkg_info, script_path, triggering_pkgkey, matching_files, priority)
 
+    // Iterate over installed packages
     for (triggered_pkgkey, triggered_pkg_info) in installed_packages.iter().chain(fresh_installs.iter()) {
         let install_dir = store_root.join(&triggered_pkg_info.pkgline).join("info/install");
         let trigger_metadata = install_dir.join(format!("{}.triggers", trigger_type));
@@ -903,10 +907,10 @@ pub fn run_rpm_file_triggers(
 /// RPMFILE_IS_INSTALLED during removal phase preparation.
 pub fn run_rpm_transaction_file_triggers(
     trigger_type: &str, // "transfiletriggerin", "transfiletriggerun", "transfiletriggerpostun"
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
-    fresh_installs: &HashMap<String, InstalledPackageInfo>,
-    upgrades_new: &HashMap<String, InstalledPackageInfo>,
-    old_removes: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
     store_root: &Path,
     env_root: &Path,
 ) -> Result<()> {

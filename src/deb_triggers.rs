@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
 use color_eyre::Result;
 use color_eyre::eyre::{self, Context};
-use crate::models::InstalledPackageInfo;
+use crate::models::{InstalledPackageInfo, InstalledPackagesMap};
 use crate::package::pkgkey2pkgname;
 
 /// Cycle detection state for hare-and-tortoise algorithm
@@ -646,7 +646,7 @@ pub struct TriggerIncorporationResult {
 /// Returns packages that need trigger processing and packages that should await
 pub fn incorporate_triggers(
     env_root: &Path,
-    installed_packages: &HashMap<String, InstalledPackageInfo>,
+    installed_packages: &InstalledPackagesMap,
     store_root: &Path,
 ) -> Result<TriggerIncorporationResult> {
     let unincorp_path = get_unincorp_path(env_root);

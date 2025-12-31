@@ -10,6 +10,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::{PackageManager, PackageFormat, SELF_ENV};
 use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 use crate::utils;
 use crate::utils::FileType;
 use crate::dirs;
@@ -42,7 +43,7 @@ impl PackageManager {
 
     /// Handle unexpose operations (del_exposes)
     pub fn execute_unexpose_operations(&mut self, plan: &InstallationPlan, env_root: &Path) -> Result<()> {
-        for (pkgkey, pkg_info) in &plan.del_exposes {
+        for (pkgkey, pkg_info) in plan.del_exposes.iter() {
             // Remove ebin wrappers for packages being unexposed
             if !pkg_info.ebin_links.is_empty() {
                 log::info!("Unexposing package: {}", pkgkey);
@@ -59,7 +60,7 @@ impl PackageManager {
             }
 
             // Update the package info to clear ebin_links
-            if let Some(installed_package_info_mut) = self.installed_packages.get_mut(pkgkey) {
+            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
                 installed_package_info_mut.ebin_links.clear();
                 installed_package_info_mut.ebin_exposure = false;
             }
@@ -70,12 +71,13 @@ impl PackageManager {
 
     /// Handle expose operations (new_exposes)
     pub fn execute_expose_operations(&mut self, plan: &InstallationPlan, store_root: &Path, env_root: &Path) -> Result<()> {
-        for (pkgkey, _pkg_info) in &plan.new_exposes {
+        for (pkgkey, _pkg_info) in plan.new_exposes.iter() {
             log::info!("Exposing package: {}", pkgkey);
 
             // Use the updated package info from self.installed_packages which has the correct pkgline
-            let installed_pkg_info = self.installed_packages.get(pkgkey)
-                .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?;
+            let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
+                .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
+                .clone();
 
             // Check if pkgline is empty, which would indicate the package wasn't properly processed
             if installed_pkg_info.pkgline.is_empty() {
@@ -87,7 +89,7 @@ impl PackageManager {
                 .with_context(|| format!("Failed to expose package {}", pkgkey))?;
 
             // Update the package info with the new links
-            if let Some(installed_package_info_mut) = self.installed_packages.get_mut(pkgkey) {
+            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
                 installed_package_info_mut.ebin_links = links.clone();
                 installed_package_info_mut.ebin_exposure = true;
             } else {

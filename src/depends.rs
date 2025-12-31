@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use crate::models::*;
+use crate::models::PACKAGE_CACHE;
 use crate::resolvo::GenericDependencyProvider;
 
 /*
@@ -75,7 +76,7 @@ impl PackageManager {
     /// Returns a `Result` containing a HashMap of packages that had their `ebin_exposure` set to
     /// `true` by this function (excluding those that were already exposed). Returns an error if
     /// package information cannot be loaded.
-    fn extend_ebin_by_source(&mut self, packages: &mut HashMap<String, InstalledPackageInfo>) -> Result<HashMap<String, InstalledPackageInfo>> {
+    fn extend_ebin_by_source(&mut self, packages: &mut InstalledPackagesMap) -> Result<InstalledPackagesMap> {
         log::debug!("Setting ebin_exposure for {} packages based on source matching.", packages.len());
 
         let mut user_requested_sources = std::collections::HashSet::new();
@@ -85,7 +86,7 @@ impl PackageManager {
         // (packages with ebin_exposure == true are user-requested in THIS session)
         for (pkgkey, info) in packages.iter() {
             if info.ebin_exposure == true {
-                match self.load_package_info(pkgkey) {
+                match crate::package_cache::load_package_info(pkgkey) {
                     Ok(pkg_details) => {
                         if let Some(source_name) = &pkg_details.source {
                             if !source_name.is_empty() {
@@ -106,7 +107,7 @@ impl PackageManager {
         for (pkgkey, info) in packages.iter_mut() {
             if info.ebin_exposure == false {
                 // For dependencies, check if their source matches any user-requested source
-                match self.load_package_info(pkgkey) {
+                match crate::package_cache::load_package_info(pkgkey) {
                     Ok(pkg_details) => {
                         if let Some(source_name) = &pkg_details.source {
                             if !source_name.is_empty() && user_requested_sources.contains(source_name) {
@@ -142,7 +143,7 @@ impl PackageManager {
 
         // Detect and add Conda virtual packages to cache
         if package_format == PackageFormat::Conda {
-            self.add_conda_virtual_packages_to_cache()?;
+            crate::package_cache::add_conda_virtual_packages_to_cache()?;
         }
 
         // Create provider and convert delta_world to requirements
@@ -232,7 +233,7 @@ impl PackageManager {
         &mut self,
         delta_world: &HashMap<String, String>,
         user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+    ) -> Result<InstalledPackagesMap> {
         // Setup provider and requirements
         let (provider, requirements) = self.setup_resolvo_provider_and_requirements(delta_world)?;
         if requirements.is_empty() {
@@ -306,7 +307,7 @@ impl PackageManager {
         &mut self,
         delta_world: &mut HashMap<String, String>,
         user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+    ) -> Result<InstalledPackagesMap> {
         // First pass: resolve with current delta_world
         let mut all_packages_for_session =
             self.resolve_dependencies_with_resolvo(delta_world, user_request_world)?;
@@ -520,7 +521,7 @@ impl PackageManager {
             // Parse constraint string from delta_world (or use world.json if delta_world has empty string)
             let final_constraints = if constraint_str.is_empty() {
                 // No constraint in delta_world, check world.json
-                self.world.get(pkgname)
+                PACKAGE_CACHE.world.read().unwrap().get(pkgname)
                     .and_then(|world_constraint_str| {
                         if world_constraint_str.is_empty() {
                             None
@@ -554,7 +555,7 @@ impl PackageManager {
     /// Returns true if packages are found, false otherwise
     fn check_package_or_capability_exists(&mut self, name: &str) -> bool {
         // First, try direct package name lookup
-        match self.map_pkgname2packages(name) {
+        match crate::package_cache::map_pkgname2packages(name) {
             Ok(packages) if !packages.is_empty() => return true,
             _ => {}
         }
@@ -563,7 +564,7 @@ impl PackageManager {
         match crate::mmio::map_provide2pkgnames(name) {
             Ok(provider_pkgnames) => {
                 for provider_pkgname in provider_pkgnames {
-                    match self.map_pkgname2packages(&provider_pkgname) {
+                    match crate::package_cache::map_pkgname2packages(&provider_pkgname) {
                         Ok(packages) if !packages.is_empty() => return true,
                         _ => continue,
                     }
@@ -646,7 +647,7 @@ impl PackageManager {
         solver: &resolvo::Solver<GenericDependencyProvider>,
         solvables: &[resolvo::SolvableId],
         user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+    ) -> Result<InstalledPackagesMap> {
         let provider_ref = solver.provider();
         let format = provider_ref.format;
 
@@ -726,7 +727,7 @@ impl PackageManager {
             pkgkey_to_depends.entry(pkgkey.clone()).or_insert_with(Vec::new);
 
             // Load package to get full info
-            let _package = match self.load_package_info(&pkgkey) {
+            let _package = match crate::package_cache::load_package_info(&pkgkey) {
                 Ok(pkg) => (*pkg).clone(),
                 Err(e) => {
                     log::warn!("Failed to load resolved package {}: {}", pkgkey, e);
@@ -1114,7 +1115,7 @@ impl PackageManager {
         pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
         pkgkey_to_depth: &HashMap<String, u16>,
         request_world_pkgkeys: &std::collections::HashSet<String>,
-    ) -> Result<HashMap<String, InstalledPackageInfo>> {
+    ) -> Result<InstalledPackagesMap> {
         let mut result = HashMap::new();
 
         // Iterate through all packages in the dependency graph
@@ -1189,7 +1190,7 @@ impl PackageManager {
         // to "predict the future" - incorporating historical dependency data.
         // The merged dependencies are sorted and de-duplicated to maintain consistency.
         let mut merged_rdepends = pkgkey_to_rdepends.get(pkgkey).cloned().unwrap_or_default();
-        if let Some(installed_info) = self.installed_packages.get(pkgkey) {
+        if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
             // Merge and de-duplicate
             merged_rdepends.extend_from_slice(&installed_info.rdepends);
             merged_rdepends.sort();
@@ -1199,7 +1200,7 @@ impl PackageManager {
         // Merges rbdepends from already installed packages (self.installed_packages)
         // to "predict the future" - incorporating historical build dependency data.
         let mut merged_rbdepends = pkgkey_to_rbdepends.get(pkgkey).cloned().unwrap_or_default();
-        if let Some(installed_info) = self.installed_packages.get(pkgkey) {
+        if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
             // Merge and de-duplicate
             merged_rbdepends.extend_from_slice(&installed_info.rbdepends);
             merged_rbdepends.sort();
