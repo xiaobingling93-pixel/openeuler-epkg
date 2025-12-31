@@ -15,6 +15,9 @@ use env_logger;
 struct TestCaseMetadata {
     /// Package format for this test
     format: String,
+    /// Distribution name (optional, e.g., "openeuler", "debian")
+    #[serde(default)]
+    distro: String,
     /// Description of what this test validates
     description: String,
     /// Whether this test should be skipped
@@ -302,6 +305,10 @@ impl TestCase {
             let format = self.parse_format()?;
             let mut channel_config = crate::models::channel_config_mut();
             channel_config.format = format;
+            // Set distro if specified in test metadata
+            if !self.metadata.distro.is_empty() {
+                channel_config.distro = self.metadata.distro.clone();
+            }
         }
         Ok(())
     }

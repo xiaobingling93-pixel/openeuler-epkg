@@ -1,4 +1,5 @@
-format: deb
+format: rpm
+distro: openeuler
 description: Test that packages providing a capability and conflicting with it are handled correctly (self-constraint filtering)
 repo: repo_self_constraint.yaml
 install:
