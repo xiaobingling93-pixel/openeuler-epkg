@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use color_eyre::eyre::{self, Result};
 use crate::models::*;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
 
 impl PackageManager {
 

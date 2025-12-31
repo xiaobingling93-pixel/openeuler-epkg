@@ -8,11 +8,45 @@ use zstd::stream::Decoder;
 use nix::unistd::{User, Group};
 use nix::unistd;
 use color_eyre::Result;
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre::{self, eyre, WrapErr};
 use walkdir::WalkDir;
 use uuid::Uuid;
-use crate::models::{dirs, PackageFormat};
+use crate::models::{dirs, Package, PackageFormat, PackageManager, InstalledPackageInfo};
+use crate::package;
 use log;
+
+/// Unpack a package file
+///
+/// Unpacks a package from a file path and returns the actual package key and updated package info.
+/// Does not link the package - linking must be done separately via link_package().
+///
+pub fn unpack_package(
+    file_path: &str,
+    pkgkey: &str,
+    mut package_info: InstalledPackageInfo,
+    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+) -> Result<(String, InstalledPackageInfo)> {
+    // Unpack the package
+    let final_dir = unpack_mv_package(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname))
+        .with_context(|| format!("Failed to unpack package: {}", file_path))?;
+
+    // Get the pkgline from the directory name
+    let pkgline = final_dir.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| eyre!("Invalid UTF-8 in package directory name: {}", final_dir.display()))?;
+
+    // Parse the pkgline which now includes architecture
+    let parsed = package::parse_pkgline(pkgline)
+        .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
+
+    // Format the package key using the exact architecture from the package
+    let actual_pkgkey = package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
+
+    // Update the package info with the pkgline
+    package_info.pkgline = pkgline.to_string();
+
+    Ok((actual_pkgkey, package_info))
+}
 
 /// Unpacks multiple packages and moves them to the store
 /// Returns a vector of paths to the final directories where packages were unpacked
@@ -622,9 +656,9 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
 /// Match a package from repodata with packages in the store by comparing Package fields
 /// Returns the matching pkgline if found, None otherwise
 fn match_package_with_store(
-    repodata_package: &crate::models::Package,
+    repodata_package: &Package,
     store_pkglines: &[String],
-    package_manager: &mut crate::models::PackageManager,
+    package_manager: &mut PackageManager,
 ) -> Result<Option<String>> {
     // Try each candidate pkgline from the store
     for store_pkgline in store_pkglines {
@@ -664,7 +698,7 @@ fn parse_option_u32_from_fields(fields: &HashMap<String, String>, key: &str) -> 
 /// This function is read-only and does not modify the package_fields
 fn verify_repo_fields(
     package_fields: &HashMap<String, String>,
-    repo_package: &crate::models::Package,
+    repo_package: &Package,
     package_txt_path: &Path,
 ) {
     // Verify size if both are non-zero
@@ -729,7 +763,7 @@ fn verify_repo_fields(
 /// Adds fields that are present in repo but missing in store
 fn add_repo_fields(
     package_fields: &mut HashMap<String, String>,
-    repo_package: &crate::models::Package,
+    repo_package: &Package,
 ) {
     // Get store values for size and installed_size to check if they're zero
     let store_size = parse_u32_from_fields(package_fields, "size");
@@ -789,7 +823,7 @@ fn add_repo_fields(
 
 
 /// Match AUR packages using relaxed criteria: pkgname, version, homepage, summary, buildRequires
-fn packages_match_aur(repodata_pkg: &crate::models::Package, store_pkg: &crate::models::Package) -> bool {
+fn packages_match_aur(repodata_pkg: &Package, store_pkg: &Package) -> bool {
     // For AUR packages, use relaxed matching: pkgname, version, homepage, summary, buildRequires
     if repodata_pkg.pkgname != store_pkg.pkgname
         || repodata_pkg.version != store_pkg.version {
@@ -824,7 +858,7 @@ fn packages_match_aur(repodata_pkg: &crate::models::Package, store_pkg: &crate::
 /// Compare two Package structs to determine if they represent the same package
 /// Compares multiple fields: pkgname, version, arch, source, sha256sum, sha1sum, buildTime
 /// For AUR packages, uses relaxed matching: pkgname, version, homepage, summary, buildRequires
-fn packages_match(repodata_pkg: &crate::models::Package, store_pkg: &crate::models::Package) -> bool {
+fn packages_match(repodata_pkg: &Package, store_pkg: &Package) -> bool {
     let common_matches = packages_match_aur(repodata_pkg, store_pkg);
     if common_matches == false {
         return false;
@@ -886,7 +920,7 @@ fn packages_match(repodata_pkg: &crate::models::Package, store_pkg: &crate::mode
 /// For AUR packages, also tries with arch replaced by std::env::consts::ARCH
 fn collect_candidate_pkglines(
     pkgkey: &str,
-    repodata_package: &crate::models::Package,
+    repodata_package: &Package,
     store_pkglines_by_pkgkey: &std::collections::HashMap<String, Vec<String>>,
 ) -> Vec<String> {
     // Get candidate pkglines from store for this pkgkey
@@ -926,9 +960,9 @@ fn collect_candidate_pkglines(
 /// Returns true if a match was found and pkgline was filled, false otherwise
 fn try_match_and_fill_pkgline(
     pkgkey: &str,
-    package_info: &mut crate::models::InstalledPackageInfo,
+    package_info: &mut InstalledPackageInfo,
     store_pkglines_by_pkgkey: &std::collections::HashMap<String, Vec<String>>,
-    package_manager: &mut crate::models::PackageManager,
+    package_manager: &mut PackageManager,
 ) -> Result<bool> {
     // Skip if pkgline is already filled
     if !package_info.pkgline.is_empty() {
@@ -969,8 +1003,8 @@ fn try_match_and_fill_pkgline(
 /// Fill pkglines in the installation plan by matching packages with existing store packages
 /// Returns the number of packages that were matched and filled
 pub fn fill_pkglines_in_plan(
-    plan: &mut crate::install::InstallationPlan,
-    package_manager: &mut crate::models::PackageManager,
+    plan: &mut crate::plan::InstallationPlan,
+    package_manager: &mut PackageManager,
 ) -> Result<usize> {
     // Collect store pkglines organized by both pkgkey (for matching) and pkgname (for reuse in unpack_mv_package)
     let (store_pkglines_by_pkgkey, store_pkglines_by_pkgname) = collect_store_pkglines()?;

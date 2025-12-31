@@ -834,6 +834,61 @@ pub fn process_package_triggers(
     Err(eyre::eyre!("Failed to execute postinst for triggers: no suitable interpreter found"))
 }
 
+/// Helper function to process DEB triggers for packages
+/// Handles the common pattern: incorporate interests (loop) -> build index -> activate triggers (loop)
+/// Takes a slice of (pkgkey, package_info) tuples
+pub fn process_deb_triggers(
+    packages: &[(&str, &InstalledPackageInfo)],
+    store_root: &Path,
+    env_root: &Path,
+) -> Result<()> {
+    // Step 1: Incorporate trigger interests for all packages
+    for (pkgkey, package_info) in packages {
+        let install_dir = store_root.join(&package_info.pkgline).join("info/install");
+        let interest_file = install_dir.join("deb_interest.triggers");
+        if interest_file.exists() {
+            if let Err(e) = crate::deb_triggers::incorporate_package_trigger_interests(
+                pkgkey,
+                store_root,
+                env_root,
+                false, // is_removal
+            ) {
+                log::warn!("Failed to incorporate trigger interests for {}: {}", pkgkey, e);
+            }
+        }
+    }
+
+    // Step 2: Build file trigger index once (shared across all packages)
+    let trigger_index = crate::deb_triggers::build_file_trigger_index(env_root)
+        .unwrap_or_else(|e| {
+            log::debug!("Failed to build file trigger index: {}", e);
+            std::collections::HashSet::new()
+        });
+
+    // Step 3: Activate file triggers for all packages
+    if !trigger_index.is_empty() {
+        for (pkgkey, package_info) in packages {
+            let pkgname = crate::package::pkgkey2pkgname(pkgkey).ok();
+            if let Ok(rel_files) = crate::utils::get_package_files(store_root, package_info) {
+                for rel_path in &rel_files {
+                    // Convert relative path to absolute path for trigger matching
+                    let file_path = format!("/{}", rel_path.to_string_lossy());
+                    if let Err(e) = crate::deb_triggers::activate_file_trigger(
+                        env_root,
+                        &file_path,
+                        pkgname.as_deref(),
+                        &trigger_index,
+                    ) {
+                        log::debug!("Failed to activate file trigger for {}: {}", file_path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Set up environment variables for Debian package scripts
 /// Matches dpkg's behavior as seen in dpkg source code (main.c, script.c)
 pub fn setup_deb_env_vars(

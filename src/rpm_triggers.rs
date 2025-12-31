@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
 use color_eyre::Result;
 use crate::models::{InstalledPackageInfo, PackageFormat};
+use crate::utils::get_package_files;
+use crate::package::pkgkey2pkgname;
 use crate::parse_provides::parse_provides;
 use crate::scriptlets::{get_interpreters_for_script, ScriptletType};
 use crate::deb_triggers::setup_deb_env_vars;
@@ -13,7 +15,6 @@ fn collect_package_files_to_vec<'a>(
     store_root: &Path,
     packages: impl Iterator<Item = &'a InstalledPackageInfo>,
 ) -> Vec<String> {
-    use crate::utils::get_package_files;
     let mut files = Vec::new();
     for pkg_info in packages {
         if let Ok(rel_files) = get_package_files(store_root, pkg_info) {
@@ -30,7 +31,6 @@ fn collect_package_files_to_map<'a>(
     store_root: &Path,
     packages: impl Iterator<Item = (&'a String, &'a InstalledPackageInfo)>,
 ) -> HashMap<String, Vec<String>> {
-    use crate::utils::get_package_files;
     let mut result = HashMap::new();
     for (pkgkey, pkg_info) in packages {
         if let Ok(rel_files) = get_package_files(store_root, pkg_info) {
@@ -50,7 +50,6 @@ fn collect_package_files_to_set<'a>(
     store_root: &Path,
     packages: impl Iterator<Item = &'a InstalledPackageInfo>,
 ) -> HashSet<String> {
-    use crate::utils::get_package_files;
     let mut files = HashSet::new();
     for pkg_info in packages {
         if let Ok(rel_files) = get_package_files(store_root, pkg_info) {
@@ -234,7 +233,6 @@ fn calculate_trigger_arg1(
     fresh_installs: &HashMap<String, InstalledPackageInfo>,
     old_removes: &HashMap<String, InstalledPackageInfo>,
 ) -> u32 {
-    use crate::package::pkgkey2pkgname;
     let triggered_pkgname = pkgkey2pkgname(pkgkey).unwrap_or_default();
     count_installed_packages_by_name(
         &triggered_pkgname,
@@ -287,7 +285,7 @@ fn find_matching_triggers(
     store_root: &Path,
 ) -> Vec<(String, InstalledPackageInfo, PathBuf, usize, String, String)> {
     use crate::parse_requires::parse_requires;
-    use crate::version::check_version_constraint;
+    use crate::version_constraint::check_version_constraint;
 
     let mut triggered_packages = Vec::new();
 
@@ -426,7 +424,7 @@ fn package_provides_capability(
     capability: &str,
 ) -> bool {
     // First check if package name matches
-    if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+    if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
         if pkgname == capability {
             return true;
         }
@@ -464,8 +462,6 @@ pub fn count_installed_packages_by_name(
     fresh_installs: &HashMap<String, InstalledPackageInfo>,
     old_removes: &HashMap<String, InstalledPackageInfo>,
 ) -> u32 {
-    use crate::package::pkgkey2pkgname;
-
     let mut count = 0u32;
 
     // Count from installed packages
@@ -509,8 +505,6 @@ pub fn prepare_rpm_trigger_data(
     HashMap<String, (String, String)>, // triggering_packages: name -> (version, pkgkey)
     HashMap<String, InstalledPackageInfo>, // all_packages: merged map for provides checking
 ) {
-    use crate::package::pkgkey2pkgname;
-
     // Collect all package names and versions that are being installed/upgraded/removed
     let mut triggering_packages: HashMap<String, (String, String)> = HashMap::new(); // name -> (version, pkgkey)
     for pkgkey in fresh_installs.keys() {
@@ -596,8 +590,6 @@ pub fn run_rpm_package_triggers_with_data(
     store_root: &Path,
     env_root: &Path,
 ) -> Result<()> {
-    use crate::package::pkgkey2pkgname;
-
     // Determine execution order based on trigger type and RPM behavior
     // For install: other packages first, then this package
     // For erase: this package first (triggerun), or only other packages (triggerpostun)
@@ -875,7 +867,6 @@ pub fn run_rpm_file_triggers(
         );
 
         // Calculate $2: number of installed instances of triggering package after operation
-        use crate::package::pkgkey2pkgname;
         let triggering_pkgname = pkgkey2pkgname(triggering_pkgkey.as_str()).unwrap_or_default();
         let arg2 = count_installed_packages_by_name(
             &triggering_pkgname,

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
 use crate::models::InstalledPackageInfo;
+use crate::package::pkgkey2pkgname;
 use crate::utils::get_package_files;
 use shlex;
 use glob::Pattern;
@@ -756,7 +757,7 @@ fn match_package_trigger(
     // Check install/upgrade operations
     if trigger.operations.contains(&HookOperation::Install) || trigger.operations.contains(&HookOperation::Upgrade) {
         for (pkgkey, _) in fresh_installs {
-            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+            if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     if trigger.operations.contains(&HookOperation::Install) {
                         install_pkgs.push(pkgname);
@@ -766,7 +767,7 @@ fn match_package_trigger(
         }
 
         for (pkgkey, _) in upgrades_new {
-            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+            if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     if trigger.operations.contains(&HookOperation::Upgrade) {
                         upgrade_pkgs.push(pkgname);
@@ -784,7 +785,7 @@ fn match_package_trigger(
                 continue;
             }
 
-            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+            if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     remove_pkgs.push(pkgname);
                 }
@@ -811,7 +812,7 @@ fn check_dependency(
     // This is a simplified check - in full implementation we'd need to check
     // provides, version constraints, etc.
     fn pkgkey_matches_dep(pkgkey: &str, dep: &str) -> bool {
-        matches!(crate::package::pkgkey2pkgname(pkgkey), Ok(pkgname) if pkgname == dep)
+        matches!(pkgkey2pkgname(pkgkey), Ok(pkgname) if pkgname == dep)
     }
 
     installed_packages.keys().any(|pkgkey| pkgkey_matches_dep(pkgkey, dep))

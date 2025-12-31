@@ -3,6 +3,7 @@ use std::fs;
 use color_eyre::Result;
 use serde_json::{Value, json};
 use crate::models::{PackageManager, Package};
+use crate::models::dirs;
 
 pub fn show_package_info(
     package_manager: &mut PackageManager,
@@ -221,7 +222,7 @@ fn show_store_path_info(
 ) -> Result<()> {
     if is_installed {
         if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-            let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
+            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
             println!("{}", store_path.display());
         }
     } else {
@@ -241,7 +242,7 @@ fn show_scripts_info(
     }
 
     if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-        let scripts_path = crate::models::dirs().epkg_store
+        let scripts_path = dirs().epkg_store
             .join(&installed_info.pkgline)
             .join("info/install");
 
@@ -285,7 +286,7 @@ fn show_files_info(
     }
 
     if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-        let filelist_path = crate::models::dirs().epkg_store
+        let filelist_path = dirs().epkg_store
             .join(&installed_info.pkgline)
             .join("info/filelist.txt");
 
@@ -364,7 +365,7 @@ fn add_installation_info(
         package_fields.insert("status".to_string(), "Installed".to_string());
 
         if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-            let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
+            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
             package_fields.insert("storePath".to_string(), store_path.display().to_string());
 
             // Add specific fields from installed_info

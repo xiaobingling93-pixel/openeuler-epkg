@@ -294,7 +294,7 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
             }
             continue;
         }
-        crate::utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions(&target_path);
     }
 
     // Restore original working directory

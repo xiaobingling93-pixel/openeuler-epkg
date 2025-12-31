@@ -26,9 +26,10 @@ use resolvo::{
 
 use crate::models::{config, channel_config};
 use crate::models::{EpkgCommand, Package, PackageFormat, PackageManager};
+use crate::package::pkgkey2pkgname;
 use crate::parse_requires::{AndDepends, Operator, PkgDepend};
+use crate::parse_requires::VersionConstraint;
 use crate::parse_provides::parse_provides;
-use crate::version;
 
 /// Represents a set of dependency fields to consider during resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -295,7 +296,7 @@ impl GenericDependencyProvider {
             let pm = self.get_package_manager()?;
             let mut installed_map: HashMap<String, Vec<String>> = HashMap::new();
             for pkgkey in pm.installed_packages.keys() {
-                if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                     installed_map.entry(pkgname).or_insert_with(Vec::new).push(pkgkey.clone());
                 }
             }
@@ -319,28 +320,23 @@ impl GenericDependencyProvider {
     /// should NOT be split. When capability contains `(arch)`, we preserve it as-is
     /// for provide lookups, as provide2pkgnames is keyed by cap_with_arch.
     fn normalize_capability_name(&self, capability: &str) -> String {
-        match self.get_package_manager() {
-            Ok(pm) => {
-                let (base_capability, arch_spec) =
-                    pm.parse_capability_architecture(capability, self.format);
+        let (base_capability, arch_spec) =
+            crate::package::parse_capability_architecture(capability, self.format);
 
-                // If arch_spec is Some, it means we successfully parsed an arch suffix
-                // For RPM format with (arch), the capability is cap_with_arch and should
-                // be preserved as-is for provide lookups. Only strip :any style suffixes.
-                if base_capability.is_empty() {
-                    capability.to_string()
-                } else if self.format == PackageFormat::Rpm && arch_spec.is_some() {
-                    // RPM format: capability is cap_with_arch (e.g., "libfoo(x86-64)")
-                    // Preserve it as-is for provide lookups, as provide2pkgnames is keyed by cap_with_arch
-                    capability.to_string()
-                } else {
-                    // Debian format with :any or other formats: use base_capability
-                    // Note: For provides stored as cap_with_arch, this might not match,
-                    // but :any dependencies are handled differently in Debian
-                    base_capability
-                }
-            }
-            Err(_) => capability.to_string(),
+        // If arch_spec is Some, it means we successfully parsed an arch suffix
+        // For RPM format with (arch), the capability is cap_with_arch and should
+        // be preserved as-is for provide lookups. Only strip :any style suffixes.
+        if base_capability.is_empty() {
+            capability.to_string()
+        } else if self.format == PackageFormat::Rpm && arch_spec.is_some() {
+            // RPM format: capability is cap_with_arch (e.g., "libfoo(x86-64)")
+            // Preserve it as-is for provide lookups, as provide2pkgnames is keyed by cap_with_arch
+            capability.to_string()
+        } else {
+            // Debian format with :any or other formats: use base_capability
+            // Note: For provides stored as cap_with_arch, this might not match,
+            // but :any dependencies are handled differently in Debian
+            base_capability
         }
     }
 
@@ -357,7 +353,7 @@ impl GenericDependencyProvider {
         // Parse potential architecture suffixes (e.g., python3:any, wine(x86-64))
         // This is only used for package name lookups and arch filtering, NOT for
         // capability lookups (which must use the original name to preserve cap_with_arch)
-        let (base_capability, arch_spec) = pm.parse_capability_architecture(name, self.format);
+        let (base_capability, arch_spec) = crate::package::parse_capability_architecture(name, self.format);
         let lookup_name = if base_capability.is_empty() {
             name.to_string()
         } else {
@@ -441,7 +437,7 @@ impl GenericDependencyProvider {
                 arch_spec,
                 self.format
             );
-            let filtered = pm.filter_packages_by_arch_spec(packages, arch_spec.as_deref(), self.format);
+            let filtered = crate::package::filter_packages_by_arch_spec(packages, arch_spec.as_deref(), self.format);
             log::debug!(
                 "[RESOLVO] After arch filtering: {} packages for '{}'",
                 filtered.len(),
@@ -960,7 +956,7 @@ impl GenericDependencyProvider {
                         // solver to forbid the package from co-existing with itself.
                         // Example: package `texlive-plain-generic` provides `tex4ht` and also
                         // conflicts with `tex4ht`, which is a self-constraint.
-                        let is_self_constraint = if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                        let is_self_constraint = if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                             pkgname == *capability
                         } else {
                             false
@@ -1000,7 +996,7 @@ impl GenericDependencyProvider {
                         };
 
                         // Filter out IfInstall constraints for version checking
-                        let non_conditional_constraints: Vec<crate::parse_requires::VersionConstraint> =
+                        let non_conditional_constraints: Vec<VersionConstraint> =
                             pkg_dep.constraints
                                 .iter()
                                 .filter(|c| c.operator != crate::parse_requires::Operator::IfInstall)
@@ -1012,9 +1008,15 @@ impl GenericDependencyProvider {
                             return Some(pkg_dep.clone());
                         }
 
+                        // Load the provider package to check its version
+                        let provider_pkg = match pm.load_package_info(pkgkey) {
+                            Ok(pkg) => pkg,
+                            Err(_) => return Some(pkg_dep.clone()), // Can't load package, allow constraint
+                        };
+
                         // Check if the package's provided version satisfies the constraints
-                        match pm.check_provider_satisfies_constraints(
-                            pkgkey,
+                        match crate::provides::check_provider_satisfies_constraints(
+                            &provider_pkg,
                             capability,
                             &non_conditional_constraints,
                             self.format,
@@ -1073,7 +1075,7 @@ impl GenericDependencyProvider {
         }
 
         use crate::parse_requires::Operator;
-        use crate::version::PackageVersion;
+        use crate::parse_version::PackageVersion;
 
         let pkg_upstream = PackageVersion::parse(package_version)
             .ok()
@@ -1150,8 +1152,8 @@ impl GenericDependencyProvider {
     /// the inverted constraint, and vice versa.
     fn invert_constraint(
         &self,
-        constraint: &crate::parse_requires::VersionConstraint,
-    ) -> crate::parse_requires::VersionConstraint {
+        constraint: &VersionConstraint,
+    ) -> VersionConstraint {
         use crate::parse_requires::Operator;
 
         let inverted_op = match constraint.operator {
@@ -1163,7 +1165,7 @@ impl GenericDependencyProvider {
             _ => constraint.operator.clone(), // Keep other operators as-is for now
         };
 
-        crate::parse_requires::VersionConstraint {
+        VersionConstraint {
             operator: inverted_op,
             operand: constraint.operand.clone(),
         }
@@ -1713,7 +1715,7 @@ impl DependencyProvider for GenericDependencyProvider {
                                 }
 
                                 // Filter out IfInstall constraints for version checking
-                                let non_conditional_constraints: Vec<crate::parse_requires::VersionConstraint> = pkg_depend.constraints
+                                let non_conditional_constraints: Vec<VersionConstraint> = pkg_depend.constraints
                                     .iter()
                                     .filter(|c| c.operator != Operator::IfInstall)
                                     .cloned()
@@ -1733,7 +1735,7 @@ impl DependencyProvider for GenericDependencyProvider {
                                     // capabilities check is only for cases where the constraint refers to
                                     // a different capability name (handled in the else branch below).
                                     non_conditional_constraints.iter().all(|constraint| {
-                                        match version::check_version_constraint(
+                                        match crate::version_constraint::check_version_constraint(
                                             &record.version,
                                             constraint,
                                             self.format,
@@ -1748,13 +1750,18 @@ impl DependencyProvider for GenericDependencyProvider {
                                     // not the provider's version
                                     match self.get_package_manager() {
                                         Ok(pm) => {
-                                            match pm.check_provider_satisfies_constraints(
-                                                &record.pkgkey,
-                                                capability,
-                                                &non_conditional_constraints,
-                                                self.format,
-                                            ) {
-                                                Ok(satisfies) => satisfies,
+                                            match pm.load_package_info(&record.pkgkey) {
+                                                Ok(provider_pkg) => {
+                                                    match crate::provides::check_provider_satisfies_constraints(
+                                                        &provider_pkg,
+                                                        capability,
+                                                        &non_conditional_constraints,
+                                                        self.format,
+                                                    ) {
+                                                        Ok(satisfies) => satisfies,
+                                                        Err(_) => false,
+                                                    }
+                                                }
                                                 Err(_) => false,
                                             }
                                         }
@@ -1791,7 +1798,7 @@ impl DependencyProvider for GenericDependencyProvider {
                 // it means this package was loaded by direct package name lookup (required)
                 if !pkgkeys.is_empty() {
                     // Check if lookup_name is a package name (not a capability like "so:...")
-                    if let Ok(pkgname_from_key) = crate::package::pkgkey2pkgname(&pkgkeys[0]) {
+                    if let Ok(pkgname_from_key) = pkgkey2pkgname(&pkgkeys[0]) {
                         if lookup_name == &pkgname_from_key {
                             return Some(pkgname_from_key);
                         }
@@ -1848,7 +1855,7 @@ impl DependencyProvider for GenericDependencyProvider {
                             // Both or neither loaded - compare by version
                             // Default: newer first, but respect prefer_low_version setting
                             let prefer_low_version = config().install.prefer_low_version;
-                            match version::compare_versions(&rec_b.version, &rec_a.version, self.format) {
+                            match crate::version_compare::compare_versions(&rec_b.version, &rec_a.version, self.format) {
                                 Some(Ordering::Less) => {
                                     if prefer_low_version {
                                         Ordering::Greater // Prefer older (a comes first)

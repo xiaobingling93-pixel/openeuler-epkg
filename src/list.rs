@@ -581,7 +581,7 @@ impl PackageManager {
 
     /// Simple version comparison (can be enhanced with proper semver)
     fn is_version_newer(&self, new_version: &str, current_version: &str) -> bool {
-        crate::version::is_version_newer(new_version, current_version)
+        crate::version_compare::is_version_newer(new_version, current_version)
     }
 
     /// Display the package list in a formatted table

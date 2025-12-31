@@ -1,1056 +1,16 @@
+//! Version constraint checking and validation
+//!
+//! This module provides functions for checking if package versions satisfy version constraints,
+//! handling format-specific version comparison rules for RPM, Debian, Alpine, Pacman, and Conda packages.
+
 use color_eyre::Result;
 use std::cmp::Ordering;
-use versions::Versioning;
 use crate::models::PackageFormat;
-use crate::parse_requires::Operator;
+use crate::parse_requires::{Operator, VersionConstraint};
+use crate::parse_version::PackageVersion;
 use crate::conda_pkg::VERSION_BUILD_SEPARATOR;
+use crate::version_compare::*;
 use log;
-
-// Refer to:
-// https://www.debian.org/doc/debian-policy/ch-controlfields.html#special-version-conventions
-// https://docs.fedoraproject.org/en-US/packaging-guidelines/Versioning/
-// https://en.opensuse.org/openSUSE:Package_versioning_guidelines
-//
-// % rpmdev-vercmp 12.0.0 12.0.0-bp160.1.2
-// 12.0.0 < 12.0.0-bp160.1.2
-// 0.18.0 < 1.0.9-160000.2.2
-// 3.007004 > 3.18.0-bp160.1.10
-
-/// Package version comparison module
-///
-/// Supports both RPM and Debian package version formats:
-/// - RPM: [epoch:]upstream_version[-release]
-/// - Debian: [epoch:]upstream_version[-debian_revision]
-///
-/// Comparison priority (high to low):
-/// 1. Epoch (number before colon, defaults to 0)
-/// 2. Upstream version (main version part)
-/// 3. Release/Revision (part after last dash)
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageVersion {
-    pub epoch: u64,
-    pub upstream: String,
-    pub revision: String,
-}
-
-impl PackageVersion {
-    /// Parse a package version string into components
-    ///
-    /// Format: [epoch:]upstream_version[-revision]
-    ///
-    /// Key parsing rules:
-    /// - Epoch: Optional number before colon (:), defaults to 0
-    /// - Upstream: Main version part, may contain dashes for pre-release markers (e.g., "1.0-rc1")
-    /// - Revision: Optional part after last dash
-    ///   - Debian: debian_revision (e.g., "1.0-5", "1.0-1ubuntu2", "2.14.14-z")
-    ///   - RPM: release (e.g., "1.0-2.el8", "1.0-1.fc35")
-    ///   - Pre-release markers (rc, beta, alpha, pre, dev, snapshot) are treated as part of upstream
-    ///   - Other alphabetic suffixes after the last dash are treated as revisions
-    ///
-    /// Examples:
-    /// - "1.0" -> epoch=0, upstream="1.0", revision="0"
-    /// - "2:1.0-rc1" -> epoch=2, upstream="1.0-rc1", revision="0"
-    /// - "1.0-rc1-5" -> epoch=0, upstream="1.0-rc1", revision="5"
-    /// - "2.14.14-z" -> epoch=0, upstream="2.14.14", revision="z"
-    /// - "2:1.18.3~beta+dfsg1-5+b1" -> epoch=2, upstream="1.18.3~beta+dfsg1", revision="5+b1"
-    pub fn parse(version_str: &str) -> Result<Self> {
-        let version_str = version_str.trim();
-
-        // Split by epoch (colon)
-        let (epoch_str, remaining) = if let Some(colon_pos) = version_str.find(':') {
-            let epoch_part = &version_str[..colon_pos];
-            let remaining_part = &version_str[colon_pos + 1..];
-            (epoch_part, remaining_part)
-        } else {
-            ("0", version_str)
-        };
-
-        let epoch = epoch_str.parse::<u64>().unwrap_or(0);
-
-        // Find revision: rightmost dash followed by a digit
-        // This correctly handles upstream versions like "1.0-rc1" vs revisions like "5"
-        let (upstream, revision) = Self::split_upstream_revision(remaining);
-
-        Ok(PackageVersion {
-            epoch,
-            upstream,
-            revision,
-        })
-    }
-
-    /// Split upstream and revision parts
-    ///
-    /// Revision is identified by scanning from right to left, but with special handling
-    /// for cases where multiple dashes are followed by digits (revisions can contain dashes).
-    /// This distinguishes between:
-    /// - Upstream suffixes: "1.0-rc1", "2.0-beta", "1.5-alpha2" (pre-release markers)
-    /// - Actual revisions: "1.0-5", "1.0-1ubuntu2", "1.0-2.el8", "2.14.14-z" (dash + digit/letter)
-    /// - Revisions with dashes: "1.48.0-2-3" -> revision="2-3" (revisions can contain dashes)
-    ///
-    /// Pre-release markers (rc, beta, alpha, etc.) are treated as part of upstream.
-    /// Other suffixes after the first valid dash are treated as revisions.
-    fn split_upstream_revision(version_part: &str) -> (String, String) {
-        // Find all dash positions
-        let dash_positions: Vec<usize> = version_part.match_indices('-').map(|(pos, _)| pos).collect();
-
-        if dash_positions.is_empty() {
-            // No dashes - entire part is upstream
-            return (version_part.to_string(), "0".to_string());
-        }
-
-        // Check dashes from right to left, but track the leftmost dash followed by digits
-        // This handles cases like "1.48.0-2-3" where revision="2-3" contains dashes
-        let mut rightmost_candidate: Option<usize> = None;
-        let mut leftmost_digit_dash: Option<usize> = None;
-
-        for &dash_pos in dash_positions.iter().rev() {
-            let after_dash = &version_part[dash_pos + 1..];
-            if after_dash.is_empty() {
-                continue;
-            }
-
-            let first_char = after_dash.chars().next().unwrap();
-
-            if first_char.is_ascii_digit() {
-                // Dash followed by digit - track both rightmost and leftmost
-                if rightmost_candidate.is_none() {
-                    rightmost_candidate = Some(dash_pos);
-                }
-                leftmost_digit_dash = Some(dash_pos);
-                // Continue to check if there are more dashes to the left
-            } else if first_char.is_ascii_alphabetic() {
-                let lower_after = after_dash.to_lowercase();
-                // Check if it's a pre-release marker
-                let is_prerelease = lower_after.starts_with("rc") ||
-                                    lower_after.starts_with("beta") ||
-                                    lower_after.starts_with("alpha") ||
-                                    lower_after.starts_with("pre") ||
-                                    lower_after.starts_with("dev") ||
-                                    lower_after.starts_with("snapshot");
-
-                if !is_prerelease {
-                    // Not a pre-release marker
-                    // If we already found a dash followed by a digit, use that instead
-                    // (e.g., "1.0-git20230101-1" -> use "-1", not "-git20230101")
-                    if rightmost_candidate.is_some() && leftmost_digit_dash.is_some() {
-                        // We already have a digit dash, ignore this letter dash
-                        break;
-                    }
-                    // Otherwise, treat as revision (e.g., "2.14.14-z")
-                    if rightmost_candidate.is_none() {
-                        rightmost_candidate = Some(dash_pos);
-                    }
-                    // Stop here - we found a non-prerelease letter, so this is the revision separator
-                    break;
-                }
-                // Otherwise, it's a pre-release marker, continue looking for earlier dashes
-            } else {
-                // Dash followed by something else (not digit or letter) - stop here
-                // This might be part of upstream
-                break;
-            }
-        }
-
-        if let Some(separator_pos) = rightmost_candidate {
-            // If we found multiple dashes followed by digits, use the leftmost one
-            // This handles "1.48.0-2-3" -> revision="2-3"
-            let final_separator = leftmost_digit_dash.unwrap_or(separator_pos);
-            let upstream_part = &version_part[..final_separator];
-            let revision_part = &version_part[final_separator + 1..];
-            (upstream_part.to_string(), revision_part.to_string())
-        } else {
-            // No revision found - entire part is upstream
-            (version_part.to_string(), "0".to_string())
-        }
-    }
-
-    /// Compare two package versions according to Debian/RPM rules
-    fn compare(&self, other: &PackageVersion) -> Ordering {
-        self.compare_with_format(other, None)
-    }
-
-    /// Compare two package versions according to format-specific rules
-    fn compare_with_format(&self, other: &PackageVersion, format: Option<PackageFormat>) -> Ordering {
-        // 1. Compare epoch first (highest priority)
-        match self.epoch.cmp(&other.epoch) {
-            Ordering::Equal => {},
-            other => return other,
-        }
-
-        // 2. Compare upstream version (middle priority)
-        match Self::compare_upstream_with_format(&self.upstream, &other.upstream, format) {
-            Ordering::Equal => {},
-            other => return other,
-        }
-
-        // 3. Compare revision (lowest priority)
-        // Special handling for Alpine/APK format: -r0, -r1, etc.
-        // Strip 'r' prefix if present and compare numerically
-        let rev_a = Self::normalize_apk_revision(&self.revision);
-        let rev_b = Self::normalize_apk_revision(&other.revision);
-
-        // Special handling for RPM format: "0" (no revision) should be less than any non-zero revision
-        // According to RPM rules: 12.0.0 < 12.0.0-bp160.1.2
-        if let Some(fmt) = format {
-            if fmt == PackageFormat::Rpm || fmt == PackageFormat::Pacman {
-                // In RPM/Pacman, "0" means no revision, which should be less than any actual revision
-                match (rev_a.as_str(), rev_b.as_str()) {
-                    ("0", rev_b) if rev_b != "0" => return Ordering::Less,
-                    (rev_a, "0") if rev_a != "0" => return Ordering::Greater,
-                    _ => {} // Both are "0" or both are non-zero, continue with normal comparison
-                }
-            }
-        }
-
-        Self::compare_upstream_with_format(&rev_a, &rev_b, format)
-    }
-
-    /// Normalize APK revision format for comparison
-    /// In Alpine/APK, -r0, -r1, etc. are explicit revisions.
-    /// For comparison: strip 'r' prefix and compare numerically, but mark as explicit
-    /// Explicit revisions should compare less than implicit ones when numeric values are equal.
-    fn normalize_apk_revision(revision: &str) -> String {
-        // If revision starts with 'r' followed by digits, strip the 'r' and compare numerically
-        // But we need to distinguish explicit vs implicit. For now, strip 'r' and compare.
-        // Note: This means r0 == 0 numerically, but we want r0 < 0 (explicit < implicit)
-        // We'll handle this by checking if both are "0" and one is explicit
-        if revision.len() > 1 && revision.starts_with('r') {
-            let after_r = &revision[1..];
-            if after_r.chars().all(|c| c.is_ascii_digit()) {
-                // Return with a special marker to indicate it's explicit
-                // Use a character that sorts before digits: ~
-                return format!("~{}", after_r);
-            }
-        }
-        revision.to_string()
-    }
-
-    /// Check if a string after a dash is a recognized pre-release marker
-    fn is_prerelease_marker(after_dash: &str) -> bool {
-        if after_dash.is_empty() {
-            return false;
-        }
-        let first_char = after_dash.chars().next().unwrap();
-        if !first_char.is_ascii_alphabetic() {
-            return false;
-        }
-        let lower_after = after_dash.to_lowercase();
-        // Check for multi-character pre-release markers
-        if lower_after.starts_with("rc") ||
-           lower_after.starts_with("beta") ||
-           lower_after.starts_with("alpha") ||
-           lower_after.starts_with("pre") ||
-           lower_after.starts_with("dev") ||
-           lower_after.starts_with("snapshot") {
-            return true;
-        }
-        // Check for single-letter pre-release markers (e.g., "a0", "b0", "a1", "b2")
-        // These are common in Conda versioning (alpha, beta, etc.)
-        // But be careful: "b24" could be a build identifier, not a beta pre-release
-        // Only treat as pre-release if it's a single letter followed by digits and
-        // the pattern matches common pre-release formats (typically short numbers like "a0", "b1")
-        if after_dash.len() >= 2 {
-            let second_char = after_dash.chars().nth(1).unwrap();
-            if second_char.is_ascii_digit() {
-                // For single-letter markers, only treat as pre-release if:
-                // 1. It's "a" (alpha) or "b" (beta) followed by a short number (typically 0-9)
-                // 2. The number is very short (single digit or low double digits)
-                // This is a heuristic to distinguish "b1" (beta 1) from "b24" (build 24)
-                let first_lower = first_char.to_ascii_lowercase();
-                if first_lower == 'a' || first_lower == 'b' {
-                    // Extract the numeric part
-                    let numeric_part = &after_dash[1..];
-                    if let Ok(num) = numeric_part.parse::<u32>() {
-                        // Only treat as pre-release if the number is small (typically 0-9, sometimes up to 20)
-                        // This distinguishes "a0", "a1", "b2" (pre-releases) from "b24", "a100" (build identifiers)
-                        if num <= 20 {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Compare upstream version strings using format-specific rules
-    ///
-    /// For RPM format:
-    /// - Numbers have higher precedence than letters
-    /// - So "2.1.76" > "2.1.fb69" (numeric segment > alphabetic segment)
-    ///
-    /// For Debian format:
-    /// - Letters have higher precedence than numbers (unless letters start with ~)
-    /// - So "2.1.fb69" > "2.1.76" (alphabetic segment > numeric segment)
-    ///
-    /// For Conda format:
-    /// - Underscores in version strings are treated as separators (like dots)
-    /// - So "1.3_7" is equivalent to "1.3.7" for comparison purposes
-    ///
-    /// Common rules:
-    /// - ~ (tilde) has lowest priority (pre-release indicator)
-    /// - Numbers are compared numerically
-    /// - Letters are compared by ASCII value
-    fn compare_upstream_with_format(a: &str, b: &str, format: Option<PackageFormat>) -> Ordering {
-        // Normalize Conda versions: convert underscores to dots
-        // This handles cases like "1.3_7" which should be treated as "1.3.7"
-        let (a_normalized, b_normalized) = if format == Some(PackageFormat::Conda) {
-            (a.replace('_', "."), b.replace('_', "."))
-        } else {
-            (a.to_string(), b.to_string())
-        };
-        let a = a_normalized.as_str();
-        let b = b_normalized.as_str();
-
-        // Special case: if one version is a prefix of the other and the continuation
-        // starts with a recognized pre-release marker (dash + pre-release marker), the shorter one is newer
-        if let Some(stripped_a) = a.strip_prefix(b) {
-            if stripped_a.starts_with('-') && stripped_a.len() > 1 {
-                let after_dash = &stripped_a[1..];
-                // Only treat as pre-release if it's a recognized pre-release marker
-                if Self::is_prerelease_marker(after_dash) {
-                    return Ordering::Less; // a < b (pre-release < final)
-                }
-            }
-        }
-        if let Some(stripped_b) = b.strip_prefix(a) {
-            if stripped_b.starts_with('-') && stripped_b.len() > 1 {
-                let after_dash = &stripped_b[1..];
-                // Only treat as pre-release if it's a recognized pre-release marker
-                if Self::is_prerelease_marker(after_dash) {
-                    return Ordering::Greater; // a > b (final > pre-release)
-                }
-            }
-        }
-
-        // Special case for Conda: handle pre-release markers directly appended (e.g., "6.10.0a0")
-        // If one version is a prefix of the other and the continuation is a pre-release marker
-        // (without a dash), treat the longer one as pre-release
-        // Only apply this for Conda format, not for Debian where ~ has special meaning
-        if format == Some(PackageFormat::Conda) {
-            if let Some(stripped_a) = a.strip_prefix(b) {
-                if !stripped_a.is_empty() && Self::is_prerelease_marker(stripped_a) {
-                    return Ordering::Less; // a < b (pre-release < final)
-                }
-            }
-            if let Some(stripped_b) = b.strip_prefix(a) {
-                if !stripped_b.is_empty() && Self::is_prerelease_marker(stripped_b) {
-                    return Ordering::Greater; // a > b (final > pre-release)
-                }
-            }
-        }
-
-        // Special case: handle versions like "48.alpha" vs "48.4"
-        // If one version ends with a pre-release marker (like ".alpha") and the other
-        // continues with a number, treat the pre-release as less
-        if let Some(dot_pos) = a.rfind('.') {
-            let after_dot = &a[dot_pos + 1..];
-            if Self::is_prerelease_marker(after_dot) {
-                if let Some(b_dot_pos) = b.rfind('.') {
-                    let b_after_dot = &b[b_dot_pos + 1..];
-                    if b_after_dot.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                        // a ends with pre-release marker, b continues with number
-                        // Check if the prefixes before the last dot match
-                        if a[..dot_pos] == b[..b_dot_pos] {
-                            return Ordering::Less; // pre-release < final
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(dot_pos) = b.rfind('.') {
-            let after_dot = &b[dot_pos + 1..];
-            if Self::is_prerelease_marker(after_dot) {
-                if let Some(a_dot_pos) = a.rfind('.') {
-                    let a_after_dot = &a[a_dot_pos + 1..];
-                    if a_after_dot.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                        // b ends with pre-release marker, a continues with number
-                        // Check if the prefixes before the last dot match
-                        if b[..dot_pos] == a[..a_dot_pos] {
-                            return Ordering::Greater; // final > pre-release
-                        }
-                    }
-                }
-            }
-        }
-
-        // Use format-specific comparison if format is specified
-        if let Some(fmt) = format {
-            match fmt {
-                PackageFormat::Rpm | PackageFormat::Pacman => {
-                    // For RPM/Pacman, use RPM-style comparison (numbers > letters)
-                    return Self::rpm_version_compare(a, b);
-                }
-                _ => {
-                    // For other formats, use Debian-style comparison
-                    if a.contains('~') || b.contains('~') || a.contains('+') || b.contains('+') ||
-                       a.chars().any(|c| c.is_ascii_alphabetic()) || b.chars().any(|c| c.is_ascii_alphabetic()) {
-                        return Self::debian_version_compare(a, b);
-                    }
-                    // Try using the versions crate first for standard semantic versioning
-                    if let (Some(ver_a), Some(ver_b)) = (Versioning::new(a), Versioning::new(b)) {
-                        return ver_a.cmp(&ver_b);
-                    }
-                    // Fall back to Debian-style comparison for non-semantic versions
-                    return Self::debian_version_compare(a, b);
-                }
-            }
-        }
-
-        // Default behavior (when format is None): use Debian-style comparison
-        // Use Debian-style comparison if either version contains special Debian characters
-        // or contains letters (for revision strings like "0ubuntu8.6")
-        if a.contains('~') || b.contains('~') || a.contains('+') || b.contains('+') ||
-           a.chars().any(|c| c.is_ascii_alphabetic()) || b.chars().any(|c| c.is_ascii_alphabetic()) {
-            return Self::debian_version_compare(a, b);
-        }
-
-        // Try using the versions crate first for standard semantic versioning
-        if let (Some(ver_a), Some(ver_b)) = (Versioning::new(a), Versioning::new(b)) {
-            return ver_a.cmp(&ver_b);
-        }
-
-        // Fall back to Debian-style comparison for non-semantic versions
-        Self::debian_version_compare(a, b)
-    }
-
-    /// RPM-style version comparison implementation
-    /// In RPM, numbers have higher precedence than letters
-    /// Dots are segment separators, so we compare segment by segment
-    fn rpm_version_compare(a: &str, b: &str) -> Ordering {
-        let mut chars_a = a.chars().peekable();
-        let mut chars_b = b.chars().peekable();
-
-        loop {
-            match (chars_a.peek(), chars_b.peek()) {
-                (None, None) => return Ordering::Equal,
-                (None, Some('~')) => return Ordering::Greater, // Something > ~
-                (None, Some(_)) => return Ordering::Less,
-                (Some('~'), None) => return Ordering::Less,    // ~ < Something
-                (Some(_), None) => return Ordering::Greater,
-                (Some(_), Some(_)) => {
-                    // Extract next segment (numbers or non-numbers), stopping at dots
-                    let (seg_a, is_num_a) = Self::extract_segment_stopping_at_dot(&mut chars_a);
-                    let (seg_b, is_num_b) = Self::extract_segment_stopping_at_dot(&mut chars_b);
-
-                    match (is_num_a, is_num_b) {
-                        (true, true) => {
-                            // Both are numbers - compare numerically
-                            let num_a: u64 = seg_a.parse().unwrap_or(0);
-                            let num_b: u64 = seg_b.parse().unwrap_or(0);
-                            match num_a.cmp(&num_b) {
-                                Ordering::Equal => continue,
-                                other => return other,
-                            }
-                        },
-                        (false, false) => {
-                            // Both are non-numbers - use character comparison
-                            match Self::rpm_string_compare(&seg_a, &seg_b) {
-                                Ordering::Equal => continue,
-                                other => return other,
-                            }
-                        },
-                        (true, false) => {
-                            // Number vs non-number: in RPM, number has higher precedence
-                            // unless the non-number starts with ~
-                            if seg_b.starts_with('~') {
-                                return Ordering::Greater;
-                            } else {
-                                return Ordering::Greater; // Number > letter in RPM
-                            }
-                        },
-                        (false, true) => {
-                            // Non-number vs number: in RPM, number has higher precedence
-                            if seg_a.starts_with('~') {
-                                return Ordering::Less;
-                            } else {
-                                return Ordering::Less; // Letter < number in RPM
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Extract a segment stopping at dots (for RPM version comparison)
-    fn extract_segment_stopping_at_dot(chars: &mut std::iter::Peekable<std::str::Chars>) -> (String, bool) {
-        let mut segment = String::new();
-        let mut is_digit = false;
-        let mut first_char = true;
-
-        while let Some(&ch) = chars.peek() {
-            // Stop at dots - they're segment separators
-            if ch == '.' {
-                break;
-            }
-
-            if first_char {
-                is_digit = ch.is_ascii_digit();
-                first_char = false;
-            } else if ch.is_ascii_digit() != is_digit {
-                // Changed from digit to non-digit or vice versa - stop here
-                break;
-            }
-
-            segment.push(ch);
-            chars.next();
-        }
-
-        // Skip the dot if we stopped at one
-        if chars.peek() == Some(&'.') {
-            chars.next();
-        }
-
-        (segment, is_digit)
-    }
-
-    /// Compare non-numeric strings using RPM precedence rules
-    /// ~ < letters < other symbols
-    fn rpm_string_compare(a: &str, b: &str) -> Ordering {
-        let mut chars_a = a.chars();
-        let mut chars_b = b.chars();
-
-        loop {
-            match (chars_a.next(), chars_b.next()) {
-                (None, None) => return Ordering::Equal,
-                (None, Some(ch_b)) => {
-                    // a ended, b continues
-                    if ch_b == '~' {
-                        return Ordering::Greater;
-                    } else {
-                        return Ordering::Less;
-                    }
-                },
-                (Some(ch_a), None) => {
-                    // b ended, a continues
-                    if ch_a == '~' {
-                        return Ordering::Less;
-                    } else {
-                        return Ordering::Greater;
-                    }
-                },
-                (Some(ch_a), Some(ch_b)) => {
-                    let order_a = Self::char_precedence(ch_a);
-                    let order_b = Self::char_precedence(ch_b);
-
-                    match order_a.cmp(&order_b) {
-                        Ordering::Equal => {
-                            // Same precedence class, compare by ASCII value
-                            match ch_a.cmp(&ch_b) {
-                                Ordering::Equal => continue,
-                                other => return other,
-                            }
-                        },
-                        other => return other,
-                    }
-                }
-            }
-        }
-    }
-
-    /// Debian-style version comparison implementation
-    fn debian_version_compare(a: &str, b: &str) -> Ordering {
-        let mut chars_a = a.chars().peekable();
-        let mut chars_b = b.chars().peekable();
-
-        loop {
-            match (chars_a.peek(), chars_b.peek()) {
-                (None, None) => return Ordering::Equal,
-                (None, Some('~')) => return Ordering::Greater, // Something > ~
-                (None, Some(_)) => return Ordering::Less,
-                (Some('~'), None) => return Ordering::Less,    // ~ < Something
-                (Some(_), None) => return Ordering::Greater,
-                (Some(_), Some(_)) => {
-                    // Extract next segment (numbers or non-numbers)
-                    let (seg_a, is_num_a) = Self::extract_segment(&mut chars_a);
-                    let (seg_b, is_num_b) = Self::extract_segment(&mut chars_b);
-
-                    match (is_num_a, is_num_b) {
-                        (true, true) => {
-                            // Both are numbers - compare numerically
-                            let num_a: u64 = seg_a.parse().unwrap_or(0);
-                            let num_b: u64 = seg_b.parse().unwrap_or(0);
-                            match num_a.cmp(&num_b) {
-                                Ordering::Equal => continue,
-                                other => return other,
-                            }
-                        },
-                        (false, false) => {
-                            // Both are non-numbers - use Debian character precedence
-                            match Self::debian_string_compare(&seg_a, &seg_b) {
-                                Ordering::Equal => continue,
-                                other => return other,
-                            }
-                        },
-                        (true, false) => {
-                            // Number vs non-number: number has higher precedence
-                            // unless the non-number starts with ~
-                            if seg_b.starts_with('~') {
-                                return Ordering::Greater;
-                            } else {
-                                return Ordering::Less;
-                            }
-                        },
-                        (false, true) => {
-                            // Non-number vs number
-                            if seg_a.starts_with('~') {
-                                return Ordering::Less;
-                            } else {
-                                return Ordering::Greater;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Extract the next segment (consecutive digits or consecutive non-digits)
-    fn extract_segment(chars: &mut std::iter::Peekable<std::str::Chars>) -> (String, bool) {
-        let mut segment = String::new();
-        let mut is_digit = false;
-        let mut first_char = true;
-
-        while let Some(&ch) = chars.peek() {
-            if first_char {
-                is_digit = ch.is_ascii_digit();
-                first_char = false;
-            } else if ch.is_ascii_digit() != is_digit {
-                break;
-            }
-
-            segment.push(ch);
-            chars.next();
-        }
-
-        (segment, is_digit)
-    }
-
-    /// Compare non-numeric strings using Debian precedence rules
-    /// ~ < letters < other symbols
-    fn debian_string_compare(a: &str, b: &str) -> Ordering {
-        let mut chars_a = a.chars();
-        let mut chars_b = b.chars();
-
-        loop {
-            match (chars_a.next(), chars_b.next()) {
-                (None, None) => return Ordering::Equal,
-                (None, Some(ch_b)) => {
-                    // a ended, b continues
-                    // If b continues with ~, a > b (something > ~)
-                    // Otherwise, a < b (shorter < longer)
-                    if ch_b == '~' {
-                        return Ordering::Greater;
-                    } else {
-                        return Ordering::Less;
-                    }
-                },
-                (Some(ch_a), None) => {
-                    // b ended, a continues
-                    // If a continues with ~, a < b (~ < something)
-                    // Otherwise, a > b (longer > shorter)
-                    if ch_a == '~' {
-                        return Ordering::Less;
-                    } else {
-                        return Ordering::Greater;
-                    }
-                },
-                (Some(ch_a), Some(ch_b)) => {
-                    let order_a = Self::char_precedence(ch_a);
-                    let order_b = Self::char_precedence(ch_b);
-
-                    match order_a.cmp(&order_b) {
-                        Ordering::Equal => {
-                            // Same precedence class, compare by ASCII value
-                            match ch_a.cmp(&ch_b) {
-                                Ordering::Equal => continue,
-                                other => return other,
-                            }
-                        },
-                        other => return other,
-                    }
-                }
-            }
-        }
-    }
-
-    /// Get character precedence for Debian version comparison
-    /// Returns: 0 for ~, 1 for letters, 2 for other symbols
-    fn char_precedence(ch: char) -> u8 {
-        match ch {
-            '~' => 0,  // Lowest precedence (pre-release)
-            c if c.is_ascii_alphabetic() => 1,  // Letters
-            _ => 2,    // Other symbols (highest precedence)
-        }
-    }
-}
-
-pub fn is_version_newer(new_version: &str, current_version: &str) -> bool {
-    match (PackageVersion::parse(new_version), PackageVersion::parse(current_version)) {
-        (Ok(new_ver), Ok(current_ver)) => {
-            new_ver.compare(&current_ver) == Ordering::Greater
-        },
-        _ => {
-            // Fall back to simple string comparison if parsing fails
-            log::warn!("Failed to parse versions, falling back to string comparison: '{}' vs '{}'",
-                      new_version, current_version);
-            new_version > current_version
-        }
-    }
-}
-
-/// Compare versions using format-specific logic
-/// Returns Some(Ordering) if comparison succeeds, None if parsing fails
-pub fn compare_versions(
-    version1: &str,
-    version2: &str,
-    format: PackageFormat,
-) -> Option<Ordering> {
-    // Use epkg's version comparison for all formats
-    compare_versions_epkg_with_format(version1, version2, Some(format))
-}
-
-/// Use epkg's version comparison with format
-fn compare_versions_epkg_with_format(version1: &str, version2: &str, format: Option<PackageFormat>) -> Option<Ordering> {
-    match (PackageVersion::parse(version1), PackageVersion::parse(version2)) {
-        (Ok(v1), Ok(v2)) => {
-            Some(v1.compare_with_format(&v2, format))
-        }
-        _ => {
-            log::warn!("Failed to parse versions: '{}' vs '{}'", version1, version2);
-            None
-        }
-    }
-}
-
-/// Compare only upstream versions (epoch:upstream) for RPM, Pacman, and Apk formats
-/// In these formats, "=" means upstream version must match, release can differ
-#[allow(dead_code)]
-fn compare_upstream_versions(
-    package_version: &str,
-    constraint_operand: &str,
-) -> Result<bool> {
-    compare_upstream_versions_with_format(package_version, constraint_operand, None)
-}
-
-fn compare_upstream_versions_with_format(
-    package_version: &str,
-    constraint_operand: &str,
-    format: Option<PackageFormat>,
-) -> Result<bool> {
-    match (PackageVersion::parse(package_version), PackageVersion::parse(constraint_operand)) {
-        (Ok(pkg_ver), Ok(constraint_ver)) => {
-            // Check if either argument has an explicit epoch (contains a colon)
-            // If neither has an explicit epoch, compare epochs normally
-            // If one has an explicit epoch and the other doesn't, skip epoch comparison
-            // This handles cases like constraint "11.9.0" matching package "1:11.9.0-1"
-            // and makes the function symmetric for check_version_equal
-            let package_has_explicit_epoch = package_version.contains(':');
-            let constraint_has_explicit_epoch = constraint_operand.contains(':');
-
-            // Only compare epochs if both have explicit epochs, or neither has explicit epoch
-            // If one has explicit epoch and the other doesn't, skip epoch comparison
-            if package_has_explicit_epoch && constraint_has_explicit_epoch {
-                // Both have explicit epochs - compare epochs first
-                match pkg_ver.epoch.cmp(&constraint_ver.epoch) {
-                    Ordering::Equal => {},
-                    _ => return Ok(false),
-                }
-            } else if !package_has_explicit_epoch && !constraint_has_explicit_epoch {
-                // Neither has explicit epoch - compare epochs normally (both default to 0)
-                match pkg_ver.epoch.cmp(&constraint_ver.epoch) {
-                    Ordering::Equal => {},
-                    _ => return Ok(false),
-                }
-            }
-            // If one has explicit epoch and the other doesn't, skip epoch comparison
-            // and proceed to compare upstream versions
-
-            // Compare upstream version (ignoring revision/release)
-            match PackageVersion::compare_upstream_with_format(&pkg_ver.upstream, &constraint_ver.upstream, format) {
-                Ordering::Equal => Ok(true),
-                _ => {
-                    // Special case: if package upstream starts with constraint upstream followed by a dash or dot,
-                    // treat the constraint as matching (e.g., "9.8.3-bp160.1.34" matches constraint "9.8.3",
-                    // and "1.14.6" matches constraint "1.14")
-                    // This handles:
-                    // - RPM releases that start with letters (like "bp160.1.34", "el8", "fc35") - remainder starts with '-'
-                    // - Version extensions (like "1.14.6" for constraint "1.14") - remainder starts with '.'
-                    if pkg_ver.upstream.starts_with(&constraint_ver.upstream) {
-                        let remainder = &pkg_ver.upstream[constraint_ver.upstream.len()..];
-                        // If remainder starts with a dash, it's a release/build identifier
-                        // If remainder starts with a dot, it's a version extension (e.g., "1.14.6" for "1.14")
-                        // This means the constraint is a complete version prefix
-                        if remainder.starts_with('-') || remainder.starts_with('.') {
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    } else {
-                        Ok(false)
-                    }
-                }
-            }
-        }
-        _ => {
-            Err(color_eyre::eyre::eyre!("Failed to parse versions for upstream comparison: '{}' vs '{}'", package_version, constraint_operand))
-        }
-    }
-}
-
-/// Check if a package version satisfies APK fuzzy version constraint
-///
-/// APK fuzzy version matching (using ~ operator) matches versions that share the same prefix.
-/// For example: ~2.2 matches 2.2, 2.2.0, 2.2.1 but not 2.10 or 2.20.
-///
-/// Reference: apk-tools/src/version.c apk_version_compare_fuzzy()
-/// https://github.com/alpinelinux/apk-tools/blob/master/src/version.c#L281
-///
-/// The logic matches when the constraint version reaches TOKEN_END while fuzzy is true,
-/// meaning the constraint is a prefix of the package version.
-fn check_apk_fuzzy_version(
-    package_version: &str,
-    normalized_operand: &str,
-) -> Option<bool> {
-    // Parse both versions and compare their upstream parts
-    match (PackageVersion::parse(package_version), PackageVersion::parse(normalized_operand)) {
-        (Ok(pkg_ver), Ok(operand_ver)) => {
-            // Compare epochs first - they must match
-            if pkg_ver.epoch != operand_ver.epoch {
-                return Some(false);
-            }
-
-            // Check if the package version's upstream starts with the operand's upstream
-            // For example: "2.2.0" starts with "2.2", "2.10" does NOT start with "2.2"
-            let pkg_upstream = &pkg_ver.upstream;
-            let operand_upstream = &operand_ver.upstream;
-
-            // Check if pkg_upstream starts with operand_upstream as a prefix
-            // But we need to ensure we match on version component boundaries
-            // "2.2" should match "2.2", "2.2.0", "2.2.1" but not "2.10", "2.20"
-            if pkg_upstream == operand_upstream {
-                // Exact match
-                Some(true)
-            } else if pkg_upstream.starts_with(operand_upstream) {
-                // Check if the next character after the prefix is a separator (., -, _) or end of string
-                // This ensures "2.2" matches "2.2.0" but not "2.20"
-                let next_char = pkg_upstream.chars().nth(operand_upstream.len());
-                match next_char {
-                    None => Some(true), // operand is a prefix and we're at the end
-                    Some(ch) if ch == '.' || ch == '-' || ch == '_' => Some(true), // valid separator
-                    _ => Some(false), // not a valid match (e.g., "2.20" doesn't start with "2.2" properly)
-                }
-            } else {
-                // Prefix doesn't match - version is not compatible
-                // For example: "2.10" does NOT start with "2.2", so it doesn't satisfy ~2.2
-                Some(false)
-            }
-        }
-        _ => {
-            // If parsing fails, fall back to simple prefix check
-            let pkg_upstream = PackageVersion::parse(package_version)
-                .map(|v| v.upstream)
-                .unwrap_or_else(|_| package_version.to_string());
-            let operand_upstream = PackageVersion::parse(normalized_operand)
-                .map(|v| v.upstream)
-                .unwrap_or_else(|_| normalized_operand.to_string());
-
-            if pkg_upstream.starts_with(&operand_upstream) {
-                let next_char = pkg_upstream.chars().nth(operand_upstream.len());
-                match next_char {
-                    None => Some(true),
-                    Some(ch) if ch == '.' || ch == '-' || ch == '_' => Some(true),
-                    _ => Some(false),
-                }
-            } else {
-                Some(false)
-            }
-        }
-    }
-}
-
-/// Check if a package version satisfies Python PEP 440 compatible release constraint
-///
-/// PEP 440 compatible release (using ~= operator) matches versions that are >= operand
-/// and share the same prefix based on the number of segments in the operand.
-///
-/// Examples:
-/// - ~= 2.2 means >= 2.2, == 2.* (matches 2.x but not 3.x)
-/// - ~= 2.2.0 means >= 2.2.0, == 2.2.* (matches 2.2.x but not 2.3.x)
-/// - ~= 2.2.post3 means >= 2.2.post3, == 2.* (suffix ignored for prefix match)
-///
-/// Reference: PEP 440 - Compatible Release
-/// https://peps.python.org/pep-0440/#compatible-release
-fn check_python_compatible_release(
-    package_version: &str,
-    normalized_operand: &str,
-    format: PackageFormat,
-) -> Option<bool> {
-    // Extract the release identifier (numeric part before pre/post-release markers)
-    // For "2.2.post3", release is "2.2"
-    // For "1.4.5a4", release is "1.4.5"
-    // For "2.2.0", release is "2.2.0"
-    let release_part = if let Some(pos) = normalized_operand.find(|c: char| c.is_alphabetic() && c != '.') {
-        // Found a letter (pre/post-release marker), extract everything before it
-        &normalized_operand[..pos].trim_end_matches('.')
-    } else {
-        // No pre/post-release markers, use the whole operand
-        normalized_operand
-    };
-
-    // Count segments in the release identifier
-    let release_segments: Vec<&str> = release_part.split('.').collect();
-    let num_segments = release_segments.len();
-
-    if num_segments < 2 {
-        // PEP 440: "This operator MUST NOT be used with a single segment version number such as ~=1"
-        // But we'll handle it gracefully by treating it as >= operand
-        return compare_versions(package_version, normalized_operand, format)
-            .map(|cmp| cmp != Ordering::Less);
-    }
-
-    // The prefix is the first (num_segments - 1) segments of the release identifier
-    // For "2.2" (2 segments), prefix is "2" (1 segment)
-    // For "2.2.0" (3 segments), prefix is "2.2" (2 segments)
-    let prefix_segments = &release_segments[..num_segments - 1];
-    let prefix = prefix_segments.join(".");
-
-    // Check: package_version >= operand AND package_version starts with prefix
-    let ge_check = compare_versions(package_version, normalized_operand, format)
-        .map(|cmp| cmp != Ordering::Less);
-
-    if ge_check == Some(false) {
-        // Doesn't satisfy >= operand
-        return Some(false);
-    }
-
-    // Extract release part from package version for prefix matching
-    let pkg_release_part = if let Some(pos) = package_version.find(|c: char| c.is_alphabetic() && c != '.') {
-        &package_version[..pos].trim_end_matches('.')
-    } else {
-        package_version
-    };
-
-    // Check if package version's release part starts with the prefix
-    // For "2.2", prefix is "2", so match "2.0", "2.1", "2.2", "2.3", etc. but not "3.0"
-    let prefix_check = if pkg_release_part.starts_with(&prefix) {
-        // Check if the next character after the prefix is a dot or end of string
-        let next_char = pkg_release_part.chars().nth(prefix.len());
-        match next_char {
-            None => true, // Exact match with prefix
-            Some(ch) if ch == '.' => true, // Valid separator
-            _ => false, // Not a valid match
-        }
-    } else {
-        false
-    };
-
-    // Both conditions must be true: >= operand AND prefix matches
-    ge_check.and_then(|ge| Some(ge && prefix_check))
-}
-
-/// Compare upstream versions (ignoring revision/release) and return Ordering
-/// This is useful for VersionCompatible operator which should ignore revisions
-fn compare_upstream_versions_ordering_with_format(
-    package_version: &str,
-    constraint_operand: &str,
-    format: Option<PackageFormat>,
-) -> Option<Ordering> {
-    match (PackageVersion::parse(package_version), PackageVersion::parse(constraint_operand)) {
-        (Ok(pkg_ver), Ok(constraint_ver)) => {
-            // Check if either argument has an explicit epoch (contains a colon)
-            // If neither has an explicit epoch, compare epochs normally
-            // If one has an explicit epoch and the other doesn't, skip epoch comparison
-            // This handles cases like constraint "11.9.0" matching package "1:11.9.0-1"
-            let package_has_explicit_epoch = package_version.contains(':');
-            let constraint_has_explicit_epoch = constraint_operand.contains(':');
-
-            // Only compare epochs if both have explicit epochs, or neither has explicit epoch
-            // If one has explicit epoch and the other doesn't, skip epoch comparison
-            if package_has_explicit_epoch && constraint_has_explicit_epoch {
-                // Both have explicit epochs - compare epochs first
-                match pkg_ver.epoch.cmp(&constraint_ver.epoch) {
-                    Ordering::Equal => {},
-                    other => return Some(other),
-                }
-            } else if !package_has_explicit_epoch && !constraint_has_explicit_epoch {
-                // Neither has explicit epoch - compare epochs normally (both default to 0)
-                match pkg_ver.epoch.cmp(&constraint_ver.epoch) {
-                    Ordering::Equal => {},
-                    other => return Some(other),
-                }
-            }
-            // If one has explicit epoch and the other doesn't, skip epoch comparison
-            // and proceed to compare upstream versions
-
-            // Compare upstream version (ignoring revision/release)
-            Some(PackageVersion::compare_upstream_with_format(&pkg_ver.upstream, &constraint_ver.upstream, format))
-        }
-        _ => None,
-    }
-}
-
-/// Compute the next version after a given base version
-/// Used for RPM's ~~ operator: "X~~" means "less than the next version after X"
-/// Examples:
-/// - "2" -> "3" (increment the numeric segment)
-/// - "0.7.5" -> "0.7.6" (increment the last numeric segment)
-/// - "1.20" -> "1.21" (increment the last numeric segment)
-///
-/// Strategy: Increment the last numeric segment in the version string.
-/// For simple integer versions like "2", increment the only segment to get "3".
-fn compute_next_version(base: &str) -> String {
-    // Handle versions with dots: find the last numeric segment and increment it
-    // For "0.7.5", we want "0.7.6" (increment the "5")
-    // For "2", we want "3" (increment the "2")
-
-    // Split by dots to find segments
-    let segments: Vec<&str> = base.split('.').collect();
-
-    if segments.is_empty() {
-        return base.to_string();
-    }
-
-    // Find the last segment that starts with a digit
-    let mut last_num_idx = None;
-    let mut last_num_value = 0u64;
-
-    for (idx, segment) in segments.iter().enumerate().rev() {
-        // Extract the numeric prefix of this segment
-        let num_part: String = segment.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !num_part.is_empty() {
-            if let Ok(num) = num_part.parse::<u64>() {
-                last_num_idx = Some(idx);
-                last_num_value = num;
-                break;
-            }
-        }
-    }
-
-    if let Some(idx) = last_num_idx {
-        // Increment the last numeric segment
-        let next_num = last_num_value + 1;
-        let mut result_segments: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
-
-        // Replace the segment at idx with the incremented value
-        let old_segment = &segments[idx];
-        let num_part_len = old_segment.chars().take_while(|c| c.is_ascii_digit()).count();
-        let suffix = &old_segment[num_part_len..];
-        result_segments[idx] = format!("{}{}", next_num, suffix);
-
-        // Reconstruct the version string
-        result_segments.join(".")
-    } else {
-        // No numeric segment found, try to parse the whole string as a number
-        if let Ok(num) = base.parse::<u64>() {
-            return (num + 1).to_string();
-        }
-        // Fallback: return base as-is
-        base.to_string()
-    }
-}
 
 /// Normalize a constraint operand based on format-specific rules
 ///
@@ -1176,69 +136,6 @@ fn normalize_constraint_operand(
     (normalized, use_greater_than_equal)
 }
 
-/// Normalize a version string for equality comparison based on format-specific rules
-///
-/// For Debian format, strips local version suffixes (everything after the last +)
-/// This allows packages with local builds (e.g., "1.0+2") to satisfy dependencies
-/// on the base version (e.g., "= 1.0").
-///
-/// Note: + can appear in upstream versions (e.g., "+dfsg1"), so we only strip
-/// the last + suffix which is the local version indicator.
-fn normalize_version_for_equality(version: &str, format: PackageFormat) -> &str {
-    if format == PackageFormat::Deb {
-        // For Debian, local version suffixes (everything after the last +) should be ignored
-        // when matching exact version constraints
-        if let Some(pos) = version.rfind('+') {
-            &version[..pos]
-        } else {
-            version
-        }
-    } else {
-        version
-    }
-}
-
-/// Check if two versions are equal using format-specific logic
-///
-/// For RPM/Pacman/Apk formats, "=" means upstream version must match, release can differ.
-/// For Debian format, local version suffixes are ignored.
-/// For other formats, full version comparison is used.
-fn check_version_equal(
-    version1: &str,
-    version2: &str,
-    format: PackageFormat,
-) -> Option<bool> {
-    match format {
-        PackageFormat::Rpm | PackageFormat::Pacman | PackageFormat::Apk => {
-            // For RPM and Pacman formats, "=" means upstream version must match, release can differ
-            // So we compare only the upstream part (epoch:upstream), not the full version
-            compare_upstream_versions_with_format(version1, version2, Some(format)).ok()
-        }
-        PackageFormat::Deb => {
-            // For Debian, local version suffixes (everything after the last +) should be ignored
-            // when matching exact version constraints
-            let v1_base = normalize_version_for_equality(version1, format);
-            let v2_base = normalize_version_for_equality(version2, format);
-            compare_versions(v1_base, v2_base, format)
-                .map(|cmp| cmp == Ordering::Equal)
-        }
-        PackageFormat::Conda => {
-            // For Conda, "=" means version part must match, build number can differ
-            // Conda packages use format: version-build (e.g., "2.26-5")
-            // When constraint is "=2.26", it should match "2.26-5" because we only care about the version part
-            let v1_version_part = version1.split(VERSION_BUILD_SEPARATOR).next().unwrap_or(version1);
-            let v2_version_part = version2.split(VERSION_BUILD_SEPARATOR).next().unwrap_or(version2);
-            compare_versions(v1_version_part, v2_version_part, format)
-                .map(|cmp| cmp == Ordering::Equal)
-        }
-        _ => {
-            // For other formats, use normal comparison
-            compare_versions(version1, version2, format)
-                .map(|cmp| cmp == Ordering::Equal)
-        }
-    }
-}
-
 /// Core operator matching logic shared between check_version_constraint and check_single_constraint
 ///
 /// This function implements the version constraint checking logic for all operators except:
@@ -1251,7 +148,7 @@ fn check_version_equal(
 /// Returns Some(bool) if handled, None if not applicable (fall through to normal processing).
 fn check_conda_version_build_string_constraint(
     package_version: &str,
-    constraint: &crate::parse_requires::VersionConstraint,
+    constraint: &VersionConstraint,
     format: PackageFormat,
     normalized_operand: &str,
     use_greater_than_equal: bool,
@@ -1276,7 +173,7 @@ fn check_conda_version_build_string_constraint(
 
     // First, check if the version part satisfies the constraint
     // Create a new constraint with just the version part (no build string)
-    let version_only_constraint = crate::parse_requires::VersionConstraint {
+    let version_only_constraint = VersionConstraint {
         operator: constraint.operator.clone(),
         operand: constraint_version.to_string(),
     };
@@ -1347,7 +244,7 @@ fn should_use_upstream_comparison(
 /// Perform version comparison based on the operator.
 fn compare_version_with_operator(
     package_version: &str,
-    constraint: &crate::parse_requires::VersionConstraint,
+    constraint: &VersionConstraint,
     format: PackageFormat,
     normalized_operand: &str,
     use_upstream_comparison: bool,
@@ -1434,9 +331,50 @@ fn compare_version_with_operator(
     }
 }
 
+/// Check if two versions are equal using format-specific logic
+///
+/// For RPM/Pacman/Apk formats, "=" means upstream version must match, release can differ.
+/// For Debian format, local version suffixes are ignored.
+/// For other formats, full version comparison is used.
+fn check_version_equal(
+    version1: &str,
+    version2: &str,
+    format: PackageFormat,
+) -> Option<bool> {
+    match format {
+        PackageFormat::Rpm | PackageFormat::Pacman | PackageFormat::Apk => {
+            // For RPM and Pacman formats, "=" means upstream version must match, release can differ
+            // So we compare only the upstream part (epoch:upstream), not the full version
+            compare_upstream_versions_with_format(version1, version2, Some(format)).ok()
+        }
+        PackageFormat::Deb => {
+            // For Debian, local version suffixes (everything after the last +) should be ignored
+            // when matching exact version constraints
+            let v1_base = normalize_version_for_equality(version1, format);
+            let v2_base = normalize_version_for_equality(version2, format);
+            compare_versions(v1_base, v2_base, format)
+                .map(|cmp| cmp == Ordering::Equal)
+        }
+        PackageFormat::Conda => {
+            // For Conda, "=" means version part must match, build number can differ
+            // Conda packages use format: version-build (e.g., "2.26-5")
+            // When constraint is "=2.26", it should match "2.26-5" because we only care about the version part
+            let v1_version_part = version1.split(VERSION_BUILD_SEPARATOR).next().unwrap_or(version1);
+            let v2_version_part = version2.split(VERSION_BUILD_SEPARATOR).next().unwrap_or(version2);
+            compare_versions(v1_version_part, v2_version_part, format)
+                .map(|cmp| cmp == Ordering::Equal)
+        }
+        _ => {
+            // For other formats, use normal comparison
+            compare_versions(version1, version2, format)
+                .map(|cmp| cmp == Ordering::Equal)
+        }
+    }
+}
+
 fn check_version_constraint_core(
     package_version: &str,
-    constraint: &crate::parse_requires::VersionConstraint,
+    constraint: &VersionConstraint,
     format: PackageFormat,
     normalized_operand: &str,
     use_greater_than_equal: bool,
@@ -1518,7 +456,7 @@ fn check_build_string_pattern(
 /// - Literal version equality
 fn check_version_equal_pattern(
     package_version: &str,
-    constraint: &crate::parse_requires::VersionConstraint,
+    constraint: &VersionConstraint,
     format: PackageFormat,
     normalized_operand: &str,
 ) -> bool {
@@ -1612,7 +550,7 @@ fn check_version_equal_pattern(
 /// - Literal version inequality
 fn check_version_not_equal_pattern(
     package_version: &str,
-    constraint: &crate::parse_requires::VersionConstraint,
+    constraint: &VersionConstraint,
     format: PackageFormat,
     normalized_operand: &str,
     use_greater_than_equal: bool,
@@ -1647,7 +585,7 @@ fn check_version_not_equal_pattern(
 /// Returns Ok(true) if the constraint is satisfied, Ok(false) if not, or an error if parsing fails.
 pub fn check_version_constraint(
     package_version: &str,
-    constraint: &crate::parse_requires::VersionConstraint,
+    constraint: &VersionConstraint,
     format: PackageFormat,
 ) -> Result<bool> {
     // Ignore constraints with unexpanded RPM macros (e.g., %{crypto_policies_version})
@@ -1724,445 +662,270 @@ pub fn check_version_constraint(
     Ok(satisfies)
 }
 
+/// Check if a version satisfies a set of constraints
+pub fn check_version_satisfies_constraints(
+    version: &str,
+    constraints: &Vec<VersionConstraint>,
+    format: PackageFormat,
+) -> Result<bool> {
+    // Separate constraints into mutually exclusive groups (OR conditions) and compatible constraints (AND conditions)
+    let mut or_groups: Vec<Vec<&VersionConstraint>> = Vec::new();
+    let mut and_constraints: Vec<&VersionConstraint> = Vec::new();
+
+    // Filter out conditional constraints first
+    let non_conditional_constraints: Vec<&VersionConstraint> = constraints.iter()
+        .filter(|c| !matches!(c.operator, Operator::IfInstall))
+        .collect();
+
+    // Group mutually exclusive constraints together
+    let mut processed = vec![false; non_conditional_constraints.len()];
+    for i in 0..non_conditional_constraints.len() {
+        if processed[i] {
+            continue;
+        }
+        let constraint_i = non_conditional_constraints[i];
+        let mut or_group = vec![constraint_i];
+        processed[i] = true;
+
+        // Look for mutually exclusive constraints
+        for j in (i + 1)..non_conditional_constraints.len() {
+            if processed[j] {
+                continue;
+            }
+            let constraint_j = non_conditional_constraints[j];
+
+            // Check if constraints are mutually exclusive
+            let are_mutually_exclusive = match (&constraint_i.operator, &constraint_j.operator) {
+                (Operator::VersionLessThan, Operator::VersionGreaterThan) |
+                (Operator::VersionLessThan, Operator::VersionGreaterThanEqual) |
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThan) |
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThanEqual) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThanEqual) |
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThanEqual) => {
+                    if constraint_i.operand == constraint_j.operand {
+                        true
+                    } else {
+                        are_constraints_logically_mutually_exclusive(
+                            constraint_i,
+                            constraint_j,
+                            format,
+                        )
+                    }
+                }
+                _ => false,
+            };
+
+            if are_mutually_exclusive {
+                let mut can_add = true;
+                for existing_constraint in &or_group[1..] {
+                    let mutually_exclusive_with_existing = match (&existing_constraint.operator, &constraint_j.operator) {
+                        (Operator::VersionLessThan, Operator::VersionGreaterThan) |
+                        (Operator::VersionLessThan, Operator::VersionGreaterThanEqual) |
+                        (Operator::VersionLessThanEqual, Operator::VersionGreaterThan) |
+                        (Operator::VersionLessThanEqual, Operator::VersionGreaterThanEqual) |
+                        (Operator::VersionGreaterThan, Operator::VersionLessThan) |
+                        (Operator::VersionGreaterThan, Operator::VersionLessThanEqual) |
+                        (Operator::VersionGreaterThanEqual, Operator::VersionLessThan) |
+                        (Operator::VersionGreaterThanEqual, Operator::VersionLessThanEqual) => {
+                            if existing_constraint.operand == constraint_j.operand {
+                                true
+                            } else {
+                                are_constraints_logically_mutually_exclusive(
+                                    existing_constraint,
+                                    constraint_j,
+                                    format,
+                                )
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !mutually_exclusive_with_existing {
+                        can_add = false;
+                        break;
+                    }
+                }
+
+                if can_add {
+                    or_group.push(constraint_j);
+                    processed[j] = true;
+                }
+            }
+        }
+
+        if or_group.len() > 1 {
+            or_groups.push(or_group);
+        } else {
+            and_constraints.push(constraint_i);
+        }
+    }
+
+    // Check AND constraints: all must be satisfied
+    for constraint in &and_constraints {
+        if !check_version_constraint(version, constraint, format)? {
+            return Ok(false);
+        }
+    }
+
+    // Check OR groups: at least one constraint in each group must be satisfied
+    for or_group in &or_groups {
+        let mut any_satisfied = false;
+        for constraint in or_group {
+            if check_version_constraint(version, constraint, format)? {
+                any_satisfied = true;
+                break;
+            }
+        }
+        if !any_satisfied {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+/// Check if two constraints with opposite operators are logically mutually exclusive
+/// even when they have different operands.
+///
+/// Examples:
+/// - "< 2.1~~" and ">= 2.2" are mutually exclusive if 2.1~~ <= 2.2
+/// - "< 2.3" and "> 2.3" are mutually exclusive (no version can satisfy both)
+/// - "<= 2.3" and ">= 2.3" are NOT mutually exclusive (version 2.3 satisfies both)
+pub fn are_constraints_logically_mutually_exclusive(
+    constraint1: &VersionConstraint,
+    constraint2: &VersionConstraint,
+    format: PackageFormat,
+) -> bool {
+    // If either constraint has an unexpanded RPM macro, we can't meaningfully compare them
+    // Treat them as not mutually exclusive (they'll be ignored during actual checking anyway)
+    if constraint1.operand.contains("%{") || constraint2.operand.contains("%{") {
+        return false;
+    }
+
+    // Normalize operands by handling RPM ~~ operator
+    // In RPM, "2.1~~" means "less than 2.2", so for comparison purposes,
+    // we treat "2.1~~" as slightly less than "2.2"
+    // When comparing with another version, we can check if base version < other version
+    let normalize_operand_for_comparison = |op: &str| -> (String, bool) {
+        if op.ends_with("~~") {
+            // Remove ~~ - the base version represents "less than next version"
+            let base = op.trim_end_matches("~~");
+            (base.to_string(), true) // true indicates this is a "less than next" version
+        } else {
+            (op.to_string(), false)
+        }
+    };
+
+    let (op1_base, op1_is_tilde) = normalize_operand_for_comparison(&constraint1.operand);
+    let (op2_base, op2_is_tilde) = normalize_operand_for_comparison(&constraint2.operand);
+
+    // Compare the base operands to determine if constraints are mutually exclusive
+    let comparison = compare_versions(&op1_base, &op2_base, format);
+
+    match comparison {
+        Some(std::cmp::Ordering::Less) => {
+            // op1_base < op2_base
+            match (&constraint1.operator, &constraint2.operator) {
+                (Operator::VersionLessThan, Operator::VersionGreaterThanEqual) |
+                (Operator::VersionLessThan, Operator::VersionGreaterThan) |
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThan) => {
+                    // < X and >= Y where X < Y: mutually exclusive (no overlap)
+                    true
+                }
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThanEqual) => {
+                    // <= X and >= Y where X < Y: mutually exclusive (no overlap)
+                    true
+                }
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThanEqual) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThanEqual) => {
+                    // >= X and < Y where X < Y: NOT mutually exclusive (ranges overlap)
+                    // Example: >= 4.2.5 and < 5.0 - version 4.5 satisfies both
+                    false
+                }
+                _ => false,
+            }
+        }
+        Some(std::cmp::Ordering::Equal) => {
+            // op1_base == op2_base
+            // When base versions are equal, check if operators and tilde status make them mutually exclusive
+            match (&constraint1.operator, &constraint2.operator) {
+                (Operator::VersionLessThan, Operator::VersionGreaterThanEqual) |
+                (Operator::VersionLessThan, Operator::VersionGreaterThan) |
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThan) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThanEqual) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThan) => {
+                    // When base versions are equal:
+                    // - If both have ~~ or both don't have ~~, they're mutually exclusive only if operators are strict opposites
+                    // - If one has ~~ and the other doesn't:
+                    //   * "< X~~" (meaning < next version) and ">= X" are NOT mutually exclusive
+                    //   * But "< X~~" and "> X" might be mutually exclusive depending on interpretation
+                    // For simplicity, when base versions are equal and one has ~~, we only treat as mutually exclusive
+                    // if both operators are strict (< vs >, not <= vs >=)
+                    if op1_is_tilde == op2_is_tilde {
+                        // Both have same tilde status
+                        matches!((&constraint1.operator, &constraint2.operator),
+                            (Operator::VersionLessThan, Operator::VersionGreaterThan) |
+                            (Operator::VersionGreaterThan, Operator::VersionLessThan))
+                    } else {
+                        // One has ~~, one doesn't - be conservative and don't treat as mutually exclusive
+                        // unless operators are strict opposites
+                        // Actually, "< X~~" means "< next version", so if we have ">= X", they overlap
+                        // Only strict opposites like "< X~~" and "> X" might be mutually exclusive
+                        // But this is complex, so for now we'll be conservative
+                        false
+                    }
+                }
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThanEqual) => {
+                    // <= X and >= X: NOT mutually exclusive (X satisfies both)
+                    false
+                }
+                _ => false,
+            }
+        }
+        Some(std::cmp::Ordering::Greater) => {
+            // op1_base > op2_base, check swapped order
+            match (&constraint2.operator, &constraint1.operator) {
+                (Operator::VersionLessThan, Operator::VersionGreaterThanEqual) |
+                (Operator::VersionLessThan, Operator::VersionGreaterThan) |
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThan) => {
+                    // < X and >= Y where X < Y (swapped, so Y < X): mutually exclusive (no overlap)
+                    // Example: < 2.1 and >= 2.2 - no version can satisfy both
+                    true
+                }
+                (Operator::VersionLessThanEqual, Operator::VersionGreaterThanEqual) => {
+                    // <= X and >= Y where X < Y (swapped, so Y < X): mutually exclusive (no overlap)
+                    // Example: <= 2.1 and >= 2.2 - no version can satisfy both
+                    true
+                }
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThanEqual, Operator::VersionLessThanEqual) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThan) |
+                (Operator::VersionGreaterThan, Operator::VersionLessThanEqual) => {
+                    // >= X and < Y where X > Y (swapped): NOT mutually exclusive (ranges overlap)
+                    // Example: >= 1.31.6 and < 3 - version 2.5.0 satisfies both, so they're NOT mutually exclusive
+                    false
+                }
+                _ => false,
+            }
+        }
+        None => {
+            // Can't compare versions, be conservative and don't treat as mutually exclusive
+            false
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_epoch_comparison() {
-        // Epoch has highest priority
-        assert!(is_version_newer("2:1.0-1", "1:9.0-1"));
-        assert!(is_version_newer("1:1.0", "1.9"));
-        assert!(!is_version_newer("1.0", "1:1.0"));
-    }
-
-    #[test]
-    fn test_tilde_precedence() {
-        // ~ indicates pre-release (lowest precedence)
-        assert!(!is_version_newer("1.0~beta", "1.0"));
-        assert!(is_version_newer("1.0", "1.0~beta"));
-        assert!(!is_version_newer("1.0~alpha", "1.0~beta"));
-        assert!(is_version_newer("1.0~beta", "1.0~alpha"));
-    }
-
-    #[test]
-    fn test_numeric_comparison() {
-        // Numbers are compared numerically, not lexicographically
-        assert!(is_version_newer("1.10", "1.2"));
-        assert!(is_version_newer("1.0.10", "1.0.2"));
-        assert!(!is_version_newer("1.2", "1.10"));
-    }
-
-    #[test]
-    fn test_revision_comparison() {
-        // Revision (after dash) has lowest priority
-        assert!(is_version_newer("1.0-10", "1.0-9"));
-        assert!(is_version_newer("1.0-2", "1.0-1"));
-        assert!(!is_version_newer("1.0-1", "1.0-2"));
-    }
-
-    #[test]
-    fn test_complex_debian_versions() {
-        // Real Debian package version examples
-        assert!(is_version_newer("2:1.18.3~beta+dfsg1-6", "2:1.18.3~beta+dfsg1-5+b1"));
-        assert!(!is_version_newer("1.18~beta", "1.18"));
-        assert!(is_version_newer("2024.12.31", "2024.3.15"));
-    }
-
-    #[test]
-    fn test_character_precedence() {
-        // Test character precedence: ~ < letters < other symbols
-        assert!(!is_version_newer("1.0~", "1.0a"));
-        assert!(is_version_newer("1.0a", "1.0~"));
-        assert!(is_version_newer("1.0+", "1.0a"));
-        assert!(!is_version_newer("1.0a", "1.0+"));
-    }
-
-    #[test]
-    fn test_missing_components() {
-        // Test versions with missing epoch or revision
-        assert!(is_version_newer("1:1.0", "1.0"));  // 1:1.0 vs 0:1.0
-        assert!(is_version_newer("1.0-1", "1.0"));  // 1.0-1 vs 1.0-0
-        assert!(!is_version_newer("1.0", "1.0-1"));
-    }
-
-    #[test]
-    fn test_version_parsing() {
-        let v1 = PackageVersion::parse("2:1.18.3~beta+dfsg1-5+b1").unwrap();
-        assert_eq!(v1.epoch, 2);
-        assert_eq!(v1.upstream, "1.18.3~beta+dfsg1");
-        assert_eq!(v1.revision, "5+b1");
-
-        let v2 = PackageVersion::parse("1.0").unwrap();
-        assert_eq!(v2.epoch, 0);
-        assert_eq!(v2.upstream, "1.0");
-        assert_eq!(v2.revision, "0");
-
-        let v3 = PackageVersion::parse("1:2.0-3").unwrap();
-        assert_eq!(v3.epoch, 1);
-        assert_eq!(v3.upstream, "2.0");
-        assert_eq!(v3.revision, "3");
-
-        // Test alphabetic revision
-        let v4 = PackageVersion::parse("2.14.14-z").unwrap();
-        assert_eq!(v4.epoch, 0);
-        assert_eq!(v4.upstream, "2.14.14");
-        assert_eq!(v4.revision, "z");
-    }
-
-    #[test]
-    fn test_upstream_with_dashes() {
-        // Upstream versions with pre-release markers (no revision)
-        let v1 = PackageVersion::parse("1.0-rc1").unwrap();
-        assert_eq!(v1.epoch, 0);
-        assert_eq!(v1.upstream, "1.0-rc1");
-        assert_eq!(v1.revision, "0");
-
-        let v2 = PackageVersion::parse("2.0-beta").unwrap();
-        assert_eq!(v2.epoch, 0);
-        assert_eq!(v2.upstream, "2.0-beta");
-        assert_eq!(v2.revision, "0");
-
-        let v3 = PackageVersion::parse("1.5-alpha2").unwrap();
-        assert_eq!(v3.epoch, 0);
-        assert_eq!(v3.upstream, "1.5-alpha2");
-        assert_eq!(v3.revision, "0");
-
-        // Upstream with pre-release markers AND revision
-        let v4 = PackageVersion::parse("1.0-rc1-5").unwrap();
-        assert_eq!(v4.epoch, 0);
-        assert_eq!(v4.upstream, "1.0-rc1");
-        assert_eq!(v4.revision, "5");
-
-        let v5 = PackageVersion::parse("2.0-beta-1ubuntu2").unwrap();
-        assert_eq!(v5.epoch, 0);
-        assert_eq!(v5.upstream, "2.0-beta");
-        assert_eq!(v5.revision, "1ubuntu2");
-
-        // With epoch
-        let v6 = PackageVersion::parse("2:1.0-rc1").unwrap();
-        assert_eq!(v6.epoch, 2);
-        assert_eq!(v6.upstream, "1.0-rc1");
-        assert_eq!(v6.revision, "0");
-
-        let v7 = PackageVersion::parse("1:1.0-rc1-3").unwrap();
-        assert_eq!(v7.epoch, 1);
-        assert_eq!(v7.upstream, "1.0-rc1");
-        assert_eq!(v7.revision, "3");
-    }
-
-    #[test]
-    fn test_complex_upstream_parsing() {
-        // Multiple dashes in upstream, revision starts with digit
-        let v1 = PackageVersion::parse("1.0-beta-rc2-1").unwrap();
-        assert_eq!(v1.upstream, "1.0-beta-rc2");
-        assert_eq!(v1.revision, "1");
-
-        // Multiple dashes, no revision (last part starts with letter)
-        let v2 = PackageVersion::parse("1.0-beta-rc2").unwrap();
-        assert_eq!(v2.upstream, "1.0-beta-rc2");
-        assert_eq!(v2.revision, "0");
-
-        // Real-world examples
-        let v3 = PackageVersion::parse("7.4.052-1ubuntu3").unwrap();
-        assert_eq!(v3.upstream, "7.4.052");
-        assert_eq!(v3.revision, "1ubuntu3");
-
-        let v4 = PackageVersion::parse("1.2.3-rc1-2.el8").unwrap();
-        assert_eq!(v4.upstream, "1.2.3-rc1");
-        assert_eq!(v4.revision, "2.el8");
-
-        // Version with git hash-like suffix
-        let v5 = PackageVersion::parse("1.0-git20230101-1").unwrap();
-        assert_eq!(v5.upstream, "1.0-git20230101");
-        assert_eq!(v5.revision, "1");
-
-        // Version with revision containing dashes (Debian format)
-        // This is the case that was failing: "1.48.0-2-3" should parse as revision="2-3"
-        let v6 = PackageVersion::parse("1.48.0-2-3").unwrap();
-        assert_eq!(v6.upstream, "1.48.0");
-        assert_eq!(v6.revision, "2-3");
-
-        // Test that "1.48.0-2-3" >= "1.48.0-2" comparison works correctly
-        let v7 = PackageVersion::parse("1.48.0-2").unwrap();
-        assert_eq!(v7.upstream, "1.48.0");
-        assert_eq!(v7.revision, "2");
-        // v6 should be greater than v7 because revision "2-3" > "2"
-        assert_eq!(v6.compare(&v7), Ordering::Greater);
-    }
-
-    #[test]
-    fn test_edge_cases_parsing() {
-        // Just revision number
-        let v1 = PackageVersion::parse("5").unwrap();
-        assert_eq!(v1.upstream, "5");
-        assert_eq!(v1.revision, "0");
-
-        // Single dash with letter
-        let v2 = PackageVersion::parse("1-beta").unwrap();
-        assert_eq!(v2.upstream, "1-beta");
-        assert_eq!(v2.revision, "0");
-
-        // Single dash with number
-        let v3 = PackageVersion::parse("1-5").unwrap();
-        assert_eq!(v3.upstream, "1");
-        assert_eq!(v3.revision, "5");
-
-        // Empty after dash
-        let v4 = PackageVersion::parse("1.0-").unwrap();
-        assert_eq!(v4.upstream, "1.0-");
-        assert_eq!(v4.revision, "0");
-
-        // Multiple consecutive dashes
-        let v5 = PackageVersion::parse("1.0--5").unwrap();
-        assert_eq!(v5.upstream, "1.0-");
-        assert_eq!(v5.revision, "5");
-    }
-
-    #[test]
-    fn test_semantic_versions() {
-        // Test with semantic versions that the versions crate can handle
-        assert!(is_version_newer("2.1.0", "2.0.5"));
-        assert!(is_version_newer("1.2.3", "1.2.2"));
-        assert!(!is_version_newer("1.0.0", "1.0.1"));
-    }
-
-    #[test]
-    fn test_version_comparison_with_dashes() {
-        // Test that upstream versions with dashes are compared correctly
-
-        // RC versions should be less than final versions
-        assert!(!is_version_newer("1.0-rc1", "1.0"));
-        assert!(is_version_newer("1.0", "1.0-rc1"));
-
-        // RC versions with revisions
-        assert!(is_version_newer("1.0-rc1-2", "1.0-rc1-1"));
-        assert!(!is_version_newer("1.0-rc1-1", "1.0-rc1-2"));
-
-        // Same upstream with different revisions
-        assert!(is_version_newer("1.0-beta-5", "1.0-beta-3"));
-
-        // Compare different upstream versions with dashes
-        assert!(is_version_newer("2.0-rc1", "1.0-rc2"));
-        assert!(!is_version_newer("1.0-rc2", "2.0-rc1"));
-
-        // Compare final vs pre-release with revision
-        assert!(is_version_newer("1.0-1", "1.0-rc1-10"));
-        assert!(!is_version_newer("1.0-rc1-10", "1.0-1"));
-
-        // Test that versions with non-pre-release markers in upstream are compared correctly
-        // "6.0-b24-1" should be greater than "6.0" (b24 is not a pre-release marker)
-        assert!(is_version_newer("6.0-b24-1", "6.0"));
-        assert!(!is_version_newer("6.0", "6.0-b24-1"));
-
-        // Test that actual pre-release markers still work correctly
-        assert!(!is_version_newer("6.0-rc1", "6.0"));
-        assert!(is_version_newer("6.0", "6.0-rc1"));
-    }
-
-    #[test]
-    fn test_compare_versions_deb() {
-        use crate::models::PackageFormat;
-
-        // Test Debian format version comparison
-        assert_eq!(
-            compare_versions("1.0-1", "1.0-2", PackageFormat::Deb),
-            Some(Ordering::Less)
-        );
-        assert_eq!(
-            compare_versions("1.0-2", "1.0-1", PackageFormat::Deb),
-            Some(Ordering::Greater)
-        );
-        assert_eq!(
-            compare_versions("1.0-1", "1.0-1", PackageFormat::Deb),
-            Some(Ordering::Equal)
-        );
-
-        // Test with epoch
-        assert_eq!(
-            compare_versions("2:1.0-1", "1:2.0-1", PackageFormat::Deb),
-            Some(Ordering::Greater)
-        );
-
-        // Test with complex versions
-        assert_eq!(
-            compare_versions("2:1.18.3~beta+dfsg1-6", "2:1.18.3~beta+dfsg1-5+b1", PackageFormat::Deb),
-            Some(Ordering::Greater)
-        );
-
-        // Test alphabetic revision: numeric revision < alphabetic revision
-        assert_eq!(
-            compare_versions("2.14.14-1", "2.14.14-z", PackageFormat::Deb),
-            Some(Ordering::Less)
-        );
-        assert_eq!(
-            compare_versions("2.14.14-z", "2.14.14-1", PackageFormat::Deb),
-            Some(Ordering::Greater)
-        );
-    }
-
-    #[test]
-    fn test_debian_plus_tilde_comparison() {
-        use crate::models::PackageFormat;
-
-        // Test Debian format with + and ~: 2.5.2-1+1 >= 2.5.2-1+~
-        // The ~ character has lowest precedence, so 1+~ < 1+1
-        assert_eq!(
-            compare_versions("2.5.2-1+1", "2.5.2-1+~", PackageFormat::Deb),
-            Some(Ordering::Greater)
-        );
-        assert_eq!(
-            compare_versions("2.5.2-1+~", "2.5.2-1+1", PackageFormat::Deb),
-            Some(Ordering::Less)
-        );
-
-        // Test parsing
-        let v1 = PackageVersion::parse("2.5.2-1+~").unwrap();
-        assert_eq!(v1.upstream, "2.5.2");
-        assert_eq!(v1.revision, "1+~");
-
-        let v2 = PackageVersion::parse("2.5.2-1+1").unwrap();
-        assert_eq!(v2.upstream, "2.5.2");
-        assert_eq!(v2.revision, "1+1");
-    }
-
-    #[test]
-    fn test_compare_versions_rpm() {
-        use crate::models::PackageFormat;
-
-        // Test RPM format version comparison
-        assert_eq!(
-            compare_versions("1.0-1.el8", "1.0-2.el8", PackageFormat::Rpm),
-            Some(Ordering::Less)
-        );
-        assert_eq!(
-            compare_versions("1.0-2.el8", "1.0-1.el8", PackageFormat::Rpm),
-            Some(Ordering::Greater)
-        );
-        assert_eq!(
-            compare_versions("1.0-1.el8", "1.0-1.el8", PackageFormat::Rpm),
-            Some(Ordering::Equal)
-        );
-
-        // Test with epoch
-        assert_eq!(
-            compare_versions("2:1.0-1", "1:2.0-1", PackageFormat::Rpm),
-            Some(Ordering::Greater)
-        );
-
-        // Test semantic versioning: 1.0.9 should be > 0.18.0
-        assert_eq!(
-            compare_versions("1.0.9", "0.18.0", PackageFormat::Rpm),
-            Some(Ordering::Greater),
-            "1.0.9 should be greater than 0.18.0"
-        );
-        assert_eq!(
-            compare_versions("0.18.0", "1.0.9", PackageFormat::Rpm),
-            Some(Ordering::Less),
-            "0.18.0 should be less than 1.0.9"
-        );
-
-        // Test pkgconfig version comparison: 7.3.0 should be >= 7.0.99.1
-        assert_eq!(
-            compare_versions("7.3.0", "7.0.99.1", PackageFormat::Rpm),
-            Some(Ordering::Greater),
-            "7.3.0 should be greater than 7.0.99.1"
-        );
-        assert_eq!(
-            compare_versions("7.0.99.1", "7.3.0", PackageFormat::Rpm),
-            Some(Ordering::Less),
-            "7.0.99.1 should be less than 7.3.0"
-        );
-
-        // Test RPM revision comparison: version with release > version without release
-        // According to RPM rules: 12.0.0 < 12.0.0-bp160.1.2
-        assert_eq!(
-            compare_versions("1.0.11-bp160.1.13", "1.0.11", PackageFormat::Rpm),
-            Some(Ordering::Greater),
-            "1.0.11-bp160.1.13 should be greater than 1.0.11 (version with release > version without)"
-        );
-        assert_eq!(
-            compare_versions("1.0.11", "1.0.11-bp160.1.13", PackageFormat::Rpm),
-            Some(Ordering::Less),
-            "1.0.11 should be less than 1.0.11-bp160.1.13 (version without release < version with release)"
-        );
-        assert_eq!(
-            compare_versions("12.0.0-bp160.1.2", "12.0.0", PackageFormat::Rpm),
-            Some(Ordering::Greater),
-            "12.0.0-bp160.1.2 should be greater than 12.0.0"
-        );
-        assert_eq!(
-            compare_versions("12.0.0", "12.0.0-bp160.1.2", PackageFormat::Rpm),
-            Some(Ordering::Less),
-            "12.0.0 should be less than 12.0.0-bp160.1.2"
-        );
-    }
-
-    #[test]
-    fn test_compare_versions_pacman() {
-        use crate::models::PackageFormat;
-
-        // Test Pacman format version comparison
-        assert_eq!(
-            compare_versions("1.0-1", "1.0-2", PackageFormat::Pacman),
-            Some(Ordering::Less)
-        );
-        assert_eq!(
-            compare_versions("1.0-2", "1.0-1", PackageFormat::Pacman),
-            Some(Ordering::Greater)
-        );
-
-        // Test Pacman revision comparison: version with release > version without release
-        // Same rule as RPM: version with release > version without release
-        assert_eq!(
-            compare_versions("1.0.11-bp160.1.13", "1.0.11", PackageFormat::Pacman),
-            Some(Ordering::Greater),
-            "1.0.11-bp160.1.13 should be greater than 1.0.11 in Pacman format"
-        );
-        assert_eq!(
-            compare_versions("1.0.11", "1.0.11-bp160.1.13", PackageFormat::Pacman),
-            Some(Ordering::Less),
-            "1.0.11 should be less than 1.0.11-bp160.1.13 in Pacman format"
-        );
-    }
-
-    #[test]
-    fn test_compare_versions_apk() {
-        use crate::models::PackageFormat;
-
-        // Test APK format version comparison
-        assert_eq!(
-            compare_versions("1.0-r1", "1.0-r2", PackageFormat::Apk),
-            Some(Ordering::Less)
-        );
-        assert_eq!(
-            compare_versions("1.0-r2", "1.0-r1", PackageFormat::Apk),
-            Some(Ordering::Greater)
-        );
-    }
-
-    #[test]
-    fn test_compare_versions_conda() {
-        use crate::models::PackageFormat;
-
-        // Test Conda format version comparison
-        let result1 = compare_versions("1.0.0", "1.0.1", PackageFormat::Conda);
-        assert!(result1.is_some());
-        assert_eq!(result1.unwrap(), Ordering::Less);
-
-        let result2 = compare_versions("1.0.1", "1.0.0", PackageFormat::Conda);
-        assert!(result2.is_some());
-        assert_eq!(result2.unwrap(), Ordering::Greater);
-
-        let result3 = compare_versions("1.0.0", "1.0.0", PackageFormat::Conda);
-        assert!(result3.is_some());
-        assert_eq!(result3.unwrap(), Ordering::Equal);
-    }
-
-    #[test]
     fn test_check_version_equal_conda_with_build() {
-        use crate::models::PackageFormat;
 
         // Test that Conda version equality ignores build numbers
         // Constraint "=2.26" should match package version "2.26-5"
@@ -2203,8 +966,6 @@ mod tests {
 
     #[test]
     fn test_conda_version_underscore_normalization() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test that Conda versions with underscores are normalized to dots for comparison
         // This is the specific bug: 1.3_7 should satisfy >=1.3.3
@@ -2278,7 +1039,6 @@ mod tests {
 
     #[test]
     fn test_check_version_equal_rpm_with_dot_extension() {
-        use crate::models::PackageFormat;
 
         // Test that RPM version equality allows dot extensions
         // Constraint "=1.14" should match package version "1.14.6-3.fc42"
@@ -2312,194 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_version_constraint_rpm_dot_extension() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
-
-        // Test that RPM VersionEqual constraint allows dot extensions
-        // This is the specific bug: hdf5(=1.14) should match hdf5-1.14.6-3.fc42
-        let constraint = VersionConstraint {
-            operator: Operator::VersionEqual,
-            operand: "1.14".to_string(),
-        };
-
-        assert!(
-            check_version_constraint("1.14.6-3.fc42", &constraint, PackageFormat::Rpm).unwrap(),
-            "Constraint 'hdf5(=1.14)' should match package version '1.14.6-3.fc42'"
-        );
-    }
-
-    #[test]
-    fn test_compare_versions_python() {
-        use crate::models::PackageFormat;
-
-        // Test Python format version comparison
-        let result1 = compare_versions("1.0.0", "1.0.1", PackageFormat::Python);
-        assert!(result1.is_some());
-        assert_eq!(result1.unwrap(), Ordering::Less);
-
-        let result2 = compare_versions("1.0.1", "1.0.0", PackageFormat::Python);
-        assert!(result2.is_some());
-        assert_eq!(result2.unwrap(), Ordering::Greater);
-    }
-
-    #[test]
-    fn test_compare_versions_edge_cases() {
-        use crate::models::PackageFormat;
-
-        // Test edge cases - the parser is lenient and handles most inputs
-        // Empty strings get parsed as epoch=0, upstream="", revision="0"
-        let result = compare_versions("", "1.0", PackageFormat::Deb);
-        assert!(result.is_some()); // Parser is lenient, so this succeeds
-
-        // Test that valid comparisons work correctly
-        assert_eq!(
-            compare_versions("1.0", "2.0", PackageFormat::Deb),
-            Some(Ordering::Less)
-        );
-    }
-
-    #[test]
-    fn test_compare_upstream_versions_equal() {
-        // Test that upstream versions match when epochs and upstream parts are equal
-        // (revision should be ignored)
-        assert!(compare_upstream_versions("1.0-1", "1.0-2").unwrap());
-        assert!(compare_upstream_versions("1.0-10", "1.0-1").unwrap());
-        assert!(compare_upstream_versions("2:1.0-1", "2:1.0-5").unwrap());
-
-        // Different upstream versions should not match
-        assert!(!compare_upstream_versions("1.0-1", "1.1-1").unwrap());
-        assert!(!compare_upstream_versions("2:1.0-1", "1:1.0-1").unwrap());
-    }
-
-    #[test]
-    fn test_compare_upstream_versions_with_dash_suffix() {
-        // Test the special case where package upstream starts with constraint upstream followed by a dash
-        // e.g., "9.8.3-bp160.1.34" should match constraint "9.8.3"
-        assert!(compare_upstream_versions("9.8.3-bp160.1.34-1", "9.8.3-1").unwrap());
-        assert!(compare_upstream_versions("9.8.3-el8-1", "9.8.3-1").unwrap());
-        assert!(compare_upstream_versions("9.8.3-fc35-1", "9.8.3-1").unwrap());
-
-        // And "9.8" should NOT match "9.8.3" (partial version)
-        assert!(!compare_upstream_versions("9.8-1", "9.8.3-1").unwrap());
-    }
-
-    #[test]
-    fn test_compare_upstream_versions_epoch_mismatch() {
-        // Different epochs should not match when both have explicit epochs
-        assert!(!compare_upstream_versions("2:1.0-1", "1:1.0-1").unwrap());
-        assert!(!compare_upstream_versions("1:1.0-1", "2:1.0-1").unwrap());
-
-        // Same epoch, different upstream should not match
-        assert!(!compare_upstream_versions("1:1.0-1", "1:1.1-1").unwrap());
-    }
-
-    #[test]
-    fn test_compare_upstream_versions_constraint_without_explicit_epoch() {
-        // When constraint doesn't have explicit epoch, it should match package versions with any epoch
-        // This fixes the bug where "libvirt(=11.9.0)" couldn't match "libvirt__1:11.9.0-1__x86_64"
-
-        // Constraint "11.9.0" (no explicit epoch) should match package "1:11.9.0-1" (with epoch 1)
-        assert!(compare_upstream_versions("1:11.9.0-1", "11.9.0").unwrap(),
-                "Package '1:11.9.0-1' should match constraint '11.9.0' (no explicit epoch)");
-
-        // Constraint "11.9.0" should also match package "2:11.9.0-1" (with epoch 2)
-        assert!(compare_upstream_versions("2:11.9.0-1", "11.9.0").unwrap(),
-                "Package '2:11.9.0-1' should match constraint '11.9.0' (no explicit epoch)");
-
-        // Constraint "11.9.0" should match package "11.9.0-1" (no epoch, epoch defaults to 0)
-        assert!(compare_upstream_versions("11.9.0-1", "11.9.0").unwrap(),
-                "Package '11.9.0-1' should match constraint '11.9.0'");
-
-        // But constraint with explicit epoch "1:11.9.0" should NOT match package "2:11.9.0-1"
-        assert!(!compare_upstream_versions("2:11.9.0-1", "1:11.9.0").unwrap(),
-                "Package '2:11.9.0-1' should NOT match constraint '1:11.9.0' (explicit epoch mismatch)");
-
-        // Constraint with explicit epoch "1:11.9.0" should match package "1:11.9.0-1"
-        assert!(compare_upstream_versions("1:11.9.0-1", "1:11.9.0").unwrap(),
-                "Package '1:11.9.0-1' should match constraint '1:11.9.0' (explicit epoch match)");
-
-        // Different upstream versions should still not match
-        assert!(!compare_upstream_versions("1:11.9.0-1", "11.10.0").unwrap(),
-                "Package '1:11.9.0-1' should NOT match constraint '11.10.0' (different upstream)");
-    }
-
-    #[test]
-    fn test_compare_upstream_versions_complex() {
-        // Test with complex RPM-style versions
-        assert!(compare_upstream_versions("1.18.3~beta+dfsg1-6", "1.18.3~beta+dfsg1-5").unwrap());
-        assert!(!compare_upstream_versions("1.18.3~beta+dfsg1-6", "1.18.4~beta+dfsg1-5").unwrap());
-
-        // Test with versions that have pre-release markers in upstream
-        assert!(compare_upstream_versions("1.0-rc1-5", "1.0-rc1-10").unwrap());
-        assert!(!compare_upstream_versions("1.0-rc1-5", "1.0-rc2-1").unwrap());
-    }
-
-    #[test]
-    fn test_rpm_version_comparison_fb69_vs_76() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
-
-        // Test direct comparison: "2.1.76" > "2.1.fb69" in RPM
-        let result = compare_versions("2.1.76", "2.1.fb69", PackageFormat::Rpm);
-        assert_eq!(
-            result,
-            Some(Ordering::Greater),
-            "2.1.76 should be greater than 2.1.fb69 in RPM format, got {:?}", result
-        );
-
-        // Test with full version strings
-        let result2 = compare_versions("2.1.76-10.fc42", "2.1.fb69", PackageFormat::Rpm);
-        assert_eq!(
-            result2,
-            Some(Ordering::Greater),
-            "2.1.76-10.fc42 should be greater than 2.1.fb69 in RPM format, got {:?}", result2
-        );
-
-        // Now test constraint: "2.1.76-10.fc42" should satisfy >= "2.1.fb69" in RPM format
-        let constraint = VersionConstraint {
-            operator: Operator::VersionGreaterThanEqual,
-            operand: "2.1.fb69".to_string(),
-        };
-
-        let satisfies = check_version_constraint("2.1.76-10.fc42", &constraint, PackageFormat::Rpm);
-        assert!(satisfies.is_ok(), "check_version_constraint should succeed");
-        assert!(satisfies.unwrap(),
-                "2.1.76-10.fc42 should satisfy >= 2.1.fb69 in RPM format");
-
-        // Test with targetcli: "2.1.58" should satisfy >= "2.1.fb49" in RPM
-        let result3 = compare_versions("2.1.58", "2.1.fb49", PackageFormat::Rpm);
-        assert_eq!(
-            result3,
-            Some(Ordering::Greater),
-            "2.1.58 should be greater than 2.1.fb49 in RPM format, got {:?}", result3
-        );
-
-        let constraint2 = VersionConstraint {
-            operator: Operator::VersionGreaterThanEqual,
-            operand: "2.1.fb49".to_string(),
-        };
-        let satisfies2 = check_version_constraint("2.1.58-4.fc42", &constraint2, PackageFormat::Rpm);
-        assert!(satisfies2.is_ok(), "check_version_constraint should succeed");
-        assert!(satisfies2.unwrap(),
-                "2.1.58-4.fc42 should satisfy >= 2.1.fb49 in RPM format");
-    }
-
-    #[test]
-    fn test_compare_upstream_versions_edge_cases() {
-        // Test edge cases - the parser is lenient and handles most inputs
-        // Empty strings get parsed as epoch=0, upstream="", revision="0"
-        let result = compare_upstream_versions("", "1.0");
-        assert!(result.is_ok()); // Parser is lenient, so this succeeds
-
-        // Test that valid comparisons work correctly
-        assert!(compare_upstream_versions("1.0-1", "1.0-2").unwrap());
-    }
-
-    #[test]
     fn test_rpm_version_constraint_with_release() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the specific issue: version with release should satisfy >= constraint without release
         // According to RPM rules: 12.0.0 < 12.0.0-bp160.1.2
@@ -2537,8 +1110,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_upstream_only_operand() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test VersionLessThanEqual with upstream-only operand (the openeuler case)
         // Package: 3.1.0-17.oe2403sp1, Constraint: <= 3.1.0
@@ -2615,8 +1186,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_with_release_operand() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // When operand includes release, compare full versions
         // Package: 3.1.0-17.oe2403sp1, Constraint: <= 3.1.0-16
@@ -2656,8 +1225,6 @@ mod tests {
 
     #[test]
     fn test_pacman_apk_version_constraint_upstream_only_operand() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test Pacman format - same behavior as RPM (upstream-only comparison)
         let constraint = VersionConstraint {
@@ -2682,8 +1249,6 @@ mod tests {
 
     #[test]
     fn test_pacman_version_constraint_without_explicit_epoch() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the specific bug case: libvirt-storage-gluster requires libvirt(=11.9.0)
         // Package libvirt__1:11.9.0-1__x86_64 should satisfy constraint libvirt(=11.9.0)
@@ -2762,8 +1327,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_without_explicit_epoch() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test that RPM format also supports constraints without explicit epochs
         let constraint = VersionConstraint {
@@ -2785,8 +1348,6 @@ mod tests {
 
     #[test]
     fn test_deb_version_constraint_full_comparison() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Debian format should always compare full versions (not affected by this change)
         let constraint = VersionConstraint {
@@ -2802,8 +1363,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_openeuler_case() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the specific openeuler case from the user's issue
         // glassfish-servlet-api <= 3.1.0 with package version 3.1.0-17.oe2403sp1
@@ -2839,8 +1398,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_with_tilde_comparison() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the specific bug: 25.0.2-3.fc42 >= 25.0.0~rc2-1 should be true
         // The tilde (~) in 25.0.0~rc2 indicates a pre-release version
@@ -2876,8 +1433,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_explicit_revision_zero() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the bug fix: when operand has explicit revision "0" (e.g., "2.1.4-0"),
         // it should use full version comparison, not upstream-only comparison.
@@ -2962,8 +1517,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_explicit_revision_zero_vs_no_revision() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test that explicit revision "0" (2.1.4-0) uses full comparison,
         // while no revision (2.1.4) uses upstream-only comparison
@@ -3016,8 +1569,6 @@ mod tests {
 
     #[test]
     fn test_pacman_version_constraint_explicit_revision_zero() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test Pacman format - same behavior as RPM for explicit revision "0"
         let constraint = VersionConstraint {
@@ -3037,8 +1588,6 @@ mod tests {
 
     #[test]
     fn test_apk_version_constraint_explicit_revision_zero() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test APK format - same behavior as RPM for explicit revision "0"
         let constraint = VersionConstraint {
@@ -3058,8 +1607,6 @@ mod tests {
 
     #[test]
     fn test_rpm_version_constraint_explicit_revision_zero_pre_release() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test that pre-release markers (like "rc1") are not treated as explicit revisions
         // Constraint: > 2.1.4-rc1 (pre-release marker, not a revision)
@@ -3083,8 +1630,6 @@ mod tests {
 
     #[test]
     fn test_version_equal_star_wildcard() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test VersionEqual with wildcard pattern (e.g., "6.9.*")
         let constraint = VersionConstraint {
@@ -3134,8 +1679,6 @@ mod tests {
 
     #[test]
     fn test_version_equal_dot_star_pattern_matching() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test that "1.*" correctly matches only versions starting with "1" followed by dot or dash
         // This prevents "1.*" from incorrectly matching "10.2"
@@ -3223,8 +1766,6 @@ mod tests {
 
     #[test]
     fn test_version_not_equal_star_wildcard() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test VersionNotEqual with wildcard pattern (e.g., "6.9.*")
         let constraint = VersionConstraint {
@@ -3249,8 +1790,6 @@ mod tests {
 
     #[test]
     fn test_version_equal_wildcard_any() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test VersionEqual with "*" operand (matches any version)
         let constraint = VersionConstraint {
@@ -3271,8 +1810,6 @@ mod tests {
 
     #[test]
     fn test_version_equal_star_conda_pattern() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test VersionEqual with conda pattern like "9*" (matches "9b", "9e", "9f", etc.)
         let constraint = VersionConstraint {
@@ -3299,8 +1836,6 @@ mod tests {
 
     #[test]
     fn test_conda_version_range_constraints() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the specific case from the issue: >=6.9.7.1,<6.10.0a0 should match 6.9.10
         let constraint1 = VersionConstraint {
@@ -3338,8 +1873,6 @@ mod tests {
 
     #[test]
     fn test_conda_version_build_string_comparison_operators() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test >= operator with version=build_string format
         let constraint_ge = VersionConstraint {
@@ -3406,8 +1939,6 @@ mod tests {
 
     #[test]
     fn test_conda_version_build_string_patterns() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test >= with build string pattern "*" (matches any build string)
         let constraint_any_build = VersionConstraint {
@@ -3466,8 +1997,6 @@ mod tests {
 
     #[test]
     fn test_conda_version_build_string_specific_case() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test the specific case from the error: libtirpc-el8-x86_64(>=1.1.4=*_0)
         // Package: libtirpc-el8-x86_64__1.1.4-hd3eb1b0_0__all
@@ -3498,8 +2027,6 @@ mod tests {
 
     #[test]
     fn test_version_equal_star_edge_cases() {
-        use crate::models::PackageFormat;
-        use crate::parse_requires::{VersionConstraint, Operator};
 
         // Test edge cases for VersionEqual with wildcard pattern
         let constraint = VersionConstraint {
@@ -3529,5 +2056,423 @@ mod tests {
                 "6.9.10 should match = 6.9.10 (fallback to equality)");
         assert!(!check_version_constraint("6.9.11", &constraint_no_wildcard, PackageFormat::Conda).unwrap(),
                 "6.9.11 should NOT match = 6.9.10 (fallback to equality)");
+    }
+
+    #[test]
+    fn test_check_single_constraint() {
+        // Test VersionGreaterThan
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThan,
+            operand: "5.13".to_string(),
+        };
+        assert!(check_version_constraint("6.1", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(!check_version_constraint("5.13", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(!check_version_constraint("5.0", &constraint, PackageFormat::Rpm).unwrap());
+
+        // Test VersionLessThan
+        let constraint = VersionConstraint {
+            operator: Operator::VersionLessThan,
+            operand: "7.0".to_string(),
+        };
+        assert!(check_version_constraint("6.1", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(!check_version_constraint("7.0", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(!check_version_constraint("8.0", &constraint, PackageFormat::Rpm).unwrap());
+
+        // Test VersionGreaterThanEqual
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "4.2.5".to_string(),
+        };
+        assert!(check_version_constraint("6.1", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(check_version_constraint("4.2.5", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(!check_version_constraint("4.2.4", &constraint, PackageFormat::Rpm).unwrap());
+
+        // Test VersionLessThanEqual
+        let constraint = VersionConstraint {
+            operator: Operator::VersionLessThanEqual,
+            operand: "7.0".to_string(),
+        };
+        assert!(check_version_constraint("6.1", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(check_version_constraint("7.0", &constraint, PackageFormat::Rpm).unwrap());
+        assert!(!check_version_constraint("8.0", &constraint, PackageFormat::Rpm).unwrap());
+    }
+
+    #[test]
+    fn test_check_single_constraint_version_compatible() {
+        // Test VersionCompatible for Alpine APK format (the original bug case)
+        // python3 3.12.12-r0 should satisfy ~3.12 (VersionCompatible "3.12")
+        let constraint = VersionConstraint {
+            operator: Operator::VersionCompatible,
+            operand: "3.12".to_string(),
+        };
+        assert!(check_version_constraint("3.12.12-r0", &constraint, PackageFormat::Apk).unwrap(),
+                "3.12.12-r0 should satisfy ~3.12");
+        assert!(check_version_constraint("3.12.0-r0", &constraint, PackageFormat::Apk).unwrap(),
+                "3.12.0-r0 should satisfy ~3.12");
+        assert!(check_version_constraint("3.12", &constraint, PackageFormat::Apk).unwrap(),
+                "3.12 should satisfy ~3.12");
+        assert!(check_version_constraint("3.12.15-r1", &constraint, PackageFormat::Apk).unwrap(),
+                "3.12.15-r1 should satisfy ~3.12");
+        assert!(!check_version_constraint("3.11.9-r0", &constraint, PackageFormat::Apk).unwrap(),
+                "3.11.9-r0 should NOT satisfy ~3.12");
+        assert!(!check_version_constraint("3.10.0-r0", &constraint, PackageFormat::Apk).unwrap(),
+                "3.10.0-r0 should NOT satisfy ~3.12");
+
+        // Test VersionCompatible for RPM format
+        let constraint = VersionConstraint {
+            operator: Operator::VersionCompatible,
+            operand: "5.13".to_string(),
+        };
+        assert!(check_version_constraint("5.13.0-1.fc42", &constraint, PackageFormat::Rpm).unwrap(),
+                "5.13.0-1.fc42 should satisfy ~5.13");
+        assert!(check_version_constraint("5.13.5-2.el8", &constraint, PackageFormat::Rpm).unwrap(),
+                "5.13.5-2.el8 should satisfy ~5.13");
+        assert!(check_version_constraint("5.13", &constraint, PackageFormat::Rpm).unwrap(),
+                "5.13 should satisfy ~5.13");
+        assert!(!check_version_constraint("5.12.9-1.fc42", &constraint, PackageFormat::Rpm).unwrap(),
+                "5.12.9-1.fc42 should NOT satisfy ~5.13");
+        assert!(!check_version_constraint("5.11", &constraint, PackageFormat::Rpm).unwrap(),
+                "5.11 should NOT satisfy ~5.13");
+
+        // Test VersionCompatible for Debian format
+        let constraint = VersionConstraint {
+            operator: Operator::VersionCompatible,
+            operand: "2.5".to_string(),
+        };
+        assert!(check_version_constraint("2.5.0-1", &constraint, PackageFormat::Deb).unwrap(),
+                "2.5.0-1 should satisfy ~2.5");
+        assert!(check_version_constraint("2.5.3-2ubuntu1", &constraint, PackageFormat::Deb).unwrap(),
+                "2.5.3-2ubuntu1 should satisfy ~2.5");
+        assert!(check_version_constraint("2.5", &constraint, PackageFormat::Deb).unwrap(),
+                "2.5 should satisfy ~2.5");
+        assert!(!check_version_constraint("2.4.9-1", &constraint, PackageFormat::Deb).unwrap(),
+                "2.4.9-1 should NOT satisfy ~2.5");
+        assert!(!check_version_constraint("2.3", &constraint, PackageFormat::Deb).unwrap(),
+                "2.3 should NOT satisfy ~2.5");
+
+        // Test VersionCompatible with patch versions
+        let constraint = VersionConstraint {
+            operator: Operator::VersionCompatible,
+            operand: "1.2.3".to_string(),
+        };
+        assert!(check_version_constraint("1.2.3", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.3 should satisfy ~1.2.3");
+        assert!(check_version_constraint("1.2.3-1", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.3-1 should satisfy ~1.2.3");
+        assert!(check_version_constraint("1.2.4", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.4 should satisfy ~1.2.3");
+        assert!(check_version_constraint("1.2.10", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.10 should satisfy ~1.2.3");
+        assert!(!check_version_constraint("1.2.2", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.2 should NOT satisfy ~1.2.3");
+        assert!(!check_version_constraint("1.1.9", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.1.9 should NOT satisfy ~1.2.3");
+    }
+
+    #[test]
+    fn test_check_single_constraint_with_tilde_tilde_suffix() {
+        // Test VersionGreaterThanEqual with ~~ suffix (Debian Rust packages)
+        // This is the specific case from the bug report: >= 0.7.5-~~ should match 0.7.5-1+b3
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "0.7.5-~~".to_string(),
+        };
+        assert!(check_version_constraint("0.7.5-1+b3", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5-1+b3 should satisfy >= 0.7.5-~~");
+        assert!(check_version_constraint("0.7.5-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5-1 should satisfy >= 0.7.5-~~");
+        assert!(check_version_constraint("0.7.5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5 should satisfy >= 0.7.5-~~");
+        assert!(check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should satisfy >= 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.4 should NOT satisfy >= 0.7.5-~~");
+
+        // Test VersionGreaterThanEqual with ~~ suffix (no dash before ~~)
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "0.7.5~~".to_string(),
+        };
+        assert!(check_version_constraint("0.7.5-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5-1 should satisfy >= 0.7.5~~");
+        assert!(check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should satisfy >= 0.7.5~~");
+        assert!(!check_version_constraint("0.7.4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.4 should NOT satisfy >= 0.7.5~~");
+
+        // Test VersionGreaterThan with ~~ suffix
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThan,
+            operand: "0.7.5-~~".to_string(),
+        };
+        assert!(check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should satisfy > 0.7.5-~~");
+        assert!(check_version_constraint("0.7.5-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5-1 should satisfy > 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5 should NOT satisfy > 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.4 should NOT satisfy > 0.7.5-~~");
+
+        // Test VersionGreaterThan with ~~ suffix for versions with revisions (specific bug fix)
+        // This is the case from the user's error: > 0.6.0-4~~ should match 0.6.0-4
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThan,
+            operand: "0.6.0-4~~".to_string(),
+        };
+        assert!(check_version_constraint("0.6.0-4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.6.0-4 should satisfy > 0.6.0-4~~ (because > X-Y~~ means >= X-Y for versions with revisions)");
+        assert!(check_version_constraint("0.6.0-5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.6.0-5 should satisfy > 0.6.0-4~~");
+        assert!(check_version_constraint("0.6.1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.6.1 should satisfy > 0.6.0-4~~");
+        assert!(!check_version_constraint("0.6.0-3", &constraint, PackageFormat::Deb).unwrap(),
+                "0.6.0-3 should NOT satisfy > 0.6.0-4~~");
+
+        // Test VersionLessThan with ~~ suffix
+        let constraint = VersionConstraint {
+            operator: Operator::VersionLessThan,
+            operand: "0.7.5-~~".to_string(),
+        };
+        assert!(check_version_constraint("0.7.4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.4 should satisfy < 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5 should NOT satisfy < 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should NOT satisfy < 0.7.5-~~");
+
+        // Test VersionLessThanEqual with ~~ suffix
+        let constraint = VersionConstraint {
+            operator: Operator::VersionLessThanEqual,
+            operand: "0.7.5-~~".to_string(),
+        };
+        assert!(check_version_constraint("0.7.4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.4 should satisfy <= 0.7.5-~~");
+        assert!(check_version_constraint("0.7.5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5 should satisfy <= 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should NOT satisfy <= 0.7.5-~~");
+
+        // Test VersionEqual with ~~ suffix
+        let constraint = VersionConstraint {
+            operator: Operator::VersionEqual,
+            operand: "0.7.5-~~".to_string(),
+        };
+        assert!(check_version_constraint("0.7.5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5 should satisfy = 0.7.5-~~");
+        assert!(!check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should NOT satisfy = 0.7.5-~~");
+
+        // Test VersionEqual with local version suffix (+)
+        // In Debian, packages with local version suffixes (e.g., "1.0+2") should satisfy
+        // exact version constraints on the base version (e.g., "= 1.0")
+        let constraint = VersionConstraint {
+            operator: Operator::VersionEqual,
+            operand: "6.14.0-1017.18~24.04.1".to_string(),
+        };
+        assert!(check_version_constraint("6.14.0-1017.18~24.04.1+2", &constraint, PackageFormat::Deb).unwrap(),
+                "6.14.0-1017.18~24.04.1+2 should satisfy = 6.14.0-1017.18~24.04.1");
+        assert!(check_version_constraint("6.14.0-1017.18~24.04.1", &constraint, PackageFormat::Deb).unwrap(),
+                "6.14.0-1017.18~24.04.1 should satisfy = 6.14.0-1017.18~24.04.1");
+        assert!(!check_version_constraint("6.14.0-1017.18~24.04.2", &constraint, PackageFormat::Deb).unwrap(),
+                "6.14.0-1017.18~24.04.2 should NOT satisfy = 6.14.0-1017.18~24.04.1");
+
+        // Test VersionGreaterThanEqual with ~ suffix (Debian pre-release indicator)
+        // In Debian, "X~" has lowest precedence, so ">= X~" effectively means ">= X"
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "5.15.13+dfsg~".to_string(),
+        };
+        assert!(check_version_constraint("5.15.13+dfsg-1ubuntu1", &constraint, PackageFormat::Deb).unwrap(),
+                "5.15.13+dfsg-1ubuntu1 should satisfy >= 5.15.13+dfsg~");
+        assert!(check_version_constraint("5.15.13+dfsg", &constraint, PackageFormat::Deb).unwrap(),
+                "5.15.13+dfsg should satisfy >= 5.15.13+dfsg~");
+        assert!(check_version_constraint("5.15.14+dfsg", &constraint, PackageFormat::Deb).unwrap(),
+                "5.15.14+dfsg should satisfy >= 5.15.13+dfsg~");
+        assert!(!check_version_constraint("5.15.12+dfsg", &constraint, PackageFormat::Deb).unwrap(),
+                "5.15.12+dfsg should NOT satisfy >= 5.15.13+dfsg~");
+
+        // Test VersionGreaterThanEqual with ~ suffix when provided version also has ~
+        // This is the speech-dispatcher case: ">= 0.12.0~" should match "0.12.0~rc2-2build3"
+        // because 0.12.0~rc2 > 0.12.0~ (rc2 has higher precedence than bare ~)
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "0.12.0~".to_string(),
+        };
+        assert!(check_version_constraint("0.12.0~rc2-2build3", &constraint, PackageFormat::Deb).unwrap(),
+                "0.12.0~rc2-2build3 should satisfy >= 0.12.0~");
+        assert!(check_version_constraint("0.12.0~rc1-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.12.0~rc1-1 should satisfy >= 0.12.0~");
+        assert!(check_version_constraint("0.12.0-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.12.0-1 should satisfy >= 0.12.0~ (final version > pre-release)");
+        assert!(!check_version_constraint("0.11.9-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.11.9-1 should NOT satisfy >= 0.12.0~");
+
+        // Test VersionGreaterThanEqual with ~ suffix when versions differ only by trailing ~
+        // This is the golang-google-genproto case: ">= 0.0~git20210726.e7812ac~" should match
+        // "0.0~git20210726.e7812ac-4" because the version without trailing ~ is greater
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "0.0~git20210726.e7812ac~".to_string(),
+        };
+        assert!(check_version_constraint("0.0~git20210726.e7812ac-4", &constraint, PackageFormat::Deb).unwrap(),
+                "0.0~git20210726.e7812ac-4 should satisfy >= 0.0~git20210726.e7812ac~");
+        assert!(check_version_constraint("0.0~git20210726.e7812ac-1", &constraint, PackageFormat::Deb).unwrap(),
+                "0.0~git20210726.e7812ac-1 should satisfy >= 0.0~git20210726.e7812ac~");
+        assert!(check_version_constraint("0.0~git20210726.e7812ac", &constraint, PackageFormat::Deb).unwrap(),
+                "0.0~git20210726.e7812ac should satisfy >= 0.0~git20210726.e7812ac~");
+
+        // Test VersionNotEqual with ~~ suffix
+        let constraint = VersionConstraint {
+            operator: Operator::VersionNotEqual,
+            operand: "0.7.5-~~".to_string(),
+        };
+        assert!(!check_version_constraint("0.7.5", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.5 should NOT satisfy != 0.7.5-~~");
+        assert!(check_version_constraint("0.7.6", &constraint, PackageFormat::Deb).unwrap(),
+                "0.7.6 should satisfy != 0.7.5-~~");
+
+        // Test VersionLessThan with ~~ suffix for simple integer versions (bug fix)
+        // This tests the specific case: python3.13dist(numpy)(<2~~,>=1.20)
+        // where <2~~ should mean <3 (next version after 2)
+        let constraint = VersionConstraint {
+            operator: Operator::VersionLessThan,
+            operand: "2~~".to_string(),
+        };
+        assert!(check_version_constraint("1.20", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.20 should satisfy < 2~~ (which means < 3)");
+        assert!(check_version_constraint("1.99", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.99 should satisfy < 2~~ (which means < 3)");
+        // Skip testing 2.1 and 2.0 as they might be considered equal to 2 in upstream comparison
+        // The key test cases are the actual versions from the bug report: 2.2.4 and 2.2.6
+        assert!(check_version_constraint("2.2.4", &constraint, PackageFormat::Rpm).unwrap(),
+                "2.2.4 should satisfy < 2~~ (which means < 3)");
+        assert!(check_version_constraint("2.2.6", &constraint, PackageFormat::Rpm).unwrap(),
+                "2.2.6 should satisfy < 2~~ (which means < 3)");
+        assert!(!check_version_constraint("2", &constraint, PackageFormat::Rpm).unwrap(),
+                "2 should NOT satisfy < 2~~ (base version is excluded)");
+        assert!(!check_version_constraint("3", &constraint, PackageFormat::Rpm).unwrap(),
+                "3 should NOT satisfy < 2~~ (which means < 3)");
+        assert!(!check_version_constraint("3.0", &constraint, PackageFormat::Rpm).unwrap(),
+                "3.0 should NOT satisfy < 2~~ (which means < 3)");
+
+        // Test VersionLessThan with ~~ suffix for versions with dots
+        // <1.20~~ should mean <1.21 (increment last numeric segment)
+        let constraint = VersionConstraint {
+            operator: Operator::VersionLessThan,
+            operand: "1.20~~".to_string(),
+        };
+        assert!(check_version_constraint("1.19", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.19 should satisfy < 1.20~~ (which means < 1.21)");
+        assert!(!check_version_constraint("1.20", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.20 should NOT satisfy < 1.20~~ (base version is excluded)");
+        assert!(check_version_constraint("1.20.5", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.20.5 should satisfy < 1.20~~ (which means < 1.21)");
+        assert!(!check_version_constraint("1.21", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.21 should NOT satisfy < 1.20~~ (which means < 1.21)");
+        assert!(!check_version_constraint("1.22", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.22 should NOT satisfy < 1.20~~ (which means < 1.21)");
+
+        // Test with RPM format (where ~~ is also used)
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "1.2.3-~~".to_string(),
+        };
+        assert!(check_version_constraint("1.2.3-1.el8", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.3-1.el8 should satisfy >= 1.2.3-~~");
+        assert!(check_version_constraint("1.2.4", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.4 should satisfy >= 1.2.3-~~");
+        assert!(!check_version_constraint("1.2.2", &constraint, PackageFormat::Rpm).unwrap(),
+                "1.2.2 should NOT satisfy >= 1.2.3-~~");
+
+        // Test edge case: multiple dashes before ~~
+        let constraint = VersionConstraint {
+            operator: Operator::VersionGreaterThanEqual,
+            operand: "1.2.3-beta-~~".to_string(),
+        };
+        assert!(check_version_constraint("1.2.3-beta-1", &constraint, PackageFormat::Deb).unwrap(),
+                "1.2.3-beta-1 should satisfy >= 1.2.3-beta-~~");
+        assert!(check_version_constraint("1.2.3-beta", &constraint, PackageFormat::Deb).unwrap(),
+                "1.2.3-beta should satisfy >= 1.2.3-beta-~~");
+    }
+
+    #[test]
+    fn test_check_version_satisfies_constraints() {
+        // Test case 1: VersionCompatible constraint
+        let constraints = vec![
+            VersionConstraint {
+                operator: Operator::VersionCompatible,
+                operand: "5.82".to_string(),
+            },
+        ];
+        // Test with versions that have patch components (like the existing test pattern)
+        assert!(check_version_satisfies_constraints("5.82.0-r0", &constraints, PackageFormat::Apk).unwrap(),
+                "5.82.0-r0 should satisfy ~5.82");
+        assert!(check_version_satisfies_constraints("5.82.1-r0", &constraints, PackageFormat::Apk).unwrap(),
+                "5.82.1-r0 should satisfy ~5.82");
+        assert!(!check_version_satisfies_constraints("5.81-r0", &constraints, PackageFormat::Apk).unwrap(),
+                "5.81-r0 should NOT satisfy ~5.82");
+
+        // Test case 2: Multiple AND constraints
+        let constraints_and = vec![
+            VersionConstraint {
+                operator: Operator::VersionGreaterThanEqual,
+                operand: "5.80".to_string(),
+            },
+            VersionConstraint {
+                operator: Operator::VersionLessThan,
+                operand: "6.0".to_string(),
+            },
+        ];
+        assert!(check_version_satisfies_constraints("5.82-r0", &constraints_and, PackageFormat::Apk).unwrap(),
+                "5.82-r0 should satisfy >=5.80,<6.0");
+        assert!(!check_version_satisfies_constraints("5.79-r0", &constraints_and, PackageFormat::Apk).unwrap(),
+                "5.79-r0 should NOT satisfy >=5.80,<6.0");
+        // With upstream-only comparison: 6.0-r0 has upstream 6.0, so 6.0 < 6.0 is false
+        assert!(!check_version_satisfies_constraints("6.0-r0", &constraints_and, PackageFormat::Apk).unwrap(),
+                "6.0-r0 should NOT satisfy >=5.80,<6.0 (upstream-only comparison: 6.0 < 6.0 is false)");
+        assert!(!check_version_satisfies_constraints("6.0", &constraints_and, PackageFormat::Apk).unwrap(),
+                "6.0 should NOT satisfy >=5.80,<6.0");
+
+        // Test case 3: OR constraints (mutually exclusive)
+        let constraints_or = vec![
+            VersionConstraint {
+                operator: Operator::VersionLessThan,
+                operand: "5.80".to_string(),
+            },
+            VersionConstraint {
+                operator: Operator::VersionGreaterThan,
+                operand: "5.80".to_string(),
+            },
+        ];
+        assert!(check_version_satisfies_constraints("5.82-r0", &constraints_or, PackageFormat::Apk).unwrap(),
+                "5.82-r0 should satisfy <5.80 OR >5.80");
+        assert!(check_version_satisfies_constraints("5.79-r0", &constraints_or, PackageFormat::Apk).unwrap(),
+                "5.79-r0 should satisfy <5.80 OR >5.80");
+        // With upstream-only comparison: 5.80-r0 has upstream 5.80, so 5.80 < 5.80 is false and 5.80 > 5.80 is false
+        assert!(!check_version_satisfies_constraints("5.80-r0", &constraints_or, PackageFormat::Apk).unwrap(),
+                "5.80-r0 should NOT satisfy <5.80 OR >5.80 (upstream-only comparison: 5.80 == 5.80)");
+        assert!(!check_version_satisfies_constraints("5.80", &constraints_or, PackageFormat::Apk).unwrap(),
+                "5.80 should NOT satisfy <5.80 OR >5.80 (exactly equal)");
+
+        // Test case 4: Mixed AND and OR constraints
+        let constraints_mixed = vec![
+            VersionConstraint {
+                operator: Operator::VersionLessThan,
+                operand: "5.80".to_string(),
+            },
+            VersionConstraint {
+                operator: Operator::VersionGreaterThan,
+                operand: "5.80".to_string(),
+            },
+            VersionConstraint {
+                operator: Operator::VersionLessThan,
+                operand: "6.0".to_string(),
+            },
+        ];
+        assert!(check_version_satisfies_constraints("5.82-r0", &constraints_mixed, PackageFormat::Apk).unwrap(),
+                "5.82-r0 should satisfy (<5.80 OR >5.80) AND <6.0");
+        assert!(!check_version_satisfies_constraints("6.1-r0", &constraints_mixed, PackageFormat::Apk).unwrap(),
+                "6.1-r0 should NOT satisfy (<5.80 OR >5.80) AND <6.0");
     }
 }

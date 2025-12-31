@@ -5,7 +5,7 @@ use color_eyre::eyre::{self, Result, WrapErr};
 use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
 use std::collections::HashMap;
 
 impl PackageManager {
@@ -125,7 +125,7 @@ impl PackageManager {
         Ok(())
     }
 
-    pub fn record_history(&mut self, new_generation_path: &PathBuf, plan: Option<&crate::install::InstallationPlan>) -> Result<()> {
+    pub fn record_history(&mut self, new_generation_path: &PathBuf, plan: Option<&crate::plan::InstallationPlan>) -> Result<()> {
         let command_json = new_generation_path.join("command.json");
 
         let mut command = GenerationCommand {

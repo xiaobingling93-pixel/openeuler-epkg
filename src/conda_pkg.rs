@@ -12,6 +12,7 @@ use bzip2::read::BzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zip::ZipArchive;
 use regex;
+use crate::utils;
 
 /// Separator used to combine version and build_string in pkgkey for virtual packages
 /// Format: version-build_string (e.g., "1-skylake_avx512")
@@ -297,7 +298,7 @@ fn unpack_tar_bz2_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) ->
 
         // Extract the file
         entry.unpack(&target_path)?;
-        crate::utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions(&target_path);
     }
 
     // Verify required metadata exists
@@ -342,7 +343,7 @@ fn extract_zstd_tar_stream<R: Read>(reader: R, target_dir: &Path, strip_prefix: 
 
         // Extract the file
         entry.unpack(&target_path)?;
-        crate::utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions(&target_path);
     }
 
     Ok(())

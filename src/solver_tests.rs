@@ -5,7 +5,7 @@ use std::sync::Arc;
 use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
 use crate::models::*;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
 #[cfg(test)]
 use env_logger;
 

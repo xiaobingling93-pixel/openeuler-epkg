@@ -1,5 +1,5 @@
 use crate::models::*;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
 use color_eyre::Result;
 
 impl PackageManager {

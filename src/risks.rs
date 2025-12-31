@@ -1,6 +1,6 @@
-//! Transaction management module for RPM-compatible package transactions
+//! Installation Risk management module for RPM-compatible package transactions
 //!
-//! This module implements transaction handling similar to RPM's transaction.cc,
+//! This module implements risks detection similar to RPM's transaction.cc,
 //! including disk space checking, file conflict detection, config file handling,
 //! and problem reporting.
 
@@ -11,7 +11,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
-use crate::models::InstalledPackageInfo;
+use crate::models::{PackageManager, InstalledPackageInfo};
+use crate::plan::InstallationPlan;
+use crate::utils;
 
 /// File state types (matching RPM's RPMFILE_STATE_*)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -856,6 +858,129 @@ pub fn prepare_transaction(
     transaction.load_installed_files(packages, store_root, env_root)?;
 
     Ok(())
+}
+
+impl PackageManager {
+
+    /// Validate transaction using transaction module (disk space, conflicts, etc.)
+    pub fn validate_transaction(
+        &self,
+        plan: &InstallationPlan,
+        store_root: &Path,
+        env_root: &Path,
+    ) -> Result<()> {
+        use crate::risks::ProblemFilterFlags;
+
+        // Create filter flags from config (placeholder - would read from config)
+        let filter_flags = ProblemFilterFlags {
+            ignore_arch: false,
+            ignore_os: false,
+            replace_pkg: false,
+            force_relocate: false,
+            replace_new_files: false,
+            replace_old_files: false,
+            old_package: false,
+            diskspace: false,
+            disknodes: false,
+            verify: false,
+        };
+
+        let mut transaction = Transaction::new(filter_flags);
+
+        // Prepare transaction (initialize DSI and load installed files)
+        prepare_transaction(&mut transaction, store_root, env_root, &self.installed_packages)?;
+
+        // Check disk space and conflicts for each package being installed
+        for (pkgkey, pkg_info) in plan.fresh_installs.iter().chain(plan.upgrades_new.iter()) {
+            // Get package files from store
+            let pkg_store_path = store_root.join(&pkg_info.pkgline).join("fs");
+            if pkg_store_path.exists() {
+                // Get file list with metadata
+                let file_list = if let Ok(files_info) = utils::list_package_files_with_info(pkg_store_path.to_str().unwrap()) {
+                    files_info
+                } else if let Ok(files) = utils::list_package_files(pkg_store_path.to_str().unwrap()) {
+                    // Fallback to simple file list - create MtreeFileInfo with File type
+                    files.iter().map(|f| utils::MtreeFileInfo {
+                        path: PathBuf::from(f),
+                        file_type: utils::MtreeFileType::File,
+                        mode: None,
+                        sha256: None,
+                        link_target: None,
+                        uname: None,
+                        gname: None,
+                    }).collect()
+                } else {
+                    Vec::new()
+                };
+
+                for (file_index, file_info) in file_list.iter().enumerate() {
+                    let store_file = &file_info.path;
+                    let env_file_path = env_root.join(store_file.strip_prefix(&pkg_store_path)
+                        .unwrap_or(store_file));
+
+                    // Skip directories for conflict/disk space checks
+                    if file_info.is_dir() {
+                        continue;
+                    }
+
+                    // Check for file conflicts
+                    if let Ok(conflicts) = transaction.check_file_conflicts(
+                        &env_file_path,
+                        pkgkey,
+                        file_index,
+                        store_file,
+                    ) {
+                        for conflict in conflicts {
+                            transaction.add_problem(conflict);
+                        }
+                    }
+
+                    // Check disk space (only for regular files, not symlinks)
+                    if !file_info.is_link() {
+                        if let Ok(metadata) = fs::metadata(store_file) {
+                            let file_size = metadata.len();
+                            let dev = metadata.dev();
+                            let dir = env_file_path.parent().unwrap_or(Path::new("/"));
+
+                            // Account for hardlinks (only count last file in hardlink set)
+                            // For now, we'll use a simple approach - in the future we can
+                            // track hardlink sets from filelist.txt
+                            let accounted_size = file_size; // TODO: integrate hardlink accounting
+
+                            // Update DSI for file creation
+                            transaction.update_dsi(
+                                dev,
+                                dir,
+                                accounted_size,
+                                0, // prev_size
+                                0, // fixup_size
+                                FileAction::Create,
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            // Check for disk space problems
+            transaction.check_dsi_problems(pkgkey);
+        }
+
+        // Validate and report problems
+        let critical_problems = validate_transaction(&transaction)?;
+        if !critical_problems.is_empty() {
+            log::warn!("Transaction validation found {} problem(s):", critical_problems.len());
+            for problem in &critical_problems {
+                log::warn!("  {}", format_problem(problem));
+            }
+            // Return error if there are critical problems
+            return Err(eyre!(
+                "Transaction validation failed with {} critical problem(s)",
+                critical_problems.len()
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// Validate transaction before execution

@@ -8,7 +8,7 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 
 use crate::dirs;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
 use crate::models::*;
 use crate::packages_stream;
 use crate::repo::{RepoReleaseItem, RepoRevise};
@@ -670,7 +670,7 @@ impl PackageManager {
     pub fn build_and_install_aur_packages(
         &mut self,
         aur_packages: &HashMap<String, InstalledPackageInfo>,
-        plan: &mut crate::install::InstallationPlan,
+        plan: &mut crate::plan::InstallationPlan,
         store_root: &Path,
         env_root: &Path,
         package_format: crate::models::PackageFormat,
@@ -712,7 +712,7 @@ impl PackageManager {
 
                 // 3) Unpack and link built packages
                 let (mut this_round_aur_packages, this_round_pkgkey_mapping) =
-                    self.unpack_link_built_aur_packages(
+                    unpack_link_built_aur_packages(
                         &mapped,
                         store_root,
                         env_root,
@@ -869,105 +869,107 @@ impl PackageManager {
         Ok(mapped)
     }
 
-    /// Unpack and link built AUR packages.
-    ///
-    /// Inputs:
-    ///   - `mapped_packages`: already mapped packages from `find_and_verify_built_packages()`
-    ///     (path, original_key, info)
-    ///
-    /// Returns:
-    ///   - `this_round_aur_packages`: actual_pkgkey -> InstalledPackageInfo
-    ///   - `this_round_pkgkey_mapping`: original_pkgkey (plan) -> actual_pkgkey (installed)
-    fn unpack_link_built_aur_packages(
-        &mut self,
-        mapped_packages: &[(PathBuf, String, InstalledPackageInfo)],
-        store_root: &Path,
-        env_root: &Path,
-        link_type: crate::models::LinkType,
-        can_reflink: bool,
-        store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-    ) -> Result<(
-        HashMap<String, InstalledPackageInfo>,
-        HashMap<String, String>,
-    )> {
-        use crate::package;
+}
 
-        // This round's completed AUR packages (actual_pkgkey -> info)
-        let mut this_round_aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
-        // Mapping from original (plan) pkgkeys to actual pkgkeys for this round
-        let mut this_round_pkgkey_mapping: HashMap<String, String> = HashMap::new();
+/// Unpack and link built AUR packages.
+///
+/// Inputs:
+///   - `mapped_packages`: already mapped packages from `find_and_verify_built_packages()`
+///     (path, original_key, info)
+///
+/// Returns:
+///   - `this_round_aur_packages`: actual_pkgkey -> InstalledPackageInfo
+///   - `this_round_pkgkey_mapping`: original_pkgkey (plan) -> actual_pkgkey (installed)
+fn unpack_link_built_aur_packages(
+    mapped_packages: &[(PathBuf, String, InstalledPackageInfo)],
+    store_root: &Path,
+    env_root: &Path,
+    link_type: crate::models::LinkType,
+    can_reflink: bool,
+    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+) -> Result<(
+    HashMap<String, InstalledPackageInfo>,
+    HashMap<String, String>,
+)> {
+    use crate::package;
 
-        for (built_pkg_path, original_key, info) in mapped_packages {
-            // Unpack and link the mapped package *after* we know its original planned key.
-            let built_pkg_path_str = built_pkg_path.to_str().ok_or_else(|| {
-                eyre!(
-                    "Invalid UTF-8 in built package path: {}",
+    // This round's completed AUR packages (actual_pkgkey -> info)
+    let mut this_round_aur_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+    // Mapping from original (plan) pkgkeys to actual pkgkeys for this round
+    let mut this_round_pkgkey_mapping: HashMap<String, String> = HashMap::new();
+
+    for (built_pkg_path, original_key, info) in mapped_packages {
+        // Unpack and link the mapped package *after* we know its original planned key.
+        let built_pkg_path_str = built_pkg_path.to_str().ok_or_else(|| {
+            eyre!(
+                "Invalid UTF-8 in built package path: {}",
+                built_pkg_path.display()
+            )
+        })?;
+
+        // Unpack the package
+        let (actual_pkgkey, mut completed_info) = crate::store::unpack_package(
+            built_pkg_path_str,
+            &original_key,
+            // Start from an empty InstalledPackageInfo; we'll fully populate fields
+            // from the mapped planned AUR entry.
+            InstalledPackageInfo::default(),
+            store_pkglines_by_pkgname,
+        )
+            .with_context(|| {
+                format!(
+                    "Failed to unpack built package: {}",
                     built_pkg_path.display()
                 )
             })?;
 
-            // Unpack the package
-            let (actual_pkgkey, mut completed_info) = self
-                .unpack_package(
-                    built_pkg_path_str,
-                    &original_key,
-                    // Start from an empty InstalledPackageInfo; we'll fully populate fields
-                    // from the mapped planned AUR entry.
-                    InstalledPackageInfo::default(),
-                    store_pkglines_by_pkgname,
+        // Link the package
+        let store_fs_dir = store_root.join(completed_info.pkgline.clone()).join("fs");
+        crate::link::link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
+            .with_context(|| {
+                format!(
+                    "Failed to link built package: {}",
+                    built_pkg_path.display()
                 )
-                .with_context(|| {
-                    format!(
-                        "Failed to unpack built package: {}",
-                        built_pkg_path.display()
-                    )
-                })?;
+            })?;
 
-            // Link the package
-            let store_fs_dir = store_root.join(completed_info.pkgline.clone()).join("fs");
-            self.link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
-                .with_context(|| {
-                    format!(
-                        "Failed to link built package: {}",
-                        built_pkg_path.display()
-                    )
-                })?;
+        // Infer name, version, and arch from the package filename for validation
+        let (act_name, act_version, act_arch) = PackageManager::infer_name_version_from_arch_pkgfile(built_pkg_path)
+            .with_context(|| format!("Failed to infer package metadata from filename: {}", built_pkg_path.display()))?;
 
-            // Infer name, version, and arch from the package filename for validation
-            let (act_name, act_version, act_arch) = Self::infer_name_version_from_arch_pkgfile(built_pkg_path)
-                .with_context(|| format!("Failed to infer package metadata from filename: {}", built_pkg_path.display()))?;
+        // Construct expected pkgkey from inferred name, version, and arch
+        let expected_pkgkey = package::format_pkgkey(&act_name, &act_version, &act_arch);
 
-            // Construct expected pkgkey from inferred name, version, and arch
-            let expected_pkgkey = package::format_pkgkey(&act_name, &act_version, &act_arch);
-
-            // Validate that the inferred pkgkey matches the actual pkgkey from the unpacked package
-            if expected_pkgkey != actual_pkgkey {
-                return Err(eyre!(
-                    "Package key mismatch for '{}': inferred '{}' but unpacked package has '{}'",
-                    built_pkg_path.display(),
-                    expected_pkgkey,
-                    actual_pkgkey
-                ));
-            }
-
-            // Copy metadata from the planned AUR entry
-            completed_info.depend_depth = info.depend_depth;
-            completed_info.depends = info.depends.clone();
-            completed_info.rdepends = info.rdepends.clone();
-            completed_info.bdepends = info.bdepends.clone();
-            completed_info.rbdepends = info.rbdepends.clone();
-
-            // Record mapping from original (plan) pkgkey to actual installed pkgkey
-            if original_key != &actual_pkgkey {
-                this_round_pkgkey_mapping.insert(original_key.clone(), actual_pkgkey.clone());
-            }
-
-            // From this point on, the round operates purely on actual_pkgkey
-            this_round_aur_packages.insert(actual_pkgkey.clone(), completed_info);
+        // Validate that the inferred pkgkey matches the actual pkgkey from the unpacked package
+        if expected_pkgkey != actual_pkgkey {
+            return Err(eyre!(
+                "Package key mismatch for '{}': inferred '{}' but unpacked package has '{}'",
+                built_pkg_path.display(),
+                expected_pkgkey,
+                actual_pkgkey
+            ));
         }
 
-        Ok((this_round_aur_packages, this_round_pkgkey_mapping))
+        // Copy metadata from the planned AUR entry
+        completed_info.depend_depth = info.depend_depth;
+        completed_info.depends = info.depends.clone();
+        completed_info.rdepends = info.rdepends.clone();
+        completed_info.bdepends = info.bdepends.clone();
+        completed_info.rbdepends = info.rbdepends.clone();
+
+        // Record mapping from original (plan) pkgkey to actual installed pkgkey
+        if original_key != &actual_pkgkey {
+            this_round_pkgkey_mapping.insert(original_key.clone(), actual_pkgkey.clone());
+        }
+
+        // From this point on, the round operates purely on actual_pkgkey
+        this_round_aur_packages.insert(actual_pkgkey.clone(), completed_info);
     }
+
+    Ok((this_round_aur_packages, this_round_pkgkey_mapping))
+}
+
+impl PackageManager {
 
     /// Map built AUR artifacts back to planned entries.
     ///

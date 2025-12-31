@@ -719,7 +719,7 @@ impl PackageManager {
         }
 
         // Get environment config for env_vars
-        let env_config = crate::models::env_config();
+        let env_config = env_config();
 
         // Initialize deactivate script
         let mut script = String::new();
@@ -888,7 +888,7 @@ impl PackageManager {
     pub fn export_environment(&mut self, name: &str, output: Option<String>) -> Result<()> {
         // Prepare environment export container
         let mut env_export = EnvExport {
-            env: crate::models::env_config().clone(),
+            env: env_config().clone(),
             ..EnvExport::default()
         };
         let generations_root = get_generations_root(name)?;
@@ -960,7 +960,7 @@ impl PackageManager {
 
     /// Get environment configuration value
     pub fn get_environment_config(&mut self, name: &str) -> Result<()> {
-        let config = crate::models::env_config();
+        let config = env_config();
 
         // Split name by dots to handle nested fields
         let parts: Vec<&str> = name.split('.').collect();
@@ -978,7 +978,7 @@ impl PackageManager {
 
     /// Set environment configuration value
     pub fn set_environment_config(&mut self, name: &str, value: &str) -> Result<()> {
-        let config = crate::models::env_config(); // load from file
+        let config = env_config(); // load from file
         let mut config = config.clone();
         // Split name by dots to handle nested fields
         let parts: Vec<&str> = name.split('.').collect();

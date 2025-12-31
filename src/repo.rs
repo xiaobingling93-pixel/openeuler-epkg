@@ -16,6 +16,7 @@ use crate::dirs;
 use crate::download::DownloadTask;
 use crate::download::{submit_download_task, has_download_task, DownloadStatus};
 use crate::download::DOWNLOAD_MANAGER;
+use crate::io::read_json_file;
 use crate::mmio;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,7 +814,7 @@ pub fn create_load_repoindex(
 ) -> Result<()> {
     let mut repo_index: RepoIndex =
         if no_revises {
-            crate::io::read_json_file(&repo_dir.join("RepoIndex.json"))
+            read_json_file(&repo_dir.join("RepoIndex.json"))
                 .with_context(|| format!("Failed to deserialize RepoIndex.json for repository: {}", repo.repo_name))?
         } else {
             collect_save_repoindex(&repo, repo_dir, &release_items)
@@ -888,7 +889,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
         }
 
         // Load packages info
-        let packages_info: PackagesFileInfo = crate::io::read_json_file(&packages_metafile)?;
+        let packages_info: PackagesFileInfo = read_json_file(&packages_metafile)?;
 
         // Try to load corresponding filelists if it exists
         let mut filelists_info = None;
@@ -897,7 +898,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
             .replace(".packages", ".filelists");
         if Path::new(&filelists_metafile).exists() {
             log::debug!("[collect_save_repoindex] Found filelists metafile: {}", filelists_metafile);
-            let filelists: FilelistsFileInfo = crate::io::read_json_file(Path::new(&filelists_metafile))?;
+            let filelists: FilelistsFileInfo = read_json_file(Path::new(&filelists_metafile))?;
             filelists_info = Some(filelists);
         } else {
             log::debug!("[collect_save_repoindex] Filelists metafile does not exist: {}", filelists_metafile);

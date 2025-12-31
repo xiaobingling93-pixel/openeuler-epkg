@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::models::{PackageManager, InstalledPackageInfo, Package};
 use crate::mmio;
 use crate::list;
+use crate::models::dirs;
 
 pub struct DpkgQueryOptions {
     pub list: bool,
@@ -141,7 +142,7 @@ fn format_field(field: &str, package: &crate::models::Package, installed_info: O
         "Conffiles" => {
             // Read conffiles from info/deb/conffiles
             if let Some(info) = installed_info {
-                let store_path = crate::models::dirs().epkg_store.join(&info.pkgline);
+                let store_path = dirs().epkg_store.join(&info.pkgline);
                 let conffiles_path = store_path.join("info/deb/conffiles");
                 if conffiles_path.exists() {
                     if let Ok(content) = fs::read_to_string(&conffiles_path) {
@@ -369,7 +370,7 @@ fn list_files(packages: &[String]) -> Result<()> {
 
         if let Some((_package, installed_info)) = find_installed_package_by_name(&pm, pkgname, arch_suffix) {
             // Read filelist
-            let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
+            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
             let filelist_path = store_path.join("info/filelist.txt");
 
             if filelist_path.exists() {
@@ -412,7 +413,7 @@ fn search_files(pattern: &str) -> Result<()> {
         };
 
         // Read filelist
-        let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
+        let store_path = dirs().epkg_store.join(&installed_info.pkgline);
         let filelist_path = store_path.join("info/filelist.txt");
 
         if !filelist_path.exists() {
@@ -461,7 +462,7 @@ fn show_control_path(package_spec: &str, control_file: Option<&str>) -> Result<(
     let (pkgname, arch_suffix) = parse_package_spec(package_spec);
 
     if let Some((_package, installed_info)) = find_installed_package_by_name(&pm, pkgname, arch_suffix) {
-        let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
+        let store_path = dirs().epkg_store.join(&installed_info.pkgline);
         let control_file_name = control_file.unwrap_or("control");
         let control_path = store_path.join("info/deb").join(control_file_name);
 
