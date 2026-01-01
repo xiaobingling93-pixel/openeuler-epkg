@@ -5,13 +5,54 @@
 
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::os::unix::fs::{symlink, MetadataExt};
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::symlink;
 use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
 use crate::models::{LinkType, InstalledPackageInfo};
+use crate::plan::InstallationPlan;
 use crate::utils;
-use crate::risks::{is_config_file_path, get_config_file_action, FileAction};
 use log;
+
+/// File action types (simplified version for config file handling)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAction {
+    Create,
+    Skip,
+    Backup,
+    AltName, // For NOREPLACE configs - creates .rpmnew file
+}
+
+/// Determine if a file path is a config file (in /etc/)
+fn is_config_file_path(file_path: &Path) -> bool {
+    file_path.to_string_lossy().starts_with("etc/")
+}
+
+/// Get config file action based on existing file and flags
+fn get_config_file_action(
+    existing_path: &Path,
+    new_path: &Path,
+    is_noreplace: bool,
+) -> FileAction {
+    // Check if existing file exists
+    if !existing_path.exists() {
+        return FileAction::Create;
+    }
+
+    // Check if files are identical (simplified - just check if they exist and are same size)
+    if let (Ok(meta1), Ok(meta2)) = (fs::metadata(existing_path), fs::metadata(new_path)) {
+        if meta1.len() == meta2.len() && meta1.mode() == meta2.mode() {
+            return FileAction::Skip;
+        }
+    }
+
+    // Files differ - handle based on flags
+    if is_noreplace {
+        FileAction::AltName // Create .rpmnew file
+    } else {
+        FileAction::Backup // Backup existing, then create new
+    }
+}
 
 // link files from env_root to store_fs_dir
 pub fn link_package(store_fs_dir: &PathBuf, env_root: &PathBuf, link_type: LinkType, can_reflink: bool) -> Result<()> {
@@ -54,15 +95,15 @@ pub fn unlink_package_diff(
         let new_files = utils::list_package_files(new_store_fs_dir.to_str()
             .ok_or_else(|| eyre::eyre!("Invalid new package fs path"))?)?;
 
-        // Convert to sets of relative paths for comparison
+        // Convert to sets of relative paths for comparison (already relative paths as strings)
         let old_rel_paths: std::collections::HashSet<PathBuf> = old_files
             .iter()
-            .filter_map(|path| path.strip_prefix(&old_store_fs_dir).ok().map(|p| p.to_path_buf()))
+            .map(|s| PathBuf::from(s))
             .collect();
 
         let new_rel_paths: std::collections::HashSet<PathBuf> = new_files
             .iter()
-            .filter_map(|path| path.strip_prefix(&new_store_fs_dir).ok().map(|p| p.to_path_buf()))
+            .map(|s| PathBuf::from(s))
             .collect();
 
         // Find files that are in old package but not in new package
@@ -117,23 +158,27 @@ pub fn unlink_package_diff(
         Ok(())
 }
 
-/// Check if two paths are on the same filesystem by comparing device IDs
-fn same_filesystem(path1: &Path, path2: &Path) -> Result<bool> {
-    let meta1 = fs::metadata(path1)
-        .with_context(|| format!("Failed to get metadata for {}", path1.display()))?;
-    let meta2 = fs::metadata(path2)
-        .with_context(|| format!("Failed to get metadata for {}", path2.display()))?;
-    Ok(meta1.dev() == meta2.dev())
+/// Check if two paths are on the same filesystem by comparing filesystem IDs
+/// Uses filesystem info from plan if provided, otherwise returns an error
+pub fn same_filesystem(
+    fs1: Option<&crate::plan::FilesystemInfo>,
+    fs2: Option<&crate::plan::FilesystemInfo>,
+) -> Result<bool> {
+    match (fs1, fs2) {
+        (Some(fs1), Some(fs2)) => Ok(fs1.fsid == fs2.fsid),
+        _ => Err(eyre!("Filesystem info not available for same_filesystem check")),
+    }
 }
 
 /// Check if reflink (copy-on-write) is supported on the filesystem
 /// This is done by attempting a test reflink operation using reflink_copy()
+/// Requires that paths are on the same filesystem (checked via same_fs parameter)
 #[cfg(target_os = "linux")]
-fn check_reflink_support(store_root: &Path, env_root: &Path) -> bool {
+fn check_reflink_support(env_root: &Path, same_fs: bool) -> bool {
     use std::io::Write;
 
     // Only check if paths are on the same filesystem
-    if same_filesystem(store_root, env_root).unwrap_or(false) {
+    if same_fs {
         // Create a temporary test file
         let test_file = env_root.join(".epkg_reflink_test");
 
@@ -197,55 +242,42 @@ fn reflink_copy(_source: &Path, _target: &Path) -> Result<()> {
 
 /// Compute link type and reflink support for installation plan
 /// Returns (link_type, can_reflink)
+/// Uses stored filesystem info from plan to avoid duplicate statvfs calls
 pub fn compute_link_type_and_reflink(
     env_link: LinkType,
     store_root: &Path,
     env_root: &Path,
+    plan: &InstallationPlan,
 ) -> Result<(LinkType, bool)> {
     let mut link_type = env_link;
     let mut can_reflink = false;
 
+    // Use stored filesystem info from plan
+    let same_fs = same_filesystem(plan.store_root_fs.as_ref(), plan.env_root_fs.as_ref())?;
+
     if link_type == LinkType::Hardlink {
-        match same_filesystem(store_root, env_root) {
-            Ok(true) => {
-                // Same filesystem, keep hardlink and check for reflink support
-                can_reflink = check_reflink_support(store_root, env_root);
-                if can_reflink {
-                    log::debug!("Reflink support detected on filesystem");
-                }
+        if same_fs {
+            // Same filesystem, keep hardlink and check for reflink support
+            can_reflink = check_reflink_support(env_root, same_fs);
+            if can_reflink {
+                log::debug!("Reflink support detected on filesystem");
             }
-            Ok(false) => {
-                // Different filesystems, downgrade to symlink
-                log::debug!("Store root and env root are on different filesystems, downgrading hardlink to symlink");
-                link_type = LinkType::Symlink;
-            }
-            Err(e) => {
-                log::warn!("Failed to check filesystem compatibility: {}, downgrading hardlink to symlink", e);
-                link_type = LinkType::Symlink;
-            }
+        } else {
+            // Different filesystems, downgrade to symlink
+            log::debug!("Store root and env root are on different filesystems, downgrading hardlink to symlink");
+            link_type = LinkType::Symlink;
         }
     } else if link_type == LinkType::Move || link_type == LinkType::Runpath {
-        match same_filesystem(store_root, env_root) {
-            Ok(true) => {
-                // Same filesystem, rename() will work
-            }
-            Ok(false) => {
-                // Different filesystems, rename() will fail
-                return Err(eyre::eyre!(
-                    "Link type {:?} requires store and environment to be on the same filesystem, but they are on different filesystems (store: {}, env: {})",
-                    link_type,
-                    store_root.display(),
-                    env_root.display()
-                ));
-            }
-            Err(e) => {
-                return Err(eyre::eyre!(
-                    "Failed to check filesystem compatibility for {:?} link type: {}",
-                    link_type,
-                    e
-                ));
-            }
+        if !same_fs {
+            // Different filesystems, rename() will fail
+            return Err(eyre::eyre!(
+                "Link type {:?} requires store and environment to be on the same filesystem, but they are on different filesystems (store: {}, env: {})",
+                link_type,
+                store_root.display(),
+                env_root.display()
+            ));
         }
+        // Same filesystem, rename() will work
     }
 
     Ok((link_type, can_reflink))
@@ -326,9 +358,8 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
 
 fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
     for fs_file_info in fs_files {
-        let fs_file = &fs_file_info.path;
-        let fhs_file = fs_file.strip_prefix(store_fs_dir)
-            .with_context(|| format!("Failed to strip prefix {} from {}", store_fs_dir.display(), fs_file.display()))?;
+        let fs_file = store_fs_dir.join(&fs_file_info.path);
+        let fhs_file = &fs_file_info.path;
         let target_path = env_root.join(fhs_file);
 
         if fs_file_info.is_dir() {
@@ -350,13 +381,13 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFile
         //         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
         // }
 
-        if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
+        if matches!(fhs_file.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
             // No modify top-level directories/symlinks created by create_environment_directories()
         } else if fs_file_info.is_link() {
-            mirror_symlink_file(fs_file, &target_path)
+            mirror_symlink_file(&fs_file, &target_path)
                 .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))?;
         } else {
-            mirror_regular_file(fs_file, &target_path, fhs_file, link_type, can_reflink)
+            mirror_regular_file(&fs_file, &target_path, Path::new(fhs_file), link_type, can_reflink)
                 .with_context(|| format!("Failed to handle regular file {}", fs_file.display()))?;
         }
     }

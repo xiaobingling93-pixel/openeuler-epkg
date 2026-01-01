@@ -18,9 +18,7 @@ fn collect_package_files_to_vec<'a>(
     let mut files = Vec::new();
     for pkg_info in packages {
         if let Ok(rel_files) = get_package_files(store_root, pkg_info) {
-            for rel_path in rel_files {
-                files.push(rel_path.to_string_lossy().to_string());
-            }
+            files.extend(rel_files);
         }
     }
     files
@@ -34,9 +32,6 @@ fn collect_package_files_to_map<'a>(
     let mut result = HashMap::new();
     for (pkgkey, pkg_info) in packages {
         if let Ok(rel_files) = get_package_files(store_root, pkg_info) {
-            let rel_files: Vec<String> = rel_files.iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
             if !rel_files.is_empty() {
                 result.insert(pkgkey.clone(), rel_files);
             }
@@ -53,9 +48,7 @@ fn collect_package_files_to_set<'a>(
     let mut files = HashSet::new();
     for pkg_info in packages {
         if let Ok(rel_files) = get_package_files(store_root, pkg_info) {
-            for rel_path in rel_files {
-                files.insert(rel_path.to_string_lossy().to_string());
-            }
+            files.extend(rel_files);
         }
     }
     files

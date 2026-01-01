@@ -23,13 +23,11 @@ pub fn unlink_package(pkg_store_path: &PathBuf, env_root: &PathBuf) -> Result<()
     let fs_files = crate::utils::list_package_files_with_info(fs_dir_str)?;
     log::debug!("Unlinking package from {} to {} ({} files)", pkg_store_path.display(), env_root.display(), fs_files.len());
     for fs_file_info in fs_files {
-        let fs_file = &fs_file_info.path;
-        let fhs_file = fs_file.strip_prefix(&fs_dir)
-            .map_err(|e| eyre::eyre!("Failed to strip prefix from path: {}", e))?;
-        let target_path = env_root.join(fhs_file);
+        // fs_file_info.path is already relative
+        let target_path = env_root.join(&fs_file_info.path);
 
         // Skip symlinks for top-level directories, some are manually created in create_environment_directories()
-        if matches!(fhs_file.to_string_lossy().as_ref(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
+        if matches!(fs_file_info.path.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
             continue;
         }
 

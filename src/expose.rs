@@ -191,7 +191,7 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[utils::MtreeFileInfo]) -> R
     log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
     for fs_file_info in fs_files {
         let fs_file = &fs_file_info.path;
-        let path_str = fs_file.to_string_lossy();
+        let path_str = fs_file.as_str();
 
         if !path_str.contains("/bin/") && !path_str.contains("/sbin/") && !path_str.contains("/libexec/") {
             continue;
@@ -211,8 +211,9 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[utils::MtreeFileInfo]) -> R
             continue;
         }
 
-        if let Some(created_path) = create_ebin_wrapper(env_root, fs_file)
-            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file.display()))? {
+        let fs_file_path = Path::new(fs_file);
+        if let Some(created_path) = create_ebin_wrapper(env_root, fs_file_path)
+            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file_path.display()))? {
             created_ebin_paths.push(created_path);
         }
     }

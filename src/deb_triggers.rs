@@ -872,7 +872,7 @@ pub fn process_deb_triggers(
             if let Ok(rel_files) = crate::utils::get_package_files(store_root, package_info) {
                 for rel_path in &rel_files {
                     // Convert relative path to absolute path for trigger matching
-                    let file_path = format!("/{}", rel_path.to_string_lossy());
+                    let file_path = format!("/{}", rel_path);
                     if let Err(e) = crate::deb_triggers::activate_file_trigger(
                         env_root,
                         &file_path,

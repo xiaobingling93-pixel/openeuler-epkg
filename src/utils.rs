@@ -36,7 +36,7 @@ pub enum FileType {
 
 #[derive(Debug, Clone)]
 pub struct MtreeFileInfo {
-    pub path: PathBuf,
+    pub path: String,
     pub file_type: MtreeFileType,
     pub mode: Option<u32>,
     #[allow(dead_code)]
@@ -54,7 +54,7 @@ pub enum MtreeFileType {
     File,
     Dir,
     Link,
-    Unknown,
+    Device,
 }
 
 impl MtreeFileInfo {
@@ -96,8 +96,8 @@ pub fn is_setuid() -> bool {
 }
 
 // List package/fs files - improved version that reads from filelist.txt
-pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
-    // For backwards compatibility, still return Vec<PathBuf>
+pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<String>> {
+    // Return relative paths as strings
     let file_infos = list_package_files_with_info(package_fs_dir)?;
     Ok(file_infos.into_iter().map(|info| info.path).collect())
 }
@@ -107,7 +107,7 @@ pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<PathBuf>> {
 pub fn get_package_files(
     store_root: &Path,
     package_info: &InstalledPackageInfo,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<String>> {
     let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
     if !store_fs_dir.exists() {
         return Ok(Vec::new());
@@ -116,11 +116,8 @@ pub fn get_package_files(
     let files = list_package_files(store_fs_dir.to_str()
         .ok_or_else(|| eyre::eyre!("Invalid store fs path"))?)?;
 
-    // Convert to relative paths (without leading /)
-    Ok(files.iter()
-        .filter_map(|p| p.strip_prefix(&store_fs_dir).ok())
-        .map(|p| p.to_path_buf())
-        .collect())
+    // Already relative paths as strings
+    Ok(files)
 }
 
 // New function that reads from filelist.txt and provides type information
@@ -143,10 +140,9 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
         .ok_or_else(|| eyre::eyre!("Cannot get parent directory of {}", package_fs_dir))?;
     let filelist_path = store_dir.join("info/filelist.txt");
 
-    // If filelist.txt doesn't exist, fall back to filesystem walking
+    // If filelist.txt doesn't exist, return an error
     if !filelist_path.exists() {
-        log::debug!("filelist.txt not found at {}, falling back to filesystem walking", filelist_path.display());
-        return list_package_files_fallback(package_fs_dir);
+        return Err(eyre::eyre!("filelist.txt not found at {}", filelist_path.display()));
     }
 
     // Read and parse filelist.txt
@@ -161,7 +157,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
             continue;
         }
 
-        match parse_mtree_line(line, package_fs_path) {
+        match parse_mtree_line(line) {
             Ok(Some(file_info)) => file_infos.push(file_info),
             Ok(None) => continue, // Skip this line
             Err(e) => {
@@ -175,16 +171,15 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
 }
 
 // Parse a single mtree format line
-fn parse_mtree_line(line: &str, package_fs_path: &Path) -> Result<Option<MtreeFileInfo>> {
+fn parse_mtree_line(line: &str) -> Result<Option<MtreeFileInfo>> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.is_empty() {
         return Ok(None);
     }
 
     let relative_path = parts[0];
-    let full_path = package_fs_path.join(relative_path);
 
-    let mut file_type = MtreeFileType::Unknown;
+    let mut file_type = MtreeFileType::Device;
     let mut mode = None;
     let mut sha256 = None;
     let mut link_target = None;
@@ -200,7 +195,7 @@ fn parse_mtree_line(line: &str, package_fs_path: &Path) -> Result<Option<MtreeFi
                         "file" => MtreeFileType::File,
                         "dir" => MtreeFileType::Dir,
                         "link" => MtreeFileType::Link,
-                        _ => MtreeFileType::Unknown,
+                        _ => MtreeFileType::Device,
                     };
                 }
                 "mode" => {
@@ -226,7 +221,7 @@ fn parse_mtree_line(line: &str, package_fs_path: &Path) -> Result<Option<MtreeFi
     }
 
     Ok(Some(MtreeFileInfo {
-        path: full_path,
+        path: relative_path.to_string(),
         file_type,
         mode,
         sha256,
@@ -236,64 +231,6 @@ fn parse_mtree_line(line: &str, package_fs_path: &Path) -> Result<Option<MtreeFi
     }))
 }
 
-// Fallback to filesystem walking if filelist.txt doesn't exist
-fn list_package_files_fallback(package_fs_dir: &str) -> Result<Vec<MtreeFileInfo>> {
-    let dir = Path::new(package_fs_dir);
-    let mut file_infos = Vec::new();
-
-    // Check if directory exists before trying to read it
-    if !dir.exists() {
-        log::warn!("Directory does not exist during fallback: {}", dir.display());
-        return Err(eyre::eyre!("Directory does not exist: {}", dir.display()));
-    }
-
-    // Check if it's actually a directory
-    if !dir.is_dir() {
-        log::warn!("Path is not a directory during fallback: {}", dir.display());
-        return Err(eyre::eyre!("Path is not a directory: {}", dir.display()));
-    }
-
-    for entry in fs::read_dir(dir)
-        .wrap_err_with(|| format!("Failed to read directory: {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-
-        let mtree_type = if file_type.is_dir() {
-            MtreeFileType::Dir
-        } else if file_type.is_symlink() {
-            MtreeFileType::Link
-        } else {
-            MtreeFileType::File
-        };
-
-        let metadata = fs::symlink_metadata(&path)?;
-        let mode = Some(metadata.permissions().mode());
-        let link_target = if file_type.is_symlink() {
-            fs::read_link(&path).ok().map(|p| p.to_string_lossy().to_string())
-        } else {
-            None
-        };
-
-        file_infos.push(MtreeFileInfo {
-            path: path.clone(),
-            file_type: mtree_type,
-            mode,
-            sha256: None,
-            link_target,
-            uname: None,
-            gname: None,
-        });
-
-        if file_type.is_dir() {
-            let path_str = path.to_str()
-                .ok_or_else(|| eyre::eyre!("Path contains invalid UTF-8: {}", path.display()))?;
-            file_infos.extend(list_package_files_fallback(path_str)?);
-        }
-    }
-
-    Ok(file_infos)
-}
 
 // Get file type
 pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {

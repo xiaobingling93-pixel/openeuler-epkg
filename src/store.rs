@@ -89,12 +89,10 @@ fn build_sha256_mapping_for_package(
         }
 
         if let Some(sha256_val) = file_info.sha256 {
-            // Get relative path from fs_dir
-            if let Ok(relative_path) = file_info.path.strip_prefix(fs_dir) {
-                let relative_filename = relative_path.to_string_lossy().to_string();
-                // Only store the first occurrence (one is enough for de-duplication)
-                sha256_to_file.entry(sha256_val).or_insert_with(|| (relative_filename, pkgline.to_string()));
-            }
+            // file_info.path is already relative
+            let relative_filename = file_info.path.clone();
+            // Only store the first occurrence (one is enough for de-duplication)
+            sha256_to_file.entry(sha256_val).or_insert_with(|| (relative_filename, pkgline.to_string()));
         }
     }
 
@@ -406,6 +404,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
         // Build attributes string
         let mut attrs = Vec::new();
+        let mut relative_path_str = relative_path.to_string_lossy();
 
         // File type
         if file_type.is_file() {
@@ -425,6 +424,8 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             }
         } else if file_type.is_dir() {
             attrs.push("type=dir".to_string());
+
+            relative_path_str += "/";
 
             // Add mode if not default (755)
             let mode = metadata.permissions().mode() & 0o777;
@@ -470,7 +471,6 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         }
 
         // Write entry to filelist
-        let relative_path_str = relative_path.to_string_lossy();
         let attrs_str = attrs.join(" ");
         output.push_str(&format!("{} {}\n", relative_path_str, attrs_str));
     }

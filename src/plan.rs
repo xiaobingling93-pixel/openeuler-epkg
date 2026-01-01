@@ -11,6 +11,14 @@ use crate::models::PACKAGE_CACHE;
 use crate::mmio;
 use crate::aur::is_aur_package;
 
+/// Filesystem information from statvfs
+#[derive(Debug, Clone, Default)]
+pub struct FilesystemInfo {
+    pub fsid: u64,          // Filesystem ID from statvfs.f_fsid
+    pub free_space: u64,    // Free space in bytes
+    pub free_inodes: u64,   // Free inodes (u64::MAX if unlimited)
+}
+
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct InstallationPlan {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -35,6 +43,16 @@ pub struct InstallationPlan {
     pub can_reflink: bool,
     #[serde(skip)]
     pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
+    #[serde(skip)]
+    pub total_download: u64,
+    #[serde(skip)]
+    pub total_install: u64,
+    #[serde(skip)]
+    pub store_root_fs: Option<FilesystemInfo>,
+    #[serde(skip)]
+    pub env_root_fs: Option<FilesystemInfo>,
+    #[serde(skip)]
+    pub download_cache_fs: Option<FilesystemInfo>,
 }
 
 impl<'de> serde::Deserialize<'de> for InstallationPlan {
@@ -154,6 +172,11 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             link: helper.link,
             can_reflink: helper.can_reflink,
             store_pkglines_by_pkgname: std::collections::HashMap::new(),
+            total_download: 0,
+            total_install: 0,
+            store_root_fs: None,
+            env_root_fs: None,
+            download_cache_fs: None,
         })
     }
 }
@@ -574,24 +597,14 @@ fn print_installation_summary(plan: &InstallationPlan) {
 
 /// Calculate and print download and disk space requirements
 fn print_download_requirements(plan: &InstallationPlan) -> Result<()> {
-    // Sum sizes for downloads
-    let mut total_download: u64 = 0;
-    let mut total_install: u64 = 0;
-    for pkgkey in plan.fresh_installs.keys().chain(plan.upgrades_new.keys()) {
-        if let Ok(pkginfo) = crate::package_cache::load_package_info(pkgkey) {
-            total_download += pkginfo.size as u64;
-            total_install += pkginfo.installed_size as u64;
-        }
-    }
-
-    if total_download > 0 {
+    if plan.total_download > 0 {
         println!(
             "Need to get {} archives.",
-            crate::utils::format_size(total_download)
+            crate::utils::format_size(plan.total_download)
         );
         println!(
             "After this operation, {} of additional disk space will be used.",
-            crate::utils::format_size(total_install)
+            crate::utils::format_size(plan.total_install)
         );
     }
 

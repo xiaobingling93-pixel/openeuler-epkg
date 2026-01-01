@@ -984,6 +984,8 @@ pub struct PackageCache {
     /// Maps pkgname -> version constraint string (loaded from env world.json)
     /// Special key "no-install" stores space-separated list of package names to exclude
     pub world: RwLock<HashMap<String, String>>,
+    /// Maps pkgkey -> Vec<MtreeFileInfo> (cached filelists from store)
+    pub package2filelist: RwLock<HashMap<String, Vec<crate::utils::MtreeFileInfo>>>,
 }
 
 /// Global package cache instance

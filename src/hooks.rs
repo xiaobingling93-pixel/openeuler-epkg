@@ -517,9 +517,8 @@ where
     for info in packages {
         let files = get_package_files(store_root, info)?;
         for file in &files {
-            let file_str = file.to_string_lossy();
-            if matches_patterns(&file_str, positive_patterns, negative_patterns) {
-                output.push(file_str.to_string());
+            if matches_patterns(file, positive_patterns, negative_patterns) {
+                output.push(file.clone());
             }
         }
     }
@@ -594,8 +593,7 @@ fn match_path_trigger_no_targets(
     let file_matches = |packages: &InstalledPackagesMap| -> Result<bool> {
         for (_pkgkey, info) in packages.iter() {
             for file in get_package_files(store_root, info)? {
-                let file_str = file.to_string_lossy();
-                if matches_patterns(&file_str, &positive_patterns, &negative_patterns) {
+                if matches_patterns(&file, &positive_patterns, &negative_patterns) {
                     return Ok(true);
                 }
             }
@@ -617,9 +615,8 @@ fn match_path_trigger_no_targets(
     if wants_upgrade || wants_remove || wants_install {
         for (_pkgkey, info) in upgrades_old.iter() {
             for file in get_package_files(store_root, info)? {
-                let file_str = file.to_string_lossy();
-                if matches_patterns(&file_str, &positive_patterns, &negative_patterns) {
-                    upgrades_old_set.insert(file_str.to_string());
+                if matches_patterns(&file, &positive_patterns, &negative_patterns) {
+                    upgrades_old_set.insert(file);
                 }
             }
         }
@@ -629,9 +626,8 @@ fn match_path_trigger_no_targets(
     if wants_upgrade || wants_remove || wants_install {
         for (_pkgkey, info) in upgrades_new.iter() {
             for file in get_package_files(store_root, info)? {
-                let file_str = file.to_string_lossy();
-                if matches_patterns(&file_str, &positive_patterns, &negative_patterns) {
-                    let file_str = file_str.to_string();
+                if matches_patterns(&file, &positive_patterns, &negative_patterns) {
+                    let file_str = file;
                     // Upgrade match: found in both old and new
                     if wants_upgrade && upgrades_old_set.contains(&file_str) {
                         return Ok(true);
