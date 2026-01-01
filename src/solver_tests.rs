@@ -198,41 +198,65 @@ impl TestCase {
     /// Validate InstallationPlan against expected outcome
     #[allow(dead_code)] // Used in test module
     fn validate_plan(&self, plan_result: Result<InstallationPlan>) -> Result<()> {
+        // Helper to extract operations from a plan
+        let extract_operations = |plan: &InstallationPlan| -> (std::collections::HashSet<String>, std::collections::HashSet<String>, std::collections::HashSet<String>) {
+            let mut fresh = std::collections::HashSet::new();
+            let mut upgrades = std::collections::HashSet::new();
+            let mut removes = std::collections::HashSet::new();
+
+            for op in &plan.ordered_operations {
+                match op.op_type {
+                    crate::plan::OperationType::FreshInstall => {
+                        if let Some((pkgkey, _)) = &op.new_pkg {
+                            fresh.insert(pkgkey.clone());
+                        }
+                    }
+                    crate::plan::OperationType::Upgrade => {
+                        if let Some((pkgkey, _)) = &op.new_pkg {
+                            upgrades.insert(pkgkey.clone());
+                        }
+                    }
+                    crate::plan::OperationType::Removal => {
+                        if let Some((pkgkey, _)) = &op.old_pkg {
+                            removes.insert(pkgkey.clone());
+                        }
+                    }
+                }
+            }
+            (fresh, upgrades, removes)
+        };
+
         match plan_result {
             Ok(plan) => {
-                println!("  Fresh installs: {:?}", plan.fresh_installs.keys().cloned().collect::<Vec<_>>());
-                println!("  Upgrades: {:?}", plan.upgrades_new.keys().cloned().collect::<Vec<_>>());
-                println!("  Removals: {:?}", plan.old_removes.keys().cloned().collect::<Vec<_>>());
+                let (actual_fresh, actual_upgrades, actual_removes) = extract_operations(&plan);
+                println!("  Fresh installs: {:?}", actual_fresh.iter().cloned().collect::<Vec<_>>());
+                println!("  Upgrades: {:?}", actual_upgrades.iter().cloned().collect::<Vec<_>>());
+                println!("  Removals: {:?}", actual_removes.iter().cloned().collect::<Vec<_>>());
 
                 // Check if expected plan has any content
                 let expected_plan = &self.metadata.plan;
-                let has_expected_plan = !expected_plan.fresh_installs.is_empty()
-                    || !expected_plan.upgrades_new.is_empty()
-                    || !expected_plan.old_removes.is_empty();
+                let (expected_fresh, expected_upgrades, expected_removes) = extract_operations(expected_plan);
+                let has_expected_plan = !expected_fresh.is_empty()
+                    || !expected_upgrades.is_empty()
+                    || !expected_removes.is_empty();
 
                 if has_expected_plan {
                     // Compare with expected plan
                     let mut errors = Vec::new();
 
                     // Compare fresh_installs
-                    let actual_fresh: std::collections::HashSet<String> = plan.fresh_installs.keys().cloned().collect();
-                    let expected_fresh: std::collections::HashSet<String> = expected_plan.fresh_installs.keys().cloned().collect();
                     if actual_fresh != expected_fresh {
                         errors.push(format!("Fresh installs mismatch: expected {:?}, got {:?}",
                             expected_fresh, actual_fresh));
                     }
 
                     // Compare upgrades_new
-                    let actual_upgrades: std::collections::HashSet<String> = plan.upgrades_new.keys().cloned().collect();
-                    let expected_upgrades: std::collections::HashSet<String> = expected_plan.upgrades_new.keys().cloned().collect();
                     if actual_upgrades != expected_upgrades {
                         errors.push(format!("Upgrades mismatch: expected {:?}, got {:?}",
                             expected_upgrades, actual_upgrades));
                     }
 
                     // Compare old_removes
-                    let actual_removes: std::collections::HashSet<String> = plan.old_removes.keys().cloned().collect();
-                    let expected_removes: std::collections::HashSet<String> = expected_plan.old_removes.keys().cloned().collect();
                     if actual_removes != expected_removes {
                         errors.push(format!("Removals mismatch: expected {:?}, got {:?}",
                             expected_removes, actual_removes));

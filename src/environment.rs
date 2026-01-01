@@ -425,7 +425,7 @@ pub fn create_environment(name: &str) -> Result<()> {
     if !packages_to_install.is_empty() {
         // Clear installed_packages since this is a new environment with no packages installed yet
         PACKAGE_CACHE.installed_packages.write().unwrap().clear();
-        let plan = prepare_installation_plan(&packages_to_install)?;
+        let plan = prepare_installation_plan(&packages_to_install, None)?;
         execute_installation_plan(plan)?;
     } else {
         // Create metadata files

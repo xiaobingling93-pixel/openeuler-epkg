@@ -1013,17 +1013,12 @@ pub fn fill_pkglines_in_plan(
 
     let mut matched_count = 0;
 
-    // Process fresh_installs
-    for (pkgkey, package_info) in plan.fresh_installs.iter_mut() {
-        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey)? {
-            matched_count += 1;
-        }
-    }
-
-    // Process upgrades_new
-    for (pkgkey, package_info) in plan.upgrades_new.iter_mut() {
-        if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey)? {
-            matched_count += 1;
+    // Process new packages (fresh installs and upgrades)
+    for op in &mut plan.ordered_operations {
+        if let Some((pkgkey, ref mut package_info)) = &mut op.new_pkg {
+            if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey)? {
+                matched_count += 1;
+            }
         }
     }
 

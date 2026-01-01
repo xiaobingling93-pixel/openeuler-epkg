@@ -4,62 +4,9 @@ use std::os::unix::fs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr};
 use time::OffsetDateTime;
 use time::macros::format_description;
-use crate::models::{*, InstalledPackagesMap};
-use crate::plan::InstallationPlan;
+use crate::models::*;
 use crate::io::read_installed_packages;
 use crate::install::execute_installation_plan;
-use crate::plan::{find_upgrade_target, auto_populate_expose_plan};
-
-/// Creates an InstallationPlan by diffing two generations' InstalledPackageInfo.
-/// This is used for rollback operations to determine what packages need to be
-/// added/removed to restore a previous generation state.
-fn create_rollback_plan(mut current_packages: InstalledPackagesMap,
-                        mut target_packages: InstalledPackagesMap) -> InstallationPlan {
-    let mut plan = InstallationPlan::default();
-
-    // Find packages that exist in both collections and remove them as duplicates
-    let mut duplicate_packages = std::collections::HashSet::new();
-
-    for (pkgkey, _pkg_info) in &target_packages {
-        if current_packages.contains_key(pkgkey) {
-            duplicate_packages.insert(pkgkey.clone());
-        }
-    }
-
-    // Remove duplicates from both collections
-    for pkgkey in &duplicate_packages {
-        current_packages.remove(pkgkey);
-        target_packages.remove(pkgkey);
-    }
-
-    // Now classify remaining packages using find_upgrade_target()
-    // Use current_packages directly for find_upgrade_target (now accepts HashMap)
-    for (pkgkey, pkg_info) in &target_packages {
-        // Package exists in both filtered collections - check if it's an upgrade
-        let (is_upgrade, old_pkgkey) = find_upgrade_target(
-            pkgkey,
-            pkg_info,
-            &current_packages,
-        );
-        if is_upgrade {
-            // Different versions - this is an upgrade
-            plan.upgrades_old.insert(old_pkgkey.clone(), current_packages[&old_pkgkey].clone());
-            plan.upgrades_new.insert(pkgkey.clone(), pkg_info.clone());
-            current_packages.remove(pkgkey);
-        } else {
-            // This package exists in target but not in current - needs to be installed
-            plan.fresh_installs.insert(pkgkey.clone(), pkg_info.clone());
-        }
-    }
-
-    // Remaining packages are already HashMap
-    plan.old_removes = current_packages.into_iter().collect();
-
-    // Auto-populate expose plan based on rollback actions
-    auto_populate_expose_plan(&mut plan);
-
-    plan
-}
 
 pub fn get_current_generation_id() -> Result<u32> {
     let generations_root = crate::dirs::get_default_generations_root()?;
@@ -144,12 +91,29 @@ pub fn record_history(new_generation_path: &PathBuf, plan: Option<&crate::plan::
     // If an InstallationPlan is provided, populate the command with its members
     if let Some(plan) = plan {
         command.action = format!("{:?}", config().subcommand);
+        // Extract operations from ordered_operations
+        let mut new_exposes = Vec::new();
+        let mut del_exposes = Vec::new();
+
+        for op in &plan.ordered_operations {
+            if op.should_expose() {
+                if let Some((pkgkey, _)) = &op.new_pkg {
+                    new_exposes.push(pkgkey.clone());
+                }
+            }
+            if op.should_unexpose() {
+                if let Some((old_pkgkey, _)) = &op.old_pkg {
+                    del_exposes.push(old_pkgkey.clone());
+                }
+            }
+        }
+
         command.fresh_installs = plan.fresh_installs.keys().cloned().collect();
         command.upgrades_new = plan.upgrades_new.keys().cloned().collect();
         command.upgrades_old = plan.upgrades_old.keys().cloned().collect();
         command.old_removes = plan.old_removes.keys().cloned().collect();
-        command.new_exposes = plan.new_exposes.keys().cloned().collect();
-        command.del_exposes = plan.del_exposes.keys().cloned().collect();
+        command.new_exposes = new_exposes;
+        command.del_exposes = del_exposes;
     }
 
     let json = serde_json::to_string_pretty(&command)?;
@@ -257,11 +221,22 @@ pub fn rollback_history(rollback_id: i32) -> Result<()> {
         return Err(eyre::eyre!("Cannot restore to the current generation"));
     }
 
-    // Load current and rollback installed-packages.json
-    let current_packages = read_installed_packages(&config().common.env, current_generation_id)?;
+    // Load target generation's installed-packages.json
     let target_packages = read_installed_packages(&config().common.env, target_id)?;
 
+    // Compute delta_removes: packages in installed but not in target
+    crate::io::load_installed_packages()?;
+    let installed = &*crate::models::PACKAGE_CACHE.installed_packages.read().unwrap();
+    let mut delta_removes = crate::models::InstalledPackagesMap::new();
+    for (pkgkey, pkg_info) in installed.iter() {
+        if !target_packages.contains_key(pkgkey) {
+            delta_removes.insert(pkgkey.clone(), pkg_info.clone());
+        }
+    }
+
     // Create InstallationPlan by diffing the two generations
-    let plan = create_rollback_plan(current_packages, target_packages);
-    execute_installation_plan(plan).map(|_| ())
+    // PACKAGE_CACHE.installed_packages represents current state, target_packages is desired state
+    let plan = crate::plan::prepare_installation_plan(&target_packages, Some(delta_removes))?;
+    execute_installation_plan(plan)?;
+    Ok(())
 }

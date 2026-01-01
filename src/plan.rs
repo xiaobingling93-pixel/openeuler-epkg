@@ -5,11 +5,85 @@
 
 use std::collections::HashMap;
 use color_eyre::Result;
-use crate::models::{InstalledPackageInfo, InstalledPackagesMap, LinkType};
+use color_eyre::eyre::WrapErr;
+use crate::models::{PACKAGE_CACHE, InstalledPackageInfo, InstalledPackagesMap, LinkType};
 use crate::package;
-use crate::models::PACKAGE_CACHE;
 use crate::mmio;
 use crate::aur::is_aur_package;
+
+/// Package operation flags
+pub mod op_flags {
+    /// Whether new package should be exposed (ebin_exposure)
+    pub const SHOULD_EXPOSE: u8 = 1 << 0;
+    /// Whether old package should be unexposed (was exposed, now being removed)
+    pub const SHOULD_UNEXPOSE: u8 = 1 << 1;
+    /// Whether new_pkg is already in store (has non-empty pkgline)
+    pub const IN_STORE: u8 = 1 << 2;
+    /// Whether new_pkg is an AUR package
+    pub const IS_AUR: u8 = 1 << 3;
+}
+
+/// Package operation type (L2: Package Operations)
+/// Represents a single package operation in a transaction
+#[derive(Debug, Clone)]
+pub struct PackageOperation {
+    /// New package being installed/upgraded (None for pure removals)
+    pub new_pkg: Option<(String, InstalledPackageInfo)>, // (pkgkey, info)
+    /// Old package being removed/upgraded (None for fresh installs)
+    pub old_pkg: Option<(String, InstalledPackageInfo)>, // (pkgkey, info)
+    /// Operation type
+    pub op_type: OperationType,
+    /// Operation flags (see op_flags module)
+    pub flags: u8,
+    /// Dependency depth for ordering (from pkgkey_to_depth)
+    pub depend_depth: u16,
+}
+
+impl PackageOperation {
+    /// Check if a flag is set
+    pub fn has_flag(&self, flag: u8) -> bool {
+        (self.flags & flag) != 0
+    }
+
+    /// Set a flag
+    #[allow(dead_code)]
+    pub fn set_flag(&mut self, flag: u8) {
+        self.flags |= flag;
+    }
+
+    /// Check if should_expose flag is set
+    pub fn should_expose(&self) -> bool {
+        self.has_flag(op_flags::SHOULD_EXPOSE)
+    }
+
+    /// Check if should_unexpose flag is set
+    pub fn should_unexpose(&self) -> bool {
+        self.has_flag(op_flags::SHOULD_UNEXPOSE)
+    }
+
+    /// Check if in_store flag is set
+    #[allow(dead_code)]
+    pub fn in_store(&self) -> bool {
+        self.has_flag(op_flags::IN_STORE)
+    }
+
+    /// Check if is_aur flag is set
+    #[allow(dead_code)]
+    pub fn is_aur(&self) -> bool {
+        self.has_flag(op_flags::IS_AUR)
+    }
+}
+
+/// Package operation type (L2: Package Operations)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationType {
+    /// Fresh installation (new_pkg is Some, old_pkg is None)
+    FreshInstall,
+    /// Upgrade (both new_pkg and old_pkg are Some)
+    Upgrade,
+    /// Pure removal (new_pkg is None, old_pkg is Some)
+    Removal,
+}
 
 /// Filesystem information from statvfs
 #[derive(Debug, Clone, Default)]
@@ -21,38 +95,45 @@ pub struct FilesystemInfo {
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct InstallationPlan {
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub fresh_installs: InstalledPackagesMap,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub upgrades_new: InstalledPackagesMap,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub upgrades_old: InstalledPackagesMap,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub upgrade_map_old_to_new: HashMap<String, String>, // old_pkgkey -> new_pkgkey
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub skipped_reinstalls: InstalledPackagesMap,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub old_removes: InstalledPackagesMap,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub new_exposes: InstalledPackagesMap,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub del_exposes: InstalledPackagesMap,
+    // Uniform ordered structure (L1: Transaction -> Vec<PackageOperation>)
+    #[serde(skip)]
+    pub ordered_operations: Vec<PackageOperation>,
+
     #[serde(default)]
     pub link: LinkType,
     #[serde(default)]
     pub can_reflink: bool,
-    #[serde(skip)]
-    pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
+
     #[serde(skip)]
     pub total_download: u64,
     #[serde(skip)]
     pub total_install: u64,
+
     #[serde(skip)]
-    pub store_root_fs: Option<FilesystemInfo>,
+    pub store_root_fs:      Option<FilesystemInfo>,
     #[serde(skip)]
-    pub env_root_fs: Option<FilesystemInfo>,
+    pub env_root_fs:        Option<FilesystemInfo>,
     #[serde(skip)]
-    pub download_cache_fs: Option<FilesystemInfo>,
+    pub download_cache_fs:  Option<FilesystemInfo>,
+
+    #[serde(skip)]
+    pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
+
+    // Skipped reinstalls (packages that are already installed with same version)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub skipped_reinstalls: InstalledPackagesMap,
+
+    // Cache fields for ordered_operations
+    #[serde(skip)]
+    pub fresh_installs: InstalledPackagesMap,
+    #[serde(skip)]
+    pub old_removes:    InstalledPackagesMap,
+    #[serde(skip)]
+    pub upgrades_new:   InstalledPackagesMap,
+    #[serde(skip)]
+    pub upgrades_old:   InstalledPackagesMap,
+    #[serde(skip)]
+    pub upgrade_map_old_to_new: HashMap<String, String>,
 }
 
 impl<'de> serde::Deserialize<'de> for InstallationPlan {
@@ -63,21 +144,7 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
         #[derive(serde::Deserialize)]
         struct Helper {
             #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            fresh_installs: InstalledPackagesMap,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            upgrades_new: InstalledPackagesMap,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            upgrades_old: InstalledPackagesMap,
-            #[serde(default)]
-            upgrade_map_old_to_new: HashMap<String, String>,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
             skipped_reinstalls: InstalledPackagesMap,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            old_removes: InstalledPackagesMap,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            new_exposes: InstalledPackagesMap,
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            del_exposes: InstalledPackagesMap,
             #[serde(default)]
             link: LinkType,
             #[serde(default)]
@@ -161,14 +228,8 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
 
         let helper = Helper::deserialize(deserializer)?;
         Ok(InstallationPlan {
-            fresh_installs: helper.fresh_installs,
-            upgrades_new: helper.upgrades_new,
-            upgrades_old: helper.upgrades_old,
-            upgrade_map_old_to_new: helper.upgrade_map_old_to_new,
+            ordered_operations: Vec::new(), // Will be built when plan is used
             skipped_reinstalls: helper.skipped_reinstalls,
-            old_removes: helper.old_removes,
-            new_exposes: helper.new_exposes,
-            del_exposes: helper.del_exposes,
             link: helper.link,
             can_reflink: helper.can_reflink,
             store_pkglines_by_pkgname: std::collections::HashMap::new(),
@@ -177,17 +238,104 @@ impl<'de> serde::Deserialize<'de> for InstallationPlan {
             store_root_fs: None,
             env_root_fs: None,
             download_cache_fs: None,
+            fresh_installs: InstalledPackagesMap::new(),
+            upgrades_new: InstalledPackagesMap::new(),
+            upgrades_old: InstalledPackagesMap::new(),
+            upgrade_map_old_to_new: HashMap::new(),
+            old_removes: InstalledPackagesMap::new(),
         })
     }
 }
 
+/// Calculate operation flags for a package operation
+/// Computes flags based on new_pkg and old_pkg directly
+pub fn calculate_op_flags(
+    new_pkg: Option<&(String, InstalledPackageInfo)>,
+    old_pkg: Option<&(String, InstalledPackageInfo)>,
+) -> u8 {
+    let mut flags = 0u8;
 
-pub fn prepare_installation_plan(
+    // SHOULD_EXPOSE: new package should be exposed if it has ebin_exposure
+    if let Some((_pkgkey, new_pkg_info)) = new_pkg {
+        if new_pkg_info.ebin_exposure {
+            flags |= op_flags::SHOULD_EXPOSE;
+        }
+        if !new_pkg_info.pkgline.is_empty() {
+            flags |= op_flags::IN_STORE;
+        }
+        if is_aur_package(&_pkgkey) {
+            flags |= op_flags::IS_AUR;
+        }
+    }
+
+    // SHOULD_UNEXPOSE: old package should be unexposed if it was exposed
+    if let Some((_pkgkey, old_pkg_info)) = old_pkg {
+        if old_pkg_info.ebin_exposure {
+            flags |= op_flags::SHOULD_UNEXPOSE;
+        }
+    }
+
+    flags
+}
+
+/// Create a PackageOperation with calculated flags
+/// Helper function to avoid duplication when creating operations
+pub(crate) fn create_package_operation(
+    new_pkg: Option<(String, InstalledPackageInfo)>,
+    old_pkg: Option<(String, InstalledPackageInfo)>,
+    op_type: OperationType,
+) -> PackageOperation {
+    let flags = calculate_op_flags(
+        new_pkg.as_ref(),
+        old_pkg.as_ref(),
+    );
+    // Calculate depend_depth: use new_pkg.depend_depth if available, otherwise old_pkg.depend_depth
+    let depend_depth = if let Some((_, info)) = new_pkg.as_ref() {
+        info.depend_depth
+    } else if let Some((_, info)) = old_pkg.as_ref() {
+        info.depend_depth
+    } else {
+        0
+    };
+    PackageOperation {
+        new_pkg,
+        old_pkg,
+        op_type,
+        flags,
+        depend_depth,
+    }
+}
+
+/// Sort operations by dependency depth
+/// Upgrades and fresh installs are sorted by depth (lowest first)
+/// Removals are sorted by reverse depth (highest first, so dependents before dependencies)
+pub(crate) fn sort_operations_by_depth(operations: &mut [PackageOperation]) {
+    operations.sort_by(|a, b| {
+        let depth_a = match a.op_type {
+            OperationType::Upgrade => a.depend_depth,
+            OperationType::Removal => u16::MAX - a.depend_depth,
+            OperationType::FreshInstall => a.depend_depth,
+        };
+        let depth_b = match b.op_type {
+            OperationType::Upgrade => b.depend_depth,
+            OperationType::Removal => u16::MAX - b.depend_depth,
+            OperationType::FreshInstall => b.depend_depth,
+        };
+        depth_a.cmp(&depth_b)
+    });
+}
+
+/// Classify packages into fresh installs and upgrades
+fn classify_packages(
     all_packages_for_session: &InstalledPackagesMap,
-) -> Result<InstallationPlan> {
-    let mut plan = InstallationPlan::default();
+    plan: &mut InstallationPlan,
+) -> Result<()> {
+    // Ensure PACKAGE_CACHE.installed_packages is loaded
+    crate::io::load_installed_packages()?;
+    let installed = &*PACKAGE_CACHE.installed_packages.read().unwrap();
+
+    // First pass: classify packages
     for (session_pkgkey, session_pkg_info) in all_packages_for_session {
-        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
         if installed.contains_key(session_pkgkey) {
             plan.skipped_reinstalls.insert(session_pkgkey.clone(), session_pkg_info.clone());
             continue;
@@ -196,37 +344,138 @@ pub fn prepare_installation_plan(
         let (is_upgrade, old_pkgkey) = find_upgrade_target(
             session_pkgkey,
             session_pkg_info,
-            &installed,
+            installed,
         );
         if is_upgrade {
             plan.upgrades_new.insert(session_pkgkey.clone(), session_pkg_info.clone());
             plan.upgrades_old.insert(old_pkgkey.clone(), installed.get(&old_pkgkey).unwrap().clone());
-            // Directly build deterministic old->new mapping for upgrades (used in UI and processing).
-            // For AUR packages, find_upgrade_target() already applies AUR-aware matching logic
-            // (matching by pkgname+version and allowing arch changes from "any" to actual arch).
             plan.upgrade_map_old_to_new.insert(old_pkgkey.clone(), session_pkgkey.clone());
         } else {
             plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
         }
     }
 
-    // Find and add orphaned packages to removals
-    add_orphans_to_removes(&mut plan)?;
+    Ok(())
+}
 
-    // Auto-populate expose plan based on installation/removal actions
-    auto_populate_expose_plan(&mut plan);
+
+/// Build ordered operations from classified packages
+fn build_ordered_operations(plan: &mut InstallationPlan) {
+    let mut operations: Vec<PackageOperation> = Vec::new();
+
+    // Add fresh installs
+    for (pkgkey, pkg_info) in plan.fresh_installs.iter() {
+        operations.push(create_package_operation(
+            Some((pkgkey.clone(), pkg_info.clone())),
+            None,
+            OperationType::FreshInstall,
+        ));
+    }
+
+    // Add upgrades
+    for (old_pkgkey, old_pkg_info) in plan.upgrades_old.iter() {
+        if let Some(new_pkgkey) = plan.upgrade_map_old_to_new.get(old_pkgkey) {
+            if let Some(new_pkg_info) = plan.upgrades_new.get(new_pkgkey) {
+                operations.push(create_package_operation(
+                    Some((new_pkgkey.clone(), new_pkg_info.clone())),
+                    Some((old_pkgkey.clone(), old_pkg_info.clone())),
+                    OperationType::Upgrade,
+                ));
+            }
+        }
+    }
+
+    // Add pure removals
+    for (pkgkey, pkg_info) in plan.old_removes.iter() {
+        // Skip if this is part of an upgrade
+        if plan.upgrades_old.contains_key(pkgkey) {
+            continue;
+        }
+
+        operations.push(create_package_operation(
+            None,
+            Some((pkgkey.clone(), pkg_info.clone())),
+            OperationType::Removal,
+        ));
+    }
+
+    // Sort operations by depend_depth
+    sort_operations_by_depth(&mut operations);
+
+    plan.ordered_operations = operations;
+}
+
+/// Convert an InstallationPlan to a GenerationCommand
+/// Extracts package lists and expose/unexpose operations from the plan
+pub fn plan_to_generation_command(plan: &InstallationPlan) -> crate::models::GenerationCommand {
+    use crate::models::GenerationCommand;
+
+    // Extract expose/unexpose operations from ordered_operations
+    let mut new_exposes = Vec::new();
+    let mut del_exposes = Vec::new();
+
+    for op in &plan.ordered_operations {
+        if op.should_expose() {
+            if let Some((pkgkey, _)) = &op.new_pkg {
+                new_exposes.push(pkgkey.clone());
+            }
+        }
+        if op.should_unexpose() {
+            if let Some((old_pkgkey, _)) = &op.old_pkg {
+                del_exposes.push(old_pkgkey.clone());
+            }
+        }
+    }
+
+    GenerationCommand {
+        timestamp:      String::new(),  // Will be set by caller
+        action:         String::new(),  // Will be set by caller
+        command_line:   String::new(),  // Will be set by caller
+        fresh_installs: plan.fresh_installs.keys().cloned().collect(),
+        upgrades_new:   plan.upgrades_new.keys().cloned().collect(),
+        upgrades_old:   plan.upgrades_old.keys().cloned().collect(),
+        old_removes:    plan.old_removes.keys().cloned().collect(),
+        new_exposes,
+        del_exposes,
+    }
+}
+
+pub fn prepare_installation_plan(
+    all_packages_for_session: &InstalledPackagesMap,
+    explicit_removes: Option<InstalledPackagesMap>,
+) -> Result<InstallationPlan> {
+    let mut plan = InstallationPlan::default();
+
+    // Classify packages into fresh installs and upgrades
+    classify_packages(all_packages_for_session, &mut plan)?;
+
+    // Determine which packages should be removed
+    if let Some(old_removes) = explicit_removes {
+        plan.old_removes = old_removes;
+    } else {
+        plan.old_removes = find_orphaned_packages(&plan.upgrades_old, &plan.skipped_reinstalls)?;
+    }
+
+    // Build ordered operations from classified packages
+    build_ordered_operations(&mut plan);
+
+    // Fill pkglines for packages that already exist in the store
+    crate::store::fill_pkglines_in_plan(&mut plan)
+        .with_context(|| "Failed to find existing packages in store")?;
 
     Ok(plan)
 }
 
-/// Recursively find orphaned packages and add them to plan.old_removes
+/// Find orphaned packages that should be removed
 /// An orphaned package is one that has no remaining reverse dependencies
 /// (i.e., no other installed package depends on it)
 /// Packages with depend_depth=0 (user-requested packages) are never considered orphans
 /// Essential packages are never considered orphans
-fn add_orphans_to_removes(
-    plan: &mut InstallationPlan,
-) -> Result<()> {
+fn find_orphaned_packages(
+    upgrades_old: &InstalledPackagesMap,
+    skipped_reinstalls: &InstalledPackagesMap,
+) -> Result<InstalledPackagesMap> {
+    let mut old_removes = InstalledPackagesMap::new();
     // Helper function to check if a package is essential
     let is_essential = |pkgkey: &str| -> bool {
         if let Ok(pkgname) = package::pkgkey2pkgname(pkgkey) {
@@ -242,16 +491,16 @@ fn add_orphans_to_removes(
     let possible_orphans: Vec<String> = installed
         .iter()
         .filter(|(pkgkey, pkg_info)| {
-            !plan.skipped_reinstalls.contains_key(*pkgkey) &&
-            !plan.upgrades_old.contains_key(*pkgkey) &&
-            pkg_info.depend_depth > 0 &&  // Exclude user-requested packages (depend_depth=0)
-            !is_essential(pkgkey)  // Exclude essential packages
+            !skipped_reinstalls.contains_key(*pkgkey) &&
+            !upgrades_old.contains_key(*pkgkey) &&
+            pkg_info.depend_depth > 0 &&    // Exclude user-requested packages (depend_depth=0)
+            !is_essential(pkgkey)           // Exclude essential packages
         })
         .map(|(pkgkey, _)| pkgkey.clone())
         .collect();
 
     if possible_orphans.is_empty() {
-        return Ok(());
+        return Ok(old_removes);
     }
 
     // Build pkgkey_to_depends for possible orphans
@@ -276,8 +525,8 @@ fn add_orphans_to_removes(
                 .filter(|rdep_pkgkey| {
                     // Filter out rdepends that are being removed or upgraded (old version)
                     // These won't keep the package alive
-                    let is_being_removed = plan.old_removes.contains_key(*rdep_pkgkey);
-                    let is_old_upgrade = plan.upgrades_old.contains_key(*rdep_pkgkey);
+                    let is_being_removed = old_removes.contains_key(*rdep_pkgkey);
+                    let is_old_upgrade = upgrades_old.contains_key(*rdep_pkgkey);
 
                     // Keep rdepends that are staying installed:
                     // - skipped_reinstalls: staying as-is
@@ -327,11 +576,11 @@ fn add_orphans_to_removes(
 
         log::debug!("Found {} orphaned packages", orphan_pkgkeys.len());
 
-        // Add orphans to plan.old_removes
+        // Add orphans to old_removes
         let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
         for orphan_pkgkey in &orphan_pkgkeys {
             if let Some(pkg_info) = installed.get(orphan_pkgkey) {
-                plan.old_removes.insert(orphan_pkgkey.clone(), pkg_info.clone());
+                old_removes.insert(orphan_pkgkey.clone(), pkg_info.clone());
                 log::debug!("Added orphaned package '{}' to old_removes", orphan_pkgkey);
             }
         }
@@ -355,93 +604,7 @@ fn add_orphans_to_removes(
         }
     }
 
-    Ok(())
-}
-
-/// Auto-add items to plan.del_exposes/new_exposes based on ebin_exposure status
-/// This function automatically populates the expose fields based on the installation/removal plan
-pub fn auto_populate_expose_plan(plan: &mut InstallationPlan) {
-    // Track exposure changes for packages being removed
-    for (pkgkey, pkg_info) in plan.old_removes.iter() {
-        if pkg_info.ebin_exposure {
-            // Package being removed was exposed - will be unexposed
-            plan.del_exposes.insert(pkgkey.clone(), pkg_info.clone());
-        }
-    }
-
-    // Track exposure changes for packages being upgraded (old versions)
-    // Also ensure new versions inherit exposure from old versions
-    for (old_pkgkey, old_pkg_info) in plan.upgrades_old.iter() {
-        if old_pkg_info.ebin_exposure {
-            // Old version being upgraded was exposed - will be unexposed
-            plan.del_exposes.insert(old_pkgkey.clone(), old_pkg_info.clone());
-
-            // Find the corresponding new version and ensure it's also exposed
-            if let Some(new_pkgkey) = plan.upgrade_map_old_to_new.get(old_pkgkey) {
-                if let Some(new_pkg_info) = plan.upgrades_new.get(new_pkgkey) {
-                    // Found matching new version - ensure it's exposed
-                    plan.new_exposes.insert(new_pkgkey.clone(), new_pkg_info.clone());
-                }
-            }
-        }
-    }
-
-    // Track exposure changes for new packages being installed
-    for (pkgkey, pkg_info) in plan.fresh_installs.iter() {
-        if pkg_info.ebin_exposure {
-            // New package being installed should be exposed
-            plan.new_exposes.insert(pkgkey.clone(), pkg_info.clone());
-        }
-    }
-
-    // Track exposure changes for packages being upgraded (new versions)
-    // Note: This handles cases where new version has ebin_exposure set but old version didn't
-    for (pkgkey, pkg_info) in plan.upgrades_new.iter() {
-        if pkg_info.ebin_exposure {
-            // New version being upgraded should be exposed
-            plan.new_exposes.insert(pkgkey.clone(), pkg_info.clone());
-        }
-    }
-
-    // Track additional exposure changes for skipped_reinstalls
-    process_skipped_reinstalls_exposure(plan);
-}
-
-/// Track exposure changes for packages in skipped_reinstalls
-/// This function handles cases where packages exist in both old and new states but have exposure changes.
-/// IMPORTANT: For skipped reinstalls (same version), we preserve the existing exposure status.
-/// We only change exposure if the user explicitly requested it (which would be handled elsewhere).
-fn process_skipped_reinstalls_exposure(
-    plan: &mut InstallationPlan,
-) {
-    // Collect keys first to avoid borrow checker issues
-    let pkgkeys: Vec<String> = plan.skipped_reinstalls.keys().cloned().collect();
-    for pkgkey in pkgkeys {
-        // Extract values we need before any mutable borrows
-        let (new_ebin_exposure, new_info_clone) = {
-            let new_info = plan.skipped_reinstalls.get(&pkgkey).unwrap();
-            (new_info.ebin_exposure, new_info.clone())
-        };
-
-        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-        if let Some(old_info) = installed.get(&pkgkey) {
-            // Package exists in both - check for exposure changes
-            // For skipped reinstalls (same version), preserve existing exposure status
-            // The new_ebin_exposure might be false due to resolution logic (e.g., user_request_world=None),
-            // but we should preserve the installed package's exposure status
-            if new_ebin_exposure != old_info.ebin_exposure {
-                // Only change exposure if the new exposure is explicitly true (user requested)
-                // If old was exposed and new is false, preserve the exposure (don't unexpose)
-                // If old was not exposed and new is true, expose it (user requested)
-                if new_ebin_exposure && !old_info.ebin_exposure {
-                    // Package will be newly exposed (user requested)
-                    plan.new_exposes.insert(pkgkey.clone(), new_info_clone);
-                }
-                // If old was exposed but new session says false, preserve exposure (don't unexpose)
-                // This happens when user_request_world is None during full upgrade
-            }
-        }
-    }
+    Ok(old_removes)
 }
 
 /// Determine if a package is an upgrade by comparing package names and architectures
@@ -511,45 +674,80 @@ pub fn prompt_and_confirm_install_plan(
 /// Display the installation plan details to the user
 fn display_installation_plan(plan: &InstallationPlan) -> bool {
     let mut actions_planned = false;
+    let mut fresh_installs = Vec::new();
+    let mut upgrades = Vec::new();
+    let mut removals = Vec::new();
+    let mut exposes = Vec::new();
+    let mut unexposes = Vec::new();
 
-    if !plan.fresh_installs.is_empty() {
+    for op in &plan.ordered_operations {
+        match op.op_type {
+            OperationType::FreshInstall => {
+                if let Some((pkgkey, pkg_info)) = &op.new_pkg {
+                    fresh_installs.push((pkgkey.clone(), pkg_info.clone()));
+                }
+            }
+            OperationType::Upgrade => {
+                if let (Some((new_pkgkey, _)), Some((old_pkgkey, _))) = (&op.new_pkg, &op.old_pkg) {
+                    upgrades.push((old_pkgkey.clone(), new_pkgkey.clone()));
+                }
+            }
+            OperationType::Removal => {
+                if let Some((pkgkey, _)) = &op.old_pkg {
+                    removals.push(pkgkey.clone());
+                }
+            }
+        }
+        if op.should_expose() {
+            if let Some((pkgkey, _)) = &op.new_pkg {
+                exposes.push(pkgkey.clone());
+            }
+        }
+        if op.should_unexpose() {
+            if let Some((pkgkey, _)) = &op.old_pkg {
+                unexposes.push(pkgkey.clone());
+            }
+        }
+    }
+
+    if !fresh_installs.is_empty() {
         actions_planned = true;
         println!("Packages to be freshly installed:");
-        print_packages_by_depend_depth(&plan.fresh_installs);
+        let mut fresh_map = HashMap::new();
+        for (k, v) in fresh_installs {
+            fresh_map.insert(k, v);
+        }
+        print_packages_by_depend_depth(&fresh_map);
     }
 
-    if !plan.upgrades_new.is_empty() {
+    if !upgrades.is_empty() {
         actions_planned = true;
         println!("Packages to be upgraded:");
-        for (old_pkgkey, _pkg_info) in plan.upgrades_old.iter() {
-            let new_pkgkey_display = plan.upgrade_map_old_to_new
-                .get(old_pkgkey)
-                .map(|s| s.as_str())
-                .unwrap_or("unknown new version");
-            println!("- {} (replacing {})", new_pkgkey_display, old_pkgkey);
+        for (old_pkgkey, new_pkgkey) in upgrades {
+            println!("- {} (replacing {})", new_pkgkey, old_pkgkey);
         }
     }
 
-    if !plan.old_removes.is_empty() {
+    if !removals.is_empty() {
         actions_planned = true;
         println!("Packages to be removed:");
-        for (pkgkey, _pkg_info) in plan.old_removes.iter() {
+        for pkgkey in removals {
             println!("- {}", pkgkey);
         }
     }
 
-    if !plan.new_exposes.is_empty() {
+    if !exposes.is_empty() {
         actions_planned = true;
         println!("Packages to be exposed:");
-        for (pkgkey, _pkg_info) in plan.new_exposes.iter() {
+        for pkgkey in exposes {
             println!("- {}", pkgkey);
         }
     }
 
-    if !plan.del_exposes.is_empty() {
+    if !unexposes.is_empty() {
         actions_planned = true;
         println!("Packages to be unexposed:");
-        for (pkgkey, _pkg_info) in plan.del_exposes.iter() {
+        for pkgkey in unexposes {
             println!("- {}", pkgkey);
         }
     }
@@ -583,11 +781,25 @@ fn print_packages_by_depend_depth(packages: &InstalledPackagesMap) {
 
 /// Print summary statistics for the installation plan
 fn print_installation_summary(plan: &InstallationPlan) {
-    let num_upgraded = plan.upgrades_new.len();
-    let num_new = plan.fresh_installs.len();
-    let num_remove = plan.old_removes.len();
-    let num_expose = plan.new_exposes.len();
-    let num_unexpose = plan.del_exposes.len();
+    let mut num_upgraded = 0;
+    let mut num_new = 0;
+    let mut num_remove = 0;
+    let mut num_expose = 0;
+    let mut num_unexpose = 0;
+
+    for op in &plan.ordered_operations {
+        match op.op_type {
+            OperationType::FreshInstall => num_new += 1,
+            OperationType::Upgrade => num_upgraded += 1,
+            OperationType::Removal => num_remove += 1,
+        }
+        if op.should_expose() {
+            num_expose += 1;
+        }
+        if op.should_unexpose() {
+            num_unexpose += 1;
+        }
+    }
 
     println!(
         "\n{} upgraded, {} newly installed, {} to remove, {} to expose, {} to unexpose.",

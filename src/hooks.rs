@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
-use crate::models::{InstalledPackageInfo, InstalledPackagesMap};
+use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::models::PACKAGE_CACHE;
 use crate::utils::get_package_files;
@@ -372,7 +372,13 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
 
 /// Load all hooks from the system hook directory
 /// Reference: _alpm_hook_run - scans directories in reverse order, hooks with same name override
-pub fn load_hooks(env_root: &Path) -> Result<Vec<Hook>> {
+/// Returns None if package_format is not Pacman or if loading fails
+pub fn load_hooks(env_root: &Path, package_format: PackageFormat) -> Option<Vec<Hook>> {
+    // Only load hooks for Arch Linux (Pacman format)
+    if package_format != PackageFormat::Pacman {
+        return None;
+    }
+
     let mut hooks: HashMap<String, Hook> = HashMap::new(); // Map by file name for overriding
 
     // Standard hook directories (reference scans in reverse order)
@@ -387,9 +393,19 @@ pub fn load_hooks(env_root: &Path) -> Result<Vec<Hook>> {
             continue;
         }
 
-        let mut entries: Vec<_> = fs::read_dir(hook_dir)
-            .with_context(|| format!("Failed to read hook directory: {}", hook_dir.display()))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut entries: Vec<_> = match fs::read_dir(hook_dir) {
+            Ok(dir) => match dir.collect::<std::result::Result<Vec<_>, _>>() {
+                Ok(entries) => entries,
+                Err(e) => {
+                    log::warn!("Failed to read hook directory entries: {}", e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                log::warn!("Failed to read hook directory {}: {}", hook_dir.display(), e);
+                continue;
+            }
+        };
 
         // Sort entries by name for consistent processing
         entries.sort_by_key(|e| e.file_name());
@@ -478,7 +494,7 @@ pub fn load_hooks(env_root: &Path) -> Result<Vec<Hook>> {
         }
     });
 
-    Ok(hooks_vec)
+    Some(hooks_vec)
 }
 
 /// Check if any compiled pattern matches a string
@@ -1005,7 +1021,7 @@ fn parent_prefix_before_wildcard(target: &str) -> Option<String> {
 /// Run hooks for a transaction
 /// Reference: _alpm_hook_run
 pub fn run_hooks(
-    hooks: &[Hook],
+    hooks: Option<&[Hook]>,
     env_root: &Path,
     store_root: &Path,
     when: HookWhen,
@@ -1014,6 +1030,15 @@ pub fn run_hooks(
     upgrades_old: &InstalledPackagesMap,
     old_removes: &InstalledPackagesMap,
 ) -> Result<()> {
+    // Early return if no hooks or no packages to process
+    let hooks = match hooks {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+    if fresh_installs.is_empty() && upgrades_new.is_empty() && old_removes.is_empty() {
+        return Ok(());
+    }
+
     let should_reduce_path_triggers = fresh_installs.len() + upgrades_new.len() >= 20;
     let recent_cutoff = if should_reduce_path_triggers {
         SystemTime::now()

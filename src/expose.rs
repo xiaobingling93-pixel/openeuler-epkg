@@ -40,59 +40,69 @@ fn expose_package(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<Stri
     Ok(relative_ebin_links)
 }
 
-/// Handle unexpose operations (del_exposes)
+/// Handle unexpose operations
 pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> Result<()> {
-    for (pkgkey, pkg_info) in plan.del_exposes.iter() {
-        // Remove ebin wrappers for packages being unexposed
-        if !pkg_info.ebin_links.is_empty() {
-            log::info!("Unexposing package: {}", pkgkey);
-            for relative_ebin_path_str in &pkg_info.ebin_links {
-                let ebin_path = env_root.join(relative_ebin_path_str);
-                if fs::symlink_metadata(&ebin_path).is_ok() {
-                    log::debug!("Removing ebin wrapper: {}", ebin_path.display());
-                    fs::remove_file(&ebin_path)
-                        .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
-                } else {
-                    log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
+    for op in &plan.ordered_operations {
+        if !op.should_unexpose() {
+            continue;
+        }
+        if let Some((pkgkey, pkg_info)) = &op.old_pkg {
+            // Remove ebin wrappers for packages being unexposed
+            if !pkg_info.ebin_links.is_empty() {
+                log::info!("Unexposing package: {}", pkgkey);
+                for relative_ebin_path_str in &pkg_info.ebin_links {
+                    let ebin_path = env_root.join(relative_ebin_path_str);
+                    if fs::symlink_metadata(&ebin_path).is_ok() {
+                        log::debug!("Removing ebin wrapper: {}", ebin_path.display());
+                        fs::remove_file(&ebin_path)
+                            .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
+                    } else {
+                        log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
+                    }
                 }
             }
-        }
 
-        // Update the package info to clear ebin_links
-        if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-            installed_package_info_mut.ebin_links.clear();
-            installed_package_info_mut.ebin_exposure = false;
+            // Update the package info to clear ebin_links
+            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+                installed_package_info_mut.ebin_links.clear();
+                installed_package_info_mut.ebin_exposure = false;
+            }
         }
     }
 
     Ok(())
 }
 
-/// Handle expose operations (new_exposes)
+/// Handle expose operations
 pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path) -> Result<()> {
-    for (pkgkey, _pkg_info) in plan.new_exposes.iter() {
-        log::info!("Exposing package: {}", pkgkey);
-
-        // Use the updated package info from installed_packages which has the correct pkgline
-        let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
-            .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
-            .clone();
-
-        // Check if pkgline is empty, which would indicate the package wasn't properly processed
-        if installed_pkg_info.pkgline.is_empty() {
-            return Err(eyre::eyre!("Package {} has empty pkgline, cannot expose. This indicates the package wasn't properly downloaded and processed.", pkgkey));
+    for op in &plan.ordered_operations {
+        if !op.should_expose() {
+            continue;
         }
+        if let Some((pkgkey, _pkg_info)) = &op.new_pkg {
+            log::info!("Exposing package: {}", pkgkey);
 
-        let store_fs_dir = store_root.join(installed_pkg_info.pkgline.clone()).join("fs");
-        let links = expose_package(&store_fs_dir, &env_root.to_path_buf())
-            .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+            // Use the updated package info from installed_packages which has the correct pkgline
+            let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
+                .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
+                .clone();
 
-        // Update the package info with the new links
-        if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-            installed_package_info_mut.ebin_links = links.clone();
-            installed_package_info_mut.ebin_exposure = true;
-        } else {
-            log::warn!("execute_expose_operations: pkgkey '{}' from new_exposes not found in installed_packages. Ebin links not stored.", pkgkey);
+            // Check if pkgline is empty, which would indicate the package wasn't properly processed
+            if installed_pkg_info.pkgline.is_empty() {
+                return Err(eyre::eyre!("Package {} has empty pkgline, cannot expose. This indicates the package wasn't properly downloaded and processed.", pkgkey));
+            }
+
+            let store_fs_dir = store_root.join(installed_pkg_info.pkgline.clone()).join("fs");
+            let links = expose_package(&store_fs_dir, &env_root.to_path_buf())
+                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+
+            // Update the package info with the new links
+            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+                installed_package_info_mut.ebin_links = links.clone();
+                installed_package_info_mut.ebin_exposure = true;
+            } else {
+                log::warn!("execute_expose_operations: pkgkey '{}' not found in installed_packages. Ebin links not stored.", pkgkey);
+            }
         }
     }
 

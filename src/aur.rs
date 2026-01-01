@@ -13,7 +13,7 @@ use crate::models::*;
 use crate::packages_stream;
 use crate::repo::{RepoReleaseItem, RepoRevise};
 use crate::download::get_package_file_path;
-use crate::steps::process_installation_results;
+use crate::transaction::run_transaction_batch;
 
 /// AUR domain
 pub const AUR_DOMAIN: &str = "aur.archlinux.org";
@@ -604,8 +604,7 @@ fn find_and_verify_built_packages(
 /// - **pkgline**: Format includes arch, so pkglines differ based on arch
 /// - **Upgrade detection**: Need to match old installed packages (with determined arch) to
 ///   new packages (initially with `arch="any"`)
-/// - **Plan keys**: `plan.upgrades_new`, `plan.fresh_installs`, `plan.new_exposes`, and
-///   `plan.upgrade_map_old_to_new` all use pkgkeys that need to be updated after arch is determined
+/// - **Plan keys**: `plan.ordered_operations` contains pkgkeys that need to be updated after arch is determined
 ///
 /// ## Solution
 ///
@@ -624,8 +623,7 @@ fn find_and_verify_built_packages(
 /// 3. **Plan Key Fixup** (`fixup_aur_plan_keys()` in `aur.rs`):
 ///    - After all AUR packages are built and actual arch is determined, this function:
 ///      - Maps original pkgkeys (with `arch="any"`) to actual pkgkeys (with determined arch)
-///      - Updates `plan.upgrades_new`, `plan.fresh_installs`, `plan.new_exposes`
-///      - Updates `plan.upgrade_map_old_to_new` (maps new_pkgkey only, old_pkgkey already has correct arch)
+///      - Updates pkgkeys in `plan.ordered_operations` (maps new_pkgkey only, old_pkgkey already has correct arch)
 ///    - This ensures all subsequent operations use the correct pkgkeys
 ///
 /// 4. **AUR Plan Key Fixup** (in this module):
@@ -642,9 +640,9 @@ fn find_and_verify_built_packages(
 /// - **fill_pkglines_in_plan()**: May not find matches for AUR with `arch="any"` (OK, they need building) ✓
 /// - **prepare_packages_for_installation()**: Uses plan keys (still `arch="any"` for AUR) ✓
 /// - **download_and_install_packages()**: Separates AUR packages, processes binary packages ✓
-/// - **process_installation_results()**: For binary packages, uses plan keys directly ✓
+/// - **run_transaction_batch()**: For binary packages, uses plan keys directly ✓
 /// - **build_and_install_aur_packages()**: Builds AUR, determines actual arch, fixes up plan ✓
-/// - **process_installation_results()**: For AUR packages, uses fixed plan keys (actual arch) ✓
+/// - **run_transaction_batch()**: For AUR packages, uses fixed plan keys (actual arch) ✓
 /// - **execute_expose_operations()**: Uses fixed plan keys that match `installed_packages` ✓
 ///
 /// This function and its helpers handle the "build AUR + plan key fixup + AUR result processing"
@@ -1097,7 +1095,7 @@ fn postinstall_built_aur_round(
 
     // Process installation results for this round so that subsequent rounds
     // can depend on these newly installed AUR packages.
-    process_installation_results(
+    run_transaction_batch(
         plan,
         &this_round_aur_packages,
         store_root,
@@ -1115,43 +1113,22 @@ fn fixup_aur_plan_keys(
     plan: &mut InstallationPlan,
     pkgkey_mapping: &HashMap<String, String>, // original_pkgkey -> actual_pkgkey
 ) -> Result<()> {
-    // Helper to remap keys of a HashMap<String, T> in place using pkgkey_mapping.
-    fn remap_plan_map<T>(
-        map: &mut HashMap<String, T>,
-        pkgkey_mapping: &HashMap<String, String>,
-    ) {
-        let mut new_map = HashMap::new();
-        for (original_pkgkey, info) in map.drain() {
-            if let Some(actual_pkgkey) = pkgkey_mapping.get(&original_pkgkey) {
-                new_map.insert(actual_pkgkey.clone(), info);
-            } else {
-                // Keep original if no mapping found (shouldn't happen for AUR, but be safe)
-                new_map.insert(original_pkgkey, info);
+    // Fixup ordered_operations - remap pkgkeys in operations
+    for op in &mut plan.ordered_operations {
+        // Remap new_pkg key if present
+        if let Some((ref mut pkgkey, ref mut pkg_info)) = op.new_pkg {
+            if let Some(mapped_key) = pkgkey_mapping.get(pkgkey) {
+                // Update the pkgkey in the operation
+                let old_key = pkgkey.clone();
+                *pkgkey = mapped_key.clone();
+
+                // Also update pkgline in the package info if needed
+                if pkg_info.pkgline.contains(&old_key) {
+                    pkg_info.pkgline = pkg_info.pkgline.replace(&old_key, mapped_key);
+                }
             }
         }
-        *map = new_map;
     }
-
-    // Fixup upgrades_new, fresh_installs, and new_exposes using the common helper.
-    remap_plan_map(&mut plan.upgrades_new, pkgkey_mapping);
-    remap_plan_map(&mut plan.fresh_installs, pkgkey_mapping);
-    remap_plan_map(&mut plan.new_exposes, pkgkey_mapping);
-
-    // Fixup upgrade_map_old_to_new
-    // old_pkgkey is from installed_packages (already has correct arch), so it doesn't need mapping
-    // new_pkgkey might have arch="any" and needs to be mapped to actual arch
-    let mut new_upgrade_map = HashMap::new();
-    for (old_pkgkey, new_pkgkey) in plan.upgrade_map_old_to_new.drain() {
-        // Map new_pkgkey if it changed (arch from "any" to actual)
-        let fixed_new_pkgkey = if let Some(mapped_new) = pkgkey_mapping.get(&new_pkgkey) {
-            mapped_new.clone()
-        } else {
-            new_pkgkey
-        };
-
-        new_upgrade_map.insert(old_pkgkey, fixed_new_pkgkey);
-    }
-    plan.upgrade_map_old_to_new = new_upgrade_map;
 
     Ok(())
 }

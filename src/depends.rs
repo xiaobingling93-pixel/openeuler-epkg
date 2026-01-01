@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
 use crate::models::*;
 use crate::models::PACKAGE_CACHE;
 use crate::resolvo::GenericDependencyProvider;
@@ -399,11 +398,7 @@ pub fn resolve_and_install_packages(
         return Ok(InstallationPlan::default());
     }
 
-    let mut plan = prepare_installation_plan(&all_packages_for_session)?;
-
-    // Fill pkglines for packages that already exist in the store
-    crate::store::fill_pkglines_in_plan(&mut plan)
-        .with_context(|| "Failed to find existing packages in store")?;
+    let plan = prepare_installation_plan(&all_packages_for_session, None)?;
 
     // If we reach here, actions_planned was true, user confirmed, and not dry_run.
     // Proceed with actual installation steps by calling the unified execution method.

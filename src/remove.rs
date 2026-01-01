@@ -5,7 +5,6 @@ use color_eyre::eyre::{self, Result};
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::install::execute_installation_plan;
-use crate::plan::auto_populate_expose_plan;
 use crate::io::{load_installed_packages, load_world};
 
 pub fn unlink_package(pkg_store_path: &PathBuf, env_root: &PathBuf) -> Result<()> {
@@ -97,7 +96,7 @@ pub fn remove_packages(package_specs: Vec<String>) -> Result<InstallationPlan> {
 
     let plan = prepare_removal_plan(package_specs)?;
 
-    if plan.old_removes.is_empty() {
+    if plan.ordered_operations.is_empty() {
         return Ok(InstallationPlan::default());
     }
 
@@ -108,21 +107,22 @@ pub fn remove_packages(package_specs: Vec<String>) -> Result<InstallationPlan> {
 /// This function handles the dependency resolution and orphan detection logic
 /// that was previously embedded in remove_packages().
 pub fn prepare_removal_plan(package_specs: Vec<String>) -> Result<InstallationPlan> {
-    let mut plan = InstallationPlan::default();
+    let mut old_removes = HashMap::new();
 
     // Step 1: Resolve package specs to package keys
     let (explicitly_requested_keys, _not_found_specs) = resolve_removal_specs(&package_specs);
 
-    // Step 2: Check for blocking dependencies
-    let _prevented_removals = add_top_removable(&mut plan, &explicitly_requested_keys);
+    // Step 2: Check for blocking dependencies and build old_removes map
+    let _prevented_removals = add_top_removable(&mut old_removes, &explicitly_requested_keys);
 
     // Step 3: Process orphaned dependencies
-    add_orphaned_dependencies(&mut plan);
+    add_orphaned_dependencies(&mut old_removes);
 
-    // Step 4: Auto-populate expose plan based on removal actions
-    auto_populate_expose_plan(&mut plan);
+    // Step 4: Nothing to install/upgrade
+    let new_pkgs = crate::models::InstalledPackagesMap::new();
 
-    Ok(plan)
+    // Step 5: Use prepare_installation_plan() with old_removes
+    crate::plan::prepare_installation_plan(&new_pkgs, Some(old_removes))
 }
 
 /// Remove packages from world.json based on package specs
@@ -207,7 +207,7 @@ fn resolve_removal_specs(package_specs: &[String]) -> (std::collections::HashSet
 /// # Returns
 /// Map of blocked package keys to their blocking reverse dependencies
 fn add_top_removable(
-    plan: &mut InstallationPlan,
+    old_removes: &mut crate::models::InstalledPackagesMap,
     explicitly_requested_keys: &std::collections::HashSet<String>
 ) -> HashMap<String, Vec<String>> {
     let mut prevented_removals: HashMap<String, Vec<String>> = HashMap::new();
@@ -227,7 +227,7 @@ fn add_top_removable(
             }
 
             if can_remove_requested_key {
-                plan.old_removes.insert(requested_key.clone(), requested_pkg_info.clone());
+                old_removes.insert(requested_key.clone(), requested_pkg_info.clone());
             } else {
                 prevented_removals.insert(requested_key.clone(), blocking_rdepends);
             }
@@ -243,15 +243,15 @@ fn add_top_removable(
         for (pkg_to_remove, blockers) in &prevented_removals {
             println!("- '{}' is required by: {}", pkg_to_remove, blockers.join(", "));
         }
-        // If ALL explicitly requested packages were blocked, then plan.old_removes will be empty.
-        if plan.old_removes.is_empty() {
+        // If ALL explicitly requested packages were blocked, then old_removes will be empty.
+        if old_removes.is_empty() {
              println!("No packages will be removed as all specified packages have active dependencies or were not found.");
         }
-        // If some were blocked but others were not, plan.old_removes is not empty,
+        // If some were blocked but others were not, old_removes is not empty,
         // and we proceed with the ones that can be removed. The warning above is sufficient.
     }
 
-    if plan.old_removes.is_empty() && !explicitly_requested_keys.is_empty() {
+    if old_removes.is_empty() && !explicitly_requested_keys.is_empty() {
         println!("No packages will be removed.");
     }
 
@@ -283,9 +283,9 @@ fn add_top_removable(
 /// # Arguments
 /// * `plan` - Mutable reference to the InstallationPlan that contains packages
 ///            already marked for removal and will be updated with orphaned dependencies
-fn add_orphaned_dependencies(plan: &mut InstallationPlan) {
+fn add_orphaned_dependencies(old_removes: &mut crate::models::InstalledPackagesMap) {
     // Build initial processing queue from packages already marked for removal
-    let mut processing_queue: Vec<String> = plan.old_removes.keys().cloned().collect();
+    let mut processing_queue: Vec<String> = old_removes.keys().cloned().collect();
     let mut visited_for_orphan_check = std::collections::HashSet::new();
 
     while let Some(pkgkey_being_removed) = processing_queue.pop() {
@@ -300,7 +300,7 @@ fn add_orphaned_dependencies(plan: &mut InstallationPlan) {
         };
 
         for dep_pkgkey in &current_pkg_info.depends {
-            if plan.old_removes.contains_key(dep_pkgkey) {
+            if old_removes.contains_key(dep_pkgkey) {
                 continue; // Already marked for removal
             }
 
@@ -339,7 +339,7 @@ fn add_orphaned_dependencies(plan: &mut InstallationPlan) {
                 log::debug!("Dependency '{}' has no recorded rdepends. It will be removed if not kept by other means.", dep_pkgkey);
             } else {
                 for rdep_pkgkey in &dep_info.rdepends {
-                    let rdep_is_in_final_set = plan.old_removes.contains_key(rdep_pkgkey);
+                    let rdep_is_in_final_set = old_removes.contains_key(rdep_pkgkey);
                     log::debug!("[Orphan Check]   Checking rdepend '{}' (of dep '{}'): is_in_final_removal_set? {}", rdep_pkgkey, dep_pkgkey, rdep_is_in_final_set);
                     if !rdep_is_in_final_set {
                         all_rdepends_being_removed = false;
@@ -352,7 +352,7 @@ fn add_orphaned_dependencies(plan: &mut InstallationPlan) {
             log::debug!("[Orphan Check] Final all_rdepends_being_removed for dep '{}': {}", dep_pkgkey, all_rdepends_being_removed);
             if all_rdepends_being_removed {
                 log::info!("Marking orphaned dependency for removal: {}", dep_pkgkey);
-                plan.old_removes.insert(dep_pkgkey.clone(), dep_info.clone());
+                old_removes.insert(dep_pkgkey.clone(), dep_info.clone());
                 // Add to queue only if not already processed to check its dependencies for orphaning
                 if !visited_for_orphan_check.contains(dep_pkgkey) {
                      processing_queue.push(dep_pkgkey.clone());
