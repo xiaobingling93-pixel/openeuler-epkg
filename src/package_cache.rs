@@ -20,6 +20,16 @@ impl PackageCache {
             world: RwLock::new(HashMap::new()),
         }
     }
+
+    /// Clear all caches (useful for tests to ensure clean state)
+    pub fn clear(&self) {
+        self.pkgkey2package.write().unwrap().clear();
+        self.pkgline2package.write().unwrap().clear();
+        self.pkgname2packages.write().unwrap().clear();
+        self.provide2pkgnames.write().unwrap().clear();
+        self.installed_packages.write().unwrap().clear();
+        self.world.write().unwrap().clear();
+    }
 }
 
 /// Helper to add a package to cache and update indexes

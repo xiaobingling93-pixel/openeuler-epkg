@@ -2,12 +2,11 @@ use std::collections::HashMap;
 use std::fs;
 use color_eyre::Result;
 use serde_json::{Value, json};
-use crate::models::{PackageManager, Package};
+use crate::models::Package;
 use crate::models::dirs;
 use crate::models::PACKAGE_CACHE;
 
 pub fn show_package_info(
-    _package_manager: &mut PackageManager,
     all_args: &[String],
     show_files: bool,
     show_scripts: bool,

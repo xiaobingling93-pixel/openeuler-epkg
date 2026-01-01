@@ -11,7 +11,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
 use walkdir::WalkDir;
 use uuid::Uuid;
-use crate::models::{dirs, Package, PackageFormat, PackageManager, InstalledPackageInfo};
+use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo};
 use crate::package;
 use log;
 
@@ -1002,7 +1002,6 @@ fn try_match_and_fill_pkgline(
 /// Returns the number of packages that were matched and filled
 pub fn fill_pkglines_in_plan(
     plan: &mut crate::plan::InstallationPlan,
-    _package_manager: &mut PackageManager,
 ) -> Result<usize> {
     // Collect store pkglines organized by both pkgkey (for matching) and pkgname (for reuse in unpack_mv_package)
     let (store_pkglines_by_pkgkey, store_pkglines_by_pkgname) = collect_store_pkglines()?;

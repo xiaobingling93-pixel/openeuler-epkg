@@ -2,7 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::fs;
 use std::path::Path;
-use crate::models::{PackageManager, InstalledPackageInfo, Package};
+use crate::models::{InstalledPackageInfo, Package};
 use crate::mmio;
 use crate::list;
 use crate::models::dirs;
@@ -219,8 +219,7 @@ fn format_output(format_str: &str, package: &crate::models::Package, installed_i
 }
 
 fn list_packages(pattern: Option<&str>) -> Result<()> {
-    let mut pm = PackageManager::default();
-    pm.load_installed_packages()?;
+    crate::io::load_installed_packages()?;
 
     // Print header
     println!("Desired=Unknown/Install/Remove/Purge/Hold");
@@ -303,7 +302,6 @@ fn load_package_info(pkgkey: &str, installed_info: &InstalledPackageInfo) -> Res
 /// Helper function to find installed package by name (with optional arch suffix)
 /// Returns (Package, InstalledPackageInfo) if found
 fn find_installed_package_by_name(
-    _pm: &PackageManager,
     pkgname: &str,
     arch_suffix: Option<&str>,
 ) -> Option<(Package, InstalledPackageInfo)> {
@@ -343,15 +341,14 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 fn show_packages(packages: &[String], format: Option<&str>) -> Result<()> {
-    let mut pm = PackageManager::default();
-    pm.load_installed_packages()?;
+    crate::io::load_installed_packages()?;
 
     let default_format = format.unwrap_or("${binary:Package}\t${Version}\n");
 
     for pkg_spec in packages {
         let (pkgname, arch_suffix) = parse_package_spec(pkg_spec);
 
-        if let Some((package, installed_info)) = find_installed_package_by_name(&pm, pkgname, arch_suffix) {
+        if let Some((package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
             let output = format_output(default_format, &package, Some(&installed_info));
             print!("{}", output);
         } else {
@@ -363,13 +360,12 @@ fn show_packages(packages: &[String], format: Option<&str>) -> Result<()> {
 }
 
 fn list_files(packages: &[String]) -> Result<()> {
-    let mut pm = PackageManager::default();
-    pm.load_installed_packages()?;
+    crate::io::load_installed_packages()?;
 
     for pkg_spec in packages {
         let (pkgname, arch_suffix) = parse_package_spec(pkg_spec);
 
-        if let Some((_package, installed_info)) = find_installed_package_by_name(&pm, pkgname, arch_suffix) {
+        if let Some((_package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
             // Read filelist
             let store_path = dirs().epkg_store.join(&installed_info.pkgline);
             let filelist_path = store_path.join("info/filelist.txt");
@@ -401,8 +397,7 @@ fn list_files(packages: &[String]) -> Result<()> {
 }
 
 fn search_files(pattern: &str) -> Result<()> {
-    let mut pm = PackageManager::default();
-    pm.load_installed_packages()?;
+    crate::io::load_installed_packages()?;
 
     let pattern_path = Path::new(pattern);
     let mut found_any = false;
@@ -457,12 +452,11 @@ fn search_files(pattern: &str) -> Result<()> {
 }
 
 fn show_control_path(package_spec: &str, control_file: Option<&str>) -> Result<()> {
-    let mut pm = PackageManager::default();
-    pm.load_installed_packages()?;
+    crate::io::load_installed_packages()?;
 
     let (pkgname, arch_suffix) = parse_package_spec(package_spec);
 
-    if let Some((_package, installed_info)) = find_installed_package_by_name(&pm, pkgname, arch_suffix) {
+    if let Some((_package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
         let store_path = dirs().epkg_store.join(&installed_info.pkgline);
         let control_file_name = control_file.unwrap_or("control");
         let control_path = store_path.join("info/deb").join(control_file_name);

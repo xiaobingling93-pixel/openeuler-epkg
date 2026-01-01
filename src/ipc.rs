@@ -193,6 +193,7 @@ pub fn privdrop_on_suid() {
 }
 
 impl PackageManager {
+    #[allow(dead_code)]
     pub fn fork_on_suid(&mut self) -> Result<()> {
         if is_suid() {
             let socket_path = create_random_socket_path();
@@ -223,23 +224,6 @@ impl PackageManager {
             self.ipc_socket = socket_path.to_string_lossy().into_owned();
         }
         Ok(())
-    }
-}
-
-impl Drop for PackageManager {
-    fn drop(&mut self) {
-        // kill work process
-        if let Some(pid) = self.child_pid {
-            if let Err(e) = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
-                log::warn!("Failed to kill child process {}: {}", pid, e);
-            }
-        }
-        // remove socket file
-        if !self.ipc_socket.is_empty() {
-            if let Err(e) = std::fs::remove_file(&self.ipc_socket) {
-                log::warn!("Failed to remove IPC socket file {}: {}", self.ipc_socket, e);
-            }
-        }
     }
 }
 

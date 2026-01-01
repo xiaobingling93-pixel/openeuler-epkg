@@ -133,16 +133,10 @@ impl TestCase {
     /// This creates a fresh PackageManager instance with empty caches for each test,
     /// ensuring that packages from previous tests don't leak into the current test.
     #[allow(dead_code)] // Used in test module
-    fn setup_package_manager(&self) -> PackageManager {
-        // Create a fresh PackageManager with empty caches
-        // This ensures each test starts with a clean state
-        let pm = PackageManager {
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
-        
+    fn setup_package_manager(&self) {
+        // Clear all caches first to ensure clean state
+        PACKAGE_CACHE.clear();
+
         // Populate installed packages into cache
         for (k, v) in &self.installed {
             PACKAGE_CACHE.installed_packages.write().unwrap().insert(k.clone(), v.clone());
@@ -159,13 +153,11 @@ impl TestCase {
             }
             crate::package_cache::add_package_to_cache(Arc::new(pkg), format);
         }
-
-        pm
     }
 
     /// Create initial packages map from install request (for fallback compatibility)
     #[allow(dead_code)] // Used in test module
-    fn create_initial_packages(&self, _pm: &mut PackageManager) -> InstalledPackagesMap {
+    fn create_initial_packages(&self) -> InstalledPackagesMap {
         let mut initial_packages: InstalledPackagesMap = HashMap::new();
 
         // For each requested package, try to find it and add to initial packages
@@ -334,7 +326,7 @@ impl TestCase {
         // Apply config overrides if present (including format)
         self.apply_config_overrides()?;
 
-        let mut pm = self.setup_package_manager();
+        self.setup_package_manager();
 
         // Determine which operation to perform and get the plan
         // dry_run is already set to true in test mode via CLAP_MATCHES
@@ -346,10 +338,10 @@ impl TestCase {
                 let mut global_config = crate::models::config_mut();
                 global_config.subcommand = crate::models::EpkgCommand::Install;
             }
-            pm.install_packages(self.metadata.install.clone())
+            crate::install::install_packages(self.metadata.install.clone())
         } else if !self.metadata.remove.is_empty() {
             println!("  Remove: {:?}", self.metadata.remove);
-            pm.remove_packages(self.metadata.remove.clone())
+            crate::remove::remove_packages(self.metadata.remove.clone())
         } else {
             println!("  Upgrade: {:?}", self.metadata.upgrade);
             // Set config.subcommand for upgrade
@@ -358,7 +350,7 @@ impl TestCase {
                 let mut global_config = crate::models::config_mut();
                 global_config.subcommand = crate::models::EpkgCommand::Upgrade;
             }
-            pm.upgrade_packages(self.metadata.upgrade.clone())
+            crate::upgrade::upgrade_packages(self.metadata.upgrade.clone())
         };
 
         // Validate plan

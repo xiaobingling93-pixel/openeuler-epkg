@@ -1018,78 +1018,76 @@ fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collect
     unreachable!();
 }
 
-impl PackageManager {
-    /// Execute command with environment PATH lookup and namespace isolation
-    pub fn command_run(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        let mut run_options = self.parse_run_options(sub_matches)?;
+/// Execute command with environment PATH lookup and namespace isolation
+pub fn command_run(sub_matches: &clap::ArgMatches) -> Result<()> {
+    let mut run_options = parse_run_options(sub_matches)?;
 
-        debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
-        debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
+    debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
+    debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
 
-        let env_root = crate::dirs::get_default_env_root()?;
-        info!("Using environment root: {}", env_root.display());
+    let env_root = crate::dirs::get_default_env_root()?;
+    info!("Using environment root: {}", env_root.display());
 
-        let cmd_path = find_command_in_env_path(&run_options.command, &env_root)?;
-        info!("Found command at: {}", cmd_path.display());
+    let cmd_path = find_command_in_env_path(&run_options.command, &env_root)?;
+    info!("Found command at: {}", cmd_path.display());
 
-        let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
-        if is_conda {
-            // conda ELF binary has RPATH
-            run_options.skip_namespace_isolation = true;
-        }
-
-        fork_and_execute(&env_root, &run_options, &cmd_path)?;
-
-        Ok(())
+    let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
+    if is_conda {
+        // conda ELF binary has RPATH
+        run_options.skip_namespace_isolation = true;
     }
 
-    /// Execute built-in command (busybox-style)
-    pub fn command_busybox(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        match sub_matches.subcommand() {
-            Some((cmd_name, cmd_matches)) => {
-                debug!("Running built-in command: {}", cmd_name);
-                crate::applets::exec_builtin_command(cmd_name, cmd_matches)
-            }
-            None => {
-                Err(eyre::eyre!("No command specified"))
-            }
+    fork_and_execute(&env_root, &run_options, &cmd_path)?;
+
+    Ok(())
+}
+
+/// Execute built-in command (busybox-style)
+pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
+    match sub_matches.subcommand() {
+        Some((cmd_name, cmd_matches)) => {
+            debug!("Running built-in command: {}", cmd_name);
+            crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+        }
+        None => {
+            Err(eyre::eyre!("No command specified"))
         }
     }
+}
 
-    /// Parse command line options for run command
-    fn parse_run_options(&self, sub_matches: &clap::ArgMatches) -> Result<RunOptions> {
-        let mount_dirs = if let Some(mount_str) = sub_matches.get_one::<String>("mount") {
-            mount_str.split(',').map(|s| s.trim().to_string()).collect()
-        } else {
-            Vec::new()
-        };
+/// Parse command line options for run command
+fn parse_run_options(sub_matches: &clap::ArgMatches) -> Result<RunOptions> {
+    let mount_dirs = if let Some(mount_str) = sub_matches.get_one::<String>("mount") {
+        mount_str.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        Vec::new()
+    };
 
-        let user = sub_matches.get_one::<String>("user").cloned();
+    let user = sub_matches.get_one::<String>("user").cloned();
 
-        let command = sub_matches.get_one::<String>("command")
-            .ok_or_else(|| eyre::eyre!("Command is required"))?
-            .clone();
+    let command = sub_matches.get_one::<String>("command")
+        .ok_or_else(|| eyre::eyre!("Command is required"))?
+        .clone();
 
-        let args: Vec<String> = if let Some(args_iter) = sub_matches.get_many::<String>("args") {
-            args_iter.cloned().collect()
-        } else {
-            Vec::new()
-        };
+    let args: Vec<String> = if let Some(args_iter) = sub_matches.get_many::<String>("args") {
+        args_iter.cloned().collect()
+    } else {
+        Vec::new()
+    };
 
-        let timeout = if let Some(timeout_str) = sub_matches.get_one::<String>("timeout") {
-            timeout_str.parse::<u64>()
-                .map_err(|e| eyre::eyre!("Invalid timeout value '{}': {}", timeout_str, e))?
-        } else {
-            0 // Default: no timeout
-        };
+    let timeout = if let Some(timeout_str) = sub_matches.get_one::<String>("timeout") {
+        timeout_str.parse::<u64>()
+            .map_err(|e| eyre::eyre!("Invalid timeout value '{}': {}", timeout_str, e))?
+    } else {
+        0 // Default: no timeout
+    };
 
-        Ok(RunOptions {
-            mount_dirs,
-            user,
-            command,
-            args,
-            timeout,
-            ..Default::default()
-        })
-    }
+    Ok(RunOptions {
+        mount_dirs,
+        user,
+        command,
+        args,
+        timeout,
+        ..Default::default()
+    })
 }

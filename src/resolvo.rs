@@ -26,7 +26,7 @@ use resolvo::{
 };
 
 use crate::models::{config, channel_config};
-use crate::models::{EpkgCommand, Package, PackageFormat, PackageManager};
+use crate::models::{EpkgCommand, Package, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::parse_requires::{AndDepends, Operator, PkgDepend};
 use crate::parse_requires::VersionConstraint;
@@ -208,9 +208,6 @@ pub struct GenericDependencyProvider {
     /// Which dependency fields to use (using RefCell for interior mutability)
     depend_fields: RefCell<DependFieldFlags>,
 
-    /// Reference to PackageManager for lazy loading
-    package_manager: *mut PackageManager,
-
     /// Package names in delta_world (packages being upgraded/installed)
     /// Used to determine which packages should not be favored during upgrade
     delta_world_keys: std::collections::HashSet<String>,
@@ -228,7 +225,6 @@ impl GenericDependencyProvider {
     pub fn new(
         format: PackageFormat,
         depend_fields: DependFieldFlags,
-        package_manager: *mut PackageManager,
         delta_world_keys: std::collections::HashSet<String>,
         no_install: std::collections::HashSet<String>,
     ) -> Self {
@@ -239,7 +235,6 @@ impl GenericDependencyProvider {
             pkgkey_to_solvable: RefCell::new(HashMap::new()),
             format,
             depend_fields: RefCell::new(depend_fields),
-            package_manager,
             delta_world_keys,
             no_install,
             installed_pkgname2keys: RefCell::new(None),
@@ -259,11 +254,8 @@ impl GenericDependencyProvider {
             name
         );
 
-        // Get PackageManager reference
-        let pm = self.get_package_manager()?;
-
         // Try to find packages by name or capability
-        let packages = self.lookup_packages(name, pm)?;
+        let packages = self.lookup_packages(name)?;
 
         if packages.is_empty() {
             log::info!("[RESOLVO] No packages found for name/capability: {}", name);
@@ -282,19 +274,12 @@ impl GenericDependencyProvider {
         self.loaded_packages.borrow().get(name).cloned()
     }
 
-    /// Get PackageManager reference, returning error if null
-    fn get_package_manager(&self) -> Result<&mut PackageManager> {
-        if self.package_manager.is_null() {
-            return Err(color_eyre::eyre::eyre!("PackageManager pointer is null"));
-        }
-        Ok(unsafe { &mut *self.package_manager })
-    }
-
     /// Initialize or get cached installed packages map (pkgname -> Vec<pkgkey>)
     fn get_installed_pkgname2keys(&self) -> Result<HashMap<String, Vec<String>>> {
         let mut cache = self.installed_pkgname2keys.borrow_mut();
         if cache.is_none() {
-            let _pm = self.get_package_manager()?;
+            // Ensure installed packages are loaded
+            crate::io::load_installed_packages()?;
             let mut installed_map: HashMap<String, Vec<String>> = HashMap::new();
             for (pkgkey, _) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
                 if let Ok(pkgname) = pkgkey2pkgname(pkgkey.as_str()) {
@@ -350,7 +335,7 @@ impl GenericDependencyProvider {
     /// NEVER be split. The provide2pkgnames index is keyed by cap_with_arch, not
     /// by cap alone. We use the original name for capability lookups to preserve
     /// cap_with_arch integrity.
-    fn lookup_packages(&self, name: &str, _pm: &mut PackageManager) -> Result<Vec<Package>> {
+    fn lookup_packages(&self, name: &str) -> Result<Vec<Package>> {
         // Parse potential architecture suffixes (e.g., python3:any, wine(x86-64))
         // This is only used for package name lookups and arch filtering, NOT for
         // capability lookups (which must use the original name to preserve cap_with_arch)
@@ -715,13 +700,7 @@ impl GenericDependencyProvider {
             return !pkgkeys.is_empty();
         }
 
-        // Try to lookup packages
-        let pm = match self.get_package_manager() {
-            Ok(pm) => pm,
-            Err(_) => return false,
-        };
-
-        match self.lookup_packages(name, pm) {
+        match self.lookup_packages(name) {
             Ok(packages) => !packages.is_empty(),
             Err(_) => false,
         }
@@ -729,15 +708,6 @@ impl GenericDependencyProvider {
 
     /// Load package info for a solvable, returning StringId for error message if failed
     fn load_package_for_solvable(&self, pkgkey: &str) -> Result<Package, StringId> {
-        let _pm = match self.get_package_manager() {
-            Ok(pm) => pm,
-            Err(_) => {
-                let reason = self
-                    .pool
-                    .intern_string("PackageManager pointer is null".to_string());
-                return Err(reason);
-            }
-        };
 
         match crate::package_cache::load_package_info(pkgkey) {
             Ok(pkg) => Ok((*pkg).clone()),
@@ -988,12 +958,6 @@ impl GenericDependencyProvider {
                             );
                             return None;
                         }
-
-                        // Check if the package's provided version satisfies the constraints
-                        let _pm = match self.get_package_manager() {
-                            Ok(pm) => pm,
-                            Err(_) => return Some(pkg_dep.clone()), // Can't check, allow it
-                        };
 
                         // Filter out IfInstall constraints for version checking
                         let non_conditional_constraints: Vec<VersionConstraint> =
@@ -1748,20 +1712,15 @@ impl DependencyProvider for GenericDependencyProvider {
                                     // Provider match: use proper provider constraint checking
                                     // This checks the provided capability's version (if specified),
                                     // not the provider's version
-                                    match self.get_package_manager() {
-                                        Ok(_pm) => {
-                                            match crate::package_cache::load_package_info(&record.pkgkey) {
-                                                Ok(provider_pkg) => {
-                                                    match crate::provides::check_provider_satisfies_constraints(
-                                                        &provider_pkg,
-                                                        capability,
-                                                        &non_conditional_constraints,
-                                                        self.format,
-                                                    ) {
-                                                        Ok(satisfies) => satisfies,
-                                                        Err(_) => false,
-                                                    }
-                                                }
+                                    match crate::package_cache::load_package_info(&record.pkgkey) {
+                                        Ok(provider_pkg) => {
+                                            match crate::provides::check_provider_satisfies_constraints(
+                                                &provider_pkg,
+                                                capability,
+                                                &non_conditional_constraints,
+                                                self.format,
+                                            ) {
+                                                Ok(satisfies) => satisfies,
                                                 Err(_) => false,
                                             }
                                         }

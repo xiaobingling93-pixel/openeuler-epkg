@@ -311,24 +311,14 @@ fn rpm_constraints_require_release(constraints: &Vec<VersionConstraint>) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PackageManager;
-    use std::collections::HashMap;
     use std::sync::Arc;
+    use crate::models::{PackageFormat, PACKAGE_CACHE};
+    use crate::package_cache::add_package_to_cache;
+
 
     #[test]
     fn test_check_provider_satisfies_constraints_with_or_conditions() {
-
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Create a mock package that provides python3.13dist(isort) version 6.1
         let mut provider_pkg = Package {
@@ -341,10 +331,7 @@ mod tests {
         };
 
         // Cache the package
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test case 1: OR condition with mutually exclusive constraints
         // Requirement: ((python3.13dist(isort) < 5.13 or python3.13dist(isort) > 5.13) with python3.13dist(isort) < 7 with python3.13dist(isort) >= 4.2.5)
@@ -379,10 +366,7 @@ mod tests {
         // Test case 2: Version that doesn't satisfy OR condition
         // Version 5.13 should NOT satisfy: < 5.13 is false, > 5.13 is false (exactly equal)
         provider_pkg.provides = vec!["python3.13dist(isort) = 5.13".to_string()];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -408,10 +392,7 @@ mod tests {
                 operand: "4.2.5".to_string(),
             },
         ];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -433,10 +414,7 @@ mod tests {
             },
         ];
         provider_pkg.provides = vec!["python3.13dist(isort) = 6.1".to_string()];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -458,10 +436,7 @@ mod tests {
             },
         ];
         provider_pkg.provides = vec!["python3.13dist(isort) = 6.1".to_string()];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -495,10 +470,7 @@ mod tests {
             },
         ];
         provider_pkg.provides = vec!["python3.13dist(isort) = 5.0".to_string()];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -512,17 +484,7 @@ mod tests {
     #[test]
     fn test_or_group_detection_with_different_operands() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Create a mock package that provides python3.13dist(google-api-core) version 2.11.1
         let mut provider_pkg = Package {
@@ -534,10 +496,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test case: OR group with different operands (without ~~ to avoid constraint checking issues)
         // Requirement: ((python3.13dist(google-api-core) < 2.1 or >= 2.2) with >= 1.31.6)
@@ -567,10 +526,7 @@ mod tests {
 
         // Test case: Version that satisfies < 2.1 branch
         provider_pkg.provides = vec!["python3.13dist(google-api-core) = 2.0.5".to_string()];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -584,17 +540,7 @@ mod tests {
     #[test]
     fn test_or_group_detection_multiple_with_clauses() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Create a mock package that provides version 2.5.0
         let provider_pkg = Package {
@@ -606,10 +552,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test case: Multiple OR groups (simplified)
         // Version 2.5.0 should satisfy:
@@ -668,17 +611,7 @@ mod tests {
     #[test]
     fn test_or_group_detection_same_operand_strict() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         let mut provider_pkg = Package {
             pkgname: "test-pkg".to_string(),
@@ -689,10 +622,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test case: <= X and >= X should NOT be mutually exclusive (X satisfies both)
         let constraints_not_exclusive = vec![
@@ -736,10 +666,7 @@ mod tests {
 
         // But version 2.2 should satisfy < 2.3 (first OR branch)
         provider_pkg.provides = vec!["test-capability = 2.2".to_string()];
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         let result = check_provider_satisfies_constraints(
             &provider_pkg,
@@ -753,17 +680,7 @@ mod tests {
     #[test]
     fn test_debian_provide_format_with_parentheses() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test Debian format: libgcc1 (= 1:14.2.0-19)
         let provider_pkg = Package {
@@ -775,10 +692,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test constraint: libgcc1 (>= 1:3.0)
         // Version 1:14.2.0-19 should satisfy >= 1:3.0
@@ -801,17 +715,7 @@ mod tests {
     #[test]
     fn test_debian_provide_format_various_operators() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test various Debian provide formats with parentheses
         // Note: Debian provide entries always use "= version" format
@@ -849,10 +753,7 @@ mod tests {
                 ..Default::default()
             };
 
-            pm.pkgkey2package.insert(
-                provider_pkg.pkgkey.clone(),
-                Arc::new(provider_pkg.clone()),
-            );
+            add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
             let constraints = vec![
                 VersionConstraint {
@@ -882,17 +783,7 @@ mod tests {
     #[test]
     fn test_epoch_version_comparison() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test epoch version comparison: 1:14.2.0-19 >= 1:3.0
         let provider_pkg = Package {
@@ -904,10 +795,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test various epoch version constraints
         let test_cases = vec![
@@ -928,10 +816,7 @@ mod tests {
             test_pkg.provides = vec![format!("libgcc1 (= {})", provided_version)];
             test_pkg.pkgkey = format!("libgcc-s1__{}__amd64", provided_version.replace(':', "_"));
 
-            pm.pkgkey2package.insert(
-                test_pkg.pkgkey.clone(),
-                Arc::new(test_pkg.clone()),
-            );
+            add_package_to_cache(Arc::new(test_pkg.clone()), PackageFormat::Deb);
 
             let constraints = vec![
                 VersionConstraint {
@@ -961,17 +846,7 @@ mod tests {
     #[test]
     fn test_rpm_vs_debian_provide_format() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test RPM format: "capability = version" (no parentheses)
         let rpm_provider = Package {
@@ -983,10 +858,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            rpm_provider.pkgkey.clone(),
-            Arc::new(rpm_provider.clone()),
-        );
+        add_package_to_cache(Arc::new(rpm_provider.clone()), PackageFormat::Rpm);
 
         let rpm_constraints = vec![
             VersionConstraint {
@@ -1013,10 +885,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            deb_provider.pkgkey.clone(),
-            Arc::new(deb_provider.clone()),
-        );
+        add_package_to_cache(Arc::new(deb_provider.clone()), PackageFormat::Deb);
 
         let deb_constraints = vec![
             VersionConstraint {
@@ -1037,17 +906,7 @@ mod tests {
     #[test]
     fn test_alpine_pkgconfig_multiple_provides() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Create a provider package that provides multiple pkgconfig entries in a single string
         // This is the format used by Alpine packages like pcre2-dev
@@ -1064,10 +923,7 @@ mod tests {
         };
 
         // Cache the package
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Test 1: Check that pc:libpcre2-8>=10.32 is satisfied by pc:libpcre2-8=10.46
         let constraints = vec![
@@ -1134,17 +990,7 @@ mod tests {
     #[test]
     fn test_check_provider_satisfies_constraints_implicit_provide() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test case 1: Implicit provide with VersionCompatible (~) operator (the bug case)
         // Package bluez__5.82-r0__x86_64 should satisfy requirement bluez~5.82
@@ -1158,10 +1004,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            bluez_pkg.pkgkey.clone(),
-            Arc::new(bluez_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(bluez_pkg.clone()), PackageFormat::Apk);
 
         let constraints_compatible = vec![
             VersionConstraint {
@@ -1229,10 +1072,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            bluez_with_explicit.pkgkey.clone(),
-            Arc::new(bluez_with_explicit.clone()),
-        );
+        add_package_to_cache(Arc::new(bluez_with_explicit.clone()), PackageFormat::Apk);
 
         let result = check_provider_satisfies_constraints(
             &bluez_with_explicit,
@@ -1286,17 +1126,7 @@ mod tests {
     #[test]
     fn test_rpm_provide_with_version_operators() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test case 1: Package provides capability with exact version
         // In RPM repositories, provides are always stored as exact versions with "=".
@@ -1311,10 +1141,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg.pkgkey.clone(),
-            Arc::new(provider_pkg.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg.clone()), PackageFormat::Rpm);
 
         // Requirement: test-cap(>=2.0.0)
         // Provided version 3.0.0 should satisfy >=2.0.0
@@ -1343,10 +1170,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg_low.pkgkey.clone(),
-            Arc::new(provider_pkg_low.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg_low.clone()), PackageFormat::Rpm);
 
         let constraints_high = vec![
             VersionConstraint {
@@ -1374,10 +1198,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg_multi.pkgkey.clone(),
-            Arc::new(provider_pkg_multi.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg_multi.clone()), PackageFormat::Rpm);
 
         let constraints_multi = vec![
             VersionConstraint {
@@ -1408,10 +1229,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            provider_pkg_eq.pkgkey.clone(),
-            Arc::new(provider_pkg_eq.clone()),
-        );
+        add_package_to_cache(Arc::new(provider_pkg_eq.clone()), PackageFormat::Rpm);
 
         let constraints_eq = vec![
             VersionConstraint {
@@ -1439,10 +1257,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            mesa_provider.pkgkey.clone(),
-            Arc::new(mesa_provider.clone()),
-        );
+        add_package_to_cache(Arc::new(mesa_provider.clone()), PackageFormat::Rpm);
 
         let mesa_constraints = vec![
             VersionConstraint {
@@ -1463,17 +1278,7 @@ mod tests {
     #[test]
     fn test_check_provider_satisfies_constraints_rpm_composer_fallback() {
 
-        let mut pm = PackageManager {
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: HashMap::new(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+        PACKAGE_CACHE.clear();
 
         // Test case: RPM composer capability fallback
         // Package provides capability with only upstream version (no release),
@@ -1491,10 +1296,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            php_geshi.pkgkey.clone(),
-            Arc::new(php_geshi.clone()),
-        );
+        add_package_to_cache(Arc::new(php_geshi.clone()), PackageFormat::Rpm);
 
         // Constraint requires a release (>= 1.0.9.1-5)
         let constraints = vec![
@@ -1556,10 +1358,7 @@ mod tests {
             ..Default::default()
         };
 
-        pm.pkgkey2package.insert(
-            php_geshi_with_release.pkgkey.clone(),
-            Arc::new(php_geshi_with_release.clone()),
-        );
+        add_package_to_cache(Arc::new(php_geshi_with_release.clone()), PackageFormat::Rpm);
 
         let result_with_release = check_provider_satisfies_constraints(
             &php_geshi_with_release,

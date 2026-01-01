@@ -87,29 +87,25 @@ impl HashType {
     }
 }
 
-impl PackageManager {
+pub fn sync_channel_metadata() -> Result<()> {
+    let channel_configs = crate::models::channel_configs();
+    let mut all_repos = Vec::new();
 
-    pub fn sync_channel_metadata(&mut self) -> Result<()> {
-        let channel_configs = crate::models::channel_configs();
-        let mut all_repos = Vec::new();
+    // Collect all repos first
+    for channel_config in channel_configs {
+        let repos = get_revise_repos(channel_config.clone())
+            .with_context(|| "Failed to get repository revision information")?;
 
-        // Collect all repos first
-        for channel_config in channel_configs {
-            let repos = get_revise_repos(channel_config.clone())
-                .with_context(|| "Failed to get repository revision information")?;
+        crate::mirror::extend_repodata_name2distro_dirs(&channel_config, &repos)
+            .with_context(|| "Failed to set up repodata_name2distro_dirs hashmap")?;
 
-            crate::mirror::extend_repodata_name2distro_dirs(&channel_config, &repos)
-                .with_context(|| "Failed to set up repodata_name2distro_dirs hashmap")?;
-
-            all_repos.extend(repos);
-        }
-
-        revise_repos(all_repos)
-            .with_context(|| "Failed to process repository revisions")?;
-
-        Ok(())
+        all_repos.extend(repos);
     }
 
+    revise_repos(all_repos)
+        .with_context(|| "Failed to process repository revisions")?;
+
+    Ok(())
 }
 
 /// Download a single file using DownloadTask with repodata_name

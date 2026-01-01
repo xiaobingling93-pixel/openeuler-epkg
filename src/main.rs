@@ -78,6 +78,18 @@ use time::macros::format_description;
 use crate::models::*;
 use crate::ipc::privdrop_on_suid;
 use crate::dirs::{get_epkg_src_path, find_env_base};
+use crate::environment::{list_environments, create_environment, remove_environment, register_environment, unregister_environment, activate_environment, deactivate_environment, export_environment, get_environment_config, set_environment_config};
+use crate::io::edit_environment_config;
+use crate::path::update_path;
+use crate::repo::sync_channel_metadata;
+use crate::list::list_packages_with_scope;
+use crate::io::load_installed_packages;
+use crate::install::install_packages;
+use crate::upgrade::upgrade_packages;
+use crate::remove::remove_packages;
+use crate::history::{print_history, rollback_history};
+use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
+use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use clap::{arg, Command};
@@ -111,30 +123,29 @@ fn main() -> Result<()> {
     // 第一次访问会触发命令行解析和配置初始化
     log::trace!("Application starting with config: {:#?}", config());
 
-    let mut package_manager: PackageManager = Default::default();
-    package_manager.try_light_init()?;
+    try_light_init()?;
 
     let matches = &CLAP_MATCHES;
     match matches.subcommand() {
-        Some(("self",       sub_matches))  =>  package_manager.command_self(sub_matches)?,
-        Some(("env",        sub_matches))  =>  package_manager.command_env(sub_matches)?,
-        Some(("list",       sub_matches))  =>  package_manager.command_list(sub_matches)?,
-        Some(("info",       sub_matches))  =>  package_manager.command_info(sub_matches)?,
-        Some(("install",    sub_matches))  =>  package_manager.command_install(sub_matches)?,
-        Some(("upgrade",    sub_matches))  =>  package_manager.command_upgrade(sub_matches)?,
-        Some(("remove",     sub_matches))  =>  package_manager.command_remove(sub_matches)?,
-        Some(("history",    sub_matches))  =>  package_manager.command_history(sub_matches)?,
-        Some(("restore",    sub_matches))  =>  package_manager.command_restore(sub_matches)?,
-        Some(("update",     sub_matches))  =>  package_manager.command_update(sub_matches)?,
-        Some(("repo",       sub_matches))  =>  package_manager.command_repo(sub_matches)?,
-        Some(("hash",       sub_matches))  =>  package_manager.command_hash(sub_matches)?,
-        Some(("build",      sub_matches))  =>  package_manager.command_build(sub_matches)?,
-        Some(("unpack",     sub_matches))  =>  package_manager.command_unpack(&sub_matches)?,
-        Some(("convert",    sub_matches))  =>  package_manager.command_convert(&sub_matches)?,
-        Some(("run",        sub_matches))  =>  package_manager.command_run(sub_matches)?,
-        Some(("busybox",    sub_matches))  =>  package_manager.command_busybox(sub_matches)?,
-        Some(("search",     sub_matches))  =>  package_manager.command_search(sub_matches)?,
-        Some(("gc",         sub_matches))  =>  package_manager.command_gc(sub_matches)?,
+        Some(("self",       sub_matches))  =>  command_self(sub_matches)?,
+        Some(("env",        sub_matches))  =>  command_env(sub_matches)?,
+        Some(("list",       sub_matches))  =>  command_list(sub_matches)?,
+        Some(("info",       sub_matches))  =>  command_info(sub_matches)?,
+        Some(("install",    sub_matches))  =>  command_install(sub_matches)?,
+        Some(("upgrade",    sub_matches))  =>  command_upgrade(sub_matches)?,
+        Some(("remove",     sub_matches))  =>  command_remove(sub_matches)?,
+        Some(("history",    sub_matches))  =>  command_history(sub_matches)?,
+        Some(("restore",    sub_matches))  =>  command_restore(sub_matches)?,
+        Some(("update",     sub_matches))  =>  command_update(sub_matches)?,
+        Some(("repo",       sub_matches))  =>  command_repo(sub_matches)?,
+        Some(("hash",       sub_matches))  =>  command_hash(sub_matches)?,
+        Some(("build",      sub_matches))  =>  command_build(sub_matches)?,
+        Some(("unpack",     sub_matches))  =>  command_unpack(&sub_matches)?,
+        Some(("convert",    sub_matches))  =>  command_convert(&sub_matches)?,
+        Some(("run",        sub_matches))  =>  command_run(sub_matches)?,
+        Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
+        Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
+        Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
 
@@ -1024,333 +1035,327 @@ fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches)
 }
 
 
-// Command handlers
-impl PackageManager {
-
-    fn command_env(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        match sub_matches.subcommand() {
-            Some(("list", _)) => self.list_environments(),
-            Some(("create", sub_matches)) => {
-                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
-                    self.create_environment(name)
-                } else {
-                    Ok(())
-                }
-            }
-            Some(("remove", sub_matches)) => {
-                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
-                    self.remove_environment(name)
-                } else {
-                    Ok(())
-                }
-            }
-            Some(("register", sub_matches)) => {
-                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
-                    self.register_environment(name)
-                } else {
-                    Ok(())
-                }
-            }
-            Some(("unregister", sub_matches)) => {
-                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
-                    self.unregister_environment(name)
-                } else {
-                    Ok(())
-                }
-            }
-            Some(("activate", sub_matches)) => {
-                if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
-                    self.activate_environment(name)
-                } else {
-                    Ok(())
-                }
-            }
-            Some(("deactivate", _)) => self.deactivate_environment(),
-            Some(("export", sub_matches)) => {
-                let name = sub_matches.get_one::<String>("ENV_NAME")
-                    .map(|s| s.as_str())
-                    .unwrap_or_else(|| &config().common.env);
-                let output = sub_matches.get_one::<String>("output").cloned();
-                self.export_environment(name, output)
-            }
-            Some(("path", _)) => self.update_path(),
-            Some(("config", sub_matches)) => {
-                match sub_matches.subcommand() {
-                    Some(("edit", _)) => self.edit_environment_config(),
-                    Some(("get", sub_matches)) => {
-                        if let Some(name) = sub_matches.get_one::<String>("NAME") {
-                            self.get_environment_config(name)
-                        } else {
-                            Ok(())
-                        }
-                    }
-                    Some(("set", sub_matches)) => {
-                        if let (Some(name), Some(value)) = (sub_matches.get_one::<String>("NAME"), sub_matches.get_one::<String>("VALUE")) {
-                            self.set_environment_config(name, value)
-                        } else {
-                            Ok(())
-                        }
-                    }
-                    _ => Ok(()),
-                }
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn command_list(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        // Determine scope - only one should be true, with installed as default
-        let scope = if sub_matches.get_flag("all") {
-            ListScope::All
-        } else if sub_matches.get_flag("available") {
-            ListScope::Available
-        } else if sub_matches.get_flag("upgradable") {
-            ListScope::Upgradable
-        } else {
-            ListScope::Installed // default
-        };
-
-        let pattern = sub_matches.get_one::<String>("GLOB_PATTERN")
-            .map(|s| s.as_str())
-            .unwrap_or("");
-
-        self.sync_channel_metadata()?;
-        privdrop_on_suid();
-        self.list_packages_with_scope(scope, pattern)?;
-        Ok(())
-    }
-
-    fn command_info(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        // First call sync_channel_metadata to prepare data
-        self.sync_channel_metadata()?;
-        privdrop_on_suid();
-
-        // Load installed packages info
-        self.load_installed_packages()?;
-
-        // Get all arguments (package specs and key=val filters combined)
-        let mut all_args: Vec<String> = Vec::new();
-
-        // Add PACKAGE_SPEC arguments
-        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            all_args.extend(package_specs.cloned());
-        }
-
-        // Get command options
-        let show_files = sub_matches.get_flag("files");
-        let show_scripts = sub_matches.get_flag("scripts");
-        let show_store_path = sub_matches.get_flag("store-path");
-
-        // Use the info module function
-        crate::info::show_package_info(
-            self,
-            &all_args,
-            show_files,
-            show_scripts,
-            show_store_path,
-        )?;
-
-        Ok(())
-    }
-
-    fn command_install(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            let packages_vec: Vec<String> = package_specs.cloned().collect();
-            self.sync_channel_metadata()?;
-            self.install_packages(packages_vec).map(|_| ())?;
-        }
-        Ok(())
-    }
-
-    fn command_upgrade(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.sync_channel_metadata()?;
-
-        let package_names: Vec<String> = sub_matches
-            .get_many::<String>("PACKAGE_SPEC")
-            .map(|vals| vals.cloned().collect())
-            .unwrap_or_else(Vec::new);
-
-        self.upgrade_packages(package_names).map(|_| ())
-    }
-
-    fn command_remove(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
-            let packages_vec: Vec<String> = package_specs.cloned().collect();
-            self.remove_packages(packages_vec).map(|_| ())?;
-        }
-        Ok(())
-    }
-
-    fn command_history(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.print_history()
-    }
-
-    fn command_restore(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(rollback_id) = sub_matches.get_one::<i32>("GEN_ID") {
-            self.sync_channel_metadata()?;
-            self.rollback_history(*rollback_id)?;
-        }
-        Ok(())
-    }
-
-    fn command_update(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.sync_channel_metadata()?;
-        Ok(())
-    }
-
-    fn command_repo(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(_) = sub_matches.subcommand_matches("list") {
-            self.fork_on_suid()?;  // to be removed
-            crate::repo::list_repos()?;
-        }
-        Ok(())
-    }
-
-    fn command_hash(&self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
-            privdrop_on_suid();
-            for dir in package_store_dirs {
-                let hash = crate::hash::epkg_store_hash(dir)?;
-                println!("{}", hash);
+fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
+    match sub_matches.subcommand() {
+        Some(("list", _)) => list_environments(),
+        Some(("create", sub_matches)) => {
+            if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                create_environment(name)
+            } else {
+                Ok(())
             }
         }
-        Ok(())
-    }
-
-    fn command_build(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
-            privdrop_on_suid();
-
-            let epkg_src_path = get_epkg_src_path();
-            let build_script = epkg_src_path.join("build/scripts/generic-build.sh");
-            if !build_script.exists() {
-                return Err(eyre::eyre!("Build script not found"));
-            }
-
-            let mut command = std::process::Command::new("bash");
-            command.arg(build_script);
-            command.arg(package_yaml);
-            command.status()?;
-        }
-        Ok(())
-    }
-
-    fn command_unpack(&self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
-            let files: Vec<String> = package_files_iter.cloned().collect();
-
-            match crate::store::unpack_packages(files) {
-                Ok(final_dirs) => {
-                    if final_dirs.is_empty() {
-                        println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
-                    } else {
-                        for final_dir in &final_dirs {
-                            // Print both the final directory path and the pkgline (directory name)
-                            println!("{}", final_dir.display());
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error during store unpacking process: {}", e);
-                    // Consider returning the error to propagate it, e.g.:
-                    // return Err(e).wrap_err("Failed in unpack command");
-                }
+        Some(("remove", sub_matches)) => {
+            if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                remove_environment(name)
+            } else {
+                Ok(())
             }
         }
-        // If execution reaches here, it implies sub_matches.get_many was None,
-        // but clap should have handled the 'required' argument before calling this command.
-        // If not, an explicit error or log for "No package files specified" could be added.
-        Ok(())
-    }
-
-    fn command_convert(&self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
-            let files: Vec<String> = package_files_iter.cloned().collect();
-            let mut out_dir = sub_matches.get_one::<String>("out-dir").map(|s| s.as_str()).unwrap_or("");
-            if out_dir == "" {
-                out_dir = ".";
+        Some(("register", sub_matches)) => {
+            if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                register_environment(name)
+            } else {
+                Ok(())
             }
-            let origin_url = sub_matches.get_one::<String>("origin-url")
+        }
+        Some(("unregister", sub_matches)) => {
+            if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                unregister_environment(name)
+            } else {
+                Ok(())
+            }
+        }
+        Some(("activate", sub_matches)) => {
+            if let Some(name) = sub_matches.get_one::<String>("ENV_NAME") {
+                activate_environment(name)
+            } else {
+                Ok(())
+            }
+        }
+        Some(("deactivate", _)) => deactivate_environment(),
+        Some(("export", sub_matches)) => {
+            let name = sub_matches.get_one::<String>("ENV_NAME")
                 .map(|s| s.as_str())
-                .unwrap_or("default_url");
-
-            match crate::store::unpack_packages(files) {
-                Ok(final_dirs) => {
-                    if final_dirs.is_empty() {
-                        println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
+                .unwrap_or_else(|| &config().common.env);
+            let output = sub_matches.get_one::<String>("output").cloned();
+            export_environment(name, output)
+        }
+        Some(("path", _)) => update_path(),
+        Some(("config", sub_matches)) => {
+            match sub_matches.subcommand() {
+                Some(("edit", _)) => edit_environment_config(),
+                Some(("get", sub_matches)) => {
+                    if let Some(name) = sub_matches.get_one::<String>("NAME") {
+                        get_environment_config(name)
                     } else {
-                        for final_dir in &final_dirs {
-                            // Compress the package using the final directory path
-                            epkg::compress_packages(final_dir, &out_dir, &origin_url)?;
-                        }
+                        Ok(())
                     }
                 }
-                Err(e) => {
-                    eprintln!("Error during store unpacking process: {}", e);
-                    // Consider returning the error to propagate it, e.g.:
-                    // return Err(e).wrap_err("Failed in unpack command");
+                Some(("set", sub_matches)) => {
+                    if let (Some(name), Some(value)) = (sub_matches.get_one::<String>("NAME"), sub_matches.get_one::<String>("VALUE")) {
+                        set_environment_config(name, value)
+                    } else {
+                        Ok(())
+                    }
                 }
+                _ => Ok(()),
             }
         }
-        // If execution reaches here, it implies sub_matches.get_many was None,
-        // but clap should have handled the 'required' argument before calling this command.
-        // If not, an explicit error or log for "No package files specified" could be added.
-        Ok(())
+        _ => Ok(()),
+    }
+}
+
+fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
+    // Determine scope - only one should be true, with installed as default
+    let scope = if sub_matches.get_flag("all") {
+        ListScope::All
+    } else if sub_matches.get_flag("available") {
+        ListScope::Available
+    } else if sub_matches.get_flag("upgradable") {
+        ListScope::Upgradable
+    } else {
+        ListScope::Installed // default
+    };
+
+    let pattern = sub_matches.get_one::<String>("GLOB_PATTERN")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+
+    sync_channel_metadata()?;
+    privdrop_on_suid();
+    list_packages_with_scope(scope, pattern)?;
+    Ok(())
+}
+
+fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
+    // First call sync_channel_metadata to prepare data
+    sync_channel_metadata()?;
+    privdrop_on_suid();
+
+    // Load installed packages info
+    load_installed_packages()?;
+
+    // Get all arguments (package specs and key=val filters combined)
+    let mut all_args: Vec<String> = Vec::new();
+
+    // Add PACKAGE_SPEC arguments
+    if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+        all_args.extend(package_specs.cloned());
     }
 
-    fn command_search(&mut self, _sub_matches: &clap::ArgMatches) -> Result<()> {
-        self.sync_channel_metadata()?;
+    // Get command options
+    let show_files = sub_matches.get_flag("files");
+    let show_scripts = sub_matches.get_flag("scripts");
+    let show_store_path = sub_matches.get_flag("store-path");
 
-        // channel_config() cannot be referenced at parse_options_search() time,
-        // so setup the derived options.u8_pattern here
-        let mut options = config().search.clone();
+    // Use the info module function
+    crate::info::show_package_info(
+        &all_args,
+        show_files,
+        show_scripts,
+        show_store_path,
+    )?;
 
-        // Create the pattern for searching and store it in options
-        options.u8_pattern = options.pattern.as_bytes().to_vec();
+    Ok(())
+}
 
-        // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
-        // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
-        // with relative filelist entries like usr/bin/ls
-        if (channel_config().format == crate::models::PackageFormat::Deb ||
-            channel_config().format == crate::models::PackageFormat::Pacman) &&
-            !options.u8_pattern.is_empty() &&
-            options.u8_pattern[0] == b'/' {
-            options.u8_pattern.remove(0);
+fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+        let packages_vec: Vec<String> = package_specs.cloned().collect();
+        sync_channel_metadata()?;
+        install_packages(packages_vec).map(|_| ())?;
+    }
+    Ok(())
+}
+
+fn command_upgrade(sub_matches: &clap::ArgMatches) -> Result<()> {
+    sync_channel_metadata()?;
+
+    let package_names: Vec<String> = sub_matches
+        .get_many::<String>("PACKAGE_SPEC")
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_else(Vec::new);
+
+    upgrade_packages(package_names).map(|_| ())
+}
+
+fn command_remove(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
+        let packages_vec: Vec<String> = package_specs.cloned().collect();
+        remove_packages(packages_vec).map(|_| ())?;
+    }
+    Ok(())
+}
+
+fn command_history(_sub_matches: &clap::ArgMatches) -> Result<()> {
+    print_history()
+}
+
+fn command_restore(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(rollback_id) = sub_matches.get_one::<i32>("GEN_ID") {
+        sync_channel_metadata()?;
+        rollback_history(*rollback_id)?;
+    }
+    Ok(())
+}
+
+fn command_update(_sub_matches: &clap::ArgMatches) -> Result<()> {
+    sync_channel_metadata()?;
+    Ok(())
+}
+
+fn command_repo(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(_) = sub_matches.subcommand_matches("list") {
+        crate::repo::list_repos()?;
+    }
+    Ok(())
+}
+
+fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
+        privdrop_on_suid();
+        for dir in package_store_dirs {
+            let hash = crate::hash::epkg_store_hash(dir)?;
+            println!("{}", hash);
+        }
+    }
+    Ok(())
+}
+
+fn command_build(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
+        privdrop_on_suid();
+
+        let epkg_src_path = get_epkg_src_path();
+        let build_script = epkg_src_path.join("build/scripts/generic-build.sh");
+        if !build_script.exists() {
+            return Err(eyre::eyre!("Build script not found"));
         }
 
-        search::search_repo_cache(&mut options)?;
-        Ok(())
+        let mut command = std::process::Command::new("bash");
+        command.arg(build_script);
+        command.arg(package_yaml);
+        command.status()?;
     }
+    Ok(())
+}
 
-    fn command_gc(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
-        gc::gc_epkg(old_downloads_days)?;
-        Ok(())
-    }
+fn command_unpack(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
+        let files: Vec<String> = package_files_iter.cloned().collect();
 
-    fn command_self(&mut self, sub_matches: &clap::ArgMatches) -> Result<()> {
-        match sub_matches.subcommand() {
-            Some(("install", _sub_matches)) => {
-                if find_env_base(SELF_ENV).is_none() {
-                    self.install_epkg()?;
-                }
-
-                if find_env_base(MAIN_ENV).is_none() {
-                    self.light_init()?;
+        match crate::store::unpack_packages(files) {
+            Ok(final_dirs) => {
+                if final_dirs.is_empty() {
+                    println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                 } else {
-                    eprintln!("epkg was already initialized for current user");
+                    for final_dir in &final_dirs {
+                        // Print both the final directory path and the pkgline (directory name)
+                        println!("{}", final_dir.display());
+                    }
                 }
             }
-            Some(("upgrade", _sub_matches)) => {
-                self.upgrade_epkg()?;
+            Err(e) => {
+                eprintln!("Error during store unpacking process: {}", e);
+                // Consider returning the error to propagate it, e.g.:
+                // return Err(e).wrap_err("Failed in unpack command");
             }
-            Some(("remove", sub_matches)) => {
-                if let Some(scope) = sub_matches.get_one::<String>("scope") {
-                    deinit::deinit_epkg(scope)?;
-                }
-            }
-            _ => {}
         }
-        Ok(())
     }
+    // If execution reaches here, it implies sub_matches.get_many was None,
+    // but clap should have handled the 'required' argument before calling this command.
+    // If not, an explicit error or log for "No package files specified" could be added.
+    Ok(())
+}
+
+fn command_convert(sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
+        let files: Vec<String> = package_files_iter.cloned().collect();
+        let mut out_dir = sub_matches.get_one::<String>("out-dir").map(|s| s.as_str()).unwrap_or("");
+        if out_dir == "" {
+            out_dir = ".";
+        }
+        let origin_url = sub_matches.get_one::<String>("origin-url")
+            .map(|s| s.as_str())
+            .unwrap_or("default_url");
+
+        match crate::store::unpack_packages(files) {
+            Ok(final_dirs) => {
+                if final_dirs.is_empty() {
+                    println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
+                } else {
+                    for final_dir in &final_dirs {
+                        // Compress the package using the final directory path
+                        epkg::compress_packages(final_dir, &out_dir, &origin_url)?;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error during store unpacking process: {}", e);
+                // Consider returning the error to propagate it, e.g.:
+                // return Err(e).wrap_err("Failed in unpack command");
+            }
+        }
+    }
+    // If execution reaches here, it implies sub_matches.get_many was None,
+    // but clap should have handled the 'required' argument before calling this command.
+    // If not, an explicit error or log for "No package files specified" could be added.
+    Ok(())
+}
+
+fn command_search(_sub_matches: &clap::ArgMatches) -> Result<()> {
+    sync_channel_metadata()?;
+
+    // channel_config() cannot be referenced at parse_options_search() time,
+    // so setup the derived options.u8_pattern here
+    let mut options = config().search.clone();
+
+    // Create the pattern for searching and store it in options
+    options.u8_pattern = options.pattern.as_bytes().to_vec();
+
+    // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
+    // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
+    // with relative filelist entries like usr/bin/ls
+    if (channel_config().format == crate::models::PackageFormat::Deb ||
+        channel_config().format == crate::models::PackageFormat::Pacman) &&
+        !options.u8_pattern.is_empty() &&
+        options.u8_pattern[0] == b'/' {
+        options.u8_pattern.remove(0);
+    }
+
+    search::search_repo_cache(&mut options)?;
+    Ok(())
+}
+
+fn command_gc(sub_matches: &clap::ArgMatches) -> Result<()> {
+    let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
+    gc::gc_epkg(old_downloads_days)?;
+    Ok(())
+}
+
+fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
+    match sub_matches.subcommand() {
+        Some(("install", _sub_matches)) => {
+            if find_env_base(SELF_ENV).is_none() {
+                install_epkg()?;
+            }
+
+            if find_env_base(MAIN_ENV).is_none() {
+                light_init()?;
+            } else {
+                eprintln!("epkg was already initialized for current user");
+            }
+        }
+        Some(("upgrade", _sub_matches)) => {
+            upgrade_epkg()?;
+        }
+        Some(("remove", sub_matches)) => {
+            if let Some(scope) = sub_matches.get_one::<String>("scope") {
+                deinit::deinit_epkg(scope)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

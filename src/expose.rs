@@ -8,7 +8,7 @@ use std::io::Write;
 use std::os::unix::fs::symlink;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use crate::models::{PackageManager, PackageFormat, SELF_ENV};
+use crate::models::{PackageFormat, SELF_ENV};
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::utils;
@@ -17,89 +17,86 @@ use crate::dirs;
 use crate::link::{hard_link_or_copy, replace_existing_symlink1, create_symlink2};
 use log;
 
-impl PackageManager {
-    // Create ebin wrappers.
-    // Returns a list of relative paths to the created ebin wrappers (relative to env_root).
-    fn expose_package(&self, store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
-        log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
-        let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
-        let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;
-        log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
-        let mut relative_ebin_links: Vec<String> = Vec::new();
-        for abs_path in absolute_ebin_paths {
-            match abs_path.strip_prefix(env_root) {
-                Ok(rel_path) => {
-                    relative_ebin_links.push(rel_path.to_string_lossy().into_owned());
-                }
-                Err(e) => {
-                    // Still log a warning, as this indicates a potential issue in path generation or env_root handling.
-                    log::warn!("Failed to strip prefix {} from path {} for store_fs_dir '{}': {}", env_root.display(), abs_path.display(), store_fs_dir.display(), e);
+// Create ebin wrappers.
+// Returns a list of relative paths to the created ebin wrappers (relative to env_root).
+fn expose_package(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
+    log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
+    let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
+    let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;
+    log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
+    let mut relative_ebin_links: Vec<String> = Vec::new();
+    for abs_path in absolute_ebin_paths {
+        match abs_path.strip_prefix(env_root) {
+            Ok(rel_path) => {
+                relative_ebin_links.push(rel_path.to_string_lossy().into_owned());
+            }
+            Err(e) => {
+                // Still log a warning, as this indicates a potential issue in path generation or env_root handling.
+                log::warn!("Failed to strip prefix {} from path {} for store_fs_dir '{}': {}", env_root.display(), abs_path.display(), store_fs_dir.display(), e);
+            }
+        }
+    }
+    log::debug!("expose_package for store_fs_dir '{}': returning {} relative_ebin_links: {:?}", store_fs_dir.display(), relative_ebin_links.len(), relative_ebin_links);
+    Ok(relative_ebin_links)
+}
+
+/// Handle unexpose operations (del_exposes)
+pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> Result<()> {
+    for (pkgkey, pkg_info) in plan.del_exposes.iter() {
+        // Remove ebin wrappers for packages being unexposed
+        if !pkg_info.ebin_links.is_empty() {
+            log::info!("Unexposing package: {}", pkgkey);
+            for relative_ebin_path_str in &pkg_info.ebin_links {
+                let ebin_path = env_root.join(relative_ebin_path_str);
+                if fs::symlink_metadata(&ebin_path).is_ok() {
+                    log::debug!("Removing ebin wrapper: {}", ebin_path.display());
+                    fs::remove_file(&ebin_path)
+                        .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
+                } else {
+                    log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
                 }
             }
         }
-        log::debug!("expose_package for store_fs_dir '{}': returning {} relative_ebin_links: {:?}", store_fs_dir.display(), relative_ebin_links.len(), relative_ebin_links);
-        Ok(relative_ebin_links)
+
+        // Update the package info to clear ebin_links
+        if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+            installed_package_info_mut.ebin_links.clear();
+            installed_package_info_mut.ebin_exposure = false;
+        }
     }
 
-    /// Handle unexpose operations (del_exposes)
-    pub fn execute_unexpose_operations(&mut self, plan: &InstallationPlan, env_root: &Path) -> Result<()> {
-        for (pkgkey, pkg_info) in plan.del_exposes.iter() {
-            // Remove ebin wrappers for packages being unexposed
-            if !pkg_info.ebin_links.is_empty() {
-                log::info!("Unexposing package: {}", pkgkey);
-                for relative_ebin_path_str in &pkg_info.ebin_links {
-                    let ebin_path = env_root.join(relative_ebin_path_str);
-                    if fs::symlink_metadata(&ebin_path).is_ok() {
-                        log::debug!("Removing ebin wrapper: {}", ebin_path.display());
-                        fs::remove_file(&ebin_path)
-                            .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
-                    } else {
-                        log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
-                    }
-                }
-            }
+    Ok(())
+}
 
-            // Update the package info to clear ebin_links
-            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                installed_package_info_mut.ebin_links.clear();
-                installed_package_info_mut.ebin_exposure = false;
-            }
+/// Handle expose operations (new_exposes)
+pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path) -> Result<()> {
+    for (pkgkey, _pkg_info) in plan.new_exposes.iter() {
+        log::info!("Exposing package: {}", pkgkey);
+
+        // Use the updated package info from installed_packages which has the correct pkgline
+        let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
+            .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
+            .clone();
+
+        // Check if pkgline is empty, which would indicate the package wasn't properly processed
+        if installed_pkg_info.pkgline.is_empty() {
+            return Err(eyre::eyre!("Package {} has empty pkgline, cannot expose. This indicates the package wasn't properly downloaded and processed.", pkgkey));
         }
 
-        Ok(())
-    }
+        let store_fs_dir = store_root.join(installed_pkg_info.pkgline.clone()).join("fs");
+        let links = expose_package(&store_fs_dir, &env_root.to_path_buf())
+            .with_context(|| format!("Failed to expose package {}", pkgkey))?;
 
-    /// Handle expose operations (new_exposes)
-    pub fn execute_expose_operations(&mut self, plan: &InstallationPlan, store_root: &Path, env_root: &Path) -> Result<()> {
-        for (pkgkey, _pkg_info) in plan.new_exposes.iter() {
-            log::info!("Exposing package: {}", pkgkey);
-
-            // Use the updated package info from self.installed_packages which has the correct pkgline
-            let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
-                .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
-                .clone();
-
-            // Check if pkgline is empty, which would indicate the package wasn't properly processed
-            if installed_pkg_info.pkgline.is_empty() {
-                return Err(eyre::eyre!("Package {} has empty pkgline, cannot expose. This indicates the package wasn't properly downloaded and processed.", pkgkey));
-            }
-
-            let store_fs_dir = store_root.join(installed_pkg_info.pkgline.clone()).join("fs");
-            let links = self.expose_package(&store_fs_dir, &env_root.to_path_buf())
-                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
-
-            // Update the package info with the new links
-            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                installed_package_info_mut.ebin_links = links.clone();
-                installed_package_info_mut.ebin_exposure = true;
-            } else {
-                log::warn!("execute_expose_operations: pkgkey '{}' from new_exposes not found in self.installed_packages. Ebin links not stored.", pkgkey);
-            }
+        // Update the package info with the new links
+        if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+            installed_package_info_mut.ebin_links = links.clone();
+            installed_package_info_mut.ebin_exposure = true;
+        } else {
+            log::warn!("execute_expose_operations: pkgkey '{}' from new_exposes not found in installed_packages. Ebin links not stored.", pkgkey);
         }
-
-        Ok(())
     }
 
+    Ok(())
 }
 
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {

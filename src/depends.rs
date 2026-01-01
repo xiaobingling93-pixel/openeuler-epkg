@@ -4,6 +4,11 @@ use color_eyre::eyre::WrapErr;
 use crate::models::*;
 use crate::models::PACKAGE_CACHE;
 use crate::resolvo::GenericDependencyProvider;
+use crate::aur::is_aur_package;
+use crate::world::{remove_from_no_install, get_no_install_set};
+use crate::io::load_installed_packages;
+use crate::plan::prepare_installation_plan;
+use crate::install::execute_installation_plan;
 
 /*
  * Debian Multi-Arch and Architecture Suffix Rules
@@ -59,1172 +64,1151 @@ use crate::resolvo::GenericDependencyProvider;
  * - https://www.debian.org/doc/debian-policy/ch-relationships.html#architecture-restrictions
  */
 
-impl PackageManager {
-    /// Extends ebin_exposure to packages that share the same source package as user-requested packages.
-    ///
-    /// This function identifies all source package names from packages that already have
-    /// `ebin_exposure` set to `true` (user-requested packages), then sets `ebin_exposure` to `true`
-    /// for all other packages in the provided map that share the same source package name.
-    ///
-    /// # Arguments
-    ///
-    /// * `packages` - A mutable reference to a HashMap of package keys to `InstalledPackageInfo`.
-    ///                Packages with `ebin_exposure == true` are considered user-requested.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` containing a HashMap of packages that had their `ebin_exposure` set to
-    /// `true` by this function (excluding those that were already exposed). Returns an error if
-    /// package information cannot be loaded.
-    fn extend_ebin_by_source(&mut self, packages: &mut InstalledPackagesMap) -> Result<InstalledPackagesMap> {
-        log::debug!("Setting ebin_exposure for {} packages based on source matching.", packages.len());
+/// Extends ebin_exposure to packages that share the same source package as user-requested packages.
+///
+/// This function identifies all source package names from packages that already have
+/// `ebin_exposure` set to `true` (user-requested packages), then sets `ebin_exposure` to `true`
+/// for all other packages in the provided map that share the same source package name.
+///
+/// # Arguments
+///
+/// * `packages` - A mutable reference to a HashMap of package keys to `InstalledPackageInfo`.
+///                Packages with `ebin_exposure == true` are considered user-requested.
+///
+/// # Returns
+///
+/// Returns a `Result` containing a HashMap of packages that had their `ebin_exposure` set to
+/// `true` by this function (excluding those that were already exposed). Returns an error if
+/// package information cannot be loaded.
+fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<InstalledPackagesMap> {
+    log::debug!("Setting ebin_exposure for {} packages based on source matching.", packages.len());
 
-        let mut user_requested_sources = std::collections::HashSet::new();
-        let mut packages_to_expose = HashMap::new();
+    let mut user_requested_sources = std::collections::HashSet::new();
+    let mut packages_to_expose = HashMap::new();
 
-        // First, collect all source package names from user-requested packages
-        // (packages with ebin_exposure == true are user-requested in THIS session)
-        for (pkgkey, info) in packages.iter() {
-            if info.ebin_exposure == true {
-                match crate::package_cache::load_package_info(pkgkey) {
-                    Ok(pkg_details) => {
-                        if let Some(source_name) = &pkg_details.source {
-                            if !source_name.is_empty() {
-                                user_requested_sources.insert(source_name.clone());
-                            }
+    // First, collect all source package names from user-requested packages
+    // (packages with ebin_exposure == true are user-requested in THIS session)
+    for (pkgkey, info) in packages.iter() {
+        if info.ebin_exposure == true {
+            match crate::package_cache::load_package_info(pkgkey) {
+                Ok(pkg_details) => {
+                    if let Some(source_name) = &pkg_details.source {
+                        if !source_name.is_empty() {
+                            user_requested_sources.insert(source_name.clone());
                         }
                     }
-                    Err(e) => {
-                        log::warn!("Failed to load package info for {}: {} during appbin source collection. Skipping.", pkgkey, e);
-                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to load package info for {}: {} during appbin source collection. Skipping.", pkgkey, e);
                 }
             }
         }
-        log::debug!("User-requested sources for ebin_exposure logic: {:?}", user_requested_sources);
+    }
+    log::debug!("User-requested sources for ebin_exposure logic: {:?}", user_requested_sources);
 
-        // Now, iterate again to set the ebin_exposure for all packages
-        // (both new and already-installed packages that share sources with user-requested packages)
-        for (pkgkey, info) in packages.iter_mut() {
-            if info.ebin_exposure == false {
-                // For dependencies, check if their source matches any user-requested source
-                match crate::package_cache::load_package_info(pkgkey) {
-                    Ok(pkg_details) => {
-                        if let Some(source_name) = &pkg_details.source {
-                            if !source_name.is_empty() && user_requested_sources.contains(source_name) {
-                                info.ebin_exposure = true;
-                                packages_to_expose.insert(pkgkey.clone(), info.clone());
-                            }
+    // Now, iterate again to set the ebin_exposure for all packages
+    // (both new and already-installed packages that share sources with user-requested packages)
+    for (pkgkey, info) in packages.iter_mut() {
+        if info.ebin_exposure == false {
+            // For dependencies, check if their source matches any user-requested source
+            match crate::package_cache::load_package_info(pkgkey) {
+                Ok(pkg_details) => {
+                    if let Some(source_name) = &pkg_details.source {
+                        if !source_name.is_empty() && user_requested_sources.contains(source_name) {
+                            info.ebin_exposure = true;
+                            packages_to_expose.insert(pkgkey.clone(), info.clone());
                         }
                     }
-                    Err(e) => {
-                        log::warn!("Failed to load package info for {}: {} during ebin_exposure setting. Defaulting ebin_exposure to false.", pkgkey, e);
-                        info.ebin_exposure = false; // Default to false if info can't be loaded
-                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to load package info for {}: {} during ebin_exposure setting. Defaulting ebin_exposure to false.", pkgkey, e);
+                    info.ebin_exposure = false; // Default to false if info can't be loaded
                 }
             }
         }
-        Ok(packages_to_expose)
+    }
+    Ok(packages_to_expose)
+}
+
+
+/// Setup resolvo provider and convert delta_world to requirements
+fn setup_resolvo_provider_and_requirements(
+    delta_world: &HashMap<String, String>,
+) -> Result<(GenericDependencyProvider, Vec<resolvo::ConditionalRequirement>)> {
+    let package_format = channel_config().format;
+
+    log::info!(
+        "Starting resolvo-based recursive dependency collection for {} packages in delta_world. Repo format: {:?}",
+        delta_world.len(),
+        package_format
+    );
+    log::debug!("delta_world contents: {:?}", delta_world);
+
+    // Detect and add Conda virtual packages to cache
+    if package_format == PackageFormat::Conda {
+        crate::package_cache::add_conda_virtual_packages_to_cache()?;
     }
 
+    // Create provider and convert delta_world to requirements
+    let mut provider = create_resolvo_provider(package_format, delta_world);
+    let requirements = convert_initial_packages_to_requirements(delta_world, &mut provider)?;
+    log::debug!("Converted {} requirements from delta_world", requirements.len());
 
-    /// Setup resolvo provider and convert delta_world to requirements
-    fn setup_resolvo_provider_and_requirements(
-        &mut self,
-        delta_world: &HashMap<String, String>,
-    ) -> Result<(GenericDependencyProvider, Vec<resolvo::ConditionalRequirement>)> {
-        let package_format = channel_config().format;
+    Ok((provider, requirements))
+}
 
-        log::info!(
-            "Starting resolvo-based recursive dependency collection for {} packages in delta_world. Repo format: {:?}",
-            delta_world.len(),
-            package_format
-        );
-        log::debug!("delta_world contents: {:?}", delta_world);
+/// Create a resolvo problem and solver from provider and requirements
+fn create_resolvo_problem_and_solver(
+    provider: GenericDependencyProvider,
+    requirements: Vec<resolvo::ConditionalRequirement>,
+) -> (resolvo::Problem<std::iter::Empty<resolvo::SolvableId>>, resolvo::Solver<GenericDependencyProvider>) {
+    use resolvo::{Problem, Solver};
+    let problem = Problem::new().requirements(requirements);
+    let solver = Solver::new(provider);
+    (problem, solver)
+}
 
-        // Detect and add Conda virtual packages to cache
-        if package_format == PackageFormat::Conda {
-            crate::package_cache::add_conda_virtual_packages_to_cache()?;
+/// Run a single solve pass with the given solver and problem
+/// Returns Ok(solvables) on success, or Err with a warning message on failure
+fn run_solve_pass(
+    solver: &mut resolvo::Solver<GenericDependencyProvider>,
+    problem: resolvo::Problem<std::iter::Empty<resolvo::SolvableId>>,
+    pass_name: &str,
+) -> Result<Vec<resolvo::SolvableId>> {
+    use resolvo::UnsolvableOrCancelled;
+
+    match solver.solve(problem) {
+        Ok(solvables) => {
+            log::debug!("Solver found solution with {} packages ({})", solvables.len(), pass_name);
+            Ok(solvables)
+        },
+        Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
+            let error_msg = problem.display_user_friendly(solver).to_string();
+            // Preserve the full formatted error message with tree structure
+            Err(color_eyre::eyre::eyre!("Dependency resolution failed for {}:\n{}", pass_name, error_msg))
         }
+        Err(UnsolvableOrCancelled::Cancelled(_)) => {
+            Err(color_eyre::eyre::eyre!("Dependency resolution was cancelled for {}", pass_name))
+        }
+    }
+}
 
-        // Create provider and convert delta_world to requirements
-        let mut provider = self.create_resolvo_provider(package_format, delta_world);
-        let requirements = self.convert_initial_packages_to_requirements(delta_world, &mut provider)?;
-        log::debug!("Converted {} requirements from delta_world", requirements.len());
+/// Solve dependencies with resolvo using the given flags
+fn solve_with_resolvo(
+    provider: GenericDependencyProvider,
+    requirements: Vec<resolvo::ConditionalRequirement>,
+    flags: crate::resolvo::DependFieldFlags,
+) -> Result<(resolvo::Solver<GenericDependencyProvider>, Vec<resolvo::SolvableId>)> {
+    // Update provider with the desired flags before creating solver
+    provider.update_depend_fields(flags);
 
-        Ok((provider, requirements))
+    // Create problem and solver
+    let (problem, mut solver) = create_resolvo_problem_and_solver(provider, requirements);
+
+    // Determine pass name based on flags
+    let package_format = channel_config().format;
+    let base_flags = if package_format == PackageFormat::Pacman {
+        crate::resolvo::DependFieldFlags::REQUIRES | crate::resolvo::DependFieldFlags::BUILD_REQUIRES
+    } else {
+        crate::resolvo::DependFieldFlags::REQUIRES
+    };
+    let pass_name = if flags != base_flags {
+        "1st pass (with RECOMMENDS/SUGGESTS)"
+    } else if package_format == PackageFormat::Pacman {
+        "2nd pass (REQUIRES|BUILD_REQUIRES only)"
+    } else {
+        "2nd pass (REQUIRES only)"
+    };
+
+    // Run solve pass
+    let solvables = run_solve_pass(&mut solver, problem, pass_name)?;
+    log::debug!("Solver resolved {} solvables", solvables.len());
+
+    Ok((solver, solvables))
+}
+
+/// Resolvo-based dependency resolver
+/// Internal function for core dependency resolution logic using resolvo SAT solver
+fn resolve_dependencies_with_resolvo(
+    delta_world: &HashMap<String, String>,
+    user_request_world: Option<&HashMap<String, String>>,
+) -> Result<InstalledPackagesMap> {
+    // Setup provider and requirements
+    let (provider, requirements) = setup_resolvo_provider_and_requirements(delta_world)?;
+    if requirements.is_empty() {
+        log::warn!("No valid packages to resolve");
+        return Err(color_eyre::eyre::eyre!("No requirements to solve"));
     }
 
-    /// Create a resolvo problem and solver from provider and requirements
-    fn create_resolvo_problem_and_solver(
-        &self,
-        provider: GenericDependencyProvider,
-        requirements: Vec<resolvo::ConditionalRequirement>,
-    ) -> (resolvo::Problem<std::iter::Empty<resolvo::SolvableId>>, resolvo::Solver<GenericDependencyProvider>) {
-        use resolvo::{Problem, Solver};
-        let problem = Problem::new().requirements(requirements);
-        let solver = Solver::new(provider);
-        (problem, solver)
+    // Determine flags to use: always include REQUIRES|BUILD_REQUIRES, try with RECOMMENDS/SUGGESTS if configured
+    let package_format = channel_config().format;
+    let (base_flags, base_flag_desc) = if package_format == PackageFormat::Pacman {
+        (
+            crate::resolvo::DependFieldFlags::REQUIRES | crate::resolvo::DependFieldFlags::BUILD_REQUIRES,
+            "REQUIRES|BUILD_REQUIRES",
+        )
+    } else {
+        (crate::resolvo::DependFieldFlags::REQUIRES, "REQUIRES")
+    };
+    let mut flags = base_flags;
+    if !config().install.no_install_recommends {
+        flags = flags | crate::resolvo::DependFieldFlags::RECOMMENDS;
+    }
+    if config().install.install_suggests {
+        flags = flags | crate::resolvo::DependFieldFlags::SUGGESTS;
     }
 
-    /// Run a single solve pass with the given solver and problem
-    /// Returns Ok(solvables) on success, or Err with a warning message on failure
-    fn run_solve_pass(
-        &self,
-        solver: &mut resolvo::Solver<GenericDependencyProvider>,
-        problem: resolvo::Problem<std::iter::Empty<resolvo::SolvableId>>,
-        pass_name: &str,
-    ) -> Result<Vec<resolvo::SolvableId>> {
-        use resolvo::UnsolvableOrCancelled;
+    // Try to solve with RECOMMENDS/SUGGESTS (if configured) - allow failure
+    let (solver, solvables) = match solve_with_resolvo(provider, requirements.clone(), flags) {
+        Ok(result) => result,
+        Err(e) if e.to_string().contains("No requirements to solve") => {
+            return Ok(HashMap::new());
+        }
+        Err(e) if flags != base_flags => {
+            // If we tried with additional flags and failed, warn and retry with REQUIRES|BUILD_REQUIRES only
+            log::warn!(
+                "Dependency resolution failed with RECOMMENDS/SUGGESTS: {}. Retrying with {} only.",
+                e,
+                base_flag_desc
+            );
 
-        match solver.solve(problem) {
-            Ok(solvables) => {
-                log::debug!("Solver found solution with {} packages ({})", solvables.len(), pass_name);
-                Ok(solvables)
-            },
-            Err(UnsolvableOrCancelled::Unsolvable(problem)) => {
-                let error_msg = problem.display_user_friendly(solver).to_string();
-                // Preserve the full formatted error message with tree structure
-                Err(color_eyre::eyre::eyre!("Dependency resolution failed for {}:\n{}", pass_name, error_msg))
+            // Create a fresh provider and solver for the retry
+            let (fresh_provider, _) = setup_resolvo_provider_and_requirements(delta_world)?;
+            match solve_with_resolvo(fresh_provider, requirements, base_flags) {
+                Ok(result) => result,
+                Err(e) => return Err(e),
             }
-            Err(UnsolvableOrCancelled::Cancelled(_)) => {
-                Err(color_eyre::eyre::eyre!("Dependency resolution was cancelled for {}", pass_name))
-            }
         }
+        Err(e) => return Err(e),
+    };
+
+    // Build dependency graph and create result
+    let result = build_installed_package_info_map(
+        &solver,
+        &solvables,
+        user_request_world,
+    )?;
+
+    log::info!("Collected {} packages with dependencies", result.len());
+    Ok(result)
+}
+
+/// Wrapper for resolvo-based dependency resolver that also injects makepkg
+/// build-time dependencies when resolving Pacman/AUR packages.
+///
+/// Flow:
+/// 1. Call `resolve_dependencies_with_resolvo` once.
+/// 2. If repo format is Pacman and any resolved package is an AUR package,
+///    extend `delta_world` with makepkg dependencies (`base-devel`, `gawk`,
+///    `libarchive`, `coreutils`) and remove those names from the no-install list.
+/// 3. Re-run `resolve_dependencies_with_resolvo` with the updated `delta_world`.
+fn resolve_dependencies_adding_makepkg_deps(
+    delta_world: &mut HashMap<String, String>,
+    user_request_world: Option<&HashMap<String, String>>,
+) -> Result<InstalledPackagesMap> {
+    // First pass: resolve with current delta_world
+    let mut all_packages_for_session =
+        resolve_dependencies_with_resolvo(delta_world, user_request_world)?;
+
+    // Only apply makepkg dependency handling for Pacman format
+    let package_format = channel_config().format;
+    if package_format != PackageFormat::Pacman {
+        return Ok(all_packages_for_session);
     }
 
-    /// Solve dependencies with resolvo using the given flags
-    fn solve_with_resolvo(
-        &self,
-        provider: GenericDependencyProvider,
-        requirements: Vec<resolvo::ConditionalRequirement>,
-        flags: crate::resolvo::DependFieldFlags,
-    ) -> Result<(resolvo::Solver<GenericDependencyProvider>, Vec<resolvo::SolvableId>)> {
-        // Update provider with the desired flags before creating solver
-        provider.update_depend_fields(flags);
+    // Check if any resolved package is an AUR package and whether any of them is a *-git package
+    let mut has_aur_packages = false;
+    let mut has_git_aur = false;
+    for pkgkey in all_packages_for_session.keys() {
+        if is_aur_package(pkgkey) {
+            has_aur_packages = true;
 
-        // Create problem and solver
-        let (problem, mut solver) = self.create_resolvo_problem_and_solver(provider, requirements);
-
-        // Determine pass name based on flags
-        let package_format = channel_config().format;
-        let base_flags = if package_format == PackageFormat::Pacman {
-            crate::resolvo::DependFieldFlags::REQUIRES | crate::resolvo::DependFieldFlags::BUILD_REQUIRES
-        } else {
-            crate::resolvo::DependFieldFlags::REQUIRES
-        };
-        let pass_name = if flags != base_flags {
-            "1st pass (with RECOMMENDS/SUGGESTS)"
-        } else if package_format == PackageFormat::Pacman {
-            "2nd pass (REQUIRES|BUILD_REQUIRES only)"
-        } else {
-            "2nd pass (REQUIRES only)"
-        };
-
-        // Run solve pass
-        let solvables = self.run_solve_pass(&mut solver, problem, pass_name)?;
-        log::debug!("Solver resolved {} solvables", solvables.len());
-
-        Ok((solver, solvables))
-    }
-
-    /// Resolvo-based dependency resolver
-    /// Internal function for core dependency resolution logic using resolvo SAT solver
-    fn resolve_dependencies_with_resolvo(
-        &mut self,
-        delta_world: &HashMap<String, String>,
-        user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<InstalledPackagesMap> {
-        // Setup provider and requirements
-        let (provider, requirements) = self.setup_resolvo_provider_and_requirements(delta_world)?;
-        if requirements.is_empty() {
-            log::warn!("No valid packages to resolve");
-            return Err(color_eyre::eyre::eyre!("No requirements to solve"));
-        }
-
-        // Determine flags to use: always include REQUIRES|BUILD_REQUIRES, try with RECOMMENDS/SUGGESTS if configured
-        let package_format = channel_config().format;
-        let (base_flags, base_flag_desc) = if package_format == PackageFormat::Pacman {
-            (
-                crate::resolvo::DependFieldFlags::REQUIRES | crate::resolvo::DependFieldFlags::BUILD_REQUIRES,
-                "REQUIRES|BUILD_REQUIRES",
-            )
-        } else {
-            (crate::resolvo::DependFieldFlags::REQUIRES, "REQUIRES")
-        };
-        let mut flags = base_flags;
-        if !config().install.no_install_recommends {
-            flags = flags | crate::resolvo::DependFieldFlags::RECOMMENDS;
-        }
-        if config().install.install_suggests {
-            flags = flags | crate::resolvo::DependFieldFlags::SUGGESTS;
-        }
-
-        // Try to solve with RECOMMENDS/SUGGESTS (if configured) - allow failure
-        let (solver, solvables) = match self.solve_with_resolvo(provider, requirements.clone(), flags) {
-            Ok(result) => result,
-            Err(e) if e.to_string().contains("No requirements to solve") => {
-                return Ok(HashMap::new());
-            }
-            Err(e) if flags != base_flags => {
-                // If we tried with additional flags and failed, warn and retry with REQUIRES|BUILD_REQUIRES only
-                log::warn!(
-                    "Dependency resolution failed with RECOMMENDS/SUGGESTS: {}. Retrying with {} only.",
-                    e,
-                    base_flag_desc
-                );
-
-                // Create a fresh provider and solver for the retry
-                let (fresh_provider, _) = self.setup_resolvo_provider_and_requirements(delta_world)?;
-                match self.solve_with_resolvo(fresh_provider, requirements, base_flags) {
-                    Ok(result) => result,
-                    Err(e) => return Err(e),
-                }
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Build dependency graph and create result
-        let result = self.build_installed_package_info_map(
-            &solver,
-            &solvables,
-            user_request_world,
-        )?;
-
-        log::info!("Collected {} packages with dependencies", result.len());
-        Ok(result)
-    }
-
-    /// Wrapper for resolvo-based dependency resolver that also injects makepkg
-    /// build-time dependencies when resolving Pacman/AUR packages.
-    ///
-    /// Flow:
-    /// 1. Call `resolve_dependencies_with_resolvo` once.
-    /// 2. If repo format is Pacman and any resolved package is an AUR package,
-    ///    extend `delta_world` with makepkg dependencies (`base-devel`, `gawk`,
-    ///    `libarchive`, `coreutils`) and remove those names from the no-install list.
-    /// 3. Re-run `resolve_dependencies_with_resolvo` with the updated `delta_world`.
-    fn resolve_dependencies_adding_makepkg_deps(
-        &mut self,
-        delta_world: &mut HashMap<String, String>,
-        user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<InstalledPackagesMap> {
-        // First pass: resolve with current delta_world
-        let mut all_packages_for_session =
-            self.resolve_dependencies_with_resolvo(delta_world, user_request_world)?;
-
-        // Only apply makepkg dependency handling for Pacman format
-        let package_format = channel_config().format;
-        if package_format != PackageFormat::Pacman {
-            return Ok(all_packages_for_session);
-        }
-
-        // Check if any resolved package is an AUR package and whether any of them is a *-git package
-        let mut has_aur_packages = false;
-        let mut has_git_aur = false;
-        for pkgkey in all_packages_for_session.keys() {
-            if self.is_aur_package(pkgkey) {
-                has_aur_packages = true;
-
-                // Extract pkgname from pkgkey and check for '-git' suffix
-                if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
-                    if pkgname.ends_with("-git") {
-                        has_git_aur = true;
-                        break;
-                    }
+            // Extract pkgname from pkgkey and check for '-git' suffix
+            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                if pkgname.ends_with("-git") {
+                    has_git_aur = true;
+                    break;
                 }
             }
         }
+    }
 
-        if !has_aur_packages {
-            return Ok(all_packages_for_session);
+    if !has_aur_packages {
+        return Ok(all_packages_for_session);
+    }
+
+    // Inject makepkg runtime/build-time dependencies into delta_world
+    let mut makepkg_depends: HashMap<String, String> = [
+        ("gnupg".to_string(), String::new()),
+        ("pacman".to_string(), String::new()),      // for makepkg
+        ("libarchive".to_string(), String::new()),  // for bsdtar
+        ("coreutils".to_string(), String::new()),
+        ("base-devel".to_string(), String::new()),
+    ]
+    .into_iter()
+    .collect();
+
+    // If any AUR package being resolved is a *-git package, ensure `git` itself is present
+    if has_git_aur {
+        makepkg_depends
+            .entry("git".to_string())
+            .or_insert_with(String::new);
+    }
+
+    // Extend delta_world without overwriting any existing constraints
+    for (pkgname, constraint) in &makepkg_depends {
+        delta_world.entry(pkgname.clone()).or_insert_with(|| constraint.clone());
+    }
+
+    // Remove makepkg dependencies from no-install list so they can be pulled in
+    remove_from_no_install(makepkg_depends.keys());
+
+    // Second pass: resolve again with updated delta_world
+    all_packages_for_session =
+        resolve_dependencies_with_resolvo(delta_world, user_request_world)?;
+
+    Ok(all_packages_for_session)
+}
+
+/// Resolves dependencies using resolvo SAT solver and performs full installation workflow
+pub fn resolve_and_install_packages(
+    delta_world: &mut HashMap<String, String>,
+    user_request_world: Option<&HashMap<String, String>>,
+) -> Result<crate::plan::InstallationPlan> {
+    use crate::plan::InstallationPlan;
+
+    // Remove "no-install" key - it's not a package
+    delta_world.remove("no-install");
+
+    load_installed_packages()?;
+
+    // Resolve dependencies (pass user_request_world to extract correct candidate pkgkeys)
+    let mut all_packages_for_session =
+        resolve_dependencies_adding_makepkg_deps(delta_world, user_request_world)?;
+
+    // Determine packages to expose based on source matching
+    let packages_to_expose = extend_ebin_by_source(&mut all_packages_for_session)?;
+
+    if packages_to_expose.is_empty() && all_packages_for_session.is_empty() {
+        let empty_msg = if user_request_world.is_some() {
+            "No packages to install or upgrade."
+        } else {
+            "No packages to upgrade."
+        };
+        println!("{}", empty_msg);
+        return Ok(InstallationPlan::default());
+    }
+
+    let mut plan = prepare_installation_plan(&all_packages_for_session)?;
+
+    // Fill pkglines for packages that already exist in the store
+    crate::store::fill_pkglines_in_plan(&mut plan)
+        .with_context(|| "Failed to find existing packages in store")?;
+
+    // If we reach here, actions_planned was true, user confirmed, and not dry_run.
+    // Proceed with actual installation steps by calling the unified execution method.
+    execute_installation_plan(plan)
+}
+
+/// Get candidate pkgkeys from capabilities (package names or provides)
+/// Uses get_candidates() to find packages that satisfy capabilities, which already handles provides
+/// Returns empty set if user_request_world is None
+/// Only includes pkgkeys that are in solvables
+fn get_candidate_pkgkeys_from_capabilities(
+    provider_ref: &GenericDependencyProvider,
+    solvables: &[resolvo::SolvableId],
+    user_request_world: Option<&HashMap<String, String>>,
+) -> Result<std::collections::HashSet<String>> {
+    use resolvo::DependencyProvider;
+    use resolvo::runtime::{AsyncRuntime, NowOrNeverRuntime};
+
+    // If user_request_world is None, return empty set
+    let capabilities_map = match user_request_world {
+        Some(user_request_world) => user_request_world,
+        None => {
+            return Ok(std::collections::HashSet::new());
         }
+    };
 
-        // Inject makepkg runtime/build-time dependencies into delta_world
-        let mut makepkg_depends: HashMap<String, String> = [
-            ("gnupg".to_string(), String::new()),
-            ("pacman".to_string(), String::new()),      // for makepkg
-            ("libarchive".to_string(), String::new()),  // for bsdtar
-            ("coreutils".to_string(), String::new()),
-            ("base-devel".to_string(), String::new()),
-        ]
-        .into_iter()
+    // Create a set of solvable pkgkeys for fast lookup
+    let solvable_pkgkeys: std::collections::HashSet<String> = solvables
+        .iter()
+        .map(|solvable_id| {
+            let record = &provider_ref.pool.resolve_solvable(*solvable_id).record;
+            record.pkgkey.clone()
+        })
         .collect();
 
-        // If any AUR package being resolved is a *-git package, ensure `git` itself is present
-        if has_git_aur {
-            makepkg_depends
-                .entry("git".to_string())
-                .or_insert_with(String::new);
-        }
+    let mut candidate_pkgkeys = std::collections::HashSet::new();
 
-        // Extend delta_world without overwriting any existing constraints
-        for (pkgname, constraint) in &makepkg_depends {
-            delta_world.entry(pkgname.clone()).or_insert_with(|| constraint.clone());
-        }
+    // For each capability in capabilities_map, get candidates using get_candidates()
+    // This already handles provides via load_packages_for_name
+    for capability in capabilities_map.keys() {
+        // Intern the capability name to get NameId
+        let name_id = provider_ref.pool.intern_package_name(
+            crate::resolvo::NameType(capability.clone())
+        );
 
-        // Remove makepkg dependencies from no-install list so they can be pulled in
-        self.remove_from_no_install(makepkg_depends.keys());
-
-        // Second pass: resolve again with updated delta_world
-        all_packages_for_session =
-            self.resolve_dependencies_with_resolvo(delta_world, user_request_world)?;
-
-        Ok(all_packages_for_session)
-    }
-
-    /// Resolves dependencies using resolvo SAT solver and performs full installation workflow
-    pub fn resolve_and_install_packages(
-        &mut self,
-        delta_world: &mut HashMap<String, String>,
-        user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<crate::plan::InstallationPlan> {
-        use crate::plan::InstallationPlan;
-
-        // Remove "no-install" key - it's not a package
-        delta_world.remove("no-install");
-
-        self.load_installed_packages()?;
-
-        // Resolve dependencies (pass user_request_world to extract correct candidate pkgkeys)
-        let mut all_packages_for_session =
-            self.resolve_dependencies_adding_makepkg_deps(delta_world, user_request_world)?;
-
-        // Determine packages to expose based on source matching
-        let packages_to_expose = self.extend_ebin_by_source(&mut all_packages_for_session)?;
-
-        if packages_to_expose.is_empty() && all_packages_for_session.is_empty() {
-            let empty_msg = if user_request_world.is_some() {
-                "No packages to install or upgrade."
-            } else {
-                "No packages to upgrade."
-            };
-            println!("{}", empty_msg);
-            return Ok(InstallationPlan::default());
-        }
-
-        let mut plan = self.prepare_installation_plan(&all_packages_for_session)?;
-
-        // Fill pkglines for packages that already exist in the store
-        crate::store::fill_pkglines_in_plan(&mut plan, self)
-            .with_context(|| "Failed to find existing packages in store")?;
-
-        // If we reach here, actions_planned was true, user confirmed, and not dry_run.
-        // Proceed with actual installation steps by calling the unified execution method.
-        self.execute_installation_plan(plan)
-    }
-
-    /// Get candidate pkgkeys from capabilities (package names or provides)
-    /// Uses get_candidates() to find packages that satisfy capabilities, which already handles provides
-    /// Returns empty set if user_request_world is None
-    /// Only includes pkgkeys that are in solvables
-    fn get_candidate_pkgkeys_from_capabilities(
-        &mut self,
-        provider_ref: &GenericDependencyProvider,
-        solvables: &[resolvo::SolvableId],
-        user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<std::collections::HashSet<String>> {
-        use resolvo::DependencyProvider;
-        use resolvo::runtime::{AsyncRuntime, NowOrNeverRuntime};
-
-        // If user_request_world is None, return empty set
-        let capabilities_map = match user_request_world {
-            Some(user_request_world) => user_request_world,
-            None => {
-                return Ok(std::collections::HashSet::new());
-            }
-        };
-
-        // Create a set of solvable pkgkeys for fast lookup
-        let solvable_pkgkeys: std::collections::HashSet<String> = solvables
-            .iter()
-            .map(|solvable_id| {
-                let record = &provider_ref.pool.resolve_solvable(*solvable_id).record;
-                record.pkgkey.clone()
-            })
-            .collect();
-
-        let mut candidate_pkgkeys = std::collections::HashSet::new();
-
-        // For each capability in capabilities_map, get candidates using get_candidates()
+        // Call get_candidates to get packages that satisfy this requirement
         // This already handles provides via load_packages_for_name
-        for capability in capabilities_map.keys() {
-            // Intern the capability name to get NameId
-            let name_id = provider_ref.pool.intern_package_name(
-                crate::resolvo::NameType(capability.clone())
-            );
-
-            // Call get_candidates to get packages that satisfy this requirement
-            // This already handles provides via load_packages_for_name
-            match NowOrNeverRuntime::default().block_on(provider_ref.get_candidates(name_id)) {
-                Some(candidates) => {
-                    for solvable_id in &candidates.candidates {
-                        let record = &provider_ref.pool.resolve_solvable(*solvable_id).record;
-                        // Only add if this pkgkey is in solvables
-                        if solvable_pkgkeys.contains(&record.pkgkey) {
-                            candidate_pkgkeys.insert(record.pkgkey.clone());
-                            log::debug!("[RESOLVO] Found candidate pkgkey: {} (pkgkey: {})", record.pkgname, record.pkgkey);
-                        }
+        match NowOrNeverRuntime::default().block_on(provider_ref.get_candidates(name_id)) {
+            Some(candidates) => {
+                for solvable_id in &candidates.candidates {
+                    let record = &provider_ref.pool.resolve_solvable(*solvable_id).record;
+                    // Only add if this pkgkey is in solvables
+                    if solvable_pkgkeys.contains(&record.pkgkey) {
+                        candidate_pkgkeys.insert(record.pkgkey.clone());
+                        log::debug!("[RESOLVO] Found candidate pkgkey: {} (pkgkey: {})", record.pkgname, record.pkgkey);
                     }
                 }
-                None => {
-                    log::warn!("[RESOLVO] No candidates found for capability: {}", capability);
+            }
+            None => {
+                log::warn!("[RESOLVO] No candidates found for capability: {}", capability);
+            }
+        }
+    }
+
+    log::debug!("[RESOLVO] Extracted {} candidate pkgkeys from capabilities", candidate_pkgkeys.len());
+    Ok(candidate_pkgkeys)
+}
+
+/// Create a resolvo dependency provider
+fn create_resolvo_provider(format: PackageFormat, delta_world: &HashMap<String, String>) -> GenericDependencyProvider {
+    use crate::resolvo::DependFieldFlags;
+    let depend_fields = DependFieldFlags::REQUIRES;
+
+    let delta_world_keys: std::collections::HashSet<String> = delta_world.keys().cloned().collect();
+
+    // Extract no-install list from world (space-separated string)
+    let no_install = get_no_install_set();
+
+    GenericDependencyProvider::new(
+        format,
+        depend_fields,
+        delta_world_keys,
+        no_install,
+    )
+}
+
+/// Convert delta_world to resolvo requirements
+/// delta_world is a HashMap<String, String> where:
+/// - Key: package name
+/// - Value: version constraint string (empty string means no constraint)
+/// Supports version constraints from world.json format
+fn convert_initial_packages_to_requirements(
+    delta_world: &HashMap<String, String>,
+    provider: &mut GenericDependencyProvider,
+) -> Result<Vec<resolvo::ConditionalRequirement>> {
+    let mut requirements = Vec::new();
+    let ignore_missing = crate::models::config().common.ignore_missing;
+
+    for (pkgname, constraint_str) in delta_world {
+        // Check if package/capability exists when ignore_missing is enabled
+        if ignore_missing && !check_package_or_capability_exists(pkgname) {
+            log::warn!(
+                "Package/capability '{}' not found, skipping (ignore_missing=true)",
+                pkgname
+            );
+            continue;
+        }
+
+        // Parse constraint string from delta_world (or use world.json if delta_world has empty string)
+        let final_constraints = if constraint_str.is_empty() {
+            // No constraint in delta_world, check world.json
+            PACKAGE_CACHE.world.read().unwrap().get(pkgname)
+                .and_then(|world_constraint_str| {
+                    if world_constraint_str.is_empty() {
+                        None
+                    } else {
+                        crate::parse_requires::parse_world_constraint(world_constraint_str)
+                    }
+                })
+        } else {
+            // Use constraint from delta_world
+            crate::parse_requires::parse_world_constraint(constraint_str)
+        };
+
+        if let Some(constraints) = final_constraints {
+            // Create requirement with constraints
+            log::debug!("Using version constraints for '{}': constraints={:?}",
+                pkgname, constraints);
+            let requirement = create_constrained_requirement(pkgname, &constraints, provider);
+            requirements.push(requirement);
+        } else {
+            // No version constraints - create requirement for any version
+            // Note: We don't skip already installed packages here since resolvo will handle that
+            let requirement = create_package_name_requirement(pkgname, provider);
+            requirements.push(requirement);
+        }
+    }
+
+    Ok(requirements)
+}
+
+/// Check if a package or capability exists in the repository
+/// Returns true if packages are found, false otherwise
+fn check_package_or_capability_exists(name: &str) -> bool {
+    // First, try direct package name lookup
+    match crate::package_cache::map_pkgname2packages(name) {
+        Ok(packages) if !packages.is_empty() => return true,
+        _ => {}
+    }
+
+    // If no packages found, try capability/provide lookup
+    match crate::mmio::map_provide2pkgnames(name) {
+        Ok(provider_pkgnames) => {
+            for provider_pkgname in provider_pkgnames {
+                match crate::package_cache::map_pkgname2packages(&provider_pkgname) {
+                    Ok(packages) if !packages.is_empty() => return true,
+                    _ => continue,
                 }
             }
         }
-
-        log::debug!("[RESOLVO] Extracted {} candidate pkgkeys from capabilities", candidate_pkgkeys.len());
-        Ok(candidate_pkgkeys)
+        _ => {}
     }
 
-    /// Create a resolvo dependency provider
-    fn create_resolvo_provider(&mut self, format: PackageFormat, delta_world: &HashMap<String, String>) -> GenericDependencyProvider {
-        use crate::resolvo::DependFieldFlags;
-        let depend_fields = DependFieldFlags::REQUIRES;
+    false
+}
 
-        let delta_world_keys: std::collections::HashSet<String> = delta_world.keys().cloned().collect();
+/// Create a requirement that matches any version of a package
+/// This allows the solver to choose the best version that satisfies all constraints
+fn create_package_name_requirement(
+    pkgname: &str,
+    provider: &mut GenericDependencyProvider,
+) -> resolvo::ConditionalRequirement {
+    use resolvo::ConditionalRequirement;
 
-        // Extract no-install list from world (space-separated string)
-        let no_install = self.get_no_install_set();
+    // Intern package name
+    let name_id = provider.pool.intern_package_name(
+        crate::resolvo::NameType(pkgname.to_string())
+    );
 
-        GenericDependencyProvider::new(
-            format,
-            depend_fields,
-            self as *mut PackageManager,
-            delta_world_keys,
-            no_install,
-        )
+    // Create a version set that matches any version (no constraints)
+    let pkg_depend = crate::parse_requires::PkgDepend {
+        capability: pkgname.to_string(),
+        constraints: Vec::new(), // No constraints = matches any version
+    };
+    let or_deps = vec![pkg_depend];
+    let and_deps = vec![or_deps];
+    let version_set_id = provider.pool.intern_version_set(
+        name_id,
+        crate::resolvo::SolverMatchSpec::MatchSpec(and_deps),
+    );
+
+    ConditionalRequirement {
+        requirement: version_set_id.into(),
+        condition: None,
     }
+}
 
-    /// Convert delta_world to resolvo requirements
-    /// delta_world is a HashMap<String, String> where:
-    /// - Key: package name
-    /// - Value: version constraint string (empty string means no constraint)
-    /// Supports version constraints from world.json format
-    fn convert_initial_packages_to_requirements(
-        &mut self,
-        delta_world: &HashMap<String, String>,
-        provider: &mut GenericDependencyProvider,
-    ) -> Result<Vec<resolvo::ConditionalRequirement>> {
-        let mut requirements = Vec::new();
-        let ignore_missing = crate::models::config().common.ignore_missing;
+/// Create a requirement with version constraints
+/// Supports constraints like =, >=, >, <=, <, !=, ~=
+fn create_constrained_requirement(
+    pkgname: &str,
+    constraints: &[crate::parse_requires::VersionConstraint],
+    provider: &mut GenericDependencyProvider,
+) -> resolvo::ConditionalRequirement {
+    use resolvo::ConditionalRequirement;
 
-        for (pkgname, constraint_str) in delta_world {
-            // Check if package/capability exists when ignore_missing is enabled
-            if ignore_missing && !self.check_package_or_capability_exists(pkgname) {
-                log::warn!(
-                    "Package/capability '{}' not found, skipping (ignore_missing=true)",
-                    pkgname
-                );
+    // Intern package name
+    let name_id = provider.pool.intern_package_name(
+        crate::resolvo::NameType(pkgname.to_string())
+    );
+
+    // Create a version set with the specified constraints
+    let pkg_depend = crate::parse_requires::PkgDepend {
+        capability: pkgname.to_string(),
+        constraints: constraints.to_vec(),
+    };
+    let or_deps = vec![pkg_depend];
+    let and_deps = vec![or_deps];
+    let version_set_id = provider.pool.intern_version_set(
+        name_id,
+        crate::resolvo::SolverMatchSpec::MatchSpec(and_deps),
+    );
+
+    ConditionalRequirement {
+        requirement: version_set_id.into(),
+        condition: None,
+    }
+}
+
+/// Build dependency graph and create InstalledPackageInfo map
+fn build_installed_package_info_map(
+    solver: &resolvo::Solver<GenericDependencyProvider>,
+    solvables: &[resolvo::SolvableId],
+    user_request_world: Option<&HashMap<String, String>>,
+) -> Result<InstalledPackagesMap> {
+    let provider_ref = solver.provider();
+    let format = provider_ref.format;
+
+    // Extract request_world pkgkeys: candidate pkgkeys for user_request_world (handles provides)
+    // request_world_pkgkeys is only used for ebin_exposure computing, not for depth calculation
+    let request_world_pkgkeys = get_candidate_pkgkeys_from_capabilities(
+        provider_ref,
+        solvables,
+        user_request_world,
+    )?;
+    log::debug!("[RESOLVO] Found {} request_world pkgkeys out of {} resolved solvables: {:?}", request_world_pkgkeys.len(), solvables.len(), request_world_pkgkeys);
+
+    // Build dependency graph from resolved solvables
+    let (pkgkey_to_depends, pkgkey_to_rdepends) =
+        build_dependency_graph(provider_ref, solvables)?;
+
+    // For Pacman format, also build build-dependency graph
+    let (pkgkey_to_bdepends, pkgkey_to_rbdepends) = if format == PackageFormat::Pacman {
+        log::debug!("[RESOLVO] Building build-dependency graph for Pacman format");
+        // Update provider to use BUILD_REQUIRES only
+        provider_ref.update_depend_fields(crate::resolvo::DependFieldFlags::BUILD_REQUIRES);
+        let (bdepends, rbdepends) = build_dependency_graph(provider_ref, solvables)?;
+        (bdepends, rbdepends)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+
+    // Calculate dependency depths
+    let pkgkey_to_depth = calculate_pkgkey_to_depth(
+        &pkgkey_to_depends,
+        &pkgkey_to_rdepends,
+        &pkgkey_to_bdepends,
+        &pkgkey_to_rbdepends,
+    )?;
+
+    // Create InstalledPackageInfo entries with correct depths
+    let result = create_installed_package_info_map(
+        provider_ref,
+        solvables,
+        &pkgkey_to_depends,
+        &pkgkey_to_rdepends,
+        &pkgkey_to_bdepends,
+        &pkgkey_to_rbdepends,
+        &pkgkey_to_depth,
+        &request_world_pkgkeys,
+    )?;
+
+    Ok(result)
+}
+
+/// Build dependency graph from resolved solvables.
+///
+/// This function builds a dependency graph by:
+/// 1. Processing all resolved solvables to extract their dependencies
+/// 2. Ensuring all solvables have entries in the dependency maps (even if empty)
+fn build_dependency_graph(
+    provider_ref: &GenericDependencyProvider,
+    solvables: &[resolvo::SolvableId],
+) -> Result<(
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+)> {
+    use resolvo::{DependencyProvider, Interner};
+    use resolvo::runtime::{AsyncRuntime, NowOrNeverRuntime};
+
+    let mut pkgkey_to_depends: HashMap<String, Vec<String>> = HashMap::new();
+    let mut pkgkey_to_rdepends: HashMap<String, Vec<String>> = HashMap::new();
+
+    // First pass: collect all resolved packages and build dependency graph
+    // Ensure each solvable has an entry in pkgkey_to_depends (even if empty)
+    for solvable_id in solvables {
+        let record = &provider_ref.pool.resolve_solvable(*solvable_id).record;
+        let pkgkey = record.pkgkey.clone();
+
+        // Ensure entry exists (may be empty vec)
+        pkgkey_to_depends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+
+        // Load package to get full info
+        let _package = match crate::package_cache::load_package_info(&pkgkey) {
+            Ok(pkg) => (*pkg).clone(),
+            Err(e) => {
+                log::warn!("Failed to load resolved package {}: {}", pkgkey, e);
                 continue;
             }
-
-            // Parse constraint string from delta_world (or use world.json if delta_world has empty string)
-            let final_constraints = if constraint_str.is_empty() {
-                // No constraint in delta_world, check world.json
-                PACKAGE_CACHE.world.read().unwrap().get(pkgname)
-                    .and_then(|world_constraint_str| {
-                        if world_constraint_str.is_empty() {
-                            None
-                        } else {
-                            crate::parse_requires::parse_world_constraint(world_constraint_str)
-                        }
-                    })
-            } else {
-                // Use constraint from delta_world
-                crate::parse_requires::parse_world_constraint(constraint_str)
-            };
-
-            if let Some(constraints) = final_constraints {
-                // Create requirement with constraints
-                log::debug!("Using version constraints for '{}': constraints={:?}",
-                    pkgname, constraints);
-                let requirement = self.create_constrained_requirement(pkgname, &constraints, provider);
-                requirements.push(requirement);
-            } else {
-                // No version constraints - create requirement for any version
-                // Note: We don't skip already installed packages here since resolvo will handle that
-                let requirement = self.create_package_name_requirement(pkgname, provider);
-                requirements.push(requirement);
-            }
-        }
-
-        Ok(requirements)
-    }
-
-    /// Check if a package or capability exists in the repository
-    /// Returns true if packages are found, false otherwise
-    fn check_package_or_capability_exists(&mut self, name: &str) -> bool {
-        // First, try direct package name lookup
-        match crate::package_cache::map_pkgname2packages(name) {
-            Ok(packages) if !packages.is_empty() => return true,
-            _ => {}
-        }
-
-        // If no packages found, try capability/provide lookup
-        match crate::mmio::map_provide2pkgnames(name) {
-            Ok(provider_pkgnames) => {
-                for provider_pkgname in provider_pkgnames {
-                    match crate::package_cache::map_pkgname2packages(&provider_pkgname) {
-                        Ok(packages) if !packages.is_empty() => return true,
-                        _ => continue,
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        false
-    }
-
-    /// Create a requirement that matches any version of a package
-    /// This allows the solver to choose the best version that satisfies all constraints
-    fn create_package_name_requirement(
-        &self,
-        pkgname: &str,
-        provider: &mut GenericDependencyProvider,
-    ) -> resolvo::ConditionalRequirement {
-        use resolvo::ConditionalRequirement;
-
-        // Intern package name
-        let name_id = provider.pool.intern_package_name(
-            crate::resolvo::NameType(pkgname.to_string())
-        );
-
-        // Create a version set that matches any version (no constraints)
-        let pkg_depend = crate::parse_requires::PkgDepend {
-            capability: pkgname.to_string(),
-            constraints: Vec::new(), // No constraints = matches any version
-        };
-        let or_deps = vec![pkg_depend];
-        let and_deps = vec![or_deps];
-        let version_set_id = provider.pool.intern_version_set(
-            name_id,
-            crate::resolvo::SolverMatchSpec::MatchSpec(and_deps),
-        );
-
-        ConditionalRequirement {
-            requirement: version_set_id.into(),
-            condition: None,
-        }
-    }
-
-    /// Create a requirement with version constraints
-    /// Supports constraints like =, >=, >, <=, <, !=, ~=
-    fn create_constrained_requirement(
-        &self,
-        pkgname: &str,
-        constraints: &[crate::parse_requires::VersionConstraint],
-        provider: &mut GenericDependencyProvider,
-    ) -> resolvo::ConditionalRequirement {
-        use resolvo::ConditionalRequirement;
-
-        // Intern package name
-        let name_id = provider.pool.intern_package_name(
-            crate::resolvo::NameType(pkgname.to_string())
-        );
-
-        // Create a version set with the specified constraints
-        let pkg_depend = crate::parse_requires::PkgDepend {
-            capability: pkgname.to_string(),
-            constraints: constraints.to_vec(),
-        };
-        let or_deps = vec![pkg_depend];
-        let and_deps = vec![or_deps];
-        let version_set_id = provider.pool.intern_version_set(
-            name_id,
-            crate::resolvo::SolverMatchSpec::MatchSpec(and_deps),
-        );
-
-        ConditionalRequirement {
-            requirement: version_set_id.into(),
-            condition: None,
-        }
-    }
-
-    /// Build dependency graph and create InstalledPackageInfo map
-    fn build_installed_package_info_map(
-        &mut self,
-        solver: &resolvo::Solver<GenericDependencyProvider>,
-        solvables: &[resolvo::SolvableId],
-        user_request_world: Option<&HashMap<String, String>>,
-    ) -> Result<InstalledPackagesMap> {
-        let provider_ref = solver.provider();
-        let format = provider_ref.format;
-
-        // Extract request_world pkgkeys: candidate pkgkeys for user_request_world (handles provides)
-        // request_world_pkgkeys is only used for ebin_exposure computing, not for depth calculation
-        let request_world_pkgkeys = self.get_candidate_pkgkeys_from_capabilities(
-            provider_ref,
-            solvables,
-            user_request_world,
-        )?;
-        log::debug!("[RESOLVO] Found {} request_world pkgkeys out of {} resolved solvables: {:?}", request_world_pkgkeys.len(), solvables.len(), request_world_pkgkeys);
-
-        // Build dependency graph from resolved solvables
-        let (pkgkey_to_depends, pkgkey_to_rdepends) =
-            self.build_dependency_graph(provider_ref, solvables)?;
-
-        // For Pacman format, also build build-dependency graph
-        let (pkgkey_to_bdepends, pkgkey_to_rbdepends) = if format == PackageFormat::Pacman {
-            log::debug!("[RESOLVO] Building build-dependency graph for Pacman format");
-            // Update provider to use BUILD_REQUIRES only
-            provider_ref.update_depend_fields(crate::resolvo::DependFieldFlags::BUILD_REQUIRES);
-            let (bdepends, rbdepends) = self.build_dependency_graph(provider_ref, solvables)?;
-            (bdepends, rbdepends)
-        } else {
-            (HashMap::new(), HashMap::new())
         };
 
-        // Calculate dependency depths
-        let pkgkey_to_depth = self.calculate_pkgkey_to_depth(
-            &pkgkey_to_depends,
-            &pkgkey_to_rdepends,
-            &pkgkey_to_bdepends,
-            &pkgkey_to_rbdepends,
-        )?;
-
-        // Create InstalledPackageInfo entries with correct depths
-        let result = self.create_installed_package_info_map(
-            provider_ref,
-            solvables,
-            &pkgkey_to_depends,
-            &pkgkey_to_rdepends,
-            &pkgkey_to_bdepends,
-            &pkgkey_to_rbdepends,
-            &pkgkey_to_depth,
-            &request_world_pkgkeys,
-        )?;
-
-        Ok(result)
-    }
-
-    /// Build dependency graph from resolved solvables.
-    ///
-    /// This function builds a dependency graph by:
-    /// 1. Processing all resolved solvables to extract their dependencies
-    /// 2. Ensuring all solvables have entries in the dependency maps (even if empty)
-    fn build_dependency_graph(
-        &mut self,
-        provider_ref: &GenericDependencyProvider,
-        solvables: &[resolvo::SolvableId],
-    ) -> Result<(
-        HashMap<String, Vec<String>>,
-        HashMap<String, Vec<String>>,
-    )> {
-        use resolvo::{DependencyProvider, Interner};
-        use resolvo::runtime::{AsyncRuntime, NowOrNeverRuntime};
-
-        let mut pkgkey_to_depends: HashMap<String, Vec<String>> = HashMap::new();
-        let mut pkgkey_to_rdepends: HashMap<String, Vec<String>> = HashMap::new();
-
-        // First pass: collect all resolved packages and build dependency graph
-        // Ensure each solvable has an entry in pkgkey_to_depends (even if empty)
-        for solvable_id in solvables {
-            let record = &provider_ref.pool.resolve_solvable(*solvable_id).record;
-            let pkgkey = record.pkgkey.clone();
-
-            // Ensure entry exists (may be empty vec)
-            pkgkey_to_depends.entry(pkgkey.clone()).or_insert_with(Vec::new);
-
-            // Load package to get full info
-            let _package = match crate::package_cache::load_package_info(&pkgkey) {
-                Ok(pkg) => (*pkg).clone(),
-                Err(e) => {
-                    log::warn!("Failed to load resolved package {}: {}", pkgkey, e);
-                    continue;
-                }
-            };
-
-            // Get dependencies for this package
-            let deps = match NowOrNeverRuntime::default().block_on(provider_ref.get_dependencies(*solvable_id)) {
-                resolvo::Dependencies::Known(known_deps) => known_deps,
-                resolvo::Dependencies::Unknown(reason) => {
-                    let reason_str = provider_ref.display_string(reason).to_string();
-                    log::warn!("Dependencies unknown for {}: {}", pkgkey, reason_str);
-                    continue;
-                }
-            };
-
-            // Extract dependency pkgkeys
-            let dep_pkgkeys = self.extract_dependency_pkgkeys(provider_ref, solvables, &deps.requirements);
-            pkgkey_to_depends.insert(pkgkey.clone(), dep_pkgkeys.clone());
-
-            // Update reverse dependencies
-            for dep_pkgkey in &dep_pkgkeys {
-                pkgkey_to_rdepends
-                    .entry(dep_pkgkey.clone())
-                    .or_insert_with(Vec::new)
-                    .push(pkgkey.clone());
+        // Get dependencies for this package
+        let deps = match NowOrNeverRuntime::default().block_on(provider_ref.get_dependencies(*solvable_id)) {
+            resolvo::Dependencies::Known(known_deps) => known_deps,
+            resolvo::Dependencies::Unknown(reason) => {
+                let reason_str = provider_ref.display_string(reason).to_string();
+                log::warn!("Dependencies unknown for {}: {}", pkgkey, reason_str);
+                continue;
             }
-        }
+        };
 
-        Ok((pkgkey_to_depends, pkgkey_to_rdepends))
+        // Extract dependency pkgkeys
+        let dep_pkgkeys = extract_dependency_pkgkeys(provider_ref, solvables, &deps.requirements);
+        pkgkey_to_depends.insert(pkgkey.clone(), dep_pkgkeys.clone());
+
+        // Update reverse dependencies
+        for dep_pkgkey in &dep_pkgkeys {
+            pkgkey_to_rdepends
+                .entry(dep_pkgkey.clone())
+                .or_insert_with(Vec::new)
+                .push(pkgkey.clone());
+        }
     }
 
-    /// Extract pkgkeys from dependency requirements
-    fn extract_dependency_pkgkeys(
-        &self,
-        provider_ref: &GenericDependencyProvider,
-        solvables: &[resolvo::SolvableId],
-        requirements: &[resolvo::ConditionalRequirement],
-    ) -> Vec<String> {
-        use resolvo::{Interner, VersionSetId};
+    Ok((pkgkey_to_depends, pkgkey_to_rdepends))
+}
 
-        let mut dep_pkgkeys = Vec::new();
+/// Extract pkgkeys from dependency requirements
+fn extract_dependency_pkgkeys(
+    provider_ref: &GenericDependencyProvider,
+    solvables: &[resolvo::SolvableId],
+    requirements: &[resolvo::ConditionalRequirement],
+) -> Vec<String> {
+    use resolvo::{Interner, VersionSetId};
 
-        for req in requirements {
-            // Extract version set IDs from the requirement
-            let version_set_ids: Vec<VersionSetId> = match req.requirement {
-                resolvo::Requirement::Single(version_set_id) => vec![version_set_id],
-                resolvo::Requirement::Union(union_id) => {
-                    provider_ref.version_sets_in_union(union_id).collect()
-                }
-            };
+    let mut dep_pkgkeys = Vec::new();
 
-            for version_set_id in version_set_ids {
-                let dep_name_id = provider_ref.version_set_name(version_set_id);
-                let dep_name = provider_ref.display_name(dep_name_id).to_string();
-
-                // Find the solvable that satisfies this requirement
-                // Check both direct pkgname match and provides
-                for other_solvable_id in solvables {
-                    let other_record = &provider_ref.pool.resolve_solvable(*other_solvable_id).record;
-                    // Check direct pkgname match
-                    if other_record.pkgname == dep_name {
-                        dep_pkgkeys.push(other_record.pkgkey.clone());
-                        break;
-                    }
-                    // Check if package provides the capability
-                    if provider_ref.package_provides_capability(&other_record.pkgkey, &dep_name) {
-                        dep_pkgkeys.push(other_record.pkgkey.clone());
-                        break;
-                    }
-                }
+    for req in requirements {
+        // Extract version set IDs from the requirement
+        let version_set_ids: Vec<VersionSetId> = match req.requirement {
+            resolvo::Requirement::Single(version_set_id) => vec![version_set_id],
+            resolvo::Requirement::Union(union_id) => {
+                provider_ref.version_sets_in_union(union_id).collect()
             }
-        }
+        };
 
-        dep_pkgkeys
-    }
+        for version_set_id in version_set_ids {
+            let dep_name_id = provider_ref.version_set_name(version_set_id);
+            let dep_name = provider_ref.display_name(dep_name_id).to_string();
 
-    /// Find leaf nodes (packages with no reverse dependencies)
-    fn find_leaf_nodes_by_rdepends(
-        remaining_rdepends: &HashMap<String, Vec<String>>,
-    ) -> Vec<String> {
-        remaining_rdepends
-            .iter()
-            .filter(|(_, rdepends)| rdepends.is_empty())
-            .map(|(pkgkey, _)| pkgkey.clone())
-            .collect()
-    }
-
-    /// Find leaf nodes by checking build reverse dependencies
-    fn find_leaf_nodes_by_rbdepends(
-        remaining_rbdepends: &HashMap<String, Vec<String>>,
-    ) -> Vec<String> {
-        remaining_rbdepends
-            .iter()
-            .filter(|(_, rbdepends)| rbdepends.is_empty())
-            .map(|(pkgkey, _)| pkgkey.clone())
-            .collect()
-    }
-
-    /// Find candidate node with least build reverse dependencies for breaking circular dependencies
-    fn find_candidate_with_least_rbdepends(
-        remaining_rbdepends: &HashMap<String, Vec<String>>,
-    ) -> Option<String> {
-        remaining_rbdepends
-            .iter()
-            .filter(|(_, rbdepends)| !rbdepends.is_empty())
-            .min_by_key(|(_, rbdepends)| rbdepends.len())
-            .map(|(pkgkey, _)| pkgkey.clone())
-    }
-
-    /// Find candidate node with least regular reverse dependencies for breaking circular dependencies
-    fn find_candidate_with_least_rdepends(
-        remaining_rdepends: &HashMap<String, Vec<String>>,
-    ) -> Option<String> {
-        remaining_rdepends
-            .iter()
-            .filter(|(_, rdepends)| !rdepends.is_empty())
-            .min_by_key(|(_, rdepends)| rdepends.len())
-            .map(|(pkgkey, _)| pkgkey.clone())
-    }
-
-    /// Remove a node from the dependency graph and update reverse dependencies
-    fn remove_node_and_update_dependencies(
-        node: &str,
-        pkgkey_to_depends: &HashMap<String, Vec<String>>,
-        pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-        remaining_rdepends: &mut HashMap<String, Vec<String>>,
-        remaining_rbdepends: &mut HashMap<String, Vec<String>>,
-    ) {
-        // Remove node from tracking maps
-        remaining_rdepends.remove(node);
-        remaining_rbdepends.remove(node);
-
-        // Update reverse regular dependencies
-        if let Some(depends_list) = pkgkey_to_depends.get(node) {
-            for dep_pkgkey in depends_list {
-                if let Some(rdepends) = remaining_rdepends.get_mut(dep_pkgkey) {
-                    rdepends.retain(|x| x != node);
-                }
-            }
-        }
-
-        // Update reverse build dependencies
-        if let Some(bdepends_list) = pkgkey_to_bdepends.get(node) {
-            for dep_pkgkey in bdepends_list {
-                if let Some(rbdepends) = remaining_rbdepends.get_mut(dep_pkgkey) {
-                    rbdepends.retain(|x| x != node);
-                }
-            }
-        }
-    }
-
-    /// Process leaf nodes: assign depth and remove them from the graph
-    fn process_leaf_nodes(
-        leaf_nodes: &[String],
-        pkgkey_to_depends: &HashMap<String, Vec<String>>,
-        pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_depth: &mut HashMap<String, u16>,
-        remaining_rdepends: &mut HashMap<String, Vec<String>>,
-        remaining_rbdepends: &mut HashMap<String, Vec<String>>,
-        current_depth: u16,
-    ) {
-        // Set depth for all leaf nodes
-        for pkgkey in leaf_nodes {
-            pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
-        }
-
-        // Remove leaf nodes and update reverse dependencies
-        for leaf_pkgkey in leaf_nodes {
-            Self::remove_node_and_update_dependencies(
-                leaf_pkgkey,
-                pkgkey_to_depends,
-                pkgkey_to_bdepends,
-                remaining_rdepends,
-                remaining_rbdepends,
-            );
-        }
-    }
-
-    /// Break circular dependency by trying different strategies
-    fn break_circular_dependency(
-        pkgkey_to_depends: &HashMap<String, Vec<String>>,
-        pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_depth: &mut HashMap<String, u16>,
-        remaining_rdepends: &mut HashMap<String, Vec<String>>,
-        remaining_rbdepends: &mut HashMap<String, Vec<String>>,
-        current_depth: u16,
-    ) -> bool {
-        // Strategy 1: Try to find leaf nodes by remaining_rbdepends
-        let leaf_nodes_by_rbdepends = Self::find_leaf_nodes_by_rbdepends(remaining_rbdepends);
-        if !leaf_nodes_by_rbdepends.is_empty() {
-            log::debug!(
-                "Found {} leaf nodes by rbdepends at depth {}",
-                leaf_nodes_by_rbdepends.len(),
-                current_depth
-            );
-            Self::process_leaf_nodes(
-                &leaf_nodes_by_rbdepends,
-                pkgkey_to_depends,
-                pkgkey_to_bdepends,
-                pkgkey_to_depth,
-                remaining_rdepends,
-                remaining_rbdepends,
-                current_depth,
-            );
-            return true;
-        }
-
-        // Strategy 2: Remove node with least rbdepends (if has non-empty rbdepends)
-        if let Some(candidate) = Self::find_candidate_with_least_rbdepends(remaining_rbdepends) {
-            let rbdepends_count = remaining_rbdepends
-                .get(&candidate)
-                .map(|v| v.len())
-                .unwrap_or(0);
-            log::debug!(
-                "Breaking circular dependency by removing node {} with least rbdepends ({}) at depth {}",
-                candidate,
-                rbdepends_count,
-                current_depth
-            );
-            pkgkey_to_depth.insert(candidate.clone(), current_depth);
-            Self::remove_node_and_update_dependencies(
-                &candidate,
-                pkgkey_to_depends,
-                pkgkey_to_bdepends,
-                remaining_rdepends,
-                remaining_rbdepends,
-            );
-            return true;
-        }
-
-        // Strategy 3: Remove node with least rdepends
-        if let Some(candidate) = Self::find_candidate_with_least_rdepends(remaining_rdepends) {
-            let rdepends_count = remaining_rdepends
-                .get(&candidate)
-                .map(|v| v.len())
-                .unwrap_or(0);
-            log::debug!(
-                "Breaking circular dependency by removing node {} with least rdepends ({}) at depth {}",
-                candidate,
-                rdepends_count,
-                current_depth
-            );
-            pkgkey_to_depth.insert(candidate.clone(), current_depth);
-            Self::remove_node_and_update_dependencies(
-                &candidate,
-                pkgkey_to_depends,
-                pkgkey_to_bdepends,
-                remaining_rdepends,
-                remaining_rbdepends,
-            );
-            return true;
-        }
-
-        false
-    }
-
-    /// Calculate dependency depths based on dependency graph using topological sort.
-    ///
-    /// This function assigns a depth value to each package based on its position in the dependency
-    /// graph. Packages with no reverse dependencies (leaf nodes) are assigned depth 0, and depth
-    /// increases as we move up the dependency tree.
-    ///
-    /// The algorithm handles both regular dependencies and build dependencies (for Pacman format):
-    /// - Regular dependencies: packages that this package depends on at runtime
-    /// - Build dependencies: packages needed only during build time (Pacman only)
-    ///
-    /// Circular dependency breaking strategy (when no leaf nodes are found):
-    /// 1. First, try to find leaf nodes by checking remaining_rbdepends (build reverse dependencies)
-    /// 2. If still no leaf nodes, remove the node with the least rbdepends (build reverse dependencies)
-    /// 3. If still no progress, remove the node with the least rdepends (regular reverse dependencies)
-    /// 4. Last resort: assign all remaining packages the current depth
-    ///
-    /// This approach leads to better depth assignments and avoids deadlocks while still maintaining
-    /// a reasonable dependency ordering.
-    ///
-    /// # Arguments
-    ///
-    /// * `pkgkey_to_depends` - Map of package keys to their regular dependencies
-    /// * `pkgkey_to_rdepends` - Map of package keys to packages that depend on them (reverse regular deps)
-    /// * `pkgkey_to_bdepends` - Map of package keys to their build dependencies (Pacman only)
-    /// * `pkgkey_to_rbdepends` - Map of package keys to packages that have them as build deps (reverse build deps)
-    ///
-    /// # Returns
-    ///
-    /// A HashMap mapping package keys to their calculated dependency depths
-    pub fn calculate_pkgkey_to_depth(
-        &self,
-        pkgkey_to_depends: &HashMap<String, Vec<String>>,
-        pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
-    ) -> Result<HashMap<String, u16>> {
-        let mut pkgkey_to_depth: HashMap<String, u16> = HashMap::new();
-
-        // Create a mutable copy of pkgkey_to_rdepends for tracking remaining reverse dependencies
-        let mut remaining_rdepends: HashMap<String, Vec<String>> = pkgkey_to_rdepends
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        // Create a mutable copy of pkgkey_to_rbdepends for tracking remaining reverse build dependencies
-        let mut remaining_rbdepends: HashMap<String, Vec<String>> = pkgkey_to_rbdepends
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        // Initialize remaining_rdepends and remaining_rbdepends for all packages in pkgkey_to_depends
-        for pkgkey in pkgkey_to_depends.keys() {
-            remaining_rdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
-            remaining_rbdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
-        }
-
-        let mut current_depth = 0;
-
-        loop {
-            // Find packages with empty remaining_rdepends (leaf nodes at current depth)
-            let leaf_nodes = Self::find_leaf_nodes_by_rdepends(&remaining_rdepends);
-
-            if leaf_nodes.is_empty() {
-                // No more leaf nodes - check if there are any remaining packages
-                if remaining_rdepends.is_empty() {
+            // Find the solvable that satisfies this requirement
+            // Check both direct pkgname match and provides
+            for other_solvable_id in solvables {
+                let other_record = &provider_ref.pool.resolve_solvable(*other_solvable_id).record;
+                // Check direct pkgname match
+                if other_record.pkgname == dep_name {
+                    dep_pkgkeys.push(other_record.pkgkey.clone());
                     break;
-                } else {
-                    // Circular dependency detected - try to break it using helper function
-                    if Self::break_circular_dependency(
-                        pkgkey_to_depends,
-                        pkgkey_to_bdepends,
-                        &mut pkgkey_to_depth,
-                        &mut remaining_rdepends,
-                        &mut remaining_rbdepends,
-                        current_depth,
-                    ) {
-                        // Successfully broke the cycle, continue to next iteration
-                        current_depth += 1;
-                        continue;
-                    }
-
-                    // Last resort: assign remaining packages max depth
-                    log::warn!(
-                        "Found {} packages with unresolved dependencies, assigning depth {}",
-                        remaining_rdepends.len(),
-                        current_depth
-                    );
-                    for pkgkey in remaining_rdepends.keys() {
-                        pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
-                    }
+                }
+                // Check if package provides the capability
+                if provider_ref.package_provides_capability(&other_record.pkgkey, &dep_name) {
+                    dep_pkgkeys.push(other_record.pkgkey.clone());
                     break;
                 }
             }
-
-            log::debug!(
-                "Found {} leaf nodes at depth {}",
-                leaf_nodes.len(),
-                current_depth
-            );
-
-            // Process leaf nodes: assign depth and remove from graph
-            Self::process_leaf_nodes(
-                &leaf_nodes,
-                pkgkey_to_depends,
-                pkgkey_to_bdepends,
-                &mut pkgkey_to_depth,
-                &mut remaining_rdepends,
-                &mut remaining_rbdepends,
-                current_depth,
-            );
-
-            current_depth += 1;
         }
-
-        log::debug!("Calculated depths for {} packages", pkgkey_to_depth.len());
-        Ok(pkgkey_to_depth)
     }
 
-    /// Create InstalledPackageInfo map with correct dependency depths
-    fn create_installed_package_info_map(
-        &self,
-        provider_ref: &GenericDependencyProvider,
-        solvables: &[resolvo::SolvableId],
-        pkgkey_to_depends: &HashMap<String, Vec<String>>,
-        pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_depth: &HashMap<String, u16>,
-        request_world_pkgkeys: &std::collections::HashSet<String>,
-    ) -> Result<InstalledPackagesMap> {
-        let mut result = HashMap::new();
+    dep_pkgkeys
+}
 
-        // Iterate through all packages in the dependency graph
-        for pkgkey in pkgkey_to_depends.keys() {
-            // Skip conda virtual packages (names starting with __)
-            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
-                if pkgname.starts_with("__") {
+/// Find leaf nodes (packages with no reverse dependencies)
+fn find_leaf_nodes_by_rdepends(
+    remaining_rdepends: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    remaining_rdepends
+        .iter()
+        .filter(|(_, rdepends)| rdepends.is_empty())
+        .map(|(pkgkey, _)| pkgkey.clone())
+        .collect()
+}
+
+/// Find leaf nodes by checking build reverse dependencies
+fn find_leaf_nodes_by_rbdepends(
+    remaining_rbdepends: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    remaining_rbdepends
+        .iter()
+        .filter(|(_, rbdepends)| rbdepends.is_empty())
+        .map(|(pkgkey, _)| pkgkey.clone())
+        .collect()
+}
+
+/// Find candidate node with least build reverse dependencies for breaking circular dependencies
+fn find_candidate_with_least_rbdepends(
+    remaining_rbdepends: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    remaining_rbdepends
+        .iter()
+        .filter(|(_, rbdepends)| !rbdepends.is_empty())
+        .min_by_key(|(_, rbdepends)| rbdepends.len())
+        .map(|(pkgkey, _)| pkgkey.clone())
+}
+
+/// Find candidate node with least regular reverse dependencies for breaking circular dependencies
+fn find_candidate_with_least_rdepends(
+    remaining_rdepends: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    remaining_rdepends
+        .iter()
+        .filter(|(_, rdepends)| !rdepends.is_empty())
+        .min_by_key(|(_, rdepends)| rdepends.len())
+        .map(|(pkgkey, _)| pkgkey.clone())
+}
+
+/// Remove a node from the dependency graph and update reverse dependencies
+fn remove_node_and_update_dependencies(
+    node: &str,
+    pkgkey_to_depends: &HashMap<String, Vec<String>>,
+    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    remaining_rdepends: &mut HashMap<String, Vec<String>>,
+    remaining_rbdepends: &mut HashMap<String, Vec<String>>,
+) {
+    // Remove node from tracking maps
+    remaining_rdepends.remove(node);
+    remaining_rbdepends.remove(node);
+
+    // Update reverse regular dependencies
+    if let Some(depends_list) = pkgkey_to_depends.get(node) {
+        for dep_pkgkey in depends_list {
+            if let Some(rdepends) = remaining_rdepends.get_mut(dep_pkgkey) {
+                rdepends.retain(|x| x != node);
+            }
+        }
+    }
+
+    // Update reverse build dependencies
+    if let Some(bdepends_list) = pkgkey_to_bdepends.get(node) {
+        for dep_pkgkey in bdepends_list {
+            if let Some(rbdepends) = remaining_rbdepends.get_mut(dep_pkgkey) {
+                rbdepends.retain(|x| x != node);
+            }
+        }
+    }
+}
+
+/// Process leaf nodes: assign depth and remove them from the graph
+fn process_leaf_nodes(
+    leaf_nodes: &[String],
+    pkgkey_to_depends: &HashMap<String, Vec<String>>,
+    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depth: &mut HashMap<String, u16>,
+    remaining_rdepends: &mut HashMap<String, Vec<String>>,
+    remaining_rbdepends: &mut HashMap<String, Vec<String>>,
+    current_depth: u16,
+) {
+    // Set depth for all leaf nodes
+    for pkgkey in leaf_nodes {
+        pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
+    }
+
+    // Remove leaf nodes and update reverse dependencies
+    for leaf_pkgkey in leaf_nodes {
+        remove_node_and_update_dependencies(
+            leaf_pkgkey,
+            pkgkey_to_depends,
+            pkgkey_to_bdepends,
+            remaining_rdepends,
+            remaining_rbdepends,
+        );
+    }
+}
+
+/// Break circular dependency by trying different strategies
+fn break_circular_dependency(
+    pkgkey_to_depends: &HashMap<String, Vec<String>>,
+    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depth: &mut HashMap<String, u16>,
+    remaining_rdepends: &mut HashMap<String, Vec<String>>,
+    remaining_rbdepends: &mut HashMap<String, Vec<String>>,
+    current_depth: u16,
+) -> bool {
+    // Strategy 1: Try to find leaf nodes by remaining_rbdepends
+    let leaf_nodes_by_rbdepends = find_leaf_nodes_by_rbdepends(remaining_rbdepends);
+    if !leaf_nodes_by_rbdepends.is_empty() {
+        log::debug!(
+            "Found {} leaf nodes by rbdepends at depth {}",
+            leaf_nodes_by_rbdepends.len(),
+            current_depth
+        );
+        process_leaf_nodes(
+            &leaf_nodes_by_rbdepends,
+            pkgkey_to_depends,
+            pkgkey_to_bdepends,
+            pkgkey_to_depth,
+            remaining_rdepends,
+            remaining_rbdepends,
+            current_depth,
+        );
+        return true;
+    }
+
+    // Strategy 2: Remove node with least rbdepends (if has non-empty rbdepends)
+    if let Some(candidate) = find_candidate_with_least_rbdepends(remaining_rbdepends) {
+        let rbdepends_count = remaining_rbdepends
+            .get(&candidate)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        log::debug!(
+            "Breaking circular dependency by removing node {} with least rbdepends ({}) at depth {}",
+            candidate,
+            rbdepends_count,
+            current_depth
+        );
+        pkgkey_to_depth.insert(candidate.clone(), current_depth);
+        remove_node_and_update_dependencies(
+            &candidate,
+            pkgkey_to_depends,
+            pkgkey_to_bdepends,
+            remaining_rdepends,
+            remaining_rbdepends,
+        );
+        return true;
+    }
+
+    // Strategy 3: Remove node with least rdepends
+    if let Some(candidate) = find_candidate_with_least_rdepends(remaining_rdepends) {
+        let rdepends_count = remaining_rdepends
+            .get(&candidate)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        log::debug!(
+            "Breaking circular dependency by removing node {} with least rdepends ({}) at depth {}",
+            candidate,
+            rdepends_count,
+            current_depth
+        );
+        pkgkey_to_depth.insert(candidate.clone(), current_depth);
+        remove_node_and_update_dependencies(
+            &candidate,
+            pkgkey_to_depends,
+            pkgkey_to_bdepends,
+            remaining_rdepends,
+            remaining_rbdepends,
+        );
+        return true;
+    }
+
+    false
+}
+
+/// Calculate dependency depths based on dependency graph using topological sort.
+///
+/// This function assigns a depth value to each package based on its position in the dependency
+/// graph. Packages with no reverse dependencies (leaf nodes) are assigned depth 0, and depth
+/// increases as we move up the dependency tree.
+///
+/// The algorithm handles both regular dependencies and build dependencies (for Pacman format):
+/// - Regular dependencies: packages that this package depends on at runtime
+/// - Build dependencies: packages needed only during build time (Pacman only)
+///
+/// Circular dependency breaking strategy (when no leaf nodes are found):
+/// 1. First, try to find leaf nodes by checking remaining_rbdepends (build reverse dependencies)
+/// 2. If still no leaf nodes, remove the node with the least rbdepends (build reverse dependencies)
+/// 3. If still no progress, remove the node with the least rdepends (regular reverse dependencies)
+/// 4. Last resort: assign all remaining packages the current depth
+///
+/// This approach leads to better depth assignments and avoids deadlocks while still maintaining
+/// a reasonable dependency ordering.
+///
+/// # Arguments
+///
+/// * `pkgkey_to_depends` - Map of package keys to their regular dependencies
+/// * `pkgkey_to_rdepends` - Map of package keys to packages that depend on them (reverse regular deps)
+/// * `pkgkey_to_bdepends` - Map of package keys to their build dependencies (Pacman only)
+/// * `pkgkey_to_rbdepends` - Map of package keys to packages that have them as build deps (reverse build deps)
+///
+/// # Returns
+///
+/// A HashMap mapping package keys to their calculated dependency depths
+pub fn calculate_pkgkey_to_depth(
+    pkgkey_to_depends: &HashMap<String, Vec<String>>,
+    pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
+) -> Result<HashMap<String, u16>> {
+    let mut pkgkey_to_depth: HashMap<String, u16> = HashMap::new();
+
+    // Create a mutable copy of pkgkey_to_rdepends for tracking remaining reverse dependencies
+    let mut remaining_rdepends: HashMap<String, Vec<String>> = pkgkey_to_rdepends
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Create a mutable copy of pkgkey_to_rbdepends for tracking remaining reverse build dependencies
+    let mut remaining_rbdepends: HashMap<String, Vec<String>> = pkgkey_to_rbdepends
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Initialize remaining_rdepends and remaining_rbdepends for all packages in pkgkey_to_depends
+    for pkgkey in pkgkey_to_depends.keys() {
+        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+        remaining_rbdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+    }
+
+    let mut current_depth = 0;
+
+    loop {
+        // Find packages with empty remaining_rdepends (leaf nodes at current depth)
+        let leaf_nodes = find_leaf_nodes_by_rdepends(&remaining_rdepends);
+
+        if leaf_nodes.is_empty() {
+            // No more leaf nodes - check if there are any remaining packages
+            if remaining_rdepends.is_empty() {
+                break;
+            } else {
+                // Circular dependency detected - try to break it using helper function
+                if break_circular_dependency(
+                    pkgkey_to_depends,
+                    pkgkey_to_bdepends,
+                    &mut pkgkey_to_depth,
+                    &mut remaining_rdepends,
+                    &mut remaining_rbdepends,
+                    current_depth,
+                ) {
+                    // Successfully broke the cycle, continue to next iteration
+                    current_depth += 1;
                     continue;
                 }
+
+                // Last resort: assign remaining packages max depth
+                log::warn!(
+                    "Found {} packages with unresolved dependencies, assigning depth {}",
+                    remaining_rdepends.len(),
+                    current_depth
+                );
+                for pkgkey in remaining_rdepends.keys() {
+                    pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
+                }
+                break;
             }
-
-            // Get depth from pre-calculated map (default to 0 if not found)
-            let depth = pkgkey_to_depth.get(pkgkey).copied().unwrap_or(0);
-
-            // Determine ebin_exposure: true only for request_world packages
-            let ebin_exposure = request_world_pkgkeys.contains(pkgkey);
-
-            // Create InstalledPackageInfo
-            let pkg_info = self.create_installed_package_info(
-                pkgkey,
-                provider_ref,
-                solvables,
-                pkgkey_to_depends,
-                pkgkey_to_rdepends,
-                pkgkey_to_bdepends,
-                pkgkey_to_rbdepends,
-                depth,
-                ebin_exposure,
-            )?;
-
-            result.insert(pkgkey.clone(), pkg_info.clone());
         }
 
-        log::debug!("Final result size: {}", result.len());
-        Ok(result)
+        log::debug!(
+            "Found {} leaf nodes at depth {}",
+            leaf_nodes.len(),
+            current_depth
+        );
+
+        // Process leaf nodes: assign depth and remove from graph
+        process_leaf_nodes(
+            &leaf_nodes,
+            pkgkey_to_depends,
+            pkgkey_to_bdepends,
+            &mut pkgkey_to_depth,
+            &mut remaining_rdepends,
+            &mut remaining_rbdepends,
+            current_depth,
+        );
+
+        current_depth += 1;
     }
 
-    /// Create InstalledPackageInfo for a single package
-    fn create_installed_package_info(
-        &self,
-        pkgkey: &str,
-        provider_ref: &GenericDependencyProvider,
-        solvables: &[resolvo::SolvableId],
-        pkgkey_to_depends: &HashMap<String, Vec<String>>,
-        pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-        pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
-        depend_depth: u16,
-        ebin_exposure: bool,
-    ) -> Result<InstalledPackageInfo> {
-        // pkgline should be empty initially - it will be filled by fill_pkglines_in_plan
-        // if the package already exists in the store, otherwise it will remain empty
-        // and the package will be downloaded and installed
-        let pkgline = String::new();
+    log::debug!("Calculated depths for {} packages", pkgkey_to_depth.len());
+    Ok(pkgkey_to_depth)
+}
 
-        let depends_list = pkgkey_to_depends.get(pkgkey).cloned().unwrap_or_default();
-        let bdepends_list = pkgkey_to_bdepends.get(pkgkey).cloned().unwrap_or_default();
+/// Create InstalledPackageInfo map with correct dependency depths
+fn create_installed_package_info_map(
+    provider_ref: &GenericDependencyProvider,
+    solvables: &[resolvo::SolvableId],
+    pkgkey_to_depends: &HashMap<String, Vec<String>>,
+    pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depth: &HashMap<String, u16>,
+    request_world_pkgkeys: &std::collections::HashSet<String>,
+) -> Result<InstalledPackagesMap> {
+    let mut result = HashMap::new();
 
-        let arch = solvables
-            .iter()
-            .find_map(|&id| {
-                let rec = &provider_ref.pool.resolve_solvable(id).record;
-                if rec.pkgkey == pkgkey {
-                    Some(rec.arch.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-
-        // Merges rdepends from already installed packages (self.installed_packages)
-        // to "predict the future" - incorporating historical dependency data.
-        // The merged dependencies are sorted and de-duplicated to maintain consistency.
-        let mut merged_rdepends = pkgkey_to_rdepends.get(pkgkey).cloned().unwrap_or_default();
-        if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
-            // Merge and de-duplicate
-            merged_rdepends.extend_from_slice(&installed_info.rdepends);
-            merged_rdepends.sort();
-            merged_rdepends.dedup();
+    // Iterate through all packages in the dependency graph
+    for pkgkey in pkgkey_to_depends.keys() {
+        // Skip conda virtual packages (names starting with __)
+        if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+            if pkgname.starts_with("__") {
+                continue;
+            }
         }
 
-        // Merges rbdepends from already installed packages (self.installed_packages)
-        // to "predict the future" - incorporating historical build dependency data.
-        let mut merged_rbdepends = pkgkey_to_rbdepends.get(pkgkey).cloned().unwrap_or_default();
-        if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
-            // Merge and de-duplicate
-            merged_rbdepends.extend_from_slice(&installed_info.rbdepends);
-            merged_rbdepends.sort();
-            merged_rbdepends.dedup();
-        }
+        // Get depth from pre-calculated map (default to 0 if not found)
+        let depth = pkgkey_to_depth.get(pkgkey).copied().unwrap_or(0);
 
-        Ok(crate::models::InstalledPackageInfo {
-            pkgline,
-            arch,
-            depend_depth,
-            install_time: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+        // Determine ebin_exposure: true only for request_world packages
+        let ebin_exposure = request_world_pkgkeys.contains(pkgkey);
+
+        // Create InstalledPackageInfo
+        let pkg_info = create_installed_package_info(
+            pkgkey,
+            provider_ref,
+            solvables,
+            pkgkey_to_depends,
+            pkgkey_to_rdepends,
+            pkgkey_to_bdepends,
+            pkgkey_to_rbdepends,
+            depth,
             ebin_exposure,
-            rdepends: merged_rdepends,
-            depends: depends_list,
-            bdepends: bdepends_list,
-            rbdepends: merged_rbdepends,
-            ebin_links: Vec::new(),
-            pending_triggers: Vec::new(),
-            triggers_awaited: false,
-            config_failed: false,
-        })
+        )?;
+
+        result.insert(pkgkey.clone(), pkg_info.clone());
     }
 
+    log::debug!("Final result size: {}", result.len());
+    Ok(result)
+}
+
+/// Create InstalledPackageInfo for a single package
+fn create_installed_package_info(
+    pkgkey: &str,
+    provider_ref: &GenericDependencyProvider,
+    solvables: &[resolvo::SolvableId],
+    pkgkey_to_depends: &HashMap<String, Vec<String>>,
+    pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
+    depend_depth: u16,
+    ebin_exposure: bool,
+) -> Result<InstalledPackageInfo> {
+    // pkgline should be empty initially - it will be filled by fill_pkglines_in_plan
+    // if the package already exists in the store, otherwise it will remain empty
+    // and the package will be downloaded and installed
+    let pkgline = String::new();
+
+    let depends_list = pkgkey_to_depends.get(pkgkey).cloned().unwrap_or_default();
+    let bdepends_list = pkgkey_to_bdepends.get(pkgkey).cloned().unwrap_or_default();
+
+    let arch = solvables
+        .iter()
+        .find_map(|&id| {
+            let rec = &provider_ref.pool.resolve_solvable(id).record;
+            if rec.pkgkey == pkgkey {
+                Some(rec.arch.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Merges rdepends from already installed packages (installed_packages)
+    // to "predict the future" - incorporating historical dependency data.
+    // The merged dependencies are sorted and de-duplicated to maintain consistency.
+    let mut merged_rdepends = pkgkey_to_rdepends.get(pkgkey).cloned().unwrap_or_default();
+    if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
+        // Merge and de-duplicate
+        merged_rdepends.extend_from_slice(&installed_info.rdepends);
+        merged_rdepends.sort();
+        merged_rdepends.dedup();
+    }
+
+    // Merges rbdepends from already installed packages (installed_packages)
+    // to "predict the future" - incorporating historical build dependency data.
+    let mut merged_rbdepends = pkgkey_to_rbdepends.get(pkgkey).cloned().unwrap_or_default();
+    if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
+        // Merge and de-duplicate
+        merged_rbdepends.extend_from_slice(&installed_info.rbdepends);
+        merged_rbdepends.sort();
+        merged_rbdepends.dedup();
+    }
+
+    Ok(crate::models::InstalledPackageInfo {
+        pkgline,
+        arch,
+        depend_depth,
+        install_time: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        ebin_exposure,
+        rdepends: merged_rdepends,
+        depends: depends_list,
+        bdepends: bdepends_list,
+        rbdepends: merged_rbdepends,
+        ebin_links: Vec::new(),
+        pending_triggers: Vec::new(),
+        triggers_awaited: false,
+        config_failed: false,
+    })
 }

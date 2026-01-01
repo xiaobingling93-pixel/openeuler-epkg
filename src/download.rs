@@ -3301,53 +3301,20 @@ fn parse_etag(response: &http::Response<ureq::Body>) -> Option<String> {
 // PACKAGE MANAGER DOWNLOAD INTEGRATION
 // ============================================================================
 
-impl PackageManager {
-    /// Enqueue download tasks for packages without waiting for completion
-    /// Returns a mapping from download URLs to their package keys for tracking
-    pub fn enqueue_package_downloads(
-        &mut self,
-        packages: &InstalledPackagesMap,
-    ) -> Result<HashMap<String, Vec<String>>> {
-        let output_dir = dirs().epkg_downloads_cache.clone();
-        let mut url_to_pkgkeys: HashMap<String, Vec<String>> = HashMap::new();
+/// Enqueue download tasks for packages without waiting for completion
+/// Returns a mapping from download URLs to their package keys for tracking
+pub fn enqueue_package_downloads(
+    packages: &InstalledPackagesMap,
+) -> Result<HashMap<String, Vec<String>>> {
+    let output_dir = dirs().epkg_downloads_cache.clone();
+    let mut url_to_pkgkeys: HashMap<String, Vec<String>> = HashMap::new();
 
-        // Create output directory
-        fs::create_dir_all(&output_dir)
-            .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
+    // Create output directory
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
 
-        // Submit download tasks for each package (handles both local and remote)
-        for pkgkey in packages.keys() {
-            let package = crate::package_cache::load_package_info(pkgkey)
-                .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
-            let url = format!(
-                "{}/{}",
-                package.package_baseurl,
-                package.location
-            );
-
-            // Use the larger of compressed size or installed size for download prioritization
-            // This helps the download manager prioritize packages that are likely to take longer
-            let size = if package.size > 0 {
-                Some(package.size as u64)
-            } else {
-                None
-            };
-
-            // Submit download task with size information (handles both local and remote files)
-            let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), DownloadFlags::empty());
-            submit_download_task(task)
-                .with_context(|| format!("Failed to submit download task for {}", url))?;
-            url_to_pkgkeys.entry(url).or_default().push(pkgkey.clone());
-        }
-
-        // Start processing download tasks
-        DOWNLOAD_MANAGER.start_processing();
-
-        Ok(url_to_pkgkeys)
-    }
-
-    /// Get the local file path for a downloaded package
-    pub fn get_package_file_path(&mut self, pkgkey: &str) -> Result<String> {
+    // Submit download tasks for each package (handles both local and remote)
+    for pkgkey in packages.keys() {
         let package = crate::package_cache::load_package_info(pkgkey)
             .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
         let url = format!(
@@ -3356,28 +3323,58 @@ impl PackageManager {
             package.location
         );
 
-        // Check if we have a download task for this URL
-        let tasks = DOWNLOAD_MANAGER.tasks.lock()
-            .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
-
-        if let Some(task) = tasks.get(&url) {
-            // Return the final_path from the task
-            return Ok(task.final_path.to_string_lossy().to_string());
-        }
-
-        // If no task exists, calculate the path as before (fallback)
-        if url.starts_with("/") {
-            // Local file - return the destination path in downloads cache
-            let file_name = url.split('/').last()
-                .ok_or_else(|| eyre!("Failed to extract filename from URL: {}", url))?;
-            let dest_path = dirs().epkg_downloads_cache.join(file_name);
-            Ok(dest_path.to_string_lossy().to_string())
+        // Use the larger of compressed size or installed size for download prioritization
+        // This helps the download manager prioritize packages that are likely to take longer
+        let size = if package.size > 0 {
+            Some(package.size as u64)
         } else {
-            // Remote file - use the URL to cache path conversion
-            let cache_path = mirror::Mirrors::url_to_cache_path(&url, &package.repodata_name)
-                .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?;
-            Ok(cache_path.to_string_lossy().to_string())
-        }
+            None
+        };
+
+        // Submit download task with size information (handles both local and remote files)
+        let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), DownloadFlags::empty());
+        submit_download_task(task)
+            .with_context(|| format!("Failed to submit download task for {}", url))?;
+        url_to_pkgkeys.entry(url).or_default().push(pkgkey.clone());
+    }
+
+    // Start processing download tasks
+    DOWNLOAD_MANAGER.start_processing();
+
+    Ok(url_to_pkgkeys)
+}
+
+/// Get the local file path for a downloaded package
+pub fn get_package_file_path(pkgkey: &str) -> Result<String> {
+    let package = crate::package_cache::load_package_info(pkgkey)
+        .map_err(|e| eyre!("Failed to load package info for key: {}: {}", pkgkey, e))?;
+    let url = format!(
+        "{}/{}",
+        package.package_baseurl,
+        package.location
+    );
+
+    // Check if we have a download task for this URL
+    let tasks = DOWNLOAD_MANAGER.tasks.lock()
+        .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
+
+    if let Some(task) = tasks.get(&url) {
+        // Return the final_path from the task
+        return Ok(task.final_path.to_string_lossy().to_string());
+    }
+
+    // If no task exists, calculate the path as before (fallback)
+    if url.starts_with("/") {
+        // Local file - return the destination path in downloads cache
+        let file_name = url.split('/').last()
+            .ok_or_else(|| eyre!("Failed to extract filename from URL: {}", url))?;
+        let dest_path = dirs().epkg_downloads_cache.join(file_name);
+        Ok(dest_path.to_string_lossy().to_string())
+    } else {
+        // Remote file - use the URL to cache path conversion
+        let cache_path = mirror::Mirrors::url_to_cache_path(&url, &package.repodata_name)
+            .map_err(|e| eyre!("Failed to convert URL to cache path: {}: {}", url, e))?;
+        Ok(cache_path.to_string_lossy().to_string())
     }
 }
 
