@@ -26,7 +26,7 @@ use resolvo::{
 };
 
 use crate::models::{config, channel_config};
-use crate::models::{EpkgCommand, Package, PackageFormat};
+use crate::models::{Package, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::parse_requires::{AndDepends, Operator, PkgDepend};
 use crate::parse_requires::VersionConstraint;
@@ -1389,7 +1389,6 @@ impl GenericDependencyProvider {
 
         // Get installed packages map for favored candidate lookup
         let installed_pkgname2keys = self.get_installed_pkgname2keys().unwrap_or_default();
-        let command = config().subcommand;
 
         // Direct lookup by package name
         if let Some(installed_pkgkeys) = installed_pkgname2keys.get(name_string) {
@@ -1397,19 +1396,13 @@ impl GenericDependencyProvider {
             candidates_vec.iter().find_map(|&solvable_id| {
                 let record = &self.pool.resolve_solvable(solvable_id).record;
                 if installed_pkgkeys.contains(&record.pkgkey) {
-                    // Inline should_favor_package logic
-                    // For upgrade command (normal, not full), check if package is in delta_world
-                    if command == EpkgCommand::Upgrade {
-                        if self.delta_world_keys.contains(name_string) {
-                            log::debug!("[RESOLVO] Package '{}' (pkgkey: {}) is installed and in delta_world, not favoring for upgrade", name_string, record.pkgkey);
-                            None
-                        } else {
-                            log::debug!("[RESOLVO] Package '{}' (pkgkey: {}) is installed but not in delta_world, favoring to prevent auto-upgrade", name_string, record.pkgkey);
-                            Some(solvable_id)
-                        }
+                    // For upgrade/install commands, check if package is in delta_world
+                    // If so, don't favor installed version to allow upgrade/install to latest
+                    if self.delta_world_keys.contains(name_string) {
+                        log::debug!("[RESOLVO] Package '{}' (pkgkey: {}) is installed and in delta_world, not favoring to allow upgrade", name_string, record.pkgkey);
+                        None
                     } else {
-                        // For non-upgrade commands, always favor installed versions
-                        log::debug!("[RESOLVO] Package '{}' (pkgkey: {}) is installed, favoring to prevent auto-upgrade", name_string, record.pkgkey);
+                        log::debug!("[RESOLVO] Package '{}' (pkgkey: {}) is installed but not in delta_world, favoring to prevent auto-upgrade", name_string, record.pkgkey);
                         Some(solvable_id)
                     }
                 } else {
