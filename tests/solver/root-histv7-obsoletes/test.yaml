@@ -6,5 +6,5 @@ install:
 - root-histv7
 plan:
   fresh_installs:
-    root-histv7__6.34.04-2.fc42__x86_64:
-    root-core__6.34.04-2.fc42__x86_64:
+  - root-histv7__6.34.04-2.fc42__x86_64
+  - root-core__6.34.04-2.fc42__x86_64

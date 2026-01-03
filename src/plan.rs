@@ -14,13 +14,13 @@ use crate::aur::is_aur_package;
 /// Package operation flags
 pub mod op_flags {
     /// Whether new package should be exposed (ebin_exposure)
-    pub const SHOULD_EXPOSE: u8 = 1 << 0;
+    pub const SHOULD_EXPOSE:    u8 = 1 << 0;
     /// Whether old package should be unexposed (was exposed, now being removed)
-    pub const SHOULD_UNEXPOSE: u8 = 1 << 1;
+    pub const SHOULD_UNEXPOSE:  u8 = 1 << 1;
     /// Whether new_pkg is already in store (has non-empty pkgline)
-    pub const IN_STORE: u8 = 1 << 2;
+    pub const IN_STORE:         u8 = 1 << 2;
     /// Whether new_pkg is an AUR package
-    pub const IS_AUR: u8 = 1 << 3;
+    pub const IS_AUR:           u8 = 1 << 3;
 }
 
 /// Package operation type (L2: Package Operations)
@@ -93,158 +93,32 @@ pub struct FilesystemInfo {
     pub free_inodes: u64,   // Free inodes (u64::MAX if unlimited)
 }
 
-#[derive(Debug, Default, Clone, serde::Serialize)]
+#[derive(Debug, Default, Clone)]
 pub struct InstallationPlan {
     // Uniform ordered structure (L1: Transaction -> Vec<PackageOperation>)
-    #[serde(skip)]
     pub ordered_operations: Vec<PackageOperation>,
 
-    #[serde(default)]
     pub link: LinkType,
-    #[serde(default)]
     pub can_reflink: bool,
 
-    #[serde(skip)]
     pub total_download: u64,
-    #[serde(skip)]
     pub total_install: u64,
 
-    #[serde(skip)]
     pub store_root_fs:      Option<FilesystemInfo>,
-    #[serde(skip)]
     pub env_root_fs:        Option<FilesystemInfo>,
-    #[serde(skip)]
     pub download_cache_fs:  Option<FilesystemInfo>,
 
-    #[serde(skip)]
     pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
 
     // Skipped reinstalls (packages that are already installed with same version)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub skipped_reinstalls: InstalledPackagesMap,
 
     // Cache fields for ordered_operations
-    #[serde(skip)]
     pub fresh_installs: InstalledPackagesMap,
-    #[serde(skip)]
     pub old_removes:    InstalledPackagesMap,
-    #[serde(skip)]
     pub upgrades_new:   InstalledPackagesMap,
-    #[serde(skip)]
     pub upgrades_old:   InstalledPackagesMap,
-    #[serde(skip)]
     pub upgrade_map_old_to_new: HashMap<String, String>,
-}
-
-impl<'de> serde::Deserialize<'de> for InstallationPlan {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Helper {
-            #[serde(default, deserialize_with = "deserialize_pkgkey_hashmap")]
-            skipped_reinstalls: InstalledPackagesMap,
-            #[serde(default)]
-            link: LinkType,
-            #[serde(default)]
-            can_reflink: bool,
-        }
-
-        fn deserialize_pkgkey_hashmap<'de, D>(
-            deserializer: D,
-        ) -> Result<InstalledPackagesMap, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            use serde::de::{MapAccess, Visitor};
-            use std::fmt;
-
-            struct PkgkeyHashMapVisitor;
-
-            impl<'de> Visitor<'de> for PkgkeyHashMapVisitor {
-                type Value = InstalledPackagesMap;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a map of pkgkey to InstalledPackageInfo or null")
-                }
-
-                fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-                where
-                    M: MapAccess<'de>,
-                {
-                    let mut result = HashMap::new();
-                    while let Some(key) = map.next_key::<String>()? {
-                        // Try to deserialize as Option<InstalledPackageInfo>
-                        // null values will deserialize as None, which we convert to a default
-                        let pkgkey = key.clone();
-                        let info = match map.next_value::<Option<InstalledPackageInfo>>() {
-                            Ok(Some(info)) => info,
-                            Ok(None) => {
-                                // null value - create minimal default (we only compare keys anyway)
-                                InstalledPackageInfo {
-                                    pkgline: format!("fake_hash__{}", pkgkey),
-                                    arch: "x86_64".to_string(),
-                                    depend_depth: 0,
-                                    install_time: 1000000000,
-                                    ebin_exposure: true,
-                                    rdepends: Vec::new(),
-                                    depends: Vec::new(),
-                                    bdepends: Vec::new(),
-                                    rbdepends: Vec::new(),
-                                    ebin_links: Vec::new(),
-                                    pending_triggers: Vec::new(),
-                                    triggers_awaited: false,
-                                    config_failed: false,
-                                }
-                            }
-                            Err(_) => {
-                                // Deserialization error - also create default
-                                InstalledPackageInfo {
-                                    pkgline: format!("fake_hash__{}", pkgkey),
-                                    arch: "x86_64".to_string(),
-                                    depend_depth: 0,
-                                    install_time: 1000000000,
-                                    ebin_exposure: true,
-                                    rdepends: Vec::new(),
-                                    depends: Vec::new(),
-                                    bdepends: Vec::new(),
-                                    rbdepends: Vec::new(),
-                                    ebin_links: Vec::new(),
-                                    pending_triggers: Vec::new(),
-                                    triggers_awaited: false,
-                                    config_failed: false,
-                                }
-                            }
-                        };
-                        result.insert(key, info);
-                    }
-                    Ok(result)
-                }
-            }
-
-            deserializer.deserialize_map(PkgkeyHashMapVisitor)
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
-        Ok(InstallationPlan {
-            ordered_operations: Vec::new(), // Will be built when plan is used
-            skipped_reinstalls: helper.skipped_reinstalls,
-            link: helper.link,
-            can_reflink: helper.can_reflink,
-            store_pkglines_by_pkgname: std::collections::HashMap::new(),
-            total_download: 0,
-            total_install: 0,
-            store_root_fs: None,
-            env_root_fs: None,
-            download_cache_fs: None,
-            fresh_installs: InstalledPackagesMap::new(),
-            upgrades_new: InstalledPackagesMap::new(),
-            upgrades_old: InstalledPackagesMap::new(),
-            upgrade_map_old_to_new: HashMap::new(),
-            old_removes: InstalledPackagesMap::new(),
-        })
-    }
 }
 
 /// Calculate operation flags for a package operation
@@ -279,8 +153,7 @@ pub fn calculate_op_flags(
 }
 
 /// Create a PackageOperation with calculated flags
-/// Helper function to avoid duplication when creating operations
-pub(crate) fn create_package_operation(
+pub fn create_package_operation(
     new_pkg: Option<(String, InstalledPackageInfo)>,
     old_pkg: Option<(String, InstalledPackageInfo)>,
     op_type: OperationType,
@@ -309,7 +182,7 @@ pub(crate) fn create_package_operation(
 /// Sort operations by dependency depth
 /// Upgrades and fresh installs are sorted by depth (lowest first)
 /// Removals are sorted by reverse depth (highest first, so dependents before dependencies)
-pub(crate) fn sort_operations_by_depth(operations: &mut [PackageOperation]) {
+pub fn sort_operations_by_depth(operations: &mut [PackageOperation]) {
     operations.sort_by(|a, b| {
         let depth_a = match a.op_type {
             OperationType::Upgrade => a.depend_depth,

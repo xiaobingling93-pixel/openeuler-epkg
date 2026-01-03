@@ -6,6 +6,6 @@ upgrade:
 - b
 plan:
   upgrades_new:
-    b__2__x86_64:
+  - b__2__x86_64
   upgrades_old:
-    b__1__x86_64:
+  - b__1__x86_64

@@ -76,45 +76,20 @@ pub fn update_current_generation_symlink_with_root(generations_root: &Path, new_
 pub fn record_history(new_generation_path: &PathBuf, plan: Option<&crate::plan::InstallationPlan>) -> Result<()> {
     let command_json = new_generation_path.join("command.json");
 
-    let mut command = GenerationCommand {
-        timestamp: OffsetDateTime::now_local()?.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string()),
-        action: "Create".to_string(),
-        command_line: config().command_line.to_string(),
-        fresh_installs: Vec::new(),
-        upgrades_new: Vec::new(),
-        upgrades_old: Vec::new(),
-        old_removes: Vec::new(),
-        new_exposes: Vec::new(),
-        del_exposes: Vec::new(),
+    let mut command = if let Some(plan) = plan {
+        crate::plan::plan_to_generation_command(plan)
+    } else {
+        GenerationCommand::default()
     };
 
-    // If an InstallationPlan is provided, populate the command with its members
-    if let Some(plan) = plan {
-        command.action = format!("{:?}", config().subcommand);
-        // Extract operations from ordered_operations
-        let mut new_exposes = Vec::new();
-        let mut del_exposes = Vec::new();
-
-        for op in &plan.ordered_operations {
-            if op.should_expose() {
-                if let Some((pkgkey, _)) = &op.new_pkg {
-                    new_exposes.push(pkgkey.clone());
-                }
-            }
-            if op.should_unexpose() {
-                if let Some((old_pkgkey, _)) = &op.old_pkg {
-                    del_exposes.push(old_pkgkey.clone());
-                }
-            }
-        }
-
-        command.fresh_installs = plan.fresh_installs.keys().cloned().collect();
-        command.upgrades_new = plan.upgrades_new.keys().cloned().collect();
-        command.upgrades_old = plan.upgrades_old.keys().cloned().collect();
-        command.old_removes = plan.old_removes.keys().cloned().collect();
-        command.new_exposes = new_exposes;
-        command.del_exposes = del_exposes;
-    }
+    // Set metadata fields
+    command.timestamp = OffsetDateTime::now_local()?.format(&format_description!("[year]-[month]-[day] [hour repr:24]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")).unwrap_or_else(|_| "<time_fmt_err>".to_string());
+    command.command_line = config().command_line.to_string();
+    command.action = if plan.is_some() {
+        format!("{:?}", config().subcommand)
+    } else {
+        "Create".to_string()
+    };
 
     let json = serde_json::to_string_pretty(&command)?;
     fs::write(&command_json, json)?;

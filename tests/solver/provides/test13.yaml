@@ -6,5 +6,5 @@ install:
 - pulseaudio-alsa
 plan:
   fresh_installs:
-    pulseaudio__1__x86_64:
-    pulseaudio-alsa__1__x86_64:
+  - pulseaudio__1__x86_64
+  - pulseaudio-alsa__1__x86_64

@@ -267,7 +267,6 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     Ok(plan)
 }
 
-
 /// Execute package installations and upgrades
 fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_root: &Path, package_format: PackageFormat) -> Result<()> {
     if plan.ordered_operations.is_empty() {

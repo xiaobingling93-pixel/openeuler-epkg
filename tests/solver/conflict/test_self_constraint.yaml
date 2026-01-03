@@ -1,13 +1,13 @@
 format: rpm
 distro: openeuler
-description: Test that packages providing a capability and conflicting with it are handled correctly (self-constraint filtering)
+description: Test that packages providing a capability and conflicting with it are
+  handled correctly (self-constraint filtering)
 repo: repo_self_constraint.yaml
 install:
 - texlive-plain-generic
 plan:
   fresh_installs:
-    tex-common__6.13__x86_64:
-    texlive-base__2024.20240401__x86_64:
-    texlive-binaries__2024.20240313__x86_64:
-    texlive-plain-generic__2024.20250309-2__x86_64:
-
+  - tex-common__6.13__x86_64
+  - texlive-base__2024.20240401__x86_64
+  - texlive-binaries__2024.20240313__x86_64
+  - texlive-plain-generic__2024.20250309-2__x86_64

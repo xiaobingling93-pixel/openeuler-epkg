@@ -39,9 +39,9 @@ struct TestCaseMetadata {
     /// Packages to remove
     #[serde(default)]
     remove: Vec<String>,
-    /// Expected InstallationPlan
+    /// Expected GenerationCommand (simplified plan with just package lists)
     #[serde(default)]
-    plan: InstallationPlan,
+    plan: GenerationCommand,
     /// Whether resolution should fail
     #[serde(default)]
     expect_fail: bool,
@@ -195,71 +195,56 @@ impl TestCase {
         initial_packages
     }
 
-    /// Validate InstallationPlan against expected outcome
+    /// Validate InstallationPlan against expected GenerationCommand
     #[allow(dead_code)] // Used in test module
     fn validate_plan(&self, plan_result: Result<InstallationPlan>) -> Result<()> {
-        // Helper to extract operations from a plan
-        let extract_operations = |plan: &InstallationPlan| -> (std::collections::HashSet<String>, std::collections::HashSet<String>, std::collections::HashSet<String>) {
-            let mut fresh = std::collections::HashSet::new();
-            let mut upgrades = std::collections::HashSet::new();
-            let mut removes = std::collections::HashSet::new();
-
-            for op in &plan.ordered_operations {
-                match op.op_type {
-                    crate::plan::OperationType::FreshInstall => {
-                        if let Some((pkgkey, _)) = &op.new_pkg {
-                            fresh.insert(pkgkey.clone());
-                        }
-                    }
-                    crate::plan::OperationType::Upgrade => {
-                        if let Some((pkgkey, _)) = &op.new_pkg {
-                            upgrades.insert(pkgkey.clone());
-                        }
-                    }
-                    crate::plan::OperationType::Removal => {
-                        if let Some((pkgkey, _)) = &op.old_pkg {
-                            removes.insert(pkgkey.clone());
-                        }
-                    }
-                }
-            }
-            (fresh, upgrades, removes)
-        };
-
         match plan_result {
             Ok(plan) => {
-                let (actual_fresh, actual_upgrades, actual_removes) = extract_operations(&plan);
-                println!("  Fresh installs: {:?}", actual_fresh.iter().cloned().collect::<Vec<_>>());
-                println!("  Upgrades: {:?}", actual_upgrades.iter().cloned().collect::<Vec<_>>());
-                println!("  Removals: {:?}", actual_removes.iter().cloned().collect::<Vec<_>>());
+                // Use the helper function to convert plan to GenerationCommand
+                let actual_command = crate::plan::plan_to_generation_command(&plan);
+                let expected_command = &self.metadata.plan;
+
+                println!("  Fresh installs: {:?}", actual_command.fresh_installs);
+                println!("  Upgrades: {:?}", actual_command.upgrades_new);
+                println!("  Removals: {:?}", actual_command.old_removes);
+                if !actual_command.new_exposes.is_empty() {
+                    println!("  New exposes: {:?}", actual_command.new_exposes);
+                }
+                if !actual_command.del_exposes.is_empty() {
+                    println!("  Del exposes: {:?}", actual_command.del_exposes);
+                }
 
                 // Check if expected plan has any content
-                let expected_plan = &self.metadata.plan;
-                let (expected_fresh, expected_upgrades, expected_removes) = extract_operations(expected_plan);
-                let has_expected_plan = !expected_fresh.is_empty()
-                    || !expected_upgrades.is_empty()
-                    || !expected_removes.is_empty();
+                let has_expected_plan = !expected_command.fresh_installs.is_empty()
+                    || !expected_command.upgrades_new.is_empty()
+                    || !expected_command.old_removes.is_empty()
+                    || !expected_command.new_exposes.is_empty()
+                    || !expected_command.del_exposes.is_empty();
 
                 if has_expected_plan {
-                    // Compare with expected plan
+                    // Compare Vec fields by converting to HashSet for order-independent comparison
                     let mut errors = Vec::new();
 
-                    // Compare fresh_installs
-                    if actual_fresh != expected_fresh {
-                        errors.push(format!("Fresh installs mismatch: expected {:?}, got {:?}",
-                            expected_fresh, actual_fresh));
-                    }
+                    // Helper to compare Vec fields as sets
+                    let compare_vec_fields = |actual: &[String], expected: &[String], field_name: &str| -> Option<String> {
+                        let actual_set: std::collections::HashSet<String> = actual.iter().cloned().collect();
+                        let expected_set: std::collections::HashSet<String> = expected.iter().cloned().collect();
+                        if actual_set != expected_set {
+                            Some(format!("{} mismatch: expected {:?}, got {:?}", field_name, expected, actual))
+                        } else {
+                            None
+                        }
+                    };
 
-                    // Compare upgrades_new
-                    if actual_upgrades != expected_upgrades {
-                        errors.push(format!("Upgrades mismatch: expected {:?}, got {:?}",
-                            expected_upgrades, actual_upgrades));
+                    // Compare all GenerationCommand fields
+                    if let Some(error) = compare_vec_fields(&actual_command.fresh_installs, &expected_command.fresh_installs, "Fresh installs") {
+                        errors.push(error);
                     }
-
-                    // Compare old_removes
-                    if actual_removes != expected_removes {
-                        errors.push(format!("Removals mismatch: expected {:?}, got {:?}",
-                            expected_removes, actual_removes));
+                    if let Some(error) = compare_vec_fields(&actual_command.upgrades_new, &expected_command.upgrades_new, "Upgrades") {
+                        errors.push(error);
+                    }
+                    if let Some(error) = compare_vec_fields(&actual_command.old_removes, &expected_command.old_removes, "Removals") {
+                        errors.push(error);
                     }
 
                     if !errors.is_empty() {

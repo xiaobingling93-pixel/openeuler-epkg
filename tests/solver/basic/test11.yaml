@@ -9,6 +9,6 @@ install:
 - not-in-repo
 plan:
   fresh_installs:
-    a__2__x86_64:
-    b__2__x86_64:
-    broken__1__x86_64:
+  - a__2__x86_64
+  - b__2__x86_64
+  - broken__1__x86_64

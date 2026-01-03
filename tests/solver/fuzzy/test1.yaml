@@ -5,4 +5,4 @@ install:
 - a~=2.2
 plan:
   fresh_installs:
-    a__2.2__x86_64:
+  - a__2.2__x86_64

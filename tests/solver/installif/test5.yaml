@@ -7,5 +7,5 @@ install:
 - cmd:babel
 plan:
   fresh_installs:
-    dam-babel__1__x86_64:
-    dam__1__x86_64:
+  - dam-babel__1__x86_64
+  - dam__1__x86_64

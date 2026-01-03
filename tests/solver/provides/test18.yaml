@@ -8,6 +8,6 @@ remove:
 - wine-staging
 plan:
   fresh_installs:
-    wine__2__x86_64:
+  - wine__2__x86_64
   old_removes:
-    wine-staging__10__x86_64:
+  - wine-staging__10__x86_64

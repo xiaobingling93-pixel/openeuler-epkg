@@ -302,8 +302,11 @@ impl Default for InstalledPackageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct GenerationCommand {
+    #[serde(default)]
     pub timestamp: String,
+    #[serde(default)]
     pub action: String,
+    #[serde(default)]
     pub command_line: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fresh_installs: Vec<String>,
