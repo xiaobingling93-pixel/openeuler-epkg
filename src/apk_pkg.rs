@@ -311,36 +311,18 @@ pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let install_dir = store_tmp_dir.join("info/install");
 
     // Mapping from APK scriptlet names to common names
-    let scriptlet_mapping: HashMap<&str, Vec<&str>> = [
-        (".pre-install", vec!["pre_install.sh", "pre_upgrade.sh"]),
-        (".post-install", vec!["post_install.sh", "post_upgrade.sh"]),
-        (".pre-deinstall", vec!["pre_uninstall.sh"]),
-        (".post-deinstall", vec!["post_uninstall.sh"]),
-        (".pre-upgrade", vec!["pre_upgrade.sh"]),
-        (".post-upgrade", vec!["post_upgrade.sh"]),
+    // APK scriptlet types: pre-install, post-install, pre-upgrade, post-upgrade, pre-deinstall, post-deinstall
+    // Common names match ScriptletType::get_script_names() which uses pre_remove/post_remove for removals
+    let scriptlet_mapping: HashMap<&str, &str> = [
+        (".pre-install", "pre_install.sh"),
+        (".post-install", "post_install.sh"),
+        (".pre-deinstall", "pre_remove.sh"),
+        (".post-deinstall", "post_remove.sh"),
+        (".pre-upgrade", "pre_upgrade.sh"),
+        (".post-upgrade", "post_upgrade.sh"),
     ].into_iter().collect();
 
-    for (apk_script, common_scripts) in &scriptlet_mapping {
-        let apk_script_path = apk_dir.join(apk_script);
-        if apk_script_path.exists() {
-            for common_script in common_scripts {
-                let target_path = install_dir.join(common_script);
-
-                // Copy the script content
-                let content = fs::read(&apk_script_path)?;
-                fs::write(&target_path, &content)?;
-
-                // Make it executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&target_path)?.permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)?;
-                }
-            }
-        }
-    }
+    crate::utils::copy_scriptlets_by_mapping(&scriptlet_mapping, &apk_dir, &install_dir, false)?;
 
     Ok(())
 }

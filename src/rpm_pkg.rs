@@ -157,46 +157,31 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
     // Mapping from RPM scriptlet names to common names
     // Note: Transaction scriptlets (pretrans, posttrans, preuntrans, postuntrans) use distinct filenames
     // to avoid conflicts with regular upgrade scriptlets
-    let scriptlet_mapping: HashMap<&str, Vec<&str>> = [
-        ("prein", vec!["pre_install.sh", "pre_upgrade.sh"]),
-        ("postin", vec!["post_install.sh", "post_upgrade.sh"]),
-        ("preun", vec!["pre_uninstall.sh"]),
-        ("postun", vec!["post_uninstall.sh"]),
-        ("pretrans", vec!["pre_trans.sh"]),      // Distinct filename for transaction scriptlets
-        ("posttrans", vec!["post_trans.sh"]),    // Distinct filename for transaction scriptlets
-        ("preuntrans", vec!["pre_untrans.sh"]),
-        ("postuntrans", vec!["post_untrans.sh"]),
+    let scriptlet_mapping: HashMap<&str, &str> = [
+        ("prein", "pre_install.sh"),
+        ("postin", "post_install.sh"),
+        ("preun", "pre_uninstall.sh"),
+        ("postun", "post_uninstall.sh"),
+        ("pretrans", "pre_trans.sh"),      // Distinct filename for transaction scriptlets
+        ("posttrans", "post_trans.sh"),    // Distinct filename for transaction scriptlets
+        ("preuntrans", "pre_untrans.sh"),
+        ("postuntrans", "post_untrans.sh"),
     ].into_iter().collect();
 
     let metadata = &package.metadata;
 
     // Extract scriptlets using the correct methods with interpreter detection
-    for (rpm_script, common_scripts) in &scriptlet_mapping {
+    for (rpm_script, common_script) in &scriptlet_mapping {
         if let Some((script_content, file_extension)) = get_scriptlet_with_extension(metadata, rpm_script) {
-            for common_script in common_scripts {
-                // Use the detected file extension instead of always .sh
-                let script_name = if file_extension != "sh" {
-                    format!("{}.{}", common_script.trim_end_matches(".sh"), file_extension)
-                } else {
-                    common_script.to_string()
-                };
+            // Use the detected file extension instead of always .sh
+            let script_name = if file_extension != "sh" {
+                format!("{}.{}", common_script.trim_end_matches(".sh"), file_extension)
+            } else {
+                common_script.to_string()
+            };
 
-                let target_path = install_dir.join(&script_name);
-
-                // Write the script content
-                fs::write(&target_path, &script_content)
-                    .wrap_err_with(|| format!("Failed to write script content to {}", target_path.display()))?;
-
-                // Make it executable
-                #[cfg(unix)]
-                {
-                    let mut perms = fs::metadata(&target_path)
-                        .wrap_err_with(|| format!("Failed to get metadata for script at {}", target_path.display()))?.permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)
-                        .wrap_err_with(|| format!("Failed to set executable permissions for script at {}", target_path.display()))?;
-                }
-            }
+            let target_path = install_dir.join(&script_name);
+            crate::utils::write_scriptlet_content(&target_path, script_content.as_bytes())?;
         }
     }
 
@@ -268,15 +253,7 @@ fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> 
                 format!("{}.sh", trigger_type)
             };
             let target_path = install_dir.join(&script_name);
-            fs::write(&target_path, &modified_content)
-                .wrap_err_with(|| format!("Failed to write trigger scriptlet {}", trigger_type))?;
-
-            #[cfg(unix)]
-            {
-                let mut perms = fs::metadata(&target_path)?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&target_path, perms)?;
-            }
+            crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
 
             // Write trigger metadata with version conditions
             // Format: each line is "name" or "name version_op version" (e.g., "vixie-cron < 3.0.1-56")
@@ -338,15 +315,7 @@ fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> 
                 format!("{}.sh", trigger_type)
             };
             let target_path = install_dir.join(&script_name);
-            fs::write(&target_path, &modified_content)
-                .wrap_err_with(|| format!("Failed to write file trigger scriptlet {}", trigger_type))?;
-
-            #[cfg(unix)]
-            {
-                let mut perms = fs::metadata(&target_path)?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&target_path, perms)?;
-            }
+            crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
 
             // Write trigger metadata (file paths that trigger this)
             if !trigger_paths.is_empty() {
@@ -406,15 +375,7 @@ fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> 
                 format!("{}.sh", trigger_type)
             };
             let target_path = install_dir.join(&script_name);
-            fs::write(&target_path, &modified_content)
-                .wrap_err_with(|| format!("Failed to write transaction file trigger scriptlet {}", trigger_type))?;
-
-            #[cfg(unix)]
-            {
-                let mut perms = fs::metadata(&target_path)?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&target_path, perms)?;
-            }
+            crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
 
             // Write trigger metadata (file paths that trigger this)
             if !trigger_paths.is_empty() {

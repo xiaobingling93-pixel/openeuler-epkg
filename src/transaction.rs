@@ -139,7 +139,7 @@ fn run_action(
             }
 
             // Pre-install scriptlet
-            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PreInstall, false)?;
+            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PreInstall, is_upgrade)?;
 
             // DEB activate triggers - AFTER pre scriptlet
             if package_format == PackageFormat::Deb {
@@ -211,7 +211,7 @@ fn run_action(
             single_pkg.insert(pkgkey.to_string(), pkg_info.clone());
 
             // Post-install scriptlet
-            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PostInstall, false)?;
+            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PostInstall, is_upgrade)?;
 
             // RPM package triggers (triggerin) - AFTER postin
             if package_format == PackageFormat::Rpm {
@@ -665,38 +665,28 @@ pub fn begin_transaction(
             pretrans_packages.insert(k.clone(), v.clone());
         }
         if !pretrans_packages.is_empty() {
-            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-            if let Err(e) = scriptlets::run_scriptlets_with_context(
+            if let Err(e) = scriptlets::run_scriptlets(
                 &pretrans_packages,
                 store_root,
                 env_root,
                 package_format,
                 scriptlets::ScriptletType::PreTrans,
                 has_upgrades,
-                Some(&installed),
-                Some(&plan.fresh_installs),
-                Some(&plan.old_removes),
             ) {
-                drop(installed);
                 log::warn!("Failed to run %pretrans scriptlets: {}", e);
             }
         }
 
         // %preuntrans of packages being removed (runs after %pretrans, before removals)
         if !plan.old_removes.is_empty() {
-            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-            if let Err(e) = scriptlets::run_scriptlets_with_context(
+            if let Err(e) = scriptlets::run_scriptlets(
                 &plan.old_removes,
                 store_root,
                 env_root,
                 package_format,
                 scriptlets::ScriptletType::PreUnTrans,
                 false, // is_upgrade - removals are separate from upgrades
-                Some(&installed),
-                Some(&plan.fresh_installs),
-                Some(&plan.old_removes),
             ) {
-                drop(installed);
                 log::warn!("Failed to run %preuntrans scriptlets: {}", e);
             }
         }
@@ -742,19 +732,14 @@ pub fn end_transaction(
             posttrans_packages.insert(k.clone(), v.clone());
         }
         if !posttrans_packages.is_empty() {
-            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-            if let Err(e) = scriptlets::run_scriptlets_with_context(
+            if let Err(e) = scriptlets::run_scriptlets(
                 &posttrans_packages,
                 store_root,
                 env_root,
                 package_format,
                 scriptlets::ScriptletType::PostTrans,
                 has_upgrades,
-                Some(&installed),
-                Some(&plan.fresh_installs),
-                Some(&plan.old_removes),
             ) {
-                drop(installed);
                 log::warn!("Failed to run %posttrans scriptlets: {}", e);
             }
         }
@@ -763,19 +748,14 @@ pub fn end_transaction(
         // This runs AFTER %posttrans, AFTER uninstall transaction completes (RPM behavior)
         // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
         if !plan.old_removes.is_empty() {
-            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-            if let Err(e) = scriptlets::run_scriptlets_with_context(
+            if let Err(e) = scriptlets::run_scriptlets(
                 &plan.old_removes,
                 store_root,
                 env_root,
                 package_format,
                 scriptlets::ScriptletType::PostUnTrans,
                 false, // is_upgrade - removals are separate from upgrades
-                Some(&installed),
-                Some(&plan.fresh_installs),
-                Some(&plan.old_removes),
             ) {
-                drop(installed);
                 log::warn!("Failed to run %postuntrans scriptlets: {}", e);
             }
         }
@@ -949,13 +929,63 @@ pub fn process_package_operation(
         OperationType::Upgrade => {
             if let (Some((new_pkgkey, _)), Some((old_pkgkey, old_info))) = (&op.new_pkg, &op.old_pkg) {
                 if let Some(new_info) = completed_packages.get(new_pkgkey) {
-                    // Execute actions for upgrade
-                    run_action(PackageAction::PreUpgrade,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                    run_action(PackageAction::PreRemove,    old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                    run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                    run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                    run_action(PackageAction::PostUpgrade,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                    run_action(PackageAction::PostRemove,   old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                    match package_format {
+                        PackageFormat::Rpm | PackageFormat::Conda => {
+                            // Order matches RPM scriptlet execution sequence https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7
+                            // Also matches conda's execution order (conda/core/link.py _execute method)
+                            // 1. %pre of _new_     | pre-link of _new_     (PreInstall)
+                            // 2. (unpack _new_ files)                      (LinkFiles)
+                            // 3. %post of _new_    | post-link of _new_    (PostInstall)
+                            //
+                            // 4. %preun of _old_   | pre-unlink of _old_   (PreRemove)
+                            // 5. (erase _old_ files)                       (UnlinkFiles)
+                            // 6. %postun of _old_  | post-unlink of _old_  (PostRemove)
+                            run_action(PackageAction::PreInstall,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::PostInstall,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+
+                            run_action(PackageAction::PreRemove,    old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::PostRemove,   old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                        },
+                        PackageFormat::Deb => {
+                            // Order matches Debian maintainer script execution sequence https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
+                            // Based on dpkg/src/main/unpack.c process_archive() and configure.c:
+                            // 1. prerm of _old_         (PreRemove) with "upgrade new-version"
+                            //    - Called at line 1459: maintscript_run_old_or_new(..., PRERMFILE, "upgrade", ...)
+                            //    - Args: $1="upgrade", $2=new_version (from script.c:347-348)
+                            // 2. preinst of _new_       (PreInstall) with "upgrade old-version new-version"
+                            //    - Called at line 1520: maintscript_run_new(..., PREINSTFILE, "upgrade", old_ver, new_ver, NULL)
+                            //    - Args: $1="upgrade", $2=old_version, $3=new_version
+                            // 3. (unpack _new_ files)   (LinkFiles) - extracts new files, also calls unlink_package_diff()
+                            //    - Unpacking happens at lines 1614-1650
+                            //    - unlink_package_diff() called here (equivalent to pkg_remove_old_files() at line 1686)
+                            // 4. postrm of _old_        (PostRemove) with "upgrade new-version"
+                            //    - Called at line 1663: maintscript_run_old_or_new(..., POSTRMFILE, "upgrade", ...)
+                            //    - Args: $1="upgrade", $2=new_version (only if old was HALFINSTALLED/UNPACKED, but we always call it)
+                            // 5. (unlink _old_ files)   (UnlinkFiles) - completely unlink old package from environment
+                            //    - Needed for store-based system, not in dpkg (dpkg replaces files during unpack)
+                            // 6. postinst of _new_      (PostInstall) with "configure old-version"
+                            //    - Called in configure.c:679: maintscript_postinst(..., "configure", old_version, NULL)
+                            //    - Args: $1="configure", $2=old_version
+                            run_action(PackageAction::PreRemove,    old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::PreInstall,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::PostRemove,   old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::PostInstall,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                        },
+                        PackageFormat::Pacman | PackageFormat::Apk => {
+                            // Archlinux https://man.archlinux.org/man/PKGBUILD.5#INSTALL/UPGRADE/REMOVE_SCRIPTING
+                            // Alpine https://wiki.alpinelinux.org/wiki/APKBUILD_Reference
+                            run_action(PackageAction::PreUpgrade,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(PackageAction::PostUpgrade,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                        },
+                        PackageFormat::Epkg | PackageFormat::Python => { todo!() },
+                    }
+
                     if op.should_unexpose() {
                         run_action(PackageAction::UnexposeExecutables, old_pkgkey, old_info, None, None, store_root, env_root, package_format)?;
                     }

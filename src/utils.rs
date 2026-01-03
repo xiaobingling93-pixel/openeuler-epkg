@@ -1083,3 +1083,86 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
 
     Ok(())
 }
+
+/// Copy a scriptlet file from source to target and make it executable
+/// This is a common pattern used by deb_pkg, conda_pkg, and apk_pkg
+pub fn copy_scriptlet_file<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
+    let source = source.as_ref();
+    let target = target.as_ref();
+
+    // Copy the script content
+    let content = fs::read(source)
+        .wrap_err_with(|| format!("Failed to read scriptlet file: {}", source.display()))?;
+    fs::write(target, &content)
+        .wrap_err_with(|| format!("Failed to write scriptlet file: {}", target.display()))?;
+
+    // Make it executable on Unix systems
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(target)
+            .wrap_err_with(|| format!("Failed to get metadata for scriptlet: {}", target.display()))?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(target, perms)
+            .wrap_err_with(|| format!("Failed to set executable permissions for scriptlet: {}", target.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Write scriptlet content to a file and make it executable
+/// This is used by rpm_pkg when writing scriptlet content directly (not from files)
+pub fn write_scriptlet_content<P: AsRef<Path>>(target: P, content: &[u8]) -> Result<()> {
+    let target = target.as_ref();
+
+    // Write the script content
+    fs::write(target, content)
+        .wrap_err_with(|| format!("Failed to write scriptlet content to {}", target.display()))?;
+
+    // Make it executable on Unix systems
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(target)
+            .wrap_err_with(|| format!("Failed to get metadata for scriptlet: {}", target.display()))?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(target, perms)
+            .wrap_err_with(|| format!("Failed to set executable permissions for scriptlet: {}", target.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Process scriptlets from a mapping, copying them from source directory to target directory
+/// This is a common pattern used by deb_pkg, conda_pkg, and apk_pkg
+///
+/// # Arguments
+/// * `mapping` - HashMap mapping package-specific scriptlet names to common scriptlet names
+/// * `source_dir` - Directory containing the source scriptlet files
+/// * `target_dir` - Directory where common scriptlet files should be written
+/// * `enable_logging` - If true, log when scriptlets are found and created
+pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
+    mapping: &std::collections::HashMap<&str, &str>,
+    source_dir: P,
+    target_dir: P,
+    enable_logging: bool,
+) -> Result<()> {
+    let source_dir = source_dir.as_ref();
+    let target_dir = target_dir.as_ref();
+
+    for (package_script, common_script) in mapping {
+        let source_path = source_dir.join(package_script);
+        if source_path.exists() {
+            if enable_logging {
+                log::debug!("Found scriptlet: {}", package_script);
+            }
+            let target_path = target_dir.join(common_script);
+            copy_scriptlet_file(&source_path, &target_path)?;
+            if enable_logging {
+                log::debug!("Created script: {} -> {}", package_script, common_script);
+            }
+        }
+    }
+
+    Ok(())
+}

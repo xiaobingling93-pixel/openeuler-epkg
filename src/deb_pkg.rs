@@ -133,34 +133,14 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
     // Mapping from Debian scriptlet names to common names
     // Debian upgrade uses the same scripts as install
-    let scriptlet_mapping: HashMap<&str, Vec<&str>> = [
-        ("preinst", vec!["pre_install.sh", "pre_upgrade.sh"]),
-        ("postinst", vec!["post_install.sh", "post_upgrade.sh"]),
-        ("prerm", vec!["pre_uninstall.sh"]),
-        ("postrm", vec!["post_uninstall.sh"]),
+    let scriptlet_mapping: HashMap<&str, &str> = [
+        ("preinst", "pre_install.sh"),
+        ("postinst", "post_install.sh"),
+        ("prerm", "pre_uninstall.sh"),
+        ("postrm", "post_uninstall.sh"),
     ].into_iter().collect();
 
-    for (deb_script, common_scripts) in &scriptlet_mapping {
-        let deb_script_path = deb_dir.join(deb_script);
-        if deb_script_path.exists() {
-            for common_script in common_scripts {
-                let target_path = install_dir.join(common_script);
-
-                // Copy the script content
-                let content = fs::read(&deb_script_path)?;
-                fs::write(&target_path, &content)?;
-
-                // Make it executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&target_path)?.permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)?;
-                }
-            }
-        }
-    }
+    crate::utils::copy_scriptlets_by_mapping(&scriptlet_mapping, &deb_dir, &install_dir, false)?;
 
     // Parse and store DEB triggers
     parse_deb_triggers(store_tmp_dir)?;

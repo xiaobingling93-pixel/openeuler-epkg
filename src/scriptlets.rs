@@ -2,7 +2,7 @@ use std::path::Path;
 use color_eyre::eyre::Result;
 use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::deb_triggers::setup_deb_env_vars;
-use crate::rpm_triggers::{setup_rpm_env_vars, count_installed_packages_by_name};
+use crate::rpm_triggers::setup_rpm_env_vars;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
@@ -23,17 +23,13 @@ impl ScriptletType {
     /// Get the script filenames for this scriptlet type
     fn get_script_names(&self, package_format: PackageFormat) -> Vec<String> {
         let name = match (self, package_format) {
-            // For RPM and DEB, upgrade scriptlets reuse install/remove scripts
-            (ScriptletType::PreUpgrade, PackageFormat::Rpm) | (ScriptletType::PreUpgrade, PackageFormat::Deb) => "pre_install",
-            (ScriptletType::PostUpgrade, PackageFormat::Rpm) | (ScriptletType::PostUpgrade, PackageFormat::Deb) => "post_install",
-
             // For other scriptlet types, use direct mapping
-            (ScriptletType::PreInstall, _) => "pre_install",
+            (ScriptletType::PreInstall, _)  => "pre_install",
             (ScriptletType::PostInstall, _) => "post_install",
-            (ScriptletType::PreUpgrade, _) => "pre_upgrade",
+            (ScriptletType::PreUpgrade, _)  => "pre_upgrade",
             (ScriptletType::PostUpgrade, _) => "post_upgrade",
-            (ScriptletType::PreRemove, _) => "pre_remove",
-            (ScriptletType::PostRemove, _) => "post_remove",
+            (ScriptletType::PreRemove, _)   => "pre_remove",
+            (ScriptletType::PostRemove, _)  => "post_remove",
 
             // Transaction scriptlets (RPM-specific)
             // These use distinct filenames to avoid conflicts with regular upgrade scriptlets
@@ -55,162 +51,354 @@ impl ScriptletType {
 
     /// Get the parameters to pass to the script based on package format and scenario
     /// For RPM, $1 represents the number of installed instances AFTER the operation completes.
-    /// This function now accepts an optional package_count parameter for accurate calculation.
     fn get_script_params(
         &self,
         package_format: PackageFormat,
         is_upgrade: bool,
         old_version: Option<&str>,
         new_version: Option<&str>,
-        package_count: Option<u32>, // Number of installed instances BEFORE operation
     ) -> Vec<String> {
         match package_format {
             PackageFormat::Rpm => {
-                match self {
-                    ScriptletType::PreInstall | ScriptletType::PreTrans => {
-                        // PKG_INSTALL/PKG_PRETRANS: $1 = npkgs_installed + 1 (will be 1 after install)
-                        let arg1 = package_count.map(|c| c + 1).unwrap_or(1);
-                        let mut params = vec![arg1.to_string()];
-                        if is_upgrade {
-                            if let Some(old_ver) = old_version {
-                                params.push(old_ver.to_string()); // $2=old_version
-                            }
-                        }
-                        params
-                    }
-                    ScriptletType::PostInstall | ScriptletType::PostTrans => {
-                        // PKG_POSTTRANS: $1 = npkgs_installed + isUpdate (1 if upgrade, 0 if fresh install)
-                        // For fresh install: npkgs_installed + 1 = 1
-                        // For upgrade: npkgs_installed + 1 = 1 (old removed, new installed, net +1)
-                        let arg1 = if is_upgrade {
-                            package_count.map(|c| c + 1).unwrap_or(1) // Upgrade: count stays same but we add 1
-                        } else {
-                            package_count.map(|c| c + 1).unwrap_or(1) // Fresh install: 0 + 1 = 1
-                        };
-                        vec![arg1.to_string()]
-                    }
-                    ScriptletType::PreUpgrade => {
-                        // For RPM, PreUpgrade maps to pre_install.sh with upgrade parameters
-                        // Same as PreInstall for upgrades
-                        let arg1 = package_count.map(|c| c + 1).unwrap_or(1);
-                        let mut params = vec![arg1.to_string()];
-                        if let Some(old_ver) = old_version {
-                            params.push(old_ver.to_string()); // $2=old_version
-                        }
-                        params
-                    }
-                    ScriptletType::PostUpgrade => {
-                        // Same as PostInstall for upgrades
-                        let arg1 = package_count.map(|c| c + 1).unwrap_or(1);
-                        vec![arg1.to_string()]
-                    }
-                    ScriptletType::PreRemove | ScriptletType::PreUnTrans => {
-                        // PKG_ERASE/PKG_PREUNTRANS:
-                        // If upgrade (rpmteDependsOn): $1 = npkgs_installed (old version still installed)
-                        // If removal: $1 = npkgs_installed - 1 (will be 0 after removal)
-                        let arg1 = if is_upgrade {
-                            package_count.unwrap_or(1) // Upgrade: old version count
-                        } else {
-                            package_count.map(|c| c.saturating_sub(1)).unwrap_or(0) // Removal: will be 0
-                        };
-                        let mut params = vec![arg1.to_string()];
-                        if is_upgrade {
-                            if let Some(new_ver) = new_version {
-                                params.push(new_ver.to_string()); // $2=new_version
-                            }
-                        }
-                        params
-                    }
-                    ScriptletType::PostRemove | ScriptletType::PostUnTrans => {
-                        // PKG_POSTUNTRANS: $1 = npkgs_installed (after removal, will be 0 for complete removal)
-                        let arg1 = if is_upgrade {
-                            package_count.map(|c| c.saturating_sub(1)).unwrap_or(0) // Upgrade: old removed, new installed
-                        } else {
-                            0 // Complete removal: will be 0
-                        };
-                        let mut params = vec![arg1.to_string()];
-                        if is_upgrade {
-                            if let Some(new_ver) = new_version {
-                                params.push(new_ver.to_string()); // $2=new_version
-                            }
-                        }
-                        params
-                    }
-                }
+                self.get_rpm_script_params(is_upgrade)
             }
             PackageFormat::Deb => {
-                match self {
-                    ScriptletType::PreInstall => {
-                        if is_upgrade {
-                            let mut params = vec!["upgrade".to_string()];
-                            if let Some(old_ver) = old_version {
-                                params.push(old_ver.to_string()); // $2=old_version
-                            }
-                            params
-                        } else {
-                            vec!["install".to_string()]
-                        }
-                    }
-                    ScriptletType::PostInstall => {
-                        if is_upgrade {
-                            let mut params = vec!["configure".to_string()];
-                            if let Some(old_ver) = old_version {
-                                params.push(old_ver.to_string()); // $2=old_version
-                            }
-                            params
-                        } else {
-                            vec!["configure".to_string()]
-                        }
-                    }
-                    ScriptletType::PreUpgrade => {
-                        // For DEB, PreUpgrade maps to pre_install.sh with upgrade parameters
-                        let mut params = vec!["upgrade".to_string()];
-                        if let Some(old_ver) = old_version {
-                            params.push(old_ver.to_string()); // $2=old_version
-                        }
-                        params
-                    }
-                    ScriptletType::PostUpgrade => {
-                        // For DEB, PostUpgrade maps to post_install.sh with configure parameters
-                        let mut params = vec!["configure".to_string()];
-                        if let Some(old_ver) = old_version {
-                            params.push(old_ver.to_string()); // $2=old_version
-                        }
-                        params
-                    }
-                    ScriptletType::PreRemove => {
-                        if is_upgrade {
-                            let mut params = vec!["upgrade".to_string()];
-                            if let Some(new_ver) = new_version {
-                                params.push(new_ver.to_string()); // $2=new_version
-                            }
-                            params
-                        } else {
-                            vec!["remove".to_string()]
-                        }
-                    }
-                    ScriptletType::PostRemove => {
-                        if is_upgrade {
-                            let mut params = vec!["upgrade".to_string()];
-                            if let Some(new_ver) = new_version {
-                                params.push(new_ver.to_string()); // $2=new_version
-                            }
-                            params
-                        } else {
-                            vec!["remove".to_string()]
-                        }
-                    }
-                    // Transaction scriptlets not supported for DEB
-                    ScriptletType::PreTrans | ScriptletType::PostTrans |
-                    ScriptletType::PreUnTrans | ScriptletType::PostUnTrans => {
-                        Vec::new()
-                    }
-                }
+                self.get_deb_script_params(is_upgrade, old_version, new_version)
             }
-            // For other formats (Arch, Alpine, etc.), no parameters are typically used
+            PackageFormat::Pacman | PackageFormat::Apk => {
+                // Both Pacman and APK use the same scriptlet parameter format:
+                // - pre_install/post_install: <new-version>
+                // - pre_upgrade/post_upgrade: <new-version> <old-version>
+                // - pre_remove/post_remove: <old-version>
+                self.get_pacman_script_params(old_version, new_version)
+            }
+            PackageFormat::Conda => {
+                // Conda scripts receive no command-line parameters
+                // Only environment variables are set: PREFIX, PKG_NAME, PKG_VERSION, PKG_BUILDNUM
+                // Reference: conda/core/link.py run_script() function
+                vec![]
+            }
+            // For other formats, no parameters are typically used
             _ => vec![]
         }
     }
+
+    /// Get script parameters for RPM format
+    /// RPM scriptlets only accept $1 (package count), never $2
+    /// $1 represents the number of instances of the package that will be installed AFTER the scriptlet completes
+    fn get_rpm_script_params(
+        &self,
+        is_upgrade: bool,
+    ) -> Vec<String> {
+        // Calculate $1 based on scriptlet type and upgrade status
+        // Based on RPM scriptlet execution order in rpm-scriptlets.7.scd and process_package_operation()
+        let package_count = match self {
+            ScriptletType::PreInstall => {
+                // %pre of new: $1 = npkgs_installed + 1 (will be 1 after install)
+                // For both fresh install and upgrade, the new package is not installed yet,
+                // so npkgs_installed = 0, and after install it will be 1
+                1
+            }
+            ScriptletType::PreUpgrade => {
+                // %preupgrade: same as %pre for upgrades, $1 = npkgs_installed + 1 (will be 1 after install)
+                // Note: This scriptlet type may not be used in current flow (PreInstall is used instead)
+                1
+            }
+            ScriptletType::PostInstall => {
+                // %post of new: new installed, old still installed (if upgrade)
+                if is_upgrade { 2 } else { 1 }
+            }
+            ScriptletType::PostUpgrade => {
+                // %postupgrade: same as %post for upgrades, both old and new installed
+                2
+            }
+
+            ScriptletType::PreRemove => {
+                // %preun of old: new installed, old still installed (if upgrade)
+                if is_upgrade { 2 } else { 1 }
+            }
+            ScriptletType::PostRemove => {
+                // %postun of old: new installed, old removed (if upgrade)
+                if is_upgrade { 1 } else { 0 }
+            }
+
+            ScriptletType::PreTrans => {
+                // %pretrans of new: $1 = npkgs_installed + 1 (will be 1 after install)
+                // Same as PreInstall - for both fresh install and upgrade, the new package
+                // is not installed yet, so npkgs_installed = 0, and after install it will be 1
+                1
+            }
+            ScriptletType::PostTrans => {
+                // %posttrans of new: new installed, old removed (if upgrade)
+                1
+            }
+
+            ScriptletType::PreUnTrans => {
+                // %preuntrans of old:
+                // Upgrade: $1 = npkgs_installed (old version still installed) = 1
+                // Removal: $1 = npkgs_installed - 1 (will be 0 after removal) = 0
+                if is_upgrade { 1 } else { 0 }
+            }
+            ScriptletType::PostUnTrans => {
+                // %postuntrans of old: old removed
+                0
+            }
+        };
+        vec![package_count.to_string()]
+    }
+
+    /// Get script parameters for DEB format
+    fn get_deb_script_params(
+        &self,
+        is_upgrade: bool,
+        old_version: Option<&str>,
+        new_version: Option<&str>,
+    ) -> Vec<String> {
+        match self {
+            ScriptletType::PreInstall => {
+                if is_upgrade {
+                    let mut params = vec!["upgrade".to_string()];
+                    if let Some(old_ver) = old_version {
+                        params.push(old_ver.to_string()); // $2=old_version
+                    }
+                    if let Some(new_ver) = new_version {
+                        params.push(new_ver.to_string()); // $3=new_version
+                    }
+                    params
+                } else {
+                    vec!["install".to_string()]
+                }
+            }
+            ScriptletType::PostInstall => {
+                if is_upgrade {
+                    let mut params = vec!["configure".to_string()];
+                    if let Some(old_ver) = old_version {
+                        params.push(old_ver.to_string()); // $2=old_version
+                    }
+                    params
+                } else {
+                    vec!["configure".to_string()]
+                }
+            }
+            ScriptletType::PreUpgrade => {
+                // For DEB, PreUpgrade maps to pre_install.sh with upgrade parameters
+                let mut params = vec!["upgrade".to_string()];
+                if let Some(old_ver) = old_version {
+                    params.push(old_ver.to_string()); // $2=old_version
+                }
+                params
+            }
+            ScriptletType::PostUpgrade => {
+                // For DEB, PostUpgrade maps to post_install.sh with configure parameters
+                let mut params = vec!["configure".to_string()];
+                if let Some(old_ver) = old_version {
+                    params.push(old_ver.to_string()); // $2=old_version
+                }
+                params
+            }
+            ScriptletType::PreRemove => {
+                if is_upgrade {
+                    let mut params = vec!["upgrade".to_string()];
+                    if let Some(new_ver) = new_version {
+                        params.push(new_ver.to_string()); // $2=new_version
+                    }
+                    params
+                } else {
+                    vec!["remove".to_string()]
+                }
+            }
+            ScriptletType::PostRemove => {
+                if is_upgrade {
+                    let mut params = vec!["upgrade".to_string()];
+                    if let Some(new_ver) = new_version {
+                        params.push(new_ver.to_string()); // $2=new_version
+                    }
+                    params
+                } else {
+                    vec!["remove".to_string()]
+                }
+            }
+            // Transaction scriptlets not supported for DEB
+            ScriptletType::PreTrans | ScriptletType::PostTrans |
+            ScriptletType::PreUnTrans | ScriptletType::PostUnTrans => {
+                Vec::new()
+            }
+        }
+    }
+
+    /// Get script parameters for Pacman (Arch Linux) and APK (Alpine Linux) formats
+    /// According to:
+    /// - Pacman: https://man.archlinux.org/man/PKGBUILD.5#INSTALL/UPGRADE/REMOVE_SCRIPTING
+    /// - APK: https://wiki.alpinelinux.org/wiki/APKBUILD_Reference and apk-package.5.scd
+    /// Both formats use the same parameter format:
+    /// - pre_install: one argument (new package full version string)
+    /// - post_install: one argument (new package full version string)
+    /// - pre_upgrade: two arguments (new package full version string, old package full version string)
+    /// - post_upgrade: two arguments (new package full version string, old package full version string)
+    /// - pre_remove/pre_deinstall: one argument (old package full version string)
+    /// - post_remove/post_deinstall: one argument (old package full version string)
+    /// Note: During upgrade operations, only pre_upgrade and post_upgrade are called, not install/remove functions.
+    /// Reference code:
+    /// - Pacman: _alpm_runscriptlet() calls and proto.install template in http://gitlab.archlinux.org/pacman/pacman
+    /// - APK: apk_ipkg_run_script() in /c/package-managers/apk-tools/src/package.c
+    fn get_pacman_script_params(
+        &self,
+        old_version: Option<&str>,
+        new_version: Option<&str>,
+    ) -> Vec<String> {
+        match self {
+            ScriptletType::PreInstall => {
+                // pre_install: one argument (new package full version string)
+                if let Some(new_ver) = new_version {
+                    vec![new_ver.to_string()]
+                } else {
+                    vec![]
+                }
+            }
+            ScriptletType::PostInstall => {
+                // post_install: one argument (new package full version string)
+                if let Some(new_ver) = new_version {
+                    vec![new_ver.to_string()]
+                } else {
+                    vec![]
+                }
+            }
+            ScriptletType::PreUpgrade => {
+                // pre_upgrade: two arguments (new package full version string, old package full version string)
+                let mut params = Vec::new();
+                if let Some(new_ver) = new_version {
+                    params.push(new_ver.to_string());
+                }
+                if let Some(old_ver) = old_version {
+                    params.push(old_ver.to_string());
+                }
+                params
+            }
+            ScriptletType::PostUpgrade => {
+                // post_upgrade: two arguments (new package full version string, old package full version string)
+                let mut params = Vec::new();
+                if let Some(new_ver) = new_version {
+                    params.push(new_ver.to_string());
+                }
+                if let Some(old_ver) = old_version {
+                    params.push(old_ver.to_string());
+                }
+                params
+            }
+            ScriptletType::PreRemove => {
+                // pre_remove: one argument (old package full version string)
+                if let Some(old_ver) = old_version {
+                    vec![old_ver.to_string()]
+                } else {
+                    vec![]
+                }
+            }
+            ScriptletType::PostRemove => {
+                // post_remove: one argument (old package full version string)
+                if let Some(old_ver) = old_version {
+                    vec![old_ver.to_string()]
+                } else {
+                    vec![]
+                }
+            }
+            // Transaction scriptlets not supported for Pacman
+            ScriptletType::PreTrans | ScriptletType::PostTrans |
+            ScriptletType::PreUnTrans | ScriptletType::PostUnTrans => {
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Set up APK (Alpine Linux) environment variables for scriptlets
+/// According to https://wiki.alpinelinux.org/wiki/APKBUILD_Reference and apk.8.scd:
+/// - APK_PACKAGE: Package name (package scripts only)
+/// - APK_SCRIPT: Set to one of the package script types
+/// Reference: apk_ipkg_run_script() and apk_script_types[] in /c/package-managers/apk-tools/src/package.c
+pub fn setup_apk_env_vars(
+    env_vars: &mut std::collections::HashMap<String, String>,
+    pkgkey: &str,
+    _package_info: &InstalledPackageInfo,
+    scriptlet_type: ScriptletType,
+) {
+    use crate::package::pkgkey2pkgname;
+
+    // Set APK_SCRIPT to the script type name
+    // APK script types: pre-install, post-install, pre-upgrade, post-upgrade, pre-deinstall, post-deinstall
+    let script_type = match scriptlet_type {
+        ScriptletType::PreInstall   => "pre-install",
+        ScriptletType::PostInstall  => "post-install",
+        ScriptletType::PreUpgrade   => "pre-upgrade",
+        ScriptletType::PostUpgrade  => "post-upgrade",
+        ScriptletType::PreRemove    => "pre-deinstall",
+        ScriptletType::PostRemove   => "post-deinstall",
+        _ => {
+            // Transaction scriptlets not used for APK
+            return;
+        }
+    };
+    env_vars.insert("APK_SCRIPT".to_string(), script_type.to_string());
+
+    // Set APK_PACKAGE to package name
+    // Reference: apk sets this for package scripts (not commit scripts)
+    if let Ok(package_name) = pkgkey2pkgname(pkgkey) {
+        env_vars.insert("APK_PACKAGE".to_string(), package_name);
+    }
+}
+
+/// Set up Conda environment variables for scriptlets
+/// According to conda documentation:
+/// - PREFIX: The install prefix (environment root)
+/// - PKG_NAME: The name of the package
+/// - PKG_VERSION: The version of the package (without build string)
+/// - PKG_BUILDNUM: The build number of the package
+/// Reference: conda/core/link.py and rattler/src/install/link_script.rs
+pub fn setup_conda_env_vars(
+    env_vars: &mut std::collections::HashMap<String, String>,
+    pkgkey: &str,
+    package_info: &InstalledPackageInfo,
+    store_root: &std::path::Path,
+    env_root: &std::path::Path,
+) {
+    use crate::package::{pkgkey2pkgname, pkgkey2version};
+    use crate::conda_pkg::VERSION_BUILD_SEPARATOR;
+    use std::fs;
+
+    // Set PREFIX to the environment root (install prefix)
+    env_vars.insert("PREFIX".to_string(), env_root.to_string_lossy().to_string());
+
+    // Set PKG_NAME to package name
+    if let Ok(package_name) = pkgkey2pkgname(pkgkey) {
+        env_vars.insert("PKG_NAME".to_string(), package_name);
+    }
+
+    // Extract version from pkgkey (may include build string separated by VERSION_BUILD_SEPARATOR)
+    let version_with_build = pkgkey2version(pkgkey).unwrap_or_default();
+    // Split version and build string (version is the part before the separator)
+    let pkg_version = version_with_build
+        .splitn(2, VERSION_BUILD_SEPARATOR)
+        .next()
+        .unwrap_or(&version_with_build)
+        .to_string();
+    env_vars.insert("PKG_VERSION".to_string(), pkg_version);
+
+    // Try to read PKG_BUILDNUM from package.txt
+    // Build number is stored as "buildNumber" in package.txt
+    let mut build_num = "0".to_string(); // Default to "0" if not found
+    let package_txt_path = store_root.join(&package_info.pkgline).join("info/package.txt");
+    if package_txt_path.exists() {
+        if let Ok(content) = fs::read_to_string(&package_txt_path) {
+            for line in content.lines() {
+                if let Some((key, value)) = line.split_once(": ") {
+                    if key == "buildNumber" {
+                        build_num = value.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    env_vars.insert("PKG_BUILDNUM".to_string(), build_num);
 }
 
 /// Get interpreters to try for a given script file extension
@@ -238,31 +426,6 @@ pub fn run_scriptlets(
     scriptlet_type: ScriptletType,
     is_upgrade: bool,
 ) -> Result<()> {
-    run_scriptlets_with_context(
-        completed_packages,
-        store_root,
-        env_root,
-        package_format,
-        scriptlet_type,
-        is_upgrade,
-        None, // installed_packages
-        None, // fresh_installs
-        None, // old_removes
-    )
-}
-
-/// Run scriptlets for multiple packages with package count context
-pub fn run_scriptlets_with_context(
-    completed_packages: &InstalledPackagesMap,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
-    scriptlet_type: ScriptletType,
-    is_upgrade: bool,
-    installed_packages: Option<&InstalledPackagesMap>,
-    fresh_installs: Option<&InstalledPackagesMap>,
-    old_removes: Option<&InstalledPackagesMap>,
-) -> Result<()> {
     // Convert HashMap to a Vec of tuples (pkgkey, info) and sort by depend_depth in descending order
     // This ensures packages with higher depend_depth are processed first
     let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = completed_packages.iter().map(|(k, v)| (k, v)).collect();
@@ -270,27 +433,7 @@ pub fn run_scriptlets_with_context(
 
     // Process packages in sorted order
     for (pkgkey, package_info) in packages_vec {
-        // Calculate package count for RPM scriptlet arguments
-        let package_count = if package_format == PackageFormat::Rpm {
-            if let (Some(installed), Some(fresh), Some(old)) = (installed_packages, fresh_installs, old_removes) {
-                if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
-                    Some(count_installed_packages_by_name(
-                        &pkgname,
-                        installed,
-                        fresh,
-                        old,
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let Err(e) = run_scriptlet_with_count(
+        if let Err(e) = run_scriptlet(
             pkgkey,
             package_info,
             store_root,
@@ -300,7 +443,6 @@ pub fn run_scriptlets_with_context(
             is_upgrade,
             None, // old_version
             None, // new_version
-            package_count,
         ) {
             log::warn!("Failed to run {:?} scriptlet for package {}: {}", scriptlet_type, pkgkey, e);
         }
@@ -319,33 +461,6 @@ pub fn run_scriptlet(
     is_upgrade: bool,
     old_version: Option<&str>,
     new_version: Option<&str>,
-) -> Result<()> {
-    run_scriptlet_with_count(
-        pkgkey,
-        package_info,
-        store_root,
-        env_root,
-        package_format,
-        scriptlet_type,
-        is_upgrade,
-        old_version,
-        new_version,
-        None, // package_count - will use fallback
-    )
-}
-
-/// Run a single scriptlet for one package with package count
-pub fn run_scriptlet_with_count(
-    pkgkey: &str,
-    package_info: &InstalledPackageInfo,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
-    scriptlet_type: ScriptletType,
-    is_upgrade: bool,
-    old_version: Option<&str>,
-    new_version: Option<&str>,
-    package_count: Option<u32>,
 ) -> Result<()> {
     // Skip all fakeroot scriptlets as post_install runs ldconfig -r . which removes ld-linux-x86-64.so.2
     let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
@@ -391,7 +506,7 @@ pub fn run_scriptlet_with_count(
                 }
 
                 // Get parameters based on package format and scenario
-                let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version, new_version, package_count);
+                let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version, new_version);
 
                 // Prepare script arguments: [script_path, param1, param2, ...]
                 let mut script_args = vec![script_path.to_string_lossy().to_string()];
@@ -406,6 +521,10 @@ pub fn run_scriptlet_with_count(
                     setup_deb_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type, env_root);
                 } else if package_format == PackageFormat::Rpm {
                     setup_rpm_env_vars(&mut env_vars, pkgkey, package_info, store_root);
+                } else if package_format == PackageFormat::Apk {
+                    setup_apk_env_vars(&mut env_vars, pkgkey, package_info, scriptlet_type);
+                } else if package_format == PackageFormat::Conda {
+                    setup_conda_env_vars(&mut env_vars, pkgkey, package_info, store_root, env_root);
                 }
 
                 let run_options = crate::run::RunOptions {

@@ -60,28 +60,31 @@ lazy_static! {
 
     /// Scriptlet mapping for Conda packages
     /// Based on conda-package-streaming link/unlink script handling
-    pub static ref SCRIPT_MAPPING: HashMap<&'static str, Vec<&'static str>> = {
+    pub static ref SCRIPT_MAPPING: HashMap<&'static str, &'static str> = {
         let mut m = HashMap::new();
 
         // Conda link scripts (executed when package is installed/linked)
-        m.insert("pre-link.sh",     vec!["pre_install.sh", "pre_upgrade.sh"]);
-        m.insert("post-link.sh",    vec!["post_install.sh", "post_upgrade.sh"]);
+        // Note: Conda uses the same pre-link/post-link scripts for both installs and upgrades
+        // During upgrades, PreInstall/PostInstall actions are used (not PreUpgrade/PostUpgrade)
+        m.insert("pre-link.sh",     "pre_install.sh");
+        m.insert("post-link.sh",    "post_install.sh");
 
         // Conda unlink scripts (executed when package is removed/unlinked)
-        m.insert("pre-unlink.sh",   vec!["pre_uninstall.sh"]);
-        m.insert("post-unlink.sh",  vec!["post_uninstall.sh"]);
+        m.insert("pre-unlink.sh",   "pre_remove.sh");
+        m.insert("post-unlink.sh",  "post_remove.sh");
 
         // Conda environment activation/deactivation scripts
-        m.insert("activate.sh",     vec!["activate.sh"]);
-        m.insert("deactivate.sh",   vec!["deactivate.sh"]);
+        m.insert("activate.sh",     "activate.sh");
+        m.insert("deactivate.sh",   "deactivate.sh");
 
         // Windows equivalents
-        m.insert("pre-link.bat",    vec!["pre_install.bat", "pre_upgrade.bat"]);
-        m.insert("post-link.bat",   vec!["post_install.bat", "post_upgrade.bat"]);
-        m.insert("pre-unlink.bat",  vec!["pre_uninstall.bat"]);
-        m.insert("post-unlink.bat", vec!["post_uninstall.bat"]);
-        m.insert("activate.bat",    vec!["activate.bat"]);
-        m.insert("deactivate.bat",  vec!["deactivate.bat"]);
+        // Note: Conda uses the same pre-link/post-link scripts for both installs and upgrades
+        m.insert("pre-link.bat",    "pre_install.bat");
+        m.insert("post-link.bat",   "post_install.bat");
+        m.insert("pre-unlink.bat",  "pre_remove.bat");
+        m.insert("post-unlink.bat", "post_remove.bat");
+        m.insert("activate.bat",    "activate.bat");
+        m.insert("deactivate.bat",  "deactivate.bat");
 
         m
     };
@@ -421,33 +424,7 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let conda_info_dir = store_tmp_dir.join("info/conda");
     let install_dir = store_tmp_dir.join("info/install");
 
-    // Process each mapped script following project pattern
-    for (conda_script, common_scripts) in SCRIPT_MAPPING.iter() {
-        let conda_script_path = conda_info_dir.join(conda_script);
-        if conda_script_path.exists() {
-            log::debug!("Found Conda script: {}", conda_script);
-            for common_script in common_scripts {
-                let target_path = install_dir.join(common_script);
-
-                // Copy the script content
-                let content = fs::read(&conda_script_path)
-                    .wrap_err_with(|| format!("Failed to read Conda script: {}", conda_script_path.display()))?;
-                fs::write(&target_path, &content)
-                    .wrap_err_with(|| format!("Failed to write script: {}", target_path.display()))?;
-
-                // Make it executable on Unix systems (following project pattern)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&target_path)?.permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)?;
-                }
-
-                log::debug!("Created script: {} -> {}", conda_script, common_script);
-            }
-        }
-    }
+    crate::utils::copy_scriptlets_by_mapping(&SCRIPT_MAPPING, &conda_info_dir, &install_dir, true)?;
 
     Ok(())
 }

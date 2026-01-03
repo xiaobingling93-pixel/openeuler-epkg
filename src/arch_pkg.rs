@@ -340,12 +340,13 @@ fn extract_install_scriptlets(install_content: &[u8], store_tmp_dir: &Path) -> R
             // Map the scriptlet name to the standard name
             if let Some(standard_name) = SCRIPT_MAPPING.get(scriptlet_name) {
                 // Create a wrapper script that sources the .INSTALL file and calls the function
+                // Pass script arguments ($1, $2, etc.) to the function using "$@"
                 let wrapper_content = format!(
                     "#!/bin/sh
 # Wrapper script for {scriptlet_name} function
 THIS_SCRIPT_DIR=$(dirname \"$0\")
 source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
-{scriptlet_name}
+{scriptlet_name} \"$@\"
 "
                 );
 
