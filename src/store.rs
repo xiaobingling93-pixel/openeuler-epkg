@@ -17,15 +17,14 @@ use log;
 
 /// Unpack a package file
 ///
-/// Unpacks a package from a file path and returns the actual package key and updated package info.
+/// Unpacks a package from a file path and returns the actual package key and pkgline.
 /// Does not link the package - linking must be done separately via link_package().
 ///
 pub fn unpack_package(
     file_path: &str,
     pkgkey: &str,
-    mut package_info: InstalledPackageInfo,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-) -> Result<(String, InstalledPackageInfo)> {
+) -> Result<(String, String)> {
     // Unpack the package
     let final_dir = unpack_mv_package(file_path, Some(pkgkey), Some(store_pkglines_by_pkgname))
         .with_context(|| format!("Failed to unpack package: {}", file_path))?;
@@ -42,10 +41,7 @@ pub fn unpack_package(
     // Format the package key using the exact architecture from the package
     let actual_pkgkey = package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
 
-    // Update the package info with the pkgline
-    package_info.pkgline = pkgline.to_string();
-
-    Ok((actual_pkgkey, package_info))
+    Ok((actual_pkgkey, pkgline.to_string()))
 }
 
 /// Unpacks multiple packages and moves them to the store

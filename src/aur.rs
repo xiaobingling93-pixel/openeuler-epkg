@@ -898,12 +898,9 @@ fn unpack_link_built_aur_packages(
         })?;
 
         // Unpack the package
-        let (actual_pkgkey, mut completed_info) = crate::store::unpack_package(
+        let (actual_pkgkey, pkgline) = crate::store::unpack_package(
             built_pkg_path_str,
             &original_key,
-            // Start from an empty InstalledPackageInfo; we'll fully populate fields
-            // from the mapped planned AUR entry.
-            InstalledPackageInfo::default(),
             store_pkglines_by_pkgname,
         )
             .with_context(|| {
@@ -913,8 +910,12 @@ fn unpack_link_built_aur_packages(
                 )
             })?;
 
+        // Create InstalledPackageInfo with the pkgline
+        let mut completed_info = info.clone();
+        completed_info.pkgline = pkgline.clone();
+
         // Link the package
-        let store_fs_dir = store_root.join(completed_info.pkgline.clone()).join("fs");
+        let store_fs_dir = store_root.join(&pkgline).join("fs");
         crate::link::link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
             .with_context(|| {
                 format!(
@@ -939,13 +940,6 @@ fn unpack_link_built_aur_packages(
                 actual_pkgkey
             ));
         }
-
-        // Copy metadata from the planned AUR entry
-        completed_info.depend_depth = info.depend_depth;
-        completed_info.depends = info.depends.clone();
-        completed_info.rdepends = info.rdepends.clone();
-        completed_info.bdepends = info.bdepends.clone();
-        completed_info.rbdepends = info.rbdepends.clone();
 
         // Record mapping from original (plan) pkgkey to actual installed pkgkey
         if original_key != &actual_pkgkey {

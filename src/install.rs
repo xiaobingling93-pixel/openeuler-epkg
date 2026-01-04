@@ -459,16 +459,18 @@ fn wait_downloads_and_unpack(
                         let file_path = get_package_file_path(&pkgkey)?;
 
                         // Get package info from the map
-                        let package_info = packages_to_install.remove(&pkgkey)
+                        let mut package_info = packages_to_install.remove(&pkgkey)
                             .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?;
 
                         // Unpack the package (without linking)
-                        let (actual_pkgkey, package_info) = crate::store::unpack_package(
+                        let (actual_pkgkey, pkgline) = crate::store::unpack_package(
                             &file_path,
                             &pkgkey,
-                            package_info,
                             store_pkglines_by_pkgname,
                         )?;
+
+                        // Update package info with the pkgline
+                        package_info.pkgline = pkgline;
 
                         // Store for later linking (don't add to completed_packages yet - that happens after linking)
                         packages_to_link.push((actual_pkgkey, package_info));
