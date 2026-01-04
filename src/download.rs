@@ -5898,7 +5898,9 @@ fn is_immutable_filename(file_path: &str) -> bool {
     file_path.ends_with(".apk") ||
     file_path.ends_with(".epkg") ||
     file_path.ends_with(".conda") ||
+    file_path.ends_with(".whl") ||
     file_path.contains("/by-hash/") ||
+    file_path.ends_with(".bz2") ||
     file_path.ends_with(".gz") ||
     file_path.ends_with(".xz") ||
     file_path.ends_with(".zst")
