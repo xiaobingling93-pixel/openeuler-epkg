@@ -19,6 +19,7 @@ use crate::utils::force_symlink;
 use crate::deinit::force_remove_dir_all;
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
+use std::sync::Arc;
 use crate::install::execute_installation_plan;
 use crate::history::record_history;
 use crate::path::update_path;
@@ -425,7 +426,9 @@ pub fn create_environment(name: &str) -> Result<()> {
     if !packages_to_install.is_empty() {
         // Clear installed_packages since this is a new environment with no packages installed yet
         PACKAGE_CACHE.installed_packages.write().unwrap().clear();
-        let plan = prepare_installation_plan(&packages_to_install, None)?;
+        // Convert HashMap<String, InstalledPackageInfo> to InstalledPackagesMap
+        let packages_map: InstalledPackagesMap = packages_to_install.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+        let plan = prepare_installation_plan(&packages_map, None)?;
         execute_installation_plan(plan)?;
     } else {
         // Create metadata files

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::symlink;
+use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::{PackageFormat, SELF_ENV};
@@ -64,8 +65,9 @@ pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> 
 
             // Update the package info to clear ebin_links
             if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                installed_package_info_mut.ebin_links.clear();
-                installed_package_info_mut.ebin_exposure = false;
+                let info_mut = Arc::make_mut(installed_package_info_mut);
+                info_mut.ebin_links.clear();
+                info_mut.ebin_exposure = false;
             }
         }
     }
@@ -98,8 +100,9 @@ pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env
 
             // Update the package info with the new links
             if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                installed_package_info_mut.ebin_links = links.clone();
-                installed_package_info_mut.ebin_exposure = true;
+                let info_mut = Arc::make_mut(installed_package_info_mut);
+                info_mut.ebin_links = links.clone();
+                info_mut.ebin_exposure = true;
             } else {
                 log::warn!("execute_expose_operations: pkgkey '{}' not found in installed_packages. Ebin links not stored.", pkgkey);
             }

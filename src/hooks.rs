@@ -663,7 +663,7 @@ fn match_path_trigger_with_targets(
 
     if wants_install || wants_upgrade {
         collect_matching_package_files(
-            fresh_installs.values(),
+            fresh_installs.values().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
@@ -673,7 +673,7 @@ fn match_path_trigger_with_targets(
 
     if wants_install || wants_upgrade || wants_remove {
         collect_matching_package_files(
-            upgrades_new.values(),
+            upgrades_new.values().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
@@ -681,7 +681,7 @@ fn match_path_trigger_with_targets(
         )?;
 
         collect_matching_package_files(
-            upgrades_old.values(),
+            upgrades_old.values().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
@@ -691,7 +691,7 @@ fn match_path_trigger_with_targets(
 
     if wants_remove {
         collect_matching_package_files(
-            old_removes.values(),
+            old_removes.values().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,

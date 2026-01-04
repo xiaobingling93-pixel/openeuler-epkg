@@ -106,7 +106,8 @@ impl TestCase {
             let installed_path = test_dir.join(installed_file);
             if installed_path.exists() {
                 let content = fs::read_to_string(&installed_path)?;
-                serde_yaml::from_str(&content)?
+                let raw: HashMap<String, InstalledPackageInfo> = serde_yaml::from_str(&content)?;
+                raw.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
             } else {
                 return Err(eyre!("Installed file not found: {}", installed_path.display()));
             }
@@ -168,7 +169,7 @@ impl TestCase {
                     let pkgkey = pkg.pkgkey.clone();
                     initial_packages.insert(
                         pkgkey.clone(),
-                        InstalledPackageInfo {
+                        std::sync::Arc::new(InstalledPackageInfo {
                             pkgline: format!("fake_hash__{}", pkgkey),
                             arch: pkg.arch.clone(),
                             depend_depth: 0,
@@ -185,7 +186,7 @@ impl TestCase {
                             pending_triggers: Vec::new(),
                             triggers_awaited: false,
                             config_failed: false,
-                        },
+                        }),
                     );
                 }
             }

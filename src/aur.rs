@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
+use std::sync::{Arc, mpsc::Receiver};
 
 use color_eyre::eyre::{self, eyre, Result, WrapErr};
 use flate2::read::GzDecoder;
@@ -523,7 +523,7 @@ fn find_and_verify_built_packages(
     aur_packages: &InstalledPackagesMap,
     pkg_build_dir: &Path,
     is_post_makepkg: bool,
-) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
+) -> Result<Vec<(PathBuf, String, Arc<InstalledPackageInfo>)>> {
     use crate::package;
 
     // Get version from the first pkgkey (all pkgkeys in a pkgbase should have the same version)
@@ -810,7 +810,7 @@ fn build_aur_packages_for_base(
     aur_packages: &InstalledPackagesMap,
     build_dir: &Path,
     env_root: &Path,
-) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
+) -> Result<Vec<(PathBuf, String, Arc<InstalledPackageInfo>)>> {
     // Use the first pkgkey in this pkgbase group as the representative for building
     // (the tarball and pkgbase are shared across split packages). This representative
     // is only used to drive the build; we stop using it once artifacts are produced.
@@ -871,7 +871,7 @@ fn build_aur_packages_for_base(
 ///   - `this_round_aur_packages`: actual_pkgkey -> InstalledPackageInfo
 ///   - `this_round_pkgkey_mapping`: original_pkgkey (plan) -> actual_pkgkey (installed)
 fn unpack_link_built_aur_packages(
-    mapped_packages: &[(PathBuf, String, InstalledPackageInfo)],
+    mapped_packages: &[(PathBuf, String, Arc<InstalledPackageInfo>)],
     store_root: &Path,
     env_root: &Path,
     link_type: crate::models::LinkType,
@@ -910,9 +910,9 @@ fn unpack_link_built_aur_packages(
                 )
             })?;
 
-        // Create InstalledPackageInfo with the pkgline
-        let mut completed_info = info.clone();
-        completed_info.pkgline = pkgline.clone();
+        // Update InstalledPackageInfo with the pkgline
+        let mut completed_info = Arc::clone(info);
+        Arc::make_mut(&mut completed_info).pkgline = pkgline.clone();
 
         // Link the package
         let store_fs_dir = store_root.join(&pkgline).join("fs");
@@ -968,20 +968,20 @@ fn map_built_aur_packages(
     built_pkg_paths: &[PathBuf],
     pkgkeys: &[String],
     aur_packages: &InstalledPackagesMap,
-) -> Result<Vec<(PathBuf, String, InstalledPackageInfo)>> {
+) -> Result<Vec<(PathBuf, String, Arc<InstalledPackageInfo>)>> {
     use crate::package;
 
     // Pre-build a mapping from (pkgname, version) -> (original_pkgkey, info) for all
     // planned AUR packages in this pkgbase group. This allows us to map built artifacts
     // to planned entries without relying on the representative pkgkey used for the build.
-    let mut namever2entry: HashMap<(String, String), (String, InstalledPackageInfo)> =
+    let mut namever2entry: HashMap<(String, String), (String, Arc<InstalledPackageInfo>)> =
         HashMap::new();
     for original_pkgkey in pkgkeys {
         if let Some(info) = aur_packages.get(original_pkgkey) {
             if let Ok((name, version, _)) = package::parse_pkgkey(original_pkgkey) {
                 namever2entry
                     .entry((name, version))
-                    .or_insert_with(|| (original_pkgkey.clone(), info.clone()));
+                    .or_insert_with(|| (original_pkgkey.clone(), Arc::clone(info)));
             }
         }
     }
@@ -1009,8 +1009,8 @@ fn map_built_aur_packages(
 /// or `None` if it should be skipped (e.g., debug packages or unmapped artifacts).
 fn map_built_package_to_entry(
     built_pkg_path: &Path,
-    namever2entry: &HashMap<(String, String), (String, InstalledPackageInfo)>,
-) -> Option<(String, InstalledPackageInfo)> {
+    namever2entry: &HashMap<(String, String), (String, Arc<InstalledPackageInfo>)>,
+) -> Option<(String, Arc<InstalledPackageInfo>)> {
     // First, infer (pkgname, version, arch) from the built package filename so we can
     // determine which planned AUR entry this artifact corresponds to. We only
     // unpack/link packages that we can successfully map.
@@ -1034,7 +1034,7 @@ fn map_built_package_to_entry(
     {
         Some((
             original_key.clone(),
-            info.clone(),
+            Arc::clone(info),
         ))
     } else {
         // Likely a debug or sub package not in install plan: skip unpacking/linking.
@@ -1116,8 +1116,9 @@ fn fixup_aur_plan_keys(
                 *pkgkey = mapped_key.clone();
 
                 // Also update pkgline in the package info if needed
-                if pkg_info.pkgline.contains(&old_key) {
-                    pkg_info.pkgline = pkg_info.pkgline.replace(&old_key, mapped_key);
+                let pkg_info_mut = Arc::make_mut(pkg_info);
+                if pkg_info_mut.pkgline.contains(&old_key) {
+                    pkg_info_mut.pkgline = pkg_info_mut.pkgline.replace(&old_key, mapped_key);
                 }
             }
         }
@@ -1155,31 +1156,32 @@ fn fixup_installed_packages_values(
         // Keep InstalledPackageInfo.arch in sync with the pkgkey that indexes this entry.
         // This is important for AUR packages where the pkgkey arch is updated from "any"
         // to the actual arch after makepkg has run.
-        if info.arch != std::env::consts::ARCH {
+        let info_mut = Arc::make_mut(info);
+        if info_mut.arch != std::env::consts::ARCH {
             if let Ok((_name, _version, arch)) = package::parse_pkgkey(pkgkey) {
-                info.arch = arch;
+                info_mut.arch = arch;
             }
         }
 
-        info.depends = info
+        info_mut.depends = info_mut
             .depends
             .iter()
             .map(|k| rewrite_key(k, pkgkey_mapping))
             .collect();
 
-        info.rdepends = info
+        info_mut.rdepends = info_mut
             .rdepends
             .iter()
             .map(|k| rewrite_key(k, pkgkey_mapping))
             .collect();
 
-        info.bdepends = info
+        info_mut.bdepends = info_mut
             .bdepends
             .iter()
             .map(|k| rewrite_key(k, pkgkey_mapping))
             .collect();
 
-        info.rbdepends = info
+        info_mut.rbdepends = info_mut
             .rbdepends
             .iter()
             .map(|k| rewrite_key(k, pkgkey_mapping))

@@ -351,7 +351,7 @@ pub struct EnvImport {
     pub env: EnvConfig,
 
     #[serde(default)]
-    pub packages: InstalledPackagesMap,        // key is pkgkey (!= pkgline)
+    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
 
     #[serde(default)]
     pub world: HashMap<String, String>,
@@ -956,7 +956,7 @@ pub struct PackageManager {
 }
 
 /// Type alias for installed packages map
-pub type InstalledPackagesMap = HashMap<String, InstalledPackageInfo>;
+pub type InstalledPackagesMap = HashMap<String, Arc<InstalledPackageInfo>>;
 
 /// Type alias for package cache map (pkgkey/pkgline -> Arc<Package>)
 pub type PackageMap = RwLock<HashMap<String, Arc<Package>>>;

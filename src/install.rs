@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use color_eyre::eyre::{self, Result, WrapErr, eyre};
 use crate::models::*;
@@ -325,11 +326,11 @@ fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_roo
 /// Returns: (aur_packages, packages_to_link)
 fn download_and_unpack_packages(
     plan: &InstallationPlan,
-) -> Result<(InstalledPackagesMap, Vec<(String, InstalledPackageInfo)>)> {
+) -> Result<(InstalledPackagesMap, Vec<(String, Arc<InstalledPackageInfo>)>)> {
     // Separate packages into those with pkglines (already in store) and those without (need download)
     // AUR packages are included in both categories and will be filtered later
-    let mut packages_to_download = HashMap::new();
-    let mut packages_with_pkglines = HashMap::new();
+    let mut packages_to_download: HashMap<String, Arc<InstalledPackageInfo>> = HashMap::new();
+    let mut packages_with_pkglines: HashMap<String, Arc<InstalledPackageInfo>> = HashMap::new();
 
     // Extract fresh installs and upgrades from ordered_operations
     for op in &plan.ordered_operations {
@@ -359,7 +360,7 @@ fn download_and_unpack_packages(
 
     // Add packages that already exist in the store
     for (pkgkey, package_info) in packages_with_pkglines {
-        all_packages_to_link.push((pkgkey.clone(), package_info.clone()));
+        all_packages_to_link.push((pkgkey, package_info));
     }
 
     Ok((downloaded_aur_packages, all_packages_to_link))
@@ -369,7 +370,7 @@ fn download_and_unpack_packages(
 /// Link all packages to the environment
 /// This should only be called after all risk checks have passed.
 fn link_packages(
-    packages_to_link: Vec<(String, InstalledPackageInfo)>,
+    packages_to_link: Vec<(String, Arc<InstalledPackageInfo>)>,
     store_root: &Path,
     env_root: &Path,
     link_type: LinkType,
@@ -383,7 +384,7 @@ fn link_packages(
             .with_context(|| format!("Failed to link package {}", pkgkey))?;
 
         // Add to completed packages after successful linking
-        completed_packages.insert(pkgkey.clone(), package_info.clone());
+        completed_packages.insert(pkgkey.clone(), package_info);
     }
 
     utils::fixup_env_links(env_root)?;
@@ -395,13 +396,14 @@ fn link_packages(
 fn update_skipped_reinstalls_metadata(plan: &InstallationPlan) -> Result<()> {
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
     for (pkgkey, session_info) in plan.skipped_reinstalls.iter() {
-        if let Some(installed_info) = installed.get_mut(pkgkey) {
+        if let Some(installed_info_arc) = installed.get_mut(pkgkey) {
             // Only update fields that can change between sessions.
             // Crucially, DO NOT overwrite `pkgline` or `install_time`.
-            installed_info.depend_depth = session_info.depend_depth;
-            installed_info.ebin_exposure = session_info.ebin_exposure;
-            installed_info.depends = session_info.depends.clone();
-            installed_info.rdepends = session_info.rdepends.clone();
+            let info = Arc::make_mut(installed_info_arc);
+            info.depend_depth = session_info.depend_depth;
+            info.ebin_exposure = session_info.ebin_exposure;
+            info.depends = session_info.depends.clone();
+            info.rdepends = session_info.rdepends.clone();
         }
     }
     Ok(())
@@ -429,10 +431,10 @@ fn wait_downloads_and_unpack(
     pending_urls: &mut Vec<String>,
     packages_to_install: &mut InstalledPackagesMap,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-) -> Result<(InstalledPackagesMap, Vec<(String, InstalledPackageInfo)>)> {
+) -> Result<(InstalledPackagesMap, Vec<(String, Arc<InstalledPackageInfo>)>)> {
     let mut aur_packages: InstalledPackagesMap = HashMap::new();
     // Collect unpacked packages that need linking after all downloads complete
-    let mut packages_to_link: Vec<(String, InstalledPackageInfo)> = Vec::new();
+    let mut packages_to_link: Vec<(String, Arc<InstalledPackageInfo>)> = Vec::new();
 
     // Unpack packages as downloads complete
     while !pending_urls.is_empty() {
@@ -458,10 +460,6 @@ fn wait_downloads_and_unpack(
                         // Get the downloaded file path
                         let file_path = get_package_file_path(&pkgkey)?;
 
-                        // Get package info from the map
-                        let mut package_info = packages_to_install.remove(&pkgkey)
-                            .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?;
-
                         // Unpack the package (without linking)
                         let (actual_pkgkey, pkgline) = crate::store::unpack_package(
                             &file_path,
@@ -469,11 +467,15 @@ fn wait_downloads_and_unpack(
                             store_pkglines_by_pkgname,
                         )?;
 
+                        // Get package info from the map
+                        let mut package_info_arc = packages_to_install.remove(&pkgkey)
+                            .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?;
+
                         // Update package info with the pkgline
-                        package_info.pkgline = pkgline;
+                        Arc::make_mut(&mut package_info_arc).pkgline = pkgline;
 
                         // Store for later linking (don't add to completed_packages yet - that happens after linking)
-                        packages_to_link.push((actual_pkgkey, package_info));
+                        packages_to_link.push((actual_pkgkey, package_info_arc));
                     }
                 }
             } else {

@@ -4,6 +4,7 @@ use crate::models::PACKAGE_CACHE;
 use crate::io::load_installed_packages;
 use color_eyre::Result;
 use memchr::{memchr, memmem::Finder};
+use std::sync::Arc;
 
 // ======================================================================================
 // `epkg list` - Enhanced Package Listing Command
@@ -106,11 +107,11 @@ fn process_installed_packages(pattern: &str, upgradable_only: bool, list_title: 
     let mut local_items = Vec::new();
 
     // Collect keys and info to avoid borrowing conflicts
-    let installed_data: Vec<(String, InstalledPackageInfo)> = PACKAGE_CACHE.installed_packages
+    let installed_data: Vec<(String, Arc<InstalledPackageInfo>)> = PACKAGE_CACHE.installed_packages
         .read()
         .unwrap()
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.clone(), Arc::clone(v)))
         .collect();
 
     for (pkgkey, installed_info) in installed_data {

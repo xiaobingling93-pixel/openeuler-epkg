@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use color_eyre::Result;
 use crate::models::*;
 use crate::models::PACKAGE_CACHE;
@@ -83,7 +84,7 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
     log::debug!("Setting ebin_exposure for {} packages based on source matching.", packages.len());
 
     let mut user_requested_sources = std::collections::HashSet::new();
-    let mut packages_to_expose = HashMap::new();
+    let mut packages_to_expose: InstalledPackagesMap = HashMap::new();
 
     // First, collect all source package names from user-requested packages
     // (packages with ebin_exposure == true are user-requested in THIS session)
@@ -107,21 +108,22 @@ fn extend_ebin_by_source(packages: &mut InstalledPackagesMap) -> Result<Installe
 
     // Now, iterate again to set the ebin_exposure for all packages
     // (both new and already-installed packages that share sources with user-requested packages)
-    for (pkgkey, info) in packages.iter_mut() {
+    for (pkgkey, info) in packages.iter() {
         if info.ebin_exposure == false {
             // For dependencies, check if their source matches any user-requested source
             match crate::package_cache::load_package_info(pkgkey) {
                 Ok(pkg_details) => {
                     if let Some(source_name) = &pkg_details.source {
                         if !source_name.is_empty() && user_requested_sources.contains(source_name) {
-                            info.ebin_exposure = true;
-                            packages_to_expose.insert(pkgkey.clone(), info.clone());
+                            let mut new_info_arc = Arc::clone(info);
+                            Arc::make_mut(&mut new_info_arc).ebin_exposure = true;
+                            packages_to_expose.insert(pkgkey.clone(), new_info_arc);
                         }
                     }
                 }
                 Err(e) => {
                     log::warn!("Failed to load package info for {}: {} during ebin_exposure setting. Defaulting ebin_exposure to false.", pkgkey, e);
-                    info.ebin_exposure = false; // Default to false if info can't be loaded
+                    // No need to set false since it's already false
                 }
             }
         }
@@ -1128,7 +1130,7 @@ fn create_installed_package_info_map(
             ebin_exposure,
         )?;
 
-        result.insert(pkgkey.clone(), pkg_info.clone());
+        result.insert(pkgkey.clone(), Arc::new(pkg_info));
     }
 
     log::debug!("Final result size: {}", result.len());

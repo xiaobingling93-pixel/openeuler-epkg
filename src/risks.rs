@@ -4,6 +4,7 @@
 //! file conflict detection, and config file handling.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use color_eyre::Result;
@@ -190,7 +191,7 @@ pub fn load_installed_files(
 /// This is called before linking any packages to keep the environment clean
 /// Validate packages before linking - check inodes and file conflicts
 pub fn validate_before_linking(
-    packages_to_link: &[(String, InstalledPackageInfo)],
+    packages_to_link: &[(String, Arc<InstalledPackageInfo>)],
     store_root: &Path,
     env_root: &Path,
     plan: &crate::plan::InstallationPlan,

@@ -3,6 +3,7 @@ use color_eyre::Result;
 use std::fs;
 use std::path::Path;
 use crate::models::{InstalledPackageInfo, Package};
+use std::sync::Arc;
 use crate::mmio;
 use crate::list;
 use crate::models::dirs;
@@ -300,13 +301,13 @@ fn load_package_info(pkgkey: &str, installed_info: &InstalledPackageInfo) -> Res
 }
 
 /// Helper function to find installed package by name (with optional arch suffix)
-/// Returns (Package, InstalledPackageInfo) if found
+/// Returns (Package, Arc<InstalledPackageInfo>) if found
 fn find_installed_package_by_name(
     pkgname: &str,
     arch_suffix: Option<&str>,
-) -> Option<(Package, InstalledPackageInfo)> {
+) -> Option<(Package, Arc<InstalledPackageInfo>)> {
     for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        let package = match load_package_info(pkgkey, installed_info) {
+        let package = match load_package_info(pkgkey, installed_info.as_ref()) {
             Ok(pkg) => pkg,
             Err(_) => continue,
         };
@@ -317,7 +318,7 @@ fn find_installed_package_by_name(
                     continue;
                 }
             }
-            return Some((package, installed_info.clone()));
+            return Some((package, Arc::clone(installed_info)));
         }
     }
     None
@@ -349,7 +350,7 @@ fn show_packages(packages: &[String], format: Option<&str>) -> Result<()> {
         let (pkgname, arch_suffix) = parse_package_spec(pkg_spec);
 
         if let Some((package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
-            let output = format_output(default_format, &package, Some(&installed_info));
+            let output = format_output(default_format, &package, Some(installed_info.as_ref()));
             print!("{}", output);
         } else {
             eprintln!("dpkg-query: no packages found matching '{}'", pkg_spec);

@@ -428,7 +428,7 @@ pub fn run_scriptlets(
 ) -> Result<()> {
     // Convert HashMap to a Vec of tuples (pkgkey, info) and sort by depend_depth in descending order
     // This ensures packages with higher depend_depth are processed first
-    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = completed_packages.iter().map(|(k, v)| (k, v)).collect();
+    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = completed_packages.iter().map(|(k, v)| (k, v.as_ref())).collect();
     packages_vec.sort_by(|a, b| b.1.depend_depth.cmp(&a.1.depend_depth));
 
     // Process packages in sorted order

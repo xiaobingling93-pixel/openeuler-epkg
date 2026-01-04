@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use color_eyre::Result;
 use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::utils::get_package_files;
@@ -276,7 +277,7 @@ fn find_matching_triggers(
     triggering_packages: &HashMap<String, (String, String)>, // name -> (version, pkgkey)
     all_packages: &InstalledPackagesMap, // All packages for provides checking
     store_root: &Path,
-) -> Vec<(String, InstalledPackageInfo, PathBuf, usize, String, String)> {
+) -> Vec<(String, Arc<InstalledPackageInfo>, PathBuf, usize, String, String)> {
     use crate::parse_requires::parse_requires;
     use crate::version_constraint::check_version_constraint;
 
@@ -390,7 +391,7 @@ fn find_matching_triggers(
                             if version_matches {
                                 triggered_packages.push((
                                     pkgkey.clone(),
-                                    pkg_info.clone(),
+                                    Arc::clone(pkg_info),
                                     script_path.clone(),
                                     trigger_index,
                                     triggering_name.clone(),
@@ -617,19 +618,19 @@ pub fn run_rpm_package_triggers_with_data(
 
     // Phase 2: Triggers in THIS package (equivalent to RPM's runImmedTriggers)
     // These are packages that ARE being installed/removed in this transaction
-    let mut this_packages = HashMap::new();
+    let mut this_packages: InstalledPackagesMap = HashMap::new();
     for (pkgkey, pkg_info) in fresh_installs.iter() {
-        this_packages.insert(pkgkey.clone(), pkg_info.clone());
+        this_packages.insert(pkgkey.clone(), Arc::clone(pkg_info));
     }
     for (pkgkey, pkg_info) in upgrades_new.iter() {
         if !this_packages.contains_key(pkgkey) {
-            this_packages.insert(pkgkey.clone(), pkg_info.clone());
+            this_packages.insert(pkgkey.clone(), Arc::clone(pkg_info));
         }
     }
     // For triggerun/triggerpostun, include packages being removed
     if trigger_type == "triggerun" || trigger_type == "triggerpostun" {
         for (pkgkey, pkg_info) in old_removes.iter() {
-            this_packages.insert(pkgkey.clone(), pkg_info.clone());
+            this_packages.insert(pkgkey.clone(), Arc::clone(pkg_info));
         }
     }
 
@@ -750,24 +751,24 @@ pub fn run_rpm_file_triggers(
     let triggering_packages_files = match trigger_type {
         "filetriggerin" => {
             // Files from packages being installed/upgraded
-            collect_package_files_to_map(
-                store_root,
-                fresh_installs.iter().map(|(k, v)| (k, v)).chain(upgrades_new.iter().map(|(k, v)| (k, v))),
-            )
+                collect_package_files_to_map(
+                    store_root,
+                    fresh_installs.iter().map(|(k, v)| (k, v.as_ref())).chain(upgrades_new.iter().map(|(k, v)| (k, v.as_ref()))),
+                )
         }
         "filetriggerun" | "filetriggerpostun" => {
             // Files from packages being removed
-            collect_package_files_to_map(
-                store_root,
-                old_removes.iter().map(|(k, v)| (k, v)),
-            )
+                collect_package_files_to_map(
+                    store_root,
+                    old_removes.iter().map(|(k, v)| (k, v.as_ref())),
+                )
         }
         _ => return Ok(()),
     };
 
     // Find packages with file triggers (triggered packages) and match files
     // Package file triggers execute once per triggering package
-    let mut triggered_packages: Vec<(String, InstalledPackageInfo, PathBuf, String, Vec<String>, u32)> = Vec::new();
+    let mut triggered_packages: Vec<(String, Arc<InstalledPackageInfo>, PathBuf, String, Vec<String>, u32)> = Vec::new();
     // Structure: (triggered_pkgkey, triggered_pkg_info, script_path, triggering_pkgkey, matching_files, priority)
 
     // Iterate over installed packages
@@ -828,7 +829,7 @@ pub fn run_rpm_file_triggers(
                         if matches_priority_class {
                             triggered_packages.push((
                                 triggered_pkgkey.clone(),
-                                triggered_pkg_info.clone(),
+                                Arc::clone(triggered_pkg_info),
                                 script_path.clone(),
                                 triggering_pkgkey.clone(),
                                 matching_files,
@@ -878,7 +879,7 @@ pub fn run_rpm_file_triggers(
         execute_file_trigger_scriptlet(
             &script_path,
             &triggered_pkgkey,
-            &triggered_pkg_info,
+            triggered_pkg_info.as_ref(),
             store_root,
             env_root,
             PackageFormat::Rpm,
@@ -916,13 +917,13 @@ pub fn run_rpm_transaction_file_triggers(
             // Collect from fresh installs, upgrades, and all installed packages
             let files = collect_package_files_to_set(
                 store_root,
-                fresh_installs.values().chain(upgrades_new.values()).chain(installed_packages.values()),
+                fresh_installs.values().map(|v| v.as_ref()).chain(upgrades_new.values().map(|v| v.as_ref())).chain(installed_packages.values().map(|v| v.as_ref())),
             );
             Some(files.into_iter().collect())
         }
         "transfiletriggerun" => {
             // Collect from packages being removed
-            let files = collect_package_files_to_vec(store_root, old_removes.values());
+            let files = collect_package_files_to_vec(store_root, old_removes.values().map(|v| v.as_ref()));
             Some(files)
         }
         "transfiletriggerpostun" => {
@@ -934,7 +935,7 @@ pub fn run_rpm_transaction_file_triggers(
             // Even though files are unlinked from env_root during removal, the store's fs/ directory
             // still contains the installed files, which is what we match against.
             // This is counterintuitive but matches RPM's documented behavior.
-            let files = collect_package_files_to_set(store_root, old_removes.values());
+            let files = collect_package_files_to_set(store_root, old_removes.values().map(|v| v.as_ref()));
             // Return as Vec for consistency with other trigger types
             Some(files.into_iter().collect())
         }
@@ -945,7 +946,7 @@ pub fn run_rpm_transaction_file_triggers(
     // Skip packages in the current transaction (they run via immediate triggers instead)
     // This matches RPM's skipFileTrigger logic for transaction triggers
     // Reference: rpmtriggers.cc:519-554 (skipFileTrigger)
-    let mut trigger_packages: Vec<(String, InstalledPackageInfo, PathBuf, Vec<String>)> = Vec::new();
+    let mut trigger_packages: Vec<(String, Arc<InstalledPackageInfo>, PathBuf, Vec<String>)> = Vec::new();
     // Structure: (pkgkey, pkg_info, script_path, matching_files)
 
     // Build set of packages in current transaction for skip logic
@@ -980,7 +981,7 @@ pub fn run_rpm_transaction_file_triggers(
 
                     // Only add if there are matching files (except for transfiletriggerpostun)
                     if !matching_files.is_empty() || trigger_type == "transfiletriggerpostun" {
-                        trigger_packages.push((pkgkey.clone(), pkg_info.clone(), script_path, matching_files));
+                        trigger_packages.push((pkgkey.clone(), Arc::clone(pkg_info), script_path, matching_files));
                     }
                 } else if trigger_type == "transfiletriggerpostun" {
                     // transfiletriggerpostun executes if there were matching installed files from packages being removed
@@ -988,7 +989,7 @@ pub fn run_rpm_transaction_file_triggers(
                     // Check if there are any matching files (even though we won't pass them)
                     if let Some(ref files_to_check) = files_to_collect {
                         if has_matching_files_against_trigger_paths(files_to_check, &trigger_paths) {
-                            trigger_packages.push((pkgkey.clone(), pkg_info.clone(), script_path, Vec::new()));
+                            trigger_packages.push((pkgkey.clone(), Arc::clone(pkg_info), script_path, Vec::new()));
                         }
                     }
                 }
@@ -1022,7 +1023,7 @@ pub fn run_rpm_transaction_file_triggers(
         execute_file_trigger_scriptlet(
             &script_path,
             &pkgkey,
-            &pkg_info,
+            pkg_info.as_ref(),
             store_root,
             env_root,
             PackageFormat::Rpm,

@@ -4,6 +4,7 @@
 //! upgraded, removed, and exposed during package operations.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use crate::models::{PACKAGE_CACHE, InstalledPackageInfo, InstalledPackagesMap, LinkType};
@@ -28,9 +29,9 @@ pub mod op_flags {
 #[derive(Debug, Clone)]
 pub struct PackageOperation {
     /// New package being installed/upgraded (None for pure removals)
-    pub new_pkg: Option<(String, InstalledPackageInfo)>, // (pkgkey, info)
+    pub new_pkg: Option<(String, Arc<InstalledPackageInfo>)>, // (pkgkey, info)
     /// Old package being removed/upgraded (None for fresh installs)
-    pub old_pkg: Option<(String, InstalledPackageInfo)>, // (pkgkey, info)
+    pub old_pkg: Option<(String, Arc<InstalledPackageInfo>)>, // (pkgkey, info)
     /// Operation type
     pub op_type: OperationType,
     /// Operation flags (see op_flags module)
@@ -124,8 +125,8 @@ pub struct InstallationPlan {
 /// Calculate operation flags for a package operation
 /// Computes flags based on new_pkg and old_pkg directly
 pub fn calculate_op_flags(
-    new_pkg: Option<&(String, InstalledPackageInfo)>,
-    old_pkg: Option<&(String, InstalledPackageInfo)>,
+    new_pkg: Option<&(String, Arc<InstalledPackageInfo>)>,
+    old_pkg: Option<&(String, Arc<InstalledPackageInfo>)>,
 ) -> u8 {
     let mut flags = 0u8;
 
@@ -154,8 +155,8 @@ pub fn calculate_op_flags(
 
 /// Create a PackageOperation with calculated flags
 pub fn create_package_operation(
-    new_pkg: Option<(String, InstalledPackageInfo)>,
-    old_pkg: Option<(String, InstalledPackageInfo)>,
+    new_pkg: Option<(String, Arc<InstalledPackageInfo>)>,
+    old_pkg: Option<(String, Arc<InstalledPackageInfo>)>,
     op_type: OperationType,
 ) -> PackageOperation {
     let flags = calculate_op_flags(
@@ -210,21 +211,20 @@ fn classify_packages(
     // First pass: classify packages
     for (session_pkgkey, session_pkg_info) in all_packages_for_session {
         if installed.contains_key(session_pkgkey) {
-            plan.skipped_reinstalls.insert(session_pkgkey.clone(), session_pkg_info.clone());
+            plan.skipped_reinstalls.insert(session_pkgkey.clone(), Arc::clone(session_pkg_info));
             continue;
         }
 
         let (is_upgrade, old_pkgkey) = find_upgrade_target(
             session_pkgkey,
-            session_pkg_info,
             installed,
         );
         if is_upgrade {
-            plan.upgrades_new.insert(session_pkgkey.clone(), session_pkg_info.clone());
-            plan.upgrades_old.insert(old_pkgkey.clone(), installed.get(&old_pkgkey).unwrap().clone());
+            plan.upgrades_new.insert(session_pkgkey.clone(), Arc::clone(session_pkg_info));
+            plan.upgrades_old.insert(old_pkgkey.clone(), Arc::clone(installed.get(&old_pkgkey).unwrap()));
             plan.upgrade_map_old_to_new.insert(old_pkgkey.clone(), session_pkgkey.clone());
         } else {
-            plan.fresh_installs.insert(session_pkgkey.clone(), session_pkg_info.clone());
+            plan.fresh_installs.insert(session_pkgkey.clone(), Arc::clone(session_pkg_info));
         }
     }
 
@@ -239,7 +239,7 @@ fn build_ordered_operations(plan: &mut InstallationPlan) {
     // Add fresh installs
     for (pkgkey, pkg_info) in plan.fresh_installs.iter() {
         operations.push(create_package_operation(
-            Some((pkgkey.clone(), pkg_info.clone())),
+            Some((pkgkey.clone(), Arc::clone(pkg_info))),
             None,
             OperationType::FreshInstall,
         ));
@@ -250,8 +250,8 @@ fn build_ordered_operations(plan: &mut InstallationPlan) {
         if let Some(new_pkgkey) = plan.upgrade_map_old_to_new.get(old_pkgkey) {
             if let Some(new_pkg_info) = plan.upgrades_new.get(new_pkgkey) {
                 operations.push(create_package_operation(
-                    Some((new_pkgkey.clone(), new_pkg_info.clone())),
-                    Some((old_pkgkey.clone(), old_pkg_info.clone())),
+                    Some((new_pkgkey.clone(), Arc::clone(new_pkg_info))),
+                    Some((old_pkgkey.clone(), Arc::clone(old_pkg_info))),
                     OperationType::Upgrade,
                 ));
             }
@@ -267,7 +267,7 @@ fn build_ordered_operations(plan: &mut InstallationPlan) {
 
         operations.push(create_package_operation(
             None,
-            Some((pkgkey.clone(), pkg_info.clone())),
+            Some((pkgkey.clone(), Arc::clone(pkg_info))),
             OperationType::Removal,
         ));
     }
@@ -453,7 +453,7 @@ fn find_orphaned_packages(
         let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
         for orphan_pkgkey in &orphan_pkgkeys {
             if let Some(pkg_info) = installed.get(orphan_pkgkey) {
-                old_removes.insert(orphan_pkgkey.clone(), pkg_info.clone());
+                old_removes.insert(orphan_pkgkey.clone(), Arc::clone(pkg_info));
                 log::debug!("Added orphaned package '{}' to old_removes", orphan_pkgkey);
             }
         }
@@ -487,8 +487,7 @@ fn find_orphaned_packages(
 /// For non-AUR packages, matches by pkgname+arch (version is compared separately if needed).
 pub fn find_upgrade_target(
     new_pkgkey: &str,
-    _new_pkg_info: &InstalledPackageInfo,
-    old_packages: &InstalledPackagesMap,
+    installed: &InstalledPackagesMap,
 ) -> (bool, String) {
     let (new_pkgname, new_version, new_arch) = match package::parse_pkgkey(new_pkgkey) {
         Ok(parts) => parts,
@@ -497,7 +496,7 @@ pub fn find_upgrade_target(
 
     let is_aur = is_aur_package(new_pkgkey);
 
-    for (old_pkgkey, _) in old_packages.iter() {
+    for (old_pkgkey, _) in installed.iter() {
         if old_pkgkey == new_pkgkey {
             continue;
         }
@@ -557,7 +556,7 @@ fn display_installation_plan(plan: &InstallationPlan) -> bool {
         match op.op_type {
             OperationType::FreshInstall => {
                 if let Some((pkgkey, pkg_info)) = &op.new_pkg {
-                    fresh_installs.push((pkgkey.clone(), pkg_info.clone()));
+                    fresh_installs.push((pkgkey.clone(), Arc::clone(pkg_info)));
                 }
             }
             OperationType::Upgrade => {
@@ -630,7 +629,7 @@ fn display_installation_plan(plan: &InstallationPlan) -> bool {
 
 fn print_packages_by_depend_depth(packages: &InstalledPackagesMap) {
     // Convert HashMap to a Vec of tuples (pkgkey, info)
-    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = packages.iter().map(|(k, v)| (k, v)).collect();
+    let mut packages_vec: Vec<(&String, &Arc<InstalledPackageInfo>)> = packages.iter().map(|(k, v)| (k, v)).collect();
 
     // Sort by depend_depth
     packages_vec.sort_by(|a, b| a.1.depend_depth.cmp(&b.1.depend_depth));

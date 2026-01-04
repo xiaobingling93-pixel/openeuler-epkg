@@ -5,6 +5,7 @@ use std::fs;
 use std::env;
 use std::path::PathBuf;
 use std::collections::{HashMap, BTreeMap};
+use std::sync::Arc;
 use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::{self, *};
@@ -396,7 +397,8 @@ pub fn read_installed_packages(env: &str, generation_id: u32) -> Result<Installe
         return Ok(HashMap::new());
     }
 
-    let packages: InstalledPackagesMap = read_json_file(&file_path)?;
+    let packages_raw: HashMap<String, InstalledPackageInfo> = read_json_file(&file_path)?;
+    let packages: InstalledPackagesMap = packages_raw.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
     Ok(packages)
 }
 
@@ -419,8 +421,8 @@ pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
     // Construct the file path
     let file_path = new_generation.join("installed-packages.json");
 
-    // Convert HashMap to BTreeMap to ensure keys are sorted
-    let sorted_packages: BTreeMap<_, _> = PACKAGE_CACHE.installed_packages.read().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // Convert HashMap to BTreeMap to ensure keys are sorted, dereferencing Arc for serialization
+    let sorted_packages: BTreeMap<_, _> = PACKAGE_CACHE.installed_packages.read().unwrap().iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
 
     // Serialize the installed packages to JSON (keys will be in sorted order)
     let json = serde_json::to_string_pretty(&sorted_packages)?;

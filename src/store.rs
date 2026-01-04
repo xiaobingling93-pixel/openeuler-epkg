@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
@@ -1011,8 +1012,8 @@ pub fn fill_pkglines_in_plan(
 
     // Process new packages (fresh installs and upgrades)
     for op in &mut plan.ordered_operations {
-        if let Some((pkgkey, ref mut package_info)) = &mut op.new_pkg {
-            if try_match_and_fill_pkgline(pkgkey, package_info, &store_pkglines_by_pkgkey)? {
+        if let Some((pkgkey, package_info)) = &mut op.new_pkg {
+            if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(package_info), &store_pkglines_by_pkgkey)? {
                 matched_count += 1;
             }
         }
