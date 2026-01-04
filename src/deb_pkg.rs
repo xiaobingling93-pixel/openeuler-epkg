@@ -29,6 +29,9 @@ pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Opt
     // Create scriptlets
     create_scriptlets(store_tmp_dir)?;
 
+    // Parse and store DEB triggers
+    parse_deb_triggers(store_tmp_dir)?;
+
     // Create package.txt
     create_package_txt(deb_file, store_tmp_dir, pkgkey)?;
 
@@ -142,10 +145,13 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
     crate::utils::copy_scriptlets_by_mapping(&scriptlet_mapping, &deb_dir, &install_dir, false)?;
 
-    // Parse and store DEB triggers
-    parse_deb_triggers(store_tmp_dir)?;
-
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct TriggerEntry {
+    name: String,
+    await_mode: bool, // true = await, false = noawait
 }
 
 /// Parse DEB triggers file and store trigger information
@@ -155,7 +161,6 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let deb_dir = store_tmp_dir.join("info/deb");
-    let install_dir = store_tmp_dir.join("info/install");
     let triggers_path = deb_dir.join("triggers");
 
     if !triggers_path.exists() {
@@ -163,13 +168,21 @@ fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     }
 
     let triggers_content = fs::read_to_string(&triggers_path)?;
+    let (interest_triggers, activate_triggers) = parse_triggers_content(&triggers_content, &triggers_path)?;
 
-    #[derive(Debug, Clone)]
-    struct TriggerEntry {
-        name: String,
-        await_mode: bool, // true = await, false = noawait
-    }
+    parse_deb_interest_triggers(&interest_triggers, store_tmp_dir)?;
+    parse_deb_activate_triggers(&activate_triggers, store_tmp_dir)?;
 
+    Ok(())
+}
+
+/// Parse triggers file content into interest and activate trigger entries
+/// Returns (interest_triggers, activate_triggers)
+fn parse_triggers_content<P: AsRef<Path>>(
+    triggers_content: &str,
+    triggers_path: P,
+) -> Result<(Vec<TriggerEntry>, Vec<TriggerEntry>)> {
+    let triggers_path = triggers_path.as_ref();
     let mut interest_triggers: Vec<TriggerEntry> = Vec::new();
     let mut activate_triggers: Vec<TriggerEntry> = Vec::new();
 
@@ -246,6 +259,31 @@ fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         }
     }
 
+    Ok((interest_triggers, activate_triggers))
+}
+
+/// Parse and write DEB interest triggers
+///
+/// Output Layout:
+/// ==============
+/// Creates a single file in info/install/:
+///
+/// File: deb_interest.triggers
+/// Format: One trigger name per line
+/// Lines: "<trigger-name>" or "<trigger-name>/noawait"
+/// - Without /noawait suffix: await mode (default)
+/// - With /noawait suffix: noawait mode
+///
+/// Example:
+/// mime-support
+/// menu/noawait
+/// package-name /etc/foo.conf
+///
+/// File is only created if interest_triggers is non-empty.
+fn parse_deb_interest_triggers<P: AsRef<Path>>(interest_triggers: &[TriggerEntry], store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let install_dir = store_tmp_dir.join("info/install");
+
     // Write trigger metadata files with await mode information
     // Format: "<trigger-name>[/noawait]" (similar to dpkg's format)
     if !interest_triggers.is_empty() {
@@ -262,6 +300,32 @@ fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         fs::write(&metadata_path, content.join("\n"))?;
     }
 
+    Ok(())
+}
+
+/// Parse and write DEB activate triggers
+///
+/// Output Layout:
+/// ==============
+/// Creates a single file in info/install/:
+///
+/// File: deb_activate.triggers
+/// Format: One trigger name per line
+/// Lines: "<trigger-name>" or "<trigger-name>/noawait"
+/// - Without /noawait suffix: await mode (default)
+/// - With /noawait suffix: noawait mode
+///
+/// Example:
+/// mime-support
+/// menu/noawait
+///
+/// File is only created if activate_triggers is non-empty.
+fn parse_deb_activate_triggers<P: AsRef<Path>>(activate_triggers: &[TriggerEntry], store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let install_dir = store_tmp_dir.join("info/install");
+
+    // Write trigger metadata files with await mode information
+    // Format: "<trigger-name>[/noawait]" (similar to dpkg's format)
     if !activate_triggers.is_empty() {
         let metadata_path = install_dir.join("deb_activate.triggers");
         let content: Vec<String> = activate_triggers.iter()

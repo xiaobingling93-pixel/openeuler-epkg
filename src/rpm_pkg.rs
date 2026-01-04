@@ -47,6 +47,9 @@ pub fn unpack_package<P: AsRef<Path>>(rpm_file: P, store_tmp_dir: P, pkgkey: Opt
     // Create scriptlets
     create_scriptlets(&package, store_tmp_dir)?;
 
+    // Extract trigger scriptlets (package triggers, file triggers, transaction file triggers)
+    extract_rpm_triggers(&package, store_tmp_dir)?;
+
     // Extract and store install prefixes for relocatable packages
     extract_install_prefixes(&package, store_tmp_dir)?;
 
@@ -185,9 +188,6 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
         }
     }
 
-    // Extract trigger scriptlets (package triggers, file triggers, transaction file triggers)
-    extract_rpm_triggers(package, store_tmp_dir)?;
-
     Ok(())
 }
 
@@ -195,34 +195,46 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
 /// and store them with their associated metadata
 fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
     let metadata = &package.metadata;
 
-    // Package triggers: triggerprein, triggerin, triggerun, triggerpostun
-    // These are triggered by package names with optional version conditions
+    extract_rpm_package_triggers(metadata, store_tmp_dir)?;
+    extract_rpm_file_triggers(metadata, store_tmp_dir)?;
+    extract_rpm_transaction_file_triggers(metadata, store_tmp_dir)?;
+
+    Ok(())
+}
+
+/// Extract RPM package triggers (triggerprein, triggerin, triggerun, triggerpostun)
+/// These are triggered by package names with optional version conditions
+///
+/// Output Layout:
+/// ==============
+/// For each trigger type that exists, creates files in info/install/:
+///
+/// 1. Scriptlet file: <trigger_type>.<ext>
+///    - triggerprein.sh, triggerin.sh, triggerun.sh, triggerpostun.sh
+///    - Or with detected extension: triggerprein.lua, triggerin.py, etc.
+///    - Contains the trigger scriptlet with appropriate shebang if needed
+///
+/// 2. Trigger metadata file: <trigger_type>.triggers
+///    - triggerprein.triggers, triggerin.triggers, triggerun.triggers, triggerpostun.triggers
+///    - Format: One trigger condition per line
+///    - Lines: "<package-name>" or "<package-name> <version>"
+///    - Example:
+///      "vixie-cron"
+///      "sendmail 8.14.5"
+///
+/// Files are only created if the trigger scriptlet exists in the RPM package.
+fn extract_rpm_package_triggers<P: AsRef<Path>>(metadata: &rpm::PackageMetadata, store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let install_dir = store_tmp_dir.join("info/install");
+
     // RPM stores trigger conditions in shared arrays: TRIGGERNAME, TRIGGERVERSION, TRIGGERFLAGS
     // The indices correspond across arrays and trigger types
 
     // Get all trigger conditions from shared arrays
-    let trigger_names: Vec<String> = if metadata.header.entry_is_present(IndexTag::RPMTAG_TRIGGERNAME) {
-        metadata.header.get_entry_data_as_string_array(IndexTag::RPMTAG_TRIGGERNAME).ok()
-            .unwrap_or_default()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let trigger_versions: Vec<String> = if metadata.header.entry_is_present(IndexTag::RPMTAG_TRIGGERVERSION) {
-        metadata.header.get_entry_data_as_string_array(IndexTag::RPMTAG_TRIGGERVERSION).ok()
-            .unwrap_or_default()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let trigger_names: Vec<String> = extract_string_array(metadata, IndexTag::RPMTAG_TRIGGERNAME);
+    let trigger_versions: Vec<String> = extract_string_array(metadata, IndexTag::RPMTAG_TRIGGERVERSION);
 
     // Read trigger flags as integers (RPM stores them as u32 array)
     // Note: The rpm crate may not expose a direct method for u32 arrays
@@ -246,44 +258,52 @@ fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> 
             // store all conditions and match by name during execution
 
             // Write trigger scriptlet
-            let (file_extension, modified_content) = determine_script_extension(&scriptlet, &scriptlet.script);
-            let script_name = if file_extension != "sh" {
-                format!("{}.{}", trigger_type, file_extension)
-            } else {
-                format!("{}.sh", trigger_type)
-            };
-            let target_path = install_dir.join(&script_name);
-            crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
+            write_trigger_scriptlet(trigger_type, &scriptlet, &install_dir)?;
 
             // Write trigger metadata with version conditions
-            // Format: each line is "name" or "name version_op version" (e.g., "vixie-cron < 3.0.1-56")
-            if !trigger_names.is_empty() {
-                let mut trigger_conditions = Vec::new();
-                for (idx, name) in trigger_names.iter().enumerate() {
-                    let mut condition = name.clone();
-                    if idx < trigger_versions.len() && !trigger_versions[idx].is_empty() {
-                        let version = &trigger_versions[idx];
-                        // For now, store version without operator - we'll parse it during matching
-                        // RPM trigger conditions use the same format as dependencies
-                        // Format: "name op version" where op can be <, <=, >, >=, =
-                        // Since we don't have easy access to flags, we'll store just name and version
-                        // and check during matching (version conditions are typically specified in spec file)
-                        condition = format!("{} {}", name, version);
-                    }
-                    trigger_conditions.push(condition);
-                }
-
-                let metadata_path = install_dir.join(format!("{}.triggers", trigger_type));
-                fs::write(&metadata_path, trigger_conditions.join("\n"))
-                    .wrap_err_with(|| format!("Failed to write trigger metadata {}", trigger_type))?;
-            }
+            write_package_trigger_metadata(
+                trigger_type,
+                &trigger_names,
+                &trigger_versions,
+                &install_dir,
+            )?;
         }
     }
 
-    // File triggers: filetriggerin, filetriggerun, filetriggerpostun
-    // These are triggered by file paths
-    // RPM default priority is 1000000 (RPMTRIGGER_DEFAULT_PRIORITY)
-    const DEFAULT_PRIORITY: u32 = 1000000;
+    Ok(())
+}
+
+/// Extract RPM file triggers (filetriggerin, filetriggerun, filetriggerpostun)
+/// These are triggered by file paths
+///
+/// Output Layout:
+/// ==============
+/// For each trigger type that exists, creates files in info/install/:
+///
+/// 1. Scriptlet file: <trigger_type>.<ext>
+///    - filetriggerin.sh, filetriggerun.sh, filetriggerpostun.sh
+///    - Or with detected extension: filetriggerin.lua, etc.
+///    - Contains the trigger scriptlet with appropriate shebang if needed
+///
+/// 2. Trigger metadata file: <trigger_type>.triggers
+///    - filetriggerin.triggers, filetriggerun.triggers, filetriggerpostun.triggers
+///    - Format: One file path pattern per line
+///    - Example:
+///      "/usr/lib/libfoo.so"
+///      "/etc/foo.conf"
+///
+/// 3. Trigger priorities file: <trigger_type>.priorities
+///    - filetriggerin.priorities, filetriggerun.priorities, filetriggerpostun.priorities
+///    - Format: One priority value per line (u32 as string)
+///    - Each line corresponds to the same-indexed line in .triggers file
+///    - Default priority: 1000000 (RPMTRIGGER_DEFAULT_PRIORITY)
+///    - Example:
+///      "1000000"
+///      "1000000"
+fn extract_rpm_file_triggers<P: AsRef<Path>>(metadata: &rpm::PackageMetadata, store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let install_dir = store_tmp_dir.join("info/install");
+    const DEFAULT_PRIORITY: u32 = 1000000; // RPMTRIGGER_DEFAULT_PRIORITY
 
     let file_trigger_types = vec![
         ("filetriggerin", IndexTag::RPMTAG_FILETRIGGERNAME),
@@ -294,57 +314,24 @@ fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> 
     // Get file trigger priorities (shared across all file trigger types)
     let file_trigger_priorities: Vec<u32> = extract_trigger_priorities(metadata, IndexTag::RPMTAG_FILETRIGGERPRIORITIES, DEFAULT_PRIORITY);
 
-    for (trigger_type, name_tag) in file_trigger_types {
-        if let Some(scriptlet) = get_scriptlet_from_header(metadata, trigger_type) {
-            // Get trigger file paths
-            let trigger_paths: Vec<String> = if metadata.header.entry_is_present(name_tag) {
-                metadata.header.get_entry_data_as_string_array(name_tag).ok()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                Vec::new()
-            };
+    extract_file_triggers_by_types(
+        metadata,
+        &file_trigger_types,
+        &file_trigger_priorities,
+        DEFAULT_PRIORITY,
+        &install_dir,
+    )?;
 
-            // Write trigger scriptlet
-            let (file_extension, modified_content) = determine_script_extension(&scriptlet, &scriptlet.script);
-            let script_name = if file_extension != "sh" {
-                format!("{}.{}", trigger_type, file_extension)
-            } else {
-                format!("{}.sh", trigger_type)
-            };
-            let target_path = install_dir.join(&script_name);
-            crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
+    Ok(())
+}
 
-            // Write trigger metadata (file paths that trigger this)
-            if !trigger_paths.is_empty() {
-                let metadata_path = install_dir.join(format!("{}.triggers", trigger_type));
-                fs::write(&metadata_path, trigger_paths.join("\n"))
-                    .wrap_err_with(|| format!("Failed to write file trigger metadata {}", trigger_type))?;
-            }
+/// Extract RPM transaction file triggers (transfiletriggerin, transfiletriggerun, transfiletriggerpostun)
+/// These are triggered by file paths at transaction level
+fn extract_rpm_transaction_file_triggers<P: AsRef<Path>>(metadata: &rpm::PackageMetadata, store_tmp_dir: P) -> Result<()> {
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let install_dir = store_tmp_dir.join("info/install");
+    const DEFAULT_PRIORITY: u32 = 1000000; // RPMTRIGGER_DEFAULT_PRIORITY
 
-            // Write trigger priorities (one per trigger path, using same index)
-            if !trigger_paths.is_empty() {
-                let priorities_to_write: Vec<String> = trigger_paths.iter()
-                    .enumerate()
-                    .map(|(idx, _)| {
-                        if idx < file_trigger_priorities.len() {
-                            file_trigger_priorities[idx].to_string()
-                        } else {
-                            DEFAULT_PRIORITY.to_string()
-                        }
-                    })
-                    .collect();
-                let priorities_path = install_dir.join(format!("{}.priorities", trigger_type));
-                fs::write(&priorities_path, priorities_to_write.join("\n"))
-                    .wrap_err_with(|| format!("Failed to write file trigger priorities {}", trigger_type))?;
-            }
-        }
-    }
-
-    // Transaction file triggers: transfiletriggerin, transfiletriggerun, transfiletriggerpostun
-    // These are triggered by file paths at transaction level
     let trans_file_trigger_types = vec![
         ("transfiletriggerin", IndexTag::RPMTAG_TRANSFILETRIGGERNAME),
         ("transfiletriggerun", IndexTag::RPMTAG_TRANSFILETRIGGERNAME),
@@ -354,54 +341,13 @@ fn extract_rpm_triggers<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) -> 
     // Get transaction file trigger priorities (shared across all transaction file trigger types)
     let trans_trigger_priorities: Vec<u32> = extract_trigger_priorities(metadata, IndexTag::RPMTAG_TRANSFILETRIGGERPRIORITIES, DEFAULT_PRIORITY);
 
-    for (trigger_type, name_tag) in trans_file_trigger_types {
-        if let Some(scriptlet) = get_scriptlet_from_header(metadata, trigger_type) {
-            // Get trigger file paths
-            let trigger_paths: Vec<String> = if metadata.header.entry_is_present(name_tag) {
-                metadata.header.get_entry_data_as_string_array(name_tag).ok()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            // Write trigger scriptlet
-            let (file_extension, modified_content) = determine_script_extension(&scriptlet, &scriptlet.script);
-            let script_name = if file_extension != "sh" {
-                format!("{}.{}", trigger_type, file_extension)
-            } else {
-                format!("{}.sh", trigger_type)
-            };
-            let target_path = install_dir.join(&script_name);
-            crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
-
-            // Write trigger metadata (file paths that trigger this)
-            if !trigger_paths.is_empty() {
-                let metadata_path = install_dir.join(format!("{}.triggers", trigger_type));
-                fs::write(&metadata_path, trigger_paths.join("\n"))
-                    .wrap_err_with(|| format!("Failed to write transaction file trigger metadata {}", trigger_type))?;
-            }
-
-            // Write trigger priorities (one per trigger path, using same index)
-            if !trigger_paths.is_empty() {
-                let priorities_to_write: Vec<String> = trigger_paths.iter()
-                    .enumerate()
-                    .map(|(idx, _)| {
-                        if idx < trans_trigger_priorities.len() {
-                            trans_trigger_priorities[idx].to_string()
-                        } else {
-                            DEFAULT_PRIORITY.to_string()
-                        }
-                    })
-                    .collect();
-                let priorities_path = install_dir.join(format!("{}.priorities", trigger_type));
-                fs::write(&priorities_path, priorities_to_write.join("\n"))
-                    .wrap_err_with(|| format!("Failed to write transaction file trigger priorities {}", trigger_type))?;
-            }
-        }
-    }
+    extract_file_triggers_by_types(
+        metadata,
+        &trans_file_trigger_types,
+        &trans_trigger_priorities,
+        DEFAULT_PRIORITY,
+        &install_dir,
+    )?;
 
     Ok(())
 }
@@ -549,6 +495,20 @@ fn interpreter_to_extension(interpreter: &str) -> String {
     }
 }
 
+/// Extract string array from RPM metadata header
+/// Returns an empty vector if the tag is not present or extraction fails
+fn extract_string_array(metadata: &rpm::PackageMetadata, tag: IndexTag) -> Vec<String> {
+    if metadata.header.entry_is_present(tag) {
+        metadata.header.get_entry_data_as_string_array(tag).ok()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Extract trigger priorities from RPM header
 /// Attempts to extract u32 array, falls back to default priority if not available
 /// RPM stores priorities as INT32 array, default is 1000000 (RPMTRIGGER_DEFAULT_PRIORITY)
@@ -583,6 +543,134 @@ fn extract_trigger_priorities(metadata: &rpm::PackageMetadata, priority_tag: Ind
     // For now, return empty vector - callers will use default priority
     // TODO: Enhance when rpm crate adds support for numeric array extraction
     Vec::new()
+}
+
+/// Write trigger scriptlet file with appropriate extension
+/// Common helper used by all trigger extraction functions
+fn write_trigger_scriptlet<P: AsRef<Path>>(
+    trigger_type: &str,
+    scriptlet: &rpm::Scriptlet,
+    install_dir: P,
+) -> Result<()> {
+    let install_dir = install_dir.as_ref();
+    let (file_extension, modified_content) = determine_script_extension(scriptlet, &scriptlet.script);
+    let script_name = if file_extension != "sh" {
+        format!("{}.{}", trigger_type, file_extension)
+    } else {
+        format!("{}.sh", trigger_type)
+    };
+    let target_path = install_dir.join(&script_name);
+    crate::utils::write_scriptlet_content(&target_path, modified_content.as_bytes())?;
+    Ok(())
+}
+
+/// Extract file triggers for a list of trigger types
+/// Common helper used by extract_rpm_file_triggers and extract_rpm_transaction_file_triggers
+fn extract_file_triggers_by_types<P: AsRef<Path>>(
+    metadata: &rpm::PackageMetadata,
+    trigger_types: &[(&str, IndexTag)],
+    priorities: &[u32],
+    default_priority: u32,
+    install_dir: P,
+) -> Result<()> {
+    let install_dir = install_dir.as_ref();
+
+    for (trigger_type, name_tag) in trigger_types {
+        if let Some(scriptlet) = get_scriptlet_from_header(metadata, trigger_type) {
+            // Get trigger file paths
+            let trigger_paths = extract_string_array(metadata, *name_tag);
+
+            // Write trigger scriptlet
+            write_trigger_scriptlet(trigger_type, &scriptlet, install_dir)?;
+
+            // Write trigger metadata and priorities
+            write_file_trigger_metadata(
+                trigger_type,
+                &trigger_paths,
+                priorities,
+                default_priority,
+                install_dir,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Write package trigger metadata file
+/// Formats trigger conditions as "name" or "name version"
+fn write_package_trigger_metadata<P: AsRef<Path>>(
+    trigger_type: &str,
+    trigger_names: &[String],
+    trigger_versions: &[String],
+    install_dir: P,
+) -> Result<()> {
+    let install_dir = install_dir.as_ref();
+
+    if trigger_names.is_empty() {
+        return Ok(());
+    }
+
+    // Format: each line is "name" or "name version_op version" (e.g., "vixie-cron < 3.0.1-56")
+    let mut trigger_conditions = Vec::new();
+    for (idx, name) in trigger_names.iter().enumerate() {
+        let mut condition = name.clone();
+        if idx < trigger_versions.len() && !trigger_versions[idx].is_empty() {
+            let version = &trigger_versions[idx];
+            // For now, store version without operator - we'll parse it during matching
+            // RPM trigger conditions use the same format as dependencies
+            // Format: "name op version" where op can be <, <=, >, >=, =
+            // Since we don't have easy access to flags, we'll store just name and version
+            // and check during matching (version conditions are typically specified in spec file)
+            condition = format!("{} {}", name, version);
+        }
+        trigger_conditions.push(condition);
+    }
+
+    let metadata_path = install_dir.join(format!("{}.triggers", trigger_type));
+    fs::write(&metadata_path, trigger_conditions.join("\n"))
+        .wrap_err_with(|| format!("Failed to write trigger metadata {}", trigger_type))?;
+
+    Ok(())
+}
+
+/// Write file trigger metadata and priorities files
+/// Common helper used by extract_rpm_file_triggers and extract_rpm_transaction_file_triggers
+fn write_file_trigger_metadata<P: AsRef<Path>>(
+    trigger_type: &str,
+    trigger_paths: &[String],
+    priorities: &[u32],
+    default_priority: u32,
+    install_dir: P,
+) -> Result<()> {
+    let install_dir = install_dir.as_ref();
+
+    if trigger_paths.is_empty() {
+        return Ok(());
+    }
+
+    // Write trigger metadata (file paths that trigger this)
+    let metadata_path = install_dir.join(format!("{}.triggers", trigger_type));
+    fs::write(&metadata_path, trigger_paths.join("\n"))
+        .wrap_err_with(|| format!("Failed to write file trigger metadata {}", trigger_type))?;
+
+    // Write trigger priorities (one per trigger path, using same index)
+    let priorities_to_write: Vec<String> = trigger_paths
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            if idx < priorities.len() {
+                priorities[idx].to_string()
+            } else {
+                default_priority.to_string()
+            }
+        })
+        .collect();
+    let priorities_path = install_dir.join(format!("{}.priorities", trigger_type));
+    fs::write(&priorities_path, priorities_to_write.join("\n"))
+        .wrap_err_with(|| format!("Failed to write file trigger priorities {}", trigger_type))?;
+
+    Ok(())
 }
 
 /// Extract install prefixes from RPM package for relocatable packages
