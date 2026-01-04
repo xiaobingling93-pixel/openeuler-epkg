@@ -55,25 +55,31 @@ pub struct HookAction {
 pub struct Hook {
     pub triggers: Vec<HookTrigger>,
     pub action: HookAction,
-    pub file_name: String,
+    pub file_name: String,  // File name without .hook suffix, used as lookup/sort key
+    pub file_path: String,  // Full path to the hook file, used for log messages
+}
+
+/// Extract file name from path and strip .hook suffix
+fn extract_hook_file_name(hook_path: &Path) -> String {
+    let file_name_full = hook_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+    file_name_full.strip_suffix(".hook").unwrap_or(&file_name_full).to_string()
 }
 
 /// Parse a hook file from disk
 /// Reference: _alpm_hook_parse_cb in hook.c
-fn parse_hook_file(hook_path: &Path) -> Result<Vec<Hook>> {
+fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
     let content = fs::read_to_string(hook_path)
         .with_context(|| format!("Failed to read hook file: {}", hook_path.display()))?;
 
-    let mut hooks = Vec::new();
     let mut current_triggers = Vec::new();
     let mut current_action: Option<HookAction> = None;
     let mut in_trigger = false;
     let mut in_action = false;
 
-    let file_name = hook_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let file_name = extract_hook_file_name(hook_path);
 
     let mut line_num = 0;
 
@@ -105,15 +111,6 @@ fn parse_hook_file(hook_path: &Path) -> Result<Vec<Hook>> {
         } else if line == "[Action]" {
             in_action = true;
             in_trigger = false;
-            // If we have an action already, create a hook (allow triggerless hooks)
-            if current_action.is_some() {
-                hooks.push(Hook {
-                    triggers: current_triggers.clone(),
-                    action: current_action.clone().unwrap(),
-                    file_name: file_name.clone(),
-                });
-                current_triggers.clear();
-            }
             // Start new action
             current_action = Some(HookAction {
                 description: None,
@@ -129,16 +126,6 @@ fn parse_hook_file(hook_path: &Path) -> Result<Vec<Hook>> {
         if in_trigger {
             parse_trigger_line(line, &mut current_triggers, hook_path, line_num)?;
         } else if in_action {
-            if current_action.is_none() {
-                current_action = Some(HookAction {
-                    description: None,
-                    when: HookWhen::PostTransaction, // Default
-                    exec: String::new(),
-                    depends: Vec::new(),
-                    abort_on_fail: false,
-                    needs_targets: false,
-                });
-            }
             parse_action_line(line, current_action.as_mut().unwrap(), hook_path, line_num)?;
         } else {
             // Invalid: option outside of section
@@ -149,21 +136,16 @@ fn parse_hook_file(hook_path: &Path) -> Result<Vec<Hook>> {
         }
     }
 
-    // Handle last hook if file doesn't end with empty line
-    if current_action.is_some() {
-        hooks.push(Hook {
-            triggers: current_triggers,
-            action: current_action.unwrap(),
-            file_name,
-        });
-    }
+    let hook = Hook {
+        triggers: current_triggers,
+        action: current_action.unwrap(),
+        file_name,
+        file_path: hook_path.to_string_lossy().to_string(),
+    };
 
-    // Validate hooks
-    for hook in &mut hooks {
-        validate_hook(hook, hook_path)?;
-    }
+    validate_hook(&hook, hook_path)?;
 
-    Ok(hooks)
+    Ok(hook)
 }
 
 /// Validate a hook (reference: _alpm_hook_validate)
@@ -215,19 +197,6 @@ fn parse_trigger_line(line: &str, triggers: &mut Vec<HookTrigger>, file: &Path, 
     if let Some((key, value)) = line.split_once('=') {
         let key = key.trim();
         let value = value.trim();
-
-        if triggers.is_empty() {
-            triggers.push(HookTrigger {
-                operations: Vec::new(),
-                hook_type: HookType::Path,
-                targets: Vec::new(),
-                positive_targets: Vec::new(),
-                negative_targets: Vec::new(),
-                positive_patterns: Vec::new(),
-                negative_patterns: Vec::new(),
-                type_set: false,
-            });
-        }
 
         let trigger = triggers.last_mut().unwrap();
 
@@ -296,7 +265,7 @@ fn split_hook_targets(targets: &[String]) -> (Vec<String>, Vec<String>) {
     (positive_targets, negative_targets)
 }
 
-fn populate_hook_target_caches(hook: &mut Hook) {
+fn populate_hook_target_cache(hook: &mut Hook) {
     for trigger in &mut hook.triggers {
         let (positive_targets, negative_targets) = split_hook_targets(&trigger.targets);
         trigger.positive_patterns = compile_patterns(&positive_targets);
@@ -334,7 +303,9 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
                 action.description = Some(value.to_string());
             }
             "Depends" => {
-                action.depends.push(value.to_string());
+                action.depends.extend(
+                    value.split_whitespace().map(|s| s.to_string())
+                );
             }
             "Exec" => {
                 // Warn if overwriting (pacman behavior)
@@ -370,6 +341,117 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
     Ok(())
 }
 
+/// Get standard hook directories
+fn get_hook_directories(env_root: &Path) -> Vec<PathBuf> {
+    vec![
+        env_root.join("usr/share/libalpm/hooks"),
+        env_root.join("etc/pacman.d/hooks"),
+    ]
+}
+
+/// Read and sort entries from a hook directory
+fn read_hook_directory_entries(hook_dir: &Path) -> Option<Vec<fs::DirEntry>> {
+    let mut entries: Vec<_> = match fs::read_dir(hook_dir) {
+        Ok(dir) => match dir.collect::<std::result::Result<Vec<_>, _>>() {
+            Ok(entries) => entries,
+            Err(e) => {
+                log::warn!("Failed to read hook directory entries: {}", e);
+                return None;
+            }
+        },
+        Err(e) => {
+            log::warn!("Failed to read hook directory {}: {}", hook_dir.display(), e);
+            return None;
+        }
+    };
+
+    // Sort entries by name for consistent processing
+    entries.sort_by_key(|e| e.file_name());
+    Some(entries)
+}
+
+/// Process a single hook file entry and add it to the hooks map if valid
+fn process_hook_file_entry(
+    entry: &fs::DirEntry,
+    hooks: &mut HashMap<String, Hook>,
+) {
+    let path = entry.path();
+
+    // Only process .hook files
+    if path.extension().and_then(|e| e.to_str()) != Some("hook") {
+        log::debug!("skipping non-hook file {}", path.display());
+        return;
+    }
+
+    let file_name = extract_hook_file_name(&path);
+
+    // Check if hook with same name already exists (skip if so - override behavior)
+    if hooks.contains_key(&file_name) {
+        log::debug!("skipping overridden hook {}", path.display());
+        return;
+    }
+
+    // Skip symlinks to /dev/null (disabled hooks)
+    if let Ok(link_target) = fs::read_link(&path) {
+        if link_target == PathBuf::from("/dev/null") {
+            log::debug!("Skipping disabled hook: {}", path.display());
+            return;
+        }
+    }
+
+    // Check if it's a directory (skip)
+    if path.is_dir() {
+        log::debug!("skipping directory {}", path.display());
+        return;
+    }
+
+    match parse_hook_file(&path) {
+        Ok(mut hook) => {
+            populate_hook_target_cache(&mut hook);
+            hook.file_path = path.to_string_lossy().to_string();
+            hooks.insert(file_name, hook);
+        }
+        Err(e) => {
+            log::warn!("Failed to parse hook file {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Scan hook directories and collect hooks into a map
+fn scan_hook_directories(env_root: &Path) -> HashMap<String, Hook> {
+    let mut hooks: HashMap<String, Hook> = HashMap::new(); // Map by file name for overriding
+
+    let hook_dirs = get_hook_directories(env_root);
+
+    // Process directories in reverse order (last directory overrides first)
+    for hook_dir in hook_dirs.iter().rev() {
+        if !hook_dir.exists() {
+            continue;
+        }
+
+        let entries = match read_hook_directory_entries(hook_dir) {
+            Some(entries) => entries,
+            None => continue,
+        };
+
+        for entry in entries {
+            process_hook_file_entry(&entry, &mut hooks);
+        }
+    }
+
+    hooks
+}
+
+/// Sort hooks by file name (reference: _alpm_hook_cmp)
+fn sort_hooks(hooks: Vec<Hook>) -> Vec<Hook> {
+    let mut hooks_vec = hooks;
+    hooks_vec.sort_by(|a, b| {
+        a.file_name.cmp(&b.file_name)
+            .then_with(|| a.file_name.len().cmp(&b.file_name.len()))
+    });
+    hooks_vec
+}
+
 /// Load all hooks from the system hook directory
 /// Reference: _alpm_hook_run - scans directories in reverse order, hooks with same name override
 /// Returns None if package_format is not Pacman or if loading fails
@@ -379,122 +461,11 @@ pub fn load_hooks(env_root: &Path, package_format: PackageFormat) -> Option<Vec<
         return None;
     }
 
-    let mut hooks: HashMap<String, Hook> = HashMap::new(); // Map by file name for overriding
+    let hooks = scan_hook_directories(env_root);
+    let hooks_vec: Vec<Hook> = hooks.into_values().collect();
+    let sorted_hooks = sort_hooks(hooks_vec);
 
-    // Standard hook directories (reference scans in reverse order)
-    let hook_dirs = vec![
-        env_root.join("usr/share/libalpm/hooks"),
-        env_root.join("etc/pacman.d/hooks"),
-    ];
-
-    // Process directories in reverse order (last directory overrides first)
-    for hook_dir in hook_dirs.iter().rev() {
-        if !hook_dir.exists() {
-            continue;
-        }
-
-        let mut entries: Vec<_> = match fs::read_dir(hook_dir) {
-            Ok(dir) => match dir.collect::<std::result::Result<Vec<_>, _>>() {
-                Ok(entries) => entries,
-                Err(e) => {
-                    log::warn!("Failed to read hook directory entries: {}", e);
-                    continue;
-                }
-            },
-            Err(e) => {
-                log::warn!("Failed to read hook directory {}: {}", hook_dir.display(), e);
-                continue;
-            }
-        };
-
-        // Sort entries by name for consistent processing
-        entries.sort_by_key(|e| e.file_name());
-
-        for entry in entries {
-            let path = entry.path();
-
-            // Only process .hook files
-            if path.extension().and_then(|e| e.to_str()) != Some("hook") {
-                log::debug!("skipping non-hook file {}", path.display());
-                continue;
-            }
-
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            // Check if hook with same name already exists (skip if so - override behavior)
-            if hooks.contains_key(&file_name) {
-                log::debug!("skipping overridden hook {}", path.display());
-                continue;
-            }
-
-            // Skip symlinks to /dev/null (disabled hooks)
-            if let Ok(link_target) = fs::read_link(&path) {
-                if link_target == PathBuf::from("/dev/null") {
-                    log::debug!("Skipping disabled hook: {}", path.display());
-                    continue;
-                }
-            }
-
-            // Check if it's a directory (skip)
-            if path.is_dir() {
-                log::debug!("skipping directory {}", path.display());
-                continue;
-            }
-
-            match parse_hook_file(&path) {
-                Ok(file_hooks) => {
-                    // For now, we only support one hook per file (first one)
-                    // The reference implementation also creates one hook per file
-                    if let Some(mut hook) = file_hooks.first().cloned() {
-                        populate_hook_target_caches(&mut hook);
-                        hooks.insert(file_name, hook);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse hook file {}: {}", path.display(), e);
-                }
-            }
-        }
-    }
-
-    // Convert to Vec and sort by file name (reference: _alpm_hook_cmp)
-    let mut hooks_vec: Vec<Hook> = hooks.into_values().collect();
-    hooks_vec.sort_by(|a, b| {
-        // Custom comparison: exclude .hook suffix from comparison
-        let suflen = ".hook".len();
-        let a_name = &a.file_name;
-        let b_name = &b.file_name;
-
-        let a_len = if a_name.len() >= suflen && a_name.ends_with(".hook") {
-            a_name.len() - suflen
-        } else {
-            a_name.len()
-        };
-        let b_len = if b_name.len() >= suflen && b_name.ends_with(".hook") {
-            b_name.len() - suflen
-        } else {
-            b_name.len()
-        };
-
-        let a_prefix = &a_name[..a_len.min(a_name.len())];
-        let b_prefix = &b_name[..b_len.min(b_name.len())];
-
-        let ret = a_prefix.cmp(b_prefix);
-        if ret == std::cmp::Ordering::Equal && a_len != b_len {
-            if a_len < b_len {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            }
-        } else {
-            ret
-        }
-    });
-
-    Some(hooks_vec)
+    Some(sorted_hooks)
 }
 
 /// Check if any compiled pattern matches a string
@@ -845,7 +816,7 @@ fn execute_hook(
         if !check_dependency(fresh_installs, dep) {
             return Err(color_eyre::eyre::eyre!(
                 "unable to run hook {}: could not satisfy dependencies",
-                hook.file_name
+                hook.file_path
             ));
         }
     }
@@ -854,14 +825,14 @@ fn execute_hook(
     let exec_parts = match shlex::split(&hook.action.exec) {
         Some(parts) => {
             if parts.is_empty() {
-                return Err(color_eyre::eyre::eyre!("Empty Exec in hook {}", hook.file_name));
+                return Err(color_eyre::eyre::eyre!("Empty Exec in hook {}", hook.file_path));
             }
             parts
         }
         None => {
             return Err(color_eyre::eyre::eyre!(
                 "hook {}: invalid Exec value {}",
-                hook.file_name, hook.action.exec
+                hook.file_path, hook.action.exec
             ));
         }
     };
@@ -887,7 +858,7 @@ fn execute_hook(
             .unwrap_or_else(|| env_root.join("usr/bin").join(command))
     };
 
-    log::info!("Executing hook {}: {}", hook.file_name, hook.action.exec);
+    log::info!("Executing hook {}: {}", hook.file_path, hook.action.exec);
 
     let env_vars = std::collections::HashMap::new();
     let stdin_data = if hook.action.needs_targets {
@@ -910,14 +881,14 @@ fn execute_hook(
 
     match crate::run::fork_and_execute(env_root, &run_options, &command_path) {
         Ok(()) => {
-            log::debug!("Hook {} executed successfully", hook.file_name);
+            log::debug!("Hook {} executed successfully", hook.file_path);
             Ok(())
         }
         Err(e) => {
             if hook.action.abort_on_fail {
-                Err(e).with_context(|| format!("Hook {} failed and AbortOnFail is set", hook.file_name))
+                Err(e).with_context(|| format!("Hook {} failed and AbortOnFail is set", hook.file_path))
             } else {
-                log::warn!("Hook {} failed: {}", hook.file_name, e);
+                log::warn!("Hook {} failed: {}", hook.file_path, e);
                 Ok(())
             }
         }
@@ -1018,6 +989,171 @@ fn parent_prefix_before_wildcard(target: &str) -> Option<String> {
     None
 }
 
+/// Filter hooks by When timing
+fn filter_hooks_by_when<'a>(hooks: &'a [Hook], when: &HookWhen) -> Vec<&'a Hook> {
+    hooks.iter()
+        .filter(|h| &h.action.when == when)
+        .collect()
+}
+
+/// Check if we should reduce path trigger evaluation based on package count
+fn should_reduce_path_triggers(fresh_installs: &InstalledPackagesMap, upgrades_new: &InstalledPackagesMap) -> bool {
+    fresh_installs.len() + upgrades_new.len() >= 20
+}
+
+/// Calculate the recent cutoff time for path trigger optimization
+fn calculate_recent_cutoff(should_reduce: bool) -> SystemTime {
+    if should_reduce {
+        SystemTime::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    } else {
+        SystemTime::UNIX_EPOCH
+    }
+}
+
+/// Check if a hook trigger matches the transaction
+fn check_trigger_match(
+    trigger: &HookTrigger,
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
+    store_root: &Path,
+    needs_targets: bool,
+    should_reduce_path_triggers: bool,
+    env_root: &Path,
+    recent_cutoff: SystemTime,
+) -> Result<(bool, Vec<String>)> {
+    if should_reduce_path_triggers && trigger.hook_type == HookType::Path {
+        // Skip expensive trigger evaluation when none of its target files
+        // were touched recently.
+        if !path_trigger_has_recent_match(trigger, env_root, recent_cutoff)? {
+            return Ok((false, Vec::new()));
+        }
+    }
+
+    match trigger.hook_type {
+        HookType::Path => {
+            match_path_trigger(
+                trigger,
+                fresh_installs,
+                upgrades_new,
+                upgrades_old,
+                old_removes,
+                store_root,
+                needs_targets,
+            )
+        }
+        HookType::Package => {
+            let (pmatched, install_targets, upgrade_targets, remove_targets) =
+                match_package_trigger(trigger, fresh_installs, upgrades_new, upgrades_old, old_removes)?;
+
+            let mut matched_targets = Vec::new();
+            if pmatched && needs_targets {
+                matched_targets.extend(install_targets);
+                matched_targets.extend(upgrade_targets);
+                matched_targets.extend(remove_targets);
+            }
+
+            Ok((pmatched, matched_targets))
+        }
+    }
+}
+
+/// Find all triggered hooks for the transaction
+/// Returns a vector of (hook, matched_targets) tuples
+fn find_triggered_hooks<'a>(
+    relevant_hooks: &'a [&'a Hook],
+    fresh_installs: &InstalledPackagesMap,
+    upgrades_new: &InstalledPackagesMap,
+    upgrades_old: &InstalledPackagesMap,
+    old_removes: &InstalledPackagesMap,
+    store_root: &Path,
+    should_reduce_path_triggers: bool,
+    env_root: &Path,
+    recent_cutoff: SystemTime,
+) -> Result<Vec<(&'a Hook, Vec<String>)>> {
+    let mut triggered_hooks = Vec::new();
+
+    for hook in relevant_hooks {
+        // Special case: triggerless hooks are never triggered
+        if hook.triggers.is_empty() {
+            continue;
+        }
+
+        let mut hook_matched = false;
+        let mut all_matched_targets = Vec::new();
+
+        for trigger in &hook.triggers {
+            let (matched, matched_targets) = check_trigger_match(
+                trigger,
+                fresh_installs,
+                upgrades_new,
+                upgrades_old,
+                old_removes,
+                store_root,
+                hook.action.needs_targets,
+                should_reduce_path_triggers,
+                env_root,
+                recent_cutoff,
+            )?;
+
+            if matched {
+                hook_matched = true;
+
+                // Path trigger already handles needs_targets internally. For package triggers,
+                // targets were added above when needed.
+                if hook.action.needs_targets {
+                    all_matched_targets.extend(matched_targets);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if hook_matched {
+            // Sort and deduplicate targets (reference: _alpm_strlist_dedup)
+            all_matched_targets.sort();
+            all_matched_targets.dedup();
+
+            triggered_hooks.push((*hook, all_matched_targets));
+        }
+    }
+
+    Ok(triggered_hooks)
+}
+
+/// Execute all triggered hooks
+fn execute_triggered_hooks(
+    triggered_hooks: Vec<(&Hook, Vec<String>)>,
+    env_root: &Path,
+    fresh_installs: &InstalledPackagesMap,
+    when: HookWhen,
+) -> Result<()> {
+    for (hook, matched_targets) in triggered_hooks {
+        log::info!("running '{}'...", hook.file_path);
+
+        if let Err(e) = execute_hook(
+            hook,
+            env_root,
+            &matched_targets,
+            fresh_installs,
+        ) {
+            if hook.action.abort_on_fail {
+                return Err(e).with_context(|| format!("failed to run transaction hooks"));
+            }
+        }
+
+        // If PreTransaction and error occurred, stop (pacman behavior)
+        if when == HookWhen::PreTransaction {
+            // Error already handled above
+        }
+    }
+
+    Ok(())
+}
+
 /// Run hooks for a transaction
 /// Reference: _alpm_hook_run
 pub fn run_hooks(
@@ -1039,113 +1175,32 @@ pub fn run_hooks(
         return Ok(());
     }
 
-    let should_reduce_path_triggers = fresh_installs.len() + upgrades_new.len() >= 20;
-    let recent_cutoff = if should_reduce_path_triggers {
-        SystemTime::now()
-            .checked_sub(Duration::from_secs(3600))
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    } else {
-        SystemTime::UNIX_EPOCH
-    };
+    let should_reduce = should_reduce_path_triggers(fresh_installs, upgrades_new);
+    let recent_cutoff = calculate_recent_cutoff(should_reduce);
 
     // Filter hooks by When
-    let relevant_hooks: Vec<&Hook> = hooks.iter()
-        .filter(|h| h.action.when == when)
-        .collect();
+    let relevant_hooks = filter_hooks_by_when(hooks, &when);
 
     if relevant_hooks.is_empty() {
         return Ok(());
     }
 
     // Find triggered hooks (reference: _alpm_hook_triggered)
-    let mut triggered_hooks = Vec::new();
-
-    for hook in relevant_hooks {
-        // Special case: triggerless hooks are never triggered
-        if hook.triggers.is_empty() {
-            continue;
-        }
-
-        let mut hook_matched = false;
-        let mut all_matched_targets = Vec::new();
-
-        for trigger in &hook.triggers {
-            if should_reduce_path_triggers && trigger.hook_type == HookType::Path {
-                // Skip expensive trigger evaluation when none of its target files
-                // were touched recently.
-                if !path_trigger_has_recent_match(trigger, env_root, recent_cutoff)? {
-                    continue;
-                }
-            }
-
-            let (matched, matched_targets) = match trigger.hook_type {
-                HookType::Path => {
-                    match_path_trigger(
-                        trigger,
-                        fresh_installs,
-                        upgrades_new,
-                        upgrades_old,
-                        old_removes,
-                        store_root,
-                        hook.action.needs_targets,
-                    )?
-                }
-                HookType::Package => {
-                    let (pmatched, install_targets, upgrade_targets, remove_targets) =
-                        match_package_trigger(trigger, fresh_installs, upgrades_new, upgrades_old, old_removes)?;
-
-                    if pmatched && hook.action.needs_targets {
-                        all_matched_targets.extend(install_targets);
-                        all_matched_targets.extend(upgrade_targets);
-                        all_matched_targets.extend(remove_targets);
-                    }
-
-                    (pmatched, Vec::new())
-                }
-            };
-
-            if matched {
-                hook_matched = true;
-
-                // Path trigger already handles needs_targets internally. For package triggers,
-                // targets were added above when needed.
-                if hook.action.needs_targets {
-                    all_matched_targets.extend(matched_targets);
-                } else {
-                    break;
-                }
-            }
-        }
-
-        if hook_matched {
-            // Sort and deduplicate targets (reference: _alpm_strlist_dedup)
-            all_matched_targets.sort();
-            all_matched_targets.dedup();
-
-            triggered_hooks.push((hook, all_matched_targets));
-        }
-    }
+    let triggered_hooks = find_triggered_hooks(
+        &relevant_hooks,
+        fresh_installs,
+        upgrades_new,
+        upgrades_old,
+        old_removes,
+        store_root,
+        should_reduce,
+        env_root,
+        recent_cutoff,
+    )?;
 
     // Execute triggered hooks (reference: executes in order)
-    for (hook, matched_targets) in triggered_hooks {
-        log::info!("running '{}'...", hook.file_name);
-
-        if let Err(e) = execute_hook(
-            hook,
-            env_root,
-            &matched_targets,
-            fresh_installs,
-        ) {
-            if hook.action.abort_on_fail {
-                return Err(e).with_context(|| format!("failed to run transaction hooks"));
-            }
-        }
-
-        // If PreTransaction and error occurred, stop (pacman behavior)
-        if when == HookWhen::PreTransaction {
-            // Error already handled above
-        }
-    }
+    execute_triggered_hooks(triggered_hooks, env_root, fresh_installs, when)?;
 
     Ok(())
 }
+
