@@ -638,8 +638,7 @@ fn find_and_verify_built_packages(
 /// - **resolve_dependencies_adding_makepkg_deps()**: Creates packages with `arch="any"` for AUR ✓
 /// - **prepare_installation_plan()**: Uses AUR-aware `find_upgrade_target()` for upgrade detection ✓
 /// - **fill_pkglines_in_plan()**: May not find matches for AUR with `arch="any"` (OK, they need building) ✓
-/// - **prepare_packages_for_installation()**: Uses plan keys (still `arch="any"` for AUR) ✓
-/// - **download_and_install_packages()**: Separates AUR packages, processes binary packages ✓
+/// - **download_and_unpack_packages()**: Separates packages with/without pkglines, separates AUR packages, processes binary packages ✓
 /// - **run_transaction_batch()**: For binary packages, uses plan keys directly ✓
 /// - **build_and_install_aur_packages()**: Builds AUR, determines actual arch, fixes up plan ✓
 /// - **run_transaction_batch()**: For AUR packages, uses fixed plan keys (actual arch) ✓

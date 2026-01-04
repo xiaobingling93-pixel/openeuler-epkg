@@ -273,15 +273,8 @@ fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_roo
         return Ok(());
     }
 
-    // Step 1: Prepare packages for download and processing
-    let (packages_to_download_and_process, packages_with_pkglines) = prepare_packages_for_installation(plan)?;
-
-    // Step 2: Download and unpack packages (but do not link yet)
-    let (aur_packages, packages_to_link) = download_and_unpack_packages(
-        &packages_to_download_and_process,
-        &packages_with_pkglines,
-        &plan.store_pkglines_by_pkgname,
-    )?;
+    // Step 1: Download and unpack packages (but do not link yet)
+    let (aur_packages, packages_to_link) = download_and_unpack_packages(plan)?;
 
     // Step 2a: Check risks for all packages before linking
     crate::risks::validate_before_linking(&packages_to_link, store_root, env_root, plan)
@@ -328,11 +321,11 @@ fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_roo
     Ok(())
 }
 
-/// Prepare packages for download and processing
-/// Returns: (packages_to_download, packages_with_pkglines)
-fn prepare_packages_for_installation(
+/// Download and unpack packages (but do not link them yet)
+/// Returns: (aur_packages, packages_to_link)
+fn download_and_unpack_packages(
     plan: &InstallationPlan,
-) -> Result<(InstalledPackagesMap, InstalledPackagesMap)> {
+) -> Result<(InstalledPackagesMap, Vec<(String, InstalledPackageInfo)>)> {
     // Separate packages into those with pkglines (already in store) and those without (need download)
     // AUR packages are included in both categories and will be filtered later
     let mut packages_to_download = HashMap::new();
@@ -349,29 +342,19 @@ fn prepare_packages_for_installation(
         }
     }
 
-    Ok((packages_to_download, packages_with_pkglines))
-}
-
-/// Download and unpack packages (but do not link them yet)
-/// Returns: (aur_packages, packages_to_link)
-fn download_and_unpack_packages(
-    packages_to_download_and_process: &InstalledPackagesMap,
-    packages_with_pkglines: &InstalledPackagesMap,
-    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-) -> Result<(InstalledPackagesMap, Vec<(String, InstalledPackageInfo)>)> {
     // Submit download tasks first (includes both binary and AUR packages)
-    let url_to_pkgkeys = enqueue_package_downloads(packages_to_download_and_process)?;
+    let url_to_pkgkeys = enqueue_package_downloads(&packages_to_download)?;
     let mut pending_urls: Vec<String> = url_to_pkgkeys.keys().cloned().collect();
 
     // Process downloads for packages that needed to be downloaded
     // wait_downloads_and_unpack will filter out AUR packages and return them separately
     // IMPORTANT: We unpack packages but do NOT link them yet - we need to check all risks first
-    let mut mutable_packages_for_processing = packages_to_download_and_process.clone();
+    let mut mutable_packages_for_processing = packages_to_download.clone();
     let (downloaded_aur_packages, mut all_packages_to_link) = wait_downloads_and_unpack(
         &url_to_pkgkeys,
         &mut pending_urls,
         &mut mutable_packages_for_processing,
-        store_pkglines_by_pkgname,
+        &plan.store_pkglines_by_pkgname,
     )?;
 
     // Add packages that already exist in the store
