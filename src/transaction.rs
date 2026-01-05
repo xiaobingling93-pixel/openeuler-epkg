@@ -98,15 +98,16 @@ pub enum PackageAction {
 /// Executes a single action for a package
 /// For upgrades, old_pkgkey and old_pkg_info are provided
 fn run_action(
+    plan: &mut InstallationPlan,
     action: PackageAction,
     pkgkey: &str,
     pkg_info: &Arc<InstalledPackageInfo>,
     old_pkgkey: Option<&str>,
     old_pkg_info: Option<&Arc<InstalledPackageInfo>>,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
 ) -> Result<()> {
+    let store_root = &plan.store_root;
+    let env_root = &plan.env_root;
+    let package_format = plan.package_format;
     let is_upgrade = old_pkgkey.is_some();
     let old_version = old_pkgkey.and_then(|k| package::pkgkey2version(k).ok());
     let new_version = package::pkgkey2version(pkgkey).ok();
@@ -140,7 +141,7 @@ fn run_action(
             }
 
             // Pre-install scriptlet
-            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PreInstall, is_upgrade)?;
+            run_scriptlets(&single_pkg, plan, ScriptletType::PreInstall, is_upgrade)?;
 
             // DEB activate triggers - AFTER pre scriptlet
             if package_format == PackageFormat::Deb {
@@ -212,7 +213,7 @@ fn run_action(
             single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
 
             // Post-install scriptlet
-            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PostInstall, is_upgrade)?;
+            run_scriptlets(&single_pkg, plan, ScriptletType::PostInstall, is_upgrade)?;
 
             // RPM package triggers (triggerin) - AFTER postin
             if package_format == PackageFormat::Rpm {
@@ -446,7 +447,7 @@ fn run_action(
             }
 
             // Pre-remove scriptlet
-            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PreRemove, is_upgrade)?;
+            run_scriptlets(&single_pkg, plan, ScriptletType::PreRemove, is_upgrade)?;
 
             // RPM file triggers (filetriggerun, low priority) - AFTER preun, BEFORE file removal
             if package_format == PackageFormat::Rpm && is_upgrade {
@@ -509,7 +510,7 @@ fn run_action(
             } else {
                 single_pkg.insert(pkgkey.to_string(), pkg_info.clone());
             }
-            run_scriptlets(&single_pkg, store_root, env_root, package_format, ScriptletType::PostRemove, is_upgrade)?;
+            run_scriptlets(&single_pkg, plan, ScriptletType::PostRemove, is_upgrade)?;
 
             // RPM package triggers (triggerpostun) for upgrade - AFTER postun
             if package_format == PackageFormat::Rpm && is_upgrade {
@@ -573,9 +574,7 @@ fn run_action(
             run_scriptlet(
                 pkgkey,
                 pkg_info.as_ref(),
-                store_root,
-                env_root,
-                package_format,
+                plan,
                 ScriptletType::PreUpgrade,
                 true, // is_upgrade
                 old_version.as_deref(),
@@ -592,9 +591,7 @@ fn run_action(
             run_scriptlet(
                 pkgkey,
                 pkg_info.as_ref(),
-                store_root,
-                env_root,
-                package_format,
+                plan,
                 ScriptletType::PostUpgrade,
                 true, // is_upgrade
                 old_version.as_deref(),
@@ -653,11 +650,11 @@ fn run_action(
 /// Runs %pretrans, %preuntrans, and transfiletriggerun scriptlets/triggers.
 pub fn begin_transaction(
     plan: &InstallationPlan,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
-    has_upgrades: bool,
 ) -> Result<()> {
+    let store_root = &plan.store_root;
+    let env_root = &plan.env_root;
+    let package_format = plan.package_format;
+    let has_upgrades = !plan.upgrades_new.is_empty();
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
     // Order: %pretrans of new, then %preuntrans of old (before any file operations)
     if package_format == PackageFormat::Rpm {
@@ -672,9 +669,7 @@ pub fn begin_transaction(
         if !pretrans_packages.is_empty() {
             if let Err(e) = scriptlets::run_scriptlets(
                 &pretrans_packages,
-                store_root,
-                env_root,
-                package_format,
+                plan,
                 scriptlets::ScriptletType::PreTrans,
                 has_upgrades,
             ) {
@@ -686,9 +681,7 @@ pub fn begin_transaction(
         if !plan.old_removes.is_empty() {
             if let Err(e) = scriptlets::run_scriptlets(
                 &plan.old_removes,
-                store_root,
-                env_root,
-                package_format,
+                plan,
                 scriptlets::ScriptletType::PreUnTrans,
                 false, // is_upgrade - removals are separate from upgrades
             ) {
@@ -721,11 +714,11 @@ pub fn begin_transaction(
 /// Runs %posttrans, %postuntrans, transfiletriggerpostun, and transfiletriggerin scriptlets/triggers.
 pub fn end_transaction(
     plan: &InstallationPlan,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
-    has_upgrades: bool,
 ) -> Result<()> {
+    let store_root = &plan.store_root;
+    let env_root = &plan.env_root;
+    let package_format = plan.package_format;
+    let has_upgrades = !plan.upgrades_new.is_empty();
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
     if package_format == PackageFormat::Rpm {
@@ -739,9 +732,7 @@ pub fn end_transaction(
         if !posttrans_packages.is_empty() {
             if let Err(e) = scriptlets::run_scriptlets(
                 &posttrans_packages,
-                store_root,
-                env_root,
-                package_format,
+                plan,
                 scriptlets::ScriptletType::PostTrans,
                 has_upgrades,
             ) {
@@ -755,9 +746,7 @@ pub fn end_transaction(
         if !plan.old_removes.is_empty() {
             if let Err(e) = scriptlets::run_scriptlets(
                 &plan.old_removes,
-                store_root,
-                env_root,
-                package_format,
+                plan,
                 scriptlets::ScriptletType::PostUnTrans,
                 false, // is_upgrade - removals are separate from upgrades
             ) {
@@ -811,67 +800,58 @@ pub fn end_transaction(
 
 
 /// Build maps for hooks from ordered_operations
+/// Stores the maps in plan.batch members
 fn build_completed_maps(
-    plan: &InstallationPlan,
-    completed_packages: &InstalledPackagesMap,
-) -> (
-    InstalledPackagesMap,
-    InstalledPackagesMap,
-    InstalledPackagesMap,
-    InstalledPackagesMap,
+    plan: &mut InstallationPlan,
 ) {
-    let mut fresh_installs_completed: InstalledPackagesMap = HashMap::new();
-    let mut upgrades_new_completed: InstalledPackagesMap = HashMap::new();
-    let mut upgrades_old_map: InstalledPackagesMap = HashMap::new();
-    let mut old_removes_map: InstalledPackagesMap = HashMap::new();
+    plan.fresh_installs_completed.clear();
+    plan.upgrades_new_completed.clear();
+    plan.upgrades_old_completed.clear();
+    plan.old_removes_completed.clear();
 
     for op in &plan.ordered_operations {
         match op.op_type {
             OperationType::FreshInstall => {
                 if let Some((pkgkey, _)) = &op.new_pkg {
-                    if let Some(info) = completed_packages.get(pkgkey) {
-                        fresh_installs_completed.insert(pkgkey.clone(), Arc::clone(info));
+                    if let Some(info) = plan.completed_packages.get(pkgkey) {
+                        plan.fresh_installs_completed.insert(pkgkey.clone(), Arc::clone(info));
                     }
                 }
             }
             OperationType::Upgrade => {
                 if let (Some((new_pkgkey, _)), Some((old_pkgkey, old_info))) = (&op.new_pkg, &op.old_pkg) {
-                    if let Some(new_info) = completed_packages.get(new_pkgkey) {
-                        upgrades_new_completed.insert(new_pkgkey.clone(), Arc::clone(new_info));
-                        upgrades_old_map.insert(old_pkgkey.clone(), Arc::clone(old_info));
+                    if let Some(new_info) = plan.completed_packages.get(new_pkgkey) {
+                        plan.upgrades_new_completed.insert(new_pkgkey.clone(), Arc::clone(new_info));
+                        plan.upgrades_old_completed.insert(old_pkgkey.clone(), Arc::clone(old_info));
                     }
                 }
             }
             OperationType::Removal => {
                 if let Some((pkgkey, pkg_info)) = &op.old_pkg {
-                    old_removes_map.insert(pkgkey.clone(), Arc::clone(pkg_info));
+                    plan.old_removes_completed.insert(pkgkey.clone(), Arc::clone(pkg_info));
                 }
             }
         }
     }
-
-    (fresh_installs_completed, upgrades_new_completed, upgrades_old_map, old_removes_map)
 }
 
 /// Process each package operation in order (rpmtsProcess style)
 fn process_package_operations(
-    plan: &InstallationPlan,
-    completed_packages: &InstalledPackagesMap,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
+    plan: &mut InstallationPlan,
 ) -> Result<()> {
-    for op in &plan.ordered_operations {
+    // Clone operations to avoid borrow checker issues
+    let operations: Vec<_> = plan.ordered_operations.clone();
+    for op in &operations {
         // Skip operations that don't have completed packages yet (for installs/upgrades)
         if let Some((new_pkgkey, _)) = &op.new_pkg {
-            if !completed_packages.contains_key(new_pkgkey) {
+            if !plan.completed_packages.contains_key(new_pkgkey) {
                 // Package not yet completed (e.g., AUR packages being built)
                 continue;
             }
         }
 
         // Level 1: Process package pair operation
-        process_package_operation(op, completed_packages, store_root, env_root, package_format)?;
+        process_package_operation(plan, op)?;
     }
     Ok(())
 }
@@ -880,30 +860,32 @@ fn process_package_operations(
 /// Executes the entire transaction by processing all package operations in order
 /// https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7#EXECUTION_ORDER
 pub fn run_transaction_batch(
-    plan: &InstallationPlan,
+    plan: &mut InstallationPlan,
     completed_packages: &InstalledPackagesMap,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
 ) -> Result<()> {
+    let package_format = plan.package_format;
+
+    // Store completed_packages in plan
+    plan.completed_packages.clear();
+    plan.completed_packages.extend(completed_packages.iter().map(|(k, v)| (k.clone(), Arc::clone(v))));
+
     // Load hooks for Arch Linux (Pacman format)
-    let hooks = hooks::load_hooks(env_root, package_format);
+    let hooks = hooks::load_hooks(&plan.env_root, package_format);
 
     // Build maps for hooks from ordered_operations
-    let (fresh_installs_completed, upgrades_new_completed, upgrades_old_map, old_removes_map) =
-        build_completed_maps(plan, completed_packages);
+    build_completed_maps(plan);
 
     // Run PreTransaction hooks
-    hooks::run_hooks(hooks.as_deref(), env_root, store_root, hooks::HookWhen::PreTransaction, &fresh_installs_completed, &upgrades_new_completed, &upgrades_old_map, &old_removes_map)?;
+    hooks::run_hooks(hooks.as_deref(), plan, hooks::HookWhen::PreTransaction)?;
 
     // Process each package operation in order (rpmtsProcess style)
-    process_package_operations(plan, completed_packages, store_root, env_root, package_format)?;
+    process_package_operations(plan)?;
 
     // Run PostTransaction hooks
-    hooks::run_hooks(hooks.as_deref(), env_root, store_root, hooks::HookWhen::PostTransaction, &fresh_installs_completed, &upgrades_new_completed, &upgrades_old_map, &old_removes_map)?;
+    hooks::run_hooks(hooks.as_deref(), plan, hooks::HookWhen::PostTransaction)?;
 
     // Run ldconfig if needed (after all package operations complete)
-    run_ldconfig_if_needed(env_root)?;
+    run_ldconfig_if_needed(&plan.env_root)?;
 
     Ok(())
 }
@@ -911,29 +893,30 @@ pub fn run_transaction_batch(
 /// Level 1: Package pair operation handler (rpmtsProcess/rpmteProcess style)
 /// Processes a single package operation by executing a sequence of actions
 pub fn process_package_operation(
+    plan: &mut InstallationPlan,
     op: &PackageOperation,
-    completed_packages: &InstalledPackagesMap,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
 ) -> Result<()> {
+    let package_format = plan.package_format;
     match op.op_type {
         OperationType::FreshInstall => {
             if let Some((pkgkey, _)) = &op.new_pkg {
-                if let Some(completed_info) = completed_packages.get(pkgkey) {
+                if let Some(completed_info) = plan.completed_packages.get(pkgkey) {
+                    let completed_info = Arc::clone(completed_info);
                     // Execute actions for fresh install
-                    run_action(PackageAction::PreInstall,   pkgkey, completed_info, None, None, store_root, env_root, package_format)?;
-                    run_action(PackageAction::LinkFiles,    pkgkey, completed_info, None, None, store_root, env_root, package_format)?;
-                    run_action(PackageAction::PostInstall,  pkgkey, completed_info, None, None, store_root, env_root, package_format)?;
+                    run_action(plan, PackageAction::PreInstall,   pkgkey, &completed_info, None, None)?;
+                    run_action(plan, PackageAction::LinkFiles,    pkgkey, &completed_info, None, None)?;
+                    run_action(plan, PackageAction::PostInstall,  pkgkey, &completed_info, None, None)?;
                     if op.should_expose() {
-                        run_action(PackageAction::ExposeExecutables, pkgkey, completed_info, None, None, store_root, env_root, package_format)?;
+                        run_action(plan, PackageAction::ExposeExecutables, pkgkey, &completed_info, None, None)?;
                     }
                 }
             }
         }
         OperationType::Upgrade => {
             if let (Some((new_pkgkey, _)), Some((old_pkgkey, old_info))) = (&op.new_pkg, &op.old_pkg) {
-                if let Some(new_info) = completed_packages.get(new_pkgkey) {
+                if let Some(new_info) = plan.completed_packages.get(new_pkgkey) {
+                    let new_info = Arc::clone(new_info);
+                    let old_info = Arc::clone(old_info);
                     match package_format {
                         PackageFormat::Rpm | PackageFormat::Conda => {
                             // Order matches RPM scriptlet execution sequence https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7
@@ -945,13 +928,13 @@ pub fn process_package_operation(
                             // 4. %preun of _old_   | pre-unlink of _old_   (PreRemove)
                             // 5. (erase _old_ files)                       (UnlinkFiles)
                             // 6. %postun of _old_  | post-unlink of _old_  (PostRemove)
-                            run_action(PackageAction::PreInstall,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::PostInstall,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(plan, PackageAction::PreInstall,   new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
+                            run_action(plan, PackageAction::LinkFiles,    new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
+                            run_action(plan, PackageAction::PostInstall,  new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
 
-                            run_action(PackageAction::PreRemove,    old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::PostRemove,   old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
+                            run_action(plan, PackageAction::PreRemove,    old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
+                            run_action(plan, PackageAction::UnlinkFiles,  old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
+                            run_action(plan, PackageAction::PostRemove,   old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
                         },
                         PackageFormat::Deb => {
                             // Order matches Debian maintainer script execution sequence https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
@@ -973,29 +956,29 @@ pub fn process_package_operation(
                             // 6. postinst of _new_      (PostInstall) with "configure old-version"
                             //    - Called in configure.c:679: maintscript_postinst(..., "configure", old_version, NULL)
                             //    - Args: $1="configure", $2=old_version
-                            run_action(PackageAction::PreRemove,    old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::PreInstall,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::PostRemove,   old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::PostInstall,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(plan, PackageAction::PreRemove,    old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
+                            run_action(plan, PackageAction::PreInstall,   new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
+                            run_action(plan, PackageAction::LinkFiles,    new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
+                            run_action(plan, PackageAction::PostRemove,   old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
+                            run_action(plan, PackageAction::UnlinkFiles,  old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
+                            run_action(plan, PackageAction::PostInstall,  new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
                         },
                         PackageFormat::Pacman | PackageFormat::Apk => {
                             // Archlinux https://man.archlinux.org/man/PKGBUILD.5#INSTALL/UPGRADE/REMOVE_SCRIPTING
                             // Alpine https://wiki.alpinelinux.org/wiki/APKBUILD_Reference
-                            run_action(PackageAction::PreUpgrade,   new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::LinkFiles,    new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::UnlinkFiles,  old_pkgkey, old_info, Some(new_pkgkey), Some(new_info), store_root, env_root, package_format)?;
-                            run_action(PackageAction::PostUpgrade,  new_pkgkey, new_info, Some(old_pkgkey), Some(old_info), store_root, env_root, package_format)?;
+                            run_action(plan, PackageAction::PreUpgrade,   new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
+                            run_action(plan, PackageAction::LinkFiles,    new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
+                            run_action(plan, PackageAction::UnlinkFiles,  old_pkgkey, &old_info, Some(new_pkgkey), Some(&new_info))?;
+                            run_action(plan, PackageAction::PostUpgrade,  new_pkgkey, &new_info, Some(old_pkgkey), Some(&old_info))?;
                         },
                         PackageFormat::Epkg | PackageFormat::Python => { todo!() },
                     }
 
                     if op.should_unexpose() {
-                        run_action(PackageAction::UnexposeExecutables, old_pkgkey, old_info, None, None, store_root, env_root, package_format)?;
+                        run_action(plan, PackageAction::UnexposeExecutables, old_pkgkey, &old_info, None, None)?;
                     }
                     if op.should_expose() {
-                        run_action(PackageAction::ExposeExecutables, new_pkgkey, new_info, None, None, store_root, env_root, package_format)?;
+                        run_action(plan, PackageAction::ExposeExecutables, new_pkgkey, &new_info, None, None)?;
                     }
                 }
             }
@@ -1003,11 +986,11 @@ pub fn process_package_operation(
         OperationType::Removal => {
             if let Some((pkgkey, pkg_info)) = &op.old_pkg {
                 // Execute actions for removal
-                run_action(PackageAction::PreRemove,        pkgkey, pkg_info, None, None, store_root, env_root, package_format)?;
-                run_action(PackageAction::UnlinkFiles,      pkgkey, pkg_info, None, None, store_root, env_root, package_format)?;
-                run_action(PackageAction::PostRemove,       pkgkey, pkg_info, None, None, store_root, env_root, package_format)?;
+                run_action(plan, PackageAction::PreRemove,        pkgkey, pkg_info, None, None)?;
+                run_action(plan, PackageAction::UnlinkFiles,      pkgkey, pkg_info, None, None)?;
+                run_action(plan, PackageAction::PostRemove,       pkgkey, pkg_info, None, None)?;
                 if op.should_unexpose() {
-                    run_action(PackageAction::UnexposeExecutables, pkgkey, pkg_info, None, None, store_root, env_root, package_format)?;
+                    run_action(plan, PackageAction::UnexposeExecutables, pkgkey, pkg_info, None, None)?;
                 }
             }
         }

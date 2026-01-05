@@ -1,6 +1,6 @@
-use std::path::Path;
 use color_eyre::eyre::Result;
 use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
+use crate::plan::InstallationPlan;
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::rpm_triggers::setup_rpm_env_vars;
 
@@ -420,9 +420,7 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
 /// Run scriptlets for multiple packages
 pub fn run_scriptlets(
     completed_packages: &InstalledPackagesMap,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
+    plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
     is_upgrade: bool,
 ) -> Result<()> {
@@ -436,9 +434,7 @@ pub fn run_scriptlets(
         if let Err(e) = run_scriptlet(
             pkgkey,
             package_info,
-            store_root,
-            env_root,
-            package_format,
+            plan,
             scriptlet_type,
             is_upgrade,
             None, // old_version
@@ -454,14 +450,15 @@ pub fn run_scriptlets(
 pub fn run_scriptlet(
     pkgkey: &str,
     package_info: &InstalledPackageInfo,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: PackageFormat,
+    plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
     is_upgrade: bool,
     old_version: Option<&str>,
     new_version: Option<&str>,
 ) -> Result<()> {
+    let store_root = &plan.store_root;
+    let env_root = &plan.env_root;
+    let package_format = plan.package_format;
     // Skip all fakeroot scriptlets as post_install runs ldconfig -r . which removes ld-linux-x86-64.so.2
     let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
     if pkgname == "fakeroot" {

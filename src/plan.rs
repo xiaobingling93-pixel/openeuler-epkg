@@ -5,12 +5,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::path::PathBuf;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
-use crate::models::{PACKAGE_CACHE, InstalledPackageInfo, InstalledPackagesMap, LinkType};
+use crate::models::{PACKAGE_CACHE, InstalledPackageInfo, InstalledPackagesMap, LinkType, PackageFormat, channel_config};
 use crate::package;
 use crate::mmio;
 use crate::aur::is_aur_package;
+use crate::dirs;
 
 /// Package operation flags
 pub mod op_flags {
@@ -94,7 +96,7 @@ pub struct FilesystemInfo {
     pub free_inodes: u64,   // Free inodes (u64::MAX if unlimited)
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct InstallationPlan {
     // Uniform ordered structure (L1: Transaction -> Vec<PackageOperation>)
     pub ordered_operations: Vec<PackageOperation>,
@@ -120,6 +122,49 @@ pub struct InstallationPlan {
     pub upgrades_new:   InstalledPackagesMap,
     pub upgrades_old:   InstalledPackagesMap,
     pub upgrade_map_old_to_new: HashMap<String, String>,
+
+    // Cache fields for execution (stored early in prepare_installation_plan)
+    pub env_root: PathBuf,
+    pub store_root: PathBuf,
+    pub package_format: PackageFormat,
+
+    // Batch maps (stored in build_completed_maps)
+    pub completed_packages: InstalledPackagesMap,
+    pub fresh_installs_completed: InstalledPackagesMap,
+    pub upgrades_new_completed: InstalledPackagesMap,
+    pub upgrades_old_completed: InstalledPackagesMap,
+    pub old_removes_completed: InstalledPackagesMap,
+}
+
+impl Default for InstallationPlan {
+    fn default() -> Self {
+        Self {
+            ordered_operations: Vec::new(),
+            link: LinkType::Symlink,
+            can_reflink: false,
+            total_download: 0,
+            total_install: 0,
+            store_root_fs: None,
+            env_root_fs: None,
+            download_cache_fs: None,
+            store_pkglines_by_pkgname: HashMap::new(),
+            skipped_reinstalls: InstalledPackagesMap::new(),
+            fresh_installs: InstalledPackagesMap::new(),
+            old_removes: InstalledPackagesMap::new(),
+            upgrades_new: InstalledPackagesMap::new(),
+            upgrades_old: InstalledPackagesMap::new(),
+            upgrade_map_old_to_new: HashMap::new(),
+            // Initialize with defaults - will be set properly in prepare_installation_plan()
+            env_root: PathBuf::new(),
+            store_root: PathBuf::new(),
+            package_format: PackageFormat::default(),
+            completed_packages: InstalledPackagesMap::new(),
+            fresh_installs_completed: InstalledPackagesMap::new(),
+            upgrades_new_completed: InstalledPackagesMap::new(),
+            upgrades_old_completed: InstalledPackagesMap::new(),
+            old_removes_completed: InstalledPackagesMap::new(),
+        }
+    }
 }
 
 /// Calculate operation flags for a package operation
@@ -317,7 +362,15 @@ pub fn prepare_installation_plan(
     all_packages_for_session: &InstalledPackagesMap,
     explicit_removes: Option<InstalledPackagesMap>,
 ) -> Result<InstallationPlan> {
+    // Get paths and format early
+    let env_root = dirs::get_default_env_root()?;
+    let store_root = dirs().epkg_store.clone();
+    let package_format = channel_config().format;
+
     let mut plan = InstallationPlan::default();
+    plan.env_root = env_root;
+    plan.store_root = store_root;
+    plan.package_format = package_format;
 
     // Classify packages into fresh installs and upgrades
     classify_packages(all_packages_for_session, &mut plan)?;

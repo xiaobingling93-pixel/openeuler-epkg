@@ -668,7 +668,6 @@ pub fn build_and_install_aur_packages(
     plan: &mut crate::plan::InstallationPlan,
     store_root: &Path,
     env_root: &Path,
-    package_format: crate::models::PackageFormat,
 ) -> Result<InstalledPackagesMap> {
     if aur_packages.is_empty() {
         return Ok(HashMap::new());
@@ -723,9 +722,6 @@ pub fn build_and_install_aur_packages(
                     &mut this_round_aur_packages,
                     &this_round_pkgkey_mapping,
                     &mut aur_mapping_all_rounds,
-                    store_root,
-                    env_root,
-                    package_format,
                 )?;
 
                 // 5) Merge this round into overall completed_aur_packages
@@ -1061,9 +1057,6 @@ fn postinstall_built_aur_round(
     this_round_aur_packages: &mut InstalledPackagesMap,
     this_round_pkgkey_mapping: &HashMap<String, String>,
     aur_mapping_all_rounds: &mut HashMap<String, String>,
-    store_root: &Path,
-    env_root: &Path,
-    package_format: crate::models::PackageFormat,
 ) -> Result<()> {
     // Fixup plan keys for this round only (based on this_round_pkgkey_mapping)
     if !this_round_pkgkey_mapping.is_empty() {
@@ -1091,9 +1084,6 @@ fn postinstall_built_aur_round(
     run_transaction_batch(
         plan,
         &this_round_aur_packages,
-        store_root,
-        env_root,
-        package_format,
     )?;
 
     Ok(())

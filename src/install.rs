@@ -211,20 +211,13 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
         return Err(eyre::eyre!("Environment name not specified for installation plan"));
     }
 
-    let env_root = dirs::get_default_env_root()?;
-    let generations_root = dirs::get_default_generations_root()?;
-
-    let new_generation = create_new_generation_with_root(&generations_root)?;
-    let env_root = env_root.clone();
-    let store_root = dirs().epkg_store.clone();
+    let env_root = plan.env_root.clone();
+    let store_root = plan.store_root.clone();
     let download_cache = dirs().epkg_downloads_cache.clone();
 
-    // Load channel config from the environment
-    let package_format = channel_config().format;
-
     // Get filesystem info for all mount points and store in plan
-    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root).ok();
     plan.env_root_fs = crate::risks::get_filesystem_info(&env_root).ok();
+    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root).ok();
     plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache).ok();
 
     // Copy link type from EnvConfig to InstallationPlan
@@ -250,6 +243,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     }
 
     // Execute installations and upgrades (also processes removals via run_transaction_batch)
+    let package_format = plan.package_format;
     execute_installations(&mut plan, &store_root, &env_root, package_format)?;
 
     // Execute exposure changes
@@ -260,6 +254,8 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // of session_info).
     update_skipped_reinstalls_metadata(&plan)?;
 
+    let generations_root = dirs::get_default_generations_root()?;
+    let new_generation = create_new_generation_with_root(&generations_root)?;
     record_history(&new_generation, Some(&plan))?;
     save_installed_packages(&new_generation)?;
     save_world(&new_generation)?;
@@ -290,19 +286,16 @@ fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_roo
         plan.can_reflink,
     )?;
 
-    // Use cached maps from plan
-    let has_upgrades = !plan.upgrades_new.is_empty();
-
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
-    begin_transaction(&plan, &store_root, &env_root, package_format, has_upgrades)?;
+    begin_transaction(&plan)?;
 
     // Step 3: Process upgrades and fresh installations
     // Pass HashMap directly to run_transaction_batch
-    run_transaction_batch(plan, &completed_packages, store_root, env_root, package_format)?;
+    run_transaction_batch(plan, &completed_packages)?;
 
     // Step 4: Build and install AUR packages (build with makepkg)
     if !aur_packages.is_empty() {
-        let aur_completed = build_and_install_aur_packages(&aur_packages, plan, store_root, env_root, package_format)?;
+        let aur_completed = build_and_install_aur_packages(&aur_packages, plan, store_root, env_root)?;
         for (k, v) in aur_completed {
             completed_packages.insert(k, v);
         }
@@ -310,7 +303,7 @@ fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_roo
 
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
-    end_transaction(&plan, &store_root, &env_root, package_format, has_upgrades)?;
+    end_transaction(&plan)?;
 
     // Step 5: Update installed packages metadata
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();

@@ -7,6 +7,7 @@ use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::models::PACKAGE_CACHE;
 use crate::utils::get_package_files;
+use crate::plan::InstallationPlan;
 use shlex;
 use glob::Pattern;
 
@@ -517,11 +518,7 @@ where
 /// Returns (matched, aggregated_targets)
 fn match_path_trigger(
     trigger: &HookTrigger,
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
-    store_root: &Path,
+    plan: &InstallationPlan,
     needs_targets: bool,
 ) -> Result<(bool, Vec<String>)> {
     // If there are no positive targets, we can't match
@@ -535,11 +532,7 @@ fn match_path_trigger(
 
     if !needs_targets {
         let matched = match_path_trigger_no_targets(
-            fresh_installs,
-            upgrades_new,
-            upgrades_old,
-            old_removes,
-            store_root,
+            plan,
             &trigger.positive_patterns,
             &trigger.negative_patterns,
             wants_install,
@@ -550,11 +543,7 @@ fn match_path_trigger(
     }
 
     match_path_trigger_with_targets(
-        fresh_installs,
-        upgrades_new,
-        upgrades_old,
-        old_removes,
-        store_root,
+        plan,
         &trigger.positive_patterns,
         &trigger.negative_patterns,
         wants_install,
@@ -566,17 +555,18 @@ fn match_path_trigger(
 /// Fast-path match for path triggers when targets are not needed. Short-circuits
 /// as soon as any matching condition is detected to avoid full set construction.
 fn match_path_trigger_no_targets(
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
-    store_root: &Path,
+    plan: &InstallationPlan,
     positive_patterns: &[Pattern],
     negative_patterns: &[Pattern],
     wants_install: bool,
     wants_upgrade: bool,
     wants_remove: bool,
 ) -> Result<bool> {
+    let store_root = &plan.store_root;
+    let fresh_installs = &plan.fresh_installs_completed;
+    let upgrades_new = &plan.upgrades_new_completed;
+    let upgrades_old = &plan.upgrades_old_completed;
+    let old_removes = &plan.old_removes_completed;
     let file_matches = |packages: &InstalledPackagesMap| -> Result<bool> {
         for (_pkgkey, info) in packages.iter() {
             for file in get_package_files(store_root, info)? {
@@ -643,17 +633,18 @@ fn match_path_trigger_no_targets(
 
 /// Full match path trigger when targets are required; collects and returns them.
 fn match_path_trigger_with_targets(
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
-    store_root: &Path,
+    plan: &InstallationPlan,
     positive_patterns: &[Pattern],
     negative_patterns: &[Pattern],
     wants_install: bool,
     wants_upgrade: bool,
     wants_remove: bool,
 ) -> Result<(bool, Vec<String>)> {
+    let store_root = &plan.store_root;
+    let fresh_installs = &plan.fresh_installs_completed;
+    let upgrades_new = &plan.upgrades_new_completed;
+    let upgrades_old = &plan.upgrades_old_completed;
+    let old_removes = &plan.old_removes_completed;
     let mut matched_targets = Vec::new();
 
     let mut fresh_install_files = Vec::new();
@@ -725,11 +716,11 @@ fn match_path_trigger_with_targets(
 /// Match Package trigger (reference: _alpm_hook_trigger_match_pkg)
 fn match_package_trigger(
     trigger: &HookTrigger,
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    _upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
+    plan: &InstallationPlan,
 ) -> Result<(bool, Vec<String>, Vec<String>, Vec<String>)> {
+    let fresh_installs = &plan.fresh_installs_completed;
+    let upgrades_new = &plan.upgrades_new_completed;
+    let old_removes = &plan.old_removes_completed;
     let mut install_pkgs = Vec::new();
     let mut upgrade_pkgs = Vec::new();
     let mut remove_pkgs = Vec::new();
@@ -807,10 +798,12 @@ fn check_dependency(
 /// Reference: _alpm_hook_run_hook
 fn execute_hook(
     hook: &Hook,
-    env_root: &Path,
+    plan: &InstallationPlan,
     matched_targets: &[String],
-    fresh_installs: &InstalledPackagesMap,
 ) -> Result<()> {
+    let env_root = &plan.env_root;
+    let fresh_installs = &plan.fresh_installs_completed;
+
     // Check dependencies (reference: checks before execution)
     for dep in &hook.action.depends {
         if !check_dependency(fresh_installs, dep) {
@@ -997,8 +990,8 @@ fn filter_hooks_by_when<'a>(hooks: &'a [Hook], when: &HookWhen) -> Vec<&'a Hook>
 }
 
 /// Check if we should reduce path trigger evaluation based on package count
-fn should_reduce_path_triggers(fresh_installs: &InstalledPackagesMap, upgrades_new: &InstalledPackagesMap) -> bool {
-    fresh_installs.len() + upgrades_new.len() >= 20
+fn should_reduce_path_triggers(plan: &InstallationPlan) -> bool {
+    plan.fresh_installs_completed.len() + plan.upgrades_new_completed.len() >= 20
 }
 
 /// Calculate the recent cutoff time for path trigger optimization
@@ -1015,16 +1008,12 @@ fn calculate_recent_cutoff(should_reduce: bool) -> SystemTime {
 /// Check if a hook trigger matches the transaction
 fn check_trigger_match(
     trigger: &HookTrigger,
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
-    store_root: &Path,
+    plan: &InstallationPlan,
     needs_targets: bool,
     should_reduce_path_triggers: bool,
-    env_root: &Path,
     recent_cutoff: SystemTime,
 ) -> Result<(bool, Vec<String>)> {
+    let env_root = &plan.env_root;
     if should_reduce_path_triggers && trigger.hook_type == HookType::Path {
         // Skip expensive trigger evaluation when none of its target files
         // were touched recently.
@@ -1037,17 +1026,13 @@ fn check_trigger_match(
         HookType::Path => {
             match_path_trigger(
                 trigger,
-                fresh_installs,
-                upgrades_new,
-                upgrades_old,
-                old_removes,
-                store_root,
+                plan,
                 needs_targets,
             )
         }
         HookType::Package => {
             let (pmatched, install_targets, upgrade_targets, remove_targets) =
-                match_package_trigger(trigger, fresh_installs, upgrades_new, upgrades_old, old_removes)?;
+                match_package_trigger(trigger, plan)?;
 
             let mut matched_targets = Vec::new();
             if pmatched && needs_targets {
@@ -1065,13 +1050,8 @@ fn check_trigger_match(
 /// Returns a vector of (hook, matched_targets) tuples
 fn find_triggered_hooks<'a>(
     relevant_hooks: &'a [&'a Hook],
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
-    store_root: &Path,
+    plan: &InstallationPlan,
     should_reduce_path_triggers: bool,
-    env_root: &Path,
     recent_cutoff: SystemTime,
 ) -> Result<Vec<(&'a Hook, Vec<String>)>> {
     let mut triggered_hooks = Vec::new();
@@ -1088,14 +1068,9 @@ fn find_triggered_hooks<'a>(
         for trigger in &hook.triggers {
             let (matched, matched_targets) = check_trigger_match(
                 trigger,
-                fresh_installs,
-                upgrades_new,
-                upgrades_old,
-                old_removes,
-                store_root,
+                plan,
                 hook.action.needs_targets,
                 should_reduce_path_triggers,
-                env_root,
                 recent_cutoff,
             )?;
 
@@ -1127,8 +1102,7 @@ fn find_triggered_hooks<'a>(
 /// Execute all triggered hooks
 fn execute_triggered_hooks(
     triggered_hooks: Vec<(&Hook, Vec<String>)>,
-    env_root: &Path,
-    fresh_installs: &InstalledPackagesMap,
+    plan: &InstallationPlan,
     when: HookWhen,
 ) -> Result<()> {
     for (hook, matched_targets) in triggered_hooks {
@@ -1136,9 +1110,8 @@ fn execute_triggered_hooks(
 
         if let Err(e) = execute_hook(
             hook,
-            env_root,
+            plan,
             &matched_targets,
-            fresh_installs,
         ) {
             if hook.action.abort_on_fail {
                 return Err(e).with_context(|| format!("failed to run transaction hooks"));
@@ -1158,24 +1131,19 @@ fn execute_triggered_hooks(
 /// Reference: _alpm_hook_run
 pub fn run_hooks(
     hooks: Option<&[Hook]>,
-    env_root: &Path,
-    store_root: &Path,
+    plan: &InstallationPlan,
     when: HookWhen,
-    fresh_installs: &InstalledPackagesMap,
-    upgrades_new: &InstalledPackagesMap,
-    upgrades_old: &InstalledPackagesMap,
-    old_removes: &InstalledPackagesMap,
 ) -> Result<()> {
     // Early return if no hooks or no packages to process
     let hooks = match hooks {
         Some(h) => h,
         None => return Ok(()),
     };
-    if fresh_installs.is_empty() && upgrades_new.is_empty() && old_removes.is_empty() {
+    if plan.fresh_installs_completed.is_empty() && plan.upgrades_new_completed.is_empty() && plan.old_removes_completed.is_empty() {
         return Ok(());
     }
 
-    let should_reduce = should_reduce_path_triggers(fresh_installs, upgrades_new);
+    let should_reduce = should_reduce_path_triggers(plan);
     let recent_cutoff = calculate_recent_cutoff(should_reduce);
 
     // Filter hooks by When
@@ -1188,18 +1156,13 @@ pub fn run_hooks(
     // Find triggered hooks (reference: _alpm_hook_triggered)
     let triggered_hooks = find_triggered_hooks(
         &relevant_hooks,
-        fresh_installs,
-        upgrades_new,
-        upgrades_old,
-        old_removes,
-        store_root,
+        plan,
         should_reduce,
-        env_root,
         recent_cutoff,
     )?;
 
     // Execute triggered hooks (reference: executes in order)
-    execute_triggered_hooks(triggered_hooks, env_root, fresh_installs, when)?;
+    execute_triggered_hooks(triggered_hooks, plan, when)?;
 
     Ok(())
 }
