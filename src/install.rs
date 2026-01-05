@@ -262,7 +262,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     }
 
     // Step 1: Download and unpack packages (but do not link yet)
-    // This populates plan.completed_packages with packages ready to link
+    // This populates plan.batch.all_pkgs with packages ready to link
     let aur_packages = download_and_unpack_packages(plan)?;
 
     // Step 2a: Check risks for all packages before linking
@@ -292,7 +292,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 }
 
 /// Download and unpack packages (but do not link them yet)
-/// Populates plan.completed_packages with packages that are ready to link
+/// Populates plan.batch.all_pkgs with packages that are ready to link
 /// Returns: aur_packages
 fn download_and_unpack_packages(
     plan: &mut InstallationPlan,
@@ -328,8 +328,8 @@ fn download_and_unpack_packages(
         &plan.store_pkglines_by_pkgname,
     )?;
 
-    // Build completed_packages from ordered_operations (filters: is_aur() == false || in_store() == true)
-    crate::plan::build_completed_packages_from_operations(plan);
+    // Build all_pkgs from ordered_operations (filters: is_aur() == false || in_store() == true)
+    crate::plan::build_all_pkgs_from_operations(plan);
 
     Ok(downloaded_aur_packages)
 }
@@ -338,7 +338,7 @@ fn download_and_unpack_packages(
 /// Link all packages to the environment
 /// This should only be called after all risk checks have passed.
 fn link_packages(plan: &InstallationPlan) -> Result<()> {
-    for (pkgkey, package_info) in plan.completed_packages.iter() {
+    for (pkgkey, package_info) in plan.batch.all_pkgs.iter() {
         let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
         crate::link::link_package(plan, &store_fs_dir)
             .with_context(|| format!("Failed to link package {}", pkgkey))?;
@@ -438,6 +438,6 @@ fn wait_downloads_and_unpack(
 
     // Return packages that need linking (but don't link them here - that happens after all risk checks)
     // This allows us to check ALL packages before linking ANY, keeping the environment clean
-    // Note: packages_to_link is not returned here - they are added to plan.completed_packages later
+    // Note: packages_to_link is not returned here - they are added to plan.batch.all_pkgs later
     Ok(aur_packages)
 }

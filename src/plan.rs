@@ -129,11 +129,28 @@ pub struct InstallationPlan {
     pub package_format: PackageFormat,
 
     // Batch maps (stored in build_completed_maps)
-    pub completed_packages: InstalledPackagesMap,
-    pub fresh_installs_completed: InstalledPackagesMap,
-    pub upgrades_new_completed: InstalledPackagesMap,
-    pub upgrades_old_completed: InstalledPackagesMap,
-    pub old_removes_completed: InstalledPackagesMap,
+    pub batch: InstallBatch,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallBatch {
+    pub all_pkgs:       InstalledPackagesMap,
+    pub fresh_installs: InstalledPackagesMap,
+    pub upgrades_new:   InstalledPackagesMap,
+    pub upgrades_old:   InstalledPackagesMap,
+    pub old_removes:    InstalledPackagesMap,
+}
+
+impl Default for InstallBatch {
+    fn default() -> Self {
+        Self {
+            all_pkgs:       InstalledPackagesMap::new(),
+            fresh_installs: InstalledPackagesMap::new(),
+            upgrades_new:   InstalledPackagesMap::new(),
+            upgrades_old:   InstalledPackagesMap::new(),
+            old_removes:    InstalledPackagesMap::new(),
+        }
+    }
 }
 
 impl Default for InstallationPlan {
@@ -158,11 +175,7 @@ impl Default for InstallationPlan {
             env_root: PathBuf::new(),
             store_root: PathBuf::new(),
             package_format: PackageFormat::default(),
-            completed_packages: InstalledPackagesMap::new(),
-            fresh_installs_completed: InstalledPackagesMap::new(),
-            upgrades_new_completed: InstalledPackagesMap::new(),
-            upgrades_old_completed: InstalledPackagesMap::new(),
-            old_removes_completed: InstalledPackagesMap::new(),
+            batch: InstallBatch::default(),
         }
     }
 }
@@ -748,15 +761,15 @@ fn print_download_requirements(plan: &InstallationPlan) -> Result<()> {
     Ok(())
 }
 
-/// Build completed_packages from ordered_operations
+/// Build all_pkgs from ordered_operations
 /// Filters packages where is_aur() == false || in_store() == true
-pub fn build_completed_packages_from_operations(plan: &mut InstallationPlan) {
-    plan.completed_packages.clear();
+pub fn build_all_pkgs_from_operations(plan: &mut InstallationPlan) {
+    plan.batch.all_pkgs.clear();
     for op in &plan.ordered_operations {
         if let Some((pkgkey, pkg_info)) = &op.new_pkg {
             // Include if: not AUR OR in store
             if !op.is_aur() || op.in_store() {
-                plan.completed_packages.insert(pkgkey.clone(), Arc::clone(pkg_info));
+                plan.batch.all_pkgs.insert(pkgkey.clone(), Arc::clone(pkg_info));
             }
         }
     }

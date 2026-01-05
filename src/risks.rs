@@ -205,7 +205,7 @@ pub fn validate_before_linking(
     drop(installed);
 
     // Process each package
-    for (pkgkey, package_info) in plan.completed_packages.iter() {
+    for (pkgkey, package_info) in plan.batch.all_pkgs.iter() {
         let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
 
         // Get filelist from cache or store

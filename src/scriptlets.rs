@@ -419,14 +419,14 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
 
 /// Run scriptlets for multiple packages
 pub fn run_scriptlets(
-    completed_packages: &InstalledPackagesMap,
+    all_pkgs: &InstalledPackagesMap,
     plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
     is_upgrade: bool,
 ) -> Result<()> {
     // Convert HashMap to a Vec of tuples (pkgkey, info) and sort by depend_depth in descending order
     // This ensures packages with higher depend_depth are processed first
-    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = completed_packages.iter().map(|(k, v)| (k, v.as_ref())).collect();
+    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = all_pkgs.iter().map(|(k, v)| (k, v.as_ref())).collect();
     packages_vec.sort_by(|a, b| b.1.depend_depth.cmp(&a.1.depend_depth));
 
     // Process packages in sorted order

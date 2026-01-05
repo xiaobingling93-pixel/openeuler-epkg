@@ -1071,10 +1071,10 @@ fn postinstall_built_aur_round(
         "Failed to normalize dependency fields for AUR packages in current round"
     })?;
 
-    // Add AUR packages to plan.completed_packages before processing transaction
-    plan.completed_packages.clear();
+    // Add AUR packages to plan.batch.all_pkgs before processing transaction
+    plan.batch.all_pkgs.clear();
     for (k, v) in this_round_aur_packages.iter() {
-        plan.completed_packages.insert(k.clone(), Arc::clone(v));
+        plan.batch.all_pkgs.insert(k.clone(), Arc::clone(v));
     }
 
     // Process installation results for this round so that subsequent rounds

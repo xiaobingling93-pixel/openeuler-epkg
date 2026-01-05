@@ -563,10 +563,10 @@ fn match_path_trigger_no_targets(
     wants_remove: bool,
 ) -> Result<bool> {
     let store_root = &plan.store_root;
-    let fresh_installs = &plan.fresh_installs_completed;
-    let upgrades_new = &plan.upgrades_new_completed;
-    let upgrades_old = &plan.upgrades_old_completed;
-    let old_removes = &plan.old_removes_completed;
+    let fresh_installs = &plan.batch.fresh_installs;
+    let upgrades_new = &plan.batch.upgrades_new;
+    let upgrades_old = &plan.batch.upgrades_old;
+    let old_removes = &plan.batch.old_removes;
     let file_matches = |packages: &InstalledPackagesMap| -> Result<bool> {
         for (_pkgkey, info) in packages.iter() {
             for file in get_package_files(store_root, info)? {
@@ -641,10 +641,10 @@ fn match_path_trigger_with_targets(
     wants_remove: bool,
 ) -> Result<(bool, Vec<String>)> {
     let store_root = &plan.store_root;
-    let fresh_installs = &plan.fresh_installs_completed;
-    let upgrades_new = &plan.upgrades_new_completed;
-    let upgrades_old = &plan.upgrades_old_completed;
-    let old_removes = &plan.old_removes_completed;
+    let fresh_installs = &plan.batch.fresh_installs;
+    let upgrades_new = &plan.batch.upgrades_new;
+    let upgrades_old = &plan.batch.upgrades_old;
+    let old_removes = &plan.batch.old_removes;
     let mut matched_targets = Vec::new();
 
     let mut fresh_install_files = Vec::new();
@@ -718,9 +718,9 @@ fn match_package_trigger(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
 ) -> Result<(bool, Vec<String>, Vec<String>, Vec<String>)> {
-    let fresh_installs = &plan.fresh_installs_completed;
-    let upgrades_new = &plan.upgrades_new_completed;
-    let old_removes = &plan.old_removes_completed;
+    let fresh_installs = &plan.batch.fresh_installs;
+    let upgrades_new = &plan.batch.upgrades_new;
+    let old_removes = &plan.batch.old_removes;
     let mut install_pkgs = Vec::new();
     let mut upgrade_pkgs = Vec::new();
     let mut remove_pkgs = Vec::new();
@@ -802,7 +802,7 @@ fn execute_hook(
     matched_targets: &[String],
 ) -> Result<()> {
     let env_root = &plan.env_root;
-    let fresh_installs = &plan.fresh_installs_completed;
+    let fresh_installs = &plan.batch.fresh_installs;
 
     // Check dependencies (reference: checks before execution)
     for dep in &hook.action.depends {
@@ -991,7 +991,7 @@ fn filter_hooks_by_when<'a>(hooks: &'a [Hook], when: &HookWhen) -> Vec<&'a Hook>
 
 /// Check if we should reduce path trigger evaluation based on package count
 fn should_reduce_path_triggers(plan: &InstallationPlan) -> bool {
-    plan.fresh_installs_completed.len() + plan.upgrades_new_completed.len() >= 20
+    plan.batch.fresh_installs.len() + plan.batch.upgrades_new.len() >= 20
 }
 
 /// Calculate the recent cutoff time for path trigger optimization
@@ -1139,7 +1139,7 @@ pub fn run_hooks(
         Some(h) => h,
         None => return Ok(()),
     };
-    if plan.fresh_installs_completed.is_empty() && plan.upgrades_new_completed.is_empty() && plan.old_removes_completed.is_empty() {
+    if plan.batch.fresh_installs.is_empty() && plan.batch.upgrades_new.is_empty() && plan.batch.old_removes.is_empty() {
         return Ok(());
     }
 

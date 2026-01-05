@@ -801,34 +801,32 @@ pub fn end_transaction(
 
 /// Build maps for hooks from ordered_operations
 /// Stores the maps in plan.batch members
-fn build_completed_maps(
-    plan: &mut InstallationPlan,
-) {
-    plan.fresh_installs_completed.clear();
-    plan.upgrades_new_completed.clear();
-    plan.upgrades_old_completed.clear();
-    plan.old_removes_completed.clear();
+fn build_batch_maps(plan: &mut InstallationPlan) {
+    plan.batch.fresh_installs.clear();
+    plan.batch.upgrades_new.clear();
+    plan.batch.upgrades_old.clear();
+    plan.batch.old_removes.clear();
 
     for op in &plan.ordered_operations {
         match op.op_type {
             OperationType::FreshInstall => {
                 if let Some((pkgkey, _)) = &op.new_pkg {
-                    if let Some(info) = plan.completed_packages.get(pkgkey) {
-                        plan.fresh_installs_completed.insert(pkgkey.clone(), Arc::clone(info));
+                    if let Some(info) = plan.batch.all_pkgs.get(pkgkey) {
+                        plan.batch.fresh_installs.insert(pkgkey.clone(), Arc::clone(info));
                     }
                 }
             }
             OperationType::Upgrade => {
                 if let (Some((new_pkgkey, _)), Some((old_pkgkey, old_info))) = (&op.new_pkg, &op.old_pkg) {
-                    if let Some(new_info) = plan.completed_packages.get(new_pkgkey) {
-                        plan.upgrades_new_completed.insert(new_pkgkey.clone(), Arc::clone(new_info));
-                        plan.upgrades_old_completed.insert(old_pkgkey.clone(), Arc::clone(old_info));
+                    if let Some(new_info) = plan.batch.all_pkgs.get(new_pkgkey) {
+                        plan.batch.upgrades_new.insert(new_pkgkey.clone(), Arc::clone(new_info));
+                        plan.batch.upgrades_old.insert(old_pkgkey.clone(), Arc::clone(old_info));
                     }
                 }
             }
             OperationType::Removal => {
                 if let Some((pkgkey, pkg_info)) = &op.old_pkg {
-                    plan.old_removes_completed.insert(pkgkey.clone(), Arc::clone(pkg_info));
+                    plan.batch.old_removes.insert(pkgkey.clone(), Arc::clone(pkg_info));
                 }
             }
         }
@@ -844,7 +842,7 @@ fn process_package_operations(
     for op in &operations {
         // Skip operations that don't have completed packages yet (for installs/upgrades)
         if let Some((new_pkgkey, _)) = &op.new_pkg {
-            if !plan.completed_packages.contains_key(new_pkgkey) {
+            if !plan.batch.all_pkgs.contains_key(new_pkgkey) {
                 // Package not yet completed (e.g., AUR packages being built)
                 continue;
             }
@@ -864,11 +862,11 @@ pub fn run_transaction_batch(
 ) -> Result<()> {
     let package_format = plan.package_format;
 
+    // Build maps for hooks from ordered_operations
+    build_batch_maps(plan);
+
     // Load hooks for Arch Linux (Pacman format)
     let hooks = hooks::load_hooks(&plan.env_root, package_format);
-
-    // Build maps for hooks from ordered_operations
-    build_completed_maps(plan);
 
     // Run PreTransaction hooks
     hooks::run_hooks(hooks.as_deref(), plan, hooks::HookWhen::PreTransaction)?;
@@ -884,7 +882,7 @@ pub fn run_transaction_batch(
 
     // Update installed packages metadata
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
-    for (k, v) in plan.completed_packages.iter() {
+    for (k, v) in plan.batch.all_pkgs.iter() {
         installed.insert(k.clone(), Arc::clone(v));
     }
     drop(installed);
@@ -902,7 +900,7 @@ pub fn process_package_operation(
     match op.op_type {
         OperationType::FreshInstall => {
             if let Some((pkgkey, _)) = &op.new_pkg {
-                if let Some(completed_info) = plan.completed_packages.get(pkgkey) {
+                if let Some(completed_info) = plan.batch.all_pkgs.get(pkgkey) {
                     let completed_info = Arc::clone(completed_info);
                     // Execute actions for fresh install
                     run_action(plan, PackageAction::PreInstall,   pkgkey, &completed_info, None, None)?;
@@ -916,7 +914,7 @@ pub fn process_package_operation(
         }
         OperationType::Upgrade => {
             if let (Some((new_pkgkey, _)), Some((old_pkgkey, old_info))) = (&op.new_pkg, &op.old_pkg) {
-                if let Some(new_info) = plan.completed_packages.get(new_pkgkey) {
+                if let Some(new_info) = plan.batch.all_pkgs.get(new_pkgkey) {
                     let new_info = Arc::clone(new_info);
                     let old_info = Arc::clone(old_info);
                     match package_format {
