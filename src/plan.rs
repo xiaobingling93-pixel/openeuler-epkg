@@ -747,3 +747,17 @@ fn print_download_requirements(plan: &InstallationPlan) -> Result<()> {
 
     Ok(())
 }
+
+/// Build completed_packages from ordered_operations
+/// Filters packages where is_aur() == false || in_store() == true
+pub fn build_completed_packages_from_operations(plan: &mut InstallationPlan) {
+    plan.completed_packages.clear();
+    for op in &plan.ordered_operations {
+        if let Some((pkgkey, pkg_info)) = &op.new_pkg {
+            // Include if: not AUR OR in store
+            if !op.is_aur() || op.in_store() {
+                plan.completed_packages.insert(pkgkey.clone(), Arc::clone(pkg_info));
+            }
+        }
+    }
+}

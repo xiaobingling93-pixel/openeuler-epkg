@@ -861,13 +861,8 @@ fn process_package_operations(
 /// https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7#EXECUTION_ORDER
 pub fn run_transaction_batch(
     plan: &mut InstallationPlan,
-    completed_packages: &InstalledPackagesMap,
 ) -> Result<()> {
     let package_format = plan.package_format;
-
-    // Store completed_packages in plan
-    plan.completed_packages.clear();
-    plan.completed_packages.extend(completed_packages.iter().map(|(k, v)| (k.clone(), Arc::clone(v))));
 
     // Load hooks for Arch Linux (Pacman format)
     let hooks = hooks::load_hooks(&plan.env_root, package_format);
@@ -886,6 +881,13 @@ pub fn run_transaction_batch(
 
     // Run ldconfig if needed (after all package operations complete)
     run_ldconfig_if_needed(&plan.env_root)?;
+
+    // Update installed packages metadata
+    let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+    for (k, v) in plan.completed_packages.iter() {
+        installed.insert(k.clone(), Arc::clone(v));
+    }
+    drop(installed);
 
     Ok(())
 }

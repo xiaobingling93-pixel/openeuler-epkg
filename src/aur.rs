@@ -664,10 +664,8 @@ fn find_and_verify_built_packages(
 /// 6. Processing AUR installation results so subsequent rounds and expose operations use pkgkeys
 ///    that match what is stored in `installed_packages` (`postinstall_built_aur_round()`).
 pub fn build_and_install_aur_packages(
-    aur_packages: &InstalledPackagesMap,
     plan: &mut crate::plan::InstallationPlan,
-    store_root: &Path,
-    env_root: &Path,
+    aur_packages: &InstalledPackagesMap,
 ) -> Result<InstalledPackagesMap> {
     if aur_packages.is_empty() {
         return Ok(HashMap::new());
@@ -701,17 +699,14 @@ pub fn build_and_install_aur_packages(
                 pkgkeys,
                 aur_packages,
                 &build_dir,
-                env_root,
+                &plan.env_root,
             )?;
 
             // 3) Unpack and link built packages
             let (mut this_round_aur_packages, this_round_pkgkey_mapping) =
                 unpack_link_built_aur_packages(
+                    plan,
                     &mapped,
-                    store_root,
-                    env_root,
-                    plan.link,
-                    plan.can_reflink,
                     &plan.store_pkglines_by_pkgname,
                 )?;
 
@@ -867,11 +862,8 @@ fn build_aur_packages_for_base(
 ///   - `this_round_aur_packages`: actual_pkgkey -> InstalledPackageInfo
 ///   - `this_round_pkgkey_mapping`: original_pkgkey (plan) -> actual_pkgkey (installed)
 fn unpack_link_built_aur_packages(
+    plan: &crate::plan::InstallationPlan,
     mapped_packages: &[(PathBuf, String, Arc<InstalledPackageInfo>)],
-    store_root: &Path,
-    env_root: &Path,
-    link_type: crate::models::LinkType,
-    can_reflink: bool,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
 ) -> Result<(
     InstalledPackagesMap,
@@ -911,8 +903,8 @@ fn unpack_link_built_aur_packages(
         Arc::make_mut(&mut completed_info).pkgline = pkgline.clone();
 
         // Link the package
-        let store_fs_dir = store_root.join(&pkgline).join("fs");
-        crate::link::link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
+        let store_fs_dir = plan.store_root.join(&pkgline).join("fs");
+        crate::link::link_package(plan, &store_fs_dir)
             .with_context(|| {
                 format!(
                     "Failed to link built package: {}",
@@ -1079,12 +1071,15 @@ fn postinstall_built_aur_round(
         "Failed to normalize dependency fields for AUR packages in current round"
     })?;
 
+    // Add AUR packages to plan.completed_packages before processing transaction
+    plan.completed_packages.clear();
+    for (k, v) in this_round_aur_packages.iter() {
+        plan.completed_packages.insert(k.clone(), Arc::clone(v));
+    }
+
     // Process installation results for this round so that subsequent rounds
     // can depend on these newly installed AUR packages.
-    run_transaction_batch(
-        plan,
-        &this_round_aur_packages,
-    )?;
+    run_transaction_batch(plan)?;
 
     Ok(())
 }

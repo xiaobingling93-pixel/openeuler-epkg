@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -224,14 +223,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // Downgrade hardlink to symlink if store and env are on different filesystems
     // Check for reflink support if using hardlink
     // Fail early if Move or Runpath link types require cross-filesystem rename
-    let (link_type, can_reflink) = compute_link_type_and_reflink(
-        env_config().link,
-        &store_root,
-        &env_root,
-        &plan,
-    )?;
-    plan.link = link_type;
-    plan.can_reflink = can_reflink;
+    compute_link_type_and_reflink(&mut plan)?;
 
     // Calculate download requirements and store in plan
     crate::risks::calculate_plan_sizes(&mut plan)?;
@@ -243,8 +235,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     }
 
     // Execute installations and upgrades (also processes removals via run_transaction_batch)
-    let package_format = plan.package_format;
-    execute_installations(&mut plan, &store_root, &env_root, package_format)?;
+    execute_installations(&mut plan)?;
 
     // Execute exposure changes
     execute_unexpose_operations(&plan, &env_root)?;
@@ -265,61 +256,47 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
 }
 
 /// Execute package installations and upgrades
-fn execute_installations(plan: &mut InstallationPlan, store_root: &Path, env_root: &Path, package_format: PackageFormat) -> Result<()> {
+fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     if plan.ordered_operations.is_empty() {
         return Ok(());
     }
 
     // Step 1: Download and unpack packages (but do not link yet)
-    let (aur_packages, packages_to_link) = download_and_unpack_packages(plan)?;
+    // This populates plan.completed_packages with packages ready to link
+    let aur_packages = download_and_unpack_packages(plan)?;
 
     // Step 2a: Check risks for all packages before linking
-    crate::risks::validate_before_linking(&packages_to_link, store_root, env_root, plan)
+    crate::risks::validate_before_linking(plan)
         .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
 
     // Step 2b: Link all packages (after risk checks pass)
-    let mut completed_packages = link_packages(
-        packages_to_link,
-        store_root,
-        env_root,
-        plan.link,
-        plan.can_reflink,
-    )?;
+    link_packages(plan)?;
 
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
     begin_transaction(&plan)?;
 
     // Step 3: Process upgrades and fresh installations
-    // Pass HashMap directly to run_transaction_batch
-    run_transaction_batch(plan, &completed_packages)?;
+    run_transaction_batch(plan)?;
 
     // Step 4: Build and install AUR packages (build with makepkg)
     if !aur_packages.is_empty() {
-        let aur_completed = build_and_install_aur_packages(&aur_packages, plan, store_root, env_root)?;
-        for (k, v) in aur_completed {
-            completed_packages.insert(k, v);
-        }
+        // Will call run_transaction_batch() once for each round of build
+        build_and_install_aur_packages(plan, &aur_packages)?;
     }
 
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
     end_transaction(&plan)?;
 
-    // Step 5: Update installed packages metadata
-    let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
-    for (k, v) in completed_packages.iter() {
-        installed.insert(k.clone(), v.clone());
-    }
-    drop(installed);
-
     Ok(())
 }
 
 /// Download and unpack packages (but do not link them yet)
-/// Returns: (aur_packages, packages_to_link)
+/// Populates plan.completed_packages with packages that are ready to link
+/// Returns: aur_packages
 fn download_and_unpack_packages(
-    plan: &InstallationPlan,
-) -> Result<(InstalledPackagesMap, Vec<(String, Arc<InstalledPackageInfo>)>)> {
+    plan: &mut InstallationPlan,
+) -> Result<InstalledPackagesMap> {
     // Separate packages into those with pkglines (already in store) and those without (need download)
     // AUR packages are included in both categories and will be filtered later
     let mut packages_to_download: HashMap<String, Arc<InstalledPackageInfo>> = HashMap::new();
@@ -344,45 +321,32 @@ fn download_and_unpack_packages(
     // wait_downloads_and_unpack will filter out AUR packages and return them separately
     // IMPORTANT: We unpack packages but do NOT link them yet - we need to check all risks first
     let mut mutable_packages_for_processing = packages_to_download.clone();
-    let (downloaded_aur_packages, mut all_packages_to_link) = wait_downloads_and_unpack(
+    let downloaded_aur_packages = wait_downloads_and_unpack(
         &url_to_pkgkeys,
         &mut pending_urls,
         &mut mutable_packages_for_processing,
         &plan.store_pkglines_by_pkgname,
     )?;
 
-    // Add packages that already exist in the store
-    for (pkgkey, package_info) in packages_with_pkglines {
-        all_packages_to_link.push((pkgkey, package_info));
-    }
+    // Build completed_packages from ordered_operations (filters: is_aur() == false || in_store() == true)
+    crate::plan::build_completed_packages_from_operations(plan);
 
-    Ok((downloaded_aur_packages, all_packages_to_link))
+    Ok(downloaded_aur_packages)
 }
 
 
 /// Link all packages to the environment
 /// This should only be called after all risk checks have passed.
-fn link_packages(
-    packages_to_link: Vec<(String, Arc<InstalledPackageInfo>)>,
-    store_root: &Path,
-    env_root: &Path,
-    link_type: LinkType,
-    can_reflink: bool,
-) -> Result<InstalledPackagesMap> {
-    let mut completed_packages = HashMap::new();
-
-    for (pkgkey, package_info) in packages_to_link {
-        let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-        crate::link::link_package(&store_fs_dir, &env_root.to_path_buf(), link_type, can_reflink)
+fn link_packages(plan: &InstallationPlan) -> Result<()> {
+    for (pkgkey, package_info) in plan.completed_packages.iter() {
+        let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
+        crate::link::link_package(plan, &store_fs_dir)
             .with_context(|| format!("Failed to link package {}", pkgkey))?;
-
-        // Add to completed packages after successful linking
-        completed_packages.insert(pkgkey.clone(), package_info);
     }
 
-    utils::fixup_env_links(env_root)?;
+    utils::fixup_env_links(&plan.env_root)?;
 
-    Ok(completed_packages)
+    Ok(())
 }
 
 /// Update metadata for packages that were already installed but involved in this session
@@ -424,10 +388,8 @@ fn wait_downloads_and_unpack(
     pending_urls: &mut Vec<String>,
     packages_to_install: &mut InstalledPackagesMap,
     store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
-) -> Result<(InstalledPackagesMap, Vec<(String, Arc<InstalledPackageInfo>)>)> {
+) -> Result<InstalledPackagesMap> {
     let mut aur_packages: InstalledPackagesMap = HashMap::new();
-    // Collect unpacked packages that need linking after all downloads complete
-    let mut packages_to_link: Vec<(String, Arc<InstalledPackageInfo>)> = Vec::new();
 
     // Unpack packages as downloads complete
     while !pending_urls.is_empty() {
@@ -454,7 +416,7 @@ fn wait_downloads_and_unpack(
                         let file_path = get_package_file_path(&pkgkey)?;
 
                         // Unpack the package (without linking)
-                        let (actual_pkgkey, pkgline) = crate::store::unpack_package(
+                        let (_actual_pkgkey, pkgline) = crate::store::unpack_package(
                             &file_path,
                             &pkgkey,
                             store_pkglines_by_pkgname,
@@ -466,9 +428,6 @@ fn wait_downloads_and_unpack(
 
                         // Update package info with the pkgline
                         Arc::make_mut(&mut package_info_arc).pkgline = pkgline;
-
-                        // Store for later linking (don't add to completed_packages yet - that happens after linking)
-                        packages_to_link.push((actual_pkgkey, package_info_arc));
                     }
                 }
             } else {
@@ -479,5 +438,6 @@ fn wait_downloads_and_unpack(
 
     // Return packages that need linking (but don't link them here - that happens after all risk checks)
     // This allows us to check ALL packages before linking ANY, keeping the environment clean
-    Ok((aur_packages, packages_to_link))
+    // Note: packages_to_link is not returned here - they are added to plan.completed_packages later
+    Ok(aur_packages)
 }

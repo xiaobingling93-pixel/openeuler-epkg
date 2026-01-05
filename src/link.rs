@@ -55,14 +55,14 @@ fn get_config_file_action(
 }
 
 // link files from env_root to store_fs_dir
-pub fn link_package(store_fs_dir: &PathBuf, env_root: &PathBuf, link_type: LinkType, can_reflink: bool) -> Result<()> {
+pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<()> {
     let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
         .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
-    mirror_dir(env_root, store_fs_dir, &fs_files, link_type, can_reflink)
-        .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), env_root.display()))?;
+    mirror_dir(&plan.env_root, store_fs_dir, &fs_files, plan.link, plan.can_reflink)
+        .with_context(|| format!("Failed to mirror directory from {} to {}", store_fs_dir.display(), plan.env_root.display()))?;
 
     // For link=move, remove the 'fs' dir after moving all files
-    if link_type == LinkType::Move {
+    if plan.link == LinkType::Move {
         // Remove the fs directory after all files have been moved
         if store_fs_dir.exists() {
             // Try to remove the directory (should be empty or nearly empty after moves)
@@ -241,15 +241,13 @@ fn reflink_copy(_source: &Path, _target: &Path) -> Result<()> {
 }
 
 /// Compute link type and reflink support for installation plan
-/// Returns (link_type, can_reflink)
+/// Sets plan.link and plan.can_reflink directly
 /// Uses stored filesystem info from plan to avoid duplicate statvfs calls
 pub fn compute_link_type_and_reflink(
-    env_link: LinkType,
-    store_root: &Path,
-    env_root: &Path,
-    plan: &InstallationPlan,
-) -> Result<(LinkType, bool)> {
-    let mut link_type = env_link;
+    plan: &mut InstallationPlan,
+) -> Result<()> {
+    use crate::models::env_config;
+    let mut link_type = env_config().link;
     let mut can_reflink = false;
 
     // Use stored filesystem info from plan
@@ -258,7 +256,7 @@ pub fn compute_link_type_and_reflink(
     if link_type == LinkType::Hardlink {
         if same_fs {
             // Same filesystem, keep hardlink and check for reflink support
-            can_reflink = check_reflink_support(env_root, same_fs);
+            can_reflink = check_reflink_support(&plan.env_root, same_fs);
             if can_reflink {
                 log::debug!("Reflink support detected on filesystem");
             }
@@ -273,14 +271,16 @@ pub fn compute_link_type_and_reflink(
             return Err(eyre::eyre!(
                 "Link type {:?} requires store and environment to be on the same filesystem, but they are on different filesystems (store: {}, env: {})",
                 link_type,
-                store_root.display(),
-                env_root.display()
+                plan.store_root.display(),
+                plan.env_root.display()
             ));
         }
         // Same filesystem, rename() will work
     }
 
-    Ok((link_type, can_reflink))
+    plan.link = link_type;
+    plan.can_reflink = can_reflink;
+    Ok(())
 }
 
 // symlink1 = target_path.replace("ebin", "bin")

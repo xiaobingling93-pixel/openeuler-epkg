@@ -4,12 +4,11 @@
 //! file conflict detection, and config file handling.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use crate::models::{InstalledPackagesMap, InstalledPackageInfo};
+use crate::models::InstalledPackagesMap;
 use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::models::PACKAGE_CACHE;
 use crate::package_cache::map_package2filelist;
@@ -191,11 +190,11 @@ pub fn load_installed_files(
 /// This is called before linking any packages to keep the environment clean
 /// Validate packages before linking - check inodes and file conflicts
 pub fn validate_before_linking(
-    packages_to_link: &[(String, Arc<InstalledPackageInfo>)],
-    store_root: &Path,
-    env_root: &Path,
     plan: &crate::plan::InstallationPlan,
 ) -> Result<()> {
+    let store_root = &plan.store_root;
+    let env_root = &plan.env_root;
+
     // Count total files (inodes) needed across all packages
     let mut total_inodes_needed: u64 = 0;
     let mut all_transaction_files: HashMap<String, String> = HashMap::new();
@@ -206,7 +205,7 @@ pub fn validate_before_linking(
     drop(installed);
 
     // Process each package
-    for (pkgkey, package_info) in packages_to_link {
+    for (pkgkey, package_info) in plan.completed_packages.iter() {
         let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
 
         // Get filelist from cache or store
