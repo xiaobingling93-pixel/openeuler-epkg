@@ -56,7 +56,7 @@ pub struct HookAction {
 pub struct Hook {
     pub triggers: Vec<HookTrigger>,
     pub action: HookAction,
-    pub file_name: String,  // File name without .hook suffix, used as lookup/sort key
+    pub hook_name: String,  // File name without .hook suffix, used as lookup/sort key
     pub file_path: String,  // Full path to the hook file, used for log messages
 }
 
@@ -80,7 +80,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
     let mut in_trigger = false;
     let mut in_action = false;
 
-    let file_name = extract_hook_file_name(hook_path);
+    let hook_name = extract_hook_file_name(hook_path);
 
     let mut line_num = 0;
 
@@ -140,7 +140,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
     let hook = Hook {
         triggers: current_triggers,
         action: current_action.unwrap(),
-        file_name,
+        hook_name,
         file_path: hook_path.to_string_lossy().to_string(),
     };
 
@@ -366,8 +366,6 @@ fn read_hook_directory_entries(hook_dir: &Path) -> Option<Vec<fs::DirEntry>> {
         }
     };
 
-    // Sort entries by name for consistent processing
-    entries.sort_by_key(|e| e.file_name());
     Some(entries)
 }
 
@@ -384,10 +382,10 @@ fn process_hook_file_entry(
         return;
     }
 
-    let file_name = extract_hook_file_name(&path);
+    let hook_name = extract_hook_file_name(&path);
 
     // Check if hook with same name already exists (skip if so - override behavior)
-    if hooks.contains_key(&file_name) {
+    if hooks.contains_key(&hook_name) {
         log::debug!("skipping overridden hook {}", path.display());
         return;
     }
@@ -410,7 +408,7 @@ fn process_hook_file_entry(
         Ok(mut hook) => {
             populate_hook_target_cache(&mut hook);
             hook.file_path = path.to_string_lossy().to_string();
-            hooks.insert(file_name, hook);
+            hooks.insert(hook_name, hook);
         }
         Err(e) => {
             log::warn!("Failed to parse hook file {}: {}", path.display(), e);
@@ -447,8 +445,8 @@ fn scan_hook_directories(env_root: &Path) -> HashMap<String, Hook> {
 fn sort_hooks(hooks: Vec<Hook>) -> Vec<Hook> {
     let mut hooks_vec = hooks;
     hooks_vec.sort_by(|a, b| {
-        a.file_name.cmp(&b.file_name)
-            .then_with(|| a.file_name.len().cmp(&b.file_name.len()))
+        a.hook_name.cmp(&b.hook_name)
+            .then_with(|| a.hook_name.len().cmp(&b.hook_name.len()))
     });
     hooks_vec
 }
