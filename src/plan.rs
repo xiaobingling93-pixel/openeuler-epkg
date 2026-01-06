@@ -13,6 +13,7 @@ use crate::package;
 use crate::mmio;
 use crate::aur::is_aur_package;
 use crate::dirs;
+use crate::hooks::{Hook, HookWhen};
 
 /// Package operation flags
 pub mod op_flags {
@@ -130,6 +131,11 @@ pub struct InstallationPlan {
 
     // Batch maps (stored in build_completed_maps)
     pub batch: InstallBatch,
+
+    // Hook data structures (indexed for efficient lookup)
+    pub hooks_by_when: HashMap<HookWhen, Vec<Arc<Hook>>>,
+    pub hooks_by_pkgkey: HashMap<String, Vec<Arc<Hook>>>,
+    pub hooks_by_name: HashMap<String, Arc<Hook>>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,7 +182,26 @@ impl Default for InstallationPlan {
             store_root: PathBuf::new(),
             package_format: PackageFormat::default(),
             batch: InstallBatch::default(),
+            hooks_by_when: HashMap::new(),
+            hooks_by_pkgkey: HashMap::new(),
+            hooks_by_name: HashMap::new(),
         }
+    }
+}
+
+/// Get pkgline for a package key
+/// Tries batch first, then falls back to installed packages
+pub fn pkgkey2pkgline(plan: &InstallationPlan, pkgkey: &str) -> String {
+    if let Some(info) = plan.batch.all_pkgs.get(pkgkey) {
+        info.pkgline.clone()
+    } else {
+        // Fall back to installed packages
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        let pkgline = installed.get(pkgkey)
+            .map(|i| i.pkgline.clone())
+            .unwrap_or_default();
+        drop(installed);
+        pkgline
     }
 }
 
@@ -401,6 +426,9 @@ pub fn prepare_installation_plan(
     // Fill pkglines for packages that already exist in the store
     crate::store::fill_pkglines_in_plan(&mut plan)
         .with_context(|| "Failed to find existing packages in store")?;
+
+    // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
+    crate::hooks::load_initial_hooks(&mut plan)?;
 
     Ok(plan)
 }

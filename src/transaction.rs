@@ -860,22 +860,20 @@ fn process_package_operations(
 pub fn run_transaction_batch(
     plan: &mut InstallationPlan,
 ) -> Result<()> {
-    let package_format = plan.package_format;
-
     // Build maps for hooks from ordered_operations
     build_batch_maps(plan);
 
-    // Load hooks for Arch Linux (Pacman format)
-    let hooks = hooks::load_hooks(&plan.env_root, package_format);
+    // Load hooks for batch packages (incremental loading)
+    hooks::load_batch_hooks(plan)?;
 
     // Run PreTransaction hooks
-    hooks::run_hooks(hooks.as_deref(), plan, hooks::HookWhen::PreTransaction)?;
+    hooks::run_hooks(plan, hooks::HookWhen::PreTransaction)?;
 
     // Process each package operation in order (rpmtsProcess style)
     process_package_operations(plan)?;
 
     // Run PostTransaction hooks
-    hooks::run_hooks(hooks.as_deref(), plan, hooks::HookWhen::PostTransaction)?;
+    hooks::run_hooks(plan, hooks::HookWhen::PostTransaction)?;
 
     // Run ldconfig if needed (after all package operations complete)
     run_ldconfig_if_needed(&plan.env_root)?;

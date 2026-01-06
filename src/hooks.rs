@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
 use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::models::PACKAGE_CACHE;
 use crate::utils::get_package_files;
-use crate::plan::InstallationPlan;
+use crate::plan::{InstallationPlan, pkgkey2pkgline};
 use shlex;
 use glob::Pattern;
 
@@ -24,7 +25,7 @@ pub enum HookType {
     Package,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HookWhen {
     PreTransaction,
     PostTransaction,
@@ -58,6 +59,7 @@ pub struct Hook {
     pub action: HookAction,
     pub hook_name: String,  // File name without .hook suffix, used as lookup/sort key
     pub file_path: String,  // Full path to the hook file, used for log messages
+    pub pkgkey: Option<String>,  // Package key if this hook belongs to a package, None for global hooks
 }
 
 /// Extract file name from path and strip .hook suffix
@@ -142,6 +144,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
         action: current_action.unwrap(),
         hook_name,
         file_path: hook_path.to_string_lossy().to_string(),
+        pkgkey: None,  // Will be set in register_hook_to_plan() if this is a package hook
     };
 
     validate_hook(&hook, hook_path)?;
@@ -342,17 +345,10 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
     Ok(())
 }
 
-/// Get standard hook directories
-fn get_hook_directories(env_root: &Path) -> Vec<PathBuf> {
-    vec![
-        env_root.join("usr/share/libalpm/hooks"),
-        env_root.join("etc/pacman.d/hooks"),
-    ]
-}
 
 /// Read and sort entries from a hook directory
 fn read_hook_directory_entries(hook_dir: &Path) -> Option<Vec<fs::DirEntry>> {
-    let mut entries: Vec<_> = match fs::read_dir(hook_dir) {
+    let entries: Vec<_> = match fs::read_dir(hook_dir) {
         Ok(dir) => match dir.collect::<std::result::Result<Vec<_>, _>>() {
             Ok(entries) => entries,
             Err(e) => {
@@ -369,12 +365,81 @@ fn read_hook_directory_entries(hook_dir: &Path) -> Option<Vec<fs::DirEntry>> {
     Some(entries)
 }
 
-/// Process a single hook file entry and add it to the hooks map if valid
-fn process_hook_file_entry(
-    entry: &fs::DirEntry,
-    hooks: &mut HashMap<String, Hook>,
+/// Update an existing global hook with a package pkgkey
+/// Returns true if the hook was updated (and caller should return early), false otherwise
+fn update_existing_hook_pkgkey(
+    hook_name: &str,
+    pkgkey: &str,
+    path: &Path,
+    plan: &mut InstallationPlan,
+) -> bool {
+    // Get mutable reference to the existing hook Arc
+    if let Some(existing_hook_arc) = plan.hooks_by_name.get_mut(hook_name) {
+        if existing_hook_arc.pkgkey.is_none() {
+            let existing_file_path = existing_hook_arc.file_path.clone();
+
+            // Mutate the hook in place using Arc::make_mut (clones only if there are multiple references)
+            Arc::make_mut(existing_hook_arc).pkgkey = Some(pkgkey.to_string());
+
+            log::info!(
+                "hook '{}' from package {} ({}) is overriding global hook ({})",
+                hook_name,
+                pkgkey,
+                path.display(),
+                existing_file_path
+            );
+            return true;
+        }
+    }
+    false
+}
+
+/// Register a hook to the plan structures
+/// Only adds to hooks_by_name. Other indices (hooks_by_when, hooks_by_pkgkey) are built later.
+fn register_hook_to_plan(
+    mut hook: Hook,
+    hook_name: String,
+    pkgkey: Option<&str>,
+    plan: &mut InstallationPlan,
 ) {
-    let path = entry.path();
+    // Set pkgkey on the hook if provided
+    hook.pkgkey = pkgkey.map(|s| s.to_string());
+
+    // Wrap hook in Arc for sharing across indices
+    let hook_arc = Arc::new(hook);
+
+    // Only save to hooks_by_name during loading
+    plan.hooks_by_name.insert(hook_name, hook_arc);
+}
+
+/// Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
+fn build_hook_indices(plan: &mut InstallationPlan) {
+    plan.hooks_by_when.clear();
+    plan.hooks_by_pkgkey.clear();
+
+    for hook_arc in plan.hooks_by_name.values() {
+        // Add to hooks_by_when
+        plan.hooks_by_when
+            .entry(hook_arc.action.when.clone())
+            .or_insert_with(Vec::new)
+            .push(Arc::clone(hook_arc));
+
+        // Add to hooks_by_pkgkey if it's a package hook
+        if let Some(ref pkgkey) = hook_arc.pkgkey {
+            plan.hooks_by_pkgkey
+                .entry(pkgkey.clone())
+                .or_insert_with(Vec::new)
+                .push(Arc::clone(hook_arc));
+        }
+    }
+}
+
+/// Process a single hook file path and save it to plan structures
+fn load_hook_file(
+    path: &Path,
+    plan: &mut InstallationPlan,
+    pkgkey: Option<&str>,
+) {
 
     // Only process .hook files
     if path.extension().and_then(|e| e.to_str()) != Some("hook") {
@@ -384,10 +449,13 @@ fn process_hook_file_entry(
 
     let hook_name = extract_hook_file_name(&path);
 
-    // Check if hook with same name already exists (skip if so - override behavior)
-    if hooks.contains_key(&hook_name) {
-        log::debug!("skipping overridden hook {}", path.display());
-        return;
+    // Check if hook with same name already exists
+    // Since we load global hooks first, then package hooks, if we find an existing hook
+    // it means a package hook is overriding a global hook. Simply update the pkgkey and return.
+    if let Some(pkgkey) = pkgkey {
+        if update_existing_hook_pkgkey(&hook_name, pkgkey, path, plan) {
+            return;
+        }
     }
 
     // Skip symlinks to /dev/null (disabled hooks)
@@ -407,8 +475,7 @@ fn process_hook_file_entry(
     match parse_hook_file(&path) {
         Ok(mut hook) => {
             populate_hook_target_cache(&mut hook);
-            hook.file_path = path.to_string_lossy().to_string();
-            hooks.insert(hook_name, hook);
+            register_hook_to_plan(hook, hook_name, pkgkey, plan);
         }
         Err(e) => {
             log::warn!("Failed to parse hook file {}: {}", path.display(), e);
@@ -416,56 +483,103 @@ fn process_hook_file_entry(
     }
 }
 
-/// Scan hook directories and collect hooks into a map
-fn scan_hook_directories(env_root: &Path) -> HashMap<String, Hook> {
-    let mut hooks: HashMap<String, Hook> = HashMap::new(); // Map by file name for overriding
-
-    let hook_dirs = get_hook_directories(env_root);
-
-    // Process directories in reverse order (last directory overrides first)
-    for hook_dir in hook_dirs.iter().rev() {
-        if !hook_dir.exists() {
-            continue;
-        }
-
-        let entries = match read_hook_directory_entries(hook_dir) {
-            Some(entries) => entries,
-            None => continue,
-        };
-
-        for entry in entries {
-            process_hook_file_entry(&entry, &mut hooks);
-        }
-    }
-
-    hooks
-}
-
-/// Sort hooks by file name (reference: _alpm_hook_cmp)
-fn sort_hooks(hooks: Vec<Hook>) -> Vec<Hook> {
-    let mut hooks_vec = hooks;
-    hooks_vec.sort_by(|a, b| {
-        a.hook_name.cmp(&b.hook_name)
-            .then_with(|| a.hook_name.len().cmp(&b.hook_name.len()))
+/// Sort hook references by file name (reference: _alpm_hook_cmp)
+fn sort_hook_refs<T: AsRef<Hook>>(hooks: &mut [T]) {
+    hooks.sort_by(|a, b| {
+        let a_hook = a.as_ref();
+        let b_hook = b.as_ref();
+        a_hook.hook_name.cmp(&b_hook.hook_name)
+            .then_with(|| a_hook.hook_name.len().cmp(&b_hook.hook_name.len()))
     });
-    hooks_vec
 }
 
-/// Load all hooks from the system hook directory
-/// Reference: _alpm_hook_run - scans directories in reverse order, hooks with same name override
-/// Returns None if package_format is not Pacman or if loading fails
-pub fn load_hooks(env_root: &Path, package_format: PackageFormat) -> Option<Vec<Hook>> {
-    // Only load hooks for Arch Linux (Pacman format)
-    if package_format != PackageFormat::Pacman {
-        return None;
+/// Load hooks from a hook directory
+/// Processes all .hook files in the given directory and adds them to the plan
+fn load_hooks_from_directory(
+    plan: &mut InstallationPlan,
+    hook_dir: &Path,
+    pkgkey: Option<&str>,
+) -> Result<()> {
+    if !hook_dir.exists() {
+        return Ok(());
     }
 
-    let hooks = scan_hook_directories(env_root);
-    let hooks_vec: Vec<Hook> = hooks.into_values().collect();
-    let sorted_hooks = sort_hooks(hooks_vec);
+    let entries = match read_hook_directory_entries(hook_dir) {
+        Some(entries) => entries,
+        None => return Ok(()),
+    };
 
-    Some(sorted_hooks)
+    for entry in entries {
+        load_hook_file(&entry.path(), plan, pkgkey);
+    }
+
+    Ok(())
 }
+
+/// Load hooks from a package's hook directory
+/// Scans $store_root/$pkgline/fs/usr/share/libalpm/hooks/ for hooks
+pub fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
+    let pkgline = pkgkey2pkgline(plan, pkgkey);
+
+    if pkgline.is_empty() {
+        log::debug!("Package {} has no pkgline, skipping hook loading", pkgkey);
+        return Ok(());
+    }
+
+    let hook_dir = plan.store_root
+        .join(&pkgline)
+        .join("fs")
+        .join("usr/share/libalpm/hooks");
+
+    load_hooks_from_directory(plan, &hook_dir, Some(pkgkey))
+}
+
+/// Load initial hooks (from installed packages and etc/pacman.d/hooks/)
+/// Note: We load global hooks first, then package hooks. Package hooks can override global hooks
+/// by updating the pkgkey on the existing hook.
+pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
+    // Only load hooks for Arch Linux (Pacman format)
+    if plan.package_format != PackageFormat::Pacman {
+        return Ok(());
+    }
+
+    // Load hooks from etc/pacman.d/hooks/ first (global hooks)
+    let etc_hooks_dir = plan.env_root.join("etc/pacman.d/hooks");
+    load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
+
+    // Load hooks from installed packages (package hooks can override global hooks)
+    let pkgkeys: Vec<String> = {
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        installed.keys().cloned().collect()
+    };
+    for pkgkey in pkgkeys {
+        load_package_hooks(plan, &pkgkey)?;
+    }
+
+    // Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
+    build_hook_indices(plan);
+
+    Ok(())
+}
+
+/// Load hooks for packages in the current batch
+pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
+    // Only load hooks for Arch Linux (Pacman format)
+    if plan.package_format != PackageFormat::Pacman {
+        return Ok(());
+    }
+
+    let pkgkeys: Vec<String> = plan.batch.all_pkgs.keys().cloned().collect();
+    for pkgkey in pkgkeys {
+        load_package_hooks(plan, &pkgkey)?;
+    }
+
+    // Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
+    build_hook_indices(plan);
+
+    Ok(())
+}
+
 
 /// Check if any compiled pattern matches a string
 fn matches_any_pattern(text: &str, patterns: &[Pattern]) -> bool {
@@ -851,7 +965,7 @@ fn execute_hook(
 
     log::info!("Executing hook {}: {}", hook.file_path, hook.action.exec);
 
-    let env_vars = std::collections::HashMap::new();
+    let env_vars = HashMap::new();
     let stdin_data = if hook.action.needs_targets {
         Some(matched_targets.join("\n").into_bytes())
     } else {
@@ -980,13 +1094,6 @@ fn parent_prefix_before_wildcard(target: &str) -> Option<String> {
     None
 }
 
-/// Filter hooks by When timing
-fn filter_hooks_by_when<'a>(hooks: &'a [Hook], when: &HookWhen) -> Vec<&'a Hook> {
-    hooks.iter()
-        .filter(|h| &h.action.when == when)
-        .collect()
-}
-
 /// Check if we should reduce path trigger evaluation based on package count
 fn should_reduce_path_triggers(plan: &InstallationPlan) -> bool {
     plan.batch.fresh_installs.len() + plan.batch.upgrades_new.len() >= 20
@@ -1047,11 +1154,11 @@ fn check_trigger_match(
 /// Find all triggered hooks for the transaction
 /// Returns a vector of (hook, matched_targets) tuples
 fn find_triggered_hooks<'a>(
-    relevant_hooks: &'a [&'a Hook],
+    relevant_hooks: &'a [&'a Arc<Hook>],
     plan: &InstallationPlan,
     should_reduce_path_triggers: bool,
     recent_cutoff: SystemTime,
-) -> Result<Vec<(&'a Hook, Vec<String>)>> {
+) -> Result<Vec<(&'a Arc<Hook>, Vec<String>)>> {
     let mut triggered_hooks = Vec::new();
 
     for hook in relevant_hooks {
@@ -1099,7 +1206,7 @@ fn find_triggered_hooks<'a>(
 
 /// Execute all triggered hooks
 fn execute_triggered_hooks(
-    triggered_hooks: Vec<(&Hook, Vec<String>)>,
+    triggered_hooks: Vec<(&Arc<Hook>, Vec<String>)>,
     plan: &InstallationPlan,
     when: HookWhen,
 ) -> Result<()> {
@@ -1107,7 +1214,7 @@ fn execute_triggered_hooks(
         log::info!("running '{}'...", hook.file_path);
 
         if let Err(e) = execute_hook(
-            hook,
+            hook.as_ref(),
             plan,
             &matched_targets,
         ) {
@@ -1128,32 +1235,34 @@ fn execute_triggered_hooks(
 /// Run hooks for a transaction
 /// Reference: _alpm_hook_run
 pub fn run_hooks(
-    hooks: Option<&[Hook]>,
     plan: &InstallationPlan,
     when: HookWhen,
 ) -> Result<()> {
-    // Early return if no hooks or no packages to process
-    let hooks = match hooks {
-        Some(h) => h,
-        None => return Ok(()),
-    };
-    if plan.batch.fresh_installs.is_empty() && plan.batch.upgrades_new.is_empty() && plan.batch.old_removes.is_empty() {
+    // Early return if no packages to process
+    if plan.batch.all_pkgs.is_empty() {
         return Ok(());
     }
 
-    let should_reduce = should_reduce_path_triggers(plan);
-    let recent_cutoff = calculate_recent_cutoff(should_reduce);
-
-    // Filter hooks by When
-    let relevant_hooks = filter_hooks_by_when(hooks, &when);
+    // Get hooks for this When timing
+    let relevant_hooks = match plan.hooks_by_when.get(&when) {
+        Some(hooks) => hooks,
+        None => return Ok(()),
+    };
 
     if relevant_hooks.is_empty() {
         return Ok(());
     }
 
+    // Sort hooks by name (reference: _alpm_hook_cmp)
+    let mut sorted_hooks: Vec<&Arc<Hook>> = relevant_hooks.iter().collect();
+    sort_hook_refs(&mut sorted_hooks);
+
+    let should_reduce = should_reduce_path_triggers(plan);
+    let recent_cutoff = calculate_recent_cutoff(should_reduce);
+
     // Find triggered hooks (reference: _alpm_hook_triggered)
     let triggered_hooks = find_triggered_hooks(
-        &relevant_hooks,
+        &sorted_hooks,
         plan,
         should_reduce,
         recent_cutoff,
