@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
-use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
+use crate::models::{InstalledPackageInfo, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::models::PACKAGE_CACHE;
 use crate::utils::get_package_files;
@@ -569,7 +569,7 @@ pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
         return Ok(());
     }
 
-    let pkgkeys: Vec<String> = plan.batch.all_pkgs.keys().cloned().collect();
+    let pkgkeys: Vec<String> = plan.batch.new_pkgkeys.iter().cloned().collect();
     for pkgkey in pkgkeys {
         load_package_hooks(plan, &pkgkey)?;
     }
@@ -675,26 +675,36 @@ fn match_path_trigger_no_targets(
     wants_remove: bool,
 ) -> Result<bool> {
     let store_root = &plan.store_root;
-    let fresh_installs = &plan.batch.fresh_installs;
-    let upgrades_new = &plan.batch.upgrades_new;
-    let upgrades_old = &plan.batch.upgrades_old;
-    let old_removes = &plan.batch.old_removes;
-    let file_matches = |packages: &InstalledPackagesMap| -> Result<bool> {
-        for (_pkgkey, info) in packages.iter() {
-            for file in get_package_files(store_root, info)? {
-                if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                    return Ok(true);
+    let file_matches_new = |pkgkeys: &HashSet<String>| -> Result<bool> {
+        for pkgkey in pkgkeys.iter() {
+            if let Some(info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+                for file in get_package_files(store_root, &info)? {
+                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    };
+    let file_matches_old = |pkgkeys: &HashSet<String>| -> Result<bool> {
+        for pkgkey in pkgkeys.iter() {
+            if let Some(info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
+                for file in get_package_files(store_root, &info)? {
+                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
+                        return Ok(true);
+                    }
                 }
             }
         }
         Ok(false)
     };
 
-    if wants_install && file_matches(fresh_installs)? {
+    if wants_install && file_matches_new(&plan.batch.fresh_installs)? {
         return Ok(true);
     }
 
-    if wants_remove && file_matches(old_removes)? {
+    if wants_remove && file_matches_old(&plan.batch.old_removes)? {
         return Ok(true);
     }
 
@@ -702,10 +712,12 @@ fn match_path_trigger_no_targets(
     // return early as soon as a decisive condition is found.
     let mut upgrades_old_set = HashSet::new();
     if wants_upgrade || wants_remove || wants_install {
-        for (_pkgkey, info) in upgrades_old.iter() {
-            for file in get_package_files(store_root, info)? {
-                if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                    upgrades_old_set.insert(file);
+        for pkgkey in plan.batch.upgrades_old.iter() {
+            if let Some(info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
+                for file in get_package_files(store_root, &info)? {
+                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
+                        upgrades_old_set.insert(file);
+                    }
                 }
             }
         }
@@ -713,19 +725,21 @@ fn match_path_trigger_no_targets(
 
     let mut upgrades_new_set = HashSet::new();
     if wants_upgrade || wants_remove || wants_install {
-        for (_pkgkey, info) in upgrades_new.iter() {
-            for file in get_package_files(store_root, info)? {
-                if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                    let file_str = file;
-                    // Upgrade match: found in both old and new
-                    if wants_upgrade && upgrades_old_set.contains(&file_str) {
-                        return Ok(true);
+        for pkgkey in plan.batch.upgrades_new.iter() {
+            if let Some(info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+                for file in get_package_files(store_root, &info)? {
+                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
+                        let file_str = file;
+                        // Upgrade match: found in both old and new
+                        if wants_upgrade && upgrades_old_set.contains(&file_str) {
+                            return Ok(true);
+                        }
+                        // Install via upgrade addition
+                        if wants_install && !upgrades_old_set.contains(&file_str) {
+                            return Ok(true);
+                        }
+                        upgrades_new_set.insert(file_str);
                     }
-                    // Install via upgrade addition
-                    if wants_install && !upgrades_old_set.contains(&file_str) {
-                        return Ok(true);
-                    }
-                    upgrades_new_set.insert(file_str);
                 }
             }
         }
@@ -753,10 +767,6 @@ fn match_path_trigger_with_targets(
     wants_remove: bool,
 ) -> Result<(bool, Vec<String>)> {
     let store_root = &plan.store_root;
-    let fresh_installs = &plan.batch.fresh_installs;
-    let upgrades_new = &plan.batch.upgrades_new;
-    let upgrades_old = &plan.batch.upgrades_old;
-    let old_removes = &plan.batch.old_removes;
     let mut matched_targets = Vec::new();
 
     let mut fresh_install_files = Vec::new();
@@ -765,8 +775,11 @@ fn match_path_trigger_with_targets(
     let mut old_remove_files = Vec::new();
 
     if wants_install || wants_upgrade {
+        let fresh_installs_info: Vec<_> = plan.batch.fresh_installs.iter()
+            .filter_map(|k| crate::plan::pkgkey2new_pkg_info(plan, k))
+            .collect();
         collect_matching_package_files(
-            fresh_installs.values().map(|v| v.as_ref()),
+            fresh_installs_info.iter().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
@@ -775,16 +788,22 @@ fn match_path_trigger_with_targets(
     }
 
     if wants_install || wants_upgrade || wants_remove {
+        let upgrades_new_info: Vec<_> = plan.batch.upgrades_new.iter()
+            .filter_map(|k| crate::plan::pkgkey2new_pkg_info(plan, k))
+            .collect();
         collect_matching_package_files(
-            upgrades_new.values().map(|v| v.as_ref()),
+            upgrades_new_info.iter().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
             &mut upgrades_new_files,
         )?;
 
+        let upgrades_old_info: Vec<_> = plan.batch.upgrades_old.iter()
+            .filter_map(|k| crate::plan::pkgkey2installed_pkg_info(k))
+            .collect();
         collect_matching_package_files(
-            upgrades_old.values().map(|v| v.as_ref()),
+            upgrades_old_info.iter().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
@@ -793,8 +812,11 @@ fn match_path_trigger_with_targets(
     }
 
     if wants_remove {
+        let old_removes_info: Vec<_> = plan.batch.old_removes.iter()
+            .filter_map(|k| crate::plan::pkgkey2installed_pkg_info(k))
+            .collect();
         collect_matching_package_files(
-            old_removes.values().map(|v| v.as_ref()),
+            old_removes_info.iter().map(|v| v.as_ref()),
             store_root,
             positive_patterns,
             negative_patterns,
@@ -830,9 +852,6 @@ fn match_package_trigger(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
 ) -> Result<(bool, Vec<String>, Vec<String>, Vec<String>)> {
-    let fresh_installs = &plan.batch.fresh_installs;
-    let upgrades_new = &plan.batch.upgrades_new;
-    let old_removes = &plan.batch.old_removes;
     let mut install_pkgs = Vec::new();
     let mut upgrade_pkgs = Vec::new();
     let mut remove_pkgs = Vec::new();
@@ -843,7 +862,7 @@ fn match_package_trigger(
 
     // Check install/upgrade operations
     if trigger.operations.contains(&HookOperation::Install) || trigger.operations.contains(&HookOperation::Upgrade) {
-        for (pkgkey, _pkg_info) in fresh_installs.iter() {
+        for pkgkey in plan.batch.fresh_installs.iter() {
             if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     if trigger.operations.contains(&HookOperation::Install) {
@@ -853,7 +872,7 @@ fn match_package_trigger(
             }
         }
 
-        for (pkgkey, _pkg_info) in upgrades_new.iter() {
+        for pkgkey in plan.batch.upgrades_new.iter() {
             if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
                 if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
                     if trigger.operations.contains(&HookOperation::Upgrade) {
@@ -866,9 +885,9 @@ fn match_package_trigger(
 
     // Check remove operations (reference: excludes packages being upgraded)
     if trigger.operations.contains(&HookOperation::Remove) {
-        for (pkgkey, _pkg_info) in old_removes.iter() {
+        for pkgkey in plan.batch.old_removes.iter() {
             // Exclude packages that are being upgraded (reference: checks if in add list)
-            if upgrades_new.contains_key(pkgkey) {
+            if plan.batch.upgrades_new.contains(pkgkey) {
                 continue;
             }
 
@@ -891,7 +910,7 @@ fn match_package_trigger(
 /// Check if a package dependency is satisfied
 /// Reference: _alpm_hook_run_hook uses alpm_find_satisfier
 fn check_dependency(
-    fresh_installs: &InstalledPackagesMap,
+    fresh_installs: &HashSet<String>,
     dep: &str,
 ) -> bool {
     // Check installed and freshly installed package names for the dependency
@@ -903,7 +922,7 @@ fn check_dependency(
 
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     installed.iter().any(|(pkgkey, _)| pkgkey_matches_dep(pkgkey, dep))
-        || fresh_installs.keys().any(|pkgkey| pkgkey_matches_dep(pkgkey, dep))
+        || fresh_installs.iter().any(|pkgkey| pkgkey_matches_dep(pkgkey, dep))
 }
 
 /// Execute a hook
@@ -914,11 +933,10 @@ fn execute_hook(
     matched_targets: &[String],
 ) -> Result<()> {
     let env_root = &plan.env_root;
-    let fresh_installs = &plan.batch.fresh_installs;
 
     // Check dependencies (reference: checks before execution)
     for dep in &hook.action.depends {
-        if !check_dependency(fresh_installs, dep) {
+        if !check_dependency(&plan.batch.fresh_installs, dep) {
             return Err(color_eyre::eyre::eyre!(
                 "unable to run hook {}: could not satisfy dependencies",
                 hook.file_path
@@ -1239,7 +1257,7 @@ pub fn run_hooks(
     when: HookWhen,
 ) -> Result<()> {
     // Early return if no packages to process
-    if plan.batch.all_pkgs.is_empty() {
+    if plan.batch.new_pkgkeys.is_empty() {
         return Ok(());
     }
 

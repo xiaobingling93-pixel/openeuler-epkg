@@ -19,7 +19,7 @@ pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
     let mut total_download: u64 = 0;
     let mut total_install: u64 = 0;
 
-    for pkgkey in plan.fresh_installs.keys().chain(plan.upgrades_new.keys()) {
+    for pkgkey in plan.fresh_installs.iter().chain(plan.upgrades_new.iter()) {
         if let Ok(pkginfo) = crate::package_cache::load_package_info(pkgkey) {
             total_download += pkginfo.size as u64;
             total_install += pkginfo.installed_size as u64;
@@ -205,41 +205,43 @@ pub fn validate_before_linking(
     drop(installed);
 
     // Process each package
-    for (pkgkey, package_info) in plan.batch.all_pkgs.iter() {
-        let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+    for pkgkey in plan.batch.new_pkgkeys.iter() {
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+            let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
 
-        // Get filelist from cache or store
-        let file_list = map_package2filelist(pkgkey, &store_fs_dir)?;
+            // Get filelist from cache or store
+            let file_list = map_package2filelist(pkgkey, &store_fs_dir)?;
 
-        // Count files (inodes) needed
-        for file_info in &file_list {
-            if file_info.is_dir() {
-                continue;
-            }
+            // Count files (inodes) needed
+            for file_info in &file_list {
+                if file_info.is_dir() {
+                    continue;
+                }
 
-            total_inodes_needed += 1;
+                total_inodes_needed += 1;
 
-            // Check conflicts with installed files
-            if let Ok(conflicts) = check_file_conflicts(&file_info.path, pkgkey, &installed_files) {
-                for (conflict_path, conflict_pkgkey) in conflicts {
+                // Check conflicts with installed files
+                if let Ok(conflicts) = check_file_conflicts(&file_info.path, pkgkey, &installed_files) {
+                    for (conflict_path, conflict_pkgkey) in conflicts {
+                        return Err(eyre!(
+                            "File conflict: {} (from package {}) conflicts with installed file from package {}",
+                            conflict_path,
+                            pkgkey,
+                            conflict_pkgkey
+                        ));
+                    }
+                }
+
+                // Track files in transaction for conflict detection
+                if let Some(existing_pkgkey) = all_transaction_files.insert(file_info.path.clone(), pkgkey.clone()) {
+                    // Conflict detected: file is provided by multiple packages
                     return Err(eyre!(
-                        "File conflict: {} (from package {}) conflicts with installed file from package {}",
-                        conflict_path,
-                        pkgkey,
-                        conflict_pkgkey
+                        "Transaction file conflict: {} is provided by multiple packages: {} and {}",
+                        file_info.path,
+                        existing_pkgkey,
+                        pkgkey
                     ));
                 }
-            }
-
-            // Track files in transaction for conflict detection
-            if let Some(existing_pkgkey) = all_transaction_files.insert(file_info.path.clone(), pkgkey.clone()) {
-                // Conflict detected: file is provided by multiple packages
-                return Err(eyre!(
-                    "Transaction file conflict: {} is provided by multiple packages: {} and {}",
-                    file_info.path,
-                    existing_pkgkey,
-                    pkgkey
-                ));
             }
         }
     }

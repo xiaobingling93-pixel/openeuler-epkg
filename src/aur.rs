@@ -1071,10 +1071,10 @@ fn postinstall_built_aur_round(
         "Failed to normalize dependency fields for AUR packages in current round"
     })?;
 
-    // Add AUR packages to plan.batch.all_pkgs before processing transaction
-    plan.batch.all_pkgs.clear();
-    for (k, v) in this_round_aur_packages.iter() {
-        plan.batch.all_pkgs.insert(k.clone(), Arc::clone(v));
+    // Add AUR packages to plan.batch.new_pkgkeys before processing transaction
+    plan.batch.new_pkgkeys.clear();
+    for k in this_round_aur_packages.keys() {
+        plan.batch.new_pkgkeys.insert(k.clone());
     }
 
     // Process installation results for this round so that subsequent rounds
@@ -1093,17 +1093,22 @@ fn fixup_aur_plan_keys(
 ) -> Result<()> {
     // Fixup ordered_operations - remap pkgkeys in operations
     for op in &mut plan.ordered_operations {
-        // Remap new_pkg key if present
-        if let Some((ref mut pkgkey, ref mut pkg_info)) = op.new_pkg {
+        // Remap new_pkgkey if present
+        if let Some(ref mut pkgkey) = op.new_pkgkey {
             if let Some(mapped_key) = pkgkey_mapping.get(pkgkey) {
                 // Update the pkgkey in the operation
                 let old_key = pkgkey.clone();
                 *pkgkey = mapped_key.clone();
 
                 // Also update pkgline in the package info if needed
-                let pkg_info_mut = Arc::make_mut(pkg_info);
-                if pkg_info_mut.pkgline.contains(&old_key) {
-                    pkg_info_mut.pkgline = pkg_info_mut.pkgline.replace(&old_key, mapped_key);
+                if let Some(pkg_info) = plan.new_pkgs.get_mut(&old_key) {
+                    let pkg_info_mut = Arc::make_mut(pkg_info);
+                    if pkg_info_mut.pkgline.contains(&old_key) {
+                        pkg_info_mut.pkgline = pkg_info_mut.pkgline.replace(&old_key, mapped_key);
+                    }
+                    // Move the entry to the new key
+                    let info = plan.new_pkgs.remove(&old_key).unwrap();
+                    plan.new_pkgs.insert(mapped_key.clone(), info);
                 }
             }
         }

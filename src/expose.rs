@@ -47,11 +47,12 @@ pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> 
         if !op.should_unexpose() {
             continue;
         }
-        if let Some((pkgkey, pkg_info)) = &op.old_pkg {
-            // Remove ebin wrappers for packages being unexposed
-            if !pkg_info.ebin_links.is_empty() {
-                log::info!("Unexposing package: {}", pkgkey);
-                for relative_ebin_path_str in &pkg_info.ebin_links {
+        if let Some(pkgkey) = &op.old_pkgkey {
+            if let Some(pkg_info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
+                // Remove ebin wrappers for packages being unexposed
+                if !pkg_info.ebin_links.is_empty() {
+                    log::info!("Unexposing package: {}", pkgkey);
+                    for relative_ebin_path_str in &pkg_info.ebin_links {
                     let ebin_path = env_root.join(relative_ebin_path_str);
                     if fs::symlink_metadata(&ebin_path).is_ok() {
                         log::debug!("Removing ebin wrapper: {}", ebin_path.display());
@@ -61,13 +62,14 @@ pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> 
                         log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
                     }
                 }
-            }
+                }
 
-            // Update the package info to clear ebin_links
-            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                let info_mut = Arc::make_mut(installed_package_info_mut);
-                info_mut.ebin_links.clear();
-                info_mut.ebin_exposure = false;
+                // Update the package info to clear ebin_links
+                if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+                    let info_mut = Arc::make_mut(installed_package_info_mut);
+                    info_mut.ebin_links.clear();
+                    info_mut.ebin_exposure = false;
+                }
             }
         }
     }
@@ -81,7 +83,7 @@ pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env
         if !op.should_expose() {
             continue;
         }
-        if let Some((pkgkey, _pkg_info)) = &op.new_pkg {
+        if let Some(pkgkey) = &op.new_pkgkey {
             log::info!("Exposing package: {}", pkgkey);
 
             // Use the updated package info from installed_packages which has the correct pkgline

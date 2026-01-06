@@ -262,7 +262,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     }
 
     // Step 1: Download and unpack packages (but do not link yet)
-    // This populates plan.batch.all_pkgs with packages ready to link
+    // This populates plan.batch.new_pkgkeys with packages ready to link
     let aur_packages = download_and_unpack_packages(plan)?;
 
     // Step 2a: Check risks for all packages before linking
@@ -285,7 +285,7 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
 }
 
 /// Download and unpack packages (but do not link them yet)
-/// Populates plan.batch.all_pkgs with packages that are ready to link
+/// Populates plan.batch.new_pkgkeys with packages that are ready to link
 /// Returns: aur_packages
 fn download_and_unpack_packages(
     plan: &mut InstallationPlan,
@@ -297,11 +297,13 @@ fn download_and_unpack_packages(
 
     // Extract fresh installs and upgrades from ordered_operations
     for op in &plan.ordered_operations {
-        if let Some((pkgkey, package_info)) = &op.new_pkg {
-            if !package_info.pkgline.is_empty() {
-                packages_with_pkglines.insert(pkgkey.clone(), package_info.clone());
-            } else {
-                packages_to_download.insert(pkgkey.clone(), package_info.clone());
+        if let Some(pkgkey) = &op.new_pkgkey {
+            if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+                if !package_info.pkgline.is_empty() {
+                    packages_with_pkglines.insert(pkgkey.clone(), package_info);
+                } else {
+                    packages_to_download.insert(pkgkey.clone(), package_info);
+                }
             }
         }
     }
@@ -331,10 +333,12 @@ fn download_and_unpack_packages(
 /// Link all packages to the environment
 /// This should only be called after all risk checks have passed.
 fn link_packages(plan: &InstallationPlan) -> Result<()> {
-    for (pkgkey, package_info) in plan.batch.all_pkgs.iter() {
-        let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
-        crate::link::link_package(plan, &store_fs_dir)
-            .with_context(|| format!("Failed to link package {}", pkgkey))?;
+    for pkgkey in plan.batch.new_pkgkeys.iter() {
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+            let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
+            crate::link::link_package(plan, &store_fs_dir)
+                .with_context(|| format!("Failed to link package {}", pkgkey))?;
+        }
     }
 
     utils::fixup_env_links(&plan.env_root)?;
@@ -431,6 +435,6 @@ fn wait_downloads_and_unpack(
 
     // Return packages that need linking (but don't link them here - that happens after all risk checks)
     // This allows us to check ALL packages before linking ANY, keeping the environment clean
-    // Note: packages_to_link is not returned here - they are added to plan.batch.all_pkgs later
+    // Note: packages_to_link is not returned here - they are added to plan.batch.new_pkgkeys later
     Ok(aur_packages)
 }

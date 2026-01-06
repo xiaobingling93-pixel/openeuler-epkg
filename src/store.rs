@@ -1012,9 +1012,12 @@ pub fn fill_pkglines_in_plan(
 
     // Process new packages (fresh installs and upgrades)
     for op in &mut plan.ordered_operations {
-        if let Some((pkgkey, package_info)) = &mut op.new_pkg {
-            if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(package_info), &store_pkglines_by_pkgkey)? {
-                matched_count += 1;
+        if let Some(pkgkey) = &op.new_pkgkey {
+            // Update the package info in plan.new_pkgs
+            if let Some(package_info) = plan.new_pkgs.get_mut(pkgkey) {
+                if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(package_info), &store_pkglines_by_pkgkey)? {
+                    matched_count += 1;
+                }
             }
         }
     }
