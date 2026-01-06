@@ -173,6 +173,13 @@ fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     parse_deb_interest_triggers(&interest_triggers, store_tmp_dir)?;
     parse_deb_activate_triggers(&activate_triggers, store_tmp_dir)?;
 
+    // Additionally, generate Arch-style .hook files under info/install/ so that
+    // Debian triggers can be handled by the generic hooks engine. For now we
+    // only emit hooks for file-style interest triggers (those whose trigger
+    // name starts with '/'), mapping them to Path hooks that fire on any
+    // install/upgrade/remove touching the path.
+    write_deb_trigger_hooks(&interest_triggers, &activate_triggers, store_tmp_dir)?;
+
     Ok(())
 }
 
@@ -339,6 +346,106 @@ fn parse_deb_activate_triggers<P: AsRef<Path>>(activate_triggers: &[TriggerEntry
             .collect();
         fs::write(&metadata_path, content.join("\n"))?;
     }
+
+    Ok(())
+}
+
+/// Generate Arch-style .hook files under info/install/ for Debian triggers.
+///
+/// Current mapping (conservative, file-trigger only):
+/// - For each interest trigger whose name starts with '/', we create a Path hook:
+///   - [Trigger]:
+///     - Operation = Install|Upgrade|Remove
+///     - Type = Path
+///     - Target = <trigger path as-is>
+///   - [Action]:
+///     - When = PostTransaction
+///     - Exec = /bin/true          (no-op placeholder for now)
+///
+/// This allows the generic hooks engine to see where Debian file triggers
+/// would conceptually fire, without changing the existing dpkg-style trigger
+/// runtime in `deb_triggers.rs`.
+fn write_deb_trigger_hooks<P: AsRef<Path>>(
+    interest_triggers: &[TriggerEntry],
+    activate_triggers: &[TriggerEntry],
+    store_tmp_dir: P,
+) -> Result<()> {
+    use std::fmt::Write as FmtWrite;
+
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let install_dir = store_tmp_dir.join("info/install");
+
+    if interest_triggers.is_empty() && activate_triggers.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&install_dir)?;
+
+    // Generate hooks for interest triggers
+    // These hooks will run when matching packages activate the trigger
+    let mut hook_index: usize = 0;
+
+    for entry in interest_triggers {
+        let name = entry.name.trim();
+        hook_index += 1;
+
+        let mut buf = String::new();
+
+        // Map await mode to When phase:
+        // - noawait -> PostInstall (immediate, per-package processing)
+        // - await -> PostTransaction (batched, after all packages are processed)
+        let when_phase = if entry.await_mode {
+            "PostTransaction"
+        } else {
+            "PostInstall"
+        };
+
+        // Determine trigger type: file trigger (starts with '/') or explicit trigger
+        let (hook_type, target) = if name.starts_with('/') {
+            // File trigger: Path type
+            ("Path", name)
+        } else {
+            // Explicit trigger: Package type
+            ("Package", name)
+        };
+
+        // [Trigger]
+        buf.push_str("[Trigger]\n");
+        buf.push_str("Operation = Install\n");
+        buf.push_str("Operation = Upgrade\n");
+        buf.push_str("Operation = Remove\n");
+        writeln!(buf, "Type = {}", hook_type)?;
+        writeln!(buf, "Target = {}", target)?;
+
+        // [Action]
+        buf.push_str("\n[Action]\n");
+        writeln!(buf, "When = {}", when_phase)?;
+        writeln!(
+            buf,
+            "Description = DEB {} trigger for {} (defer_mode={})",
+            if hook_type == "Path" { "file" } else { "explicit" },
+            target,
+            if entry.await_mode { "await" } else { "noawait" }
+        )?;
+        // Exec will call the package's postinst with "triggered" argument
+        // The hook engine will need to resolve the package context and call:
+        // postinst triggered <trigger-name>
+        // For now, use a placeholder that indicates this is a DEB trigger hook
+        buf.push_str("Exec = /bin/true\n");
+
+        let hook_name = if hook_type == "Path" {
+            format!("deb-file-trigger-{}", hook_index)
+        } else {
+            format!("deb-explicit-trigger-{}", hook_index)
+        };
+        let hook_path = install_dir.join(format!("{}.hook", hook_name));
+        fs::write(&hook_path, buf)
+            .with_context(|| format!("Failed to write DEB hook file {}", hook_path.display()))?;
+    }
+
+    // Note: activate_triggers don't generate hooks directly - they are used
+    // to match against interest triggers. The hook engine will need to check
+    // which packages activate which triggers and match them against interest hooks.
 
     Ok(())
 }

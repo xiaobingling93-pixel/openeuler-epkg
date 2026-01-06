@@ -1,8 +1,9 @@
-use color_eyre::eyre::Result;
-use crate::models::{InstalledPackageInfo, InstalledPackagesMap, PackageFormat};
+use color_eyre::eyre::{Result, eyre};
+use crate::models::{InstalledPackageInfo, PackageFormat};
 use crate::plan::InstallationPlan;
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::rpm_triggers::setup_rpm_env_vars;
+use crate::package;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
@@ -417,30 +418,39 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     }
 }
 
-/// Run scriptlets for multiple packages
-pub fn run_scriptlets(
-    all_pkgs: &InstalledPackagesMap,
+/// Run transaction scriptlets for multiple packages
+/// Iterates over plan.ordered_operations and runs transaction scriptlets for suitable packages
+/// based on scriptlet_type, with per-package is_upgrade determination.
+/// Only handles transaction scriptlets: PreTrans, PostTrans, PreUnTrans, PostUnTrans
+pub fn run_trans_scriptlets(
     plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
-    is_upgrade: bool,
 ) -> Result<()> {
-    // Convert HashMap to a Vec of tuples (pkgkey, info) and sort by depend_depth in descending order
-    // This ensures packages with higher depend_depth are processed first
-    let mut packages_vec: Vec<(&String, &InstalledPackageInfo)> = all_pkgs.iter().map(|(k, v)| (k, v.as_ref())).collect();
-    packages_vec.sort_by(|a, b| b.1.depend_depth.cmp(&a.1.depend_depth));
-
-    // Process packages in sorted order
-    for (pkgkey, package_info) in packages_vec {
-        if let Err(e) = run_scriptlet(
-            pkgkey,
-            package_info,
-            plan,
-            scriptlet_type,
-            is_upgrade,
-            None, // old_version
-            None, // new_version
-        ) {
-            log::warn!("Failed to run {:?} scriptlet for package {}: {}", scriptlet_type, pkgkey, e);
+    for op in &plan.ordered_operations {
+        match scriptlet_type {
+            // Transaction scriptlets for new packages (fresh installs and upgrades)
+            ScriptletType::PreTrans | ScriptletType::PostTrans => {
+                if let Some(new_pkgkey) = &op.new_pkgkey {
+                    if let Some(new_pkg_info) = crate::plan::pkgkey2new_pkg_info(plan, new_pkgkey) {
+                        run_scriptlet(plan, scriptlet_type, new_pkgkey, new_pkg_info.as_ref(), op.old_pkgkey.as_deref())?;
+                    }
+                }
+            }
+            // Transaction scriptlets for old packages being removed
+            ScriptletType::PreUnTrans | ScriptletType::PostUnTrans => {
+                if let Some(old_pkgkey) = &op.old_pkgkey {
+                    if let Some(old_pkg_info) = crate::plan::pkgkey2installed_pkg_info(old_pkgkey) {
+                        run_scriptlet(plan, scriptlet_type, old_pkgkey, old_pkg_info.as_ref(), op.new_pkgkey.as_deref())?;
+                    }
+                }
+            }
+            // Other scriptlet types should not be called through this function
+            _ => {
+                return Err(eyre!(
+                    "run_trans_scriptlets() called with non-transaction scriptlet type: {:?}",
+                    scriptlet_type
+                ));
+            }
         }
     }
     Ok(())
@@ -448,17 +458,20 @@ pub fn run_scriptlets(
 
 /// Run a single scriptlet for one package
 pub fn run_scriptlet(
-    pkgkey: &str,
-    package_info: &InstalledPackageInfo,
     plan: &InstallationPlan,
     scriptlet_type: ScriptletType,
-    is_upgrade: bool,
-    old_version: Option<&str>,
-    new_version: Option<&str>,
+    pkgkey: &str,
+    package_info: &InstalledPackageInfo,
+    old_pkgkey: Option<&str>,
 ) -> Result<()> {
     let store_root = &plan.store_root;
     let env_root = &plan.env_root;
     let package_format = plan.package_format;
+    // Extract versions from pkgkeys
+    let old_version = old_pkgkey.and_then(|k| package::pkgkey2version(k).ok());
+    let new_version = package::pkgkey2version(pkgkey).ok();
+    // Calculate is_upgrade: both old_pkgkey and new_version must be Some for an upgrade
+    let is_upgrade = old_pkgkey.is_some() && new_version.is_some();
     // Skip all fakeroot scriptlets as post_install runs ldconfig -r . which removes ld-linux-x86-64.so.2
     let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
     if pkgname == "fakeroot" {
@@ -503,7 +516,7 @@ pub fn run_scriptlet(
                 }
 
                 // Get parameters based on package format and scenario
-                let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version, new_version);
+                let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version.as_deref(), new_version.as_deref());
 
                 // Prepare script arguments: [script_path, param1, param2, ...]
                 let mut script_args = vec![script_path.to_string_lossy().to_string()];

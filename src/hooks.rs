@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
-use crate::models::{InstalledPackageInfo, PackageFormat};
+use crate::models::PackageFormat;
 use crate::package::pkgkey2pkgname;
 use crate::models::PACKAGE_CACHE;
 use crate::utils::get_package_files;
@@ -12,11 +12,33 @@ use crate::plan::{InstallationPlan, pkgkey2pkgline};
 use shlex;
 use glob::Pattern;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum HookOperation {
-    Install,
-    Upgrade,
-    Remove,
+    Install = 1 << 0,
+    Upgrade = 1 << 1,
+    Remove = 1 << 2,
+}
+
+impl HookOperation {
+    /// Convert to bit flag value
+    #[inline]
+    pub fn as_flag(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Trait extension for u8 to check if a HookOperation flag is set
+trait HookOperationFlags {
+    fn is_set(self, op: HookOperation) -> bool;
+}
+
+impl HookOperationFlags for u8 {
+    /// Check if a bit flag is set
+    #[inline]
+    fn is_set(self, op: HookOperation) -> bool {
+        (self & op.as_flag()) != 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,18 +51,30 @@ pub enum HookType {
 pub enum HookWhen {
     PreTransaction,
     PostTransaction,
+    PostUnTrans, // RPM
+    // Per-package phases (used for Arch-style hooks and RPM/Deb mapping)
+    PreInstall,
+    PreInstall2,
+    PostInstall,
+    PostInstall2,
+    PreRemove,
+    PreRemove2,
+    PostRemove,
+    PostRemove2,
+    PreUpgrade,
+    PostUpgrade,
 }
 
 #[derive(Debug, Clone)]
 pub struct HookTrigger {
-    pub operations: Vec<HookOperation>,
+    pub operations: u8, // Bit flags for HookOperation
     pub hook_type: HookType,
     pub targets: Vec<String>, // Can contain glob patterns and negations (!)
     pub positive_targets: Vec<String>,
     pub negative_targets: Vec<String>,
     pub positive_patterns: Vec<Pattern>,
     pub negative_patterns: Vec<Pattern>,
-    pub type_set: bool,
+    pub type_set: bool, // for input validation
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +85,7 @@ pub struct HookAction {
     pub depends: Vec<String>,
     pub abort_on_fail: bool,
     pub needs_targets: bool,
+    pub priority: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +136,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
             in_action = false;
             // Start a new trigger section
             current_triggers.push(HookTrigger {
-                operations: Vec::new(),
+                operations: 0,
                 hook_type: HookType::Path, // Default
                 targets: Vec::new(),
                 positive_targets: Vec::new(),
@@ -122,6 +157,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
                 depends: Vec::new(),
                 abort_on_fail: false,
                 needs_targets: false,
+                priority: 1_000_000,
             });
             continue;
         }
@@ -168,7 +204,7 @@ fn validate_hook(hook: &Hook, file: &Path) -> Result<()> {
                 file.display()
             ));
         }
-        if trigger.operations.is_empty() {
+        if trigger.operations == 0 {
             return Err(color_eyre::eyre::eyre!(
                 "Missing trigger operation in hook: {}",
                 file.display()
@@ -216,9 +252,7 @@ fn parse_trigger_line(line: &str, triggers: &mut Vec<HookTrigger>, file: &Path, 
                     )),
                 };
 
-                if !trigger.operations.contains(&operation) {
-                    trigger.operations.push(operation);
-                }
+                trigger.operations |= operation.as_flag();
             }
             "Type" => {
                 // Warn if overwriting (pacman behavior)
@@ -279,6 +313,44 @@ fn populate_hook_target_cache(hook: &mut Hook) {
     }
 }
 
+/// Compile string patterns into Pattern objects, filtering out invalid ones
+fn compile_patterns(patterns: &[String]) -> Vec<Pattern> {
+    patterns.iter()
+        .filter_map(|p| Pattern::new(p).ok())
+        .collect()
+}
+
+fn parse_when_value(raw: &str, file: &Path, line_num: usize) -> Result<HookWhen> {
+    let v = raw.trim();
+    let when = match v {
+        // Arch / generic
+        "PreTransaction"    => HookWhen::PreTransaction,
+        "PostTransaction"   => HookWhen::PostTransaction,
+        // RPM-style aliases for transaction phases
+        "PostUnTrans"       => HookWhen::PostUnTrans,
+        // Per-package phases (used for RPM/Deb/Arch mapping)
+        "PreInstall"        => HookWhen::PreInstall,
+        "PreInstall2"       => HookWhen::PreInstall2,
+        "PostInstall"       => HookWhen::PostInstall,
+        "PostInstall2"      => HookWhen::PostInstall2,
+        "PreRemove"         => HookWhen::PreRemove,
+        "PreRemove2"        => HookWhen::PreRemove2,
+        "PostRemove"        => HookWhen::PostRemove,
+        "PostRemove2"       => HookWhen::PostRemove2,
+        "PreUpgrade"        => HookWhen::PreUpgrade,
+        "PostUpgrade"       => HookWhen::PostUpgrade,
+        _ => {
+            return Err(color_eyre::eyre::eyre!(
+                "hook {} line {}: invalid When value {}",
+                file.display(),
+                line_num,
+                raw
+            ));
+        }
+    };
+    Ok(when)
+}
+
 fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num: usize) -> Result<()> {
     if let Some((key, value)) = line.split_once('=') {
         let key = key.trim();
@@ -288,16 +360,13 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
             "When" => {
                 // Warn if overwriting (pacman behavior)
                 if action.when != HookWhen::PostTransaction {
-                    log::warn!("hook {} line {}: overwriting previous definition of When", file.display(), line_num);
+                    log::warn!(
+                        "hook {} line {}: overwriting previous definition of When",
+                        file.display(),
+                        line_num
+                    );
                 }
-                action.when = match value {
-                    "PreTransaction" => HookWhen::PreTransaction,
-                    "PostTransaction" => HookWhen::PostTransaction,
-                    _ => return Err(color_eyre::eyre::eyre!(
-                        "hook {} line {}: invalid value {}",
-                        file.display(), line_num, value
-                    )),
-                };
+                action.when = parse_when_value(value, file, line_num)?;
             }
             "Description" => {
                 // Warn if overwriting (pacman behavior)
@@ -314,9 +383,25 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
             "Exec" => {
                 // Warn if overwriting (pacman behavior)
                 if !action.exec.is_empty() {
-                    log::warn!("hook {} line {}: overwriting previous definition of Exec", file.display(), line_num);
+                    log::warn!(
+                        "hook {} line {}: overwriting previous definition of Exec",
+                        file.display(),
+                        line_num
+                    );
                 }
                 action.exec = value.to_string();
+            }
+            "Priority" => {
+                let prio = value.parse::<u32>().map_err(|e| {
+                    color_eyre::eyre::eyre!(
+                        "hook {} line {}: invalid Priority {} ({})",
+                        file.display(),
+                        line_num,
+                        value,
+                        e
+                    )
+                })?;
+                action.priority = prio;
             }
             _ => {
                 return Err(color_eyre::eyre::eyre!(
@@ -517,7 +602,9 @@ fn load_hooks_from_directory(
 }
 
 /// Load hooks from a package's hook directory
-/// Scans $store_root/$pkgline/fs/usr/share/libalpm/hooks/ for hooks
+/// Scans the appropriate per-package hook directory for hooks.
+/// - Pacman: $store_root/$pkgline/fs/usr/share/libalpm/hooks/
+/// - Other formats (Rpm/Deb/etc): $store_root/$pkgline/info/install/
 pub fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
     let pkgline = pkgkey2pkgline(plan, pkgkey);
 
@@ -526,10 +613,19 @@ pub fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<(
         return Ok(());
     }
 
-    let hook_dir = plan.store_root
-        .join(&pkgline)
-        .join("fs")
-        .join("usr/share/libalpm/hooks");
+    let hook_dir = match plan.package_format {
+        crate::models::PackageFormat::Pacman => {
+            plan.store_root
+                .join(&pkgline)
+                .join("fs")
+                .join("usr/share/libalpm/hooks")
+        }
+        _ => {
+            plan.store_root
+                .join(&pkgline)
+                .join("info/install")
+        }
+    };
 
     load_hooks_from_directory(plan, &hook_dir, Some(pkgkey))
 }
@@ -538,14 +634,11 @@ pub fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<(
 /// Note: We load global hooks first, then package hooks. Package hooks can override global hooks
 /// by updating the pkgkey on the existing hook.
 pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
-    // Only load hooks for Arch Linux (Pacman format)
-    if plan.package_format != PackageFormat::Pacman {
-        return Ok(());
+    // Global hooks from etc/pacman.d/hooks/ are only for Pacman format
+    if plan.package_format == PackageFormat::Pacman {
+        let etc_hooks_dir = plan.env_root.join("etc/pacman.d/hooks");
+        load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
     }
-
-    // Load hooks from etc/pacman.d/hooks/ first (global hooks)
-    let etc_hooks_dir = plan.env_root.join("etc/pacman.d/hooks");
-    load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
 
     // Load hooks from installed packages (package hooks can override global hooks)
     let pkgkeys: Vec<String> = {
@@ -564,11 +657,6 @@ pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
 
 /// Load hooks for packages in the current batch
 pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
-    // Only load hooks for Arch Linux (Pacman format)
-    if plan.package_format != PackageFormat::Pacman {
-        return Ok(());
-    }
-
     let pkgkeys: Vec<String> = plan.batch.new_pkgkeys.iter().cloned().collect();
     for pkgkey in pkgkeys {
         load_package_hooks(plan, &pkgkey)?;
@@ -580,10 +668,110 @@ pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
     Ok(())
 }
 
+/// Match Path trigger (reference: _alpm_hook_trigger_match_file)
+/// Returns (matched, aggregated_targets)
+fn match_path_trigger(
+    plan: &InstallationPlan,
+    trigger: &HookTrigger,
+    needs_targets: bool,
+    pkgkey_filter: Option<&str>,
+) -> Result<(bool, Vec<String>)> {
+    // If there are no positive targets, we can't match
+    if trigger.positive_targets.is_empty() {
+        return Ok((false, Vec::new()));
+    }
 
-/// Check if any compiled pattern matches a string
-fn matches_any_pattern(text: &str, patterns: &[Pattern]) -> bool {
-    patterns.iter().any(|pattern| pattern.matches(text))
+    let mut matched_targets = Vec::new();
+
+    let upgrades_new_set =
+        collect_matching_files(plan, trigger, needs_targets, pkgkey_filter, &plan.batch.upgrades_new)?;
+    let upgrades_old_set =
+        collect_matching_files(plan, trigger, needs_targets, pkgkey_filter, &plan.batch.upgrades_old)?;
+
+    let wants_install = trigger.operations.is_set(HookOperation::Install);
+    if wants_install {
+        let installed_set =
+            collect_matching_files(plan, trigger, needs_targets, pkgkey_filter, &plan.installed)?;
+        let fresh_install_set =
+            collect_matching_files(plan, trigger, needs_targets, pkgkey_filter, &plan.batch.fresh_installs)?;
+        matched_targets.extend(installed_set.into_iter());
+        matched_targets.extend(fresh_install_set.into_iter());
+        matched_targets.extend(upgrades_new_set.difference(&upgrades_old_set).cloned());
+    }
+
+    let wants_remove = trigger.operations.is_set(HookOperation::Remove);
+    if wants_remove {
+        let old_remove_set =
+            collect_matching_files(plan, trigger, needs_targets, pkgkey_filter, &plan.batch.old_removes)?;
+        matched_targets.extend(old_remove_set.into_iter());
+        matched_targets.extend(upgrades_old_set.difference(&upgrades_new_set).cloned());
+    }
+
+    let wants_upgrade = trigger.operations.is_set(HookOperation::Upgrade);
+    if wants_upgrade {
+        matched_targets.extend(upgrades_old_set.intersection(&upgrades_new_set).cloned());
+    }
+
+    Ok((!matched_targets.is_empty(), matched_targets))
+}
+
+/// Collect matching files for a batch of pkgkeys by looking up package info from the plan.
+fn collect_matching_files(
+    plan: &InstallationPlan,
+    trigger: &HookTrigger,
+    needs_targets: bool,
+    pkgkey_filter: Option<&str>,
+    pkgkeys: &HashSet<String>,
+) -> Result<HashSet<String>> {
+    let mut out = HashSet::new();
+
+    if let Some(filter) = pkgkey_filter {
+        if pkgkeys.contains(filter) {
+            out = collect_matching_files_for_pkg(plan, trigger, needs_targets, filter)?;
+        }
+        return Ok(out);
+    }
+
+    for pkgkey in pkgkeys {
+        let pkg_matches = collect_matching_files_for_pkg(plan, trigger, needs_targets, pkgkey)?;
+        if !pkg_matches.is_empty() {
+            if !needs_targets {
+                return Ok(pkg_matches);
+            }
+            out.extend(pkg_matches.into_iter());
+        }
+    }
+
+    Ok(out)
+}
+
+/// Collect matching files for a single pkgkey by looking up package info from the plan.
+fn collect_matching_files_for_pkg(
+    plan: &InstallationPlan,
+    trigger: &HookTrigger,
+    needs_targets: bool,
+    pkgkey: &str,
+) -> Result<HashSet<String>> {
+    let store_root = &plan.store_root;
+    let mut out = HashSet::new();
+
+    if let Some(info) = crate::plan::pkgkey2installinfo(plan, pkgkey) {
+        let files = get_package_files(store_root, &info)?;
+        for file in &files {
+            if matches_patterns(
+                file,
+                &trigger.positive_patterns,
+                &trigger.negative_patterns,
+            ) {
+                out.insert(file.clone());
+                if !needs_targets {
+                    return Ok(out);
+                }
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 /// Check if text matches positive patterns but not negative patterns (using compiled patterns)
@@ -596,261 +784,16 @@ fn matches_patterns(
         && !matches_any_pattern(text, negative_patterns)
 }
 
-/// Compile string patterns into Pattern objects, filtering out invalid ones
-fn compile_patterns(patterns: &[String]) -> Vec<Pattern> {
-    patterns.iter()
-        .filter_map(|p| Pattern::new(p).ok())
-        .collect()
-}
-
-/// Collect package files matching trigger targets into the provided buffer.
-fn collect_matching_package_files<'a, I>(
-    packages: I,
-    store_root: &Path,
-    positive_patterns: &[Pattern],
-    negative_patterns: &[Pattern],
-    output: &mut Vec<String>,
-) -> Result<()>
-where
-    I: Iterator<Item = &'a InstalledPackageInfo>,
-{
-    for info in packages {
-        let files = get_package_files(store_root, info)?;
-        for file in &files {
-            if matches_patterns(file, positive_patterns, negative_patterns) {
-                output.push(file.clone());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Match Path trigger (reference: _alpm_hook_trigger_match_file)
-/// Returns (matched, aggregated_targets)
-fn match_path_trigger(
-    trigger: &HookTrigger,
-    plan: &InstallationPlan,
-    needs_targets: bool,
-) -> Result<(bool, Vec<String>)> {
-    // If there are no positive targets, we can't match
-    if trigger.positive_targets.is_empty() {
-        return Ok((false, Vec::new()));
-    }
-
-    let wants_install = trigger.operations.contains(&HookOperation::Install);
-    let wants_upgrade = trigger.operations.contains(&HookOperation::Upgrade);
-    let wants_remove = trigger.operations.contains(&HookOperation::Remove);
-
-    if !needs_targets {
-        let matched = match_path_trigger_no_targets(
-            plan,
-            &trigger.positive_patterns,
-            &trigger.negative_patterns,
-            wants_install,
-            wants_upgrade,
-            wants_remove,
-        )?;
-        return Ok((matched, Vec::new()));
-    }
-
-    match_path_trigger_with_targets(
-        plan,
-        &trigger.positive_patterns,
-        &trigger.negative_patterns,
-        wants_install,
-        wants_upgrade,
-        wants_remove,
-    )
-}
-
-/// Fast-path match for path triggers when targets are not needed. Short-circuits
-/// as soon as any matching condition is detected to avoid full set construction.
-fn match_path_trigger_no_targets(
-    plan: &InstallationPlan,
-    positive_patterns: &[Pattern],
-    negative_patterns: &[Pattern],
-    wants_install: bool,
-    wants_upgrade: bool,
-    wants_remove: bool,
-) -> Result<bool> {
-    let store_root = &plan.store_root;
-    let file_matches_new = |pkgkeys: &HashSet<String>| -> Result<bool> {
-        for pkgkey in pkgkeys.iter() {
-            if let Some(info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-                for file in get_package_files(store_root, &info)? {
-                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
-    };
-    let file_matches_old = |pkgkeys: &HashSet<String>| -> Result<bool> {
-        for pkgkey in pkgkeys.iter() {
-            if let Some(info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
-                for file in get_package_files(store_root, &info)? {
-                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
-    };
-
-    if wants_install && file_matches_new(&plan.batch.fresh_installs)? {
-        return Ok(true);
-    }
-
-    if wants_remove && file_matches_old(&plan.batch.old_removes)? {
-        return Ok(true);
-    }
-
-    // For upgrades and upgrade-related diffs we need to compare old/new sets, but still
-    // return early as soon as a decisive condition is found.
-    let mut upgrades_old_set = HashSet::new();
-    if wants_upgrade || wants_remove || wants_install {
-        for pkgkey in plan.batch.upgrades_old.iter() {
-            if let Some(info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
-                for file in get_package_files(store_root, &info)? {
-                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                        upgrades_old_set.insert(file);
-                    }
-                }
-            }
-        }
-    }
-
-    let mut upgrades_new_set = HashSet::new();
-    if wants_upgrade || wants_remove || wants_install {
-        for pkgkey in plan.batch.upgrades_new.iter() {
-            if let Some(info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-                for file in get_package_files(store_root, &info)? {
-                    if matches_patterns(&file, &positive_patterns, &negative_patterns) {
-                        let file_str = file;
-                        // Upgrade match: found in both old and new
-                        if wants_upgrade && upgrades_old_set.contains(&file_str) {
-                            return Ok(true);
-                        }
-                        // Install via upgrade addition
-                        if wants_install && !upgrades_old_set.contains(&file_str) {
-                            return Ok(true);
-                        }
-                        upgrades_new_set.insert(file_str);
-                    }
-                }
-            }
-        }
-    }
-
-    // Remove via upgrade disappearance: any old file missing from new set.
-    if wants_remove {
-        for old_file in &upgrades_old_set {
-            if !upgrades_new_set.contains(old_file) {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-/// Full match path trigger when targets are required; collects and returns them.
-fn match_path_trigger_with_targets(
-    plan: &InstallationPlan,
-    positive_patterns: &[Pattern],
-    negative_patterns: &[Pattern],
-    wants_install: bool,
-    wants_upgrade: bool,
-    wants_remove: bool,
-) -> Result<(bool, Vec<String>)> {
-    let store_root = &plan.store_root;
-    let mut matched_targets = Vec::new();
-
-    let mut fresh_install_files = Vec::new();
-    let mut upgrades_new_files = Vec::new();
-    let mut upgrades_old_files = Vec::new();
-    let mut old_remove_files = Vec::new();
-
-    if wants_install || wants_upgrade {
-        let fresh_installs_info: Vec<_> = plan.batch.fresh_installs.iter()
-            .filter_map(|k| crate::plan::pkgkey2new_pkg_info(plan, k))
-            .collect();
-        collect_matching_package_files(
-            fresh_installs_info.iter().map(|v| v.as_ref()),
-            store_root,
-            positive_patterns,
-            negative_patterns,
-            &mut fresh_install_files,
-        )?;
-    }
-
-    if wants_install || wants_upgrade || wants_remove {
-        let upgrades_new_info: Vec<_> = plan.batch.upgrades_new.iter()
-            .filter_map(|k| crate::plan::pkgkey2new_pkg_info(plan, k))
-            .collect();
-        collect_matching_package_files(
-            upgrades_new_info.iter().map(|v| v.as_ref()),
-            store_root,
-            positive_patterns,
-            negative_patterns,
-            &mut upgrades_new_files,
-        )?;
-
-        let upgrades_old_info: Vec<_> = plan.batch.upgrades_old.iter()
-            .filter_map(|k| crate::plan::pkgkey2installed_pkg_info(k))
-            .collect();
-        collect_matching_package_files(
-            upgrades_old_info.iter().map(|v| v.as_ref()),
-            store_root,
-            positive_patterns,
-            negative_patterns,
-            &mut upgrades_old_files,
-        )?;
-    }
-
-    if wants_remove {
-        let old_removes_info: Vec<_> = plan.batch.old_removes.iter()
-            .filter_map(|k| crate::plan::pkgkey2installed_pkg_info(k))
-            .collect();
-        collect_matching_package_files(
-            old_removes_info.iter().map(|v| v.as_ref()),
-            store_root,
-            positive_patterns,
-            negative_patterns,
-            &mut old_remove_files,
-        )?;
-    }
-
-    let fresh_install_set: HashSet<_> = fresh_install_files.into_iter().collect();
-    let upgrades_new_set: HashSet<_> = upgrades_new_files.into_iter().collect();
-    let upgrades_old_set: HashSet<_> = upgrades_old_files.into_iter().collect();
-    let old_remove_set: HashSet<_> = old_remove_files.into_iter().collect();
-
-    if wants_install {
-        matched_targets.extend(fresh_install_set.iter().cloned());
-        matched_targets.extend(upgrades_new_set.difference(&upgrades_old_set).cloned());
-    }
-
-    if wants_remove {
-        matched_targets.extend(old_remove_set.iter().cloned());
-        matched_targets.extend(upgrades_old_set.difference(&upgrades_new_set).cloned());
-    }
-
-    if wants_upgrade {
-        matched_targets.extend(upgrades_old_set.intersection(&upgrades_new_set).cloned());
-    }
-
-    let matched = !matched_targets.is_empty();
-    Ok((matched, matched_targets))
+/// Check if any compiled pattern matches a string
+fn matches_any_pattern(text: &str, patterns: &[Pattern]) -> bool {
+    patterns.iter().any(|pattern| pattern.matches(text))
 }
 
 /// Match Package trigger (reference: _alpm_hook_trigger_match_pkg)
 fn match_package_trigger(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
+    pkgkey_filter: Option<&str>,
 ) -> Result<(bool, Vec<String>, Vec<String>, Vec<String>)> {
     let mut install_pkgs = Vec::new();
     let mut upgrade_pkgs = Vec::new();
@@ -860,52 +803,62 @@ fn match_package_trigger(
         return Ok((false, Vec::new(), Vec::new(), Vec::new()));
     }
 
-    // Check install/upgrade operations
-    if trigger.operations.contains(&HookOperation::Install) || trigger.operations.contains(&HookOperation::Upgrade) {
-        for pkgkey in plan.batch.fresh_installs.iter() {
-            if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-                if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
-                    if trigger.operations.contains(&HookOperation::Install) {
-                        install_pkgs.push(pkgname);
-                    }
-                }
-            }
-        }
+    let wants_install = trigger.operations.is_set(HookOperation::Install);
+    let wants_upgrade = trigger.operations.is_set(HookOperation::Upgrade);
+    let wants_remove = trigger.operations.is_set(HookOperation::Remove);
 
-        for pkgkey in plan.batch.upgrades_new.iter() {
-            if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-                if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
-                    if trigger.operations.contains(&HookOperation::Upgrade) {
-                        upgrade_pkgs.push(pkgname);
-                    }
-                }
-            }
-        }
+    if wants_install {
+        install_pkgs = collect_matching_pkg_names(&plan.batch.fresh_installs, trigger, pkgkey_filter);
+    }
+    if wants_upgrade {
+        upgrade_pkgs = collect_matching_pkg_names(&plan.batch.upgrades_new, trigger, pkgkey_filter);
+    }
+    if wants_remove {
+        remove_pkgs = collect_matching_pkg_names(&plan.batch.old_removes, trigger, pkgkey_filter);
     }
 
-    // Check remove operations (reference: excludes packages being upgraded)
-    if trigger.operations.contains(&HookOperation::Remove) {
-        for pkgkey in plan.batch.old_removes.iter() {
-            // Exclude packages that are being upgraded (reference: checks if in add list)
-            if plan.batch.upgrades_new.contains(pkgkey) {
-                continue;
-            }
-
-            if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-                if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
-                    remove_pkgs.push(pkgname);
-                }
-            }
-        }
-    }
-
-    let matched = (trigger.operations.contains(&HookOperation::Install) && !install_pkgs.is_empty())
-        || (trigger.operations.contains(&HookOperation::Upgrade) && !upgrade_pkgs.is_empty())
-        || (trigger.operations.contains(&HookOperation::Remove) && !remove_pkgs.is_empty());
+    let matched = (wants_install && !install_pkgs.is_empty())
+        || (wants_upgrade && !upgrade_pkgs.is_empty())
+        || (wants_remove && !remove_pkgs.is_empty());
 
     Ok((matched, install_pkgs, upgrade_pkgs, remove_pkgs))
 }
 
+/// Collect package names from a set of pkgkeys that match the trigger patterns and optional filter.
+fn collect_matching_pkg_names(
+    pkgkeys: &HashSet<String>,
+    trigger: &HookTrigger,
+    pkgkey_filter: Option<&str>,
+) -> Vec<String> {
+    let mut matched = Vec::new();
+
+    if let Some(filter) = pkgkey_filter {
+        // Only process the filtered pkgkey if it exists in the set
+        if pkgkeys.contains(filter) {
+            add_matching_pkgname(filter, trigger, &mut matched);
+        }
+    } else {
+        // Process all pkgkeys
+        for pkgkey in pkgkeys {
+            add_matching_pkgname(pkgkey, trigger, &mut matched);
+        }
+    }
+
+    matched
+}
+
+/// Helper function to check if a package matches the trigger patterns and add it to the matched vector.
+fn add_matching_pkgname(
+    pkgkey: &str,
+    trigger: &HookTrigger,
+    matched: &mut Vec<String>,
+) {
+    if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
+        if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
+            matched.push(pkgname);
+        }
+    }
+}
 
 /// Check if a package dependency is satisfied
 /// Reference: _alpm_hook_run_hook uses alpm_find_satisfier
@@ -1135,9 +1088,10 @@ fn check_trigger_match(
     needs_targets: bool,
     should_reduce_path_triggers: bool,
     recent_cutoff: SystemTime,
+    pkgkey_filter: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
     let env_root = &plan.env_root;
-    if should_reduce_path_triggers && trigger.hook_type == HookType::Path {
+    if should_reduce_path_triggers && trigger.hook_type == HookType::Path && pkgkey_filter.is_none() {
         // Skip expensive trigger evaluation when none of its target files
         // were touched recently.
         if !path_trigger_has_recent_match(trigger, env_root, recent_cutoff)? {
@@ -1148,14 +1102,15 @@ fn check_trigger_match(
     match trigger.hook_type {
         HookType::Path => {
             match_path_trigger(
-                trigger,
                 plan,
+                trigger,
                 needs_targets,
+                pkgkey_filter,
             )
         }
         HookType::Package => {
             let (pmatched, install_targets, upgrade_targets, remove_targets) =
-                match_package_trigger(trigger, plan)?;
+                match_package_trigger(trigger, plan, pkgkey_filter)?;
 
             let mut matched_targets = Vec::new();
             if pmatched && needs_targets {
@@ -1176,6 +1131,7 @@ fn find_triggered_hooks<'a>(
     plan: &InstallationPlan,
     should_reduce_path_triggers: bool,
     recent_cutoff: SystemTime,
+    pkgkey_filter: Option<&str>,
 ) -> Result<Vec<(&'a Arc<Hook>, Vec<String>)>> {
     let mut triggered_hooks = Vec::new();
 
@@ -1195,6 +1151,7 @@ fn find_triggered_hooks<'a>(
                 hook.action.needs_targets,
                 should_reduce_path_triggers,
                 recent_cutoff,
+                pkgkey_filter,
             )?;
 
             if matched {
@@ -1226,7 +1183,7 @@ fn find_triggered_hooks<'a>(
 fn execute_triggered_hooks(
     triggered_hooks: Vec<(&Arc<Hook>, Vec<String>)>,
     plan: &InstallationPlan,
-    when: HookWhen,
+    when: &HookWhen,
 ) -> Result<()> {
     for (hook, matched_targets) in triggered_hooks {
         log::info!("running '{}'...", hook.file_path);
@@ -1242,7 +1199,7 @@ fn execute_triggered_hooks(
         }
 
         // If PreTransaction and error occurred, stop (pacman behavior)
-        if when == HookWhen::PreTransaction {
+        if *when == HookWhen::PreTransaction {
             // Error already handled above
         }
     }
@@ -1252,6 +1209,7 @@ fn execute_triggered_hooks(
 
 /// Run hooks for a transaction
 /// Reference: _alpm_hook_run
+#[allow(dead_code)]
 pub fn run_hooks(
     plan: &InstallationPlan,
     when: HookWhen,
@@ -1284,9 +1242,144 @@ pub fn run_hooks(
         plan,
         should_reduce,
         recent_cutoff,
+        None,
     )?;
 
     // Execute triggered hooks (reference: executes in order)
+    execute_triggered_hooks(triggered_hooks, plan, &when)?;
+
+    Ok(())
+}
+
+/// Run a single named hook over all packages in the current batch.
+#[allow(dead_code)]
+pub fn run_hook(
+    plan: &InstallationPlan,
+    hook_name: &str,
+) -> Result<()> {
+    // Early return if no packages to process
+    if plan.batch.new_pkgkeys.is_empty() {
+        return Ok(());
+    }
+
+    let hook_arc = match plan.hooks_by_name.get(hook_name) {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+
+    let mut sorted_hooks: Vec<&Arc<Hook>> = vec![hook_arc];
+    sort_hook_refs(&mut sorted_hooks);
+
+    let should_reduce = should_reduce_path_triggers(plan);
+    let recent_cutoff = calculate_recent_cutoff(should_reduce);
+
+    let triggered_hooks = find_triggered_hooks(
+        &sorted_hooks,
+        plan,
+        should_reduce,
+        recent_cutoff,
+        None,
+    )?;
+
+    execute_triggered_hooks(triggered_hooks, plan, &hook_arc.action.when)?;
+
+    Ok(())
+}
+
+/// Run hooks belonging to a specific pkgkey over all packages.
+pub fn run_pkgkey_hooks(
+    plan: &InstallationPlan,
+    when: &HookWhen,
+    pkgkey: &str,
+) -> Result<()> {
+    // Early return if no packages to process
+    if plan.batch.new_pkgkeys.is_empty() {
+        return Ok(());
+    }
+
+    let pkg_hooks = match plan.hooks_by_pkgkey.get(pkgkey) {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+
+    let mut relevant: Vec<&Arc<Hook>> = pkg_hooks
+        .iter()
+        .filter(|h| h.action.when == *when)
+        .collect();
+
+    if relevant.is_empty() {
+        return Ok(());
+    }
+
+    sort_hook_refs(&mut relevant);
+
+    let should_reduce = should_reduce_path_triggers(plan);
+    let recent_cutoff = calculate_recent_cutoff(should_reduce);
+
+    let triggered_hooks = find_triggered_hooks(
+        &relevant,
+        plan,
+        should_reduce,
+        recent_cutoff,
+        None,
+    )?;
+
+    execute_triggered_hooks(triggered_hooks, plan, when)?;
+
+    Ok(())
+}
+
+/// Run both:
+/// - hooks belonging to `pkgkey` over all packages (`run_pkgkey_hooks`)
+/// - all hooks on `pkgkey` with triggers restricted to that pkg (`run_hooks_on_pkgkey`)
+pub fn run_pkgkey_hooks_pair(
+    plan: &InstallationPlan,
+    when: HookWhen,
+    pkgkey: &str,
+) -> Result<()> {
+    run_pkgkey_hooks(plan, &when, pkgkey)?;
+    run_hooks_on_pkgkey(plan, &when, pkgkey)?;
+    Ok(())
+}
+
+/// Run all hooks on a specific pkgkey, restricting trigger evaluation to that pkgkey.
+pub fn run_hooks_on_pkgkey(
+    plan: &InstallationPlan,
+    when: &HookWhen,
+    pkgkey: &str,
+) -> Result<()> {
+    // Early return if no packages to process
+    if plan.batch.new_pkgkeys.is_empty() {
+        return Ok(());
+    }
+
+    let pkg_hooks = match plan.hooks_by_pkgkey.get(pkgkey) {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+
+    let mut relevant: Vec<&Arc<Hook>> = pkg_hooks
+        .iter()
+        .filter(|h| h.action.when == *when)
+        .collect();
+
+    if relevant.is_empty() {
+        return Ok(());
+    }
+
+    sort_hook_refs(&mut relevant);
+
+    let should_reduce = should_reduce_path_triggers(plan);
+    let recent_cutoff = calculate_recent_cutoff(should_reduce);
+
+    let triggered_hooks = find_triggered_hooks(
+        &relevant,
+        plan,
+        should_reduce,
+        recent_cutoff,
+        Some(pkgkey),
+    )?;
+
     execute_triggered_hooks(triggered_hooks, plan, when)?;
 
     Ok(())

@@ -14,6 +14,7 @@ use crate::mmio;
 use crate::aur::is_aur_package;
 use crate::dirs;
 use crate::hooks::{Hook, HookWhen};
+use crate::parse_provides::parse_provides;
 
 /// Package operation flags
 pub mod op_flags {
@@ -122,6 +123,9 @@ pub struct InstallationPlan {
     // = (fresh_installs + upgrades_new)
     pub new_pkgs: InstalledPackagesMap,
 
+    /// Set of currently installed package keys (snapshot at plan creation).
+    pub installed:      HashSet<String>,
+
     // Cache fields for ordered_operations (pkgkey sets)
     pub fresh_installs: HashSet<String>,
     pub old_removes:    HashSet<String>,
@@ -141,6 +145,24 @@ pub struct InstallationPlan {
     pub hooks_by_when: HashMap<HookWhen, Vec<Arc<Hook>>>,
     pub hooks_by_pkgkey: HashMap<String, Vec<Arc<Hook>>>,
     pub hooks_by_name: HashMap<String, Arc<Hook>>,
+
+    /// Debian explicit trigger interests (non-file triggers)
+    /// - deb_explicit_triggers_by_pkg: pkgkey -> trigger names this package is interested in
+    /// - deb_explicit_triggers_by_name: trigger name -> pkgkeys interested in it
+    pub deb_explicit_triggers_by_pkg: HashMap<String, Vec<String>>,
+    pub deb_explicit_triggers_by_name: HashMap<String, Vec<String>>,
+
+    /// Debian activate triggers (triggers that packages activate)
+    /// - deb_activate_triggers_by_pkg: pkgkey -> trigger names this package activates
+    /// - deb_activate_triggers_by_name: trigger name -> pkgkeys that activate it
+    pub deb_activate_triggers_by_pkg: HashMap<String, Vec<String>>,
+    pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
+
+    /// RPM provides indices for trigger/Depends matching
+    /// - rpm_provides_by_pkg: pkgkey -> capabilities provided by this package
+    /// - rpm_providers_by_cap: capability name -> pkgkeys that provide it
+    pub rpm_provides_by_pkg: HashMap<String, Vec<String>>,
+    pub rpm_providers_by_cap: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +213,13 @@ impl Default for InstallationPlan {
             hooks_by_when: HashMap::new(),
             hooks_by_pkgkey: HashMap::new(),
             hooks_by_name: HashMap::new(),
+            installed: HashSet::new(),
+            deb_explicit_triggers_by_pkg: HashMap::new(),
+            deb_explicit_triggers_by_name: HashMap::new(),
+            deb_activate_triggers_by_pkg: HashMap::new(),
+            deb_activate_triggers_by_name: HashMap::new(),
+            rpm_provides_by_pkg: HashMap::new(),
+            rpm_providers_by_cap: HashMap::new(),
         }
     }
 }
@@ -453,6 +482,10 @@ pub fn prepare_installation_plan(
     // Classify packages into fresh installs and upgrades
     classify_packages(all_packages_for_session, &mut plan)?;
 
+    // Snapshot currently installed package keys for later use.
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    plan.installed = installed.keys().cloned().collect();
+
     // Determine which packages should be removed
     if let Some(old_removes) = explicit_removes {
         plan.old_removes = old_removes.keys().cloned().collect();
@@ -468,10 +501,152 @@ pub fn prepare_installation_plan(
     crate::store::fill_pkglines_in_plan(&mut plan)
         .with_context(|| "Failed to find existing packages in store")?;
 
+    // Build explicit trigger and provides indices used by hooks/trigger mapping.
+    build_deb_explicit_trigger_maps(&mut plan)?;
+    build_deb_activate_trigger_maps(&mut plan)?;
+    build_rpm_provides_maps(&mut plan)?;
+
     // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
     crate::hooks::load_initial_hooks(&mut plan)?;
 
     Ok(plan)
+}
+
+/// Build Debian explicit trigger interest maps for the plan.
+/// Only used when operating in Debian format; safe no-op otherwise.
+fn build_deb_explicit_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
+    if plan.package_format != PackageFormat::Deb {
+        return Ok(());
+    }
+
+    // Only look at already-installed packages; new packages being installed in
+    // this transaction will have their trigger metadata populated as part of
+    // unpack and will be visible on the next plan.
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+
+    for (pkgkey, _) in installed.iter() {
+        // Reuse deb_triggers helper to read trigger interests from info/install/.
+        let (explicit_interests, _file_interests) =
+            crate::deb_triggers::read_package_trigger_interests(pkgkey, &plan.store_root)?;
+
+        if explicit_interests.is_empty() {
+            continue;
+        }
+
+        for (trigger_name, _pkgs) in explicit_interests {
+            // Map: pkgkey -> trigger names
+            let pkg_entry = plan
+                .deb_explicit_triggers_by_pkg
+                .entry(pkgkey.clone())
+                .or_insert_with(Vec::new);
+            if !pkg_entry.contains(&trigger_name) {
+                pkg_entry.push(trigger_name.clone());
+            }
+
+            // Map: trigger name -> pkgkeys
+            let name_entry = plan
+                .deb_explicit_triggers_by_name
+                .entry(trigger_name.clone())
+                .or_insert_with(Vec::new);
+            if !name_entry.contains(pkgkey) {
+                name_entry.push(pkgkey.clone());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Build Debian activate trigger maps for the plan.
+/// Only used when operating in Debian format; safe no-op otherwise.
+fn build_deb_activate_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
+    if plan.package_format != PackageFormat::Deb {
+        return Ok(());
+    }
+
+    // Only look at already-installed packages; new packages being installed in
+    // this transaction will have their trigger metadata populated as part of
+    // unpack and will be visible on the next plan.
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+
+    for (pkgkey, _) in installed.iter() {
+        // Reuse deb_triggers helper to read activate triggers from info/install/.
+        let activate_triggers =
+            crate::deb_triggers::read_package_activate_triggers(pkgkey, &plan.store_root)?;
+
+        if activate_triggers.is_empty() {
+            continue;
+        }
+
+        for (trigger_name, _await_mode) in activate_triggers {
+            // Map: pkgkey -> trigger names this package activates
+            let pkg_entry = plan
+                .deb_activate_triggers_by_pkg
+                .entry(pkgkey.clone())
+                .or_insert_with(Vec::new);
+            if !pkg_entry.contains(&trigger_name) {
+                pkg_entry.push(trigger_name.clone());
+            }
+
+            // Map: trigger name -> pkgkeys that activate it
+            let name_entry = plan
+                .deb_activate_triggers_by_name
+                .entry(trigger_name.clone())
+                .or_insert_with(Vec::new);
+            if !name_entry.contains(pkgkey) {
+                name_entry.push(pkgkey.clone());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Build RPM provides indices used for trigger / Depends matching in hooks.
+/// Only used when operating in RPM format; safe no-op otherwise.
+fn build_rpm_provides_maps(plan: &mut InstallationPlan) -> Result<()> {
+    if plan.package_format != PackageFormat::Rpm {
+        return Ok(());
+    }
+
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+
+    for (pkgkey, _) in installed.iter() {
+        // Load full package metadata to read provides.
+        let package = match mmio::map_pkgkey2package(pkgkey) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!("Failed to load package metadata for {}: {}", pkgkey, e);
+                continue;
+            }
+        };
+
+        for provide_str in &package.provides {
+            // Parse provide entries into capability names.
+            let provide_map = parse_provides(provide_str, PackageFormat::Rpm);
+            for (cap_name, _version) in provide_map {
+                // Map: pkgkey -> capabilities
+                let caps = plan
+                    .rpm_provides_by_pkg
+                    .entry(pkgkey.clone())
+                    .or_insert_with(Vec::new);
+                if !caps.contains(&cap_name) {
+                    caps.push(cap_name.clone());
+                }
+
+                // Map: capability -> pkgkeys
+                let providers = plan
+                    .rpm_providers_by_cap
+                    .entry(cap_name.clone())
+                    .or_insert_with(Vec::new);
+                if !providers.contains(pkgkey) {
+                    providers.push(pkgkey.clone());
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Find orphaned packages that should be removed
@@ -842,6 +1017,26 @@ pub fn build_all_pkgs_from_operations(plan: &mut InstallationPlan) {
             if !op.is_aur() || op.in_store() {
                 plan.batch.new_pkgkeys.insert(pkgkey.clone());
             }
+        }
+    }
+}
+
+/// Remove a package from the installed packages cache and update reverse dependencies.
+///
+/// This function:
+/// 1. Removes the package from `PACKAGE_CACHE.installed_packages`
+/// 2. Updates rdepends for all packages that depend on the removed package
+///
+/// # Arguments
+/// * `pkgkey` - Package key to remove
+/// * `pkg_info` - Package info containing the depends list
+pub fn remove_package_from_cache(pkgkey: &str, pkg_info: &InstalledPackageInfo) {
+    PACKAGE_CACHE.installed_packages.write().unwrap().remove(pkgkey);
+    // Update rdepends
+    for dep_on_key in &pkg_info.depends {
+        let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
+        if let Some(dep_pkg_info_mut) = installed.get_mut(dep_on_key) {
+            Arc::make_mut(dep_pkg_info_mut).rdepends.retain(|r| r != pkgkey);
         }
     }
 }

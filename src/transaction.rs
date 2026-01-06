@@ -47,23 +47,18 @@
 //! - `process_single_package_upgrade()` - Replaced by `run_action()` with integrated triggers
 //! - `process_fresh_installs()` - Replaced by `process_package_operation()` with integrated triggers
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
 use std::time::SystemTime;
 use color_eyre::Result;
 use std::sync::Arc;
-use color_eyre::eyre::{eyre, WrapErr};
+use color_eyre::eyre::WrapErr;
 use crate::models::{PackageFormat, InstalledPackageInfo, InstalledPackagesMap};
 use crate::models::PACKAGE_CACHE;
-use crate::plan::{InstallationPlan, PackageOperation, OperationType};
+use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_package_from_cache};
 use crate::hooks;
-use crate::rpm_triggers;
-use crate::deb_triggers;
-use crate::deb_triggers::process_deb_triggers;
-use crate::scriptlets;
-use crate::scriptlets::{run_scriptlet, run_scriptlets, ScriptletType};
-use crate::package;
+use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
 use crate::run;
 use crate::remove::unlink_package;
 use log;
@@ -107,479 +102,96 @@ fn run_action(
 ) -> Result<()> {
     let store_root = &plan.store_root;
     let env_root = &plan.env_root;
-    let package_format = plan.package_format;
-    let is_upgrade = old_pkgkey.is_some();
-    let old_version = old_pkgkey.and_then(|k| package::pkgkey2version(k).ok());
-    let new_version = package::pkgkey2version(pkgkey).ok();
 
     match action {
         PackageAction::PreInstall => {
-            // Level 3b: Trigger and scriptlet actions
-            let mut single_pkg: InstalledPackagesMap = HashMap::new();
-            single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
+            // Hook: PreInstall
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreInstall, pkgkey)?;
 
-            // RPM triggerprein - BEFORE pre scriptlet
-            if package_format == PackageFormat::Rpm {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed: InstalledPackagesMap = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), Arc::clone(v));
-                }
-                all_installed.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_package_triggers(
-                    "triggerprein",
-                    &all_installed,
-                    &single_pkg,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    store_root,
-                    env_root,
-                ) {
-                    log::warn!("Failed to run RPM triggerprein triggers for {}: {}", pkgkey, e);
-                }
-            }
+            // Level 3b: Trigger and scriptlet actions
+
+            // RPM triggerprein previously ran here (now covered by hooks).
 
             // Pre-install scriptlet
-            run_scriptlets(&single_pkg, plan, ScriptletType::PreInstall, is_upgrade)?;
+            run_scriptlet(plan, ScriptletType::PreInstall, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
-            // DEB activate triggers - AFTER pre scriptlet
-            if package_format == PackageFormat::Deb {
-                let activate_triggers = deb_triggers::read_package_activate_triggers(pkgkey, store_root)
-                    .unwrap_or_default();
-                let pkgname = package::pkgkey2pkgname(pkgkey).ok();
-                for (trigger_name, await_mode) in activate_triggers {
-                    if let Err(e) = deb_triggers::activate_trigger(
-                        env_root,
-                        &trigger_name,
-                        pkgname.as_deref(),
-                        !await_mode, // no_await is inverse of await_mode
-                    ) {
-                        log::warn!("Failed to activate trigger {} for package {}: {}", trigger_name, pkgkey, e);
-                    }
-                }
-            }
+            // DEB activate triggers now handled by hooks (PostInstall/PostTransaction based on await mode)
         }
 
         PackageAction::LinkFiles => {
             // Level 3a: Install action
             // Files are already linked during download/unpack phase, but we may need to handle diff linking for upgrades
-            if is_upgrade {
-                if let (Some(old_key), Some(old_info)) = (old_pkgkey, old_pkg_info) {
-                    // For upgrades, link new files and unlink old unique files
-                    crate::link::unlink_package_diff(old_info, pkg_info, store_root, env_root)
-                        .with_context(|| format!("Failed to unlink old package files for {}", old_key))?;
-                }
-            }
+            crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, store_root, env_root)?;
             // Note: Actual linking happens earlier in the download/unpack phase
 
-            // DEB trigger handling (incorporate interests, build index, activate file triggers) - AFTER linking
-            if package_format == PackageFormat::Deb {
-                let packages = [(pkgkey, pkg_info.as_ref())];
-                if let Err(e) = process_deb_triggers(&packages, store_root, env_root) {
-                    log::warn!("Failed to process DEB triggers for {}: {}", pkgkey, e);
-                }
-            }
-
-            // RPM file triggers (filetriggerin, high priority) - AFTER file linking, BEFORE postin
-            if package_format == PackageFormat::Rpm {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed: InstalledPackagesMap = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), Arc::clone(v));
-                }
-                all_installed.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-                drop(installed);
-                let mut single_pkg = HashMap::new();
-                single_pkg.insert(pkgkey.to_string(), pkg_info.clone());
-                if let Err(e) = rpm_triggers::run_rpm_file_triggers(
-                    "filetriggerin",
-                    &all_installed,
-                    &single_pkg,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    store_root,
-                    env_root,
-                    1, // High priority (>= 10000)
-                ) {
-                    log::warn!("Failed to run RPM filetriggerin triggers (high priority) for {}: {}", pkgkey, e);
-                }
-            }
+            // DEB trigger handling now covered by hooks (file triggers match paths, explicit triggers match packages)
         }
 
         PackageAction::PostInstall => {
             // Level 3b: Scriptlet and trigger actions
-            let mut single_pkg: InstalledPackagesMap = HashMap::new();
-            single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
 
             // Post-install scriptlet
-            run_scriptlets(&single_pkg, plan, ScriptletType::PostInstall, is_upgrade)?;
+            run_scriptlet(plan, ScriptletType::PostInstall, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
-            // RPM package triggers (triggerin) - AFTER postin
-            if package_format == PackageFormat::Rpm {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed: InstalledPackagesMap = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), Arc::clone(v));
-                }
-                all_installed.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_package_triggers(
-                    "triggerin",
-                    &all_installed,
-                    &single_pkg,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    store_root,
-                    env_root,
-                ) {
-                    log::warn!("Failed to run RPM triggerin triggers for {}: {}", pkgkey, e);
-                }
-            }
+            // Hook: PostInstall (primary post phase)
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostInstall, pkgkey)?;
 
-            // RPM file triggers (filetriggerin, low priority) - AFTER postin
-            if package_format == PackageFormat::Rpm {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed: InstalledPackagesMap = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), Arc::clone(v));
-                }
-                all_installed.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_file_triggers(
-                    "filetriggerin",
-                    &all_installed,
-                    &single_pkg,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    store_root,
-                    env_root,
-                    2, // Low priority (< 10000)
-                ) {
-                    log::warn!("Failed to run RPM filetriggerin triggers (low priority) for {}: {}", pkgkey, e);
-                }
-            }
-
-            // DEB trigger incorporation and processing - AFTER postin
-            if package_format == PackageFormat::Deb {
-                let mut all_packages: InstalledPackagesMap = PACKAGE_CACHE.installed_packages.read().unwrap()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), Arc::clone(v)))
-                    .collect();
-                all_packages.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-
-                // Incorporate triggers from Unincorp
-                let incorporation_result = deb_triggers::incorporate_triggers(env_root, &all_packages, store_root)
-                    .unwrap_or_else(|_| deb_triggers::TriggerIncorporationResult {
-                        pending_triggers: HashMap::new(),
-                        awaiting_packages: HashSet::new(),
-                    });
-
-                // Update package states based on incorporation results for ALL packages
-                // Collect pkgkeys first to avoid borrow checker issues
-                let mut pending_pkgkeys: Vec<(String, Vec<String>)> = Vec::new();
-                for (pkgname, trigger_names) in &incorporation_result.pending_triggers {
-                    if let Some((pkgkey, _)) = all_packages.iter()
-                        .find(|(k, _)| package::pkgkey2pkgname(k).unwrap_or_default() == *pkgname) {
-                        pending_pkgkeys.push((pkgkey.clone(), trigger_names.clone()));
-                    }
-                }
-                for (pkgkey, trigger_names) in &pending_pkgkeys {
-                    if let Some(info) = all_packages.get_mut(pkgkey) {
-                        Arc::make_mut(info).pending_triggers = trigger_names.clone();
-                    }
-                    if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                        Arc::make_mut(info).pending_triggers = trigger_names.clone();
-                    }
-                }
-
-                // Mark packages that should await trigger processing
-                let mut awaiting_pkgkeys: Vec<String> = Vec::new();
-                for pkgname in &incorporation_result.awaiting_packages {
-                    if let Some((pkgkey, _)) = all_packages.iter()
-                        .find(|(k, _)| package::pkgkey2pkgname(k).unwrap_or_default() == *pkgname) {
-                        awaiting_pkgkeys.push(pkgkey.clone());
-                    }
-                }
-                for pkgkey in &awaiting_pkgkeys {
-                    if let Some(info) = all_packages.get_mut(pkgkey) {
-                        Arc::make_mut(info).triggers_awaited = true;
-                    }
-                    if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                        Arc::make_mut(info).triggers_awaited = true;
-                    }
-                }
-
-                // Process triggers for ALL packages with pending triggers (not just current package)
-                // Reset cycle detection at start
-                deb_triggers::reset_cycle_detection();
-
-                // Collect pkgkeys first to avoid borrow checker issues
-                let mut processing_queue: Vec<(String, String, Vec<String>)> = Vec::new();
-                for (pkgkey, trigger_names) in &pending_pkgkeys {
-                    let pkgname = package::pkgkey2pkgname(pkgkey).unwrap_or_default();
-                    // Skip packages that are already in config-failed state
-                    if let Some(info) = all_packages.get(pkgkey) {
-                        if info.config_failed {
-                            log::debug!("Skipping package {} - already in config-failed state", pkgname);
-                            continue;
-                        }
-                    }
-                    processing_queue.push((pkgkey.clone(), pkgname, trigger_names.clone()));
-                }
-
-                // Process triggers with cycle detection
-                for (pkgkey, pkgname, trigger_names) in processing_queue {
-                    // Build map of all pending triggers for cycle detection
-                    let mut all_pending_triggers: HashMap<String, Vec<String>> = HashMap::new();
-                    for (k, info) in all_packages.iter() {
-                        if !info.pending_triggers.is_empty() && !info.config_failed {
-                            all_pending_triggers.insert(k.clone(), info.pending_triggers.clone());
-                        }
-                    }
-
-                    // Check for cycles before processing
-                    if let Some(cycle_pkgkey) = deb_triggers::check_trigger_cycle(&pkgkey, &all_pending_triggers) {
-                        log::warn!("Trigger cycle detected! Marking package {} as config-failed to break cycle", cycle_pkgkey);
-                        if let Some(info) = all_packages.get_mut(&cycle_pkgkey) {
-                            let info_mut = Arc::make_mut(info);
-                            info_mut.config_failed = true;
-                            info_mut.pending_triggers.clear();
-                        }
-                        if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&cycle_pkgkey) {
-                            let info_mut = Arc::make_mut(info);
-                            info_mut.config_failed = true;
-                            info_mut.pending_triggers.clear();
-                        }
-                        // Skip processing this package if it's the one we're marking as failed
-                        if cycle_pkgkey == pkgkey {
-                            continue;
-                        }
-                    }
-
-                    if let Some(pkg_info_ref) = all_packages.get(&pkgkey).cloned() {
-                        match deb_triggers::process_package_triggers(
-                            &pkgkey,
-                            &pkg_info_ref,
-                            &trigger_names,
-                            store_root,
-                            env_root,
-                        ) {
-                            Ok(_) => {
-                                // Clear pending triggers after successful processing
-                                if let Some(info) = all_packages.get_mut(&pkgkey) {
-                                    let info_mut = Arc::make_mut(info);
-                                    info_mut.pending_triggers.clear();
-                                    info_mut.config_failed = false;
-                                }
-                                if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&pkgkey) {
-                                    let info_mut = Arc::make_mut(info);
-                                    info_mut.pending_triggers.clear();
-                                    info_mut.config_failed = false;
-                                }
-                                log::debug!("Successfully processed triggers for package {}", pkgname);
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to process triggers for package {}: {}", pkgname, e);
-                                if let Some(info) = all_packages.get_mut(&pkgkey) {
-                                    Arc::make_mut(info).config_failed = true;
-                                }
-                                if let Some(info) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(&pkgkey) {
-                                    Arc::make_mut(info).config_failed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // RPM triggerin and filetriggerin (low priority) previously ran here (now covered by hooks).
+            // DEB trigger processing now handled by hooks (noawait -> PostInstall, await -> PostTransaction)
         }
 
         PackageAction::PreRemove => {
+            // Hook: PreRemove
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreRemove, pkgkey)?;
+
             // Level 3b: Trigger and scriptlet actions
-            let mut single_pkg = HashMap::new();
-            if let Some(old_info) = old_pkg_info {
-                single_pkg.insert(pkgkey.to_string(), old_info.clone());
-            } else {
-                single_pkg.insert(pkgkey.to_string(), pkg_info.clone());
-            }
 
-            // RPM package triggers (triggerun) - BEFORE preun
-            if package_format == PackageFormat::Rpm && is_upgrade {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), v.clone());
-                }
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_package_triggers(
-                    "triggerun",
-                    &all_installed,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &single_pkg,
-                    store_root,
-                    env_root,
-                ) {
-                    log::warn!("Failed to run RPM triggerun triggers during upgrade for {}: {}", pkgkey, e);
-                }
-            }
-
-            // RPM file triggers (filetriggerun, high priority) - BEFORE preun
-            if package_format == PackageFormat::Rpm && is_upgrade {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), v.clone());
-                }
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_file_triggers(
-                    "filetriggerun",
-                    &all_installed,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &single_pkg,
-                    store_root,
-                    env_root,
-                    1, // High priority (>= 10000)
-                ) {
-                    log::warn!("Failed to run RPM filetriggerun triggers (high priority) during upgrade for {}: {}", pkgkey, e);
-                }
-            }
+            // RPM triggerun and filetriggerun (high priority) previously ran here (now covered by hooks).
 
             // Pre-remove scriptlet
-            run_scriptlets(&single_pkg, plan, ScriptletType::PreRemove, is_upgrade)?;
+            // Use pkg_info directly - it's already the correct package info for this action
+            // (old_info for removals/upgrades, pkg_info for pure removals)
+            run_scriptlet(plan, ScriptletType::PreRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
-            // RPM file triggers (filetriggerun, low priority) - AFTER preun, BEFORE file removal
-            if package_format == PackageFormat::Rpm && is_upgrade {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), v.clone());
-                }
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_file_triggers(
-                    "filetriggerun",
-                    &all_installed,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &single_pkg,
-                    store_root,
-                    env_root,
-                    2, // Low priority (< 10000)
-                ) {
-                    log::warn!("Failed to run RPM filetriggerun triggers (low priority) during upgrade for {}: {}", pkgkey, e);
-                }
-            }
+            // Hook: PreRemove2 (low priority path trigger placement)
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreRemove2, pkgkey)?;
+
+            // RPM filetriggerun (low priority) previously ran here (now covered by hooks).
         }
 
         PackageAction::UnlinkFiles => {
             // Level 3a: Remove action
-            if pkg_info.pkgline.is_empty() || pkg_info.pkgline.contains("/") || pkg_info.pkgline.contains("..") {
-                log::error!("Invalid pkgline for {}: '{}'. Skipping unlink.", pkgkey, pkg_info.pkgline);
-                return Err(eyre!("Invalid pkgline for {}: '{}'", pkgkey, pkg_info.pkgline));
-            }
-            let pkg_store_path = store_root.join(&pkg_info.pkgline);
-            log::info!("Unlinking files for package: {} from store path {}", pkgkey, pkg_store_path.display());
-
-            // Remove DEB trigger interests before unlinking
-            if package_format == PackageFormat::Deb {
-                let install_dir = store_root.join(&pkg_info.pkgline).join("info/install");
-                let interest_file = install_dir.join("deb_interest.triggers");
-                if interest_file.exists() {
-                    if let Err(e) = deb_triggers::incorporate_package_trigger_interests(
-                        pkgkey,
-                        store_root,
-                        env_root,
-                        true, // is_removal
-                    ) {
-                        log::warn!("Failed to remove trigger interests for {}: {}", pkgkey, e);
-                    }
-                }
-            }
-
-            unlink_package(&pkg_store_path, &env_root.to_path_buf())
-                .with_context(|| format!("Failed to unlink package {} (store path: {})", pkgkey, pkg_store_path.display()))?;
-            PACKAGE_CACHE.installed_packages.write().unwrap().remove(pkgkey);
+            unlink_package(pkgkey, &pkg_info.pkgline, store_root, &env_root.to_path_buf())?;
+            remove_package_from_cache(pkgkey, pkg_info);
         }
 
         PackageAction::PostRemove => {
             // Level 3b: Scriptlet action
-            let mut single_pkg = HashMap::new();
-            if let Some(old_info) = old_pkg_info {
-                single_pkg.insert(pkgkey.to_string(), old_info.clone());
-            } else {
-                single_pkg.insert(pkgkey.to_string(), pkg_info.clone());
-            }
-            run_scriptlets(&single_pkg, plan, ScriptletType::PostRemove, is_upgrade)?;
+            // Use pkg_info directly - it's already the correct package info for this action
+            // (old_info for removals/upgrades, pkg_info for pure removals)
+            run_scriptlet(plan, ScriptletType::PostRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
-            // RPM package triggers (triggerpostun) for upgrade - AFTER postun
-            if package_format == PackageFormat::Rpm && is_upgrade {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), v.clone());
-                }
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_package_triggers(
-                    "triggerpostun",
-                    &all_installed,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &single_pkg,
-                    store_root,
-                    env_root,
-                ) {
-                    log::warn!("Failed to run RPM triggerpostun triggers during upgrade for {}: {}", pkgkey, e);
-                }
-            }
+            // Hook: PostRemove (primary post-remove phase)
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostRemove, pkgkey)?;
 
-            // Update rdepends
-            for dep_on_key in &pkg_info.depends {
-                let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
-                if let Some(dep_pkg_info_mut) = installed.get_mut(dep_on_key) {
-                    Arc::make_mut(dep_pkg_info_mut).rdepends.retain(|r| r != pkgkey);
-                }
-            }
+            // RPM triggerpostun previously ran here (now covered by hooks).
 
+            // Hook: PostRemove2 (secondary post-remove phase)
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostRemove2, pkgkey)?;
         }
 
         PackageAction::PreUpgrade => {
+            // Hook: PreUpgrade
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreUpgrade, pkgkey)?;
+
             // Level 3b: Trigger and scriptlet actions
             let mut single_pkg: InstalledPackagesMap = HashMap::new();
             single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
 
-            // RPM package triggers (triggerprein) for upgrade - BEFORE preupgrade
-            if package_format == PackageFormat::Rpm {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed: InstalledPackagesMap = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), Arc::clone(v));
-                }
-                all_installed.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_package_triggers(
-                    "triggerprein",
-                    &all_installed,
-                    &single_pkg,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    store_root,
-                    env_root,
-                ) {
-                    log::warn!("Failed to run RPM triggerprein triggers during upgrade for {}: {}", pkgkey, e);
-                }
-            }
+            // RPM triggerprein (upgrade) previously ran here (now covered by hooks).
 
             // Pre-upgrade scriptlet
-            run_scriptlet(
-                pkgkey,
-                pkg_info.as_ref(),
-                plan,
-                ScriptletType::PreUpgrade,
-                true, // is_upgrade
-                old_version.as_deref(),
-                new_version.as_deref(),
-            )?;
+            run_scriptlet(plan, ScriptletType::PreUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
         }
 
         PackageAction::PostUpgrade => {
@@ -588,45 +200,13 @@ fn run_action(
             single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
 
             // Post-upgrade scriptlet
-            run_scriptlet(
-                pkgkey,
-                pkg_info.as_ref(),
-                plan,
-                ScriptletType::PostUpgrade,
-                true, // is_upgrade
-                old_version.as_deref(),
-                new_version.as_deref(),
-            )?;
+            run_scriptlet(plan, ScriptletType::PostUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
-            // RPM package triggers (triggerin) for upgrade - AFTER postupgrade
-            if package_format == PackageFormat::Rpm {
-                let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-                let mut all_installed: InstalledPackagesMap = HashMap::new();
-                for (k, v) in installed.iter() {
-                    all_installed.insert(k.clone(), Arc::clone(v));
-                }
-                all_installed.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-                drop(installed);
-                if let Err(e) = rpm_triggers::run_rpm_package_triggers(
-                    "triggerin",
-                    &all_installed,
-                    &single_pkg,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    store_root,
-                    env_root,
-                ) {
-                    log::warn!("Failed to run RPM triggerin triggers during upgrade for {}: {}", pkgkey, e);
-                }
-            }
+            // Hook: PostUpgrade
+            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostUpgrade, pkgkey)?;
 
-            // DEB trigger handling for upgrades
-            if package_format == PackageFormat::Deb {
-                let packages = [(pkgkey, pkg_info.as_ref())];
-                if let Err(e) = process_deb_triggers(&packages, store_root, env_root) {
-                    log::warn!("Failed to process DEB triggers for upgrade {}: {}", pkgkey, e);
-                }
-            }
+            // RPM triggerin (upgrade) previously ran here (now covered by hooks).
+            // DEB trigger handling for upgrades now covered by hooks
         }
 
         PackageAction::ExposeExecutables => {
@@ -651,77 +231,21 @@ fn run_action(
 fn begin_transaction(
     plan: &InstallationPlan,
 ) -> Result<()> {
-    let store_root = &plan.store_root;
-    let env_root = &plan.env_root;
     let package_format = plan.package_format;
-    let has_upgrades = !plan.batch.upgrades_new.is_empty();
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
     // Order: %pretrans of new, then %preuntrans of old (before any file operations)
     if package_format == PackageFormat::Rpm {
         // %pretrans of packages being installed/upgraded
-        let mut pretrans_packages = HashMap::new();
-        for k in plan.batch.fresh_installs.iter() {
-            if let Some(v) = crate::plan::pkgkey2new_pkg_info(plan, k) {
-                pretrans_packages.insert(k.clone(), v);
-            }
-        }
-        for k in plan.batch.upgrades_new.iter() {
-            if let Some(v) = crate::plan::pkgkey2new_pkg_info(plan, k) {
-                pretrans_packages.insert(k.clone(), v);
-            }
-        }
-        if !pretrans_packages.is_empty() {
-            if let Err(e) = scriptlets::run_scriptlets(
-                &pretrans_packages,
-                plan,
-                scriptlets::ScriptletType::PreTrans,
-                has_upgrades,
-            ) {
-                log::warn!("Failed to run %pretrans scriptlets: {}", e);
-            }
-        }
+        run_trans_scriptlets(plan, ScriptletType::PreTrans)?;
 
         // %preuntrans of packages being removed (runs after %pretrans, before removals)
-        if !plan.batch.old_removes.is_empty() {
-            let mut old_removes_map = HashMap::new();
-            for k in plan.batch.old_removes.iter() {
-                if let Some(v) = crate::plan::pkgkey2installed_pkg_info(k) {
-                    old_removes_map.insert(k.clone(), v);
-                }
-            }
-            if let Err(e) = scriptlets::run_scriptlets(
-                &old_removes_map,
-                plan,
-                scriptlets::ScriptletType::PreUnTrans,
-                false, // is_upgrade - removals are separate from upgrades
-            ) {
-                log::warn!("Failed to run %preuntrans scriptlets: {}", e);
-            }
-        }
+        run_trans_scriptlets(plan, ScriptletType::PreUnTrans)?;
 
-        // RPM transaction file triggers (transfiletriggerun) - after %preuntrans, before removals
-        // Runs ONCE per transaction for all matching removed files
-        if !plan.batch.old_removes.is_empty() {
-            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-            let mut old_removes_map = HashMap::new();
-            for k in plan.batch.old_removes.iter() {
-                if let Some(v) = crate::plan::pkgkey2installed_pkg_info(k) {
-                    old_removes_map.insert(k.clone(), v);
-                }
-            }
-            if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
-                "transfiletriggerun",
-                &installed,
-                &HashMap::new(),
-                &HashMap::new(),
-                &old_removes_map,
-                store_root,
-                env_root,
-            ) {
-                log::warn!("Failed to run RPM transfiletriggerun triggers: {}", e);
-            }
-        }
+        // RPM transfiletriggerun previously ran here (now covered by hooks).
     }
+
+    // Hook: PreTransaction
+    hooks::run_hooks(plan, hooks::HookWhen::PreTransaction)?;
 
     Ok(())
 }
@@ -731,113 +255,24 @@ fn begin_transaction(
 fn end_transaction(
     plan: &InstallationPlan,
 ) -> Result<()> {
-    let store_root = &plan.store_root;
-    let env_root = &plan.env_root;
     let package_format = plan.package_format;
-    let has_upgrades = !plan.batch.upgrades_new.is_empty();
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
     if package_format == PackageFormat::Rpm {
-        let mut posttrans_packages = HashMap::new();
-        for k in plan.batch.fresh_installs.iter() {
-            if let Some(v) = crate::plan::pkgkey2new_pkg_info(plan, k) {
-                posttrans_packages.insert(k.clone(), v);
-            }
-        }
-        for k in plan.batch.upgrades_new.iter() {
-            if let Some(v) = crate::plan::pkgkey2new_pkg_info(plan, k) {
-                posttrans_packages.insert(k.clone(), v);
-            }
-        }
-        if !posttrans_packages.is_empty() {
-            if let Err(e) = scriptlets::run_scriptlets(
-                &posttrans_packages,
-                plan,
-                scriptlets::ScriptletType::PostTrans,
-                has_upgrades,
-            ) {
-                log::warn!("Failed to run %posttrans scriptlets: {}", e);
-            }
-        }
+        // %posttrans of packages being installed/upgraded
+        run_trans_scriptlets(plan, ScriptletType::PostTrans)?;
 
         // Execute transaction scriptlets: %postuntrans of packages being removed
         // This runs AFTER %posttrans, AFTER uninstall transaction completes (RPM behavior)
         // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
-        if !plan.batch.old_removes.is_empty() {
-            let mut old_removes_map = HashMap::new();
-            for k in plan.batch.old_removes.iter() {
-                if let Some(v) = crate::plan::pkgkey2installed_pkg_info(k) {
-                    old_removes_map.insert(k.clone(), v);
-                }
-            }
-            if let Err(e) = scriptlets::run_scriptlets(
-                &old_removes_map,
-                plan,
-                scriptlets::ScriptletType::PostUnTrans,
-                false, // is_upgrade - removals are separate from upgrades
-            ) {
-                log::warn!("Failed to run %postuntrans scriptlets: {}", e);
-            }
-        }
+        run_trans_scriptlets(plan, ScriptletType::PostUnTrans)?;
 
-        // RPM transaction file triggers (transfiletriggerpostun) - after %posttrans and %postuntrans
-        // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
-        if !plan.batch.old_removes.is_empty() {
-            let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-            let mut old_removes_map = HashMap::new();
-            for k in plan.batch.old_removes.iter() {
-                if let Some(v) = crate::plan::pkgkey2installed_pkg_info(k) {
-                    old_removes_map.insert(k.clone(), v);
-                }
-            }
-            if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
-                "transfiletriggerpostun",
-                &installed,
-                &HashMap::new(),
-                &HashMap::new(),
-                &old_removes_map,
-                store_root,
-                env_root,
-            ) {
-                log::warn!("Failed to run RPM transfiletriggerpostun triggers: {}", e);
-            }
-        }
-
-        // RPM transaction file triggers (transfiletriggerin) - LAST, after %posttrans, %postuntrans, and %transfiletriggerpostun
-        // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
-        if !posttrans_packages.is_empty() {
-            let mut all_installed: InstalledPackagesMap = HashMap::new();
-            for (k, v) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-                all_installed.insert(k.clone(), Arc::clone(v));
-            }
-            for (k, v) in posttrans_packages.iter() {
-                all_installed.insert(k.clone(), Arc::clone(v));
-            }
-            let mut fresh_installs_map = HashMap::new();
-            for k in plan.batch.fresh_installs.iter() {
-                if let Some(v) = crate::plan::pkgkey2new_pkg_info(plan, k) {
-                    fresh_installs_map.insert(k.clone(), v);
-                }
-            }
-            let mut upgrades_new_map = HashMap::new();
-            for k in plan.batch.upgrades_new.iter() {
-                if let Some(v) = crate::plan::pkgkey2new_pkg_info(plan, k) {
-                    upgrades_new_map.insert(k.clone(), v);
-                }
-            }
-            if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
-                "transfiletriggerin",
-                &all_installed,
-                &fresh_installs_map,
-                &upgrades_new_map,
-                &HashMap::new(),
-                store_root,
-                env_root,
-            ) {
-                log::warn!("Failed to run RPM transfiletriggerin triggers: {}", e);
-            }
-        }
+        // RPM transfiletriggerpostun and transfiletriggerin previously ran here (now covered by hooks).
     }
+
+    // Hooks: PostUnTrans then PostTransaction
+    hooks::run_hooks(plan, hooks::HookWhen::PostUnTrans)?;
+    hooks::run_hooks(plan, hooks::HookWhen::PostTransaction)?;
 
     Ok(())
 }

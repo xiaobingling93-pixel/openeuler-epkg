@@ -7,7 +7,31 @@ use crate::models::PACKAGE_CACHE;
 use crate::install::execute_installation_plan;
 use crate::io::{load_installed_packages, load_world};
 
-pub fn unlink_package(pkg_store_path: &PathBuf, env_root: &PathBuf) -> Result<()> {
+/// Unlink package files from the environment.
+///
+/// Validates the pkgline, constructs the store path, and removes all package files
+/// from the environment root.
+///
+/// # Arguments
+/// * `pkgkey` - Package key for logging
+/// * `pkgline` - Package line (relative path in store)
+/// * `store_root` - Root of the package store
+/// * `env_root` - Root of the environment
+pub fn unlink_package(
+    pkgkey: &str,
+    pkgline: &str,
+    store_root: &PathBuf,
+    env_root: &PathBuf,
+) -> Result<()> {
+    // Validate pkgline
+    if pkgline.is_empty() || pkgline.contains("/") || pkgline.contains("..") {
+        log::error!("Invalid pkgline for {}: '{}'. Skipping unlink.", pkgkey, pkgline);
+        return Err(eyre::eyre!("Invalid pkgline for {}: '{}'", pkgkey, pkgline));
+    }
+
+    let pkg_store_path = store_root.join(pkgline);
+    log::info!("Unlinking files for package: {} from store path {}", pkgkey, pkg_store_path.display());
+
     let fs_dir = pkg_store_path.join("fs");
     if !fs_dir.exists() {
         // If the 'fs' directory doesn't exist, it might mean the package was corrupted

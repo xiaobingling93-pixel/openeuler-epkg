@@ -80,82 +80,88 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
 
 /// Unlink files that are in old_package but not in new_package
 /// This implements the Set(old_pkg - new_pkg) logic
+/// If old_pkgkey or old_package_info is None, this is a no-op
 pub fn unlink_package_diff(
-    old_package_info: &InstalledPackageInfo,
+    old_pkgkey: Option<&str>,
+    old_package_info: Option<&std::sync::Arc<InstalledPackageInfo>>,
     new_package_info: &InstalledPackageInfo,
     store_root: &Path,
     env_root: &Path,
 ) -> Result<()> {
-        // Get file lists for both packages
-        let old_store_fs_dir = store_root.join(&old_package_info.pkgline).join("fs");
-        let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
+    let (_old_key, old_info) = match (old_pkgkey, old_package_info) {
+        (Some(key), Some(info)) => (key, info),
+        _ => return Ok(()),
+    };
+    // Get file lists for both packages
+    let old_store_fs_dir = store_root.join(&old_info.pkgline).join("fs");
+    let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
 
-        let old_files = utils::list_package_files(old_store_fs_dir.to_str()
-            .ok_or_else(|| eyre::eyre!("Invalid old package fs path"))?)?;
-        let new_files = utils::list_package_files(new_store_fs_dir.to_str()
-            .ok_or_else(|| eyre::eyre!("Invalid new package fs path"))?)?;
+    let old_files = utils::list_package_files(old_store_fs_dir.to_str()
+        .ok_or_else(|| eyre::eyre!("Invalid old package fs path"))?)?;
+    let new_files = utils::list_package_files(new_store_fs_dir.to_str()
+        .ok_or_else(|| eyre::eyre!("Invalid new package fs path"))?)?;
 
-        // Convert to sets of relative paths for comparison (already relative paths as strings)
-        let old_rel_paths: std::collections::HashSet<PathBuf> = old_files
-            .iter()
-            .map(|s| PathBuf::from(s))
-            .collect();
+    // Convert to sets of relative paths for comparison (already relative paths as strings)
+    let old_rel_paths: std::collections::HashSet<PathBuf> = old_files
+        .iter()
+        .map(|s| PathBuf::from(s))
+        .collect();
 
-        let new_rel_paths: std::collections::HashSet<PathBuf> = new_files
-            .iter()
-            .map(|s| PathBuf::from(s))
-            .collect();
+    let new_rel_paths: std::collections::HashSet<PathBuf> = new_files
+        .iter()
+        .map(|s| PathBuf::from(s))
+        .collect();
 
-        // Find files that are in old package but not in new package
-        let files_to_remove: Vec<PathBuf> = old_rel_paths
-            .difference(&new_rel_paths)
-            .cloned()
-            .collect();
+    // Find files that are in old package but not in new package
+    let files_to_remove: Vec<PathBuf> = old_rel_paths
+        .difference(&new_rel_paths)
+        .cloned()
+        .collect();
 
-        log::debug!(
-            "Found {} files to remove during upgrade: old_pkg={}, new_pkg={}",
-            files_to_remove.len(),
-            old_package_info.pkgline,
-            new_package_info.pkgline
-        );
+    log::debug!(
+        "Found {} files to remove during upgrade: old_pkg={}, new_pkg={}",
+        files_to_remove.len(),
+        old_info.pkgline,
+        new_package_info.pkgline
+    );
 
-        // Remove the files from environment
-        for rel_path in &files_to_remove {
-            let env_file_path = env_root.join(rel_path);
+    // Remove the files from environment
+    for rel_path in &files_to_remove {
+        let env_file_path = env_root.join(rel_path);
 
-            if env_file_path.exists() {
-                if env_file_path.is_dir() {
-                    // Only remove directory if it's empty
-                    match std::fs::read_dir(&env_file_path) {
-                        Ok(mut entries) => {
-                            if entries.next().is_none() {
-                                log::debug!("Removing empty directory: {}", env_file_path.display());
-                                std::fs::remove_dir(&env_file_path)
-                                    .with_context(|| format!("Failed to remove directory {}", env_file_path.display()))?;
-                            } else {
-                                log::debug!("Directory not empty, skipping: {}", env_file_path.display());
-                            }
-                        }
-                        Err(_) => {
-                            log::debug!("Cannot read directory, skipping: {}", env_file_path.display());
+        if env_file_path.exists() {
+            if env_file_path.is_dir() {
+                // Only remove directory if it's empty
+                match std::fs::read_dir(&env_file_path) {
+                    Ok(mut entries) => {
+                        if entries.next().is_none() {
+                            log::debug!("Removing empty directory: {}", env_file_path.display());
+                            std::fs::remove_dir(&env_file_path)
+                                .with_context(|| format!("Failed to remove directory {}", env_file_path.display()))?;
+                        } else {
+                            log::debug!("Directory not empty, skipping: {}", env_file_path.display());
                         }
                     }
-                } else {
-                    log::debug!("Removing file: {}", env_file_path.display());
-                    std::fs::remove_file(&env_file_path)
-                        .with_context(|| format!("Failed to remove file {}", env_file_path.display()))?;
+                    Err(_) => {
+                        log::debug!("Cannot read directory, skipping: {}", env_file_path.display());
+                    }
                 }
+            } else {
+                log::debug!("Removing file: {}", env_file_path.display());
+                std::fs::remove_file(&env_file_path)
+                    .with_context(|| format!("Failed to remove file {}", env_file_path.display()))?;
             }
         }
+    }
 
-        if !files_to_remove.is_empty() {
-            log::info!(
-                "Removed {} unique files from old package during upgrade",
-                files_to_remove.len()
-            );
-        }
+    if !files_to_remove.is_empty() {
+        log::info!(
+            "Removed {} unique files from old package during upgrade",
+            files_to_remove.len()
+        );
+    }
 
-        Ok(())
+    Ok(())
 }
 
 /// Check if two paths are on the same filesystem by comparing filesystem IDs
