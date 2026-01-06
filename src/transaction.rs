@@ -648,22 +648,22 @@ fn run_action(
 
 /// Execute transaction scriptlets and triggers before file operations.
 /// Runs %pretrans, %preuntrans, and transfiletriggerun scriptlets/triggers.
-pub fn begin_transaction(
+fn begin_transaction(
     plan: &InstallationPlan,
 ) -> Result<()> {
     let store_root = &plan.store_root;
     let env_root = &plan.env_root;
     let package_format = plan.package_format;
-    let has_upgrades = !plan.upgrades_new.is_empty();
+    let has_upgrades = !plan.batch.upgrades_new.is_empty();
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
     // Order: %pretrans of new, then %preuntrans of old (before any file operations)
     if package_format == PackageFormat::Rpm {
         // %pretrans of packages being installed/upgraded
         let mut pretrans_packages = HashMap::new();
-        for (k, v) in plan.fresh_installs.iter() {
+        for (k, v) in plan.batch.fresh_installs.iter() {
             pretrans_packages.insert(k.clone(), v.clone());
         }
-        for (k, v) in plan.upgrades_new.iter() {
+        for (k, v) in plan.batch.upgrades_new.iter() {
             pretrans_packages.insert(k.clone(), v.clone());
         }
         if !pretrans_packages.is_empty() {
@@ -678,9 +678,9 @@ pub fn begin_transaction(
         }
 
         // %preuntrans of packages being removed (runs after %pretrans, before removals)
-        if !plan.old_removes.is_empty() {
+        if !plan.batch.old_removes.is_empty() {
             if let Err(e) = scriptlets::run_scriptlets(
-                &plan.old_removes,
+                &plan.batch.old_removes,
                 plan,
                 scriptlets::ScriptletType::PreUnTrans,
                 false, // is_upgrade - removals are separate from upgrades
@@ -691,14 +691,14 @@ pub fn begin_transaction(
 
         // RPM transaction file triggers (transfiletriggerun) - after %preuntrans, before removals
         // Runs ONCE per transaction for all matching removed files
-        if !plan.old_removes.is_empty() {
+        if !plan.batch.old_removes.is_empty() {
             let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
                 "transfiletriggerun",
                 &installed,
                 &HashMap::new(),
                 &HashMap::new(),
-                &plan.old_removes,
+                &plan.batch.old_removes,
                 store_root,
                 env_root,
             ) {
@@ -712,21 +712,21 @@ pub fn begin_transaction(
 
 /// Execute transaction scriptlets and triggers after file operations.
 /// Runs %posttrans, %postuntrans, transfiletriggerpostun, and transfiletriggerin scriptlets/triggers.
-pub fn end_transaction(
+fn end_transaction(
     plan: &InstallationPlan,
 ) -> Result<()> {
     let store_root = &plan.store_root;
     let env_root = &plan.env_root;
     let package_format = plan.package_format;
-    let has_upgrades = !plan.upgrades_new.is_empty();
+    let has_upgrades = !plan.batch.upgrades_new.is_empty();
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
     if package_format == PackageFormat::Rpm {
         let mut posttrans_packages = HashMap::new();
-        for (k, v) in plan.fresh_installs.iter() {
+        for (k, v) in plan.batch.fresh_installs.iter() {
             posttrans_packages.insert(k.clone(), v.clone());
         }
-        for (k, v) in plan.upgrades_new.iter() {
+        for (k, v) in plan.batch.upgrades_new.iter() {
             posttrans_packages.insert(k.clone(), v.clone());
         }
         if !posttrans_packages.is_empty() {
@@ -743,9 +743,9 @@ pub fn end_transaction(
         // Execute transaction scriptlets: %postuntrans of packages being removed
         // This runs AFTER %posttrans, AFTER uninstall transaction completes (RPM behavior)
         // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
-        if !plan.old_removes.is_empty() {
+        if !plan.batch.old_removes.is_empty() {
             if let Err(e) = scriptlets::run_scriptlets(
-                &plan.old_removes,
+                &plan.batch.old_removes,
                 plan,
                 scriptlets::ScriptletType::PostUnTrans,
                 false, // is_upgrade - removals are separate from upgrades
@@ -756,14 +756,14 @@ pub fn end_transaction(
 
         // RPM transaction file triggers (transfiletriggerpostun) - after %posttrans and %postuntrans
         // Order: %posttrans → %postuntrans → %transfiletriggerpostun → %transfiletriggerin
-        if !plan.old_removes.is_empty() {
+        if !plan.batch.old_removes.is_empty() {
             let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
             if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
                 "transfiletriggerpostun",
                 &installed,
                 &HashMap::new(),
                 &HashMap::new(),
-                &plan.old_removes,
+                &plan.batch.old_removes,
                 store_root,
                 env_root,
             ) {
@@ -784,8 +784,8 @@ pub fn end_transaction(
             if let Err(e) = rpm_triggers::run_rpm_transaction_file_triggers(
                 "transfiletriggerin",
                 &all_installed,
-                &plan.fresh_installs,
-                &plan.upgrades_new,
+                &plan.batch.fresh_installs,
+                &plan.batch.upgrades_new,
                 &HashMap::new(),
                 store_root,
                 env_root,
@@ -863,6 +863,9 @@ pub fn run_transaction_batch(
     // Build maps for hooks from ordered_operations
     build_batch_maps(plan);
 
+    // Execute transaction scriptlets at transaction boundaries (RPM behavior)
+    begin_transaction(&plan)?;
+
     // Load hooks for batch packages (incremental loading)
     hooks::load_batch_hooks(plan)?;
 
@@ -877,6 +880,10 @@ pub fn run_transaction_batch(
 
     // Run ldconfig if needed (after all package operations complete)
     run_ldconfig_if_needed(&plan.env_root)?;
+
+    // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
+    // This runs AFTER all file operations complete (RPM behavior)
+    end_transaction(&plan)?;
 
     // Update installed packages metadata
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();

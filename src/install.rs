@@ -18,7 +18,7 @@ use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_pa
 use crate::depends::resolve_and_install_packages;
 use crate::plan::prompt_and_confirm_install_plan;
 use crate::history::{create_new_generation_with_root, record_history, update_current_generation_symlink_with_root};
-use crate::transaction::{run_transaction_batch, begin_transaction, end_transaction};
+use crate::transaction::run_transaction_batch;
 use crate::expose::{execute_unexpose_operations, execute_expose_operations};
 use crate::aur::{build_and_install_aur_packages, is_aur_package};
 use crate::download::{enqueue_package_downloads, get_package_file_path};
@@ -272,9 +272,6 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // Step 2b: Link all packages (after risk checks pass)
     link_packages(plan)?;
 
-    // Execute transaction scriptlets at transaction boundaries (RPM behavior)
-    begin_transaction(&plan)?;
-
     // Step 3: Process upgrades and fresh installations
     run_transaction_batch(plan)?;
 
@@ -283,10 +280,6 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         // Will call run_transaction_batch() once for each round of build
         build_and_install_aur_packages(plan, &aur_packages)?;
     }
-
-    // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
-    // This runs AFTER all file operations complete (RPM behavior)
-    end_transaction(&plan)?;
 
     Ok(())
 }
