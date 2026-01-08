@@ -403,7 +403,8 @@ fn write_deb_trigger_hooks<P: AsRef<Path>>(
         // Determine trigger type: file trigger (starts with '/') or explicit trigger
         let (hook_type, target) = if name.starts_with('/') {
             // File trigger: Path type
-            ("Path", name)
+            // Strip leading '/' from target path
+            ("Path", name.strip_prefix('/').unwrap_or(name))
         } else {
             // Explicit trigger: Package type
             ("Package", name)

@@ -676,7 +676,9 @@ fn write_rpm_hook_file<P: AsRef<Path>>(
     writeln!(buf, "Operation = {}", op)?;
     writeln!(buf, "Type = {}", hook_type)?;
     for t in targets {
-        writeln!(buf, "Target = {}", t)?;
+        // Strip leading '/' from target path
+        let target = t.strip_prefix('/').unwrap_or(t);
+        writeln!(buf, "Target = {}", target)?;
     }
 
     // [Action] section

@@ -211,6 +211,20 @@ fn validate_hook(hook: &Hook, file: &Path) -> Result<()> {
                 file.display()
             ));
         }
+        // Check for leading '/' in Target values (should be absolute/path, not /absolute/path)
+        for target in &trigger.targets {
+            // ! from Archlinux for negative patterns
+            // + from Alpine
+            let check_target = target.strip_prefix('!').unwrap_or(target.strip_prefix('+').unwrap_or(target));
+            if check_target.starts_with('/') {
+                return Err(color_eyre::eyre::eyre!(
+                    "Target value '{}' in hook {} has leading '/', should be '{}'",
+                    target,
+                    file.display(),
+                    check_target.strip_prefix('/').unwrap_or(check_target)
+                ));
+            }
+        }
     }
 
     // Validate action
