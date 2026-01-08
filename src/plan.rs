@@ -14,7 +14,6 @@ use crate::mmio;
 use crate::aur::is_aur_package;
 use crate::dirs;
 use crate::hooks::{Hook, HookWhen};
-use crate::parse_provides::parse_provides;
 
 /// Package operation flags
 pub mod op_flags {
@@ -157,12 +156,6 @@ pub struct InstallationPlan {
     /// - deb_activate_triggers_by_name: trigger name -> pkgkeys that activate it
     pub deb_activate_triggers_by_pkg: HashMap<String, Vec<String>>,
     pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
-
-    /// RPM provides indices for trigger/Depends matching
-    /// - rpm_provides_by_pkg: pkgkey -> capabilities provided by this package
-    /// - rpm_providers_by_cap: capability name -> pkgkeys that provide it
-    pub rpm_provides_by_pkg: HashMap<String, Vec<String>>,
-    pub rpm_providers_by_cap: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,8 +211,6 @@ impl Default for InstallationPlan {
             deb_explicit_triggers_by_name: HashMap::new(),
             deb_activate_triggers_by_pkg: HashMap::new(),
             deb_activate_triggers_by_name: HashMap::new(),
-            rpm_provides_by_pkg: HashMap::new(),
-            rpm_providers_by_cap: HashMap::new(),
         }
     }
 }
@@ -504,7 +495,6 @@ pub fn prepare_installation_plan(
     // Build explicit trigger and provides indices used by hooks/trigger mapping.
     build_deb_explicit_trigger_maps(&mut plan)?;
     build_deb_activate_trigger_maps(&mut plan)?;
-    build_rpm_provides_maps(&mut plan)?;
 
     // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
     crate::hooks::load_initial_hooks(&mut plan)?;
@@ -595,53 +585,6 @@ fn build_deb_activate_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
                 .or_insert_with(Vec::new);
             if !name_entry.contains(pkgkey) {
                 name_entry.push(pkgkey.clone());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Build RPM provides indices used for trigger / Depends matching in hooks.
-/// Only used when operating in RPM format; safe no-op otherwise.
-fn build_rpm_provides_maps(plan: &mut InstallationPlan) -> Result<()> {
-    if plan.package_format != PackageFormat::Rpm {
-        return Ok(());
-    }
-
-    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-
-    for (pkgkey, _) in installed.iter() {
-        // Load full package metadata to read provides.
-        let package = match mmio::map_pkgkey2package(pkgkey) {
-            Ok(p) => p,
-            Err(e) => {
-                log::debug!("Failed to load package metadata for {}: {}", pkgkey, e);
-                continue;
-            }
-        };
-
-        for provide_str in &package.provides {
-            // Parse provide entries into capability names.
-            let provide_map = parse_provides(provide_str, PackageFormat::Rpm);
-            for (cap_name, _version) in provide_map {
-                // Map: pkgkey -> capabilities
-                let caps = plan
-                    .rpm_provides_by_pkg
-                    .entry(pkgkey.clone())
-                    .or_insert_with(Vec::new);
-                if !caps.contains(&cap_name) {
-                    caps.push(cap_name.clone());
-                }
-
-                // Map: capability -> pkgkeys
-                let providers = plan
-                    .rpm_providers_by_cap
-                    .entry(cap_name.clone())
-                    .or_insert_with(Vec::new);
-                if !providers.contains(pkgkey) {
-                    providers.push(pkgkey.clone());
-                }
             }
         }
     }
