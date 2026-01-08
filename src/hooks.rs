@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use color_eyre::eyre::{Result, Context};
 use crate::models::PackageFormat;
 use crate::package::pkgkey2pkgname;
@@ -971,134 +970,14 @@ fn execute_hook(
     }
 }
 
-/// Check if a Path hook trigger has any matching file modified after `cutoff`.
-/// This is used to trim the number of triggers we evaluate when a transaction
-/// touches many packages.
-fn path_trigger_has_recent_match(
-    trigger: &HookTrigger,
-    env_root: &Path,
-    cutoff: SystemTime,
-) -> Result<bool> {
-    if trigger.positive_targets.is_empty() {
-        return Ok(false);
-    }
-
-    for target in &trigger.positive_targets {
-        if target_has_recent_match(target, env_root, cutoff)? {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-fn target_has_recent_match(target: &str, env_root: &Path, cutoff: SystemTime) -> Result<bool> {
-    let parent_prefix = parent_prefix_before_wildcard(target);
-
-    // Targets are relative to env_root; strip a leading slash to avoid
-    // escaping the environment root.
-    let absolute_pattern = if target.starts_with('/') {
-        env_root.join(&target[1..])
-    } else {
-        env_root.join(target)
-    };
-
-    let pattern_str = absolute_pattern.to_string_lossy();
-
-    if let Some(parent) = parent_prefix {
-        let absolute_parent = if parent.starts_with('/') {
-            env_root.join(&parent[1..])
-        } else {
-            env_root.join(&parent)
-        };
-
-        match absolute_parent.metadata().and_then(|m| m.modified()) {
-            Ok(modified) if modified >= cutoff => return Ok(true),
-            Ok(_) => {}
-            Err(e) => {
-                log::debug!(
-                    "failed to read mtime for parent {}: {}",
-                    absolute_parent.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    match glob::glob(&pattern_str) {
-        Ok(paths) => {
-            for path_result in paths {
-                let path = match path_result {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::debug!("path trigger glob error for {}: {}", pattern_str, e);
-                        continue;
-                    }
-                };
-
-                match path.metadata().and_then(|m| m.modified()) {
-                    Ok(modified) if modified >= cutoff => return Ok(true),
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::debug!("failed to read mtime for {}: {}", path.display(), e);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log::debug!("failed to expand glob {}: {}", pattern_str, e);
-        }
-    }
-
-    Ok(false)
-}
-
-fn parent_prefix_before_wildcard(target: &str) -> Option<String> {
-    if let Some(star_idx) = target.find('*') {
-        if let Some(slash_idx) = target[..star_idx].rfind('/') {
-            let prefix = &target[..=slash_idx]; // include trailing slash
-            if !prefix.is_empty() {
-                return Some(prefix.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Check if we should reduce path trigger evaluation based on package count
-fn should_reduce_path_triggers(plan: &InstallationPlan) -> bool {
-    plan.batch.fresh_installs.len() + plan.batch.upgrades_new.len() >= 20
-}
-
-/// Calculate the recent cutoff time for path trigger optimization
-fn calculate_recent_cutoff(should_reduce: bool) -> SystemTime {
-    if should_reduce {
-        SystemTime::now()
-            .checked_sub(Duration::from_secs(3600))
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    } else {
-        SystemTime::UNIX_EPOCH
-    }
-}
 
 /// Check if a hook trigger matches the transaction
 fn check_trigger_match(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
     needs_targets: bool,
-    should_reduce_path_triggers: bool,
-    recent_cutoff: SystemTime,
     pkgkey_filter: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
-    let env_root = &plan.env_root;
-    if should_reduce_path_triggers && trigger.hook_type == HookType::Path && pkgkey_filter.is_none() {
-        // Skip expensive trigger evaluation when none of its target files
-        // were touched recently.
-        if !path_trigger_has_recent_match(trigger, env_root, recent_cutoff)? {
-            return Ok((false, Vec::new()));
-        }
-    }
-
     match trigger.hook_type {
         HookType::Path => {
             match_path_trigger(
@@ -1129,8 +1008,6 @@ fn check_trigger_match(
 fn find_triggered_hooks<'a>(
     relevant_hooks: &'a [&'a Arc<Hook>],
     plan: &InstallationPlan,
-    should_reduce_path_triggers: bool,
-    recent_cutoff: SystemTime,
     pkgkey_filter: Option<&str>,
 ) -> Result<Vec<(&'a Arc<Hook>, Vec<String>)>> {
     let mut triggered_hooks = Vec::new();
@@ -1149,8 +1026,6 @@ fn find_triggered_hooks<'a>(
                 trigger,
                 plan,
                 hook.action.needs_targets,
-                should_reduce_path_triggers,
-                recent_cutoff,
                 pkgkey_filter,
             )?;
 
@@ -1233,15 +1108,10 @@ pub fn run_hooks(
     let mut sorted_hooks: Vec<&Arc<Hook>> = relevant_hooks.iter().collect();
     sort_hook_refs(&mut sorted_hooks);
 
-    let should_reduce = should_reduce_path_triggers(plan);
-    let recent_cutoff = calculate_recent_cutoff(should_reduce);
-
     // Find triggered hooks (reference: _alpm_hook_triggered)
     let triggered_hooks = find_triggered_hooks(
         &sorted_hooks,
         plan,
-        should_reduce,
-        recent_cutoff,
         None,
     )?;
 
@@ -1270,14 +1140,9 @@ pub fn run_hook(
     let mut sorted_hooks: Vec<&Arc<Hook>> = vec![hook_arc];
     sort_hook_refs(&mut sorted_hooks);
 
-    let should_reduce = should_reduce_path_triggers(plan);
-    let recent_cutoff = calculate_recent_cutoff(should_reduce);
-
     let triggered_hooks = find_triggered_hooks(
         &sorted_hooks,
         plan,
-        should_reduce,
-        recent_cutoff,
         None,
     )?;
 
@@ -1313,14 +1178,9 @@ pub fn run_pkgkey_hooks(
 
     sort_hook_refs(&mut relevant);
 
-    let should_reduce = should_reduce_path_triggers(plan);
-    let recent_cutoff = calculate_recent_cutoff(should_reduce);
-
     let triggered_hooks = find_triggered_hooks(
         &relevant,
         plan,
-        should_reduce,
-        recent_cutoff,
         None,
     )?;
 
@@ -1369,14 +1229,9 @@ pub fn run_hooks_on_pkgkey(
 
     sort_hook_refs(&mut relevant);
 
-    let should_reduce = should_reduce_path_triggers(plan);
-    let recent_cutoff = calculate_recent_cutoff(should_reduce);
-
     let triggered_hooks = find_triggered_hooks(
         &relevant,
         plan,
-        should_reduce,
-        recent_cutoff,
         Some(pkgkey),
     )?;
 
