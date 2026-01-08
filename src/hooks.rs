@@ -71,6 +71,7 @@ pub struct HookTrigger {
     pub targets: Vec<String>, // Can contain glob patterns and negations (!)
     pub positive_targets: Vec<String>,
     pub negative_targets: Vec<String>,
+    pub positive_prefixes: Vec<String>,
     pub positive_patterns: Vec<Pattern>,
     pub negative_patterns: Vec<Pattern>,
     pub type_set: bool, // for input validation
@@ -141,6 +142,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
                 positive_targets: Vec::new(),
                 negative_targets: Vec::new(),
                 positive_patterns: Vec::new(),
+                positive_prefixes: Vec::new(),
                 negative_patterns: Vec::new(),
                 type_set: false,
             });
@@ -302,14 +304,44 @@ fn split_hook_targets(targets: &[String]) -> (Vec<String>, Vec<String>) {
     (positive_targets, negative_targets)
 }
 
-fn populate_hook_target_cache(hook: &mut Hook) {
-    for trigger in &mut hook.triggers {
-        let (positive_targets, negative_targets) = split_hook_targets(&trigger.targets);
-        trigger.positive_patterns = compile_patterns(&positive_targets);
-        trigger.negative_patterns = compile_patterns(&negative_targets);
-        trigger.positive_targets = positive_targets;
-        trigger.negative_targets = negative_targets;
+/// Check if a character is a glob character
+#[inline]
+fn is_glob_char(c: char) -> bool {
+    matches!(c, '*' | '?' | '[' | ']')
+}
+
+/// Extract prefix from a pattern if it's a prefix pattern (no glob or only '*' at the end)
+/// Returns Some(prefix) if it's a prefix pattern, None otherwise
+/// Converts
+/// - "usr/share/fonts" -> Some("usr/share/fonts")
+/// - "usr/share/fonts/*" -> Some("usr/share/fonts/")
+/// - "usr/share/icons/*/" -> None
+fn extract_prefix(pattern: &str) -> Option<&str> {
+    // First try to strip '*' from the end
+    let candidate = pattern.strip_suffix('*').unwrap_or(pattern);
+
+    // Check any glob characters
+    if !candidate.chars().any(is_glob_char) {
+        return Some(candidate);
     }
+
+    None
+}
+
+/// Separate positive targets into prefixes and patterns
+fn separate_prefixes_and_patterns(positive_targets: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut prefixes = Vec::new();
+    let mut patterns = Vec::new();
+
+    for target in positive_targets {
+        if let Some(prefix) = extract_prefix(target) {
+            prefixes.push(prefix.to_string());
+        } else {
+            patterns.push(target.clone());
+        }
+    }
+
+    (prefixes, patterns)
 }
 
 /// Compile string patterns into Pattern objects, filtering out invalid ones
@@ -317,6 +349,28 @@ fn compile_patterns(patterns: &[String]) -> Vec<Pattern> {
     patterns.iter()
         .filter_map(|p| Pattern::new(p).ok())
         .collect()
+}
+
+/// Populate cache for a single trigger
+fn populate_trigger_cache(trigger: &mut HookTrigger) {
+    let (positive_targets, negative_targets) = split_hook_targets(&trigger.targets);
+
+    if trigger.hook_type == HookType::Path {
+        let (prefixes, patterns) = separate_prefixes_and_patterns(&positive_targets);
+        trigger.positive_prefixes = prefixes;
+        trigger.positive_patterns = compile_patterns(&patterns);
+    } else {
+        trigger.positive_patterns = compile_patterns(&positive_targets);
+    }
+    trigger.negative_patterns = compile_patterns(&negative_targets);
+    trigger.positive_targets = positive_targets;
+    trigger.negative_targets = negative_targets;
+}
+
+fn populate_hook_target_cache(hook: &mut Hook) {
+    for trigger in &mut hook.triggers {
+        populate_trigger_cache(trigger);
+    }
 }
 
 fn parse_when_value(raw: &str, file: &Path, line_num: usize) -> Result<HookWhen> {
@@ -769,18 +823,26 @@ fn collect_matching_files_for_pkg(
     Ok(out)
 }
 
-/// Check if text matches positive patterns but not negative patterns (using compiled patterns)
-fn matches_patterns(
-    text: &str,
-    trigger: &HookTrigger,
-) -> bool {
-    matches_any_pattern(text, &trigger.positive_patterns)
-        && !matches_any_pattern(text, &trigger.negative_patterns)
+/// Check if text matches any of the given prefixes
+fn matches_any_prefix(text: &str, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|prefix| text.starts_with(prefix))
 }
 
 /// Check if any compiled pattern matches a string
 fn matches_any_pattern(text: &str, patterns: &[Pattern]) -> bool {
     patterns.iter().any(|pattern| pattern.matches(text))
+}
+
+/// Check if text matches positive patterns but not negative patterns (using compiled patterns and prefixes)
+fn matches_patterns(
+    text: &str,
+    trigger: &HookTrigger,
+) -> bool {
+    (
+        matches_any_prefix(text, &trigger.positive_prefixes) ||
+        matches_any_pattern(text, &trigger.positive_patterns)
+    ) &&
+       !matches_any_pattern(text, &trigger.negative_patterns)
 }
 
 /// Match Package trigger (reference: _alpm_hook_trigger_match_pkg)
