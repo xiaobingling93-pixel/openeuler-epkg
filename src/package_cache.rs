@@ -18,7 +18,7 @@ impl PackageCache {
             provide2pkgnames: RwLock::new(HashMap::new()),
             installed_packages: RwLock::<InstalledPackagesMap>::default(),
             world: RwLock::new(HashMap::new()),
-            package2filelist: RwLock::new(HashMap::new()),
+            pkgline2filelist: RwLock::new(HashMap::new()),
         }
     }
 
@@ -30,7 +30,7 @@ impl PackageCache {
         self.provide2pkgnames.write().unwrap().clear();
         self.installed_packages.write().unwrap().clear();
         self.world.write().unwrap().clear();
-        self.package2filelist.write().unwrap().clear();
+        self.pkgline2filelist.write().unwrap().clear();
     }
 }
 
@@ -171,30 +171,28 @@ fn get_format_from_package(package: &Package) -> PackageFormat {
 
 /// Get filelist for a package, either from cache or from store
 /// Fills the cache if it wasn't already there
-pub fn map_package2filelist(
-    pkgkey: &str,
-    store_fs_dir: &std::path::Path,
-) -> color_eyre::Result<Vec<crate::utils::MtreeFileInfo>> {
-    use color_eyre::eyre::{eyre, Context};
+/// Returns only non-directory files as relative paths
+pub fn map_pkgline2filelist(
+    store_root: &std::path::Path,
+    pkgline: &str,
+) -> color_eyre::Result<Vec<String>> {
+    use color_eyre::eyre::Context;
 
     // Check cache first
     {
-        let cache = PACKAGE_CACHE.package2filelist.read().unwrap();
-        if let Some(cached_filelist) = cache.get(pkgkey) {
+        let cache = PACKAGE_CACHE.pkgline2filelist.read().unwrap();
+        if let Some(cached_filelist) = cache.get(pkgline) {
             return Ok(cached_filelist.clone());
         }
     }
 
-    // Not in cache, get from store
-    let file_list = crate::utils::list_package_files_with_info(
-        store_fs_dir.to_str()
-            .ok_or_else(|| eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?
-    )
-    .with_context(|| format!("Failed to get filelist for package {}", pkgkey))?;
+    // Not in cache, get from store using get_package_files (which filters out dirs)
+    let file_list = crate::utils::get_package_files(store_root, pkgline)
+        .with_context(|| format!("Failed to get filelist for pkgline {}", pkgline))?;
 
     // Cache it for future use
-    PACKAGE_CACHE.package2filelist.write().unwrap()
-        .insert(pkgkey.to_string(), file_list.clone());
+    PACKAGE_CACHE.pkgline2filelist.write().unwrap()
+        .insert(pkgline.to_string(), file_list.clone());
 
     Ok(file_list)
 }

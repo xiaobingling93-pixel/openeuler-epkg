@@ -6,7 +6,7 @@ use color_eyre::eyre::{Result, Context};
 use crate::models::PackageFormat;
 use crate::package::pkgkey2pkgname;
 use crate::models::PACKAGE_CACHE;
-use crate::utils::get_package_files;
+use crate::package_cache::map_pkgline2filelist;
 use crate::plan::{InstallationPlan, pkgkey2pkgline};
 use shlex;
 use glob::Pattern;
@@ -823,7 +823,7 @@ fn collect_matching_files_for_pkg(
     let mut out = HashSet::new();
 
     if let Some(info) = crate::plan::pkgkey2installinfo(plan, pkgkey) {
-        let files = get_package_files(store_root, &info)?;
+        let files = map_pkgline2filelist(store_root, &info.pkgline)?;
         for file in &files {
             if matches_patterns(file, trigger) {
                 out.insert(file.clone());

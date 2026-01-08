@@ -93,13 +93,8 @@ pub fn unlink_package_diff(
         _ => return Ok(()),
     };
     // Get file lists for both packages
-    let old_store_fs_dir = store_root.join(&old_info.pkgline).join("fs");
-    let new_store_fs_dir = store_root.join(&new_package_info.pkgline).join("fs");
-
-    let old_files = utils::list_package_files(old_store_fs_dir.to_str()
-        .ok_or_else(|| eyre::eyre!("Invalid old package fs path"))?)?;
-    let new_files = utils::list_package_files(new_store_fs_dir.to_str()
-        .ok_or_else(|| eyre::eyre!("Invalid new package fs path"))?)?;
+    let old_files = crate::package_cache::map_pkgline2filelist(store_root, &old_info.pkgline)?;
+    let new_files = crate::package_cache::map_pkgline2filelist(store_root, &new_package_info.pkgline)?;
 
     // Convert to sets of relative paths for comparison (already relative paths as strings)
     let old_rel_paths: std::collections::HashSet<PathBuf> = old_files

@@ -11,7 +11,7 @@ use color_eyre::eyre::eyre;
 use crate::models::InstalledPackagesMap;
 use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::models::PACKAGE_CACHE;
-use crate::package_cache::map_package2filelist;
+use crate::package_cache::map_pkgline2filelist;
 use crate::link::same_filesystem;
 
 /// Calculate total download and install sizes for the installation plan
@@ -166,20 +166,14 @@ pub fn load_installed_files(
     let mut installed_files = HashMap::new();
 
     for (pkgkey, pkg_info) in packages.iter() {
-        let store_fs_dir = store_root.join(&pkg_info.pkgline).join("fs");
-
-        // Get filelist using the cached function
-        if let Ok(file_list) = map_package2filelist(pkgkey, &store_fs_dir) {
-            // Process file list - skip directories, only track files for conflict detection
-            for file_info in &file_list {
-                if file_info.is_dir() {
-                    continue;
-                }
-
-                installed_files.insert(file_info.path.clone(), pkgkey.clone());
+        // Get filelist using the cached function (already filters out dirs)
+        if let Ok(file_list) = map_pkgline2filelist(store_root, &pkg_info.pkgline) {
+            // Process file list - all entries are files (dirs already filtered)
+            for file_path in &file_list {
+                installed_files.insert(file_path.clone(), pkgkey.clone());
             }
         } else {
-            log::debug!("Failed to get filelist for package {}: {}", pkgkey, store_fs_dir.display());
+            log::debug!("Failed to get filelist for package {}: {}", pkgkey, pkg_info.pkgline);
         }
     }
 
@@ -207,21 +201,15 @@ pub fn validate_before_linking(
     // Process each package
     for pkgkey in plan.batch.new_pkgkeys.iter() {
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-            let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
-
-            // Get filelist from cache or store
-            let file_list = map_package2filelist(pkgkey, &store_fs_dir)?;
+            // Get filelist from cache or store (already filters out dirs)
+            let file_list = map_pkgline2filelist(store_root, &package_info.pkgline)?;
 
             // Count files (inodes) needed
-            for file_info in &file_list {
-                if file_info.is_dir() {
-                    continue;
-                }
-
+            for file_path in &file_list {
                 total_inodes_needed += 1;
 
                 // Check conflicts with installed files
-                if let Ok(conflicts) = check_file_conflicts(&file_info.path, pkgkey, &installed_files) {
+                if let Ok(conflicts) = check_file_conflicts(file_path, pkgkey, &installed_files) {
                     for (conflict_path, conflict_pkgkey) in conflicts {
                         return Err(eyre!(
                             "File conflict: {} (from package {}) conflicts with installed file from package {}",
@@ -233,11 +221,11 @@ pub fn validate_before_linking(
                 }
 
                 // Track files in transaction for conflict detection
-                if let Some(existing_pkgkey) = all_transaction_files.insert(file_info.path.clone(), pkgkey.clone()) {
+                if let Some(existing_pkgkey) = all_transaction_files.insert(file_path.clone(), pkgkey.clone()) {
                     // Conflict detected: file is provided by multiple packages
                     return Err(eyre!(
                         "Transaction file conflict: {} is provided by multiple packages: {} and {}",
-                        file_info.path,
+                        file_path,
                         existing_pkgkey,
                         pkgkey
                     ));

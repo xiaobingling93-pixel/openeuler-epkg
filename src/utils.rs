@@ -19,7 +19,6 @@ use users::{get_current_uid, get_effective_uid};
 #[cfg(unix)]
 use libc;
 use crate::models;
-use crate::models::InstalledPackageInfo;
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -95,28 +94,29 @@ pub fn is_setuid() -> bool {
     true
 }
 
-// List package/fs files - improved version that reads from filelist.txt
-pub fn list_package_files(package_fs_dir: &str) -> Result<Vec<String>> {
-    // Return relative paths as strings
-    let file_infos = list_package_files_with_info(package_fs_dir)?;
-    Ok(file_infos.into_iter().map(|info| info.path).collect())
-}
 
 /// Get all files from a package as relative paths
 /// Returns relative paths (without the fs/ directory prefix)
+/// Filters out directories, only returns files
 pub fn get_package_files(
     store_root: &Path,
-    package_info: &InstalledPackageInfo,
+    pkgline: &str,
 ) -> Result<Vec<String>> {
-    let store_fs_dir = store_root.join(&package_info.pkgline).join("fs");
+    let store_fs_dir = store_root.join(pkgline).join("fs");
     if !store_fs_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let files = list_package_files(store_fs_dir.to_str()
+    let file_infos = list_package_files_with_info(store_fs_dir.to_str()
         .ok_or_else(|| eyre::eyre!("Invalid store fs path"))?)?;
 
-    // Already relative paths as strings
+    // Filter out directories, only return files
+    let files: Vec<String> = file_infos
+        .into_iter()
+        .filter(|info| !info.is_dir())
+        .map(|info| info.path)
+        .collect();
+
     Ok(files)
 }
 
