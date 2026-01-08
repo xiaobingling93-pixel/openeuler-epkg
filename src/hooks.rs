@@ -4,10 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use color_eyre::eyre::{Result, Context};
 use crate::models::PackageFormat;
-use crate::package::pkgkey2pkgname;
+use crate::package::{pkgkey2pkgname, pkgkey2version};
 use crate::models::PACKAGE_CACHE;
+use crate::version_constraint::check_version_constraint;
 use crate::package_cache::map_pkgline2filelist;
 use crate::plan::{InstallationPlan, pkgkey2pkgline};
+use crate::parse_requires::VersionConstraint;
+use crate::rpm_triggers::parse_rpm_trigger_condition;
 use shlex;
 use glob::Pattern;
 
@@ -72,6 +75,7 @@ pub struct HookTrigger {
     pub positive_targets: Vec<String>,
     pub negative_targets: Vec<String>,
     pub positive_prefixes: Vec<String>,
+    pub positive_packages: HashMap<String, Vec<VersionConstraint>>, // Package name -> version constraints
     pub positive_patterns: Vec<Pattern>,
     pub negative_patterns: Vec<Pattern>,
     pub type_set: bool, // for input validation
@@ -145,6 +149,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
                 positive_prefixes: Vec::new(),
                 negative_patterns: Vec::new(),
                 type_set: false,
+                positive_packages: HashMap::new(),
             });
             continue;
         } else if line == "[Action]" {
@@ -369,16 +374,37 @@ fn compile_patterns(patterns: &[String]) -> Vec<Pattern> {
 fn populate_trigger_cache(trigger: &mut HookTrigger) {
     let (positive_targets, negative_targets) = split_hook_targets(&trigger.targets);
 
-    if trigger.hook_type == HookType::Path {
+    if trigger.hook_type == HookType::Package {
+        // positive_targets => positive_patterns OR positive_packages
+        for target in &positive_targets {
+            if target.chars().any(is_glob_char) { // Archlinux may have package name pattern
+                match Pattern::new(target) {
+                    Ok(pattern) => {
+                        trigger.positive_patterns.push(pattern);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to compile pattern '{}' for Package trigger: {}", target, e);
+                    }
+                }
+            } else { // RPM, DEB and some Archlinux targets are suitable for quick hash lookup in matches_any_package()
+                let packages = parse_rpm_trigger_condition(target);
+                for (pkg_name, constraints) in packages {
+                    // Merge constraints if package already exists
+                    let entry = trigger.positive_packages.entry(pkg_name.clone()).or_insert_with(Vec::new);
+                    entry.extend(constraints);
+                }
+            }
+        }
+    } else { // HookType::Path
+        // positive_targets => positive_patterns OR positive_prefixes
         let (prefixes, patterns) = separate_prefixes_and_patterns(&positive_targets);
         trigger.positive_prefixes = prefixes;
         trigger.positive_patterns = compile_patterns(&patterns);
-    } else {
-        trigger.positive_patterns = compile_patterns(&positive_targets);
     }
+
     trigger.negative_patterns = compile_patterns(&negative_targets);
-    trigger.positive_targets = positive_targets;
     trigger.negative_targets = negative_targets;
+    trigger.positive_targets = positive_targets;
 }
 
 fn populate_hook_target_cache(hook: &mut Hook) {
@@ -815,7 +841,8 @@ fn collect_matching_files_for_pkg(
     if let Some(info) = crate::plan::pkgkey2installinfo(plan, pkgkey) {
         let files = map_pkgline2filelist(store_root, &info.pkgline)?;
         for file in &files {
-            if matches_patterns(file, trigger) {
+            // For file paths, pass empty string for pkgkey (not used for Path triggers)
+            if matches_patterns(file, trigger, pkgkey, plan) {
                 out.insert(file.clone());
                 if !needs_targets {
                     return Ok(out);
@@ -837,16 +864,68 @@ fn matches_any_pattern(text: &str, patterns: &[Pattern]) -> bool {
     patterns.iter().any(|pattern| pattern.matches(text))
 }
 
+/// Check if a package name matches any entry in positive_packages with version constraints
+/// Returns true if the package name is in positive_packages and all version constraints are satisfied
+fn matches_any_package(
+    pkgname: &str,
+    pkgkey: &str,
+    trigger: &HookTrigger,
+    plan: &InstallationPlan,
+) -> bool {
+    if trigger.positive_packages.is_empty() {
+        return false;
+    }
+
+    if let Some(constraints) = trigger.positive_packages.get(pkgname) {
+        // If there are version constraints, check all of them
+        if !constraints.is_empty() {
+            if let Ok(pkg_version) = pkgkey2version(pkgkey) {
+                // All constraints must be satisfied (AND logic)
+                for constraint in constraints {
+                    match check_version_constraint(&pkg_version, constraint, plan.package_format) {
+                        Ok(true) => {
+                            // This constraint is satisfied, continue checking others
+                        }
+                        Ok(false) => {
+                            // This constraint is not satisfied, fail
+                            return false;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to check version constraint for {} {}: {}", pkgname, pkg_version, e);
+                            // On error, fail open (treat as satisfied for this constraint)
+                        }
+                    }
+                }
+                // All constraints satisfied
+                return true;
+            } else {
+                // Failed to get version, fail
+                return false;
+            }
+        } else {
+            // No version constraints, package name matches
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Check if text matches positive patterns but not negative patterns (using compiled patterns and prefixes)
+/// For Package triggers, also checks positive_packages with version constraints using pkgkey and plan
 fn matches_patterns(
     text: &str,
     trigger: &HookTrigger,
+    pkgkey: &str,
+    plan: &InstallationPlan,
 ) -> bool {
+    // Must match positive and not match negative
     (
+        matches_any_package(text, pkgkey, trigger, plan) ||
         matches_any_prefix(text, &trigger.positive_prefixes) ||
         matches_any_pattern(text, &trigger.positive_patterns)
     ) &&
-       !matches_any_pattern(text, &trigger.negative_patterns)
+        !matches_any_pattern(text, &trigger.negative_patterns)
 }
 
 /// Match Package trigger (reference: _alpm_hook_trigger_match_pkg)
@@ -868,13 +947,13 @@ fn match_package_trigger(
     let wants_remove = trigger.operations.is_set(HookOperation::Remove);
 
     if wants_install {
-        install_pkgs = collect_matching_pkg_names(&plan.batch.fresh_installs, trigger, pkgkey_filter);
+        install_pkgs = collect_matching_pkg_names(&plan.batch.fresh_installs, trigger, plan, pkgkey_filter);
     }
     if wants_upgrade {
-        upgrade_pkgs = collect_matching_pkg_names(&plan.batch.upgrades_new, trigger, pkgkey_filter);
+        upgrade_pkgs = collect_matching_pkg_names(&plan.batch.upgrades_new, trigger, plan, pkgkey_filter);
     }
     if wants_remove {
-        remove_pkgs = collect_matching_pkg_names(&plan.batch.old_removes, trigger, pkgkey_filter);
+        remove_pkgs = collect_matching_pkg_names(&plan.batch.old_removes, trigger, plan, pkgkey_filter);
     }
 
     let matched = (wants_install && !install_pkgs.is_empty())
@@ -888,6 +967,7 @@ fn match_package_trigger(
 fn collect_matching_pkg_names(
     pkgkeys: &HashSet<String>,
     trigger: &HookTrigger,
+    plan: &InstallationPlan,
     pkgkey_filter: Option<&str>,
 ) -> Vec<String> {
     let mut matched = Vec::new();
@@ -895,12 +975,12 @@ fn collect_matching_pkg_names(
     if let Some(filter) = pkgkey_filter {
         // Only process the filtered pkgkey if it exists in the set
         if pkgkeys.contains(filter) {
-            add_matching_pkgname(filter, trigger, &mut matched);
+            add_matching_pkgname(filter, trigger, plan, &mut matched);
         }
     } else {
         // Process all pkgkeys
         for pkgkey in pkgkeys {
-            add_matching_pkgname(pkgkey, trigger, &mut matched);
+            add_matching_pkgname(pkgkey, trigger, plan, &mut matched);
         }
     }
 
@@ -911,10 +991,12 @@ fn collect_matching_pkg_names(
 fn add_matching_pkgname(
     pkgkey: &str,
     trigger: &HookTrigger,
+    plan: &InstallationPlan,
     matched: &mut Vec<String>,
 ) {
     if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-        if matches_patterns(&pkgname, trigger) {
+        // matches_patterns() now handles positive_packages uniformly
+        if matches_patterns(&pkgname, trigger, pkgkey, plan) {
             matched.push(pkgname);
         }
     }
