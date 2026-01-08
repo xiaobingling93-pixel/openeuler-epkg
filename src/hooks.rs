@@ -635,16 +635,6 @@ fn load_hook_file(
     }
 }
 
-/// Sort hook references by file name (reference: _alpm_hook_cmp)
-fn sort_hook_refs<T: AsRef<Hook>>(hooks: &mut [T]) {
-    hooks.sort_by(|a, b| {
-        let a_hook = a.as_ref();
-        let b_hook = b.as_ref();
-        a_hook.hook_name.cmp(&b_hook.hook_name)
-            .then_with(|| a_hook.hook_name.len().cmp(&b_hook.hook_name.len()))
-    });
-}
-
 /// Load hooks from a hook directory
 /// Processes all .hook files in the given directory and adds them to the plan
 fn load_hooks_from_directory(
@@ -1074,10 +1064,33 @@ fn check_trigger_match(
     }
 }
 
+/// Sort triggered hooks by hook name (reference: _alpm_hook_cmp)
+/// For RPM format, sort by priority first (lower priority = earlier execution)
+fn sort_triggered_hooks(
+    triggered_hooks: &mut [(&Arc<Hook>, Vec<String>)],
+    package_format: PackageFormat,
+) {
+    triggered_hooks.sort_by(|a, b| {
+        let a_hook = a.0;
+        let b_hook = b.0;
+
+        // For RPM format, sort by priority first (lower priority = earlier execution)
+        if package_format == PackageFormat::Rpm {
+            a_hook.action.priority.cmp(&b_hook.action.priority)
+                .then_with(|| a_hook.hook_name.cmp(&b_hook.hook_name))
+                .then_with(|| a_hook.hook_name.len().cmp(&b_hook.hook_name.len()))
+        } else {
+            a_hook.hook_name.cmp(&b_hook.hook_name)
+                .then_with(|| a_hook.hook_name.len().cmp(&b_hook.hook_name.len()))
+        }
+    });
+}
+
 /// Find all triggered hooks for the transaction
 /// Returns a vector of (hook, matched_targets) tuples
+/// Sorts triggered hooks before returning
 fn find_triggered_hooks<'a>(
-    relevant_hooks: &'a [&'a Arc<Hook>],
+    relevant_hooks: &'a [Arc<Hook>],
     plan: &InstallationPlan,
     pkgkey_filter: Option<&str>,
 ) -> Result<Vec<(&'a Arc<Hook>, Vec<String>)>> {
@@ -1093,12 +1106,7 @@ fn find_triggered_hooks<'a>(
         let mut all_matched_targets = Vec::new();
 
         for trigger in &hook.triggers {
-            let (matched, matched_targets) = check_trigger_match(
-                trigger,
-                plan,
-                hook.action.needs_targets,
-                pkgkey_filter,
-            )?;
+            let (matched, matched_targets) = check_trigger_match(trigger, plan, hook.action.needs_targets, pkgkey_filter)?;
 
             if matched {
                 hook_matched = true;
@@ -1118,9 +1126,12 @@ fn find_triggered_hooks<'a>(
             all_matched_targets.sort();
             all_matched_targets.dedup();
 
-            triggered_hooks.push((*hook, all_matched_targets));
+            triggered_hooks.push((hook, all_matched_targets));
         }
     }
+
+    // Sort triggered hooks (only the ones that will be executed)
+    sort_triggered_hooks(&mut triggered_hooks, plan.package_format);
 
     Ok(triggered_hooks)
 }
@@ -1160,31 +1171,15 @@ pub fn run_hooks(
     plan: &InstallationPlan,
     when: HookWhen,
 ) -> Result<()> {
-    // Early return if no packages to process
-    if plan.batch.new_pkgkeys.is_empty() {
-        return Ok(());
-    }
-
     // Get hooks for this When timing
     let relevant_hooks = match plan.hooks_by_when.get(&when) {
         Some(hooks) => hooks,
         None => return Ok(()),
     };
 
-    if relevant_hooks.is_empty() {
-        return Ok(());
-    }
-
-    // Sort hooks by name (reference: _alpm_hook_cmp)
-    let mut sorted_hooks: Vec<&Arc<Hook>> = relevant_hooks.iter().collect();
-    sort_hook_refs(&mut sorted_hooks);
-
     // Find triggered hooks (reference: _alpm_hook_triggered)
-    let triggered_hooks = find_triggered_hooks(
-        &sorted_hooks,
-        plan,
-        None,
-    )?;
+    // Sorting is done inside find_triggered_hooks on triggered hooks only
+    let triggered_hooks = find_triggered_hooks(relevant_hooks, plan, None)?;
 
     // Execute triggered hooks (reference: executes in order)
     execute_triggered_hooks(triggered_hooks, plan, &when)?;
@@ -1198,28 +1193,25 @@ pub fn run_hook(
     plan: &InstallationPlan,
     hook_name: &str,
 ) -> Result<()> {
-    // Early return if no packages to process
-    if plan.batch.new_pkgkeys.is_empty() {
-        return Ok(());
-    }
-
     let hook_arc = match plan.hooks_by_name.get(hook_name) {
         Some(h) => h,
         None => return Ok(()),
     };
 
-    let mut sorted_hooks: Vec<&Arc<Hook>> = vec![hook_arc];
-    sort_hook_refs(&mut sorted_hooks);
-
-    let triggered_hooks = find_triggered_hooks(
-        &sorted_hooks,
-        plan,
-        None,
-    )?;
+    let triggered_hooks = find_triggered_hooks(std::slice::from_ref(hook_arc), plan, None)?;
 
     execute_triggered_hooks(triggered_hooks, plan, &hook_arc.action.when)?;
 
     Ok(())
+}
+
+/// Filter hooks by when timing and clone them
+fn filter_hooks_by_when(hooks: &[Arc<Hook>], when: &HookWhen) -> Vec<Arc<Hook>> {
+    hooks
+        .iter()
+        .filter(|h| h.action.when == *when)
+        .cloned()
+        .collect()
 }
 
 /// Run hooks belonging to a specific pkgkey over all packages.
@@ -1228,32 +1220,33 @@ pub fn run_pkgkey_hooks(
     when: &HookWhen,
     pkgkey: &str,
 ) -> Result<()> {
-    // Early return if no packages to process
-    if plan.batch.new_pkgkeys.is_empty() {
-        return Ok(());
-    }
-
     let pkg_hooks = match plan.hooks_by_pkgkey.get(pkgkey) {
         Some(h) => h,
         None => return Ok(()),
     };
 
-    let mut relevant: Vec<&Arc<Hook>> = pkg_hooks
-        .iter()
-        .filter(|h| h.action.when == *when)
-        .collect();
+    let relevant_hooks = filter_hooks_by_when(pkg_hooks, when);
 
-    if relevant.is_empty() {
-        return Ok(());
-    }
+    let triggered_hooks = find_triggered_hooks(&relevant_hooks, plan, None)?;
 
-    sort_hook_refs(&mut relevant);
+    execute_triggered_hooks(triggered_hooks, plan, when)?;
 
-    let triggered_hooks = find_triggered_hooks(
-        &relevant,
-        plan,
-        None,
-    )?;
+    Ok(())
+}
+
+/// Run all hooks on a specific pkgkey, restricting trigger evaluation to that pkgkey.
+pub fn run_hooks_on_pkgkey(
+    plan: &InstallationPlan,
+    when: &HookWhen,
+    pkgkey: &str,
+) -> Result<()> {
+    // Get hooks for this When timing
+    let relevant_hooks = match plan.hooks_by_when.get(&when) {
+        Some(hooks) => hooks,
+        None => return Ok(()),
+    };
+
+    let triggered_hooks = find_triggered_hooks(&relevant_hooks, plan, Some(pkgkey))?;
 
     execute_triggered_hooks(triggered_hooks, plan, when)?;
 
@@ -1270,44 +1263,6 @@ pub fn run_pkgkey_hooks_pair(
 ) -> Result<()> {
     run_pkgkey_hooks(plan, &when, pkgkey)?;
     run_hooks_on_pkgkey(plan, &when, pkgkey)?;
-    Ok(())
-}
-
-/// Run all hooks on a specific pkgkey, restricting trigger evaluation to that pkgkey.
-pub fn run_hooks_on_pkgkey(
-    plan: &InstallationPlan,
-    when: &HookWhen,
-    pkgkey: &str,
-) -> Result<()> {
-    // Early return if no packages to process
-    if plan.batch.new_pkgkeys.is_empty() {
-        return Ok(());
-    }
-
-    let pkg_hooks = match plan.hooks_by_pkgkey.get(pkgkey) {
-        Some(h) => h,
-        None => return Ok(()),
-    };
-
-    let mut relevant: Vec<&Arc<Hook>> = pkg_hooks
-        .iter()
-        .filter(|h| h.action.when == *when)
-        .collect();
-
-    if relevant.is_empty() {
-        return Ok(());
-    }
-
-    sort_hook_refs(&mut relevant);
-
-    let triggered_hooks = find_triggered_hooks(
-        &relevant,
-        plan,
-        Some(pkgkey),
-    )?;
-
-    execute_triggered_hooks(triggered_hooks, plan, when)?;
-
     Ok(())
 }
 
