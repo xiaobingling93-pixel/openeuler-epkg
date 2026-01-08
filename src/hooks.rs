@@ -757,11 +757,7 @@ fn collect_matching_files_for_pkg(
     if let Some(info) = crate::plan::pkgkey2installinfo(plan, pkgkey) {
         let files = get_package_files(store_root, &info)?;
         for file in &files {
-            if matches_patterns(
-                file,
-                &trigger.positive_patterns,
-                &trigger.negative_patterns,
-            ) {
+            if matches_patterns(file, trigger) {
                 out.insert(file.clone());
                 if !needs_targets {
                     return Ok(out);
@@ -776,11 +772,10 @@ fn collect_matching_files_for_pkg(
 /// Check if text matches positive patterns but not negative patterns (using compiled patterns)
 fn matches_patterns(
     text: &str,
-    positive_patterns: &[Pattern],
-    negative_patterns: &[Pattern],
+    trigger: &HookTrigger,
 ) -> bool {
-    matches_any_pattern(text, positive_patterns)
-        && !matches_any_pattern(text, negative_patterns)
+    matches_any_pattern(text, &trigger.positive_patterns)
+        && !matches_any_pattern(text, &trigger.negative_patterns)
 }
 
 /// Check if any compiled pattern matches a string
@@ -853,7 +848,7 @@ fn add_matching_pkgname(
     matched: &mut Vec<String>,
 ) {
     if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-        if matches_patterns(&pkgname, &trigger.positive_patterns, &trigger.negative_patterns) {
+        if matches_patterns(&pkgname, trigger) {
             matched.push(pkgname);
         }
     }
