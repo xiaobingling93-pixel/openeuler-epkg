@@ -493,103 +493,13 @@ pub fn prepare_installation_plan(
         .with_context(|| "Failed to find existing packages in store")?;
 
     // Build explicit trigger and provides indices used by hooks/trigger mapping.
-    build_deb_explicit_trigger_maps(&mut plan)?;
-    build_deb_activate_trigger_maps(&mut plan)?;
+    crate::deb_triggers::build_deb_explicit_trigger_maps(&mut plan)?;
+    crate::deb_triggers::build_deb_activate_trigger_maps(&mut plan)?;
 
     // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
     crate::hooks::load_initial_hooks(&mut plan)?;
 
     Ok(plan)
-}
-
-/// Build Debian explicit trigger interest maps for the plan.
-/// Only used when operating in Debian format; safe no-op otherwise.
-fn build_deb_explicit_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
-    if plan.package_format != PackageFormat::Deb {
-        return Ok(());
-    }
-
-    // Only look at already-installed packages; new packages being installed in
-    // this transaction will have their trigger metadata populated as part of
-    // unpack and will be visible on the next plan.
-    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-
-    for (pkgkey, _) in installed.iter() {
-        // Reuse deb_triggers helper to read trigger interests from info/install/.
-        let (explicit_interests, _file_interests) =
-            crate::deb_triggers::read_package_trigger_interests(pkgkey, &plan.store_root)?;
-
-        if explicit_interests.is_empty() {
-            continue;
-        }
-
-        for (trigger_name, _pkgs) in explicit_interests {
-            // Map: pkgkey -> trigger names
-            let pkg_entry = plan
-                .deb_explicit_triggers_by_pkg
-                .entry(pkgkey.clone())
-                .or_insert_with(Vec::new);
-            if !pkg_entry.contains(&trigger_name) {
-                pkg_entry.push(trigger_name.clone());
-            }
-
-            // Map: trigger name -> pkgkeys
-            let name_entry = plan
-                .deb_explicit_triggers_by_name
-                .entry(trigger_name.clone())
-                .or_insert_with(Vec::new);
-            if !name_entry.contains(pkgkey) {
-                name_entry.push(pkgkey.clone());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Build Debian activate trigger maps for the plan.
-/// Only used when operating in Debian format; safe no-op otherwise.
-fn build_deb_activate_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
-    if plan.package_format != PackageFormat::Deb {
-        return Ok(());
-    }
-
-    // Only look at already-installed packages; new packages being installed in
-    // this transaction will have their trigger metadata populated as part of
-    // unpack and will be visible on the next plan.
-    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-
-    for (pkgkey, _) in installed.iter() {
-        // Reuse deb_triggers helper to read activate triggers from info/install/.
-        let activate_triggers =
-            crate::deb_triggers::read_package_activate_triggers(pkgkey, &plan.store_root)?;
-
-        if activate_triggers.is_empty() {
-            continue;
-        }
-
-        for (trigger_name, _await_mode) in activate_triggers {
-            // Map: pkgkey -> trigger names this package activates
-            let pkg_entry = plan
-                .deb_activate_triggers_by_pkg
-                .entry(pkgkey.clone())
-                .or_insert_with(Vec::new);
-            if !pkg_entry.contains(&trigger_name) {
-                pkg_entry.push(trigger_name.clone());
-            }
-
-            // Map: trigger name -> pkgkeys that activate it
-            let name_entry = plan
-                .deb_activate_triggers_by_name
-                .entry(trigger_name.clone())
-                .or_insert_with(Vec::new);
-            if !name_entry.contains(pkgkey) {
-                name_entry.push(pkgkey.clone());
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Find orphaned packages that should be removed
