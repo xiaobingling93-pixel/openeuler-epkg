@@ -273,6 +273,8 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     link_packages(plan)?;
 
     // Step 3: Process upgrades and fresh installations
+    // Set is_first flag for the first batch
+    plan.batch.is_first = true;
     run_transaction_batch(plan)?;
 
     // Step 4: Build and install AUR packages (build with makepkg)

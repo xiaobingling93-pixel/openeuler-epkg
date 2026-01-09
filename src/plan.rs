@@ -165,6 +165,7 @@ pub struct InstallBatch {
     pub upgrades_new:   HashSet<String>,
     pub upgrades_old:   HashSet<String>,
     pub old_removes:    HashSet<String>,
+    pub is_first:       bool,
 }
 
 impl Default for InstallBatch {
@@ -175,6 +176,7 @@ impl Default for InstallBatch {
             upgrades_new:   HashSet::new(),
             upgrades_old:   HashSet::new(),
             old_removes:    HashSet::new(),
+            is_first:       true,
         }
     }
 }

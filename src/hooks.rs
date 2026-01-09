@@ -688,7 +688,7 @@ fn load_hooks_from_directory(
 /// Scans the appropriate per-package hook directory for hooks.
 /// - Pacman: $store_root/$pkgline/fs/usr/share/libalpm/hooks/
 /// - Other formats (Rpm/Deb/etc): $store_root/$pkgline/info/install/
-pub fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
+fn load_package_hooks(plan: &mut InstallationPlan, pkgkey: &str) -> Result<()> {
     let pkgline = pkgkey2pkgline(plan, pkgkey);
 
     if pkgline.is_empty() {
@@ -1375,10 +1375,23 @@ fn execute_triggered_hooks(
     Ok(())
 }
 
+pub fn run_hooks(
+    plan: &InstallationPlan,
+    when: HookWhen,
+) -> Result<()> {
+    if plan.batch.is_first {
+        run_trans_hooks(plan, when)?;
+    } else {
+        for pkgkey in &plan.batch.new_pkgkeys {
+            run_pkgkey_hooks_pair(plan, when.clone(), pkgkey)?;
+        }
+    }
+    Ok(())
+}
+
 /// Run hooks for a transaction
 /// Reference: _alpm_hook_run
-#[allow(dead_code)]
-pub fn run_hooks(
+fn run_trans_hooks(
     plan: &InstallationPlan,
     when: HookWhen,
 ) -> Result<()> {
@@ -1426,7 +1439,7 @@ fn filter_hooks_by_when(hooks: &[Arc<Hook>], when: &HookWhen) -> Vec<Arc<Hook>> 
 }
 
 /// Run hooks belonging to a specific pkgkey over all packages.
-pub fn run_pkgkey_hooks(
+fn run_pkgkey_hooks(
     plan: &InstallationPlan,
     when: &HookWhen,
     pkgkey: &str,
@@ -1446,7 +1459,7 @@ pub fn run_pkgkey_hooks(
 }
 
 /// Run all hooks on a specific pkgkey, restricting trigger evaluation to that pkgkey.
-pub fn run_hooks_on_pkgkey(
+fn run_hooks_on_pkgkey(
     plan: &InstallationPlan,
     when: &HookWhen,
     pkgkey: &str,
@@ -1476,4 +1489,3 @@ pub fn run_pkgkey_hooks_pair(
     run_hooks_on_pkgkey(plan, &when, pkgkey)?;
     Ok(())
 }
-

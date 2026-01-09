@@ -58,6 +58,7 @@ use crate::models::{PackageFormat, InstalledPackageInfo, InstalledPackagesMap};
 use crate::models::PACKAGE_CACHE;
 use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_package_from_cache};
 use crate::hooks;
+use crate::hooks::{run_hooks, run_pkgkey_hooks_pair, HookWhen};
 use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
 use crate::run;
 use crate::remove::unlink_package;
@@ -106,7 +107,7 @@ fn run_action(
     match action {
         PackageAction::PreInstall => {
             // Hook: PreInstall
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreInstall, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PreInstall, pkgkey)?;
 
             // Level 3b: Trigger and scriptlet actions
 
@@ -134,7 +135,7 @@ fn run_action(
             run_scriptlet(plan, ScriptletType::PostInstall, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
             // Hook: PostInstall (primary post phase)
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostInstall, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PostInstall, pkgkey)?;
 
             // RPM triggerin and filetriggerin (low priority) previously ran here (now covered by hooks).
             // DEB trigger processing now handled by hooks (noawait -> PostInstall, await -> PostTransaction)
@@ -142,7 +143,7 @@ fn run_action(
 
         PackageAction::PreRemove => {
             // Hook: PreRemove
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreRemove, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PreRemove, pkgkey)?;
 
             // Level 3b: Trigger and scriptlet actions
 
@@ -154,7 +155,7 @@ fn run_action(
             run_scriptlet(plan, ScriptletType::PreRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
             // Hook: PreRemove2 (low priority path trigger placement)
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreRemove2, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PreRemove2, pkgkey)?;
 
             // RPM filetriggerun (low priority) previously ran here (now covered by hooks).
         }
@@ -172,17 +173,17 @@ fn run_action(
             run_scriptlet(plan, ScriptletType::PostRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
             // Hook: PostRemove (primary post-remove phase)
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostRemove, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PostRemove, pkgkey)?;
 
             // RPM triggerpostun previously ran here (now covered by hooks).
 
             // Hook: PostRemove2 (secondary post-remove phase)
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostRemove2, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PostRemove2, pkgkey)?;
         }
 
         PackageAction::PreUpgrade => {
             // Hook: PreUpgrade
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PreUpgrade, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PreUpgrade, pkgkey)?;
 
             // Level 3b: Trigger and scriptlet actions
             let mut single_pkg: InstalledPackagesMap = HashMap::new();
@@ -203,7 +204,7 @@ fn run_action(
             run_scriptlet(plan, ScriptletType::PostUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
 
             // Hook: PostUpgrade
-            hooks::run_pkgkey_hooks_pair(plan, hooks::HookWhen::PostUpgrade, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PostUpgrade, pkgkey)?;
 
             // RPM triggerin (upgrade) previously ran here (now covered by hooks).
             // DEB trigger handling for upgrades now covered by hooks
@@ -245,7 +246,7 @@ fn begin_transaction(
     }
 
     // Hook: PreTransaction
-    hooks::run_hooks(plan, hooks::HookWhen::PreTransaction)?;
+    run_hooks(plan, HookWhen::PreTransaction)?;
 
     Ok(())
 }
@@ -271,8 +272,8 @@ fn end_transaction(
     }
 
     // Hooks: PostUnTrans then PostTransaction
-    hooks::run_hooks(plan, hooks::HookWhen::PostUnTrans)?;
-    hooks::run_hooks(plan, hooks::HookWhen::PostTransaction)?;
+    run_hooks(plan, HookWhen::PostUnTrans)?;
+    run_hooks(plan, HookWhen::PostTransaction)?;
 
     Ok(())
 }
@@ -352,13 +353,13 @@ pub fn run_transaction_batch(
     crate::deb_triggers::load_batch_deb_activate_triggers(plan)?;
 
     // Run PreTransaction hooks
-    hooks::run_hooks(plan, hooks::HookWhen::PreTransaction)?;
+    run_hooks(plan, HookWhen::PreTransaction)?;
 
     // Process each package operation in order (rpmtsProcess style)
     process_package_operations(plan)?;
 
     // Run PostTransaction hooks
-    hooks::run_hooks(plan, hooks::HookWhen::PostTransaction)?;
+    run_hooks(plan, HookWhen::PostTransaction)?;
 
     // Run ldconfig if needed (after all package operations complete)
     run_ldconfig_if_needed(&plan.env_root)?;
@@ -366,6 +367,9 @@ pub fn run_transaction_batch(
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
     end_transaction(&plan)?;
+
+    // Follow-up batches will see is_first=false
+    plan.batch.is_first = false;
 
     Ok(())
 }
