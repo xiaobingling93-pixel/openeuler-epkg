@@ -1012,16 +1012,29 @@ fn collect_matching_pkg_names(
 }
 
 /// Helper function to check if a package matches the trigger patterns and add it to the matched vector.
+/// For deb packages, matches trigger-name instead of pkgname.
 fn add_matching_pkgname(
     pkgkey: &str,
     trigger: &HookTrigger,
     plan: &InstallationPlan,
     matched: &mut Vec<String>,
 ) {
-    if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
-        // matches_patterns() now handles positive_packages uniformly
-        if matches_patterns(&pkgname, trigger, pkgkey, plan) {
-            matched.push(pkgname);
+    if plan.package_format == PackageFormat::Deb {
+        // For deb packages, match trigger-name instead of pkgname
+        if let Some(trigger_names) = plan.deb_activate_triggers_by_pkg.get(pkgkey) {
+            for trigger_name in trigger_names {
+                if matches_patterns(trigger_name, trigger, pkgkey, plan) {
+                    matched.push(trigger_name.clone());
+                }
+            }
+        }
+    } else {
+        // For non-deb packages, match pkgname as before
+        if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
+            // matches_patterns() now handles positive_packages uniformly
+            if matches_patterns(&pkgname, trigger, pkgkey, plan) {
+                matched.push(pkgname);
+            }
         }
     }
 }
