@@ -138,7 +138,8 @@ fn run_action(
             run_pkgkey_hooks_pair(plan, HookWhen::PostInstall, pkgkey)?;
 
             // RPM triggerin and filetriggerin (low priority) previously ran here (now covered by hooks).
-            // DEB trigger processing now handled by hooks (noawait -> PostInstall, await -> PostTransaction)
+            // DEB trigger processing: noawait triggers from Unincorp (immediate, per-package processing)
+            crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostInstall)?;
         }
 
         PackageAction::PreRemove => {
@@ -254,7 +255,7 @@ fn begin_transaction(
 /// Execute transaction scriptlets and triggers after file operations.
 /// Runs %posttrans, %postuntrans, transfiletriggerpostun, and transfiletriggerin scriptlets/triggers.
 fn end_transaction(
-    plan: &InstallationPlan,
+    plan: &mut InstallationPlan,
 ) -> Result<()> {
     let package_format = plan.package_format;
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
@@ -274,6 +275,9 @@ fn end_transaction(
     // Hooks: PostUnTrans then PostTransaction
     run_hooks(plan, HookWhen::PostUnTrans)?;
     run_hooks(plan, HookWhen::PostTransaction)?;
+
+    // DEB trigger processing: await triggers from Unincorp (batched, after all packages are processed)
+    crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostTransaction)?;
 
     Ok(())
 }
@@ -366,7 +370,7 @@ pub fn run_transaction_batch(
 
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
-    end_transaction(&plan)?;
+    end_transaction(plan)?;
 
     // Follow-up batches will see is_first=false
     plan.batch.is_first = false;
@@ -477,6 +481,7 @@ pub fn process_package_operation(
                     run_action(plan, PackageAction::PreRemove,        pkgkey, &pkg_info, None, None)?;
                     run_action(plan, PackageAction::UnlinkFiles,      pkgkey, &pkg_info, None, None)?;
                     run_action(plan, PackageAction::PostRemove,       pkgkey, &pkg_info, None, None)?;
+                    crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostInstall)?;
                     if op.should_unexpose() {
                         run_action(plan, PackageAction::UnexposeExecutables, pkgkey, &pkg_info, None, None)?;
                     }

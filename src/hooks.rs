@@ -1149,7 +1149,7 @@ fn add_rpm_trigger_instance_args(
 ///     `/bin/sh -c 'killall -q -s USR1 gvfsd || true'`
 /// - Commands with quoted arguments:
 ///     `/usr/bin/vim -es --cmd ":helptags /usr/share/vim/vimfiles/doc" --cmd ":q"`
-fn execute_hook(
+pub fn execute_hook(
     hook: &Hook,
     plan: &InstallationPlan,
     matched_targets: &[String],
@@ -1407,24 +1407,6 @@ fn run_trans_hooks(
 
     // Execute triggered hooks (reference: executes in order)
     execute_triggered_hooks(triggered_hooks, plan, &when)?;
-
-    Ok(())
-}
-
-/// Run a single named hook over all packages in the current batch.
-#[allow(dead_code)]
-pub fn run_hook(
-    plan: &InstallationPlan,
-    hook_name: &str,
-) -> Result<()> {
-    let hook_arc = match plan.hooks_by_name.get(hook_name) {
-        Some(h) => h,
-        None => return Ok(()),
-    };
-
-    let triggered_hooks = find_triggered_hooks(std::slice::from_ref(hook_arc), plan, None)?;
-
-    execute_triggered_hooks(triggered_hooks, plan, &hook_arc.action.when)?;
 
     Ok(())
 }

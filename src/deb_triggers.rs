@@ -7,6 +7,7 @@ use color_eyre::eyre::{Context, eyre};
 use crate::models::{InstalledPackageInfo, PACKAGE_CACHE, PackageFormat};
 use crate::package::pkgkey2pkgname;
 use crate::plan::InstallationPlan;
+use crate::hooks::HookWhen;
 
 // Constants matching dpkg's structure
 pub const TRIGGERSDIR: &str = "var/lib/dpkg/triggers";
@@ -26,6 +27,19 @@ fn get_triggers_dir(env_root: &Path) -> PathBuf {
 /// Get the Unincorp (deferred triggers) file path
 fn get_unincorp_path(env_root: &Path) -> PathBuf {
     get_triggers_dir(env_root).join(TRIGGERSDEFERREDFILE)
+}
+
+/// Convert a deb trigger name to a filename-safe string.
+/// For file triggers (starting with '/'), replaces '/' with '__'.
+/// For explicit triggers, returns the name as-is.
+fn trigger_name_to_filename(name: &str) -> String {
+    if name.starts_with('/') {
+        // File trigger: replace '/' with '__'
+        name.replace('/', "__").to_string()
+    } else {
+        // Explicit trigger: use trigger name as-is
+        name.to_string()
+    }
 }
 
 /// Ensure triggers directory exists
@@ -173,6 +187,108 @@ fn add_activate_triggers_to_maps(
     }
 }
 
+/// Unincorp file format (Deferred Triggers)
+///
+/// The Unincorp file stores deferred trigger activations that need to be processed
+/// after package operations complete. This matches dpkg's behavior for handling
+/// triggers that are activated during package installation/removal.
+///
+/// File Format:
+/// ============
+/// - Location: `{env_root}/var/lib/dpkg/triggers/Unincorp`
+/// - Format: One trigger per line
+/// - Line format: `<trigger-name> <activating-package-1> [<activating-package-2> ...]`
+/// - Comments: Lines starting with `#` are ignored
+/// - Empty lines: Skipped during parsing
+///
+/// Trigger Name:
+/// =============
+/// - Must be printable ASCII characters (0x21-0x7e)
+/// - Terminated by whitespace or end of line
+///
+/// Activating Package Values:
+/// ==========================
+/// - `"-"` (single dash): Indicates a noawait trigger (processed immediately at PostInstall)
+/// - Package name: Indicates an await trigger (processed at PostTransaction)
+///   The package name is the package that activated the trigger
+///
+/// Package Name Format:
+/// ===================
+/// - Must start with: digit, lowercase letter, or `-`
+/// - Can contain: digits, lowercase letters, `-`, `:`, `+`, `.`
+/// - Special case: `-` alone is valid (noawait), but `-something` is invalid
+///
+/// Examples:
+/// ========
+/// ```
+/// mime-support package1 package2
+/// menu - package3
+/// ```
+///
+/// In the above example:
+/// - `mime-support` trigger was activated by `package1` and `package2` (await mode)
+/// - `menu` trigger has one noawait activation (`-`) and one await activation (`package3`)
+///
+/// Processing:
+/// ==========
+/// - noawait triggers (`-`) are processed at PostInstall (immediate, per-package)
+/// - await triggers (package names) are processed at PostTransaction (batched)
+/// - After processing, processed triggers are removed from the file
+///
+/// Reference: dpkg source code (lib/dpkg/trigdeferred.c, src/trigger/main.c)
+///
+/// Read and parse the Unincorp file
+/// Returns a HashMap mapping trigger names to their activating packages
+fn read_unincorp_file(unincorp_path: &Path) -> Result<HashMap<String, Vec<String>>> {
+    let mut activations: HashMap<String, Vec<String>> = HashMap::new();
+
+    if !unincorp_path.exists() {
+        return Ok(activations);
+    }
+
+    if let Ok(file) = fs::File::open(unincorp_path) {
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if !parts.is_empty() {
+                let trigger = parts[0].to_string();
+                let packages: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+                activations.insert(trigger, packages);
+            }
+        }
+    }
+
+    Ok(activations)
+}
+
+/// Write the Unincorp file from a HashMap of trigger activations
+fn write_unincorp_file(
+    unincorp_path: &Path,
+    activations: &HashMap<String, Vec<String>>,
+) -> Result<()> {
+    let mut content = String::new();
+    for (trigger, packages) in activations {
+        if !packages.is_empty() {
+            content.push_str(trigger);
+            for pkg in packages {
+                content.push(' ');
+                content.push_str(pkg);
+            }
+            content.push('\n');
+        }
+    }
+
+    fs::write(unincorp_path, content)
+        .with_context(|| format!("Failed to write Unincorp file: {}", unincorp_path.display()))?;
+
+    Ok(())
+}
+
 /// Activate a trigger (add to Unincorp file)
 /// Reference: dpkg-trigger main.c do_trigger()
 /// Used by dpkg-trigger command
@@ -186,25 +302,7 @@ pub fn activate_trigger(
     let unincorp_path = get_unincorp_path(env_root);
 
     // Read existing Unincorp
-    let mut existing_activations: HashMap<String, Vec<String>> = HashMap::new();
-    if unincorp_path.exists() {
-        if let Ok(file) = fs::File::open(&unincorp_path) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if !parts.is_empty() {
-                    let trigger = parts[0].to_string();
-                    let packages: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-                    existing_activations.insert(trigger, packages);
-                }
-            }
-        }
-    }
+    let mut existing_activations = read_unincorp_file(&unincorp_path)?;
 
     // Add new activation
     let awaiter = if no_await {
@@ -221,20 +319,7 @@ pub fn activate_trigger(
     }
 
     // Write updated Unincorp
-    let mut content = String::new();
-    for (trigger, packages) in &existing_activations {
-        if !packages.is_empty() {
-            content.push_str(trigger);
-            for pkg in packages {
-                content.push(' ');
-                content.push_str(pkg);
-            }
-            content.push('\n');
-        }
-    }
-
-    fs::write(&unincorp_path, content)
-        .with_context(|| format!("Failed to write Unincorp file: {}", unincorp_path.display()))?;
+    write_unincorp_file(&unincorp_path, &existing_activations)?;
 
     Ok(())
 }
@@ -549,11 +634,8 @@ fn write_deb_trigger_hooks<P: AsRef<Path>>(
 
     // Generate hooks for interest triggers
     // These hooks will run when matching packages activate the trigger
-    let mut hook_index: usize = 0;
-
     for entry in interest_triggers {
         let name = entry.name.trim();
-        hook_index += 1;
 
         let mut buf = String::new();
 
@@ -602,11 +684,9 @@ fn write_deb_trigger_hooks<P: AsRef<Path>>(
         let postinst_path = install_dir.join("post_install.sh");
         writeln!(buf, "Exec = {}", postinst_path.to_string_lossy())?;
 
-        let hook_name = if hook_type == "Path" {
-            format!("deb-file-trigger-{}", hook_index)
-        } else {
-            format!("deb-explicit-trigger-{}", hook_index)
-        };
+        // For DEB triggers, use the trigger name itself as the hook name
+        // Sanitize the trigger name for use as a filename (replace '/' with '__' for file triggers)
+        let hook_name = trigger_name_to_filename(name);
         let hook_path = install_dir.join(format!("{}.hook", hook_name));
         fs::write(&hook_path, buf)
             .with_context(|| format!("Failed to write DEB hook file {}", hook_path.display()))?;
@@ -692,6 +772,98 @@ pub fn load_batch_deb_activate_triggers(plan: &mut InstallationPlan) -> Result<(
         let pkgline = crate::plan::pkgkey2pkgline(plan, &pkgkey);
         process_package_activate_triggers(plan, &pkgkey, &pkgline)?;
     }
+
+    Ok(())
+}
+
+/// Separate triggers into noawait and await categories, then split based on when
+/// Returns (triggers_to_consume, triggers_remaining)
+/// If any activating_package is '-', classify the entire trigger as noawait
+fn separate_unincorp_triggers(
+    trigger_activations: HashMap<String, Vec<String>>,
+    when: HookWhen,
+) -> Result<(HashMap<String, Vec<String>>, HashMap<String, Vec<String>>)> {
+    let mut noawait_triggers: HashMap<String, Vec<String>> = HashMap::new();
+    let mut await_triggers: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (trigger_name, activating_packages) in trigger_activations {
+        // If any activating_package is '-', classify as noawait
+        if activating_packages.iter().any(|pkg| pkg == "-") {
+            noawait_triggers.insert(trigger_name, activating_packages);
+        } else {
+            await_triggers.insert(trigger_name, activating_packages);
+        }
+    }
+
+    // Split based on when parameter
+    let (triggers_to_consume, triggers_remaining) = match when {
+        HookWhen::PostInstall => (noawait_triggers, await_triggers),
+        HookWhen::PostTransaction => (await_triggers, noawait_triggers),
+        _ => {
+            // Only PostInstall and PostTransaction are valid
+            return Err(color_eyre::eyre::eyre!("Invalid HookWhen for unincorp triggers"));
+        }
+    };
+
+    Ok((triggers_to_consume, triggers_remaining))
+}
+
+/// Directly find and execute hooks for unincorp triggers without modifying the plan
+/// For each trigger name, finds the hook by name and executes it directly
+fn run_unincorp_trigger_hooks(
+    plan: &InstallationPlan,
+    triggers_to_process: &HashMap<String, Vec<String>>,
+) -> Result<()> {
+    // Process each trigger name
+    for trigger_name in triggers_to_process.keys() {
+        // Convert trigger name to hook name (filename)
+        let hook_name = trigger_name_to_filename(trigger_name);
+
+        // Find the hook by name
+        if let Some(hook) = plan.hooks_by_name.get(&hook_name) {
+            // Execute the hook with the trigger name as matched_targets
+            let matched_targets = vec![trigger_name.clone()];
+            crate::hooks::execute_hook(hook.as_ref(), plan, &matched_targets)?;
+        } else {
+            log::warn!("No hook found for trigger '{}' (hook name: '{}')", trigger_name, hook_name);
+        }
+    }
+
+    Ok(())
+}
+
+/// Process triggers from Unincorp file
+/// Reads the Unincorp file and directly finds/executes matching hooks.
+///
+/// - noawait records (activating_package == "-") -> PostInstall (immediate, per-package processing)
+/// - await records (activating_package != "-") -> PostTransaction (batched, after all packages are processed)
+pub fn run_debian_unincorp_triggers(
+    plan: &mut InstallationPlan,
+    when: HookWhen,
+) -> Result<()> {
+    if plan.package_format != PackageFormat::Deb {
+        return Ok(());
+    }
+
+    let unincorp_path = get_unincorp_path(&plan.env_root);
+
+    // Read Unincorp file
+    let trigger_activations = read_unincorp_file(&unincorp_path)?;
+    if trigger_activations.is_empty() {
+        return Ok(());
+    }
+
+    // Separate triggers and split based on when parameter
+    let (triggers_to_consume, triggers_remaining) = separate_unincorp_triggers(trigger_activations, when)?;
+    if triggers_to_consume.is_empty() {
+        return Ok(());
+    }
+
+    // Directly find and execute hooks for unincorp triggers without modifying the plan
+    run_unincorp_trigger_hooks(plan, &triggers_to_consume)?;
+
+    // Write remaining triggers back to Unincorp
+    write_unincorp_file(&unincorp_path, &triggers_remaining)?;
 
     Ok(())
 }
