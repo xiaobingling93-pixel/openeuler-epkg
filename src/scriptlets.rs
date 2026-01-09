@@ -431,6 +431,9 @@ pub fn run_trans_scriptlets(
             // Transaction scriptlets for new packages (fresh installs and upgrades)
             ScriptletType::PreTrans | ScriptletType::PostTrans => {
                 if let Some(new_pkgkey) = &op.new_pkgkey {
+                    if !plan.batch.new_pkgkeys.contains(new_pkgkey) {
+                        continue;
+                    }
                     if let Some(new_pkg_info) = crate::plan::pkgkey2new_pkg_info(plan, new_pkgkey) {
                         run_scriptlet(plan, scriptlet_type, new_pkgkey, new_pkg_info.as_ref(), op.old_pkgkey.as_deref())?;
                     }
@@ -439,6 +442,10 @@ pub fn run_trans_scriptlets(
             // Transaction scriptlets for old packages being removed
             ScriptletType::PreUnTrans | ScriptletType::PostUnTrans => {
                 if let Some(old_pkgkey) = &op.old_pkgkey {
+                    if !plan.batch.old_removes.contains(old_pkgkey) &&
+                       !plan.batch.upgrades_old.contains(old_pkgkey) {
+                        continue;
+                    }
                     if let Some(old_pkg_info) = crate::plan::pkgkey2installed_pkg_info(old_pkgkey) {
                         run_scriptlet(plan, scriptlet_type, old_pkgkey, old_pkg_info.as_ref(), op.new_pkgkey.as_deref())?;
                     }
