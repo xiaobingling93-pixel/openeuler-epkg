@@ -471,7 +471,7 @@ fn parse_deb_activate_triggers<P: AsRef<Path>>(activate_triggers: &[TriggerEntry
 ///   - [Trigger]:
 ///     - Operation = Install|Upgrade|Remove
 ///     - Type = Path
-///     - Target = <trigger path as-is>
+///     - Target = <trigger path, strips leading '/'>
 ///   - [Action]:
 ///     - When = PostTransaction
 ///     - Exec = /bin/true          (no-op placeholder for now)
@@ -543,10 +543,12 @@ fn write_deb_trigger_hooks<P: AsRef<Path>>(
             if entry.await_mode { "await" } else { "noawait" }
         )?;
         // Exec will call the package's postinst with "triggered" argument
-        // The hook engine will need to resolve the package context and call:
-        // postinst triggered <trigger-name>
-        // For now, use a placeholder that indicates this is a DEB trigger hook
-        buf.push_str("Exec = /bin/true\n");
+        // The postinst script is in the same directory as the hook file
+        // Write the full absolute path to the postinst script
+        // The hook engine will add "triggered" and trigger names as arguments:
+        // postinst triggered <trigger-name>...
+        let postinst_path = install_dir.join("post_install.sh");
+        writeln!(buf, "Exec = {}", postinst_path.to_string_lossy())?;
 
         let hook_name = if hook_type == "Path" {
             format!("deb-file-trigger-{}", hook_index)

@@ -753,11 +753,14 @@ pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
 
 /// Match Path trigger (reference: _alpm_hook_trigger_match_file)
 /// Returns (matched, aggregated_targets)
+/// For DEB trigger hooks (is_deb_trigger=true), matched_targets contains trigger names instead of file paths
+/// For DEB file triggers, trigger-name is '/' + positive_targets item (or positive_prefixes)
 fn match_path_trigger(
     plan: &InstallationPlan,
     trigger: &HookTrigger,
     needs_targets: bool,
     pkgkey_filter: Option<&str>,
+    is_deb_trigger: bool,
 ) -> Result<(bool, Vec<String>)> {
     // If there are no positive targets, we can't match
     if trigger.positive_targets.is_empty() {
@@ -795,7 +798,17 @@ fn match_path_trigger(
         matched_targets.extend(upgrades_old_set.intersection(&upgrades_new_set).cloned());
     }
 
-    Ok((!matched_targets.is_empty(), matched_targets))
+    let matched = !matched_targets.is_empty();
+
+    // For DEB trigger hooks, replace file paths with trigger names
+    if is_deb_trigger && matched {
+        // For DEB file triggers, trigger-name is '/' + positive_targets item
+        // (positive_targets contains paths without leading '/', e.g., "usr/share/omf")
+        let trigger_names: Vec<String> = trigger.positive_targets.iter().map(|target| format!("/{}", target)).collect();
+        Ok((true, trigger_names))
+    } else {
+        Ok((matched, matched_targets))
+    }
 }
 
 /// Collect matching files for a batch of pkgkeys by looking up package info from the plan.
@@ -929,38 +942,49 @@ fn matches_patterns(
 }
 
 /// Match Package trigger (reference: _alpm_hook_trigger_match_pkg)
+/// Returns (matched, combined_targets)
+/// For DEB trigger hooks (is_deb_trigger=true), returns trigger names instead of package names
+/// For DEB explicit triggers, trigger-name is positive_targets item (the trigger name)
 fn match_package_trigger(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
     pkgkey_filter: Option<&str>,
-) -> Result<(bool, Vec<String>, Vec<String>, Vec<String>)> {
-    let mut install_pkgs = Vec::new();
-    let mut upgrade_pkgs = Vec::new();
-    let mut remove_pkgs = Vec::new();
-
+    is_deb_trigger: bool,
+) -> Result<(bool, Vec<String>)> {
     if trigger.positive_targets.is_empty() {
-        return Ok((false, Vec::new(), Vec::new(), Vec::new()));
+        return Ok((false, Vec::new()));
     }
 
     let wants_install = trigger.operations.is_set(HookOperation::Install);
     let wants_upgrade = trigger.operations.is_set(HookOperation::Upgrade);
     let wants_remove = trigger.operations.is_set(HookOperation::Remove);
 
+    let mut matched_targets = Vec::new();
+
     if wants_install {
-        install_pkgs = collect_matching_pkg_names(&plan.batch.fresh_installs, trigger, plan, pkgkey_filter);
+        let install_pkgs = collect_matching_pkg_names(&plan.batch.fresh_installs, trigger, plan, pkgkey_filter);
+        matched_targets.extend(install_pkgs);
     }
     if wants_upgrade {
-        upgrade_pkgs = collect_matching_pkg_names(&plan.batch.upgrades_new, trigger, plan, pkgkey_filter);
+        let upgrade_pkgs = collect_matching_pkg_names(&plan.batch.upgrades_new, trigger, plan, pkgkey_filter);
+        matched_targets.extend(upgrade_pkgs);
     }
     if wants_remove {
-        remove_pkgs = collect_matching_pkg_names(&plan.batch.old_removes, trigger, plan, pkgkey_filter);
+        let remove_pkgs = collect_matching_pkg_names(&plan.batch.old_removes, trigger, plan, pkgkey_filter);
+        matched_targets.extend(remove_pkgs);
     }
 
-    let matched = (wants_install && !install_pkgs.is_empty())
-        || (wants_upgrade && !upgrade_pkgs.is_empty())
-        || (wants_remove && !remove_pkgs.is_empty());
+    let matched = !matched_targets.is_empty();
 
-    Ok((matched, install_pkgs, upgrade_pkgs, remove_pkgs))
+    // For DEB trigger hooks, replace package names with trigger names
+    if is_deb_trigger && matched {
+        // For DEB explicit triggers, trigger-name is positive_targets item (the trigger name)
+        // positive_targets contains the trigger names (e.g., "mime-support", "update-menus")
+        let trigger_names = trigger.positive_targets.clone();
+        Ok((true, trigger_names))
+    } else {
+        Ok((matched, matched_targets))
+    }
 }
 
 /// Collect package names from a set of pkgkeys that match the trigger patterns and optional filter.
@@ -1059,12 +1083,26 @@ fn get_triggering_pkgname(
 /// For RPM format, adds two arguments:
 /// - $1: Number of installed instances of the triggered package (package containing the trigger scriptlet)
 /// - $2: Number of installed instances of the triggering package (package that set off the trigger)
+/// For DEB format, adds "triggered" and space-separated trigger names:
+/// - "triggered" <trigger-name>...
 fn add_rpm_trigger_instance_args(
     hook: &Hook,
     matched_targets: &[String],
     plan: &InstallationPlan,
     args: &mut Vec<String>,
 ) {
+    if plan.package_format == PackageFormat::Deb {
+        // For DEB trigger hooks, add "triggered" and trigger names
+        // matched_targets contains trigger names for DEB trigger hooks
+        if !matched_targets.is_empty() {
+            args.push("triggered".to_string());
+            // Join trigger names with space and add as a single argument
+            // This matches dpkg's behavior: postinst triggered "trigger-name trigger-name ..."
+            args.push(matched_targets.join(" "));
+        }
+        return;
+    }
+
     if plan.package_format != PackageFormat::Rpm {
         return;
     }
@@ -1142,6 +1180,7 @@ fn execute_hook(
     let mut args: Vec<String> = exec_parts[1..].iter().map(|s| s.to_string()).collect();
 
     // For RPM format, add $1 and $2 arguments for trigger instance counts
+    // For DEB format, add "triggered" and trigger names
     add_rpm_trigger_instance_args(hook, matched_targets, plan, &mut args);
 
     log::debug!("Parsed Exec command: {:?}, args: {:?}", command, args);
@@ -1184,14 +1223,17 @@ fn execute_hook(
     }
 }
 
-
 /// Check if a hook trigger matches the transaction
+/// For DEB trigger hooks, matched_targets contains trigger names instead of file paths/package names
 fn check_trigger_match(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
     needs_targets: bool,
     pkgkey_filter: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
+    // Check if this is a DEB trigger hook
+    let is_deb_trigger = plan.package_format == PackageFormat::Deb;
+
     match trigger.hook_type {
         HookType::Path => {
             match_path_trigger(
@@ -1199,20 +1241,18 @@ fn check_trigger_match(
                 trigger,
                 needs_targets,
                 pkgkey_filter,
+                is_deb_trigger,
             )
         }
         HookType::Package => {
-            let (pmatched, install_targets, upgrade_targets, remove_targets) =
-                match_package_trigger(trigger, plan, pkgkey_filter)?;
+            let (pmatched, matched_targets) =
+                match_package_trigger(trigger, plan, pkgkey_filter, is_deb_trigger)?;
 
-            let mut matched_targets = Vec::new();
             if pmatched && needs_targets {
-                matched_targets.extend(install_targets);
-                matched_targets.extend(upgrade_targets);
-                matched_targets.extend(remove_targets);
+                Ok((true, matched_targets))
+            } else {
+                Ok((pmatched, Vec::new()))
             }
-
-            Ok((pmatched, matched_targets))
         }
     }
 }
@@ -1259,7 +1299,12 @@ fn find_triggered_hooks<'a>(
         let mut all_matched_targets = Vec::new();
 
         for trigger in &hook.triggers {
-            let (matched, matched_targets) = check_trigger_match(trigger, plan, hook.action.needs_targets, pkgkey_filter)?;
+            let (matched, matched_targets) = check_trigger_match(
+                trigger,
+                plan,
+                hook.action.needs_targets,
+                pkgkey_filter,
+            )?;
 
             if matched {
                 hook_matched = true;
