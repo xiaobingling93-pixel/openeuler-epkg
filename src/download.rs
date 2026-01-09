@@ -2325,7 +2325,7 @@ fn clone_or_fetch_aur_repo(
 
     let env_root = dirs::get_default_env_root().unwrap_or_else(|_| PathBuf::from("/"));
     let base_run_options = run::RunOptions {
-        command: "git".to_string(),
+        command: git_path.to_string_lossy().to_string(),
         skip_namespace_isolation: is_host_git,
         timeout: 300, // 5 minute timeout
         ..Default::default()
@@ -2343,7 +2343,7 @@ fn clone_or_fetch_aur_repo(
             ],
             ..base_run_options.clone()
         };
-        run::fork_and_execute(&env_root, &fetch_options, git_path)
+        run::fork_and_execute(&env_root, &fetch_options)
             .with_context(|| format!("Failed to fetch git repository: {}", git_url))?;
 
         // Checkout HEAD using -C to change directory
@@ -2356,7 +2356,7 @@ fn clone_or_fetch_aur_repo(
             ],
             ..base_run_options.clone()
         };
-        if let Err(e) = run::fork_and_execute(&env_root, &checkout_options, git_path) {
+        if let Err(e) = run::fork_and_execute(&env_root, &checkout_options) {
             log::warn!(
                 "Checkout HEAD failed in {}: {}. Trying git reset --hard + checkout.",
                 clone_dir.display(),
@@ -2371,9 +2371,9 @@ fn clone_or_fetch_aur_repo(
                 ],
                 ..base_run_options.clone()
             };
-            run::fork_and_execute(&env_root, &reset_options, git_path)
+            run::fork_and_execute(&env_root, &reset_options)
                 .with_context(|| format!("Failed to reset repository: {}", clone_dir.display()))?;
-            run::fork_and_execute(&env_root, &checkout_options, git_path)
+            run::fork_and_execute(&env_root, &checkout_options)
                 .with_context(|| format!("Failed to checkout HEAD in repository: {}", clone_dir.display()))?;
         }
     } else {
@@ -2394,7 +2394,7 @@ fn clone_or_fetch_aur_repo(
             ],
             ..base_run_options
         };
-        run::fork_and_execute(&env_root, &clone_options, git_path)
+        run::fork_and_execute(&env_root, &clone_options)
             .with_context(|| format!("Failed to clone git repository: {}", git_url))?;
     }
 

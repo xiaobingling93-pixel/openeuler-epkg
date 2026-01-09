@@ -1022,6 +1022,15 @@ fn check_dependency(
 
 /// Execute a hook
 /// Reference: _alpm_hook_run_hook
+///
+/// This function handles various Exec command formats found in real-world hooks:
+/// - Direct execution:
+///     `/usr/bin/appstreamcli refresh-cache --force`
+/// - Shell commands with -c and nested quotes:
+///     `/bin/sh -c 'while read -r f; do install-info "$f" /usr/share/info/dir 2> /dev/null; done'`
+///     `/bin/sh -c 'killall -q -s USR1 gvfsd || true'`
+/// - Commands with quoted arguments:
+///     `/usr/bin/vim -es --cmd ":helptags /usr/share/vim/vimfiles/doc" --cmd ":q"`
 fn execute_hook(
     hook: &Hook,
     plan: &InstallationPlan,
@@ -1040,6 +1049,13 @@ fn execute_hook(
     }
 
     // Parse exec command using shlex (reference: wordsplit)
+    // shlex correctly handles:
+    // - Shell commands with single quotes: '/bin/sh -c 'script''
+    //   → Parses as: ["/bin/sh", "-c", "script"]
+    // - Nested quotes within shell scripts: 'install-info "$f" ...'
+    //   → Preserves inner quotes as escaped: "install-info \"$f\" ..."
+    // - Quoted arguments: '--cmd ":helptags ..."'
+    //   → Parses as separate argument with quotes preserved
     let exec_parts = match shlex::split(&hook.action.exec) {
         Some(parts) => {
             if parts.is_empty() {
@@ -1058,27 +1074,12 @@ fn execute_hook(
     let command = &exec_parts[0];
     let args = &exec_parts[1..];
 
-    // Build command path (reference: _alpm_run_chroot handles path resolution)
-    let command_path = if command.starts_with('/') {
-        env_root.join(command.strip_prefix('/').unwrap_or(command))
-    } else {
-        // Try common paths
-        let common_paths = vec![
-            env_root.join("usr/bin").join(command),
-            env_root.join("usr/sbin").join(command),
-            env_root.join("bin").join(command),
-            env_root.join("sbin").join(command),
-        ];
-
-        common_paths.iter()
-            .find(|p| p.exists())
-            .cloned()
-            .unwrap_or_else(|| env_root.join("usr/bin").join(command))
-    };
-
+    log::debug!("Parsed Exec command: {:?}, args: {:?}", command, args);
     log::info!("Executing hook {}: {}", hook.file_path, hook.action.exec);
 
     let env_vars = HashMap::new();
+    // For hooks with NeedsTargets, matched file paths are passed via stdin
+    // Example: texinfo hooks read file paths from stdin in their 'while read -r f' loops
     let stdin_data = if hook.action.needs_targets {
         Some(matched_targets.join("\n").into_bytes())
     } else {
@@ -1097,7 +1098,7 @@ fn execute_hook(
         ..Default::default()
     };
 
-    match crate::run::fork_and_execute(env_root, &run_options, &command_path) {
+    match crate::run::fork_and_execute(env_root, &run_options) {
         Ok(()) => {
             log::debug!("Hook {} executed successfully", hook.file_path);
             Ok(())

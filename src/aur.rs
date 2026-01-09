@@ -456,7 +456,7 @@ fn run_makepkg(
     );
 
     let run_options = crate::run::RunOptions {
-        command: "bash".to_string(),
+        command: sh_path.to_string_lossy().to_string(),
         args: vec!["-c".to_string(), makepkg_cmd],
         chdir_to_env_root: false, // We're already changing directory in the command
         skip_namespace_isolation: false,
@@ -465,7 +465,7 @@ fn run_makepkg(
     };
 
     // Run makepkg using fork_and_execute
-    match crate::run::fork_and_execute(env_root, &run_options, &sh_path) {
+    match crate::run::fork_and_execute(env_root, &run_options) {
         Ok(()) => {
             log::info!("makepkg completed successfully for {}", pkgbase);
             Ok(())

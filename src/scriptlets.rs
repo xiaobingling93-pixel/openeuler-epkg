@@ -538,7 +538,7 @@ pub fn run_scriptlet(
                 }
 
                 let run_options = crate::run::RunOptions {
-                    command: interpreter.to_string(),
+                    command: interpreter_path.to_string_lossy().to_string(),
                     args: script_args,
                     env_vars,
                     no_exit: true,           // Don't exit on scriptlet failures, just warn
@@ -548,7 +548,7 @@ pub fn run_scriptlet(
                 };
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation
-                match crate::run::fork_and_execute(env_root, &run_options, &interpreter_path) {
+                match crate::run::fork_and_execute(env_root, &run_options) {
                     Ok(()) => {
                         log::debug!(
                             "{:?} scriptlet completed successfully for package {} using {}",

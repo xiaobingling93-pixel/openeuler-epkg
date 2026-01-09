@@ -226,7 +226,20 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
 /// Fork a new process and execute command with optional namespace isolation
 /// If `run_options.skip_namespace_isolation` is true, executes without namespace setup (for conda environments).
 /// Otherwise, sets up namespace isolation before executing.
-pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> Result<()> {
+///
+/// The command path is derived from `run_options.command`:
+/// - If `run_options.command` is already an absolute path, it's used directly
+/// - Otherwise, PATH lookup is performed using `find_command_in_env_path()`
+pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<()> {
+    // Resolve command path from run_options.command
+    let cmd_path = if Path::new(&run_options.command).is_absolute() {
+        // Already an absolute path, use it directly
+        PathBuf::from(&run_options.command)
+    } else {
+        // Command name, do PATH lookup
+        find_command_in_env_path(&run_options.command, env_root)?
+    };
+
     let stdin_bytes = run_options.stdin.as_ref().map(|v| v.as_slice());
     let mut stdin_pipe = if stdin_bytes.is_some() {
         Some(pipe().map_err(|e| eyre::eyre!("Failed to create stdin pipe: {}", e))?)
@@ -253,7 +266,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
                 }
                 let _ = close(write_fd);
             }
-            wait_for_child_with_timeout(child, cmd_path, run_options)
+            wait_for_child_with_timeout(child, &cmd_path, run_options)
         }
         Ok(nix::unistd::ForkResult::Child) => {
             if let Some((read_fd, write_fd)) = stdin_pipe {
@@ -268,7 +281,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions, cmd_path: &Pa
                 mem::forget(stdin_fd);
                 let _ = close(read_fd);
             }
-            execute_in_child(env_root, run_options, cmd_path)
+            execute_in_child(env_root, run_options, &cmd_path)
         }
         Err(e) => {
             Err(eyre::eyre!("Failed to fork process: {}", e))
@@ -1028,16 +1041,13 @@ pub fn command_run(sub_matches: &clap::ArgMatches) -> Result<()> {
     let env_root = crate::dirs::get_default_env_root()?;
     info!("Using environment root: {}", env_root.display());
 
-    let cmd_path = find_command_in_env_path(&run_options.command, &env_root)?;
-    info!("Found command at: {}", cmd_path.display());
-
     let is_conda = crate::models::channel_config().format == crate::models::PackageFormat::Conda;
     if is_conda {
         // conda ELF binary has RPATH
         run_options.skip_namespace_isolation = true;
     }
 
-    fork_and_execute(&env_root, &run_options, &cmd_path)?;
+    fork_and_execute(&env_root, &run_options)?;
 
     Ok(())
 }

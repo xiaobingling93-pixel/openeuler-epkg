@@ -535,14 +535,14 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
         match run::find_command_in_env_path("ldconfig", env_root) {
             Ok(ldconfig_path) => {
                 let run_options = run::RunOptions {
-                    command: "ldconfig".to_string(),
+                    command: ldconfig_path.to_string_lossy().to_string(),
                     no_exit: true,
                     chdir_to_env_root: true, // ldconfig should run relative to environment root
                     ..Default::default()
                 };
 
                 // Execute ldconfig
-                run::fork_and_execute(env_root, &run_options, &ldconfig_path)?;
+                run::fork_and_execute(env_root, &run_options)?;
             }
             Err(_) => {
                 log::warn!("ldconfig command not found in environment, skipping library cache update");
