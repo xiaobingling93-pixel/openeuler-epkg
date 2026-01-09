@@ -10,7 +10,7 @@ use crate::version_constraint::check_version_constraint;
 use crate::package_cache::map_pkgline2filelist;
 use crate::plan::{InstallationPlan, pkgkey2pkgline};
 use crate::parse_requires::VersionConstraint;
-use crate::rpm_triggers::parse_rpm_trigger_condition;
+use crate::rpm_triggers::{parse_rpm_trigger_condition, RPMTRIGGER_DEFAULT_PRIORITY};
 use shlex;
 use glob::Pattern;
 
@@ -163,7 +163,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
                 depends: Vec::new(),
                 abort_on_fail: false,
                 needs_targets: false,
-                priority: 1_000_000,
+                priority: RPMTRIGGER_DEFAULT_PRIORITY,
             });
             continue;
         }
@@ -1023,6 +1023,73 @@ fn check_dependency(
 /// Execute a hook
 /// Reference: _alpm_hook_run_hook
 ///
+/// Count installed instances of a package by name
+/// Returns the number of installed packages with the given pkgname
+fn count_installed_instances_by_name(pkgname: &str) -> u32 {
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    let mut count = 0u32;
+    for (pkgkey, _) in installed.iter() {
+        if let Ok(name) = pkgkey2pkgname(pkgkey) {
+            if name == pkgname {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Get triggering package name from matched targets or transaction
+/// For package triggers, matched_targets contains package names
+/// For file triggers, just return None
+fn get_triggering_pkgname(
+    hook: &Hook,
+    matched_targets: &[String],
+    _plan: &InstallationPlan,
+) -> Option<String> {
+    // For package triggers, matched_targets contains package names
+    if !hook.triggers.is_empty() && hook.triggers[0].hook_type == HookType::Package {
+        return matched_targets.first().cloned();
+    }
+
+    // It seems no real world RPM file triggers using $2
+    None
+}
+
+/// Add RPM trigger instance count arguments ($1 and $2) to the args vector
+/// For RPM format, adds two arguments:
+/// - $1: Number of installed instances of the triggered package (package containing the trigger scriptlet)
+/// - $2: Number of installed instances of the triggering package (package that set off the trigger)
+fn add_rpm_trigger_instance_args(
+    hook: &Hook,
+    matched_targets: &[String],
+    plan: &InstallationPlan,
+    args: &mut Vec<String>,
+) {
+    if plan.package_format != PackageFormat::Rpm {
+        return;
+    }
+
+    // $1: Number of installed instances of the triggered package (package containing the trigger scriptlet)
+    let triggered_pkgname = hook.pkgkey.as_ref()
+        .and_then(|pkgkey| pkgkey2pkgname(pkgkey).ok());
+    let triggered_count = if let Some(ref name) = triggered_pkgname {
+        count_installed_instances_by_name(name)
+    } else {
+        0
+    };
+
+    // $2: Number of installed instances of the triggering package (package that set off the trigger)
+    let triggering_pkgname = get_triggering_pkgname(hook, matched_targets, plan);
+    let triggering_count = if let Some(ref name) = triggering_pkgname {
+        count_installed_instances_by_name(name)
+    } else {
+        triggered_count
+    };
+
+    args.push(triggered_count.to_string());
+    args.push(triggering_count.to_string());
+}
+
 /// This function handles various Exec command formats found in real-world hooks:
 /// - Direct execution:
 ///     `/usr/bin/appstreamcli refresh-cache --force`
@@ -1072,7 +1139,10 @@ fn execute_hook(
     };
 
     let command = &exec_parts[0];
-    let args = &exec_parts[1..];
+    let mut args: Vec<String> = exec_parts[1..].iter().map(|s| s.to_string()).collect();
+
+    // For RPM format, add $1 and $2 arguments for trigger instance counts
+    add_rpm_trigger_instance_args(hook, matched_targets, plan, &mut args);
 
     log::debug!("Parsed Exec command: {:?}, args: {:?}", command, args);
     log::info!("Executing hook {}: {}", hook.file_path, hook.action.exec);
@@ -1089,7 +1159,7 @@ fn execute_hook(
     // Execute the hook
     let run_options = crate::run::RunOptions {
         command: command.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args,
         env_vars,
         stdin: stdin_data,
         no_exit: !hook.action.abort_on_fail,

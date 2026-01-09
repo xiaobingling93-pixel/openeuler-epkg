@@ -275,7 +275,7 @@ pub fn get_scriptlet_from_header(metadata: &rpm::PackageMetadata, scriptlet_name
  */
 /// Determines the appropriate file extension based on scriptlet interpreter information
 /// Returns a tuple of (extension, modified_content)
-fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) -> (String, String) {
+pub fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &str) -> (String, String) {
     let mut extension = String::new();
     let mut content = script_content.to_string();
     // log::debug!("interpreter '{:?}' {:?}", scriptlet.program, content);

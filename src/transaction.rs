@@ -124,7 +124,7 @@ fn run_action(
             crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, store_root, env_root)?;
             // Note: Actual linking happens earlier in the download/unpack phase
 
-            // DEB trigger handling now covered by hooks (file triggers match paths, explicit triggers match packages)
+            PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.to_string(), Arc::clone(pkg_info));
         }
 
         PackageAction::PostInstall => {
@@ -363,15 +363,6 @@ pub fn run_transaction_batch(
     // Execute transaction scriptlets: %posttrans of packages being installed/upgraded
     // This runs AFTER all file operations complete (RPM behavior)
     end_transaction(&plan)?;
-
-    // Update installed packages metadata
-    let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
-    for pkgkey in plan.batch.new_pkgkeys.iter() {
-        if let Some(info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
-            installed.insert(pkgkey.clone(), info);
-        }
-    }
-    drop(installed);
 
     Ok(())
 }
