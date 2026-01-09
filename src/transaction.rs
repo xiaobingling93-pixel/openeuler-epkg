@@ -348,6 +348,9 @@ pub fn run_transaction_batch(
     // Load hooks for batch packages (incremental loading)
     hooks::load_batch_hooks(plan)?;
 
+    // Load Debian activate triggers for batch packages (incremental loading)
+    crate::deb_triggers::load_batch_deb_activate_triggers(plan)?;
+
     // Run PreTransaction hooks
     hooks::run_hooks(plan, hooks::HookWhen::PreTransaction)?;
 

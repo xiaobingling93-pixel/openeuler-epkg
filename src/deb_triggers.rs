@@ -93,12 +93,12 @@ pub fn read_package_trigger_interests(
     Ok((explicit_interests, file_interests))
 }
 
-/// Read activate triggers from package metadata
+/// Read activate triggers from package metadata using pkgline
 pub fn read_package_activate_triggers(
-    pkgkey: &str,
+    pkgline: &str,
     store_root: &Path,
 ) -> Result<Vec<(String, bool)>> {
-    let install_dir = store_root.join(format!("{}/info/install", pkgkey));
+    let install_dir = store_root.join(format!("{}/info/install", pkgline));
     let activate_file = install_dir.join("deb_activate.triggers");
 
     if !activate_file.exists() {
@@ -119,6 +119,58 @@ pub fn read_package_activate_triggers(
     }
 
     Ok(triggers)
+}
+
+/// Process activate triggers for a single package
+/// Helper function to avoid code duplication between build_deb_activate_trigger_maps
+/// and load_batch_deb_activate_triggers
+fn process_package_activate_triggers(
+    plan: &mut InstallationPlan,
+    pkgkey: &str,
+    pkgline: &str,
+) -> Result<()> {
+    if pkgline.is_empty() {
+        return Ok(());
+    }
+
+    // Read activate triggers using pkgline (packages in store are stored by pkgline)
+    let activate_triggers = read_package_activate_triggers(pkgline, &plan.store_root)?;
+
+    if !activate_triggers.is_empty() {
+        add_activate_triggers_to_maps(plan, pkgkey, activate_triggers);
+    }
+
+    Ok(())
+}
+
+/// Add activate triggers to the plan's trigger maps
+/// Helper function to avoid code duplication between build_deb_activate_trigger_maps
+/// and load_batch_deb_activate_triggers
+fn add_activate_triggers_to_maps(
+    plan: &mut InstallationPlan,
+    pkgkey: &str,
+    triggers: Vec<(String, bool)>,
+) {
+    let pkgkey_string = pkgkey.to_string();
+    for (trigger_name, _await_mode) in triggers {
+        // Map: pkgkey -> trigger names this package activates
+        let pkg_entry = plan
+            .deb_activate_triggers_by_pkg
+            .entry(pkgkey_string.clone())
+            .or_insert_with(Vec::new);
+        if !pkg_entry.contains(&trigger_name) {
+            pkg_entry.push(trigger_name.clone());
+        }
+
+        // Map: trigger name -> pkgkeys that activate it
+        let name_entry = plan
+            .deb_activate_triggers_by_name
+            .entry(trigger_name.clone())
+            .or_insert_with(Vec::new);
+        if !name_entry.contains(&pkgkey_string) {
+            name_entry.push(pkgkey_string.clone());
+        }
+    }
 }
 
 /// Activate a trigger (add to Unincorp file)
@@ -612,46 +664,33 @@ pub fn build_deb_explicit_trigger_maps(plan: &mut InstallationPlan) -> Result<()
     Ok(())
 }
 
-/// Build Debian activate trigger maps for the plan.
-/// Only used when operating in Debian format; safe no-op otherwise.
+/// Build Debian activate trigger initial maps for the plan.
 pub fn build_deb_activate_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
     if plan.package_format != PackageFormat::Deb {
         return Ok(());
     }
 
-    // Only look at already-installed packages; new packages being installed in
-    // this transaction will have their trigger metadata populated as part of
-    // unpack and will be visible on the next plan.
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
 
-    for (pkgkey, _) in installed.iter() {
-        // Reuse deb_triggers helper to read activate triggers from info/install/.
-        let activate_triggers =
-            crate::deb_triggers::read_package_activate_triggers(pkgkey, &plan.store_root)?;
+    for (pkgkey, info) in installed.iter() {
+        process_package_activate_triggers(plan, pkgkey, &info.pkgline)?;
+    }
 
-        if activate_triggers.is_empty() {
-            continue;
-        }
+    Ok(())
+}
 
-        for (trigger_name, _await_mode) in activate_triggers {
-            // Map: pkgkey -> trigger names this package activates
-            let pkg_entry = plan
-                .deb_activate_triggers_by_pkg
-                .entry(pkgkey.clone())
-                .or_insert_with(Vec::new);
-            if !pkg_entry.contains(&trigger_name) {
-                pkg_entry.push(trigger_name.clone());
-            }
+/// Load Debian activate triggers for packages in the current batch.
+/// Extends plan.deb_activate_triggers_by_pkg and plan.deb_activate_triggers_by_name
+/// with triggers from packages in plan.batch.new_pkgkeys.
+pub fn load_batch_deb_activate_triggers(plan: &mut InstallationPlan) -> Result<()> {
+    if plan.package_format != PackageFormat::Deb {
+        return Ok(());
+    }
 
-            // Map: trigger name -> pkgkeys that activate it
-            let name_entry = plan
-                .deb_activate_triggers_by_name
-                .entry(trigger_name.clone())
-                .or_insert_with(Vec::new);
-            if !name_entry.contains(pkgkey) {
-                name_entry.push(pkgkey.clone());
-            }
-        }
+    let pkgkeys: Vec<String> = plan.batch.new_pkgkeys.iter().cloned().collect();
+    for pkgkey in pkgkeys {
+        let pkgline = crate::plan::pkgkey2pkgline(plan, &pkgkey);
+        process_package_activate_triggers(plan, &pkgkey, &pkgline)?;
     }
 
     Ok(())
