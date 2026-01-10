@@ -95,9 +95,8 @@ pub fn is_setuid() -> bool {
 }
 
 
-/// Get all files from a package as relative paths
+/// Get all files/dirs from a package as relative paths
 /// Returns relative paths (without the fs/ directory prefix)
-/// Filters out directories, only returns files
 pub fn get_package_files(
     store_root: &Path,
     pkgline: &str,
@@ -110,10 +109,10 @@ pub fn get_package_files(
     let file_infos = list_package_files_with_info(store_fs_dir.to_str()
         .ok_or_else(|| eyre::eyre!("Invalid store fs path"))?)?;
 
-    // Filter out directories, only return files
+    // Return both files and dirs
+    // Archlinux need matched dirs for case kmod/trunk/depmod.hook:Target = usr/lib/modules/*/
     let files: Vec<String> = file_infos
         .into_iter()
-        .filter(|info| !info.is_dir())
         .map(|info| info.path)
         .collect();
 
