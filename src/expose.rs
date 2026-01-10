@@ -23,7 +23,7 @@ use log;
 fn expose_package(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
     log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
     let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
-    let absolute_ebin_paths = create_ebin_wrappers(env_root, &fs_files)?;
+    let absolute_ebin_paths = create_ebin_wrappers(env_root, store_fs_dir, &fs_files)?;
     log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
     let mut relative_ebin_links: Vec<String> = Vec::new();
     for abs_path in absolute_ebin_paths {
@@ -201,7 +201,7 @@ fn handle_elf_with_loader(target_path: &Path, env_root: &Path, fs_file: &Path) -
     Ok(())
 }
 
-fn create_ebin_wrappers(env_root: &Path, fs_files: &[utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
+fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
     let mut created_ebin_paths: Vec<PathBuf> = Vec::new();
     log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
     for fs_file_info in fs_files {
@@ -226,9 +226,11 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[utils::MtreeFileInfo]) -> R
             continue;
         }
 
-        let fs_file_path = Path::new(fs_file);
-        if let Some(created_path) = create_ebin_wrapper(env_root, fs_file_path)
-            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file_path.display()))? {
+        // Construct absolute path by joining store_fs_dir with the relative path
+        let fs_file_relative = Path::new(fs_file);
+        let fs_file_absolute = store_fs_dir.join(fs_file_relative);
+        if let Some(created_path) = create_ebin_wrapper(env_root, &fs_file_absolute, fs_file_relative)
+            .with_context(|| format!("Failed to create ebin wrapper for {}", fs_file_absolute.display()))? {
             created_ebin_paths.push(created_path);
         }
     }
@@ -236,23 +238,24 @@ fn create_ebin_wrappers(env_root: &Path, fs_files: &[utils::MtreeFileInfo]) -> R
     Ok(created_ebin_paths)
 }
 
-fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<Option<PathBuf>> {
-    let (file_type, first_line) = utils::get_file_type(fs_file)
-        .with_context(|| format!("Failed to determine file type for {}", fs_file.display()))?;
-    let basename = fs_file.file_name()
-        .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file.display()))?;
+fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relative: &Path) -> Result<Option<PathBuf>> {
+    let (file_type, first_line) = utils::get_file_type(fs_file_absolute)
+        .with_context(|| format!("Failed to determine file type for {}", fs_file_absolute.display()))?;
+    let basename = fs_file_relative.file_name()
+        .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file_relative.display()))?;
     let ebin_path = env_root.join("usr/ebin").join(basename);
 
     log::debug!(
-        "Creating ebin wrapper: ebin_path={}, fs_file={}, file_type={:?}, first_line={:?}",
+        "Creating ebin wrapper: ebin_path={}, fs_file_absolute={}, fs_file_relative={}, file_type={:?}, first_line={:?}",
         ebin_path.display(),
-        fs_file.display(),
+        fs_file_absolute.display(),
+        fs_file_relative.display(),
         file_type,
         first_line
     );
     match file_type {
         FileType::Elf => {
-            handle_elf(&ebin_path, env_root, fs_file)
+            handle_elf(&ebin_path, env_root, fs_file_absolute)
                 .with_context(|| format!("Failed to handle elf for {}", ebin_path.display()))?;
             return Ok(Some(ebin_path));
         }
@@ -262,8 +265,8 @@ fn create_ebin_wrapper(env_root: &Path, fs_file: &Path) -> Result<Option<PathBuf
         | FileType::RubyScript
         | FileType::NodeScript
         | FileType::LuaScript => {
-            create_script_wrapper(env_root, fs_file, &ebin_path, file_type, &first_line)
-                .with_context(|| format!("Failed to create script wrapper for {}", fs_file.display()))?;
+            create_script_wrapper(env_root, fs_file_absolute, &ebin_path, file_type, &first_line)
+                .with_context(|| format!("Failed to create script wrapper for {}", fs_file_absolute.display()))?;
             return Ok(Some(ebin_path));
         }
         _ => return Ok(None),
