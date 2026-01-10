@@ -29,8 +29,15 @@ pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Opt
     // Create scriptlets
     create_scriptlets(store_tmp_dir)?;
 
-    // Parse and store DEB triggers
-    crate::deb_triggers::parse_deb_triggers(store_tmp_dir)?;
+    // Parse DEB triggers (store_tmp_dir is the full package directory path)
+    let (interest_triggers, activate_triggers) = crate::deb_triggers::read_package_triggers(store_tmp_dir)?;
+
+    // Generate Arch-style .hook files under info/install/ so that
+    // Debian triggers can be handled by the generic hooks engine. For now we
+    // only emit hooks for file-style interest triggers (those whose trigger
+    // name starts with '/'), mapping them to Path hooks that fire on any
+    // install/upgrade/remove touching the path.
+    crate::deb_triggers::write_deb_trigger_hooks(&interest_triggers, &activate_triggers, store_tmp_dir)?;
 
     // Create package.txt
     create_package_txt(deb_file, store_tmp_dir, pkgkey)?;

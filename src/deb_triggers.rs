@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
 use crate::models::{InstalledPackageInfo, PACKAGE_CACHE, PackageFormat};
-use crate::package::pkgkey2pkgname;
 use crate::plan::InstallationPlan;
 use crate::hooks::HookWhen;
 
@@ -14,7 +13,7 @@ pub const TRIGGERSDIR: &str = "var/lib/dpkg/triggers";
 pub const TRIGGERSDEFERREDFILE: &str = "Unincorp";
 
 #[derive(Debug, Clone)]
-struct TriggerEntry {
+pub(crate) struct TriggerEntry {
     name: String,
     await_mode: bool, // true = await, false = noawait
 }
@@ -50,95 +49,9 @@ pub fn ensure_triggers_dir(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Parse trigger name and options (e.g., "trigger-name/noawait")
-/// Returns (trigger_name, await_mode)
-fn parse_trigger_with_options(trigger_str: &str) -> (String, bool) {
-    if let Some(pos) = trigger_str.find("/noawait") {
-        (trigger_str[..pos].to_string(), false)
-    } else if let Some(pos) = trigger_str.find("/await") {
-        (trigger_str[..pos].to_string(), true)
-    } else {
-        (trigger_str.to_string(), true) // Default to await
-    }
-}
-
-/// Read trigger interests from package metadata
-/// Returns (explicit_interests, file_interests)
-/// explicit_interests: HashMap<trigger_name, Vec<(pkgname, await_mode)>>
-/// file_interests: Vec<(file_path, pkgname, await_mode)>
-pub fn read_package_trigger_interests(
-    pkgkey: &str,
-    store_root: &Path,
-) -> Result<(HashMap<String, Vec<(String, bool)>>, Vec<(String, String, bool)>)> {
-    let pkgname = pkgkey2pkgname(pkgkey).unwrap_or_else(|_| pkgkey.to_string());
-    let install_dir = store_root.join(format!("{}/info/install", pkgkey));
-    let interest_file = install_dir.join("deb_interest.triggers");
-
-    let mut explicit_interests: HashMap<String, Vec<(String, bool)>> = HashMap::new();
-    let mut file_interests: Vec<(String, String, bool)> = Vec::new();
-
-    if !interest_file.exists() {
-        return Ok((explicit_interests, file_interests));
-    }
-
-    let content = fs::read_to_string(&interest_file)
-        .with_context(|| format!("Failed to read interest file: {}", interest_file.display()))?;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let (trigger_name, await_mode) = parse_trigger_with_options(line);
-
-        // Check if it's a file trigger (starts with /)
-        if trigger_name.starts_with('/') {
-            file_interests.push((trigger_name, pkgname.clone(), await_mode));
-        } else {
-            // Explicit trigger
-            explicit_interests
-                .entry(trigger_name)
-                .or_insert_with(Vec::new)
-                .push((pkgname.clone(), await_mode));
-        }
-    }
-
-    Ok((explicit_interests, file_interests))
-}
-
-/// Read activate triggers from package metadata using pkgline
-pub fn read_package_activate_triggers(
-    pkgline: &str,
-    store_root: &Path,
-) -> Result<Vec<(String, bool)>> {
-    let install_dir = store_root.join(format!("{}/info/install", pkgline));
-    let activate_file = install_dir.join("deb_activate.triggers");
-
-    if !activate_file.exists() {
-        return Ok(Vec::new());
-    }
-
-    let content = fs::read_to_string(&activate_file)
-        .with_context(|| format!("Failed to read activate file: {}", activate_file.display()))?;
-
-    let mut triggers = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (trigger_name, await_mode) = parse_trigger_with_options(line);
-        triggers.push((trigger_name, await_mode));
-    }
-
-    Ok(triggers)
-}
-
-/// Process activate triggers for a single package
-/// Helper function to avoid code duplication between build_deb_activate_trigger_maps
-/// and load_batch_deb_activate_triggers
-fn process_package_activate_triggers(
+/// Process triggers for a single package (both interest and activate triggers)
+/// Helper function used by load_initial_deb_triggers and load_batch_deb_triggers
+fn load_deb_package_triggers(
     plan: &mut InstallationPlan,
     pkgkey: &str,
     pkgline: &str,
@@ -147,44 +60,74 @@ fn process_package_activate_triggers(
         return Ok(());
     }
 
-    // Read activate triggers using pkgline (packages in store are stored by pkgline)
-    let activate_triggers = read_package_activate_triggers(pkgline, &plan.store_root)?;
+    // Read triggers from info/deb/triggers using pkgline (packages in store are stored by pkgline)
+    let package_dir = plan.store_root.join(pkgline);
+    let (interest_triggers, activate_triggers) = read_package_triggers(&package_dir)?;
 
-    if !activate_triggers.is_empty() {
-        add_activate_triggers_to_maps(plan, pkgkey, activate_triggers);
-    }
+    add_interest_triggers_to_maps(plan, pkgkey, interest_triggers);
+    add_activate_triggers_to_maps(plan, pkgkey, activate_triggers);
 
     Ok(())
 }
 
-/// Add activate triggers to the plan's trigger maps
-/// Helper function to avoid code duplication between build_deb_activate_trigger_maps
-/// and load_batch_deb_activate_triggers
-fn add_activate_triggers_to_maps(
-    plan: &mut InstallationPlan,
+/// Add triggers to bidirectional maps (pkgkey -> trigger names, trigger name -> pkgkeys)
+/// Common helper used by add_interest_triggers_to_maps and add_activate_triggers_to_maps
+fn add_triggers_to_bidirectional_maps(
     pkgkey: &str,
-    triggers: Vec<(String, bool)>,
+    trigger_names: Vec<String>,
+    pkg_to_triggers: &mut HashMap<String, Vec<String>>,
+    trigger_to_pkgs: &mut HashMap<String, Vec<String>>,
 ) {
     let pkgkey_string = pkgkey.to_string();
-    for (trigger_name, _await_mode) in triggers {
-        // Map: pkgkey -> trigger names this package activates
-        let pkg_entry = plan
-            .deb_activate_triggers_by_pkg
+    for trigger_name in trigger_names {
+        // Map: pkgkey -> trigger names
+        let pkg_entry = pkg_to_triggers
             .entry(pkgkey_string.clone())
             .or_insert_with(Vec::new);
         if !pkg_entry.contains(&trigger_name) {
             pkg_entry.push(trigger_name.clone());
         }
 
-        // Map: trigger name -> pkgkeys that activate it
-        let name_entry = plan
-            .deb_activate_triggers_by_name
+        // Map: trigger name -> pkgkeys
+        let name_entry = trigger_to_pkgs
             .entry(trigger_name.clone())
             .or_insert_with(Vec::new);
         if !name_entry.contains(&pkgkey_string) {
             name_entry.push(pkgkey_string.clone());
         }
     }
+}
+
+/// Add interest triggers to the plan's trigger maps
+/// Helper function used by load_deb_package_triggers()
+fn add_interest_triggers_to_maps(
+    plan: &mut InstallationPlan,
+    pkgkey: &str,
+    triggers: Vec<TriggerEntry>,
+) {
+    let trigger_names: Vec<String> = triggers.into_iter().map(|t| t.name).collect();
+    add_triggers_to_bidirectional_maps(
+        pkgkey,
+        trigger_names,
+        &mut plan.deb_explicit_triggers_by_pkg,
+        &mut plan.deb_explicit_triggers_by_name,
+    );
+}
+
+/// Add activate triggers to the plan's trigger maps
+/// Helper function used by load_deb_package_triggers()
+fn add_activate_triggers_to_maps(
+    plan: &mut InstallationPlan,
+    pkgkey: &str,
+    triggers: Vec<TriggerEntry>,
+) {
+    let trigger_names: Vec<String> = triggers.into_iter().map(|t| t.name).collect();
+    add_triggers_to_bidirectional_maps(
+        pkgkey,
+        trigger_names,
+        &mut plan.deb_activate_triggers_by_pkg,
+        &mut plan.deb_activate_triggers_by_name,
+    );
 }
 
 /// Unincorp file format (Deferred Triggers)
@@ -405,42 +348,22 @@ pub fn setup_deb_env_vars(
     env_vars.insert("DEBCONF_NONINTERACTIVE_SEEN".to_string(), "true".to_string());
 }
 
-/// Parse DEB triggers file and store trigger information
-/// Reference: man deb-triggers, /usr/share/doc/dpkg/spec/triggers.txt
-/// Supports all trigger directive variants: interest, interest-await, interest-noawait,
-/// activate, activate-await, activate-noawait
-pub fn parse_deb_triggers<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
-    let store_tmp_dir = store_tmp_dir.as_ref();
-    let deb_dir = store_tmp_dir.join("info/deb");
-    let triggers_path = deb_dir.join("triggers");
-
+/// Read triggers from package metadata (info/deb/triggers file)
+/// Returns (interest_triggers, activate_triggers)
+/// Both are Vec<TriggerEntry> containing trigger names and await_mode
+///
+/// Takes the full path to the package directory (e.g., store_root/pkgline)
+pub fn read_package_triggers<P: AsRef<Path>>(
+    package_dir: P,
+) -> Result<(Vec<TriggerEntry>, Vec<TriggerEntry>)> {
+    let triggers_path = package_dir.as_ref().join("info/deb/triggers");
     if !triggers_path.exists() {
-        return Ok(());
+        return Ok((Vec::new(), Vec::new()));
     }
 
-    let triggers_content = fs::read_to_string(&triggers_path)?;
-    let (interest_triggers, activate_triggers) = parse_triggers_content(&triggers_content, &triggers_path)?;
+    let triggers_content = fs::read_to_string(&triggers_path)
+        .with_context(|| format!("Failed to read triggers file: {}", triggers_path.display()))?;
 
-    parse_deb_interest_triggers(&interest_triggers, store_tmp_dir)?;
-    parse_deb_activate_triggers(&activate_triggers, store_tmp_dir)?;
-
-    // Additionally, generate Arch-style .hook files under info/install/ so that
-    // Debian triggers can be handled by the generic hooks engine. For now we
-    // only emit hooks for file-style interest triggers (those whose trigger
-    // name starts with '/'), mapping them to Path hooks that fire on any
-    // install/upgrade/remove touching the path.
-    write_deb_trigger_hooks(&interest_triggers, &activate_triggers, store_tmp_dir)?;
-
-    Ok(())
-}
-
-/// Parse triggers file content into interest and activate trigger entries
-/// Returns (interest_triggers, activate_triggers)
-fn parse_triggers_content<P: AsRef<Path>>(
-    triggers_content: &str,
-    triggers_path: P,
-) -> Result<(Vec<TriggerEntry>, Vec<TriggerEntry>)> {
-    let triggers_path = triggers_path.as_ref();
     let mut interest_triggers: Vec<TriggerEntry> = Vec::new();
     let mut activate_triggers: Vec<TriggerEntry> = Vec::new();
 
@@ -457,54 +380,25 @@ fn parse_triggers_content<P: AsRef<Path>>(
         // Format: "<directive> <trigger-name>"
         // Directives: interest, interest-await, interest-noawait, activate, activate-await, activate-noawait
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.is_empty() {
+        if parts.len() < 2 {
             continue;
         }
 
         let directive = parts[0];
-        let trigger_name = if parts.len() > 1 {
-            parts[1..].join(" ")
-        } else {
-            // Legacy: simple trigger name without directive (treated as interest)
-            if !line.contains(' ') {
-                interest_triggers.push(TriggerEntry {
-                    name: line.to_string(),
-                    await_mode: true, // Default to await
-                });
-            } else {
-                // Format: "<package> <path-pattern>" - file trigger interest
-                interest_triggers.push(TriggerEntry {
-                    name: line.to_string(),
-                    await_mode: true,
-                });
-            }
-            continue;
-        };
+        let trigger_name = parts[1..].join(" ");
 
         match directive {
             "interest" | "interest-await" => {
-                interest_triggers.push(TriggerEntry {
-                    name: trigger_name,
-                    await_mode: true,
-                });
+                interest_triggers.push(TriggerEntry { name: trigger_name, await_mode: true });
             }
             "interest-noawait" => {
-                interest_triggers.push(TriggerEntry {
-                    name: trigger_name,
-                    await_mode: false,
-                });
+                interest_triggers.push(TriggerEntry { name: trigger_name, await_mode: false });
             }
             "activate" | "activate-await" => {
-                activate_triggers.push(TriggerEntry {
-                    name: trigger_name,
-                    await_mode: true,
-                });
+                activate_triggers.push(TriggerEntry { name: trigger_name, await_mode: true });
             }
             "activate-noawait" => {
-                activate_triggers.push(TriggerEntry {
-                    name: trigger_name,
-                    await_mode: false,
-                });
+                activate_triggers.push(TriggerEntry { name: trigger_name, await_mode: false });
             }
             _ => {
                 return Err(eyre!(
@@ -518,87 +412,6 @@ fn parse_triggers_content<P: AsRef<Path>>(
     }
 
     Ok((interest_triggers, activate_triggers))
-}
-
-/// Parse and write DEB interest triggers
-///
-/// Output Layout:
-/// ==============
-/// Creates a single file in info/install/:
-///
-/// File: deb_interest.triggers
-/// Format: One trigger name per line
-/// Lines: "<trigger-name>" or "<trigger-name>/noawait"
-/// - Without /noawait suffix: await mode (default)
-/// - With /noawait suffix: noawait mode
-///
-/// Example:
-/// mime-support
-/// menu/noawait
-/// package-name /etc/foo.conf
-///
-/// File is only created if interest_triggers is non-empty.
-fn parse_deb_interest_triggers<P: AsRef<Path>>(interest_triggers: &[TriggerEntry], store_tmp_dir: P) -> Result<()> {
-    let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
-
-    // Write trigger metadata files with await mode information
-    // Format: "<trigger-name>[/noawait]" (similar to dpkg's format)
-    if !interest_triggers.is_empty() {
-        let metadata_path = install_dir.join("deb_interest.triggers");
-        let content: Vec<String> = interest_triggers.iter()
-            .map(|t| {
-                if t.await_mode {
-                    t.name.clone()
-                } else {
-                    format!("{}/noawait", t.name)
-                }
-            })
-            .collect();
-        fs::write(&metadata_path, content.join("\n"))?;
-    }
-
-    Ok(())
-}
-
-/// Parse and write DEB activate triggers
-///
-/// Output Layout:
-/// ==============
-/// Creates a single file in info/install/:
-///
-/// File: deb_activate.triggers
-/// Format: One trigger name per line
-/// Lines: "<trigger-name>" or "<trigger-name>/noawait"
-/// - Without /noawait suffix: await mode (default)
-/// - With /noawait suffix: noawait mode
-///
-/// Example:
-/// mime-support
-/// menu/noawait
-///
-/// File is only created if activate_triggers is non-empty.
-fn parse_deb_activate_triggers<P: AsRef<Path>>(activate_triggers: &[TriggerEntry], store_tmp_dir: P) -> Result<()> {
-    let store_tmp_dir = store_tmp_dir.as_ref();
-    let install_dir = store_tmp_dir.join("info/install");
-
-    // Write trigger metadata files with await mode information
-    // Format: "<trigger-name>[/noawait]" (similar to dpkg's format)
-    if !activate_triggers.is_empty() {
-        let metadata_path = install_dir.join("deb_activate.triggers");
-        let content: Vec<String> = activate_triggers.iter()
-            .map(|t| {
-                if t.await_mode {
-                    t.name.clone()
-                } else {
-                    format!("{}/noawait", t.name)
-                }
-            })
-            .collect();
-        fs::write(&metadata_path, content.join("\n"))?;
-    }
-
-    Ok(())
 }
 
 /// Generate Arch-style .hook files under info/install/ for Debian triggers.
@@ -616,7 +429,7 @@ fn parse_deb_activate_triggers<P: AsRef<Path>>(activate_triggers: &[TriggerEntry
 /// This allows the generic hooks engine to see where Debian file triggers
 /// would conceptually fire, without changing the existing dpkg-style trigger
 /// runtime in `deb_triggers.rs`.
-fn write_deb_trigger_hooks<P: AsRef<Path>>(
+pub fn write_deb_trigger_hooks<P: AsRef<Path>>(
     interest_triggers: &[TriggerEntry],
     activate_triggers: &[TriggerEntry],
     store_tmp_dir: P,
@@ -699,53 +512,8 @@ fn write_deb_trigger_hooks<P: AsRef<Path>>(
     Ok(())
 }
 
-/// Build Debian explicit trigger interest maps for the plan.
-/// Only used when operating in Debian format; safe no-op otherwise.
-pub fn build_deb_explicit_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
-    if plan.package_format != PackageFormat::Deb {
-        return Ok(());
-    }
-
-    // Only look at already-installed packages; new packages being installed in
-    // this transaction will have their trigger metadata populated as part of
-    // unpack and will be visible on the next plan.
-    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-
-    for (pkgkey, _) in installed.iter() {
-        // Reuse deb_triggers helper to read trigger interests from info/install/.
-        let (explicit_interests, _file_interests) =
-            crate::deb_triggers::read_package_trigger_interests(pkgkey, &plan.store_root)?;
-
-        if explicit_interests.is_empty() {
-            continue;
-        }
-
-        for (trigger_name, _pkgs) in explicit_interests {
-            // Map: pkgkey -> trigger names
-            let pkg_entry = plan
-                .deb_explicit_triggers_by_pkg
-                .entry(pkgkey.clone())
-                .or_insert_with(Vec::new);
-            if !pkg_entry.contains(&trigger_name) {
-                pkg_entry.push(trigger_name.clone());
-            }
-
-            // Map: trigger name -> pkgkeys
-            let name_entry = plan
-                .deb_explicit_triggers_by_name
-                .entry(trigger_name.clone())
-                .or_insert_with(Vec::new);
-            if !name_entry.contains(pkgkey) {
-                name_entry.push(pkgkey.clone());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Build Debian activate trigger initial maps for the plan.
-pub fn build_deb_activate_trigger_maps(plan: &mut InstallationPlan) -> Result<()> {
+/// Build Debian trigger initial maps for the plan.
+pub fn load_initial_deb_triggers(plan: &mut InstallationPlan) -> Result<()> {
     if plan.package_format != PackageFormat::Deb {
         return Ok(());
     }
@@ -753,16 +521,15 @@ pub fn build_deb_activate_trigger_maps(plan: &mut InstallationPlan) -> Result<()
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
 
     for (pkgkey, info) in installed.iter() {
-        process_package_activate_triggers(plan, pkgkey, &info.pkgline)?;
+        load_deb_package_triggers(plan, pkgkey, &info.pkgline)?;
     }
 
     Ok(())
 }
 
-/// Load Debian activate triggers for packages in the current batch.
-/// Extends plan.deb_activate_triggers_by_pkg and plan.deb_activate_triggers_by_name
-/// with triggers from packages in plan.batch.new_pkgkeys.
-pub fn load_batch_deb_activate_triggers(plan: &mut InstallationPlan) -> Result<()> {
+/// Load Debian triggers for packages in the current batch.
+/// Extends plan trigger maps with triggers from packages in plan.batch.new_pkgkeys.
+pub fn load_batch_deb_triggers(plan: &mut InstallationPlan) -> Result<()> {
     if plan.package_format != PackageFormat::Deb {
         return Ok(());
     }
@@ -770,7 +537,7 @@ pub fn load_batch_deb_activate_triggers(plan: &mut InstallationPlan) -> Result<(
     let pkgkeys: Vec<String> = plan.batch.new_pkgkeys.iter().cloned().collect();
     for pkgkey in pkgkeys {
         let pkgline = crate::plan::pkgkey2pkgline(plan, &pkgkey);
-        process_package_activate_triggers(plan, &pkgkey, &pkgline)?;
+        load_deb_package_triggers(plan, &pkgkey, &pkgline)?;
     }
 
     Ok(())

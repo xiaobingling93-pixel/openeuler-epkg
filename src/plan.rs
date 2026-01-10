@@ -494,9 +494,8 @@ pub fn prepare_installation_plan(
     crate::store::fill_pkglines_in_plan(&mut plan)
         .with_context(|| "Failed to find existing packages in store")?;
 
-    // Build explicit trigger and provides indices used by hooks/trigger mapping.
-    crate::deb_triggers::build_deb_explicit_trigger_maps(&mut plan)?;
-    crate::deb_triggers::build_deb_activate_trigger_maps(&mut plan)?;
+    // Build trigger indices used by hooks/trigger mapping.
+    crate::deb_triggers::load_initial_deb_triggers(&mut plan)?;
 
     // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
     crate::hooks::load_initial_hooks(&mut plan)?;
