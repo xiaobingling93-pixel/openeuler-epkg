@@ -1,0 +1,360 @@
+#!/bin/bash
+set -e
+
+# Variables
+LUA_VERSION=5.4.7
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_DIR=dist
+RUST_TARGET_X86_64=x86_64-unknown-linux-musl
+RUST_TARGET_AARCH64=aarch64-unknown-linux-musl
+RUST_TARGET_RISCV64=riscv64gc-unknown-linux-musl
+RUST_TARGET_LOONGARCH64=loongarch64-unknown-linux-musl
+BINARY_NAME=epkg
+
+# Development environment paths
+DEV_ENV_BIN_DIR="$HOME/.epkg/envs/self/usr/bin"
+DEV_ENV_SRC_DIR="$HOME/.epkg/envs/self/usr/src/epkg"
+
+# Detect OS and version
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2)
+        OS_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+    else
+        OS_ID="unknown"
+        OS_VERSION="unknown"
+    fi
+}
+
+# Ensure we operate from project root
+cd "$PROJECT_ROOT"
+
+# Helper function for quick develop-debug loop
+install_to_dev_env() {
+    local binary_path="$1"
+
+    [[ -d "$DEV_ENV_BIN_DIR" ]] || return
+
+    if [[ ! -L "$DEV_ENV_SRC_DIR" ]] || [[ "$(readlink "$DEV_ENV_SRC_DIR")" != "$(pwd)" ]]; then
+        local src_rc="$PROJECT_ROOT/lib/epkg-rc.sh"
+        local dst_rc="$DEV_ENV_SRC_DIR/lib/epkg-rc.sh"
+        if [[ "$(readlink -f "$src_rc")" != "$(readlink -f "$dst_rc")" ]]; then
+            cp --update "$src_rc" "$dst_rc"
+        fi
+    fi
+
+    local cp_err=$(cp --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME" 2>&1)
+    local cp_status=$?
+    if [[ $cp_status -ne 0 ]]; then
+        if echo "$cp_err" | grep -q "Text file busy"; then
+            rm -f "$DEV_ENV_BIN_DIR/$BINARY_NAME" &&
+            cp --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+        else
+            echo "$cp_err" >&2
+            exit $cp_status
+        fi
+    fi
+}
+
+# Build Lua library for a specific architecture
+# Usage: build_lua_lib [<arch>]
+build_lua_lib() {
+    local arch=$(get_arch "$1")
+    local compiler=""
+
+    # Deduce compiler based on architecture
+    case "$arch" in
+        x86_64)
+            compiler="musl-gcc"
+            ;;
+        aarch64|riscv64|loongarch64)
+            compiler="$arch-linux-gnu-gcc"
+            ;;
+        *)
+            echo "Unknown architecture: $arch"
+            exit 1
+            ;;
+    esac
+
+    echo "Building Lua library for $arch using $compiler..."
+
+    local lua_build_dir="$PROJECT_ROOT/target/lua-build"
+    local lua_lib_dir="$PROJECT_ROOT/target/musl-lua-$arch"
+
+    mkdir -p "$lua_build_dir"
+    cd "$lua_build_dir"
+    [ -f "lua-$LUA_VERSION.tar.gz" ] || wget -q "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz"
+    [ -d "lua-$LUA_VERSION" ] || tar xzf "lua-$LUA_VERSION.tar.gz"
+
+    # Build
+    cd "lua-$LUA_VERSION"
+    rm -f src/liblua.a
+    make clean
+    make CC="$compiler" linux
+
+    # Deploy
+    mkdir -p "$lua_lib_dir"
+    cp src/liblua.a "$lua_lib_dir/"
+    cp src/lua.h src/lualib.h src/lauxlib.h src/lua.hpp src/luaconf.h "$lua_lib_dir/"
+}
+
+# Install dependencies
+install_depends() {
+    detect_os
+    echo "Detected OS: $OS_ID $OS_VERSION"
+
+    echo "Installing dependencies..."
+    if [[ "$OS_ID" =~ ^(debian|ubuntu)$ ]]; then
+        sudo apt-get update
+        sudo apt-get install -y rustup build-essential libssl-dev musl-tools gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu liblua5.4-dev
+    else
+        echo "Unsupported OS: $OS_ID"
+        exit 1
+    fi
+
+    echo "Installing Rust toolchain..."
+    rustup default stable
+    rustup target add "$RUST_TARGET_X86_64"
+    rustup target add "$RUST_TARGET_AARCH64"
+    rustup target add "$RUST_TARGET_RISCV64"
+    rustup target add "$RUST_TARGET_LOONGARCH64"
+
+    git clone https://gitee.com/wu_fengguang/rpm-rs
+    git clone https://gitee.com/wu_fengguang/resolvo
+    git clone https://gitee.com/openeuler/elf-loader
+
+    cd elf-loader/src && make install-depends
+    echo "Installation complete!"
+}
+
+# Clean build artifacts
+clean() {
+    echo "Cleaning build artifacts..."
+    cargo clean
+}
+
+# Clean everything including distribution files
+clean_all() {
+    clean
+    echo "Cleaning distribution files..."
+    rm -rf "$OUTPUT_DIR"
+}
+
+# Get Rust target for architecture
+get_rust_target() {
+    local arch="$1"
+    case "$arch" in
+        x86_64)
+            echo "$RUST_TARGET_X86_64"
+            ;;
+        aarch64)
+            echo "$RUST_TARGET_AARCH64"
+            ;;
+        riscv64)
+            echo "$RUST_TARGET_RISCV64"
+            ;;
+        loongarch64)
+            echo "$RUST_TARGET_LOONGARCH64"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Export linker variable for architecture
+export_linker_var() {
+    local arch="$1"
+    case "$arch" in
+        x86_64)
+            # No linker var needed for x86_64
+            ;;
+        aarch64)
+            export "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
+            ;;
+        riscv64)
+            export "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
+            ;;
+        loongarch64)
+            export "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Get Rust flags for architecture
+get_rustflags() {
+    local arch="$1"
+    case "$arch" in
+        x86_64)
+            echo ""
+            ;;
+        aarch64)
+            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc"
+            ;;
+        riscv64|loongarch64)
+            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc -C link-arg=-lm"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Build static binary for a specific architecture
+# Usage: build_static [<arch>]
+build_static() {
+    local arch=$(get_arch "$1")
+    local rust_target=$(get_rust_target "$arch")
+    local rustflags=$(get_rustflags "$arch")
+
+    echo "Building $arch binary..."
+
+    # Export environment variables directly
+    export LUA_LIB_NAME=lua
+    export LUA_LIB="$PROJECT_ROOT/target/musl-lua-$arch"
+    export LUA_LINK=static
+    export LUA_NO_PKG_CONFIG=1
+
+    # Export linker variable for this architecture
+    export_linker_var "$arch"
+
+    if [[ -n "$rustflags" ]]; then
+        export RUSTFLAGS="$rustflags"
+    fi
+
+    # Build the binary
+    cargo build --release --target "$rust_target"
+
+    # Deploy
+    mkdir -p "$OUTPUT_DIR"
+    cp "target/$rust_target/release/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
+    echo "Generating checksum for $arch binary..."
+    cd "$OUTPUT_DIR"
+    sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
+    echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
+
+    # Install to dev environment if this is the native architecture
+    if [[ "$arch" == "$(detect_arch)" ]]; then
+        install_to_dev_env "$PROJECT_ROOT/target/$rust_target/release/$BINARY_NAME"
+    fi
+}
+
+# Build development binary
+build() {
+    echo "Building debug binary..."
+    cargo build
+
+    echo "Development build completed. Binary is in $PROJECT_ROOT/target/debug/$BINARY_NAME"
+
+    install_to_dev_env "$PROJECT_ROOT/target/debug/$BINARY_NAME"
+}
+
+# Build release binary
+build_release() {
+    echo "Building release binary..."
+    cargo build --release
+
+    echo "Release build completed. Binary is in $PROJECT_ROOT/target/release/$BINARY_NAME"
+
+    install_to_dev_env "$PROJECT_ROOT/target/release/$BINARY_NAME"
+}
+
+# Run tests (module-level unit tests)
+run_tests() {
+    echo "Running module-level tests..."
+
+    # Since we cd to PROJECT_ROOT at the beginning, we're always in project root
+    for module in $(grep -Fxl "#[cfg(test)]" "src"/*.rs 2>/dev/null | sed 's|src/||' | sed 's|\.rs||'); do
+        echo "Testing module: $module"
+        cargo test "$module::tests" || true
+    done
+    echo "Tests completed"
+}
+
+# Detect current system architecture
+detect_arch() {
+    local machine=$(uname -m)
+    case "$machine" in
+        x86_64|amd64)
+            echo "x86_64"
+            ;;
+        aarch64|arm64)
+            echo "aarch64"
+            ;;
+        riscv64)
+            echo "riscv64"
+            ;;
+        loongarch64)
+            echo "loongarch64"
+            ;;
+        *)
+            echo "Unsupported architecture: $machine" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Set/get architecture - either from argument or auto-detect
+get_arch() {
+    local provided_arch="$1"
+
+    if [[ -z "$provided_arch" ]]; then
+        # Auto-detect current architecture
+        local arch=$(detect_arch)
+        echo "Auto-detected architecture: $arch" >&2
+        echo "$arch"
+    else
+        echo "$provided_arch"
+    fi
+}
+
+cmd="${1:-build}"
+# Main dispatcher
+case $cmd in
+    build)
+        build
+        ;;
+    lua|build_lua_lib)
+        build_lua_lib "$2"
+        ;;
+    release|build_release)
+        build_release
+        ;;
+    static|build_static)
+        build_static "$2"
+        ;;
+    install-depends)
+        install_depends
+        ;;
+    test)
+        run_tests
+        ;;
+    clean)
+        clean
+        ;;
+    clean_all)
+        clean_all
+        ;;
+    *)
+        echo "Usage: $0 [command] [options...]"
+        echo ""
+        echo "Commands:"
+        echo "  build                                Build development binary (default)"
+        echo "  lua [<arch>]                         Build Lua library for architecture (auto-detects if not specified)"
+        echo "  release                              Build release binary"
+        echo "  static [<arch>]                      Build static binary (auto-detects arch if not specified)"
+        echo "  install-depends                      Install system dependencies"
+        echo "  test                                 Run module-level unit tests"
+        echo "  clean                                Clean build artifacts"
+        echo "  clean_all                            Clean all artifacts and distribution files"
+        echo ""
+        echo "Supported architectures: x86_64, aarch64, riscv64, loongarch64"
+        exit 1
+        ;;
+esac

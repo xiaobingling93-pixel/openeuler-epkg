@@ -402,12 +402,16 @@ pub fn setup_conda_env_vars(
     env_vars.insert("PKG_BUILDNUM".to_string(), build_num);
 }
 
+/// Special marker for embedded Lua interpreter
+const EMBEDDED_LUA: &str = "<embedded-lua>";
+
 /// Get interpreters to try for a given script file extension
+/// For .lua files, try embedded Lua first, then external lua interpreter
 pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     if script_name.ends_with(".sh") {
         vec!["bash", "sh"]
     } else if script_name.ends_with(".lua") {
-        vec!["lua"]
+        vec![EMBEDDED_LUA, "lua"]  // Try embedded Lua first
     } else if script_name.ends_with(".py") {
         vec!["python3", "python"]
     } else if script_name.ends_with(".pl") {
@@ -416,6 +420,41 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
         // Default to shell interpreters for unknown extensions
         vec!["bash", "sh"]
     }
+}
+
+/// Execute Lua scriptlet using embedded Lua interpreter.
+/// Uses the global cached Lua state with extensions pre-registered.
+fn execute_lua_scriptlet(
+    script_path: &std::path::Path,
+    args: &[String],
+    env_root: &std::path::Path,
+) -> Result<()> {
+    // Get the global cached Lua state (with extensions pre-registered)
+    let lua = crate::lua::get_cached_lua_state();
+
+    // Read script content
+    let script_content = std::fs::read_to_string(script_path)
+        .map_err(|e| eyre!("Failed to read Lua scriptlet {}: {}", script_path.display(), e))?;
+
+    // Setup scriptlet environment (arg table) - this changes per scriptlet
+    crate::lua::setup_arg_table(&lua, args)
+        .map_err(|e| eyre!("Failed to setup scriptlet environment: {}", e))?;
+
+    // Change working directory to env_root
+    std::env::set_current_dir(env_root)
+        .map_err(|e| eyre!("Failed to change directory to {}: {}", env_root.display(), e))?;
+
+    // Execute the script
+    let script_name = script_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("<lua>");
+
+    lua.load(&script_content)
+        .set_name(script_name)
+        .exec()
+        .map_err(|e| eyre!("Lua scriptlet execution failed: {}", e))?;
+
+    Ok(())
 }
 
 /// Run transaction scriptlets for multiple packages
@@ -509,7 +548,45 @@ pub fn run_scriptlet(
             let interpreters = get_interpreters_for_script(script_name);
             let mut script_executed = false;
 
+            // Get parameters based on package format and scenario
+            let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version.as_deref(), new_version.as_deref());
+
             for interpreter in interpreters {
+                // Check if this is embedded Lua
+                if interpreter == EMBEDDED_LUA {
+                    // Prepare script arguments for Lua (1-indexed: arg[1], arg[2], ...)
+                    // arg[1] is typically empty or scriptlet name
+                    // arg[2] is the first parameter (package count for RPM)
+                    let mut lua_args = vec!["".to_string()]; // arg[1] - usually empty
+                    lua_args.extend(params.clone());
+
+                    log::debug!(
+                        "Trying embedded Lua interpreter for scriptlet {}",
+                        script_path.display()
+                    );
+
+                    match execute_lua_scriptlet(&script_path, &lua_args, env_root) {
+                        Ok(()) => {
+                            log::debug!(
+                                "{:?} scriptlet completed successfully for package {} using embedded Lua",
+                                scriptlet_type,
+                                pkgkey
+                            );
+                            script_executed = true;
+                            break; // Successfully executed
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "Failed to execute {:?} scriptlet for package {} using embedded Lua: {}, trying next interpreter",
+                                scriptlet_type,
+                                pkgkey,
+                                e
+                            );
+                            continue; // Try external lua interpreter
+                        }
+                    }
+                }
+
                 let interpreter_path = env_root.join("usr/bin").join(interpreter);
 
                 // Check if interpreter exists
@@ -522,12 +599,9 @@ pub fn run_scriptlet(
                     continue;
                 }
 
-                // Get parameters based on package format and scenario
-                let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version.as_deref(), new_version.as_deref());
-
                 // Prepare script arguments: [script_path, param1, param2, ...]
                 let mut script_args = vec![script_path.to_string_lossy().to_string()];
-                script_args.extend(params);
+                script_args.extend(params.clone());
 
                 // Create RunOptions for scriptlet execution with namespace isolation
                 // Set up environment variables required by package scripts

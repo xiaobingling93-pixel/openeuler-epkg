@@ -60,6 +60,7 @@ versions = "6.3"
 rkyv = { version = "0.8", features = ["std", "alloc", "bytecheck"] }
 rancor = "0.1"
 resolvo = { version = "0.10.1", path = "resolvo" }
+mlua = { version = "0.11", features = ["lua54", "send"] }
 
 # Optional but recommended for better progress bars
 [dependencies.console]
