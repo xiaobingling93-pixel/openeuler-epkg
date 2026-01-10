@@ -395,13 +395,18 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             continue; // Skip the fs directory itself
         }
 
+        // Skip files under info/ directory (metadata files that are commonly duplicated)
+        let mut relative_path_str = relative_path.to_string_lossy().to_string();
+        if relative_path_str.starts_with("info/") {
+            continue;
+        }
+
         let metadata = fs::symlink_metadata(path)
             .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
         let file_type = metadata.file_type();
 
         // Build attributes string
         let mut attrs = Vec::new();
-        let mut relative_path_str = relative_path.to_string_lossy();
 
         // File type
         if file_type.is_file() {
