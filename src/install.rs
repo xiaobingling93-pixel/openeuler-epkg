@@ -317,12 +317,11 @@ fn download_and_unpack_packages(
     // Process downloads for packages that needed to be downloaded
     // wait_downloads_and_unpack will filter out AUR packages and return them separately
     // IMPORTANT: We unpack packages but do NOT link them yet - we need to check all risks first
-    let mut mutable_packages_for_processing = packages_to_download.clone();
     let downloaded_aur_packages = wait_downloads_and_unpack(
+        plan,
         &url_to_pkgkeys,
         &mut pending_urls,
-        &mut mutable_packages_for_processing,
-        &plan.store_pkglines_by_pkgname,
+        &packages_to_download,
     )?;
 
     // Build all_pkgs from ordered_operations (filters: is_aur() == false || in_store() == true)
@@ -337,6 +336,12 @@ fn download_and_unpack_packages(
 fn link_packages(plan: &InstallationPlan) -> Result<()> {
     for pkgkey in plan.batch.new_pkgkeys.iter() {
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+            if package_info.pkgline.is_empty() {
+                return Err(eyre::eyre!(
+                    "Package {} has empty pkgline, cannot link. This indicates the package wasn't properly unpacked.",
+                    pkgkey
+                ));
+            }
             let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
             crate::link::link_package(plan, &store_fs_dir)
                 .with_context(|| format!("Failed to link package {}", pkgkey))?;
@@ -374,19 +379,19 @@ fn update_skipped_reinstalls_metadata(plan: &InstallationPlan) -> Result<()> {
 /// have been performed, keeping the environment clean in case we need to abort.
 ///
 /// # Arguments
+/// * `plan` - Installation plan (modified in place to update pkgline in plan.new_pkgs)
 /// * `url_to_pkgkeys` - Mapping from download URLs to package keys that use that URL
 /// * `pending_urls` - List of URLs that are still being downloaded (modified in place)
-/// * `packages_to_install` - Packages to process (modified in place, packages are removed as processed)
-/// * `store_pkglines_by_pkgname` - Mapping for resolving package lines by package name
+/// * `packages_to_install` - Packages to process (immutable, used for checking existence)
 ///
 /// # Returns
 /// * `aur_packages` - AUR packages that need to be built separately
 /// * `packages_to_link` - Binary packages that have been unpacked and are ready for linking
 fn wait_downloads_and_unpack(
+    plan: &mut InstallationPlan,
     url_to_pkgkeys: &HashMap<String, Vec<String>>,
     pending_urls: &mut Vec<String>,
-    packages_to_install: &mut InstalledPackagesMap,
-    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+    packages_to_install: &InstalledPackagesMap,
 ) -> Result<InstalledPackagesMap> {
     let mut aur_packages: InstalledPackagesMap = HashMap::new();
 
@@ -406,11 +411,16 @@ fn wait_downloads_and_unpack(
                     // Check if this is an AUR package
                     if is_aur_package(&pkgkey) {
                         // For AUR packages, just add to aur_packages (they will be built later)
-                        if let Some(package_info) = packages_to_install.remove(&pkgkey) {
-                            aur_packages.insert(pkgkey, package_info);
+                        if let Some(package_info) = packages_to_install.get(&pkgkey) {
+                            aur_packages.insert(pkgkey, Arc::clone(package_info));
                         }
                     } else {
                         // For binary packages, unpack (but don't link yet)
+                        // Verify package exists in packages_to_install
+                        if !packages_to_install.contains_key(&pkgkey) {
+                            return Err(eyre!("Package key not found: {}", pkgkey));
+                        }
+
                         // Get the downloaded file path
                         let file_path = get_package_file_path(&pkgkey)?;
 
@@ -418,15 +428,13 @@ fn wait_downloads_and_unpack(
                         let (_actual_pkgkey, pkgline) = crate::store::unpack_package(
                             &file_path,
                             &pkgkey,
-                            store_pkglines_by_pkgname,
+                            &plan.store_pkglines_by_pkgname,
                         )?;
 
-                        // Get package info from the map
-                        let mut package_info_arc = packages_to_install.remove(&pkgkey)
-                            .ok_or_else(|| eyre!("Package key not found: {}", pkgkey))?;
-
-                        // Update package info with the pkgline
-                        Arc::make_mut(&mut package_info_arc).pkgline = pkgline;
+                        // Update plan.new_pkgs with the updated pkgline so link_packages can find it
+                        if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(&pkgkey) {
+                            Arc::make_mut(plan_pkg_info).pkgline = pkgline;
+                        }
                     }
                 }
             } else {

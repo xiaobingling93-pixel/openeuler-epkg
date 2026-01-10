@@ -523,7 +523,7 @@ fn find_and_verify_built_packages(
     aur_packages: &InstalledPackagesMap,
     pkg_build_dir: &Path,
     is_post_makepkg: bool,
-) -> Result<Vec<(PathBuf, String, Arc<InstalledPackageInfo>)>> {
+) -> Result<Vec<(PathBuf, String)>> {
     use crate::package;
 
     // Get version from the first pkgkey (all pkgkeys in a pkgbase should have the same version)
@@ -548,7 +548,7 @@ fn find_and_verify_built_packages(
     // Check if we found all requested packages
     let found_pkgkeys: std::collections::HashSet<String> = mapped
         .iter()
-        .map(|(_path, original_key, _info)| original_key.clone())
+        .map(|(_path, original_key)| original_key.clone())
         .collect();
 
     let mut missing = Vec::new();
@@ -707,7 +707,6 @@ pub fn build_and_install_aur_packages(
                 unpack_link_built_aur_packages(
                     plan,
                     &mapped,
-                    &plan.store_pkglines_by_pkgname,
                 )?;
 
             if !this_round_aur_packages.is_empty() {
@@ -794,14 +793,14 @@ fn group_aur_packages_by_base(
 ///   - Builds all artifacts for this pkgbase.
 ///
 /// Returns:
-///   - `mapped`: Vec of (built_pkg_path, original_key, info) tuples for built packages
+///   - `mapped`: Vec of (built_pkg_path, original_key) tuples for built packages
 fn build_aur_packages_for_base(
     pkgbase: &str,
     pkgkeys: &[String],
     aur_packages: &InstalledPackagesMap,
     build_dir: &Path,
     env_root: &Path,
-) -> Result<Vec<(PathBuf, String, Arc<InstalledPackageInfo>)>> {
+) -> Result<Vec<(PathBuf, String)>> {
     // Use the first pkgkey in this pkgbase group as the representative for building
     // (the tarball and pkgbase are shared across split packages). This representative
     // is only used to drive the build; we stop using it once artifacts are produced.
@@ -845,7 +844,7 @@ fn build_aur_packages_for_base(
     };
 
     // Log built packages
-    for (built_pkg, _, _) in &mapped {
+    for (built_pkg, _) in &mapped {
         log::info!("Built package: {}", built_pkg.display());
     }
 
@@ -856,15 +855,14 @@ fn build_aur_packages_for_base(
 ///
 /// Inputs:
 ///   - `mapped_packages`: already mapped packages from `find_and_verify_built_packages()`
-///     (path, original_key, info)
+///     (path, original_key)
 ///
 /// Returns:
 ///   - `this_round_aur_packages`: actual_pkgkey -> InstalledPackageInfo
 ///   - `this_round_pkgkey_mapping`: original_pkgkey (plan) -> actual_pkgkey (installed)
 fn unpack_link_built_aur_packages(
-    plan: &crate::plan::InstallationPlan,
-    mapped_packages: &[(PathBuf, String, Arc<InstalledPackageInfo>)],
-    store_pkglines_by_pkgname: &HashMap<String, Vec<String>>,
+    plan: &mut crate::plan::InstallationPlan,
+    mapped_packages: &[(PathBuf, String)],
 ) -> Result<(
     InstalledPackagesMap,
     HashMap<String, String>,
@@ -876,7 +874,7 @@ fn unpack_link_built_aur_packages(
     // Mapping from original (plan) pkgkeys to actual pkgkeys for this round
     let mut this_round_pkgkey_mapping: HashMap<String, String> = HashMap::new();
 
-    for (built_pkg_path, original_key, info) in mapped_packages {
+    for (built_pkg_path, original_key) in mapped_packages {
         // Unpack and link the mapped package *after* we know its original planned key.
         let built_pkg_path_str = built_pkg_path.to_str().ok_or_else(|| {
             eyre!(
@@ -889,7 +887,7 @@ fn unpack_link_built_aur_packages(
         let (actual_pkgkey, pkgline) = crate::store::unpack_package(
             built_pkg_path_str,
             &original_key,
-            store_pkglines_by_pkgname,
+            &plan.store_pkglines_by_pkgname,
         )
             .with_context(|| {
                 format!(
@@ -897,10 +895,6 @@ fn unpack_link_built_aur_packages(
                     built_pkg_path.display()
                 )
             })?;
-
-        // Update InstalledPackageInfo with the pkgline
-        let mut completed_info = Arc::clone(info);
-        Arc::make_mut(&mut completed_info).pkgline = pkgline.clone();
 
         // Link the package
         let store_fs_dir = plan.store_root.join(&pkgline).join("fs");
@@ -934,8 +928,13 @@ fn unpack_link_built_aur_packages(
             this_round_pkgkey_mapping.insert(original_key.clone(), actual_pkgkey.clone());
         }
 
-        // From this point on, the round operates purely on actual_pkgkey
-        this_round_aur_packages.insert(actual_pkgkey.clone(), completed_info);
+        // Update plan.new_pkgs with the updated pkgline so it's available for later operations
+        if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(original_key) {
+            Arc::make_mut(plan_pkg_info).pkgline = pkgline.clone();
+
+            // From this point on, the round operates purely on actual_pkgkey
+            this_round_aur_packages.insert(actual_pkgkey.clone(), Arc::clone(plan_pkg_info));
+        }
     }
 
     Ok((this_round_aur_packages, this_round_pkgkey_mapping))
@@ -951,12 +950,12 @@ fn unpack_link_built_aur_packages(
 ///   - `aur_packages`: map of pkgkey -> InstalledPackageInfo
 ///
 /// Returns:
-///   - Vector of (built_pkg_path, original_key, info)
+///   - Vector of (built_pkg_path, original_key)
 fn map_built_aur_packages(
     built_pkg_paths: &[PathBuf],
     pkgkeys: &[String],
     aur_packages: &InstalledPackagesMap,
-) -> Result<Vec<(PathBuf, String, Arc<InstalledPackageInfo>)>> {
+) -> Result<Vec<(PathBuf, String)>> {
     use crate::package;
 
     // Pre-build a mapping from (pkgname, version) -> (original_pkgkey, info) for all
@@ -977,13 +976,12 @@ fn map_built_aur_packages(
     let mut mapped = Vec::new();
     for built_pkg_path in built_pkg_paths {
         // Map built artifact to a planned AUR entry and extract metadata
-        if let Some((original_key, info)) =
+        if let Some(original_key) =
             map_built_package_to_entry(built_pkg_path, &namever2entry)
         {
             mapped.push((
                 built_pkg_path.clone(),
                 original_key,
-                info,
             ));
         }
     }
@@ -993,12 +991,12 @@ fn map_built_aur_packages(
 
 /// Map a built package file to its planned AUR entry.
 ///
-/// Returns `Some((original_key, info))` if the package can be mapped,
+/// Returns `Some(original_key)` if the package can be mapped,
 /// or `None` if it should be skipped (e.g., debug packages or unmapped artifacts).
 fn map_built_package_to_entry(
     built_pkg_path: &Path,
     namever2entry: &HashMap<(String, String), (String, Arc<InstalledPackageInfo>)>,
-) -> Option<(String, Arc<InstalledPackageInfo>)> {
+) -> Option<String> {
     // First, infer (pkgname, version, arch) from the built package filename so we can
     // determine which planned AUR entry this artifact corresponds to. We only
     // unpack/link packages that we can successfully map.
@@ -1017,13 +1015,10 @@ fn map_built_package_to_entry(
 
     // Map built artifact to a planned AUR pkgkey using the pre-built map:
     // key: (pkgname, version) -> (original_pkgkey, info)
-    if let Some((original_key, info)) =
+    if let Some((original_key, _info)) =
         namever2entry.get(&(act_name.clone(), act_version.clone()))
     {
-        Some((
-            original_key.clone(),
-            Arc::clone(info),
-        ))
+        Some(original_key.clone())
     } else {
         // Likely a debug or sub package not in install plan: skip unpacking/linking.
         // Don't emit a warning for common debug split packages to avoid noisy logs.
