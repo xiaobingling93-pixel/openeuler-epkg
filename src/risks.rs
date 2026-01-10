@@ -208,6 +208,11 @@ pub fn validate_before_linking(
             for file_path in &file_list {
                 total_inodes_needed += 1;
 
+                // Skip directories for conflict checking (they end with /)
+                if file_path.ends_with('/') {
+                    continue;
+                }
+
                 // Check conflicts with installed files
                 if let Ok(conflicts) = check_file_conflicts(file_path, pkgkey, &installed_files) {
                     for (conflict_path, conflict_pkgkey) in conflicts {
