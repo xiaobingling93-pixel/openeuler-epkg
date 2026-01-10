@@ -21,6 +21,7 @@ use memchr::memmem;
 use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
 use crate::link::{hard_link_or_copy, symlink_or_copy};
+use crate::utils;
 use log;
 
 /// Default Python version (major, minor) used when version cannot be determined
@@ -650,12 +651,7 @@ fn create_unix_python_entry_point(
         .wrap_err_with(|| format!("Failed to write entry point script: {}", script_path.display()))?;
 
     // Make executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o775))
-            .wrap_err_with(|| format!("Failed to set executable permissions: {}", script_path.display()))?;
-    }
+    utils::set_executable_permissions(&script_path, 0o775)?;
 
     log::debug!("Created Python entry point: {}", script_path.display());
     Ok(relative_path)
@@ -708,7 +704,7 @@ fn copy_file_with_prefix_replacement(
         }
     }
 
-    crate::utils::preserve_file_permissions(source_path, target_path);
+    crate::utils::preserve_file_permissions(source_path, target_path)?;
     Ok(())
 }
 

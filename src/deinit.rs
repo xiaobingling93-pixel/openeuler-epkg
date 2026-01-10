@@ -9,6 +9,7 @@ use nix::unistd;
 
 use crate::dirs::*;
 use crate::models::*;
+use crate::utils;
 
 #[derive(Debug)]
 pub struct DeinitPlan {
@@ -292,10 +293,8 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
 
     // Make parent directories writable
     for dir in &parent_dirs {
-        let mut perms = fs::metadata(&dir)?.permissions();
-        perms.set_readonly(false); // Make writable
         println!("  - {}", &dir.display());
-        fs::set_permissions(&dir, perms)?;
+        utils::make_directory_writable(&dir)?;
     }
 
     println!("Retrying directory removal after permission fix...");
@@ -314,7 +313,7 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 /// Finds all read-only directories within the given path
-fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
+pub fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
     let mut readonly_dirs = Vec::new();
     let mut dir_stack = vec![root.as_ref().to_path_buf()];
 

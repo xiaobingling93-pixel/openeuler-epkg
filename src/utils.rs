@@ -848,13 +848,14 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Preserve file permissions from source to target
-pub fn preserve_file_permissions(source_path: &Path, target_path: &Path) {
-    if let Ok(metadata) = fs::metadata(source_path) {
-        fs::set_permissions(target_path, metadata.permissions())
-            .unwrap_or_else(|e| {
-                log::warn!("Failed to set permissions on {}: {}", target_path.display(), e);
-            });
+pub fn preserve_file_permissions<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
+    let source = source.as_ref();
+    let target = target.as_ref();
+    if let Ok(metadata) = fs::metadata(source) {
+        fs::set_permissions(target, metadata.permissions())
+            .wrap_err_with(|| format!("Failed to set permissions for {}", target.display()))?;
     }
+    Ok(())
 }
 
 /// Fix up file permissions to ensure files are readable for hash calculation
@@ -1093,6 +1094,58 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Set executable permissions on a file (Unix only)
+/// This is a common helper used when creating executable scripts
+/// Gets existing permissions first and then sets the mode, preserving other bits
+#[cfg(unix)]
+pub fn set_executable_permissions<P: AsRef<Path>>(path: P, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = path.as_ref();
+    let mut perms = fs::metadata(path)
+        .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))?.permissions();
+    perms.set_mode(mode);
+    fs::set_permissions(path, perms)
+        .wrap_err_with(|| format!("Failed to set executable permissions for {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn set_executable_permissions<P: AsRef<Path>>(_path: P, _mode: u32) -> Result<()> {
+    // No-op on non-Unix systems
+    Ok(())
+}
+
+/// Set exact permissions on a file from a mode (Unix only)
+/// This sets the exact mode without reading existing permissions first
+/// Useful when you want to set a specific mode value directly
+#[cfg(unix)]
+pub fn set_permissions_from_mode<P: AsRef<Path>>(path: P, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = path.as_ref();
+    let perms = fs::Permissions::from_mode(mode);
+    fs::set_permissions(path, perms)
+        .wrap_err_with(|| format!("Failed to set permissions for {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn set_permissions_from_mode<P: AsRef<Path>>(_path: P, _mode: u32) -> Result<()> {
+    // No-op on non-Unix systems
+    Ok(())
+}
+
+/// Make a directory writable by removing the readonly flag
+/// This is useful when you need to remove directories that were created as read-only
+pub fn make_directory_writable<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    let mut perms = fs::metadata(path)
+        .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))?.permissions();
+    perms.set_readonly(false); // Make writable
+    fs::set_permissions(path, perms)
+        .wrap_err_with(|| format!("Failed to set permissions for {}", path.display()))?;
+    Ok(())
+}
+
 /// Copy a scriptlet file from source to target and make it executable
 /// This is a common pattern used by deb_pkg, conda_pkg, and apk_pkg
 pub fn copy_scriptlet_file<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
@@ -1106,15 +1159,7 @@ pub fn copy_scriptlet_file<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
         .wrap_err_with(|| format!("Failed to write scriptlet file: {}", target.display()))?;
 
     // Make it executable on Unix systems
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(target)
-            .wrap_err_with(|| format!("Failed to get metadata for scriptlet: {}", target.display()))?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(target, perms)
-            .wrap_err_with(|| format!("Failed to set executable permissions for scriptlet: {}", target.display()))?;
-    }
+    set_executable_permissions(target, 0o755)?;
 
     Ok(())
 }
@@ -1129,15 +1174,7 @@ pub fn write_scriptlet_content<P: AsRef<Path>>(target: P, content: &[u8]) -> Res
         .wrap_err_with(|| format!("Failed to write scriptlet content to {}", target.display()))?;
 
     // Make it executable on Unix systems
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(target)
-            .wrap_err_with(|| format!("Failed to get metadata for scriptlet: {}", target.display()))?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(target, perms)
-            .wrap_err_with(|| format!("Failed to set executable permissions for scriptlet: {}", target.display()))?;
-    }
+    set_executable_permissions(target, 0o755)?;
 
     Ok(())
 }

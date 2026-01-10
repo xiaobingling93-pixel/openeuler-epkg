@@ -2,12 +2,12 @@ use crate::rpm_repo::PACKAGE_KEY_MAPPING;
 #[cfg(debug_assertions)]
 use crate::rpm_verify;
 use crate::rpm_triggers::{extract_rpm_triggers, extract_install_prefixes};
+use crate::utils;
 use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 use rpm::{DependencyFlags, FileMode, IndexTag, Package};
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Unpacks an RPM package to the specified directory
@@ -105,7 +105,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                         #[cfg(unix)]
                         {
                             let mode = permissions | 0o600;  // Always ensure owner has rw
-                            fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
+                            utils::set_permissions_from_mode(&file_path, mode.into())
                                 .wrap_err_with(|| format!("Failed to set permissions for file at {}", file_path.display()))?;
                         }
                     }
@@ -119,7 +119,7 @@ fn extract_rpm_files<P: AsRef<Path>>(package: &Package, target_dir: P) -> Result
                             // Ensure directories are writable by owner so they can be removed later
                             // This prevents issues with read-only directories like /usr/lib (dr-xr-xr-x)
                             let mode = permissions | 0o700;  // Always ensure owner has rwx
-                            fs::set_permissions(&file_path, fs::Permissions::from_mode(mode.into()))
+                            utils::set_permissions_from_mode(&file_path, mode.into())
                                 .wrap_err_with(|| format!("Failed to set permissions for directory at {}", file_path.display()))?;
                         }
                     }

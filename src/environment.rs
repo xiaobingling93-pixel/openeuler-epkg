@@ -15,7 +15,7 @@ use nix::unistd::chown;
 use crate::models::*;
 use crate::dirs::*;
 use crate::models::PACKAGE_CACHE;
-use crate::utils::force_symlink;
+use crate::utils::{self, force_symlink};
 use crate::deinit::force_remove_dir_all;
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
@@ -302,8 +302,7 @@ fn create_environment_directories(env_root: &Path, format: &PackageFormat, env_c
             .wrap_err_with(|| format!("Failed to set owner for {}", env_root.display()))?;
 
         // Set mode to 700 (rwx------)
-        let perms = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(env_root, perms)
+        utils::set_permissions_from_mode(env_root, 0o700)
             .wrap_err_with(|| format!("Failed to set permissions for {}", env_root.display()))?;
     }
 

@@ -1,11 +1,9 @@
-use std::fs;
 use std::io;
 use std::io::BufRead; // for .read_line()
 use std::io::Write;
 use std::os::unix::fs::chown;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use nix::{self};
@@ -14,7 +12,7 @@ use users::{get_current_uid, get_effective_uid};
 use color_eyre::eyre::{self, Result};
 use serde_json::{json, Value};
 use crate::models::*;
-use crate::utils::is_suid;
+use crate::utils::{self, is_suid};
 
 // ======================================================================================
 // Design Document: SUID Worker/Master Architecture for `epkg`
@@ -240,7 +238,7 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
     let listener = UnixListener::bind(socket_path)?;
 
     // Set permissions for master process
-    fs::set_permissions(socket_path, fs::Permissions::from_mode(0o700))?;
+    utils::set_permissions_from_mode(socket_path, 0o700)?;
     chown(socket_path, Some(get_current_uid()), None)?;
 
     for stream in listener.incoming() {

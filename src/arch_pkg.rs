@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use zstd::stream::read::Decoder as ZstdDecoder;
+use crate::utils;
 
 /// PKGINFO field definitions based on Arch Linux specification
 pub struct PkgInfoField {
@@ -355,13 +356,7 @@ source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
                     .wrap_err_with(|| format!("Failed to write scriptlet wrapper to {}", script_path.display()))?;
 
                 // Make the script executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&script_path)?.permissions();
-                    perms.set_mode(0o755); // rwxr-xr-x
-                    fs::set_permissions(&script_path, perms)?;
-                }
+                utils::set_executable_permissions(&script_path, 0o755)?;
 
                 log::debug!("Created scriptlet wrapper: {}", standard_name);
             }

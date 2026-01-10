@@ -432,10 +432,6 @@ fn get_exec_command(file_type: &FileType, fs_file: &Path) -> String {
 }
 
 fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = fs::Permissions::from_mode(0o755);
-    fs::set_permissions(ebin_path, perms)
-        .with_context(|| format!("Failed to set permissions for {}", ebin_path.display()))?;
-    Ok(())
+    utils::set_executable_permissions(ebin_path, 0o755)
 }
 

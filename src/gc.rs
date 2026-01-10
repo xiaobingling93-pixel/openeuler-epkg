@@ -8,6 +8,7 @@ use crate::models::*;
 use crate::dirs::*;
 use crate::io;
 use crate::utils;
+use crate::deinit::force_remove_dir_all;
 
 #[derive(Debug)]
 pub struct GcPlan {
@@ -491,82 +492,3 @@ fn get_dir_size(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-
-
-/// Recursively removes a directory, fixing permission issues if needed.
-fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<(), std::io::Error> {
-    let path = path.as_ref();
-
-    // First, try normal deletion
-    let initial_result = fs::remove_dir_all(path);
-    if initial_result.is_ok() {
-        return Ok(());
-    }
-
-    // If failed, collect all parent directories of read-only files
-    let parent_dirs = find_readonly_dirs(path)?;
-    if parent_dirs.is_empty() {
-        if let Err(ref e) = initial_result {
-            println!(
-                "Initial attempt to remove directory '{}' failed: {}",
-                path.display(),
-                e
-            );
-        }
-        return initial_result;
-    }
-
-    println!("Some directories are read-only and cannot be removed automatically.");
-    println!("Making {} directories writable...", parent_dirs.len());
-
-    // Make parent directories writable
-    for dir in &parent_dirs {
-        let mut perms = fs::metadata(&dir)?.permissions();
-        perms.set_readonly(false); // Make writable
-        println!("  - {}", &dir.display());
-        fs::set_permissions(&dir, perms)?;
-    }
-
-    println!("Retrying directory removal after permission fix...");
-
-    // Retry deletion
-    match fs::remove_dir_all(path) {
-        Ok(_) => {
-            println!("Directory successfully removed after permission fix");
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Failed to remove directory even after permission fix: {}", e);
-            Err(e)
-        }
-    }
-}
-
-/// Finds all read-only directories within the given path
-fn find_readonly_dirs<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut readonly_dirs = Vec::new();
-    let mut dir_stack = vec![root.as_ref().to_path_buf()];
-
-    while let Some(dir) = dir_stack.pop() {
-        // Check if current directory is read-only
-        if let Ok(metadata) = fs::metadata(&dir) {
-            if metadata.permissions().readonly() {
-                readonly_dirs.push(dir.clone());
-            }
-        }
-
-        // Add subdirectories to stack
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    dir_stack.push(entry.path());
-                }
-            }
-        }
-    }
-
-    // Remove duplicates and sort for consistent output
-    readonly_dirs.sort();
-    readonly_dirs.dedup();
-    Ok(readonly_dirs)
-}

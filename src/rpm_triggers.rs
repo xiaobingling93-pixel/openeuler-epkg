@@ -7,6 +7,7 @@ use rpm::{IndexTag, Package};
 use crate::models::InstalledPackageInfo;
 use crate::parse_requires::{VersionConstraint, parse_version_constraints};
 use crate::rpm_pkg::{get_scriptlet_from_header, determine_script_extension};
+use crate::utils;
 
 /// Default priority for RPM triggers (RPMTRIGGER_DEFAULT_PRIORITY)
 pub const RPMTRIGGER_DEFAULT_PRIORITY: u32 = 1000000;
@@ -258,16 +259,7 @@ fn build_exec_for_script<P: AsRef<Path>>(
         .wrap_err_with(|| format!("Failed to write trigger script to {}", script_path.display()))?;
 
     // Make script executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&script_path)
-            .wrap_err_with(|| format!("Failed to get metadata for {}", script_path.display()))?
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script_path, perms)
-            .wrap_err_with(|| format!("Failed to set permissions for {}", script_path.display()))?;
-    }
+    utils::set_executable_permissions(&script_path, 0o755)?;
 
     Ok(script_path.to_string_lossy().to_string())
 }

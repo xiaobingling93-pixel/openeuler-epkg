@@ -440,10 +440,7 @@ pub fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: boo
 
             // Preserve permissions if requested
             if preserve_permissions {
-                if let Ok(metadata) = fs::metadata(source) {
-                    fs::set_permissions(target, metadata.permissions())
-                        .with_context(|| format!("Failed to set permissions for {}", target.display()))?;
-                }
+                utils::preserve_file_permissions(source, target)?;
             }
 
             Ok(())

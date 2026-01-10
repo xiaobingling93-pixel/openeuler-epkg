@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
@@ -387,7 +386,7 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
     } else {
         0o755 // rwxr-xr-x for standard permissions
     };
-    fs::set_permissions(&temp_target, fs::Permissions::from_mode(mode))
+    utils::set_permissions_from_mode(&temp_target, mode)
         .context(format!("Failed to set permissions on temporary binary"))?;
 
     // Atomically rename temporary file to target
