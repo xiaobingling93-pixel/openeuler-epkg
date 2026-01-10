@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::symlink;
 use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
-use crate::models::{LinkType, InstalledPackageInfo};
+use crate::models::{LinkType, InstalledPackageInfo, PackageFormat};
 use crate::plan::InstallationPlan;
 use crate::utils;
 use log;
@@ -56,6 +56,12 @@ fn get_config_file_action(
 
 // link files from env_root to store_fs_dir
 pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<()> {
+    // Check if this is a conda package and use conda-specific linking
+    if plan.package_format == PackageFormat::Conda {
+        return crate::conda_link::link_conda_package(plan, store_fs_dir);
+    }
+
+    // Standard linking for non-conda packages
     let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
         .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;
     mirror_dir(&plan.env_root, store_fs_dir, &fs_files, plan.link, plan.can_reflink)
@@ -242,7 +248,7 @@ fn reflink_copy(_source: &Path, _target: &Path) -> Result<()> {
 }
 
 /// Compute link type and reflink support for installation plan
-/// Sets plan.link and plan.can_reflink directly
+/// Sets plan.link, plan.can_reflink, plan.can_hardlink, and plan.can_symlink directly
 /// Uses stored filesystem info from plan to avoid duplicate statvfs calls
 pub fn compute_link_type_and_reflink(
     plan: &mut InstallationPlan,
@@ -253,6 +259,12 @@ pub fn compute_link_type_and_reflink(
 
     // Use stored filesystem info from plan
     let same_fs = same_filesystem(plan.store_root_fs.as_ref(), plan.env_root_fs.as_ref())?;
+
+    // can_hardlink: hardlinks only work on the same filesystem
+    let can_hardlink = same_fs;
+
+    // can_symlink: symlinks work across filesystems, but not if link type is Move
+    let can_symlink = link_type != LinkType::Move;
 
     if link_type == LinkType::Hardlink {
         if same_fs {
@@ -281,6 +293,8 @@ pub fn compute_link_type_and_reflink(
 
     plan.link = link_type;
     plan.can_reflink = can_reflink;
+    plan.can_hardlink = can_hardlink;
+    plan.can_symlink = can_symlink;
     Ok(())
 }
 
@@ -618,7 +632,7 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
     Ok(())
 }
 
-fn symlink_or_copy(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
+pub fn symlink_or_copy(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> Result<()> {
     if let Some(preserve_permissions) = needs_hard_link_or_copy(fhs_file) {
         // Certain paths (script-language trees, gconv modules, rustc driver) must be
         // materialized as real files in env_root (via hardlink or copy) so that

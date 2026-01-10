@@ -45,6 +45,8 @@ mod arch_pkg;
 mod aur;
 mod conda_repo;
 mod conda_pkg;
+mod conda_link;
+mod shebang;
 mod version_constraint;
 mod epkg;
 mod parse_version;

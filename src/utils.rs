@@ -847,6 +847,16 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Preserve file permissions from source to target
+pub fn preserve_file_permissions(source_path: &Path, target_path: &Path) {
+    if let Ok(metadata) = fs::metadata(source_path) {
+        fs::set_permissions(target_path, metadata.permissions())
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to set permissions on {}: {}", target_path.display(), e);
+            });
+    }
+}
+
 /// Fix up file permissions to ensure files are readable for hash calculation
 #[cfg(unix)]
 pub fn fixup_file_permissions(target_path: &Path) {

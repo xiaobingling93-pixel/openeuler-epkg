@@ -9,7 +9,7 @@ use std::os::unix::fs::symlink;
 use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use crate::models::{PackageFormat, SELF_ENV};
+use crate::models::SELF_ENV;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::utils;
@@ -114,50 +114,8 @@ pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env
     Ok(())
 }
 
-fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
-    // Check if this is a conda environment - conda ELF binaries can run directly
-    let is_conda = crate::models::channel_config().format == PackageFormat::Conda;
-
-    if is_conda {
-        handle_elf_conda(target_path, env_root, fs_file)
-    } else {
-        handle_elf_with_loader(target_path, env_root, fs_file)
-    }
-}
-
-/// Handle ELF binary for conda environment - create hardlink directly from ELF binary to ebin
-fn handle_elf_conda(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
-    // For conda, create a hardlink directly from bin to ebin (no elf-loader wrapper needed)
-    if target_path.exists() {
-        fs::remove_file(target_path)
-            .with_context(|| format!("Failed to remove existing file {}", target_path.display()))?;
-    }
-
-    // Create parent directory if it doesn't exist
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
-    }
-
-    // Create hardlink from fs_file (the actual ELF binary) to target_path (ebin)
-    fs::hard_link(fs_file, target_path)
-        .with_context(|| format!(
-            "Failed to create hardlink from {} to {}",
-            fs_file.display(),
-            target_path.display()
-        ))?;
-
-    log::debug!(
-        "handle_elf_conda target_path={}, env_root={}, fs_file={}",
-        target_path.display(),
-        env_root.display(),
-        fs_file.display()
-    );
-    Ok(())
-}
-
 /// Handle ELF binary with elf-loader wrapper (non-conda environments)
-fn handle_elf_with_loader(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
+fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
     let self_env_root = dirs::find_env_root(SELF_ENV)
         .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
 
@@ -345,21 +303,69 @@ fn create_script_wrapper(
     Ok(())
 }
 
-/// Parse a shebang line into interpreter path and parameters
-fn parse_shebang_line(first_line: &str) -> Result<(String, String)> {
-    if !first_line.starts_with("#!") {
-        return Err(eyre::eyre!("No shebang line found"));
+fn create_shebang_line(env_root: &Path, first_line: &str, script_path: &Path) -> Result<String> {
+    let shebang_info = crate::shebang::parse_shebang_for_wrapper(first_line)?;
+
+    let env_interpreter_path = match create_interpreter_wrapper(env_root, &shebang_info.interpreter_path, &shebang_info.interpreter_basename, script_path)
+        .with_context(|| format!("Failed to create interpreter wrapper for {} with basename {}", shebang_info.interpreter_path, shebang_info.interpreter_basename))
+    {
+        Ok(path) => {
+            if path == "" {
+                return Ok(first_line.to_string());
+            }
+            path
+        },
+        Err(e) => return Err(e),
+    };
+
+    // Create the final shebang line
+    if shebang_info.remaining_params.is_empty() {
+        Ok(format!("#!{}\n", env_interpreter_path))
+    } else {
+        Ok(format!("#!{} {}\n", env_interpreter_path, shebang_info.remaining_params))
+    }
+}
+
+/// Create the wrapper for the interpreter in the ebin directory
+fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpreter_basename: &str, script_path: &Path) -> Result<String> {
+    // Example: env_interpreter_path = "/home/wfg/.epkg/envs/main/ebin/sh"
+    let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
+    let env_interpreter = Path::new(&env_interpreter_path);
+
+    if !env_interpreter.exists() {
+        // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
+        // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
+        // use format!() instead of Path::join() to enforce simple string operation
+        let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
+        let interpreter_in_env = Path::new(&interpreter_in_env);
+
+        // Find and link the interpreter if needed
+        match find_link_interpreter(interpreter_in_env, interpreter_basename) {
+            Ok(()) => {},
+            Err(e) => {
+                eprintln!("WARNING: script interpreter not found. Please install '{}' to make below script work:\n script_path: {}\n env_path: {}, error: {}",
+                    interpreter_path, script_path.display(), interpreter_in_env.display(), e);
+                return Ok("".to_string());
+            }
+        }
+
+        // Example: store_interpreter = "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
+        // Create the wrapper
+        let store_interpreter = fs::canonicalize(interpreter_in_env)
+            .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
+
+        log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
+            env_interpreter, env_root, store_interpreter, interpreter_in_env);
+        // Example output:
+        // handle_elf params:
+        // env_interpreter="/home/wfg/.epkg/envs/main/ebin/sh",
+        // env_root="/home/wfg/.epkg/envs/main",
+        // store_interpreter="/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash",
+        // interpreter_in_env="/home/wfg/.epkg/envs/main/bin/sh"
+        handle_elf(env_interpreter, env_root, &store_interpreter)?;
     }
 
-    let interpreter_with_params = first_line[2..].trim().replace("\t", " ");
-    // Example: interpreter_with_params = "/bin/sh"
-    let (interpreter_path, params) = match interpreter_with_params.split_once(' ') {
-        Some((path, params)) => (path.to_string(), params.to_string()),  // Example: path="/usr/bin/env", params="python3"
-        None => (interpreter_with_params.to_string(), String::new()),    // Example: path="/bin/sh", params=""
-    };
-    log::debug!("interpreter_path: '{}', params: '{}'", interpreter_path, params);
-
-    Ok((interpreter_path, params))
+    Ok(env_interpreter_path)
 }
 
 /// Find and link the appropriate interpreter if it doesn't exist
@@ -415,161 +421,6 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
     Ok(())
 }
 
-/// Create the wrapper for the interpreter in the ebin directory
-fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpreter_basename: &str, script_path: &Path) -> Result<String> {
-    // Example: env_interpreter_path = "/home/wfg/.epkg/envs/main/ebin/sh"
-    let env_interpreter_path = format!("{}/ebin/{}", env_root.display(), interpreter_basename);
-    let env_interpreter = Path::new(&env_interpreter_path);
-
-    if !env_interpreter.exists() {
-        // Example: interpreter_in_env = "/home/wfg/.epkg/envs/main/bin/sh"
-        // Which is a symlink to: "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
-        // use format!() instead of Path::join() to enforce simple string operation
-        let interpreter_in_env = format!("{}{}", env_root.display(), interpreter_path);
-        let interpreter_in_env = Path::new(&interpreter_in_env);
-
-        // Find and link the interpreter if needed
-        match find_link_interpreter(interpreter_in_env, interpreter_basename) {
-            Ok(()) => {},
-            Err(e) => {
-                eprintln!("WARNING: script interpreter not found. Please install '{}' to make below script work:\n script_path: {}\n env_path: {}, error: {}",
-                    interpreter_path, script_path.display(), interpreter_in_env.display(), e);
-                return Ok("".to_string());
-            }
-        }
-
-        // Example: store_interpreter = "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
-        // Create the wrapper
-        let store_interpreter = fs::canonicalize(interpreter_in_env)
-            .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
-
-        log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
-            env_interpreter, env_root, store_interpreter, interpreter_in_env);
-        // Example output:
-        // handle_elf params:
-        // env_interpreter="/home/wfg/.epkg/envs/main/ebin/sh",
-        // env_root="/home/wfg/.epkg/envs/main",
-        // store_interpreter="/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash",
-        // interpreter_in_env="/home/wfg/.epkg/envs/main/bin/sh"
-        handle_elf(env_interpreter, env_root, &store_interpreter)?;
-    }
-
-    Ok(env_interpreter_path)
-}
-
-fn create_shebang_line(env_root: &Path, first_line: &str, script_path: &Path) -> Result<String> {
-    let shebang_info = parse_shebang_for_wrapper(first_line)?;
-
-    let env_interpreter_path = match create_interpreter_wrapper(env_root, &shebang_info.interpreter_path, &shebang_info.interpreter_basename, script_path)
-        .with_context(|| format!("Failed to create interpreter wrapper for {} with basename {}", shebang_info.interpreter_path, shebang_info.interpreter_basename))
-    {
-        Ok(path) => {
-            if path == "" {
-                return Ok(first_line.to_string());
-            }
-            path
-        },
-        Err(e) => return Err(e),
-    };
-
-    // Create the final shebang line
-    if shebang_info.remaining_params.is_empty() {
-        Ok(format!("#!{}\n", env_interpreter_path))
-    } else {
-        Ok(format!("#!{} {}\n", env_interpreter_path, shebang_info.remaining_params))
-    }
-}
-
-/// Information extracted from a shebang line for creating wrappers
-#[derive(Debug, PartialEq)]
-pub struct ShebangInfo {
-    pub interpreter_path: String,      // Path to interpreter for wrapper creation (e.g., "/usr/bin/python")
-    pub interpreter_basename: String,  // Basename for wrapper lookup (e.g., "python")
-    pub remaining_params: String,      // Additional parameters to pass (e.g., "-u -O")
-}
-
-/// Parse a shebang line and extract information needed for wrapper creation
-/// This function handles env-based shebangs specially by resolving the actual interpreter
-///
-/// # Examples
-///
-/// ```
-/// # use epkg::install::parse_shebang_for_wrapper;
-/// let info = parse_shebang_for_wrapper("#!/usr/bin/env python").unwrap();
-/// assert_eq!(info.interpreter_path, "/usr/bin/python");
-/// assert_eq!(info.interpreter_basename, "python");
-/// assert_eq!(info.remaining_params, "");
-///
-/// let info = parse_shebang_for_wrapper("#!/usr/bin/env python3 -u").unwrap();
-/// assert_eq!(info.interpreter_path, "/usr/bin/python3");
-/// assert_eq!(info.interpreter_basename, "python3");
-/// assert_eq!(info.remaining_params, "-u");
-///
-/// let info = parse_shebang_for_wrapper("#!/bin/bash").unwrap();
-/// assert_eq!(info.interpreter_path, "/bin/bash");
-/// assert_eq!(info.interpreter_basename, "bash");
-/// assert_eq!(info.remaining_params, "");
-/// ```
-pub fn parse_shebang_for_wrapper(first_line: &str) -> Result<ShebangInfo> {
-    let (interpreter_path, params) = parse_shebang_line(first_line)
-        .with_context(|| format!("Failed to parse shebang line: '{}'", first_line))?;
-
-    // Special handling for env-based shebangs like "#!/usr/bin/env python"
-    if interpreter_path == "/usr/bin/env" {
-        // Check for case where line has trailing space after env but empty params
-        // This catches "#!/usr/bin/env " with trailing space (but not tabs)
-        if params.is_empty() {
-            return Err(eyre::eyre!("env requires an interpreter to be specified"));
-        }
-
-        if !params.trim().is_empty() {
-            let mut param_parts: Vec<&str> = params.split_whitespace().collect();
-
-            // Handle env -S flag which allows env to split arguments on whitespace
-            // Example: "#!/usr/bin/env -S awk -f" should be treated as "awk -f"
-            if param_parts.len() >= 2 && param_parts[0] == "-S" {
-                // Remove the -S flag and process the rest
-                param_parts.remove(0);
-            }
-
-            if param_parts.is_empty() {
-                return Err(eyre::eyre!("env -S requires an interpreter to be specified"));
-            }
-
-            // For env-based shebangs, the actual interpreter is in the first remaining parameter
-            let actual_interpreter = param_parts[0];
-            let remaining_params = param_parts[1..].join(" ");
-
-            return Ok(ShebangInfo {
-                interpreter_path: format!("/usr/bin/{}", actual_interpreter),
-                interpreter_basename: actual_interpreter.to_string(),
-                remaining_params,
-            });
-        }
-    }
-
-    // Original logic for non-env shebangs OR env without parameters
-    // Handle edge case where interpreter_path is empty (e.g., just "#!")
-    if interpreter_path.is_empty() {
-        return Ok(ShebangInfo {
-            interpreter_path: String::new(),
-            interpreter_basename: String::new(),
-            remaining_params: params,
-        });
-    }
-
-    let interpreter_basename = Path::new(&interpreter_path).file_name()
-        .ok_or_else(|| eyre::eyre!("Failed to get interpreter basename from: {}", interpreter_path))?
-        .to_string_lossy()
-        .to_string();
-
-    Ok(ShebangInfo {
-        interpreter_path,
-        interpreter_basename,
-        remaining_params: params,
-    })
-}
-
 fn get_exec_command(file_type: &FileType, fs_file: &Path) -> String {
     match file_type {
         FileType::ShellScript => format!("exec {:?} \"$@\"\n", fs_file),
@@ -588,418 +439,3 @@ fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_env_based_shebangs() {
-        // Basic env python
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python");
-        assert_eq!(info.interpreter_basename, "python");
-        assert_eq!(info.remaining_params, "");
-
-        // Python3 variant
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python3 ").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "");
-
-        // Python with version
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python3.11").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3.11");
-        assert_eq!(info.interpreter_basename, "python3.11");
-        assert_eq!(info.remaining_params, "");
-
-        // Python with options
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python -u").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python");
-        assert_eq!(info.interpreter_basename, "python");
-        assert_eq!(info.remaining_params, "-u");
-
-        // Python with multiple options
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python3 -u -O ").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "-u -O");
-
-        // Node.js
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env node").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/node");
-        assert_eq!(info.interpreter_basename, "node");
-        assert_eq!(info.remaining_params, "");
-
-        // Node.js with options
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env node --experimental-modules").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/node");
-        assert_eq!(info.interpreter_basename, "node");
-        assert_eq!(info.remaining_params, "--experimental-modules");
-
-        // Ruby
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env ruby").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/ruby");
-        assert_eq!(info.interpreter_basename, "ruby");
-        assert_eq!(info.remaining_params, "");
-
-        // Perl
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env perl").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/perl");
-        assert_eq!(info.interpreter_basename, "perl");
-        assert_eq!(info.remaining_params, "");
-
-        // PHP
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env php").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/php");
-        assert_eq!(info.interpreter_basename, "php");
-        assert_eq!(info.remaining_params, "");
-
-        // Bash via env
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env bash").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-
-        // Zsh via env
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env zsh").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/zsh");
-        assert_eq!(info.interpreter_basename, "zsh");
-        assert_eq!(info.remaining_params, "");
-    }
-
-    #[test]
-    fn test_direct_interpreter_shebangs() {
-        // Standard shell
-        let info = parse_shebang_for_wrapper("#! /bin/sh").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/sh");
-        assert_eq!(info.interpreter_basename, "sh");
-        assert_eq!(info.remaining_params, "");
-
-        // Bash
-        let info = parse_shebang_for_wrapper("#!/bin/bash ").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-
-        // Bash with options
-        let info = parse_shebang_for_wrapper("#!/bin/bash -e ").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "-e");
-
-        // Bash with multiple options
-        let info = parse_shebang_for_wrapper("#!/bin/bash -eu -o pipefail").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "-eu -o pipefail");
-
-        // Python direct
-        let info = parse_shebang_for_wrapper("#!/usr/bin/python3").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "");
-
-        // Python with version and options
-        let info = parse_shebang_for_wrapper("#!/usr/bin/python3.11 -u").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3.11");
-        assert_eq!(info.interpreter_basename, "python3.11");
-        assert_eq!(info.remaining_params, "-u");
-
-        // Perl direct
-        let info = parse_shebang_for_wrapper("#!/usr/bin/perl").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/perl");
-        assert_eq!(info.interpreter_basename, "perl");
-        assert_eq!(info.remaining_params, "");
-
-        // Ruby direct
-        let info = parse_shebang_for_wrapper("#!/usr/bin/ruby").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/ruby");
-        assert_eq!(info.interpreter_basename, "ruby");
-        assert_eq!(info.remaining_params, "");
-
-        // Node.js direct
-        let info = parse_shebang_for_wrapper("#!/usr/bin/node").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/node");
-        assert_eq!(info.interpreter_basename, "node");
-        assert_eq!(info.remaining_params, "");
-
-        // Lua
-        let info = parse_shebang_for_wrapper("#!/usr/bin/lua").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/lua");
-        assert_eq!(info.interpreter_basename, "lua");
-        assert_eq!(info.remaining_params, "");
-
-        // AWK
-        let info = parse_shebang_for_wrapper("#!/usr/bin/awk -f").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/awk");
-        assert_eq!(info.interpreter_basename, "awk");
-        assert_eq!(info.remaining_params, "-f");
-
-        // GNU AWK
-        let info = parse_shebang_for_wrapper("#!/usr/bin/gawk -f").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/gawk");
-        assert_eq!(info.interpreter_basename, "gawk");
-        assert_eq!(info.remaining_params, "-f");
-
-        // Tcl/Tk
-        let info = parse_shebang_for_wrapper("#!/usr/bin/tclsh").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/tclsh");
-        assert_eq!(info.interpreter_basename, "tclsh");
-        assert_eq!(info.remaining_params, "");
-
-        // Fish shell
-        let info = parse_shebang_for_wrapper("#!/usr/bin/fish").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/fish");
-        assert_eq!(info.interpreter_basename, "fish");
-        assert_eq!(info.remaining_params, "");
-    }
-
-    #[test]
-    fn test_exotic_shebangs() {
-        // Different env paths
-        let info = parse_shebang_for_wrapper("#!/bin/env python").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/env");
-        assert_eq!(info.interpreter_basename, "env");
-        assert_eq!(info.remaining_params, "python");
-
-        // Executable in non-standard location
-        let info = parse_shebang_for_wrapper("#!/opt/python/bin/python").unwrap();
-        assert_eq!(info.interpreter_path, "/opt/python/bin/python");
-        assert_eq!(info.interpreter_basename, "python");
-        assert_eq!(info.remaining_params, "");
-
-        // Local installation
-        let info = parse_shebang_for_wrapper("#!/usr/local/bin/python3").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/local/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "");
-
-        // Complex paths
-        let info = parse_shebang_for_wrapper("#!/home/user/.local/bin/custom-script").unwrap();
-        assert_eq!(info.interpreter_path, "/home/user/.local/bin/custom-script");
-        assert_eq!(info.interpreter_basename, "custom-script");
-        assert_eq!(info.remaining_params, "");
-
-        // Hyphenated interpreter names
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python-config").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python-config");
-        assert_eq!(info.interpreter_basename, "python-config");
-        assert_eq!(info.remaining_params, "");
-
-        // Dotted interpreter names
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python3.11-config").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3.11-config");
-        assert_eq!(info.interpreter_basename, "python3.11-config");
-        assert_eq!(info.remaining_params, "");
-    }
-
-    #[test]
-    fn test_edge_cases() {
-        // Empty env params should fail
-        let result = parse_shebang_for_wrapper("#!/usr/bin/env ");
-        assert!(result.is_err());
-
-        // No shebang
-        let result = parse_shebang_for_wrapper("#!/usr/bin/env");
-        assert!(result.is_err());
-
-        // Multiple spaces
-        let info = parse_shebang_for_wrapper("#! /usr/bin/env   python3   -u   -O").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "-u -O");
-
-        // Tabs instead of spaces
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env\tpython3\t-u").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "-u");
-
-        // Space after #! (common in real world)
-        let info = parse_shebang_for_wrapper("#! /bin/bash").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-
-        // Space after #! with parameters
-        let info = parse_shebang_for_wrapper("#! /bin/bash -e").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "-e");
-
-        // Space after #! with env
-        let info = parse_shebang_for_wrapper("#! /usr/bin/env python3").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "");
-
-        // Space after #! with env and options
-        let info = parse_shebang_for_wrapper("#! /usr/bin/env python3 -u").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "-u");
-
-        // Multiple spaces after #!
-        let info = parse_shebang_for_wrapper("#!   /bin/bash").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-
-        // Tab after #!
-        let info = parse_shebang_for_wrapper("#!\t/bin/bash").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-    }
-
-    #[test]
-    fn test_invalid_shebangs() {
-        // No shebang prefix
-        let result = parse_shebang_for_wrapper("python script");
-        assert!(result.is_err());
-
-        // Just hash
-        let result = parse_shebang_for_wrapper("#python");
-        assert!(result.is_err());
-
-        // Empty string
-        let result = parse_shebang_for_wrapper("");
-        assert!(result.is_err());
-
-        // Only shebang
-        let result = parse_shebang_for_wrapper("#!");
-        assert!(result.is_ok()); // This actually parses as empty interpreter path
-    }
-
-    #[test]
-    fn test_real_world_examples() {
-        // From Django management commands
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python").unwrap();
-        assert_eq!(info.interpreter_basename, "python");
-
-        // From Node.js scripts
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env node").unwrap();
-        assert_eq!(info.interpreter_basename, "node");
-
-        // From system scripts
-        let info = parse_shebang_for_wrapper("#!/bin/bash").unwrap();
-        assert_eq!(info.interpreter_basename, "bash");
-
-        // From build scripts
-        let info = parse_shebang_for_wrapper("#!/bin/sh").unwrap();
-        assert_eq!(info.interpreter_basename, "sh");
-
-        // From Python virtual environments
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python3").unwrap();
-        assert_eq!(info.interpreter_basename, "python3");
-
-        // From Ruby gems
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env ruby").unwrap();
-        assert_eq!(info.interpreter_basename, "ruby");
-
-        // From Perl scripts
-        let info = parse_shebang_for_wrapper("#!/usr/bin/perl -w").unwrap();
-        assert_eq!(info.interpreter_basename, "perl");
-        assert_eq!(info.remaining_params, "-w");
-
-        // From AWK scripts
-        let info = parse_shebang_for_wrapper("#!/usr/bin/awk -f").unwrap();
-        assert_eq!(info.interpreter_basename, "awk");
-        assert_eq!(info.remaining_params, "-f");
-    }
-
-    #[test]
-    fn test_user_provided_real_world_cases() {
-        // Based on actual usage data from the user
-
-        // #!/usr/bin/env ruby (192 occurrences)
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env ruby").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/ruby");
-        assert_eq!(info.interpreter_basename, "ruby");
-        assert_eq!(info.remaining_params, "");
-
-        // #!/bin/sh (13 occurrences)
-        let info = parse_shebang_for_wrapper("#!/bin/sh").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/sh");
-        assert_eq!(info.interpreter_basename, "sh");
-        assert_eq!(info.remaining_params, "");
-
-        // #!/usr/bin/awk -f (9 occurrences)
-        let info = parse_shebang_for_wrapper("#!/usr/bin/awk -f").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/awk");
-        assert_eq!(info.interpreter_basename, "awk");
-        assert_eq!(info.remaining_params, "-f");
-
-        // #!/usr/bin/env -S awk -f (4 occurrences) - env with -S flag
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env -S awk -f").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/awk");
-        assert_eq!(info.interpreter_basename, "awk");
-        assert_eq!(info.remaining_params, "-f");
-
-        // #!/usr/bin/env bash (2 occurrences)
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env bash").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-
-        // #!/bin/bash (2 occurrences)
-        let info = parse_shebang_for_wrapper("#!/bin/bash").unwrap();
-        assert_eq!(info.interpreter_path, "/bin/bash");
-        assert_eq!(info.interpreter_basename, "bash");
-        assert_eq!(info.remaining_params, "");
-    }
-
-    #[test]
-    fn test_env_s_flag_variations() {
-        // Basic env -S usage
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env -S awk -f").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/awk");
-        assert_eq!(info.interpreter_basename, "awk");
-        assert_eq!(info.remaining_params, "-f");
-
-        // env -S with multiple arguments
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env -S python3 -u -O").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "-u -O");
-
-        // env -S with just interpreter, no additional args
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env -S python3").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "");
-
-        // Space after #! with env -S
-        let info = parse_shebang_for_wrapper("#! /usr/bin/env -S awk -f").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/awk");
-        assert_eq!(info.interpreter_basename, "awk");
-        assert_eq!(info.remaining_params, "-f");
-
-        // Multiple spaces with env -S
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env   -S   python3   -u").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "-u");
-
-        // env -S with complex interpreter names
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env -S python3.11 -u").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3.11");
-        assert_eq!(info.interpreter_basename, "python3.11");
-        assert_eq!(info.remaining_params, "-u");
-
-        // env -S with hyphenated interpreter
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env -S python-config --version").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python-config");
-        assert_eq!(info.interpreter_basename, "python-config");
-        assert_eq!(info.remaining_params, "--version");
-    }
-
-    #[test]
-    fn test_env_s_flag_edge_cases() {
-        // Test that regular env (non -S) still works
-        let info = parse_shebang_for_wrapper("#!/usr/bin/env python3").unwrap();
-        assert_eq!(info.interpreter_path, "/usr/bin/python3");
-        assert_eq!(info.interpreter_basename, "python3");
-        assert_eq!(info.remaining_params, "");
-    }
-}

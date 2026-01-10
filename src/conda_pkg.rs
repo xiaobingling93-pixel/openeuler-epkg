@@ -52,8 +52,10 @@ lazy_static! {
         m.insert("sha256",          "sha256");
 
         // Conda-specific fields
-        m.insert("noarch",          "noarch");
-        m.insert("preferred_env",   "preferredEnv");
+        m.insert("noarch",                      "noarch");
+        m.insert("preferred_env",               "preferredEnv");
+        //       "python_site_packages_path": "lib/python3.13t/site-packages",
+        m.insert("python_site_packages_path",   "pythonSitePackagesPath");
 
         m
     };

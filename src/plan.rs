@@ -104,6 +104,8 @@ pub struct InstallationPlan {
 
     pub link: LinkType,
     pub can_reflink: bool,
+    pub can_hardlink: bool,
+    pub can_symlink: bool,
 
     pub total_download: u64,
     pub total_install: u64,
@@ -187,6 +189,8 @@ impl Default for InstallationPlan {
             ordered_operations: Vec::new(),
             link: LinkType::Symlink,
             can_reflink: false,
+            can_hardlink: false,
+            can_symlink: false,
             total_download: 0,
             total_install: 0,
             store_root_fs: None,
