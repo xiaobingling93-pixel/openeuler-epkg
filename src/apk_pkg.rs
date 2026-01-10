@@ -9,7 +9,6 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::utils;
 
-
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
@@ -474,8 +473,95 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
 
     package_fields.insert("format".to_string(), "apk".to_string());
 
+    if let Some(triggers_str) = package_fields.get("triggers") {
+        write_apk_hook_file(store_tmp_dir, triggers_str)?;
+    }
+
     // Use the general store function to save the package.txt file
     crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
+
+    Ok(())
+}
+
+/// APK (Alpine Linux) triggers support
+///
+/// APK triggers monitor directories and execute trigger scripts when files in those directories
+/// are modified during package installation, upgrade, or removal.
+///
+/// Triggers are converted to Arch-style .hook files during package unpacking, allowing them
+/// to be handled by the unified hooks infrastructure.
+///
+/// References:
+/// - https://wiki.alpinelinux.org/wiki/APKBUILD_Reference
+/// - /c/package-managers/apk-tools/doc/apk-package.5.scd
+/// - /c/package-managers/apk-tools/src/commit.c run_triggers()
+/// - /c/package-managers/apk-tools/src/package.c apk_ipkg_run_script()
+/// - grep -h triggers ~/.epkg/store/*/info/apk/.PKGINFO
+/// - head ~/.epkg/store/*/info/apk/.trigger
+
+/// Write APK trigger hooks as Arch-style .hook files
+/// Similar to extract_rpm_triggers() and write_deb_trigger_hooks()
+///
+/// Creates .hook files in info/install/ that will be picked up by the hooks infrastructure.
+/// Each trigger pattern becomes a Path-type hook that executes the .trigger script.
+fn write_apk_hook_file<P: AsRef<Path>>(
+    store_tmp_dir: P,
+    triggers_str: &str,
+) -> Result<()> {
+    use std::fmt::Write;
+
+    let trigger_patterns: Vec<String> = triggers_str
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    if trigger_patterns.is_empty() {
+        return Ok(());
+    }
+
+    // Check if .trigger script exists in info/apk/.trigger
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let trigger_script_path = store_tmp_dir.join("info/apk/.trigger");
+    if !trigger_script_path.exists() {
+        log::warn!("Package has triggers but no .trigger script, skipping trigger hook generation");
+        return Ok(());
+    }
+
+    // Create a hook file with one [Trigger] section per trigger pattern
+    // APK triggers run after package operations (PostTransaction)
+    let mut buf = String::new();
+
+    // Create one [Trigger] section per trigger pattern
+    // so that match_path_trigger() bottom part can find the exact matched positive_targets[]
+    for pattern in &trigger_patterns {
+        // Handle "+" prefix (only pass when modified during transaction)
+        // For now, we treat all patterns the same way
+        let target = pattern.strip_prefix("+").unwrap_or(pattern);
+
+        // [Trigger] section
+        buf.push_str("[Trigger]\n");
+        buf.push_str("Operation = Install\n");
+        buf.push_str("Operation = Upgrade\n");
+        buf.push_str("Operation = Remove\n");
+        writeln!(buf, "Type = Path")?;
+        writeln!(buf, "Target = {}", target)?;
+        buf.push_str("\n");
+    }
+
+    // [Action] section
+    buf.push_str("[Action]\n");
+    writeln!(buf, "When = PostTransaction")?;
+    writeln!(buf, "Description = APK trigger")?;
+    // Exec points to the trigger script
+    // The hook engine will pass matched directories as arguments
+    writeln!(buf, "Exec = {}", trigger_script_path.to_string_lossy())?;
+    writeln!(buf, "NeedsTargets")?; // Pass matched paths as arguments
+
+    let install_dir = store_tmp_dir.join("info/install");
+    let hook_path = install_dir.join("apk-trigger.hook");
+    fs::create_dir_all(&install_dir)?;
+    fs::write(&hook_path, buf)
+        .with_context(|| format!("Failed to write APK hook file {}", hook_path.display()))?;
 
     Ok(())
 }

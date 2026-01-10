@@ -102,17 +102,23 @@ pub struct Hook {
 }
 
 /// Extract file name from path and strip .hook suffix
-fn extract_hook_file_name(hook_path: &Path) -> String {
+/// Append -pkgkey to avoid conflicts since both old/new pkg triggers may be loaded
+fn extract_hook_file_name(hook_path: &Path, pkgkey: Option<&str>) -> String {
     let file_name_full = hook_path.file_name()
         .and_then(|n| n.to_str())
         .unwrap()
         .to_string();
-    file_name_full.strip_suffix(".hook").unwrap_or(&file_name_full).to_string()
+    let base_name = file_name_full.strip_suffix(".hook").unwrap_or(&file_name_full).to_string();
+    if let Some(pkgkey) = pkgkey {
+        format!("{}-{}", base_name, pkgkey)
+    } else {
+        base_name
+    }
 }
 
 /// Parse a hook file from disk
 /// Reference: _alpm_hook_parse_cb in hook.c
-fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
+fn parse_hook_file(hook_path: &Path, pkgkey: Option<&str>) -> Result<Hook> {
     let content = fs::read_to_string(hook_path)
         .with_context(|| format!("Failed to read hook file: {}", hook_path.display()))?;
 
@@ -121,7 +127,7 @@ fn parse_hook_file(hook_path: &Path) -> Result<Hook> {
     let mut in_trigger = false;
     let mut in_action = false;
 
-    let hook_name = extract_hook_file_name(hook_path);
+    let hook_name = extract_hook_file_name(hook_path, pkgkey);
 
     let mut line_num = 0;
 
@@ -216,17 +222,17 @@ fn validate_hook(hook: &Hook, file: &Path) -> Result<()> {
                 file.display()
             ));
         }
-        // Check for leading '/' in Target values (should be absolute/path, not /absolute/path)
-        for target in &trigger.targets {
+        // Check for leading '/' (should be absolute/path, not /absolute/path)
+        for pattern in &trigger.positive_prefixes {
             // ! from Archlinux for negative patterns
             // + from Alpine
-            let check_target = target.strip_prefix('!').unwrap_or(target.strip_prefix('+').unwrap_or(target));
-            if check_target.starts_with('/') {
+            let check_pattern = pattern.strip_prefix('!').unwrap_or(pattern.strip_prefix('+').unwrap_or(pattern));
+            if check_pattern.starts_with('/') {
                 return Err(color_eyre::eyre::eyre!(
                     "Target value '{}' in hook {} has leading '/', should be '{}'",
-                    target,
+                    pattern,
                     file.display(),
-                    check_target.strip_prefix('/').unwrap_or(check_target)
+                    check_pattern.strip_prefix('/').unwrap_or(check_pattern)
                 ));
             }
         }
@@ -353,7 +359,8 @@ fn separate_prefixes_and_patterns(positive_targets: &[String]) -> (Vec<String>, 
     let mut patterns = Vec::new();
 
     for target in positive_targets {
-        if let Some(prefix) = extract_prefix(target) {
+        // Deb/Apk Path trigger targets have leading '/'
+        if let Some(prefix) = extract_prefix(target.strip_prefix('/').unwrap_or(target)) {
             prefixes.push(prefix.to_string());
         } else {
             patterns.push(target.clone());
@@ -625,16 +632,19 @@ fn load_hook_file(
         return;
     }
 
-    let hook_name = extract_hook_file_name(&path);
-
     // Check if hook with same name already exists
     // Since we load global hooks first, then package hooks, if we find an existing hook
     // it means a package hook is overriding a global hook. Simply update the pkgkey and return.
+    // Use the base name (without pkgkey suffix) for the override check
+    let global_hook_name = extract_hook_file_name(&path, None);
     if let Some(pkgkey) = pkgkey {
-        if update_existing_hook_pkgkey(&hook_name, pkgkey, path, plan) {
+        if update_existing_hook_pkgkey(&global_hook_name, pkgkey, path, plan) {
             return;
         }
     }
+
+    // Extract hook name with pkgkey suffix appended if pkgkey is provided
+    let hook_name = extract_hook_file_name(&path, pkgkey);
 
     // Skip symlinks to /dev/null (disabled hooks)
     if let Ok(link_target) = fs::read_link(&path) {
@@ -650,7 +660,7 @@ fn load_hook_file(
         return;
     }
 
-    match parse_hook_file(&path) {
+    match parse_hook_file(&path, pkgkey) {
         Ok(mut hook) => {
             populate_hook_target_cache(&mut hook);
             register_hook_to_plan(hook, hook_name, pkgkey, plan);
@@ -723,6 +733,12 @@ pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
         load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
     }
 
+    // Global hooks from etc/apk/commit_hooks.d/ are only for APK format
+    if plan.package_format == PackageFormat::Apk {
+        let etc_hooks_dir = plan.env_root.join("etc/apk/commit_hooks.d");
+        load_hooks_from_directory(plan, &etc_hooks_dir, None)?;
+    }
+
     // Load hooks from installed packages (package hooks can override global hooks)
     let pkgkeys: Vec<String> = {
         let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
@@ -754,13 +770,12 @@ pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
 /// Match Path trigger (reference: _alpm_hook_trigger_match_file)
 /// Returns (matched, aggregated_targets)
 /// For DEB trigger hooks (is_deb_trigger=true), matched_targets contains trigger names instead of file paths
-/// For DEB file triggers, trigger-name is '/' + positive_targets item (or positive_prefixes)
+/// For DEB file triggers, trigger-name is positive_targets item (or positive_prefixes)
 fn match_path_trigger(
     plan: &InstallationPlan,
     trigger: &HookTrigger,
     needs_targets: bool,
     pkgkey_filter: Option<&str>,
-    is_deb_trigger: bool,
 ) -> Result<(bool, Vec<String>)> {
     // If there are no positive targets, we can't match
     if trigger.positive_targets.is_empty() {
@@ -800,11 +815,12 @@ fn match_path_trigger(
 
     let matched = !matched_targets.is_empty();
 
-    // For DEB trigger hooks, replace file paths with trigger names
-    if is_deb_trigger && matched {
-        // For DEB file triggers, trigger-name is '/' + positive_targets item
-        // (positive_targets contains paths without leading '/', e.g., "usr/share/omf")
-        let trigger_names: Vec<String> = trigger.positive_targets.iter().map(|target| format!("/{}", target)).collect();
+    // For DEB/APK file hooks, replace file paths with trigger names
+    if matched && (
+        plan.package_format == PackageFormat::Deb ||
+        plan.package_format == PackageFormat::Apk
+    ) {
+        let trigger_names: Vec<String> = trigger.positive_targets.clone();
         Ok((true, trigger_names))
     } else {
         Ok((matched, matched_targets))
@@ -949,8 +965,9 @@ fn match_package_trigger(
     trigger: &HookTrigger,
     plan: &InstallationPlan,
     pkgkey_filter: Option<&str>,
-    is_deb_trigger: bool,
 ) -> Result<(bool, Vec<String>)> {
+    let is_deb_trigger = plan.package_format == PackageFormat::Deb;
+
     if trigger.positive_targets.is_empty() {
         return Ok((false, Vec::new()));
     }
@@ -1244,9 +1261,6 @@ fn check_trigger_match(
     needs_targets: bool,
     pkgkey_filter: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
-    // Check if this is a DEB trigger hook
-    let is_deb_trigger = plan.package_format == PackageFormat::Deb;
-
     match trigger.hook_type {
         HookType::Path => {
             match_path_trigger(
@@ -1254,12 +1268,11 @@ fn check_trigger_match(
                 trigger,
                 needs_targets,
                 pkgkey_filter,
-                is_deb_trigger,
             )
         }
         HookType::Package => {
             let (pmatched, matched_targets) =
-                match_package_trigger(trigger, plan, pkgkey_filter, is_deb_trigger)?;
+                match_package_trigger(trigger, plan, pkgkey_filter)?;
 
             if pmatched && needs_targets {
                 Ok((true, matched_targets))

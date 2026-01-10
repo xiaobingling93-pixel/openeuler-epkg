@@ -421,7 +421,7 @@ pub fn read_package_triggers<P: AsRef<Path>>(
 ///   - [Trigger]:
 ///     - Operation = Install|Upgrade|Remove
 ///     - Type = Path
-///     - Target = <trigger path, strips leading '/'>
+///     - Target = <trigger path>
 ///   - [Action]:
 ///     - When = PostTransaction
 ///     - Exec = /bin/true          (no-op placeholder for now)
@@ -464,8 +464,7 @@ pub fn write_deb_trigger_hooks<P: AsRef<Path>>(
         // Determine trigger type: file trigger (starts with '/') or explicit trigger
         let (hook_type, target) = if name.starts_with('/') {
             // File trigger: Path type
-            // Strip leading '/' from target path
-            ("Path", name.strip_prefix('/').unwrap_or(name))
+            ("Path", name)
         } else {
             // Explicit trigger: Package type
             ("Package", name)
