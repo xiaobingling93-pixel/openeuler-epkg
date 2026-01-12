@@ -222,7 +222,7 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn create_environment_directories(env_root: &Path, format: &PackageFormat, env_config: &EnvConfig) -> Result<()> {
+fn create_environment_directories(env_root: &Path, pkg_format: &PackageFormat, env_config: &EnvConfig) -> Result<()> {
     let generations_root = env_root.join("generations");
     let gen_1_dir = generations_root.join("1");
 
@@ -245,7 +245,7 @@ fn create_environment_directories(env_root: &Path, format: &PackageFormat, env_c
     force_symlink("usr/lib", env_root.join("lib"))?;
 
     // Create different lib64 symlinks based on package format
-    match format {
+    match pkg_format {
         PackageFormat::Pacman => {
             // For Pacman format:
             // /usr/lib64 -> lib
@@ -268,28 +268,8 @@ fn create_environment_directories(env_root: &Path, format: &PackageFormat, env_c
 
     setup_resolv_conf(env_root)?;
 
-    // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
-    let systemctl_path = env_root.join("usr/local/bin/systemctl");
-    if !systemctl_path.exists() {
-        force_symlink("/usr/bin/true", &systemctl_path)
-            .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
-    }
-
-    // Debian-specific setup
-    if format == &PackageFormat::Deb {
-        // Create symlink from dpkg-trigger to epkg executable
-        let dpkg_trigger_path = env_root.join("usr/local/bin/dpkg-trigger");
-        let dpkg_query_path = env_root.join("usr/local/bin/dpkg-query");
-        let epkg_exe = std::env::current_exe()
-            .with_context(|| "Failed to get current executable path")?;
-        force_symlink(&epkg_exe, &dpkg_trigger_path)
-            .with_context(|| format!("Failed to create dpkg-trigger symlink in {}", dpkg_trigger_path.display()))?;
-        force_symlink(&epkg_exe, &dpkg_query_path)
-            .with_context(|| format!("Failed to create dpkg-trigger symlink in {}", dpkg_query_path.display()))?;
-
-        // Ensure triggers directory exists
-        ensure_triggers_dir(env_root)?;
-    }
+    // Create symlinks for applets in usr/local/bin/
+    create_applet_symlinks(env_root, pkg_format)?;
 
     // Set owner and permissions if environment is private (public = false)
     if !env_config.public {
@@ -309,16 +289,53 @@ fn create_environment_directories(env_root: &Path, format: &PackageFormat, env_c
     Ok(())
 }
 
-fn create_default_world_json(gen_1_dir: &Path, format: &PackageFormat) -> Result<()> {
+// These symlinks must be created and available before running scriptlets.
+// If the distro provides the commands, they'll overwrite symlink to our implementation.
+fn create_applet_symlink(env_root: &Path, target: &Path, name: &str) -> Result<()> {
+    let symlink_path = env_root.join(format!("usr/bin/{}", name));
+    force_symlink(target, &symlink_path)
+        .with_context(|| format!("Failed to create {} symlink in {}", name, symlink_path.display()))?;
+    Ok(())
+}
+
+fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
+    let epkg_exe = std::env::current_exe()
+        .with_context(|| "Failed to get current executable path")?;
+
+    // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
+    let systemctl_path = env_root.join("usr/bin/systemctl");
+    if !systemctl_path.exists() {
+        force_symlink("/usr/bin/true", &systemctl_path)
+            .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
+    }
+
+    // Create symlinks for applets
+    create_applet_symlink(env_root, &epkg_exe, "systemd-sysusers")?;
+    create_applet_symlink(env_root, &epkg_exe, "systemd-tmpfiles")?;
+    create_applet_symlink(env_root, &epkg_exe, "rpmlua")?;
+
+    // Debian-specific setup
+    if pkg_format == &PackageFormat::Deb {
+        create_applet_symlink(env_root, &epkg_exe, "dpkg-trigger")?;
+        create_applet_symlink(env_root, &epkg_exe, "dpkg-query")?;
+
+        // Ensure triggers directory exists
+        ensure_triggers_dir(env_root)?;
+    }
+
+    Ok(())
+}
+
+fn create_default_world_json(gen_1_dir: &Path, pkg_format: &PackageFormat) -> Result<()> {
     let mut world = std::collections::HashMap::new();
 
     // Set default no-install packages for Pacman/Rpm/Deb formats
-    match format {
+    match pkg_format {
         PackageFormat::Pacman | PackageFormat::Rpm | PackageFormat::Deb => {
             let mut no_install_packages = vec!["systemd", "dbus"];
 
             // Add format-specific packages
-            match format {
+            match pkg_format {
                 PackageFormat::Pacman => no_install_packages.push("pacman"),
                 PackageFormat::Rpm => no_install_packages.push("dnf"),
                 PackageFormat::Deb => no_install_packages.push("apt"),
