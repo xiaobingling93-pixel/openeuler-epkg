@@ -28,8 +28,12 @@ install-depends:
 	@$(PROJECT_ROOT)/bin/make.sh install-depends
 
 
-# Build static binaries for all architectures
-static-all: static-x86_64 static-aarch64 static-riscv64 static-loongarch64
+# Build static binaries for all architectures (sequentially to avoid Cargo lock conflicts)
+static-all:
+	$(MAKE) static-x86_64
+	$(MAKE) static-aarch64
+	$(MAKE) static-riscv64
+	$(MAKE) static-loongarch64
 
 # Build static binary for a specific architecture
 define build_static

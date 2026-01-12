@@ -78,13 +78,19 @@ build_lua_lib() {
 
     echo "Building Lua library for $arch using $compiler..."
 
-    local lua_build_dir="$PROJECT_ROOT/target/lua-build"
+    local lua_download_dir="$PROJECT_ROOT/target/lua-download"
+    local lua_build_dir="$PROJECT_ROOT/target/lua-build-$arch"
     local lua_lib_dir="$PROJECT_ROOT/target/musl-lua-$arch"
 
+    # Download tarball once to shared location
+    mkdir -p "$lua_download_dir"
+    local tarball="$lua_download_dir/lua-$LUA_VERSION.tar.gz"
+    [ -f "$tarball" ] || wget -q "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz" -O "$tarball"
+
+    # Extract to architecture-specific build directory
     mkdir -p "$lua_build_dir"
     cd "$lua_build_dir"
-    [ -f "lua-$LUA_VERSION.tar.gz" ] || wget -q "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz"
-    [ -d "lua-$LUA_VERSION" ] || tar xzf "lua-$LUA_VERSION.tar.gz"
+    [ -d "lua-$LUA_VERSION" ] || tar xzf "$tarball"
 
     # Build
     cd "lua-$LUA_VERSION"
