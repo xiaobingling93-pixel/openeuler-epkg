@@ -829,30 +829,30 @@ pub fn create_load_repoindex(
 
 /// Collect packages metafiles and save repo index
 fn collect_save_repoindex(repo: &RepoRevise, _repo_dir: &PathBuf, release_items: &[RepoReleaseItem]) -> Result<RepoIndex> {
-    log::debug!("[collect_save_repoindex] Starting for repository: {} with {} release items", repo.repo_name, release_items.len());
+    log::debug!("Starting for repository: {} with {} release items", repo.repo_name, release_items.len());
 
     let mut packages_metafiles = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
 
     for (i, info) in release_items.iter().enumerate() {
         if info.is_packages {
-            log::debug!("[collect_save_repoindex] Processing packages item {}: {}", i, info.location);
+            log::debug!("Processing packages item {}: {}", i, info.location);
             let json_path = info.output_path.with_extension("json").to_str()
-                .ok_or_else(|| eyre::eyre!("[collect_save_repoindex] Invalid packages metafile path for item {}: {}", i, info.location))?
+                .ok_or_else(|| eyre::eyre!("Invalid packages metafile path for item {}: {}", i, info.location))?
                 .replace("packages", ".packages");
             let metafile_path = PathBuf::from(json_path);
-            log::debug!("[collect_save_repoindex] Generated metafile path: {}", metafile_path.display());
+            log::debug!("Generated metafile path: {}", metafile_path.display());
 
             // Only add if we haven't seen this path before
             if seen_paths.insert(metafile_path.clone()) {
                 packages_metafiles.push(metafile_path);
             } else {
-                log::debug!("[collect_save_repoindex] Skipping duplicate metafile path: {}", metafile_path.display());
+                log::debug!("Skipping duplicate metafile path: {}", metafile_path.display());
             }
         }
     }
 
-    log::debug!("[collect_save_repoindex] Found {} unique packages metafiles for repository: {}", packages_metafiles.len(), repo.repo_name);
+    log::debug!("Found {} unique packages metafiles for repository: {}", packages_metafiles.len(), repo.repo_name);
     save_repo_index_json(&repo, packages_metafiles)
 }
 
@@ -863,8 +863,8 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 
     // Check if we have any packages metafiles
     if packages_metafiles.is_empty() {
-        log::warn!("[save_repo_index_json] No packages metafiles provided for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
-        return Err(eyre::eyre!("[save_repo_index_json] No packages metafiles provided for repository: {}. Packages need to be downloaded and processed before creating repo index. Expected metafiles would be generated from packages items in release_items. Current packages_metafiles: {:#?}. This typically means no release_items with is_packages=true were found, or the packages processing step failed to generate the expected .packages.json files.", repo.repo_name, packages_metafiles));
+        log::warn!("No packages metafiles provided for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
+        return Err(eyre::eyre!("No packages metafiles provided for repository: {}. Packages need to be downloaded and processed before creating repo index. Expected metafiles would be generated from packages items in release_items. Current packages_metafiles: {:#?}. This typically means no release_items with is_packages=true were found, or the packages processing step failed to generate the expected .packages.json files.", repo.repo_name, packages_metafiles));
     }
 
     // Get the repo directory from the first metafile
@@ -876,12 +876,12 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 
     // Process each packages metafile
     for (i, packages_metafile) in packages_metafiles.iter().enumerate() {
-        log::debug!("[collect_save_repoindex] Processing packages_metafile: {}", packages_metafile.display());
+        log::debug!("Processing packages_metafile: {}", packages_metafile.display());
 
         // Check if the packages metafile exists
         if !packages_metafile.exists() {
-            log::warn!("[collect_save_repoindex] Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display());
-            return Err(eyre::eyre!("[collect_save_repoindex] Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display()));
+            log::warn!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display());
+            return Err(eyre::eyre!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display()));
         }
 
         // Load packages info
@@ -890,14 +890,14 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
         // Try to load corresponding filelists if it exists
         let mut filelists_info = None;
         let filelists_metafile = packages_metafile.to_str()
-            .ok_or_else(|| eyre::eyre!("[collect_save_repoindex] Invalid packages metafile path: {}", packages_metafile.display()))?
+            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path: {}", packages_metafile.display()))?
             .replace(".packages", ".filelists");
         if Path::new(&filelists_metafile).exists() {
-            log::debug!("[collect_save_repoindex] Found filelists metafile: {}", filelists_metafile);
+            log::debug!("Found filelists metafile: {}", filelists_metafile);
             let filelists: FilelistsFileInfo = read_json_file(Path::new(&filelists_metafile))?;
             filelists_info = Some(filelists);
         } else {
-            log::debug!("[collect_save_repoindex] Filelists metafile does not exist: {}", filelists_metafile);
+            log::debug!("Filelists metafile does not exist: {}", filelists_metafile);
         }
 
         // Use file stem as key, fallback to shard_i
@@ -918,8 +918,8 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 
     // Check if we found any valid packages metafiles
     if repo_shards.is_empty() {
-        log::warn!("[collect_save_repoindex] No valid packages metafiles found for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
-        return Err(eyre::eyre!("[collect_save_repoindex] No valid packages metafiles found for repository: {}. Packages need to be downloaded and processed before creating repo index.", repo.repo_name));
+        log::warn!("No valid packages metafiles found for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
+        return Err(eyre::eyre!("No valid packages metafiles found for repository: {}. Packages need to be downloaded and processed before creating repo index.", repo.repo_name));
     }
 
     // Save the index for the repo
@@ -935,18 +935,18 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
     // Ensure parent directory exists
     if let Some(parent) = index_path.parent() {
         fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("[save_repo_index_json] Failed to create parent directory for: {}", index_path.display()))?;
+            .wrap_err_with(|| format!("Failed to create parent directory for: {}", index_path.display()))?;
     }
 
     // Serialize to JSON with proper error handling
     let json_content = serde_json::to_string_pretty(&repo_index)
-        .wrap_err_with(|| format!("[save_repo_index_json] Failed to serialize repo index for repository: {}", repo.repo_name))?;
+        .wrap_err_with(|| format!("Failed to serialize repo index for repository: {}", repo.repo_name))?;
 
     // Write to file with proper error handling
     fs::write(&index_path, json_content)
-        .wrap_err_with(|| format!("[save_repo_index_json] Failed to write repo index to: {}", index_path.display()))?;
+        .wrap_err_with(|| format!("Failed to write repo index to: {}", index_path.display()))?;
 
-    log::debug!("[save_repo_index_json] Successfully wrote repo index to {}", index_path.display());
+    log::debug!("Successfully wrote repo index to {}", index_path.display());
 
     Ok(repo_index)
 }
@@ -1069,7 +1069,7 @@ fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
 /// Create symbolic link from download path to output path
 fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> Result<()> {
     // Create symbolic link
-    // /home/wfg/.cache/epkg/channels/debian:trixie/contrib/x86_64/filelists-all.gz =>
+    // /home/wfg/.cache/epkg/channels/debian-trixie/contrib/x86_64/filelists-all.gz =>
     // /home/wfg/.cache/epkg/downloads/debian/dists/trixie/contrib/by-hash/SHA256/9cc88157988a1ccc1240aa749a311bd6c445ecc890d16c431816a409303f3f51
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
 

@@ -89,8 +89,8 @@ Typical Stress Test + Debug Workflow:
        # Feed the debug log to AI for analysis
 
     3. In rare cases, you may need to grep and check repodata:
-       grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>:*/*/*/provide2pkgnames.yaml
-       grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>:*/*/*/packages.txt
+       grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>-*/*/*/provide2pkgnames.yaml
+       grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>-*/*/*/packages.txt
 """)
 
 

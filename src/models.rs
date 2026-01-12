@@ -75,7 +75,7 @@ pub struct PackageRange {
     pub len: usize,
 }
 
-// $HOME/.cache/epkg/channels/debian:trixie/main/x86_64/packages-all.txt
+// $HOME/.cache/epkg/channels/debian-trixie/main/x86_64/packages-all.txt
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Package {
     pub pkgname: String,

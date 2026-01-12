@@ -12,6 +12,8 @@ use crate::models::{self, *};
 use crate::models::PACKAGE_CACHE;
 use crate::history::get_current_generation_id;
 
+const CHANNEL_SEPARATOR: char = '-';
+
 /// Deserialize environment configuration from disk
 #[allow(dead_code)] // quiet warning in cargo test calls
 pub fn deserialize_env_config() -> Result<EnvConfig> {
@@ -119,13 +121,12 @@ pub fn load_and_process_channel_config(file_path: &std::path::Path, channel_conf
 fn resolve_channel_distro_version(cc: &mut ChannelConfig) -> Result<()> {
     // Step 1: If channel is provided, try to extract distro and version from it
     if !cc.channel.is_empty() {
-        let parts: Vec<&str> = cc.channel.split(':').collect();
-        if parts.len() == 2 {
+        if let Some((distro_part, version_part)) = cc.channel.split_once(CHANNEL_SEPARATOR) {
             if cc.distro.is_empty() {
-                cc.distro = parts[0].to_string();
+                cc.distro = distro_part.to_string();
             }
             if cc.version.is_empty() {
-                cc.version = parts[1].to_string();
+                cc.version = version_part.to_string();
             }
         }
     }
@@ -144,7 +145,7 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig) -> Result<()> {
     // Step 3: If channel is empty, construct it from distro:version
     if cc.channel.is_empty() {
         if !cc.distro.is_empty() && !cc.version.is_empty() {
-            cc.channel = format!("{}:{}", cc.distro, cc.version);
+            cc.channel = format!("{}{}{}", cc.distro, CHANNEL_SEPARATOR, cc.version);
         }
     }
 

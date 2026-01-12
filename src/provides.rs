@@ -168,13 +168,13 @@ pub fn check_provider_satisfies_constraints(
             //
             // Operators like >=, >, <=, < are artifacts from metadata parsing and should be ignored.
             // wfg /c/epkg% gr -c '^provides: .*>' ~/.cache/epkg/channels/|g -v ':0$'
-            // /home/wfg/.cache/epkg/channels/opensuse:16.0/oss/x86_64/packages.txt:10
-            // /home/wfg/.cache/epkg/channels/fedora:42/Everything-updates/x86_64/packages.txt:11
-            // /home/wfg/.cache/epkg/channels/fedora:42/Everything/x86_64/packages.txt:12
+            // /home/wfg/.cache/epkg/channels/opensuse-16.0/oss/x86_64/packages.txt:10
+            // /home/wfg/.cache/epkg/channels/fedora-42/Everything-updates/x86_64/packages.txt:11
+            // /home/wfg/.cache/epkg/channels/fedora-42/Everything/x86_64/packages.txt:12
             // wfg /c/epkg% gr -c '^provides: .*<' ~/.cache/epkg/channels/|g -v ':0$'
-            // /home/wfg/.cache/epkg/channels/opensuse:16.0/oss/x86_64/packages.txt:10
-            // /home/wfg/.cache/epkg/channels/fedora:42/Everything-updates/x86_64/packages.txt:5
-            // /home/wfg/.cache/epkg/channels/fedora:42/Everything/x86_64/packages.txt:22
+            // /home/wfg/.cache/epkg/channels/opensuse-16.0/oss/x86_64/packages.txt:10
+            // /home/wfg/.cache/epkg/channels/fedora-42/Everything-updates/x86_64/packages.txt:5
+            // /home/wfg/.cache/epkg/channels/fedora-42/Everything/x86_64/packages.txt:22
             //
             // Also handle library aliases like "lib.so=lib.so-64" for Arch Linux
             let remainder = &provide_entry_trimmed[matched_capability.len()..];
