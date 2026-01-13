@@ -547,11 +547,11 @@ pub fn posix_utime(path: &str, mtime: Option<u64>, atime: Option<u64>) -> PosixR
     let currtime = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() as libc::time_t;
+        .as_secs() as i64;
 
     let times = libc::utimbuf {
-        modtime: mtime.map(|t| t as libc::time_t).unwrap_or(currtime),
-        actime: atime.map(|t| t as libc::time_t).unwrap_or(currtime),
+        modtime: mtime.map(|t| t as i64).unwrap_or(currtime),
+        actime:  atime.map(|t| t as i64).unwrap_or(currtime),
     };
 
     match unsafe { libc::utime(path_cstr.as_ptr(), &times) } {

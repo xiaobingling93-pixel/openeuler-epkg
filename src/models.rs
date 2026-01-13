@@ -346,27 +346,18 @@ pub struct EnvConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct EnvImport {
-    #[serde(flatten)]
-    pub env: EnvConfig,
-
-    #[serde(default)]
-    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
-
-    #[serde(default)]
-    pub world: HashMap<String, String>,
+pub struct ExportFile {
+    pub path: String, // path in env, no leading '/'
+    pub data: String, // file contents
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct EnvExport {
-    #[serde(flatten)]
+    #[serde(default)]
     pub env: EnvConfig,
 
     #[serde(default)]
-    pub packages: BTreeMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
-
-    #[serde(default)]
-    pub world: BTreeMap<String, String>,
+    pub files: Vec<ExportFile>,
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
@@ -508,11 +499,8 @@ pub struct ChannelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_url_nonfree_updates: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_name: Option<String>, // filename for repos.d configs
-    #[serde(skip_serializing, skip_deserializing)]
-    #[serde(default)]
-    pub file_data: String, // original file data to preserve during save
+    #[serde(skip)]
+    pub file_path: String, // full path for configs
 }
 
 pub fn default_as_true() -> bool { true }
@@ -897,7 +885,7 @@ pub struct EnvOptions {
     #[serde(default)]
     pub stack: bool,
     #[serde(default)]
-    pub link: LinkType,
+    pub link: Option<LinkType>,
     #[serde(default)]
     pub repos: Vec<String>,
 

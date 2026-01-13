@@ -163,9 +163,9 @@ fn collect_env_configs(
     // Load channel config
     let channel_config_path = env_path.join("etc/epkg/channel.yaml");
     if channel_config_path.exists() {
-        if let Ok((mut channel_config, _)) = io::read_yaml_file::<ChannelConfig>(&channel_config_path) {
+        if let Ok(mut channel_config) = io::read_yaml_file::<ChannelConfig>(&channel_config_path) {
             // Set defaults to populate channel field from distro:version
-            if let Ok(()) = crate::io::set_channel_config_defaults(&mut channel_config) {
+            if let Ok(()) = crate::io::set_channel_config_defaults(&mut channel_config, None) {
                 if config().common.verbose {
                     println!("Found channel config: {} -> {}", env_path.display(), channel_config.channel);
                 }
@@ -177,7 +177,7 @@ fn collect_env_configs(
     // Load env config
     let env_config_path = env_path.join("etc/epkg/env.yaml");
     if env_config_path.exists() {
-        if let Ok((_env_config, _)) = io::read_yaml_file::<EnvConfig>(&env_config_path) {
+        if io::read_yaml_file::<EnvConfig>(&env_config_path).is_ok() {
             // Load installed packages
             let packages_path = env_path.join("generations/current/installed-packages.json");
             if packages_path.exists() {

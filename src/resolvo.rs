@@ -278,8 +278,6 @@ impl GenericDependencyProvider {
     fn get_installed_pkgname2keys(&self) -> Result<HashMap<String, Vec<String>>> {
         let mut cache = self.installed_pkgname2keys.borrow_mut();
         if cache.is_none() {
-            // Ensure installed packages are loaded
-            crate::io::load_installed_packages()?;
             let mut installed_map: HashMap<String, Vec<String>> = HashMap::new();
             for (pkgkey, _) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
                 if let Ok(pkgname) = pkgkey2pkgname(pkgkey.as_str()) {

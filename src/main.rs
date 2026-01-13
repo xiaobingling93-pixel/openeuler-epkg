@@ -84,10 +84,11 @@ use crate::ipc::privdrop_on_suid;
 use crate::dirs::{get_epkg_src_path, find_env_base};
 use crate::environment::{list_environments, create_environment, remove_environment, register_environment, unregister_environment, activate_environment, deactivate_environment, export_environment, get_environment_config, set_environment_config};
 use crate::io::edit_environment_config;
+use crate::io::load_installed_packages;
+use crate::io::read_yaml_file;
 use crate::path::update_path;
 use crate::repo::sync_channel_metadata;
 use crate::list::list_packages_with_scope;
-use crate::io::load_installed_packages;
 use crate::install::install_packages;
 use crate::upgrade::upgrade_packages;
 use crate::remove::remove_packages;
@@ -490,7 +491,7 @@ OPTIONS:
                 .subcommand(
                     Command::new("export")
                         .about("Export environment configuration")
-                        .arg(arg!([ENV_NAME] "Name of the environment to export"))
+                        .arg(arg!(<ENV_NAME> "Name of the environment to export"))
                         .arg(arg!(-o --output <FILE> "Output file path"))
                 )
                 .subcommand(
@@ -640,25 +641,13 @@ OPTIONS:
         .get_matches()
 }
 
-fn parse_yaml_config<T>(path: &str) -> Result<T>
-where
-    T: for<'de> serde::Deserialize<'de>,
-{
-    std::fs::read_to_string(path)
-        .map_err(|e| eyre::eyre!("Failed to read config file {}: {}", path, e))
-        .and_then(|s| {
-            serde_yaml::from_str(&s)
-                .map_err(|e| eyre::eyre!("Failed to parse YAML from config file {}: {}", path, e))
-        })
-}
-
 pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
     let mut config: EPKGConfig = matches.get_one::<String>("config").map_or_else(
         || {
             // Try default config file location
             let default_config_path = PathBuf::from(dirs::get_home()?).join(".epkg/config/options.yaml");
             if default_config_path.exists() {
-                parse_yaml_config(default_config_path.to_str().expect("Default config path is not valid UTF-8"))
+                read_yaml_file(&default_config_path)
             } else {
                 // Using "{}" ensures that serde processes an empty map, allowing field-level
                 // #[serde(default = "...")] attributes to be applied.
@@ -667,7 +656,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
                     .unwrap_or_else(|e| panic!("Failed to load default config from empty map: {:?}", e)))
             }
         },
-        |s| parse_yaml_config(s)
+        |s| read_yaml_file(Path::new(s))
     )?;
 
     config.common.env = matches.get_one::<String>("env").map_or_else(
@@ -680,7 +669,7 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
             // epkg may be run inside an env, try /etc/epkg/env.yaml
             let env_yaml_path = Path::new("/etc/epkg/env.yaml");
             if env_yaml_path.exists() {
-                if let Ok((env_config, _)) = crate::io::read_yaml_file::<EnvConfig>(env_yaml_path) {
+                if let Ok(env_config) = read_yaml_file::<EnvConfig>(env_yaml_path) {
                     // ENV_CONFIG will be loaded later via LazyLock when first accessed
                     // It will use config.common.env which we're setting here
                     return env_config.name;
@@ -863,7 +852,7 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             config.env.env_path = sub_matches.get_one::<String>("path").cloned();
             config.env.import_file = sub_matches.get_one::<String>("import").cloned();
             if let Some(link_str) = sub_matches.get_one::<String>("link") {
-                config.env.link = parse_link_type(link_str.as_str())?;
+                config.env.link = Some(parse_link_type(link_str.as_str())?);
             }
         }
         Some(("remove", sub_matches)) => {
@@ -1079,11 +1068,8 @@ fn command_env(sub_matches: &clap::ArgMatches) -> Result<()> {
         }
         Some(("deactivate", _)) => deactivate_environment(),
         Some(("export", sub_matches)) => {
-            let name = sub_matches.get_one::<String>("ENV_NAME")
-                .map(|s| s.as_str())
-                .unwrap_or_else(|| &config().common.env);
             let output = sub_matches.get_one::<String>("output").cloned();
-            export_environment(name, output)
+            export_environment(output)
         }
         Some(("path", _)) => update_path(),
         Some(("config", sub_matches)) => {

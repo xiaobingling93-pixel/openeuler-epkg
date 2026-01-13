@@ -964,9 +964,17 @@ fn try_match_and_fill_pkgline(
     package_info: &mut InstalledPackageInfo,
     store_pkglines_by_pkgkey: &std::collections::HashMap<String, Vec<String>>,
 ) -> Result<bool> {
-    // Skip if pkgline is already filled
+    // Skip if pkgline is already filled and the fs directory exists
     if !package_info.pkgline.is_empty() {
-        return Ok(false);
+        let store_dir = crate::models::dirs().epkg_store.clone();
+        let fs_dir = store_dir.join(&package_info.pkgline).join("fs");
+        if fs_dir.exists() {
+            return Ok(false);
+        } else {
+            // Clear pkgline if fs directory doesn't exist, necessary to trigger package
+            // download/unpack when called from from import_packages_and_create_metadata()
+            package_info.pkgline.clear();
+        }
     }
 
     // Load Package from repodata
@@ -1008,10 +1016,6 @@ pub fn fill_pkglines_in_plan(
     // Collect store pkglines organized by both pkgkey (for matching) and pkgname (for reuse in unpack_mv_package)
     let (store_pkglines_by_pkgkey, store_pkglines_by_pkgname) = collect_store_pkglines()?;
     plan.store_pkglines_by_pkgname = store_pkglines_by_pkgname;
-
-    if store_pkglines_by_pkgkey.is_empty() {
-        return Ok(0);
-    }
 
     let mut matched_count = 0;
 

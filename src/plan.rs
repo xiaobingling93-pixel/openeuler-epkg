@@ -349,8 +349,6 @@ fn classify_packages(
     all_packages_for_session: &InstalledPackagesMap,
     plan: &mut InstallationPlan,
 ) -> Result<()> {
-    // Ensure PACKAGE_CACHE.installed_packages is loaded
-    crate::io::load_installed_packages()?;
     let installed = &*PACKAGE_CACHE.installed_packages.read().unwrap();
 
     // First pass: classify packages

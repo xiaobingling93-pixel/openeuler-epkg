@@ -12,7 +12,7 @@ use crate::models::{self, *};
 use crate::models::PACKAGE_CACHE;
 use crate::history::get_current_generation_id;
 
-const CHANNEL_SEPARATOR: char = '-';
+pub const CHANNEL_SEPARATOR: char = '-';
 
 /// Deserialize environment configuration from disk
 #[allow(dead_code)] // quiet warning in cargo test calls
@@ -36,7 +36,7 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         }
     }
 
-    let (env_config, _): (EnvConfig, _) = read_yaml_file(&config_path)?;
+    let env_config = read_yaml_file(&config_path)?;
     Ok(env_config)
 }
 
@@ -46,20 +46,20 @@ pub fn get_env_config() -> Result<EnvConfig> {
     Ok(env_config().clone())
 }
 
-pub fn set_channel_config_defaults(cc: &mut ChannelConfig) -> Result<()> {
+pub fn set_channel_config_defaults(cc: &mut ChannelConfig, main_config: Option<&ChannelConfig>) -> Result<()> {
     // Set default architecture if missing
     if cc.arch.is_empty() {
         cc.arch = config().common.arch.clone();
     }
 
     // Handle the data dependencies between channel, distro, and version
-    resolve_channel_distro_version(cc)?;
+    resolve_channel_distro_version(cc, main_config)?;
 
     Ok(())
 }
 
-fn process_channel_config(mut channel_config: ChannelConfig) -> Result<ChannelConfig> {
-    set_channel_config_defaults(&mut channel_config)?;
+fn process_channel_config(mut channel_config: ChannelConfig, main_config: Option<&ChannelConfig>) -> Result<ChannelConfig> {
+    set_channel_config_defaults(&mut channel_config, main_config)?;
     expand_channel_config_urls(&mut channel_config)?;
 
     // Sort distro_dirs by length once during deserialization
@@ -77,7 +77,7 @@ fn process_channel_config(mut channel_config: ChannelConfig) -> Result<ChannelCo
     Ok(channel_config)
 }
 
-pub fn read_yaml_file<T>(file_path: &std::path::Path) -> Result<(T, String)>
+pub fn read_yaml_file<T>(file_path: &std::path::Path) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -85,7 +85,7 @@ where
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
     let config: T = serde_yaml::from_str(&contents)
         .with_context(|| format!("Failed to parse YAML from file: {}", file_path.display()))?;
-    Ok((config, contents))
+    Ok(config)
 }
 
 pub fn read_json_file<T>(file_path: &std::path::Path) -> Result<T>
@@ -99,26 +99,18 @@ where
     Ok(value)
 }
 
-pub fn load_and_process_channel_config(file_path: &std::path::Path, channel_configs: &mut Vec<ChannelConfig>, record_file_info: bool) -> Result<()> {
-    let (mut channel_config, contents): (ChannelConfig, String) = read_yaml_file(file_path)?;
+pub fn load_and_process_channel_config(file_path: &std::path::Path, channel_configs: &mut Vec<ChannelConfig>, main_config: Option<&ChannelConfig>) -> Result<()> {
+    let mut channel_config: ChannelConfig = read_yaml_file(file_path)?;
 
-    if record_file_info {
-        // Set the original file name
-        let file_name = file_path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_else(|| "unknown")
-            .to_string();
+    let file_path_str = file_path.to_string_lossy().to_string();
+    channel_config.file_path = file_path_str.clone();
 
-        channel_config.file_data = format!("file_name: {}\n{}", file_name, contents);
-        channel_config.file_name = Some(file_name);
-    }
-
-    let processed_config = process_channel_config(channel_config)?;
+    let processed_config = process_channel_config(channel_config, main_config)?;
     channel_configs.push(processed_config);
     Ok(())
 }
 
-fn resolve_channel_distro_version(cc: &mut ChannelConfig) -> Result<()> {
+fn resolve_channel_distro_version(cc: &mut ChannelConfig, main_config: Option<&ChannelConfig>) -> Result<()> {
     // Step 1: If channel is provided, try to extract distro and version from it
     if !cc.channel.is_empty() {
         if let Some((distro_part, version_part)) = cc.channel.split_once(CHANNEL_SEPARATOR) {
@@ -131,10 +123,24 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig) -> Result<()> {
         }
     }
 
+    // Step 1.5: If distro is still empty and main config is provided, use main config's distro
+    if cc.distro.is_empty() {
+        if let Some(main_cfg) = main_config {
+            cc.distro = main_cfg.distro.clone();
+        }
+    }
+
     // Step 2: If version is still empty, fall back to versions list
     if cc.version.is_empty() {
-        let version_from_list = cc.versions.first()
-            .ok_or_else(|| eyre::eyre!("channel has no versions"))?;
+        let version_from_list = if let Some(main_cfg) = main_config {
+            // When given main config, first search cc.versions for the matching one with main.version,
+            // alias shall also be matched; then fall back to select cc.versions.first()
+            cc.versions.iter()
+                .find(|v| v.split_whitespace().any(|alias| alias == main_cfg.version))
+                .or_else(|| cc.versions.first())
+        } else {
+            cc.versions.first()
+        }.ok_or_else(|| eyre::eyre!("channel has no versions"))?;
 
         let version = version_from_list.split_whitespace().next()
             .ok_or_else(|| eyre::eyre!("malformed version string: {}", version_from_list))?;
@@ -158,7 +164,17 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig) -> Result<()> {
         }
     }
 
-    // Step 5: Validate that all required fields are now set
+    // Step 5: Warn about mismatches with main config if provided
+    if let Some(main_cfg) = main_config {
+        if cc.distro != main_cfg.distro {
+            eprintln!("Extra repo config '{}' distro '{}' does not match main config distro '{}'", cc.file_path, cc.distro, main_cfg.distro);
+        }
+        if cc.version != main_cfg.version {
+            eprintln!("Extra repo config '{}' version '{}' does not match main config version '{}'", cc.file_path, cc.version, main_cfg.version);
+        }
+    }
+
+    // Step 6: Validate that all required fields are now set
     if cc.channel.is_empty() {
         return Err(eyre::eyre!("channel name could not be determined"));
     }
@@ -250,11 +266,15 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
 
     // Load main channel config
     let file_path = env_root.join("etc/epkg/channel.yaml");
-    load_and_process_channel_config(&file_path, &mut channel_configs, false)?;
+    load_and_process_channel_config(&file_path, &mut channel_configs, None)?;
 
     // Load additional configs from repos.d
+    // Ideally the latter should all use the same cc.distro and cc.version as main config,
+    // for now we allow users to mix for flexibility, and just emit warning on mismatch.
     let repos_dir = env_root.join("etc/epkg/repos.d");
     if repos_dir.exists() {
+        // First collect all repo config paths
+        let mut repo_paths = Vec::new();
         for entry in fs::read_dir(repos_dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -265,8 +285,14 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
                 }
             }
             if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
-                load_and_process_channel_config(&path, &mut channel_configs, false)?;
+                repo_paths.push(path);
             }
+        }
+
+        // Now get the main config and process repo configs
+        let main_config = channel_configs.first().cloned();
+        for path in repo_paths {
+            load_and_process_channel_config(&path, &mut channel_configs, main_config.as_ref())?;
         }
     }
 
