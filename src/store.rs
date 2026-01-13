@@ -511,7 +511,7 @@ fn get_field_order() -> &'static [&'static str] {
         "buildRequires", "checkRequires", "requiresPre", "requires", "provides", "conflicts",
         "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "originUrl",
         "recipeMaintainers", "subdir", "constrains", "requirements", "commit", "caHash", "caHashVersion",
-        "size", "installedSize", "section", "priority", "buildTime", "buildHost", "group", "cookie", "platform",
+        "size", "installedSize", "section", "priority", "provider_priority", "replaces_priority", "buildTime", "buildHost", "group", "cookie", "platform",
         "sourcePkgId", "rsaHeader", "sha256Header", "OriginalVcsBrowser", "OriginalVcsGit", "builtUsing",
         "originalMaintainer", "conffiles", "changelogTime", "changelogName", "changelogText",
         "location", "sha256", "sha512", "sha1", "md5sum", "descriptionMd5", "multiArch", "tag",
@@ -541,7 +541,7 @@ pub fn format_package_fields(package_fields: &HashMap<String, String>) -> String
     // Then write any remaining fields that weren't in the preferred order
     for (original_field, value) in package_fields {
         if !field_order.contains(&original_field.as_str()) {
-            log::info!("Field name '{}' not found in predefined field order list", original_field);
+            log::info!("Field name '{}' with value '{}' not found in predefined field order list", original_field, value);
             output.push_str(&format!("{}: {}\n", original_field, value));
         }
     }
