@@ -200,6 +200,9 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
 /// If config().common.dry_run is true, will return the plan without executing it.
 /// The target environment is determined by config().common.env.
 pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<InstallationPlan> {
+    // Calculate download requirements and store in plan before prompting
+    crate::risks::calculate_plan_sizes(&mut plan)?;
+
     // --- USER PROMPT AND PRE-EXECUTION CHECKS ---
     let go_on = prompt_and_confirm_install_plan(&plan)?;
     if !go_on {
@@ -224,9 +227,6 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // Check for reflink support if using hardlink
     // Fail early if Move or Runpath link types require cross-filesystem rename
     compute_link_type_and_reflink(&mut plan)?;
-
-    // Calculate download requirements and store in plan
-    crate::risks::calculate_plan_sizes(&mut plan)?;
 
     // Validate transaction (disk space, conflicts, etc.)
     if let Err(e) = crate::risks::check_disk_space_for_plan(&plan, &store_root, &download_cache) {
