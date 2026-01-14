@@ -125,13 +125,11 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
 
     // Check if the package_fs_dir itself exists first
     if !package_fs_path.exists() {
-        log::warn!("Package filesystem directory does not exist: {}", package_fs_dir);
         return Err(eyre::eyre!("Package filesystem directory does not exist: {}", package_fs_dir));
     }
 
     // Check if it's actually a directory
     if !package_fs_path.is_dir() {
-        log::warn!("Package filesystem path is not a directory: {}", package_fs_dir);
         return Err(eyre::eyre!("Package filesystem path is not a directory: {}", package_fs_dir));
     }
 
@@ -1131,18 +1129,6 @@ pub fn set_permissions_from_mode<P: AsRef<Path>>(path: P, mode: u32) -> Result<(
 #[cfg(not(unix))]
 pub fn set_permissions_from_mode<P: AsRef<Path>>(_path: P, _mode: u32) -> Result<()> {
     // No-op on non-Unix systems
-    Ok(())
-}
-
-/// Make a directory writable by removing the readonly flag
-/// This is useful when you need to remove directories that were created as read-only
-pub fn make_directory_writable<P: AsRef<Path>>(path: P) -> Result<()> {
-    let path = path.as_ref();
-    let mut perms = fs::metadata(path)
-        .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))?.permissions();
-    perms.set_readonly(false); // Make writable
-    fs::set_permissions(path, perms)
-        .wrap_err_with(|| format!("Failed to set permissions for {}", path.display()))?;
     Ok(())
 }
 

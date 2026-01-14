@@ -294,7 +294,7 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     // Make parent directories writable
     for dir in &parent_dirs {
         println!("  - {}", &dir.display());
-        utils::make_directory_writable(&dir)?;
+        utils::fixup_file_permissions(&dir);
     }
 
     println!("Retrying directory removal after permission fix...");
