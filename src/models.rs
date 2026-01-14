@@ -507,11 +507,13 @@ pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub index_url: Option<String>,
+    pub index_url: String,
     #[serde(default)]
     pub amend_index_urls: HashMap<String, String>,
     #[serde(default)]
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_baseurls: Vec<String>, // Alternative URIs (mirrors/fallbacks)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<String>, // DEB specific: filter components from Release file
 }

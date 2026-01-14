@@ -3,7 +3,7 @@ use serde_yaml;
 use log;
 use std::fs;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::collections::{HashMap, BTreeMap};
 use std::sync::Arc;
 use color_eyre::eyre::{self, Result, WrapErr};
@@ -135,10 +135,12 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig, main_config: Option<&C
     if cc.version.is_empty() {
         let version_from_list = if let Some(main_cfg) = main_config {
             // When given main config, first search cc.versions for the matching one with main.version,
-            // alias shall also be matched; then fall back to select cc.versions.first()
+            // alias shall also be matched; then fall back to select cc.versions.first(),
+            // then fall back to main_cfg.version
             cc.versions.iter()
                 .find(|v| v.split_whitespace().any(|alias| alias == main_cfg.version))
                 .or_else(|| cc.versions.first())
+                .or_else(|| Some(&main_cfg.version))
         } else {
             cc.versions.first()
         }.ok_or_else(|| eyre::eyre!("channel has no versions"))?;
@@ -195,8 +197,8 @@ pub fn merge_channel_defaults_into_repos(cc: &mut ChannelConfig) {
         if repo_config.components.is_empty() {
             repo_config.components = cc.components.clone();
         }
-        if repo_config.index_url.is_none() {
-            repo_config.index_url = Some(cc.index_url.clone());
+        if repo_config.index_url.is_empty() {
+            repo_config.index_url = cc.index_url.clone();
         }
         for (key, url) in &cc.amend_index_urls {
             if !repo_config.amend_index_urls.contains_key(key) {
@@ -216,11 +218,11 @@ pub fn interpolate_channel_urls(cc: &mut ChannelConfig) {
     let repo_names: Vec<String> = cc.repos.keys().cloned().collect();
     for repo_name in repo_names {
         if let Some(repo_config) = cc.repos.get_mut(&repo_name) {
-            if let Some(url) = &repo_config.index_url {
+            if !repo_config.index_url.is_empty() {
                 let interpolated_url = interpolate_index_url(
-                    url, &config_version, &config_arch, &config_app_version, &repo_name
+                    &repo_config.index_url, &config_version, &config_arch, &config_app_version, &repo_name
                 );
-                repo_config.index_url = Some(interpolated_url);
+                repo_config.index_url = interpolated_url;
             }
 
             let mut interpolated_amend_urls = HashMap::new();
@@ -241,6 +243,40 @@ pub fn deserialize_channel_config() -> Result<Vec<ChannelConfig>> {
     let env_config = models::env_config();
     let env_root = PathBuf::from(&env_config.env_root);
     deserialize_channel_config_from_root(&env_root)
+}
+
+/// Update system channel configs with inherited settings and proper naming
+fn update_system_channel_configs(
+    system_channel_configs: Vec<ChannelConfig>,
+    channel_configs: &mut Vec<ChannelConfig>,
+    main_config: Option<&ChannelConfig>,
+) -> Result<()> {
+    let mut updated_configs = system_channel_configs;
+    for channel_config in &mut updated_configs {
+        set_channel_config_defaults(channel_config, main_config)?;
+        interpolate_channel_urls(channel_config);
+    }
+    channel_configs.append(&mut updated_configs);
+
+    Ok(())
+}
+
+/// Load system repository configurations as separate ChannelConfig instances
+fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: &Path) -> Result<()> {
+    // Get the main channel config to inherit common settings
+    let main_config = channel_configs.first().cloned();
+
+    // Load Deb system repositories
+    if let Ok(system_channel_configs) = crate::deb_sources::load_deb_system_repos(env_root, &config().common.arch) {
+        update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
+    }
+
+    // Load RPM system repositories
+    if let Ok(system_channel_configs) = crate::rpm_sources::load_rpm_system_repos(env_root) {
+        update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
+    }
+
+    Ok(())
 }
 
 /// Deserialize channel configuration from a specific environment root
@@ -279,6 +315,9 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
         }
     }
 
+    // Load system repository configurations based on format
+    load_system_repositories(&mut channel_configs, env_root)?;
+
     log::trace!("channel_configs {:#?}", channel_configs);
 
     Ok(channel_configs)
@@ -297,6 +336,8 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
 // - $repo: the repository name
 // - $arch: the architecture name
 // - $app_version: the app_version string
+// - $releasever: the RPM release version (same as $version)
+// - $basearch: the RPM base architecture (same as $arch)
 // - $conda_arch: the conda-specific architecture name
 // - $conda_repofile: the conda repodata file name based on repository
 pub fn interpolate_index_url(
@@ -319,6 +360,10 @@ pub fn interpolate_index_url(
     url = url.replace("$repo", repo_name);
     url = url.replace("$arch", arch);
     url = url.replace("$app_version", app_version);
+
+    // Replace RPM variables
+    url = url.replace("$releasever", version);
+    url = url.replace("$basearch", arch);
 
     // Replace $conda_arch with conda-specific architecture name
     let conda_arch = map_to_conda_arch(arch);

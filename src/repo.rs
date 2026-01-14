@@ -147,7 +147,7 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
             repo_name: repo_name.clone(),
             repodata_name: repo_name.clone(),
             // Channel defaults have already been merged by merge_channel_defaults_into_repos()
-            index_url: repo_config.index_url.as_ref().unwrap_or(&config.index_url).clone(),
+            index_url: repo_config.index_url.clone(),
             components: repo_config.components.clone(),
         });
 
