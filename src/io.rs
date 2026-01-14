@@ -192,6 +192,9 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig, main_config: Option<&C
 /// Merge channel-level default URLs into repo configs where missing
 pub fn merge_channel_defaults_into_repos(cc: &mut ChannelConfig) {
     for (_, repo_config) in &mut cc.repos {
+        if repo_config.components.is_empty() {
+            repo_config.components = cc.components.clone();
+        }
         if repo_config.index_url.is_none() {
             repo_config.index_url = Some(cc.index_url.clone());
         }

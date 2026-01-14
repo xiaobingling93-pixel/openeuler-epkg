@@ -6,11 +6,19 @@ versions:
 - bookworm  12
 - bullseye  11
 - buster    10
+
 repos:
   postgresql:
-  # 18:  # To select a specific version, uncomment this line and comment out the above "postgresql:" line
-  # 17:
-  # 16:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - 18
+# - 17
+# - 16
+
 index_url: https://mirrors.tuna.tsinghua.edu.cn///postgresql/repos/apt/dists/$version-pgdg/Release
 
 # Example URLs:

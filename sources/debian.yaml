@@ -15,10 +15,25 @@ versions:
 - trixie    13
 - testing
 - sid unstable
+
+# DEB specific rule for 'repos' field:
+# - shall contain
+#   - 1 item for the official repo, use "Official" key
+#   - 1 item for all other (3rd party) repos
+# - serves as prefix when composing repodata_name, so
+# - shall have unique values to avoid conflicts in dir layout get_repo_dir()
 repos:
-  main:
-  contrib:
-  non-free:
+  Official:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - contrib
+# - non-free
+# - non-free-firmware
+
 index_url:          $mirror/debian/dists/$version/Release
 amend_index_urls:
   updates:          $mirror/debian/dists/$version-updates/Release

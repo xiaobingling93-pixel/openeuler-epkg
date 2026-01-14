@@ -10,8 +10,17 @@ versions:
 - trixie    13
 - testing
 - sid unstable
+
 repos:
   multimedia:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - non-free
+
 index_url:          $mirror/debian/dists/$version/Release
 
 # Example URLs:

@@ -38,6 +38,7 @@ pub struct RepoRevise {
     pub repo_name: String,
     pub repodata_name: String,
     pub index_url: String,
+    pub components: Vec<String>, // DEB specific: filter components from Release file
 }
 
 #[allow(dead_code)]
@@ -132,20 +133,22 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
 fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
     let mut all_repos: Vec<RepoRevise> = Vec::new();
 
+    // config.repos should never be empty for valid configurations
     for (repo_name, repo_config) in &config.repos {
         // Skip disabled repos
         if !repo_config.enabled {
             continue;
         }
-        // Use repo-specific index_url if present, else fallback to config.index_url
-        let index_url = repo_config.index_url.as_ref().unwrap_or(&config.index_url);
+
         all_repos.push(RepoRevise {
             format: config.format.clone(),
             arch: config.arch.clone(),
             channel: config.channel.clone(),
             repo_name: repo_name.clone(),
             repodata_name: repo_name.clone(),
-            index_url: index_url.clone(),
+            // Channel defaults have already been merged by merge_channel_defaults_into_repos()
+            index_url: repo_config.index_url.as_ref().unwrap_or(&config.index_url).clone(),
+            components: repo_config.components.clone(),
         });
 
         for (suffix, url) in &repo_config.amend_index_urls {
@@ -161,6 +164,7 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
                 repo_name: repo_name.clone(),
                 repodata_name: format!("{}-{}", repo_name, repodata_suffix),
                 index_url: url.clone(),
+                components: repo_config.components.clone(),
             });
         }
     }

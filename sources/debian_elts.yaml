@@ -8,10 +8,18 @@ versions: # Extended LTS versions
 - stretch   9
 - jessie    8
 - wheezy    7
+
 repos:
-  main:
-  contrib:
-  non-free:
+  elts:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - contrib
+# - non-free
+
 index_url: $mirror/dists/$version/Release
 
 # Example URLs:

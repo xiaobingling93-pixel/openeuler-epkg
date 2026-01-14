@@ -477,6 +477,9 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>, // DEB specific: filter components from Release file
+
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -509,6 +512,8 @@ pub struct RepoConfig {
     pub amend_index_urls: HashMap<String, String>,
     #[serde(default)]
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>, // DEB specific: filter components from Release file
 }
 
 static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
