@@ -1191,7 +1191,24 @@ pub fn execute_hook(
     //   → Preserves inner quotes as escaped: "install-info \"$f\" ..."
     // - Quoted arguments: '--cmd ":helptags ..."'
     //   → Parses as separate argument with quotes preserved
-    let exec_parts = match shlex::split(&hook.action.exec) {
+    // Replace %PKGINFO_DIR placeholder with the actual package info directory path
+    // The hook file is at: store_dir/pkgline/info/install/hook_name.hook
+    // So pkginfo_dir is: hook.file_path.parent().parent() (== store_dir/pkgline/info)
+    let exec_command = if hook.action.exec.contains("%PKGINFO_DIR") {
+        let pkginfo_dir = std::path::Path::new(&hook.file_path)
+            .parent() // install/
+            .and_then(|p| p.parent()) // info/
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| {
+                log::warn!("Could not determine PKGINFO_DIR for hook {}", hook.file_path);
+                String::new()
+            });
+        hook.action.exec.replace("%PKGINFO_DIR", &pkginfo_dir)
+    } else {
+        hook.action.exec.clone()
+    };
+
+    let exec_parts = match shlex::split(&exec_command) {
         Some(parts) => {
             if parts.is_empty() {
                 return Err(color_eyre::eyre::eyre!("Empty Exec in hook {}", hook.file_path));
@@ -1201,7 +1218,7 @@ pub fn execute_hook(
         None => {
             return Err(color_eyre::eyre::eyre!(
                 "hook {}: invalid Exec value {}",
-                hook.file_path, hook.action.exec
+                hook.file_path, exec_command
             ));
         }
     };

@@ -554,7 +554,8 @@ fn write_apk_hook_file<P: AsRef<Path>>(
     writeln!(buf, "Description = APK trigger")?;
     // Exec points to the trigger script
     // The hook engine will pass matched directories as arguments
-    writeln!(buf, "Exec = {}", trigger_script_path.to_string_lossy())?;
+    // Use %PKGINFO_DIR placeholder that will be replaced at runtime with the actual package info directory
+    writeln!(buf, "Exec = %PKGINFO_DIR/apk/.trigger")?;
     writeln!(buf, "NeedsTargets")?; // Pass matched paths as arguments
 
     let install_dir = store_tmp_dir.join("info/install");
