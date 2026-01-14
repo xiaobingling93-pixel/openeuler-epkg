@@ -148,60 +148,19 @@ fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
             index_url: index_url.clone(),
         });
 
-        if let Some(noarch_url) = &repo_config.index_url_noarch {
-            // For noarch repositories, set arch to "all" to be consistent with other distros
-            // This ensures get_repo_dir() works correctly without special handling
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: "all".to_string(),  // Use "all" for noarch, not the system arch
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-noarch", repo_name),
-                index_url: noarch_url.clone(),
-            });
-        }
+        for (suffix, url) in &repo_config.amend_index_urls {
+            let (repodata_suffix, arch) = match suffix.as_str() {
+                "noarch" => ("noarch",   "all"), // Use "all" for noarch, not the system arch
+                _ => (suffix.as_str(), config.arch.as_str()),
+            };
 
-        if let Some(updates_url) = &repo_config.index_url_updates {
             all_repos.push(RepoRevise {
                 format: config.format.clone(),
-                arch: config.arch.clone(),
+                arch: arch.to_string(),
                 channel: config.channel.clone(),
                 repo_name: repo_name.clone(),
-                repodata_name: format!("{}-updates", repo_name),
-                index_url: updates_url.clone(),
-            });
-        }
-
-        if let Some(security_url) = &repo_config.index_url_security {
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: config.arch.clone(),
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-security", repo_name),
-                index_url: security_url.clone(),
-            });
-        }
-
-        if let Some(nonfree_url) = &repo_config.index_url_nonfree {
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: config.arch.clone(),
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-nonfree", repo_name),
-                index_url: nonfree_url.clone(),
-            });
-        }
-
-        if let Some(nonfree_updates_url) = &repo_config.index_url_nonfree_updates {
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: config.arch.clone(),
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-nonfree-updates", repo_name),
-                index_url: nonfree_updates_url.clone(),
+                repodata_name: format!("{}-{}", repo_name, repodata_suffix),
+                index_url: url.clone(),
             });
         }
     }

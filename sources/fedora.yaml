@@ -28,7 +28,8 @@ distro_dirs:
 repos:
   Everything:
 index_url:         $mirror/releases/$version/$repo/$arch/os/repodata/repomd.xml
-index_url_updates: $mirror/updates/$version/$repo/$arch/repodata/repomd.xml
+amend_index_urls:
+  updates: $mirror/updates/$version/$repo/$arch/repodata/repomd.xml
 
 # Example URLs:
 # https://mirrors.tuna.tsinghua.edu.cn/fedora/releases/42/Everything/x86_64/os/repodata/repomd.xml

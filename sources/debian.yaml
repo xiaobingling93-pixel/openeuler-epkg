@@ -20,8 +20,9 @@ repos:
   contrib:
   non-free:
 index_url:          $mirror/debian/dists/$version/Release
-index_url_updates:  $mirror/debian/dists/$version-updates/Release
-index_url_security: $mirror/debian-security/dists/$version-security/Release
+amend_index_urls:
+  updates:          $mirror/debian/dists/$version-updates/Release
+  security:         $mirror/debian-security/dists/$version-security/Release
 
 # Example URLs:
 # https://mirrors.huaweicloud.com/debian/dists/trixie/contrib/binary-amd64/Packages.xz

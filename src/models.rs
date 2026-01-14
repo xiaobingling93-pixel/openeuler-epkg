@@ -488,16 +488,8 @@ pub struct ChannelConfig {
     pub app_versions: Vec<String>,
 
     pub index_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_url_noarch: Option<String>, // conda https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r/noarch/
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_url_updates: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_url_security: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_url_nonfree: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_url_nonfree_updates: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub amend_index_urls: HashMap<String, String>,
 
     #[serde(skip)]
     pub file_path: String, // full path for configs
@@ -514,15 +506,7 @@ pub struct RepoConfig {
     #[serde(default)]
     pub index_url: Option<String>,
     #[serde(default)]
-    pub index_url_noarch: Option<String>,
-    #[serde(default)]
-    pub index_url_updates: Option<String>,
-    #[serde(default)]
-    pub index_url_security: Option<String>,
-    #[serde(default)]
-    pub index_url_nonfree: Option<String>,
-    #[serde(default)]
-    pub index_url_nonfree_updates: Option<String>,
+    pub amend_index_urls: HashMap<String, String>,
     #[serde(default)]
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
 }

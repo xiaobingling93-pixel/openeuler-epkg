@@ -12,9 +12,10 @@ versions:
 repos:
   rpmfusion:
 index_url: $mirror/free/fedora/releases/$version/Everything/$arch/os/repodata/repomd.xml
-index_url_updates: $mirror/free/fedora/updates/$version/$arch/repodata/repomd.xml
-index_url_nonfree: $mirror/nonfree/fedora/releases/$version/Everything/$arch/os/repodata/repomd.xml
-index_url_nonfree_updates: $mirror/nonfree/fedora/updates/$version/$arch/repodata/repomd.xml
+amend_index_urls:
+  updates: $mirror/free/fedora/updates/$version/$arch/repodata/repomd.xml
+  nonfree:         $mirror/nonfree/fedora/releases/$version/Everything/$arch/os/repodata/repomd.xml
+  nonfree-updates: $mirror/nonfree/fedora/updates/$version/$arch/repodata/repomd.xml
 
 # Example URLs:
 # https://download1.rpmfusion.org/free/fedora/releases/41/Everything/x86_64/os/repodata/repomd.xml

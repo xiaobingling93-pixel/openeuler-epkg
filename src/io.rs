@@ -60,7 +60,8 @@ pub fn set_channel_config_defaults(cc: &mut ChannelConfig, main_config: Option<&
 
 fn process_channel_config(mut channel_config: ChannelConfig, main_config: Option<&ChannelConfig>) -> Result<ChannelConfig> {
     set_channel_config_defaults(&mut channel_config, main_config)?;
-    expand_channel_config_urls(&mut channel_config)?;
+    merge_channel_defaults_into_repos(&mut channel_config);
+    interpolate_channel_urls(&mut channel_config);
 
     // Sort distro_dirs by length once during deserialization
     channel_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
@@ -188,68 +189,47 @@ fn resolve_channel_distro_version(cc: &mut ChannelConfig, main_config: Option<&C
     Ok(())
 }
 
-pub fn expand_channel_config_urls(cc: &mut ChannelConfig) -> Result<()> {
-    // First pass: set default URLs from channel config
+/// Merge channel-level default URLs into repo configs where missing
+pub fn merge_channel_defaults_into_repos(cc: &mut ChannelConfig) {
     for (_, repo_config) in &mut cc.repos {
         if repo_config.index_url.is_none() {
             repo_config.index_url = Some(cc.index_url.clone());
         }
-        if repo_config.index_url_noarch.is_none() {
-            repo_config.index_url_noarch = cc.index_url_noarch.clone();
-        }
-        if repo_config.index_url_updates.is_none() {
-            repo_config.index_url_updates = cc.index_url_updates.clone();
-        }
-        if repo_config.index_url_security.is_none() {
-            repo_config.index_url_security = cc.index_url_security.clone();
-        }
-        if repo_config.index_url_nonfree.is_none() {
-            repo_config.index_url_nonfree = cc.index_url_nonfree.clone();
-        }
-        if repo_config.index_url_nonfree_updates.is_none() {
-            repo_config.index_url_nonfree_updates = cc.index_url_nonfree_updates.clone();
-        }
-    }
-
-    // Second pass: interpolate URLs
-    let mut interpolated_urls = Vec::new();
-    for (repo_name, repo_config) in &cc.repos {
-        if let Some(url) = &repo_config.index_url {
-            interpolated_urls.push((repo_name.clone(), "index_url", interpolate_index_url(cc, repo_name, url)?));
-        }
-        if let Some(url) = &repo_config.index_url_noarch {
-            interpolated_urls.push((repo_name.clone(), "index_url_noarch", interpolate_index_url(cc, repo_name, url)?));
-        }
-        if let Some(url) = &repo_config.index_url_updates {
-            interpolated_urls.push((repo_name.clone(), "index_url_updates", interpolate_index_url(cc, repo_name, url)?));
-        }
-        if let Some(url) = &repo_config.index_url_security {
-            interpolated_urls.push((repo_name.clone(), "index_url_security", interpolate_index_url(cc, repo_name, url)?));
-        }
-        if let Some(url) = &repo_config.index_url_nonfree {
-            interpolated_urls.push((repo_name.clone(), "index_url_nonfree", interpolate_index_url(cc, repo_name, url)?));
-        }
-        if let Some(url) = &repo_config.index_url_nonfree_updates {
-            interpolated_urls.push((repo_name.clone(), "index_url_nonfree_updates", interpolate_index_url(cc, repo_name, url)?));
-        }
-    }
-
-    // Third pass: update the URLs
-    for (repo_name, url_type, interpolated_url) in interpolated_urls {
-        if let Some(repo_config) = cc.repos.get_mut(&repo_name) {
-            match url_type {
-                "index_url" => repo_config.index_url = Some(interpolated_url),
-                "index_url_noarch" => repo_config.index_url_noarch = Some(interpolated_url),
-                "index_url_updates" => repo_config.index_url_updates = Some(interpolated_url),
-                "index_url_security" => repo_config.index_url_security = Some(interpolated_url),
-                "index_url_nonfree" => repo_config.index_url_nonfree = Some(interpolated_url),
-                "index_url_nonfree_updates" => repo_config.index_url_nonfree_updates = Some(interpolated_url),
-                _ => unreachable!(),
+        for (key, url) in &cc.amend_index_urls {
+            if !repo_config.amend_index_urls.contains_key(key) {
+                repo_config.amend_index_urls.insert(key.clone(), url.clone());
             }
         }
     }
+}
 
-    Ok(())
+/// Interpolate URL variables in channel configs with actual values
+pub fn interpolate_channel_urls(cc: &mut ChannelConfig) {
+    // Extract needed config values to avoid borrowing conflicts
+    let config_version = cc.version.clone();
+    let config_arch = cc.arch.clone();
+    let config_app_version = cc.app_version.clone();
+
+    let repo_names: Vec<String> = cc.repos.keys().cloned().collect();
+    for repo_name in repo_names {
+        if let Some(repo_config) = cc.repos.get_mut(&repo_name) {
+            if let Some(url) = &repo_config.index_url {
+                let interpolated_url = interpolate_index_url(
+                    url, &config_version, &config_arch, &config_app_version, &repo_name
+                );
+                repo_config.index_url = Some(interpolated_url);
+            }
+
+            let mut interpolated_amend_urls = HashMap::new();
+            for (key, url) in &repo_config.amend_index_urls {
+                let interpolated_url = interpolate_index_url(
+                    url, &config_version, &config_arch, &config_app_version, &repo_name
+                );
+                interpolated_amend_urls.insert(key.clone(), interpolated_url);
+            }
+            repo_config.amend_index_urls = interpolated_amend_urls;
+        }
+    }
 }
 
 /// Deserialize channel configuration from disk
@@ -310,36 +290,42 @@ pub fn deserialize_channel_config_from_root(env_root: &PathBuf) -> Result<Vec<Ch
 // - $mirror: the top priority mirror that supports the distribution
 // - $VERSION: the upper case version string
 // - $version_integer: the version string with non-numeric characters stripped
-// - $version: the version string
+// - $version: the distro version string
 // - $repo: the repository name
 // - $arch: the architecture name
 // - $app_version: the app_version string
 // - $conda_arch: the conda-specific architecture name
 // - $conda_repofile: the conda repodata file name based on repository
-pub fn interpolate_index_url(config: &ChannelConfig, repo_name: &str, index_url: &str) -> Result<String> {
+pub fn interpolate_index_url(
+    index_url: &str,
+    version: &str,
+    arch: &str,
+    app_version: &str,
+    repo_name: &str,
+) -> String {
     // Keep $mirror placeholder for later resolution in download functions
     let mut url = index_url.to_string();
 
-    // Strip non-numeric characters from config.version for $version_integer
-    let version_integer: String = config.version.chars().filter(|c| c.is_ascii_digit()).collect();
+    // Strip non-numeric characters from version for $version_integer
+    let version_integer: String = version.chars().filter(|c| c.is_ascii_digit()).collect();
     url = url.replace("$version_integer", &version_integer);
 
     // Replace other variables but keep $mirror for download-time resolution
-    url = url.replace("$VERSION", &config.version.to_uppercase());
-    url = url.replace("$version", &config.version);
+    url = url.replace("$VERSION", &version.to_uppercase());
+    url = url.replace("$version", version);
     url = url.replace("$repo", repo_name);
-    url = url.replace("$arch", &config.arch);
-    url = url.replace("$app_version", &config.app_version);
+    url = url.replace("$arch", arch);
+    url = url.replace("$app_version", app_version);
 
     // Replace $conda_arch with conda-specific architecture name
-    let conda_arch = map_to_conda_arch(&config.arch);
+    let conda_arch = map_to_conda_arch(arch);
     url = url.replace("$conda_arch", &conda_arch);
 
     // Replace $conda_repofile with conda-specific repodata file name
     let conda_repofile = map_to_conda_repofile(repo_name);
     url = url.replace("$conda_repofile", &conda_repofile);
 
-    Ok(url)
+    url
 }
 
 /// Map standard architecture names to conda-specific architecture names
