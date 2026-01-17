@@ -19,6 +19,7 @@ mod store;
 mod package_cache;
 mod link;
 mod expose;
+mod xdesktop;
 mod transaction;
 mod world;
 mod utils;

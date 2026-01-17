@@ -238,8 +238,10 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     execute_installations(&mut plan)?;
 
     // Execute exposure changes
-    execute_unexpose_operations(&plan, &env_root)?;
-    execute_expose_operations(&plan, &store_root, &env_root)?;
+    let mut desktop_integration_occurred = crate::xdesktop::DesktopIntegrationFlags::default();
+    execute_unexpose_operations(&plan, &store_root, &env_root, &mut desktop_integration_occurred)?;
+    execute_expose_operations(&plan, &store_root, &env_root, &mut desktop_integration_occurred)?;
+    crate::xdesktop::update_desktop_databases(&env_root, &desktop_integration_occurred);
 
     // Update metadata for skipped reinstalls (uses plan.skipped_reinstalls as the source
     // of session_info).

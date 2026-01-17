@@ -14,6 +14,7 @@ use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::utils;
 use crate::utils::FileType;
+use crate::xdesktop;
 use crate::dirs;
 use crate::link::{hard_link_or_copy, replace_existing_symlink1, create_symlink2};
 use log;
@@ -42,7 +43,10 @@ fn expose_package(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<Stri
 }
 
 /// Handle unexpose operations
-pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> Result<()> {
+pub fn execute_unexpose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path, desktop_integration_occurred: &mut crate::xdesktop::DesktopIntegrationFlags) -> Result<()> {
+    // Get user's home directory for desktop integration
+    let home = dirs::get_home().ok();
+
     for op in &plan.ordered_operations {
         if !op.should_unexpose() {
             continue;
@@ -52,6 +56,16 @@ pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> 
                 // Remove ebin wrappers for packages being unexposed
                 if !pkg_info.ebin_links.is_empty() {
                     log::info!("Unexposing package: {}", pkgkey);
+
+                    // Desktop integration (optional, only if home directory available)
+                    if let Some(ref home_path) = home {
+                        let home_path = Path::new(home_path);
+                        let store_fs_dir = store_root.join(pkg_info.pkgline.clone()).join("fs");
+                        if let Err(e) = xdesktop::unexpose_desktop_integration(&store_fs_dir, home_path, desktop_integration_occurred) {
+                            log::warn!("Desktop integration removal failed for package {}: {}", pkgkey, e);
+                        }
+                    }
+
                     for relative_ebin_path_str in &pkg_info.ebin_links {
                     let ebin_path = env_root.join(relative_ebin_path_str);
                     if fs::symlink_metadata(&ebin_path).is_ok() {
@@ -78,7 +92,10 @@ pub fn execute_unexpose_operations(plan: &InstallationPlan, env_root: &Path) -> 
 }
 
 /// Handle expose operations
-pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path) -> Result<()> {
+pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path, desktop_integration_occurred: &mut crate::xdesktop::DesktopIntegrationFlags) -> Result<()> {
+    // Get user's home directory for desktop integration
+    let home = dirs::get_home().ok();
+
     for op in &plan.ordered_operations {
         if !op.should_expose() {
             continue;
@@ -107,6 +124,14 @@ pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env
                 info_mut.ebin_exposure = true;
             } else {
                 log::warn!("execute_expose_operations: pkgkey '{}' not found in installed_packages. Ebin links not stored.", pkgkey);
+            }
+
+            // Desktop integration (optional, only if home directory available)
+            if let Some(ref home_path) = home {
+                let home_path = Path::new(home_path);
+                if let Err(e) = xdesktop::expose_desktop_integration(&store_fs_dir, env_root, home_path, desktop_integration_occurred) {
+                    log::warn!("Desktop integration failed for package {}: {}", pkgkey, e);
+                }
             }
         }
     }
