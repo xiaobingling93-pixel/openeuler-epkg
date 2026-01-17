@@ -36,6 +36,11 @@ pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
         }
     }
 
+    // Check if environment exists
+    if !config_path.exists() {
+        return Err(eyre::eyre!("Environment config file not found: '{}'", config_path.display()));
+    }
+
     let env_config = read_yaml_file(&config_path)?;
     Ok(env_config)
 }
