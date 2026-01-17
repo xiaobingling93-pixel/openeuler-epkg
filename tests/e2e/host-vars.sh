@@ -14,6 +14,11 @@ case "$ARCH" in
 	*) exit 1 ;;
 esac
 
+# If EPKG_BINARY doesn't exist, build it automatically
+if [ ! -x "$EPKG_BINARY" ]; then
+	make -C $PROJECT_ROOT static-$ARCH
+fi
+
 # Docker volume mounts (host paths)
 TMPFS_ENVS_ROOT="/tmp/epkg-envs-root"
 

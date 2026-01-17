@@ -33,7 +33,7 @@ docker run -d --name="$CONTAINER_NAME" --privileged --rm \
 	-v "$PERSISTENT_STORE:/root/.epkg/store:rw" \
 	-v "$TMPFS_ENVS_ROOT:/root/.epkg/envs:rw" \
         epkg-scratch-temp \
-        $EPKG_BINARY run --builtin sleep 10000
+        $EPKG_BINARY busybox sleep 10000
 
 # Check if container is running
 if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -63,8 +63,8 @@ exec_epkg() {
     docker exec "$CONTAINER_NAME" $EPKG_BINARY "$@" || error "epkg command failed: $*"
 }
 
-exec_epkg run --builtin ls /
-exec_epkg run --builtin ls /etc
+exec_epkg busybox ls /
+exec_epkg busybox ls /etc
 # Install epkg in the running container
 log "Installing epkg in container"
 exec_epkg self install -c alpine
@@ -74,7 +74,7 @@ log "Creating sys environment with --path /"
 exec_epkg env create sys -c alpine --path /
 
 log "Installing jq"
-exec_epkg run --builtin cat /etc/resolv.conf
+exec_epkg busybox cat /etc/resolv.conf
 exec_epkg -e sys --assume-yes install jq coreutils bash
 
 # Verify that jq
