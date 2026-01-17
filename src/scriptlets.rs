@@ -676,7 +676,7 @@ pub fn run_scriptlet(
 
                 // Execute the scriptlet using fork_and_execute for namespace isolation
                 match crate::run::fork_and_execute(env_root, &run_options) {
-                    Ok(()) => {
+                    Ok(None) => {
                         log::debug!(
                             "{:?} scriptlet completed successfully for package {} using {}",
                             scriptlet_type,
@@ -685,6 +685,9 @@ pub fn run_scriptlet(
                         );
                         script_executed = true;
                         break; // Successfully executed, break out of paths loop
+                    }
+                    Ok(Some(_)) => {
+                        unreachable!("Foreground process should not return PID")
                     }
                     Err(e) => {
                         // Check if this is a diversion conflict or other known recoverable error

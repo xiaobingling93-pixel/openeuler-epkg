@@ -1255,9 +1255,12 @@ pub fn execute_hook(
     };
 
     match crate::run::fork_and_execute(env_root, &run_options) {
-        Ok(()) => {
+        Ok(None) => {
             log::debug!("Hook {} executed successfully", hook.file_path);
             Ok(())
+        }
+        Ok(Some(_)) => {
+            unreachable!("Foreground process should not return PID")
         }
         Err(e) => {
             if hook.action.abort_on_fail {

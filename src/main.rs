@@ -67,6 +67,7 @@ mod info;
 mod list;
 mod search;
 mod gc;
+mod service;
 
 #[cfg(debug_assertions)]
 mod rpm_verify;
@@ -153,6 +154,7 @@ fn main() -> Result<()> {
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
         Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
+        Some(("service",    sub_matches))  =>  command_service(sub_matches)?,
         _ => {} // No subcommand or unknown subcommand
     }
 
@@ -640,6 +642,37 @@ OPTIONS:
                 .arg(arg!(--"old-downloads" <DAYS> "Remove download files older than DAYS (0 = all files)")
                     .value_parser(clap::value_parser!(u64)))
         )
+        .subcommand(
+            Command::new("service")
+                .about("Service management - start/stop/restart/status/reload services")
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("start")
+                        .about("Start a service")
+                        .arg(arg!(<SERVICE_NAME> "Name of the service to start (without .service extension)"))
+                )
+                .subcommand(
+                    Command::new("stop")
+                        .about("Stop a service")
+                        .arg(arg!(<SERVICE_NAME> "Name of the service to stop (without .service extension)"))
+                )
+                .subcommand(
+                    Command::new("status")
+                        .about("Show service status")
+                        .arg(arg!(--all "Show status for all services across all environments"))
+                        .arg(arg!([SERVICE_NAME] "Name of the service to check (without .service extension)"))
+                )
+                .subcommand(
+                    Command::new("reload")
+                        .about("Reload a service")
+                        .arg(arg!(<SERVICE_NAME> "Name of the service to reload (without .service extension)"))
+                )
+                .subcommand(
+                    Command::new("restart")
+                        .about("Restart a service")
+                        .arg(arg!(<SERVICE_NAME> "Name of the service to restart (without .service extension)"))
+                )
+        )
         .get_matches()
 }
 
@@ -788,6 +821,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("convert",    sub_matches))  =>  parse_options_convert(&mut config, sub_matches).expect("Failed to parse convert options"),
         Some(("run",        sub_matches))  =>  parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
+        Some(("service",   sub_matches))  =>  parse_options_service(&mut config, sub_matches).expect("Failed to parse service options"),
         _ => {} // No subcommand or unknown subcommand
     }
     log::trace!("Configuration: {:#?}", config);
@@ -1026,6 +1060,13 @@ fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches)
     }
 
     config.search = options;
+    Ok(())
+}
+
+fn parse_options_service(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
+    if let Some(("status", status_matches)) = sub_matches.subcommand() {
+        config.service.all = status_matches.get_flag("all");
+    }
     Ok(())
 }
 
@@ -1324,6 +1365,10 @@ fn command_gc(sub_matches: &clap::ArgMatches) -> Result<()> {
     let old_downloads_days = sub_matches.get_one::<u64>("old-downloads").copied();
     gc::gc_epkg(old_downloads_days)?;
     Ok(())
+}
+
+fn command_service(sub_matches: &clap::ArgMatches) -> Result<()> {
+    service::command_service(sub_matches)
 }
 
 fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {

@@ -660,6 +660,7 @@ pub enum EpkgCommand {
     Busybox,
     Search,
     Gc,
+    Service,
     SelfInstall,
     SelfUpgrade,
     SelfRemove,
@@ -686,6 +687,7 @@ impl From<&str> for EpkgCommand {
             "busybox" => EpkgCommand::Busybox,
             "search" => EpkgCommand::Search,
             "gc" => EpkgCommand::Gc,
+            "service" => EpkgCommand::Service,
             "self" => EpkgCommand::None, // Handled separately for nested subcommands
             _ => EpkgCommand::None, // Default for empty or unrecognized strings
         }
@@ -710,6 +712,8 @@ pub struct EPKGConfig {
     pub history: HistoryOptions,
     #[serde(default = "default_init_options")]
     pub init: InitOptions,
+    #[serde(default)]
+    pub service: ServiceOptions,
     #[serde(skip)]
     pub search: SearchOptions,
 
@@ -902,6 +906,12 @@ pub struct InitOptions {
 
 pub fn default_commit() -> String {
     DEFAULT_COMMIT.to_string()
+}
+
+#[derive(Default, Debug, Clone, Deserialize)]
+pub struct ServiceOptions {
+    #[serde(default)]
+    pub all: bool, // Used for 'epkg status --all'
 }
 
 #[derive(Debug)]

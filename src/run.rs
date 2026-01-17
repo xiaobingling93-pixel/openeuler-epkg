@@ -23,6 +23,8 @@ use crate::dirs;
 pub struct RunOptions {
     pub mount_dirs: Vec<String>,
     pub user: Option<String>,
+    #[allow(dead_code)]
+    pub group: Option<String>,
     pub command: String,
     pub args: Vec<String>,
     pub env_vars: std::collections::HashMap<String, String>,
@@ -31,6 +33,8 @@ pub struct RunOptions {
     pub chdir_to_env_root: bool,
     pub skip_namespace_isolation: bool,
     pub timeout: u64, // Timeout in seconds, 0 means no timeout
+    pub background: bool, // Run in background and return PID instead of waiting
+    pub redirect_stdio: bool, // Redirect stdin/stdout/stderr to /dev/null for daemon processes
 }
 
 /// Kill child process when timeout occurs
@@ -230,7 +234,11 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
 /// The command path is derived from `run_options.command`:
 /// - If `run_options.command` is already an absolute path, it's used directly
 /// - Otherwise, PATH lookup is performed using `find_command_in_env_path()`
-pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<()> {
+///
+/// Returns:
+/// - Ok(Some(pid)) for background processes (run_options.background = true)
+/// - Ok(None) for foreground processes (waits for completion)
+pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     // Resolve command path from run_options.command
     let cmd_path = if Path::new(&run_options.command).is_absolute() {
         // Already an absolute path, use it directly
@@ -266,7 +274,15 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<()>
                 }
                 let _ = close(write_fd);
             }
-            wait_for_child_with_timeout(child, &cmd_path, run_options)
+
+            if run_options.background {
+                // For background processes, return the PID without waiting
+                Ok(Some(child.as_raw() as i32))
+            } else {
+                // For foreground processes, wait for completion
+                wait_for_child_with_timeout(child, &cmd_path, run_options)?;
+                Ok(None)
+            }
         }
         Ok(nix::unistd::ForkResult::Child) => {
             if let Some((read_fd, write_fd)) = stdin_pipe {
@@ -281,6 +297,20 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<()>
                 mem::forget(stdin_fd);
                 let _ = close(read_fd);
             }
+
+            // Redirect stdio to /dev/null for background daemon processes
+            if run_options.redirect_stdio {
+                unsafe {
+                    let null_fd = libc::open(b"/dev/null\0".as_ptr() as *const libc::c_char, libc::O_RDWR);
+                    if null_fd >= 0 {
+                        libc::dup2(null_fd, 0); // stdin
+                        libc::dup2(null_fd, 1); // stdout
+                        libc::dup2(null_fd, 2); // stderr
+                        libc::close(null_fd);
+                    }
+                }
+            }
+
             execute_in_child(env_root, run_options, &cmd_path)
         }
         Err(e) => {
@@ -1047,7 +1077,7 @@ pub fn command_run(sub_matches: &clap::ArgMatches) -> Result<()> {
         run_options.skip_namespace_isolation = true;
     }
 
-    fork_and_execute(&env_root, &run_options)?;
+    let _ = fork_and_execute(&env_root, &run_options)?;
 
     Ok(())
 }

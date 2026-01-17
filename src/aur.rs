@@ -466,9 +466,12 @@ fn run_makepkg(
 
     // Run makepkg using fork_and_execute
     match crate::run::fork_and_execute(env_root, &run_options) {
-        Ok(()) => {
+        Ok(None) => {
             log::info!("makepkg completed successfully for {}", pkgbase);
             Ok(())
+        }
+        Ok(Some(_)) => {
+            unreachable!("Foreground process should not return PID")
         }
         Err(e) => {
             eprintln!("makepkg failed for {}: {}", pkgbase, e);
