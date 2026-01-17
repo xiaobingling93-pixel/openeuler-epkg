@@ -80,9 +80,11 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
 
     // Get all applet commands and find the matching one in a single pass
     let applet_commands = busybox_subcommands();
-    let applet_cmd = applet_commands.iter()
-        .find(|cmd| cmd.get_name() == applet_name)
-        .ok_or_else(|| color_eyre::eyre::eyre!("Applet '{}' not found", applet_name))?;
+    let applet_cmd = match applet_commands.iter()
+        .find(|cmd| cmd.get_name() == applet_name) {
+        Some(cmd) => cmd,
+        None => return Ok(None), // Not a valid applet, fall back to normal epkg operation
+    };
 
     // Parse arguments using the applet's command structure
     // Clap expects the command name as the first argument, so prepend the applet name
