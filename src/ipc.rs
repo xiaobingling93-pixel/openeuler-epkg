@@ -184,12 +184,6 @@ enum WorkerCommand {
     Unpack(Vec<String>),
 }
 
-pub fn privdrop_on_suid() {
-    if is_suid() {
-        setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
-    }
-}
-
 impl PackageManager {
     #[allow(dead_code)]
     pub fn fork_on_suid(&mut self) -> Result<()> {

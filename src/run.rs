@@ -6,17 +6,18 @@ use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use nix::unistd::{Uid, Gid, getuid, getgid, geteuid, dup2, pipe, close, write};
+use nix::unistd::{Uid, Gid, getuid, getgid, geteuid, dup2, pipe, close, write, fork, setuid, ForkResult};
 use nix::sys::signal::{self, Signal};
-
 use nix::sched::{unshare, CloneFlags};
 use nix::mount::{mount, MsFlags};
+use users::{get_current_uid};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn};
 use crate::models::*;
 use crate::utils;
+use crate::utils::is_suid;
 use crate::dirs;
 
 #[derive(Debug, Clone, Default)]
@@ -35,6 +36,12 @@ pub struct RunOptions {
     pub timeout: u64, // Timeout in seconds, 0 means no timeout
     pub background: bool, // Run in background and return PID instead of waiting
     pub redirect_stdio: bool, // Redirect stdin/stdout/stderr to /dev/null for daemon processes
+}
+
+pub fn privdrop_on_suid() {
+    if is_suid() {
+        setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
+    }
 }
 
 /// Kill child process when timeout occurs
@@ -257,8 +264,8 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
     // Fork a new process to handle namespace creation and command execution
     // This is necessary because multi-threaded processes cannot create user namespaces
-    match unsafe { nix::unistd::fork() } {
-        Ok(nix::unistd::ForkResult::Parent { child }) => {
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
             if let (Some(bytes), Some((read_fd, write_fd))) = (stdin_bytes, stdin_pipe.take()) {
                 let _ = close(read_fd);
                 let mut written = 0;
@@ -284,7 +291,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                 Ok(None)
             }
         }
-        Ok(nix::unistd::ForkResult::Child) => {
+        Ok(ForkResult::Child) => {
             if let Some((read_fd, write_fd)) = stdin_pipe {
                 let _ = close(write_fd);
                 // Duplicate the pipe read end onto STDIN without closing STDIN prematurely.
@@ -808,13 +815,13 @@ fn fork_idmap_child(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<(ni
     let (read_fd, write_fd) = nix::unistd::pipe()
         .map_err(|e| eyre::eyre!("Failed to create pipe: {}", e))?;
 
-    match unsafe { nix::unistd::fork() } {
-        Ok(nix::unistd::ForkResult::Parent { child }) => {
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
             drop(read_fd); // Close read end in parent
             debug!("Forked ID mapping child process: {}", child);
             Ok((child, write_fd))
         }
-        Ok(nix::unistd::ForkResult::Child) => {
+        Ok(ForkResult::Child) => {
             drop(write_fd); // Close write end in child
             // Wait for parent to signal us to proceed
             let mut buffer = [0u8; 1];
