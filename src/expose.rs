@@ -12,6 +12,7 @@ use color_eyre::eyre::{self, WrapErr};
 use crate::models::SELF_ENV;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
+use crate::package_cache::map_pkgline2filelist;
 use crate::utils;
 use crate::utils::FileType;
 use crate::xdesktop;
@@ -21,11 +22,9 @@ use log;
 
 // Create ebin wrappers.
 // Returns a list of relative paths to the created ebin wrappers (relative to env_root).
-fn expose_package(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
-    log::debug!("expose_package called for store_fs_dir: {}", store_fs_dir.display());
+fn expose_package_ebin(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<String>> {
     let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path"))?)?;
     let absolute_ebin_paths = create_ebin_wrappers(env_root, store_fs_dir, &fs_files)?;
-    log::debug!("expose_package for store_fs_dir '{}': received {} absolute_ebin_paths: {:?}", store_fs_dir.display(), absolute_ebin_paths.len(), absolute_ebin_paths);
     let mut relative_ebin_links: Vec<String> = Vec::new();
     for abs_path in absolute_ebin_paths {
         match abs_path.strip_prefix(env_root) {
@@ -38,106 +37,39 @@ fn expose_package(store_fs_dir: &PathBuf, env_root: &PathBuf) -> Result<Vec<Stri
             }
         }
     }
-    log::debug!("expose_package for store_fs_dir '{}': returning {} relative_ebin_links: {:?}", store_fs_dir.display(), relative_ebin_links.len(), relative_ebin_links);
+    log::debug!("expose_package_ebin for store_fs_dir '{}': returning {} relative_ebin_links: {:?}", store_fs_dir.display(), relative_ebin_links.len(), relative_ebin_links);
     Ok(relative_ebin_links)
 }
 
-/// Handle unexpose operations
-pub fn execute_unexpose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path, desktop_integration_occurred: &mut crate::xdesktop::DesktopIntegrationFlags) -> Result<()> {
-    // Get user's home directory for desktop integration
-    let home = dirs::get_home().ok();
+/// Handle unexpose operations for ebin wrappers of a single package
+fn unexpose_package_ebin(env_root: &Path, pkgkey: &str) -> Result<()> {
+    if let Some(pkg_info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
+        // Remove ebin wrappers for packages being unexposed
+        if !pkg_info.ebin_links.is_empty() {
+            log::debug!("Unexposing ebin wrappers for package: {}", pkgkey);
 
-    for op in &plan.ordered_operations {
-        if !op.should_unexpose() {
-            continue;
-        }
-        if let Some(pkgkey) = &op.old_pkgkey {
-            if let Some(pkg_info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
-                // Remove ebin wrappers for packages being unexposed
-                if !pkg_info.ebin_links.is_empty() {
-                    log::info!("Unexposing package: {}", pkgkey);
-
-                    // Desktop integration (optional, only if home directory available)
-                    if let Some(ref home_path) = home {
-                        let home_path = Path::new(home_path);
-                        let store_fs_dir = store_root.join(pkg_info.pkgline.clone()).join("fs");
-                        if let Err(e) = xdesktop::unexpose_desktop_integration(&store_fs_dir, home_path, desktop_integration_occurred) {
-                            log::warn!("Desktop integration removal failed for package {}: {}", pkgkey, e);
-                        }
-                    }
-
-                    for relative_ebin_path_str in &pkg_info.ebin_links {
-                    let ebin_path = env_root.join(relative_ebin_path_str);
-                    if fs::symlink_metadata(&ebin_path).is_ok() {
-                        log::debug!("Removing ebin wrapper: {}", ebin_path.display());
-                        fs::remove_file(&ebin_path)
-                            .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
-                    } else {
-                        log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
-                    }
-                }
-                }
-
-                // Update the package info to clear ebin_links
-                if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                    let info_mut = Arc::make_mut(installed_package_info_mut);
-                    info_mut.ebin_links.clear();
-                    info_mut.ebin_exposure = false;
+            for relative_ebin_path_str in &pkg_info.ebin_links {
+                let ebin_path = env_root.join(relative_ebin_path_str);
+                if fs::symlink_metadata(&ebin_path).is_ok() {
+                    log::debug!("Removing ebin wrapper: {}", ebin_path.display());
+                    fs::remove_file(&ebin_path)
+                        .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
+                } else {
+                    log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
                 }
             }
+        }
+
+        // Update the package info to clear ebin links
+        if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+            let info_mut = Arc::make_mut(installed_package_info_mut);
+            info_mut.ebin_links.clear();
         }
     }
 
     Ok(())
 }
 
-/// Handle expose operations
-pub fn execute_expose_operations(plan: &InstallationPlan, store_root: &Path, env_root: &Path, desktop_integration_occurred: &mut crate::xdesktop::DesktopIntegrationFlags) -> Result<()> {
-    // Get user's home directory for desktop integration
-    let home = dirs::get_home().ok();
-
-    for op in &plan.ordered_operations {
-        if !op.should_expose() {
-            continue;
-        }
-        if let Some(pkgkey) = &op.new_pkgkey {
-            log::info!("Exposing package: {}", pkgkey);
-
-            // Use the updated package info from installed_packages which has the correct pkgline
-            let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
-                .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
-                .clone();
-
-            // Check if pkgline is empty, which would indicate the package wasn't properly processed
-            if installed_pkg_info.pkgline.is_empty() {
-                return Err(eyre::eyre!("Package {} has empty pkgline, cannot expose. This indicates the package wasn't properly downloaded and processed.", pkgkey));
-            }
-
-            let store_fs_dir = store_root.join(installed_pkg_info.pkgline.clone()).join("fs");
-            let links = expose_package(&store_fs_dir, &env_root.to_path_buf())
-                .with_context(|| format!("Failed to expose package {}", pkgkey))?;
-
-            // Update the package info with the new links
-            if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
-                let info_mut = Arc::make_mut(installed_package_info_mut);
-                info_mut.ebin_links = links.clone();
-                info_mut.ebin_exposure = true;
-            } else {
-                log::warn!("execute_expose_operations: pkgkey '{}' not found in installed_packages. Ebin links not stored.", pkgkey);
-            }
-
-            // Desktop integration (optional, only if home directory available)
-            if let Some(ref home_path) = home {
-                let home_path = Path::new(home_path);
-                if let Err(e) = xdesktop::expose_desktop_integration(&store_fs_dir, env_root, home_path, desktop_integration_occurred) {
-                    log::warn!("Desktop integration failed for package {}: {}", pkgkey, e);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Handle ELF binary with elf-loader wrapper (non-conda environments)
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
@@ -186,7 +118,6 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
 
 fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
     let mut created_ebin_paths: Vec<PathBuf> = Vec::new();
-    log::debug!("Creating ebin wrappers for {} files in {}", fs_files.len(), env_root.display());
     for fs_file_info in fs_files {
         let fs_file = &fs_file_info.path;
         let path_str = fs_file.as_str();
@@ -460,3 +391,58 @@ fn set_wrapper_permissions(ebin_path: &Path) -> Result<()> {
     utils::set_executable_permissions(ebin_path, 0o755)
 }
 
+/// Handle unexpose operations for a single package
+pub fn unexpose_package(plan: &mut InstallationPlan, env_root: &Path, pkgkey: &str) -> Result<()> {
+    // First unexpose ebin wrappers
+    unexpose_package_ebin(env_root, pkgkey)?;
+
+    if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+        let info_mut = Arc::make_mut(installed_package_info_mut);
+        // Remove desktop integration links based on stored xdesktop_links info
+        xdesktop::unexpose_package_xdesktop(&info_mut.xdesktop_links, env_root, &mut plan.desktop_integration_occurred)?;
+
+        // Update the package info to clear xdesktop links and mark as not exposed
+        info_mut.xdesktop_links.clear();
+        info_mut.ebin_exposure = false;
+    }
+
+    Ok(())
+}
+
+/// Handle expose operations for a single package
+pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: &str) -> Result<()> {
+    log::debug!("Exposing package: {}", pkgkey);
+
+    // Use the updated package info from installed_packages which has the correct pkgline
+    let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
+        .ok_or_else(|| eyre::eyre!("Package {} not found in installed_packages for exposure", pkgkey))?
+        .clone();
+
+    // Check if pkgline is empty, which would indicate the package wasn't properly processed
+    if installed_pkg_info.pkgline.is_empty() {
+        return Err(eyre::eyre!("Package {} has empty pkgline, cannot expose. This indicates the package wasn't properly downloaded and processed.", pkgkey));
+    }
+
+    // Get filelist for desktop integration
+    let store_root = store_fs_dir.parent().unwrap().parent().unwrap(); // /opt/epkg/store from /opt/epkg/store/$pkgline/fs
+    let filelist = map_pkgline2filelist(store_root, &installed_pkg_info.pkgline)?;
+
+    // Expose ebin wrappers
+    let ebin_links = expose_package_ebin(&store_fs_dir.to_path_buf(), &plan.env_root)
+        .with_context(|| format!("Failed to expose package {}", pkgkey))?;
+
+    // Desktop integration
+    let xdesktop_links = xdesktop::expose_package_xdesktop(&plan.env_root, &filelist, &mut plan.desktop_integration_occurred)?;
+
+    // Update the package info with the new links
+    if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
+        let info_mut = Arc::make_mut(installed_package_info_mut);
+        info_mut.ebin_links = ebin_links;
+        info_mut.xdesktop_links = xdesktop_links;
+        info_mut.ebin_exposure = true;
+    } else {
+        log::warn!("expose_package_operations: pkgkey '{}' not found in installed_packages. Links not stored.", pkgkey);
+    }
+
+    Ok(())
+}

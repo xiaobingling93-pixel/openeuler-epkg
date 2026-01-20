@@ -266,6 +266,8 @@ pub struct InstalledPackageInfo {
     pub rbdepends: Vec<String>, // Stores pkgkeys of packages that have this as a build dependency (Pacman only)
     #[serde(default, skip_serializing_if = "Vec::is_empty")] // for backward compatibility with older installed-packages.json
     pub ebin_links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub xdesktop_links: Vec<String>,
 
     // Debian trigger state management
     // Pending triggers that need to be processed
@@ -292,6 +294,7 @@ impl Default for InstalledPackageInfo {
             bdepends: Vec::new(),
             rbdepends: Vec::new(),
             ebin_links: Vec::new(),
+            xdesktop_links: Vec::new(),
             pending_triggers: Vec::new(),
             triggers_awaited: false,
             config_failed: false,

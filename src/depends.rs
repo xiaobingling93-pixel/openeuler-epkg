@@ -1204,6 +1204,7 @@ fn create_installed_package_info(
         bdepends: bdepends_list,
         rbdepends: merged_rbdepends,
         ebin_links: Vec::new(),
+        xdesktop_links: Vec::new(),
         pending_triggers: Vec::new(),
         triggers_awaited: false,
         config_failed: false,

@@ -19,7 +19,6 @@ use crate::depends::resolve_and_install_packages;
 use crate::plan::prompt_and_confirm_install_plan;
 use crate::history::{create_new_generation_with_root, record_history, update_current_generation_symlink_with_root};
 use crate::transaction::run_transaction_batch;
-use crate::expose::{execute_unexpose_operations, execute_expose_operations};
 use crate::aur::{build_and_install_aur_packages, is_aur_package};
 use crate::download::{enqueue_package_downloads, get_package_file_path};
 
@@ -237,12 +236,6 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // Execute installations and upgrades (also processes removals via run_transaction_batch)
     execute_installations(&mut plan)?;
 
-    // Execute exposure changes
-    let mut desktop_integration_occurred = crate::xdesktop::DesktopIntegrationFlags::default();
-    execute_unexpose_operations(&plan, &store_root, &env_root, &mut desktop_integration_occurred)?;
-    execute_expose_operations(&plan, &store_root, &env_root, &mut desktop_integration_occurred)?;
-    crate::xdesktop::update_desktop_databases(&env_root, &desktop_integration_occurred);
-
     // Update metadata for skipped reinstalls (uses plan.skipped_reinstalls as the source
     // of session_info).
     update_skipped_reinstalls_metadata(&plan)?;
@@ -284,6 +277,10 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
         // Will call run_transaction_batch() once for each round of build
         build_and_install_aur_packages(plan, &aur_packages)?;
     }
+
+    // Step 5: update X11 desktop database
+    // expose_packages(plan)?; // Now done earlier in run_action() PackageAction::ExposeExecutables branch
+    crate::xdesktop::update_desktop_databases(&plan.env_root, &plan.desktop_integration_occurred);
 
     Ok(())
 }
@@ -333,11 +330,11 @@ fn download_and_unpack_packages(
 }
 
 
-/// Link all packages to the environment
+/// Link all packages to the environment (without exposing)
 /// This should only be called after all risk checks have passed.
-fn link_packages(plan: &InstallationPlan) -> Result<()> {
-    for pkgkey in plan.batch.new_pkgkeys.iter() {
-        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+fn link_packages(plan: &mut InstallationPlan) -> Result<()> {
+    for pkgkey in &plan.batch.new_pkgkeys {
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
             if package_info.pkgline.is_empty() {
                 return Err(eyre::eyre!(
                     "Package {} has empty pkgline, cannot link. This indicates the package wasn't properly unpacked.",
@@ -345,12 +342,39 @@ fn link_packages(plan: &InstallationPlan) -> Result<()> {
                 ));
             }
             let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
-            crate::link::link_package(plan, &store_fs_dir)
-                .with_context(|| format!("Failed to link package {}", pkgkey))?;
+            crate::link::link_package(plan, &store_fs_dir)?;
         }
     }
 
     utils::fixup_env_links(&plan.env_root)?;
+
+    Ok(())
+}
+
+/// Expose all packages that should be exposed based on ordered_operations
+/// - ebin wrappers
+/// - create/symlink X11 desktop files
+/// - update X11 desktop database
+#[allow(dead_code)]
+fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
+    // Collect pkgkeys that need exposure to avoid borrowing issues
+    let pkgkeys_to_expose: Vec<String> = plan.ordered_operations
+        .iter()
+        .filter(|op| op.should_expose())
+        .filter_map(|op| op.new_pkgkey.clone())
+        .collect();
+
+    for pkgkey in pkgkeys_to_expose {
+        log::info!("Exposing package: {}", pkgkey);
+
+        // Get the package info to find the store_fs_dir
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
+            let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
+            crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
+        } else {
+            log::warn!("Package {} not found in plan for exposure", pkgkey);
+        }
+    }
 
     Ok(())
 }

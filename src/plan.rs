@@ -158,6 +158,9 @@ pub struct InstallationPlan {
     /// - deb_activate_triggers_by_name: trigger name -> pkgkeys that activate it
     pub deb_activate_triggers_by_pkg: HashMap<String, Vec<String>>,
     pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
+
+    /// Desktop integration flags tracking which types occurred during expose operations
+    pub desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags,
 }
 
 #[derive(Debug, Clone)]
@@ -217,6 +220,7 @@ impl Default for InstallationPlan {
             deb_explicit_triggers_by_name: HashMap::new(),
             deb_activate_triggers_by_pkg: HashMap::new(),
             deb_activate_triggers_by_name: HashMap::new(),
+            desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags::default(),
         }
     }
 }

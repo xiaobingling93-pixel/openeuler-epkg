@@ -45,9 +45,6 @@
 //!
 //!  - Source: $env_root/etc/xdg/autostart/*.desktop
 //!  - Target: ~/.config/autostart/ (adjust Exec like regular desktop files)
-//!
-//! Note: we currently check store_fs_dir per expose/unexposed package, which does not exist
-//! in LinkType=Move case.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -56,7 +53,6 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
-use glob;
 use log;
 
 
@@ -146,46 +142,47 @@ fn adjust_desktop_file(desktop_path: &Path, env_root: &Path) -> Result<String> {
 /// Generic function to transform and copy desktop files from source to destination
 ///
 /// # Arguments
-/// * `src_dir` - Source directory to read desktop files from
-/// * `dst_dir` - Destination directory to write processed files to
-/// * `env_root` - Environment root path for adjusting desktop file content
-/// * `file_extension_filter` - Optional file extension filter (e.g., ".desktop")
-fn create_desktop_files_generic(
-    src_dir: &Path,
-    dst_dir: &Path,
+/// * `env_root` - Environment root path for adjusting desktop file content and creating symlink targets
+/// * `filelist` - List of relative file paths from package filesystem
+/// * `src_prefix` - Source directory prefix to filter files (e.g., "usr/share/applications")
+/// * `dst_subdir` - Destination subdirectory under home directory (e.g., ".local/share/applications")
+fn create_desktop_files(
     env_root: &Path,
-    file_extension_filter: Option<&str>,
+    filelist: &[String],
+    src_prefix: &str,
+    dst_subdir: &str,
 ) -> Result<Vec<PathBuf>> {
     let mut processed_files = Vec::new();
 
-    if !src_dir.exists() {
+    let home = crate::dirs::get_home().ok();
+    let home_path = if let Some(ref home_str) = home {
+        Path::new(home_str)
+    } else {
         return Ok(processed_files);
-    }
+    };
+    let dst_dir = home_path.join(dst_subdir);
 
-    fs::create_dir_all(dst_dir)
+    fs::create_dir_all(&dst_dir)
         .with_context(|| format!("Failed to create directory {}", dst_dir.display()))?;
 
-    for entry in fs::read_dir(src_dir)
-        .with_context(|| format!("Failed to read directory {}", src_dir.display()))?
-    {
-        let entry = entry?;
-        let src_path = entry.path();
+    // Filter filelist for files in the source directory that end with .desktop
+    let desktop_files: Vec<&String> = filelist
+        .iter()
+        .filter(|path| {
+            path.starts_with(src_prefix) &&
+            path.ends_with(".desktop")
+        })
+        .collect();
 
-        if !src_path.is_file() {
-            continue;
-        }
-
-        let filename = src_path.file_name()
-            .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", src_path.display()))?;
-
-        // Apply extension filter if provided
-        if let Some(ext) = file_extension_filter {
-            if !filename.to_string_lossy().ends_with(ext) {
-                continue;
-            }
-        }
+    for file_path in desktop_files {
+        let filename = Path::new(file_path)
+            .file_name()
+            .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", file_path))?;
 
         let dst_path = dst_dir.join(filename);
+
+        // Construct the source path under env_root (where the file has been moved)
+        let src_path = env_root.join(file_path);
 
         // Parse and adjust desktop file
         let adjusted_content = adjust_desktop_file(&src_path, env_root)?;
@@ -202,100 +199,43 @@ fn create_desktop_files_generic(
     Ok(processed_files)
 }
 
-/// Generic function to remove desktop files created from source directory
+
+/// Generic function to symlink files or directories from filelist to destination
 ///
 /// # Arguments
-/// * `src_dir` - Source directory where files originated from
-/// * `dst_dir` - Destination directory where files were created
-/// * `file_extension_filter` - Optional file extension filter
-fn remove_desktop_files_generic(
-    src_dir: &Path,
-    dst_dir: &Path,
-    file_extension_filter: Option<&str>,
-) -> Result<Vec<PathBuf>> {
-    let mut removed_files = Vec::new();
-
-    if !src_dir.exists() {
-        return Ok(removed_files);
-    }
-
-    for entry in fs::read_dir(src_dir)
-        .with_context(|| format!("Failed to read directory {}", src_dir.display()))?
-    {
-        let entry = entry?;
-        let src_path = entry.path();
-
-        if !src_path.is_file() {
-            continue;
-        }
-
-        let filename = src_path.file_name()
-            .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", src_path.display()))?;
-
-        // Apply extension filter if provided
-        if let Some(ext) = file_extension_filter {
-            if !filename.to_string_lossy().ends_with(ext) {
-                continue;
-            }
-        }
-
-        let dst_path = dst_dir.join(filename);
-
-        // Remove the file if it exists
-        if dst_path.exists() {
-            fs::remove_file(&dst_path)
-                .with_context(|| format!("Failed to remove desktop file {}", dst_path.display()))?;
-            removed_files.push(dst_path.clone());
-            log::debug!("Removed desktop file: {}", dst_path.display());
-        }
-    }
-
-    Ok(removed_files)
-}
-
-/// Generic function to symlink files or directories from source base directory with glob pattern to destination
-///
-/// # Arguments
-/// * `src_base` - Base source directory
-/// * `glob_pattern` - Glob pattern relative to src_base for files/directories to symlink
-/// * `dst_dir` - Destination directory to create symlinks in
-fn symlink_generic(
-    src_base: &Path,
-    glob_pattern: &str,
-    dst_dir: &Path,
+/// * `env_root` - Environment root path where files have been moved, used as symlink target
+/// * `filelist` - List of relative file paths from package filesystem
+/// * `src_prefix` - Base source directory prefix to filter files (e.g., "usr/share/icons")
+/// * `dst_subdir` - Destination subdirectory under home directory (e.g., ".local/share/icons")
+fn symlink_desktop_files(
+    env_root: &Path,
+    filelist: &[String],
+    src_prefix: &str,
+    dst_subdir: &str,
 ) -> Result<Vec<PathBuf>> {
     let mut linked_items = Vec::new();
 
-    if !src_base.exists() {
+    let home = crate::dirs::get_home().ok();
+    let home_path = if let Some(ref home_str) = home {
+        Path::new(home_str)
+    } else {
         return Ok(linked_items);
-    }
+    };
+    let dst_dir = home_path.join(dst_subdir);
 
-    fs::create_dir_all(dst_dir)
+    fs::create_dir_all(&dst_dir)
         .with_context(|| format!("Failed to create directory {}", dst_dir.display()))?;
 
-    // Construct full glob pattern by joining base path with glob pattern
-    let full_glob = src_base.join(glob_pattern).to_string_lossy().to_string();
+    // Filter filelist for files/directories in the source base directory
+    let matching_items: Vec<&String> = filelist
+        .iter()
+        .filter(|path| path.starts_with(src_prefix))
+        .collect();
 
-    // Use glob to find matching paths
-    for entry in glob::glob(&full_glob)
-        .with_context(|| format!("Failed to parse glob pattern {}", full_glob))?
-    {
-        let src_path = entry
-            .with_context(|| format!("Failed to read glob entry for pattern {}", full_glob))?;
-
-        // Determine the relative path from the base directory to compose destination
-        let src_path_str = src_path.to_string_lossy();
-        let base_str = src_base.to_string_lossy();
-
-        // Strip the base directory from the source path to get the relative part
-        let relative_path = if src_path_str.starts_with(&*base_str) {
-            &src_path_str[base_str.len()..]
-        } else {
-            &src_path_str
-        };
-
-        // Remove leading path separator if present
-        let relative_path = relative_path.strip_prefix(std::path::MAIN_SEPARATOR).unwrap_or(relative_path);
+    for file_path in matching_items {
+        // Get the relative path from the base prefix
+        let relative_path = &file_path[src_prefix.len()..];
+        let relative_path = relative_path.strip_prefix('/').unwrap_or(relative_path);
 
         // Compose destination path
         let dst_path = dst_dir.join(relative_path);
@@ -315,204 +255,23 @@ fn symlink_generic(
             }
         }
 
-        // Create symlink
-        symlink(&src_path, &dst_path)
-            .with_context(|| format!("Failed to create symlink {} -> {}", dst_path.display(), src_path.display()))?;
+        // Create symlink to the path under env_root (where the file has been moved)
+        let target_path = env_root.join(file_path);
+
+        // Skip directories
+        if target_path.is_dir() {
+            continue;
+        }
+
+        symlink(&target_path, &dst_path)
+            .with_context(|| format!("Failed to create symlink {} -> {}", dst_path.display(), target_path.display()))?;
 
         linked_items.push(dst_path.clone());
 
-        let item_type = if src_path.is_dir() { "directory" } else { "file" };
-        log::debug!("Linked {}: {} -> {}", item_type, src_path.display(), dst_path.display());
+        log::debug!("Linked desktop file: {} -> {}", target_path.display(), dst_path.display());
     }
 
     Ok(linked_items)
-}
-
-/// Generic function to remove symlinks from destination directory based on source base directory and glob pattern
-///
-/// # Arguments
-/// * `src_base` - Base source directory (used to determine what was originally linked)
-/// * `glob_pattern` - Glob pattern relative to src_base for files/directories that were symlinked
-/// * `dst_dir` - Destination directory where symlinks were created
-fn unlink_generic(
-    src_base: &Path,
-    glob_pattern: &str,
-    dst_dir: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mut unlinked_items = Vec::new();
-
-    if !src_base.exists() {
-        return Ok(unlinked_items);
-    }
-
-    // Construct full glob pattern by joining base path with glob pattern
-    let full_glob = src_base.join(glob_pattern).to_string_lossy().to_string();
-
-    // Use glob to find matching paths that were originally linked
-    for entry in glob::glob(&full_glob)
-        .with_context(|| format!("Failed to parse glob pattern {}", full_glob))?
-    {
-        let src_path = entry
-            .with_context(|| format!("Failed to read glob entry for pattern {}", full_glob))?;
-
-        // Determine the relative path from the base directory to compose destination
-        let src_path_str = src_path.to_string_lossy();
-        let base_str = src_base.to_string_lossy();
-
-        // Strip the base directory from the source path to get the relative part
-        let relative_path = if src_path_str.starts_with(&*base_str) {
-            &src_path_str[base_str.len()..]
-        } else {
-            &src_path_str
-        };
-
-        // Remove leading path separator if present
-        let relative_path = relative_path.strip_prefix(std::path::MAIN_SEPARATOR).unwrap_or(relative_path);
-
-        // Compose destination path
-        let dst_path = dst_dir.join(relative_path);
-
-        // Remove the symlink if it exists
-        if dst_path.exists() {
-            if dst_path.is_symlink() {
-                fs::remove_file(&dst_path)
-                    .with_context(|| format!("Failed to remove symlink {}", dst_path.display()))?;
-                unlinked_items.push(dst_path.clone());
-                log::debug!("Removed symlink: {}", dst_path.display());
-            } else {
-                log::warn!("Expected symlink at {} but found regular file/directory, skipping removal", dst_path.display());
-            }
-        }
-    }
-
-    Ok(unlinked_items)
-}
-
-/// Symlink autostart entries from package to user's autostart directory
-fn create_autostart_entries(
-    store_fs_dir: &Path,
-    env_root: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let autostart_src = store_fs_dir.join("etc/xdg/autostart");
-    let autostart_dst = home.join(".config/autostart");
-    create_desktop_files_generic(&autostart_src, &autostart_dst, env_root, None)
-}
-
-/// Symlink desktop files from package to user's applications directory
-///
-/// # Arguments
-/// * `store_fs_dir` - Path to package's extracted files (e.g., /opt/epkg/store/.../fs)
-/// * `env_root` - Path to environment root (e.g., /opt/epkg/envs/main)
-/// * `home` - User's home directory path
-fn create_desktop_files(
-    store_fs_dir: &Path,
-    env_root: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let applications_src = store_fs_dir.join("usr/share/applications");
-    let applications_dst = home.join(".local/share/applications");
-    create_desktop_files_generic(&applications_src, &applications_dst, env_root, Some(".desktop"))
-}
-
-/// Symlink icon directories from package to user's icons directory
-fn symlink_icons(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let icons_src = store_fs_dir.join("usr/share/icons");
-    let icons_dst = home.join(".local/share/icons");
-    symlink_generic(&icons_src, "**/*", &icons_dst)
-}
-
-/// Symlink font directories from package to user's fonts directory
-fn symlink_fonts(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let fonts_src = store_fs_dir.join("usr/share/fonts");
-    let fonts_dst = home.join(".local/share/fonts");
-    symlink_generic(&fonts_src, "**/*", &fonts_dst)
-}
-
-/// Symlink MIME type files from package to user's mime directory
-fn symlink_mime_files(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mime_src = store_fs_dir.join("usr/share/mime/packages");
-    let mime_dst = home.join(".local/share/mime/packages");
-    symlink_generic(&mime_src, "*", &mime_dst)
-}
-
-/// Symlink DBus service files from package to user's DBus directory
-fn symlink_dbus_services(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let dbus_src = store_fs_dir.join("usr/share/dbus-1/services");
-    let dbus_dst = home.join(".local/share/dbus-1/services");
-    symlink_generic(&dbus_src, "*", &dbus_dst)
-}
-
-/// Remove autostart entries created by package
-fn remove_autostart_entries(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let autostart_src = store_fs_dir.join("etc/xdg/autostart");
-    let autostart_dst = home.join(".config/autostart");
-    remove_desktop_files_generic(&autostart_src, &autostart_dst, None)
-}
-
-/// Remove desktop files created by package
-fn remove_desktop_files(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let applications_src = store_fs_dir.join("usr/share/applications");
-    let applications_dst = home.join(".local/share/applications");
-    remove_desktop_files_generic(&applications_src, &applications_dst, Some(".desktop"))
-}
-
-/// Remove symlinks for icon directories created by package
-fn unlink_icons(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let icons_src = store_fs_dir.join("usr/share/icons");
-    let icons_dst = home.join(".local/share/icons");
-    unlink_generic(&icons_src, "**/*", &icons_dst)
-}
-
-/// Remove symlinks for font directories created by package
-fn unlink_fonts(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let fonts_src = store_fs_dir.join("usr/share/fonts");
-    let fonts_dst = home.join(".local/share/fonts");
-    unlink_generic(&fonts_src, "**/*", &fonts_dst)
-}
-
-/// Remove symlinks for MIME type files created by package
-fn unlink_mime_files(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mime_src = store_fs_dir.join("usr/share/mime/packages");
-    let mime_dst = home.join(".local/share/mime/packages");
-    unlink_generic(&mime_src, "*", &mime_dst)
-}
-
-/// Remove symlinks for DBus service files created by package
-fn unlink_dbus_services(
-    store_fs_dir: &Path,
-    home: &Path,
-) -> Result<Vec<PathBuf>> {
-    let dbus_src = store_fs_dir.join("usr/share/dbus-1/services");
-    let dbus_dst = home.join(".local/share/dbus-1/services");
-    unlink_generic(&dbus_src, "*", &dbus_dst)
 }
 
 /// Common function to run a desktop database update command
@@ -534,11 +293,11 @@ fn run_desktop_update_command(
 ) -> Result<()> {
     // Compute XDG_DATA_HOME and the directory to check for existence
     let xdg_data_home = home.join(".local/share");
-    let check_dir = xdg_data_home.join(subdir);
+    let dir_to_update = xdg_data_home.join(subdir);
 
     // Check if directory exists
-    if !check_dir.exists() {
-        log::debug!("{} directory {} does not exist, skipping {}", command_name, check_dir.display(), command);
+    if !dir_to_update.exists() {
+        log::debug!("{} directory {} does not exist, skipping {}", command_name, dir_to_update.display(), command);
         return Ok(());
     }
 
@@ -549,8 +308,8 @@ fn run_desktop_update_command(
         ..Default::default()
     };
 
-    // Append subdir to args
-    run_options.args.push(subdir.to_string());
+    // Append dir_to_update to args
+    run_options.args.push(dir_to_update.display().to_string());
 
     // Add XDG_DATA_HOME environment variable
     run_options.env_vars.insert("XDG_DATA_HOME".to_string(), xdg_data_home.to_string_lossy().to_string());
@@ -637,66 +396,188 @@ pub struct DesktopIntegrationFlags {
     pub fonts: bool,          // Font directories were symlinked
 }
 
-/// Macro to check if desktop integration function processed any files and update flags accordingly
-macro_rules! check_integration {
-    ($flags:expr, $field:ident, $func:expr) => {
-        if !$func?.is_empty() {
-            $flags.$field = true;
-        }
-    };
-}
+/// Perform desktop integration for a package and return the created links
+pub fn expose_package_xdesktop(env_root: &Path, filelist: &[String], desktop_integration_occurred: &mut DesktopIntegrationFlags) -> Result<Vec<String>> {
+    let mut links = Vec::new();
 
-/// Macro to update desktop database if integration occurred
-macro_rules! update_database_if_needed {
-    ($flags:expr, $flag_field:ident, $update_func:expr) => {
-        if $flags.$flag_field {
-            let _ = $update_func;
-        }
-    };
-}
+    /// Macro to check if desktop integration function processed any files and collect links
+    macro_rules! collect_integration_links {
+        ($flag_field:ident, $func:expr) => {
+            let processed_files = $func?;
+            if !processed_files.is_empty() {
+                desktop_integration_occurred.$flag_field = true;
+            }
+            links.extend(processed_files.into_iter().map(|p| p.to_string_lossy().into_owned()));
+        };
+    }
 
-/// Perform desktop integration for a package
-pub fn expose_desktop_integration(store_fs_dir: &Path, env_root: &Path, home: &Path, flags: &mut DesktopIntegrationFlags) -> Result<()> {
     // Check autostart entries and desktop files (both contribute to desktop_files)
-    check_integration!(flags, desktop_files, create_autostart_entries(store_fs_dir, env_root, home));
-    check_integration!(flags, desktop_files, create_desktop_files(store_fs_dir, env_root, home));
+    collect_integration_links!(desktop_files, create_desktop_files(env_root, filelist, "etc/xdg/autostart", ".config/autostart"));
+    collect_integration_links!(desktop_files, create_desktop_files(env_root, filelist, "usr/share/applications", ".local/share/applications"));
 
     // Check other integration types
-    check_integration!(flags, icons,        symlink_icons(store_fs_dir, home));
-    check_integration!(flags, fonts,        symlink_fonts(store_fs_dir, home));
-    check_integration!(flags, mime_files,   symlink_mime_files(store_fs_dir, home));
+    collect_integration_links!(icons,      symlink_desktop_files(env_root, filelist, "usr/share/icons", ".local/share/icons"));
+    collect_integration_links!(fonts,      symlink_desktop_files(env_root, filelist, "usr/share/fonts", ".local/share/fonts"));
+    // MIME: Only symlink source XML files from packages/, not:
+    // - Generated cache files (mime.cache, globs, aliases, etc.)
+    // - Generated type definition files in subdirs (application/, text/, image/, video/, inode/, etc.)
+    // These are all created by update-mime-database from the source XML files.
+    collect_integration_links!(mime_files, symlink_desktop_files(env_root, filelist, "usr/share/mime/packages", ".local/share/mime/packages"));
 
     // DBus services don't have a corresponding database update, so we don't track them
-    let _ = symlink_dbus_services(store_fs_dir, home);
+    let _ = symlink_desktop_files(env_root, filelist, "usr/share/dbus-1/services", ".local/share/dbus-1/services");
+
+    Ok(links)
+}
+
+
+/// Desktop files created by env have their Exec line modified to point to the ebin wrapper
+/// under the environment root.
+fn is_env_desktop_file(desktop_path: &Path, env_root: &Path) -> Result<bool> {
+    let file = match fs::File::open(desktop_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(false), // File doesn't exist or can't be read
+    };
+
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = line?;
+        if line.starts_with("Exec=") {
+            // Check if Exec line points to env_root
+            let env_prefix = env_root.to_string_lossy().to_string();
+            if line.contains(&env_prefix) {
+                return Ok(true);
+            }
+            break;
+        }
+    }
+
+    Ok(false)
+}
+
+/// Remove a single symlinked desktop integration file (icons, fonts, mime files, etc.)
+fn remove_symlinked_file(
+    link_path: &Path,
+    link_path_str: &str,
+    env_root: &Path,
+    desktop_integration_occurred: &mut DesktopIntegrationFlags,
+) -> Result<()> {
+    // Verify this is a symlink and points to our environment or store
+    if let Ok(target_path) = fs::read_link(link_path) {
+        // Check if the symlink target starts with env_root
+        if target_path.starts_with(env_root) {
+            // Safe to remove - this symlink points to our environment or store
+            if let Err(e) = fs::remove_file(link_path) {
+                log::warn!("Failed to remove desktop integration file {}: {}", link_path.display(), e);
+            } else {
+                log::debug!("Removed desktop integration file: {}", link_path.display());
+
+                // Update flags based on what was removed
+                if link_path_str.contains("icons") {
+                    desktop_integration_occurred.icons = true;
+                } else if link_path_str.contains("fonts") {
+                    desktop_integration_occurred.fonts = true;
+                } else if link_path_str.contains("mime") {
+                    desktop_integration_occurred.mime_files = true;
+                }
+            }
+        } else {
+            log::warn!("Desktop integration file {} points outside environment or store ({}), not removing",
+                link_path.display(), target_path.display());
+        }
+    } else {
+        log::warn!("Desktop integration file {} is not a symlink or cannot read link target, not removing",
+            link_path.display());
+    }
 
     Ok(())
 }
 
-/// Remove desktop integration for a package
-pub fn unexpose_desktop_integration(store_fs_dir: &Path, home: &Path, flags: &mut DesktopIntegrationFlags) -> Result<()> {
-    // Remove autostart entries and desktop files (both contribute to desktop_files)
-    check_integration!(flags, desktop_files, remove_autostart_entries(store_fs_dir, home));
-    check_integration!(flags, desktop_files, remove_desktop_files(store_fs_dir, home));
+/// Remove a single desktop file that points to env_root
+fn remove_desktop_file(
+    link_path: &Path,
+    env_root: &Path,
+    desktop_integration_occurred: &mut DesktopIntegrationFlags,
+) -> Result<()> {
+    match is_env_desktop_file(link_path, env_root) {
+        Ok(true) => {
+            if let Err(e) = fs::remove_file(link_path) {
+                log::warn!("Failed to remove desktop integration file {}: {}", link_path.display(), e);
+            } else {
+                log::debug!("Removed desktop integration file: {}", link_path.display());
+                desktop_integration_occurred.desktop_files = true;
+            }
+        }
+        Ok(false) => {
+            log::warn!("Desktop file {} not pointing to env_root {}, not removing",
+                link_path.display(),
+                env_root.display(),
+                );
+        }
+        Err(e) => {
+            log::warn!("Failed to check if desktop file {} was created by epkg: {}, not removing",
+                link_path.display(), e);
+        }
+    }
 
-    // Remove other integration types
-    check_integration!(flags, icons,        unlink_icons(store_fs_dir, home));
-    check_integration!(flags, fonts,        unlink_fonts(store_fs_dir, home));
-    check_integration!(flags, mime_files,   unlink_mime_files(store_fs_dir, home));
+    Ok(())
+}
 
-    // DBus services don't have a corresponding database update, so we don't track them
-    let _ = unlink_dbus_services(store_fs_dir, home);
+/// Remove desktop integration files based on stored links, with env validation
+///
+/// This function removes desktop integration files that were previously created during package exposure.
+/// It validates that each file to be removed was created by epkg before removal:
+/// - Symlinks are checked to ensure they point to the environment or store
+/// - Desktop files are checked to ensure their Exec line points to the ebin wrapper
+///
+/// # Arguments
+/// * `xdesktop_links` - List of paths to desktop integration files that were created
+/// * `env_root` - Environment root path to validate file targets against
+/// * `desktop_integration_occurred` - Mutable reference to flags tracking which integration types occurred
+pub fn unexpose_package_xdesktop(
+    xdesktop_links: &[String],
+    env_root: &Path,
+    desktop_integration_occurred: &mut DesktopIntegrationFlags,
+) -> Result<()> {
+    for link_path_str in xdesktop_links {
+        let link_path = Path::new(link_path_str);
+
+        // Check if the file exists
+        if !link_path.exists() {
+            log::debug!("Desktop integration file does not exist, skipping: {}", link_path.display());
+            continue;
+        }
+
+        // Check if this is a desktop file by extension
+        if link_path.is_symlink() {
+            remove_symlinked_file(link_path, link_path_str, env_root, desktop_integration_occurred)?;
+        } else if link_path_str.ends_with(".desktop") {
+            remove_desktop_file(link_path, env_root, desktop_integration_occurred)?;
+        } else {
+            log::warn!("Desktop integration file {} is not a symlink or .desktop file, not removing", link_path.display());
+        }
+    }
 
     Ok(())
 }
 
 /// Update desktop databases based on which types of integration occurred
 pub fn update_desktop_databases(env_root: &Path, desktop_integration_occurred: &DesktopIntegrationFlags) {
+    /// Macro to update desktop database if integration occurred
+    macro_rules! update_database_if_needed {
+        ($flag_field:ident, $update_func:expr) => {
+            if desktop_integration_occurred.$flag_field {
+                let _ = $update_func;
+            }
+        };
+    }
+
     let home = crate::dirs::get_home().ok();
     if let Some(home_path) = home {
         let home_path = Path::new(&home_path);
-        update_database_if_needed!(desktop_integration_occurred, desktop_files, update_desktop_database(env_root, home_path));
-        update_database_if_needed!(desktop_integration_occurred, icons,         update_icon_cache(env_root, home_path));
-        update_database_if_needed!(desktop_integration_occurred, fonts,         update_font_cache(env_root, home_path));
-        update_database_if_needed!(desktop_integration_occurred, mime_files,    update_mime_database(env_root, home_path));
+        update_database_if_needed!(desktop_files, update_desktop_database(env_root, home_path));
+        update_database_if_needed!(icons,         update_icon_cache(env_root, home_path));
+        update_database_if_needed!(fonts,         update_font_cache(env_root, home_path));
+        update_database_if_needed!(mime_files,    update_mime_database(env_root, home_path));
     }
 }

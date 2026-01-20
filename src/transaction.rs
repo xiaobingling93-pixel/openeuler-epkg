@@ -103,8 +103,8 @@ fn run_action(
     old_pkgkey: Option<&str>,
     old_pkg_info: Option<&Arc<InstalledPackageInfo>>,
 ) -> Result<()> {
-    let store_root = &plan.store_root;
-    let env_root = &plan.env_root;
+    let store_root = plan.store_root.clone();
+    let env_root = plan.env_root.clone();
 
     match action {
         PackageAction::PreInstall => {
@@ -124,7 +124,7 @@ fn run_action(
         PackageAction::LinkFiles => {
             // Level 3a: Install action
             // Files are already linked during download/unpack phase, but we may need to handle diff linking for upgrades
-            crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, store_root, env_root)?;
+            crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, &store_root, &env_root)?;
             // Note: Actual linking happens earlier in the download/unpack phase
 
             PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.to_string(), Arc::clone(pkg_info));
@@ -165,7 +165,8 @@ fn run_action(
 
         PackageAction::UnlinkFiles => {
             // Level 3a: Remove action
-            unlink_package(pkgkey, &pkg_info.pkgline, store_root, &env_root.to_path_buf())?;
+            unlink_package(pkgkey, &pkg_info.pkgline, &store_root, &env_root)?;
+
             remove_package_from_cache(pkgkey, pkg_info);
         }
 
@@ -215,16 +216,13 @@ fn run_action(
 
         PackageAction::ExposeExecutables => {
             // Level 3a: Expose action
-            // Note: Actual exposure is handled in execute_expose_operations
-            // This action is a placeholder for the action sequence
-            log::debug!("Expose executables action for {}", pkgkey);
+            let store_fs_dir = plan.store_root.join(&pkg_info.pkgline).join("fs");
+            crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
         }
 
         PackageAction::UnexposeExecutables => {
             // Level 3a: Unexpose action
-            // Note: Actual unexposure is handled in execute_unexpose_operations
-            // This action is a placeholder for the action sequence
-            log::debug!("Unexpose executables action for {}", pkgkey);
+            crate::expose::unexpose_package(plan, &env_root, pkgkey)?;
         }
     }
     Ok(())
@@ -489,6 +487,9 @@ pub fn process_package_operation(
                 if plan.batch.new_pkgkeys.contains(new_pkgkey) {
                     if let Some(new_info) = crate::plan::pkgkey2new_pkg_info(plan, new_pkgkey) {
                         if let Some(old_info) = crate::plan::pkgkey2installed_pkg_info(old_pkgkey) {
+                            if op.should_unexpose() {
+                                run_action(plan, PackageAction::UnexposeExecutables, old_pkgkey, &old_info, None, None)?;
+                            }
                             match package_format {
                                 PackageFormat::Rpm | PackageFormat::Conda => {
                                     // Order matches RPM scriptlet execution sequence https://rpm-software-management.github.io/rpm/man/rpm-scriptlets.7
@@ -546,9 +547,6 @@ pub fn process_package_operation(
                                 PackageFormat::Epkg | PackageFormat::Python => { todo!() },
                             }
 
-                            if op.should_unexpose() {
-                                run_action(plan, PackageAction::UnexposeExecutables, old_pkgkey, &old_info, None, None)?;
-                            }
                             if op.should_expose() {
                                 run_action(plan, PackageAction::ExposeExecutables, new_pkgkey, &new_info, None, None)?;
                             }
@@ -560,14 +558,14 @@ pub fn process_package_operation(
         OperationType::Removal => {
             if let Some(pkgkey) = &op.old_pkgkey {
                 if let Some(pkg_info) = crate::plan::pkgkey2installed_pkg_info(pkgkey) {
+                    if op.should_unexpose() {
+                        run_action(plan, PackageAction::UnexposeExecutables, pkgkey, &pkg_info, None, None)?;
+                    }
                     // Execute actions for removal
                     run_action(plan, PackageAction::PreRemove,        pkgkey, &pkg_info, None, None)?;
                     run_action(plan, PackageAction::UnlinkFiles,      pkgkey, &pkg_info, None, None)?;
                     run_action(plan, PackageAction::PostRemove,       pkgkey, &pkg_info, None, None)?;
                     crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostInstall)?;
-                    if op.should_unexpose() {
-                        run_action(plan, PackageAction::UnexposeExecutables, pkgkey, &pkg_info, None, None)?;
-                    }
                 }
             }
         }
