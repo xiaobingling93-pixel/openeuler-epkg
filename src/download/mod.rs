@@ -3,6 +3,7 @@ pub mod types;
 pub mod utils;
 pub mod aur;
 pub mod validation;
+pub mod progress;
 pub mod orchestration;
 
 // Re-export all types from types module to maintain backward compatibility

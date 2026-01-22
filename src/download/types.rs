@@ -275,6 +275,21 @@ pub enum CacheDecision {
     RedownloadDueTo { reason: String },
 }
 
+/// Download manager statistics for progress tracking and ETA calculation
+#[derive(Debug, Clone, Default)]
+pub struct DownloadManagerStats {
+    pub global_ideal_eta: u64,          // Global ideal ETA in seconds
+    pub slowest_task_eta: u64,          // Slowest task ETA in seconds
+    pub fastest_task_eta: u64,          // Fastest task ETA in seconds
+    pub total_remaining_bytes: u64,     // Total bytes remaining across all downloads
+    pub total_rate_bps: u64,            // Total download rate in bytes per second
+    pub active_tasks: usize,            // Number of actively downloading tasks
+    pub pending_tasks: usize,           // Number of pending tasks
+    pub complete_tasks: usize,          // Number of completed tasks
+    pub master_tasks: usize,            // Number of master tasks
+    pub l2_chunk_tasks: usize,          // Number of L2 chunk tasks
+    pub l3_chunk_tasks: usize,          // Number of L3 chunk tasks
+}
 
 /// Chunk information for split download areas
 #[derive(Debug, Clone)]
