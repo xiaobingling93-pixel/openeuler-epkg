@@ -15,8 +15,6 @@ use crate::repo::{RepoReleaseItem, RepoRevise};
 use crate::download::get_package_file_path;
 use crate::transaction::run_transaction_batch;
 
-/// AUR domain
-pub const AUR_DOMAIN: &str = "aur.archlinux.org";
 
 /// Base URL for AUR package snapshots
 pub const AUR_BASE_URL: &str = "https://aur.archlinux.org/cgit/aur.git/snapshot";

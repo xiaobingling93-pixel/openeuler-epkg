@@ -1,3 +1,20 @@
+// ============================================================================
+// DOWNLOAD PROGRESS - Progress Bar Setup and Status Tracking
+//
+// This module manages progress tracking and user feedback during download
+// operations. It provides visual progress bars, ETA calculations, transfer
+// speed display, and comprehensive status reporting for individual downloads
+// and overall download manager statistics.
+//
+// Key Features:
+// - Progress bar setup with indicatif library
+// - Real-time download progress updates
+// - ETA calculation and display
+// - Transfer speed monitoring
+// - Chunk progress tracking and aggregation
+// - Multi-progress coordination for concurrent downloads
+// ============================================================================
+
 use std::{
     sync::atomic::Ordering,
     time::Duration,
@@ -5,9 +22,11 @@ use std::{
 
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle};
 use color_eyre::eyre::Result;
+use ureq::http;
 
 use crate::config;
 use super::types::*;
+use super::http::get_remote_size;
 
 /// Setup progress bar for download task
 pub fn setup_progress_bar(task: &DownloadTask, multi_progress: &MultiProgress, url: &str) -> Result<()> {
@@ -168,7 +187,7 @@ pub fn update_global_stats(
     };
 
     // Update stats atomically
-    if let Ok(mut stats_guard) = super::orchestration::DOWNLOAD_MANAGER.stats.lock() {
+    if let Ok(mut stats_guard) = super::manager::DOWNLOAD_MANAGER.stats.lock() {
         *stats_guard = new_stats.clone();
     }
 
@@ -313,4 +332,47 @@ pub fn log_download_completion(
             log::warn!("Failed to log download completion: {}", e);
         }
     }
+}
+
+/// Setup file size and progress tracking for the task
+pub(crate) fn setup_task_progress_tracking(
+    task: &DownloadTask,
+    response: &http::Response<ureq::Body>,
+    existing_bytes: u64,
+) -> Result<()> {
+    if task.is_master_task() {
+        task.save_remote_metadata()?;
+
+        // Setup file size and progress tracking for master tasks
+        if task.file_size.load(Ordering::Relaxed) == 0 {
+            if let Some(remote_size) = get_remote_size(task, response) {
+                task.file_size.store(remote_size, Ordering::Relaxed);
+                task.chunk_size.store(remote_size, Ordering::Relaxed);
+                log::debug!("Remote size determined: {} for {}", remote_size, task.chunk_path.display());
+            }
+        }
+
+        if task.attempt_number.load(Ordering::SeqCst) == 0 {
+            let file_size_val = task.file_size.load(Ordering::Relaxed);
+            if file_size_val > 0 {
+                task.set_length(file_size_val);
+            }
+            task.set_position(existing_bytes);
+        }
+    }
+
+    // Set start time for estimation
+    if let Ok(mut start_time) = task.start_time.lock() {
+        if start_time.is_none() {
+            *start_time = Some(std::time::Instant::now());
+        } else {
+            // This could happen in retries
+            log::debug!("Clearing start_time for chunk {} at offset {}: {:?} (chunk_path={})",
+                task.chunk_path.display(), task.chunk_offset.load(Ordering::Relaxed), start_time, task.chunk_path.display());
+            task.received_bytes.store(0, Ordering::Relaxed);
+            task.duration_ms.store(0, Ordering::Relaxed);
+        }
+    }
+
+    Ok(())
 }

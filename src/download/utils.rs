@@ -1,3 +1,18 @@
+// ============================================================================
+// DOWNLOAD UTILS - Shared Utility Functions
+//
+// This module contains shared utility functions used throughout the download
+// system, including data streaming, error mapping, logging helpers, and
+// common operations that support multiple components.
+//
+// Key Features:
+// - Safe HTTP event logging with error handling
+// - IO error mapping to DownloadError types
+// - Data streaming to channels for concurrent processing
+// - File system utilities and path operations
+// - Common validation and conversion helpers
+// ============================================================================
+
 use std::{
     fs::File,
     io::{Read, Write},
@@ -12,6 +27,7 @@ use color_eyre::eyre::{eyre, Result};
 
 use crate::mirror;
 use super::types::*;
+
 
 /// Safe wrapper for logging HTTP events that ignores failures
 pub fn log_http_event_safe(url: &str, event: mirror::HttpEvent) {

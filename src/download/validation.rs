@@ -1,3 +1,19 @@
+// ============================================================================
+// DOWNLOAD VALIDATION - Download Integrity and Range Validation
+//
+// This module provides validation logic for download operations, including
+// range request validation, file type classification, and integrity checking.
+// It ensures downloads are performed correctly and handles various edge cases
+// in HTTP responses and file handling.
+//
+// Key Features:
+// - Range request response validation
+// - File type classification for integrity handling
+// - HTTP date parsing and validation
+// - Content validation and corruption detection
+// - Mirror conflict detection and recording
+// ============================================================================
+
 use std::{
     fs,
     path::Path,
@@ -11,7 +27,8 @@ use ureq::http;
 
 use crate::mirror;
 use super::types::*;
-use super::orchestration::{DOWNLOAD_MANAGER, record_conflict_mirror};
+use super::manager::DOWNLOAD_MANAGER;
+use super::mirror::record_conflict_mirror;
 
 /// Validate range request response to ensure proper partial content handling
 pub fn validate_range_request_response(

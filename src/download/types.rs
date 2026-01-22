@@ -1,3 +1,20 @@
+// ============================================================================
+// DOWNLOAD TYPES - Core Data Structures and Constants
+//
+// This module defines the fundamental data structures, types, and constants used
+// throughout the download system. It provides the building blocks for download
+// tasks, status tracking, file integrity validation, and system configuration.
+//
+// Key Components:
+// - DownloadTask: Core structure representing an individual download operation
+// - DownloadStatus: Enumeration of possible download states
+// - DownloadError: Error types specific to download operations
+// - FileType: Classification of file types for integrity handling
+// - ServerMetadata: HTTP response metadata for consistency validation
+// - ChunkInfo: Information about download chunks for parallel processing
+// - Various constants for chunking, threading, and timing configurations
+// ============================================================================
+
 use std::{
     path::PathBuf,
     sync::{
@@ -161,6 +178,10 @@ pub enum ChunkStatus {
     HasBeforehandChunk,
 }
 
+// =======================================
+// Data Integrity System - Data Structures
+// =======================================
+
 /// File type classification for appropriate integrity handling
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FileType {
@@ -193,6 +214,36 @@ pub struct ServerMetadata {
     pub last_modified: Option<String>,
     pub timestamp: u64,  // parsed from last_modified
     pub etag: Option<String>,
+}
+
+impl ServerMetadata {
+    pub(crate) fn matches_with(&self, other: &Self) -> bool {
+        // If etag matches, then result is matches
+        if self.etag.is_some() && other.etag.is_some() && self.etag == other.etag {
+            return true;
+        }
+
+        // remote_size can only be matches if both are some not none
+        let remote_size_matches = if self.remote_size.is_some() && other.remote_size.is_some() {
+            self.remote_size == other.remote_size
+        } else {
+            true // If either is None, consider it a match
+        };
+
+        // for timestamp, result is match if time_diff <= Duration::from_secs(600)
+        let timestamp_matches = if self.timestamp > 0 && other.timestamp > 0 {
+            let time_diff = if self.timestamp > other.timestamp {
+                self.timestamp - other.timestamp
+            } else {
+                other.timestamp - self.timestamp
+            };
+            time_diff <= TIMESTAMP_TOLERANCE_SECONDS // 600 seconds = 10 minutes
+        } else {
+            true // If either timestamp is 0, consider it a match
+        };
+
+        remote_size_matches && timestamp_matches
+    }
 }
 
 /// Range request type for download tasks

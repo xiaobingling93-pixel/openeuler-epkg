@@ -1,3 +1,17 @@
+// ============================================================================
+// DOWNLOAD AUR - Arch User Repository Download Handling
+//
+// This module provides specialized handling for downloading packages from the
+// Arch User Repository (AUR). Unlike regular HTTP downloads, AUR packages are
+// downloaded using git clone/fetch operations to retrieve the source snapshots.
+//
+// Key Features:
+// - AUR URL pattern recognition and validation
+// - Git-based download using clone/fetch operations
+// - Package name extraction from AUR snapshot URLs
+// - Integration with the broader download system
+// ============================================================================
+
 use std::path::PathBuf;
 
 use color_eyre::eyre::{eyre, Result, WrapErr};
@@ -11,7 +25,10 @@ pub const AUR_BASE_URL: &str = "https://aur.archlinux.org/cgit/aur.git/snapshot/
 /// AUR domain for git operations
 pub const AUR_DOMAIN: &str = "aur.archlinux.org";
 
-/// Handle AUR git downloads - extract package from AUR using git
+/// Handles AUR package downloads using git clone/fetch
+///
+/// Returns Ok(()) if URL is AUR and git download was successful.
+/// Returns Err if URL is not AUR or git is not available (caller should fall back to regular download).
 pub fn handle_aur_git_download(
     url: &str,
 ) -> Result<()> {
