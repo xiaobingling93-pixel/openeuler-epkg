@@ -9,7 +9,7 @@ use std::{
         mpsc::SyncSender as Sender,
     },
     thread,
-    time::{SystemTime, UNIX_EPOCH, Duration},
+    time::{UNIX_EPOCH, Duration},
     collections::HashMap,
 };
 
@@ -21,7 +21,6 @@ macro_rules! error_context {
         format!("{} (line: {})", $msg, line!())
     };
 }
-use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle};
 
 // =====================================================================================
@@ -38,6 +37,8 @@ use indicatif::{ProgressBar, MultiProgress, ProgressStyle};
 use ureq::Agent;
 use ureq::http;
 
+use time::OffsetDateTime;
+
 use crate::dirs;
 use crate::models::*;
 use crate::mirror;
@@ -51,6 +52,9 @@ use super::types::*;
 
 // Import utility functions
 use super::utils::*;
+
+// Import validation functions
+use super::validation::*;
 
 
 impl DownloadTask {
@@ -145,7 +149,7 @@ impl DownloadTask {
     }
 
     /// Get the current range request type
-    fn get_range_request(&self) -> RangeRequest {
+    pub(crate) fn get_range_request(&self) -> RangeRequest {
         match self.range_request.lock() {
             Ok(guard) => (*guard).clone(),
             Err(_) => RangeRequest::None,
@@ -447,7 +451,7 @@ impl DownloadTask {
 
 
 impl ServerMetadata {
-    fn matches_with(&self, other: &Self) -> bool {
+    pub(crate) fn matches_with(&self, other: &Self) -> bool {
         // If etag matches, then result is matches
         if self.etag.is_some() && other.etag.is_some() && self.etag == other.etag {
             return true;
@@ -890,7 +894,7 @@ impl DownloadManager {
         Ok(())
     }
 
-    fn get_task(&self, url: &str) -> Option<Arc<DownloadTask>> {
+    pub(crate) fn get_task(&self, url: &str) -> Option<Arc<DownloadTask>> {
         let tasks = self.tasks.lock().ok()?;
         tasks.get(url).map(|task| Arc::clone(task))
     }
@@ -3391,130 +3395,7 @@ fn handle_304_and_extract_metadata(
 }
 
 /// Validate range request response status
-fn validate_range_request_response(
-    task: &DownloadTask,
-    response: &http::Response<ureq::Body>,
-    resolved_url: &str,
-) -> Result<()> {
-    let range_request_type = task.get_range_request();
-    log::debug!("process_download_response: range_request={:?}, response_status={}, chunk_path={}",
-               range_request_type, response.status(), task.chunk_path.display());
 
-    if range_request_type != RangeRequest::None {
-        // For chunk tasks, validate we got partial content
-        if response.status() == 200 {
-            // Server ignoring Range header - would corrupt chunk
-            log::warn!("CORRUPTION PREVENTED: Server returned HTTP 200 instead of 206 for range request to {} (chunk: {})",
-                       resolved_url, task.chunk_path.display());
-            if let Err(e) = mirror::append_http_log(resolved_url, mirror::HttpEvent::NoRange) {
-                log::warn!("Failed to log chunk range error: {}", e);
-            }
-            return Err(eyre!("Server returned 200 instead of 206 for range request - would corrupt chunk"));
-        }
-
-        if response.status() != 206 {
-            // Resume failed, restart from beginning
-            if task.chunk_path.exists() {
-                fs::remove_file(&task.chunk_path)?;
-            }
-            task.resumed_bytes.store(0, Ordering::Relaxed);
-            log::debug!("Server doesn't support resume, restarting download for {}", task.chunk_path.display());
-            return Err(eyre!("Server returned {} for range request", response.status()));
-        }
-    } else {
-        log::debug!("process_download_response: No range request validation needed for {}", task.chunk_path.display());
-    }
-
-    Ok(())
-}
-
-/// Validate metadata consistency between master and chunks
-///
-/// METADATA CONSISTENCY: Two synchronization dimensions
-///
-/// DIMENSION 1: vs old download (resume scenario)
-/// When resuming from part files, we validate:
-///   - parto_files' previous master etag.json (from disk, checked in recover_parto_files)
-///   - master task serving_metadata (prefilled in recover_parto_files from HEAD)
-///   - master response metadata (validated here against prefilled serving_metadata)
-///
-/// This ensures the resumed download continues from the same snapshot as the
-/// previous partial download, preventing corruption from mixing different mirror versions.
-///
-/// DIMENSION 2: in new download (parallel tasks scenario)
-/// During active download, we validate:
-///   - all tasks' response metadata (master + chunks from concurrent HTTP GETs)
-///   - master serving_metadata (may be prefilled if None from resume, or set by first response)
-///
-/// This ensures all chunks come from the same snapshot as the master, preventing
-/// corruption from mixing chunks from different mirrors/versions.
-///
-/// RACE CONDITION HANDLING:
-/// - recover_parto_files() pre-fills task.serving_metadata with HEAD metadata
-///   so master/chunk share a baseline before any GET starts (Dimension 1 + Dimension 2)
-/// - resolve_mirror_and_update_task() reuses that baseline URL instead of
-///   picking a new mirror on resume (Dimension 1)
-/// - Below we ensure:
-///   * master response validates against prefilled serving_metadata (Dimension 1)
-///   * first response establishes master serving_metadata baseline if None (Dimension 2)
-///   * each chunk validates against master serving_metadata (Dimension 2)
-fn validate_metadata_consistency(
-    task: &DownloadTask,
-    metadata: &ServerMetadata,
-    resolved_url: &str,
-) -> Result<()> {
-    // DIMENSION 1 + DIMENSION 2: Validate metadata consistency
-    if task.is_master_task() {
-        // DIMENSION 1: Validate master response against prefilled serving_metadata
-        // (from recover_parto_files or previous attempt_number or the first chunk).
-        if let Ok(mut guard) = task.serving_metadata.lock() {
-            if let Some(ref serving_metadata) = *guard {
-                // Dimension 1: master response must match prefilled baseline (resume scenario)
-                if !metadata.matches_with(serving_metadata) {
-                    record_conflict_mirror(&task, resolved_url, metadata);
-                    return Err(eyre!(
-                        "Master metadata conflicts with existing serving_metadata. New: {:?}, Existing: {:?}",
-                        metadata,
-                        serving_metadata
-                    ));
-                }
-            }
-            // Dimension 2: establish baseline for new download (no resume)
-            *guard = Some(metadata.clone());
-        }
-    } else {
-        // DIMENSION 2: Validate chunk response against master serving_metadata
-        // This ensures all chunks come from the same snapshot as the master.
-        if let Some(master_task) = DOWNLOAD_MANAGER.get_task(&task.url) {
-            if let Ok(mut master_metadata_guard) = master_task.serving_metadata.lock() {
-                if let Some(ref serving_metadata) = *master_metadata_guard {
-                    // Chunk must match master baseline
-                    if !metadata.matches_with(serving_metadata) {
-                        record_conflict_mirror(&task, resolved_url, metadata);
-                        return Err(eyre!(
-                            "Chunk metadata conflicts with master metadata. Chunk: {:?}, Master: {:?}",
-                            metadata,
-                            serving_metadata
-                        ));
-                    }
-                } else {
-                    // Edge case: chunk arrived before master response
-                    // Adopt this chunk's metadata as master baseline so subsequent chunks validate
-                    *master_metadata_guard = Some(metadata.clone());
-                }
-            }
-        } else {
-            log::warn!("Cannot find master task for {}", &task.url);
-        }
-
-        // Dimension 2: record for validation by validate_mirror_metadata()
-        if let Ok(mut serving_metadata) = task.serving_metadata.lock() {
-            *serving_metadata = Some(metadata.clone());
-        }
-    }
-
-    Ok(())
-}
 
 /// Setup file size and progress tracking for the task
 fn setup_task_progress_tracking(
@@ -4768,35 +4649,6 @@ fn check_mutable_file_without_timestamp(
 }
 
 // Helper function to parse HTTP date headers
-fn parse_http_date(date_str: &str) -> Result<SystemTime> {
-    log::debug!("Parsing HTTP date: {}", date_str);
-
-    // Try parsing RFC 2822 format (most common HTTP date format)
-    if let Ok(datetime) = OffsetDateTime::parse(date_str, &Rfc2822) {
-        return Ok(datetime.into());
-    }
-
-    // Try parsing ISO format as fallback
-    if let Ok(datetime) = OffsetDateTime::parse(date_str, &time::format_description::well_known::Iso8601::DEFAULT) {
-        return Ok(datetime.into());
-    }
-
-    // Try parsing simple date formats
-    let formats = [
-        "%a, %d %b %Y %H:%M:%S GMT",
-        "%A, %d-%b-%y %H:%M:%S GMT",
-        "%a %b %d %H:%M:%S %Y",
-    ];
-
-    for format in &formats {
-        if let Ok(parsed) = time::PrimitiveDateTime::parse(date_str, &time::format_description::parse(format).unwrap_or_default()) {
-            let offset_dt = parsed.assume_utc();
-            return Ok(offset_dt.into());
-        }
-    }
-
-    Err(eyre!("Failed to parse HTTP date: {}", date_str))
-}
 
 /// Helper to safely log HTTP events with error handling
 
@@ -5294,65 +5146,7 @@ fn resolve_mirror_for_adb(task: &DownloadTask, url: &str, need_range: bool) -> R
 /// Uses pre-filtered mirrors and intelligent retry logic for optimal performance
 /// Determine if a file is immutable based on its file path
 /// Immutable files are those whose content won't change over time
-fn is_immutable_filename(file_path: &str) -> bool {
-    file_path.ends_with(".deb") ||
-    file_path.ends_with(".rpm") ||
-    file_path.ends_with(".apk") ||
-    file_path.ends_with(".epkg") ||
-    file_path.ends_with(".conda") ||
-    file_path.ends_with(".whl") ||
-    file_path.contains("/by-hash/") ||
-    file_path.ends_with(".bz2") ||
-    file_path.ends_with(".gz") ||
-    file_path.ends_with(".xz") ||
-    file_path.ends_with(".zst")
-}
 
-/// Classify file type for integrity handling based on filename and path
-fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType {
-    let path_str = final_path.to_string_lossy();
-
-    // Check for mutable repository metadata files first
-    let file_name = final_path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-
-    // Known mutable files
-    if matches!(file_name,
-        "Release" | "Release.gpg" | "InRelease" |
-        "repomd.xml" | "repomd.xml.asc" |
-        "APKINDEX.tar.gz" | "APKINDEX.tar.gz.sig" |
-        "elf-loader" | "elf-loader.sig"
-    ) {
-        return FileType::Mutable;
-    }
-
-    // Check by path patterns for mutable files
-    if path_str.contains("/Release") ||
-       path_str.contains("/repomd.xml") ||
-       path_str.contains("/APKINDEX") ||
-       path_str.contains("/elf-loader") {
-        return FileType::Mutable;
-    }
-
-    // Immutable files (packages) - require known size
-    if file_size.is_some() && is_immutable_filename(&path_str) {
-        return FileType::Immutable;
-    }
-
-    // Append-only files (future extension)
-    // if path_str.contains("/epkg-index") {
-    //     return FileType::AppendOnly;
-    // }
-
-    // Default classification based on size availability
-    // Files with known size are more likely to be immutable packages
-    if file_size.is_some() {
-        FileType::Immutable
-    } else {
-        FileType::Mutable
-    }
-}
 
 /// Validate existing final_file and determine appropriate download action
 fn validate_existing_file(task: &DownloadTask) -> Result<ValidationResult> {
@@ -5978,7 +5772,7 @@ fn adjust_and_create_chunks(
     add_chunk_tasks(master_task, chunk_tasks, ChunkStatus::HasBeforehandChunk)
 }
 
-fn record_conflict_mirror(task: &DownloadTask, resolved_url: &str, metadata: &ServerMetadata) {
+pub(crate) fn record_conflict_mirror(task: &DownloadTask, resolved_url: &str, metadata: &ServerMetadata) {
     add_url_to_mirror_skip_list(&task.url, resolved_url);
 
     // Record different metadata in servers_metadata for validation in validate_mirror_metadata()
