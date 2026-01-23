@@ -1,5 +1,6 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 use std::time::Duration;
 
 pub struct SleepOptions {
@@ -11,7 +12,7 @@ pub struct SleepOptions {
 /// Returns duration in seconds as f64
 fn parse_time_interval(s: &str) -> Result<f64> {
     if s.is_empty() {
-        return Err(color_eyre::eyre::eyre!("sleep: invalid time interval '{}'", s));
+        return Err(eyre!("sleep: invalid time interval '{}'", s));
     }
 
     // Check for suffix
@@ -29,7 +30,7 @@ fn parse_time_interval(s: &str) -> Result<f64> {
 
     // Parse the number (supports floating-point)
     let number = number_str.parse::<f64>()
-        .map_err(|e| color_eyre::eyre::eyre!("sleep: invalid time interval '{}': {}", s, e))?;
+        .map_err(|e| eyre!("sleep: invalid time interval '{}': {}", s, e))?;
 
     // Convert to seconds based on suffix
     let seconds = match suffix {
@@ -49,7 +50,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SleepOptions> {
         .unwrap_or_default();
 
     if intervals.is_empty() {
-        return Err(color_eyre::eyre::eyre!("sleep: missing operand"));
+        return Err(eyre!("sleep: missing operand"));
     }
 
     // Parse all intervals and sum them

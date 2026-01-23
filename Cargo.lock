@@ -499,6 +499,7 @@ dependencies = [
  "libc",
  "liblzma",
  "log",
+ "md-5",
  "memchr",
  "memmap2",
  "mlua",

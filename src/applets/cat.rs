@@ -1,7 +1,8 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
-use std::fs;
-use std::io::{self, Read};
+use color_eyre::eyre::eyre;
+use std::fs::File;
+use std::io::{self};
 
 pub struct CatOptions {
     pub files: Vec<String>,
@@ -24,18 +25,22 @@ pub fn command() -> Command {
 }
 
 pub fn run(options: CatOptions) -> Result<()> {
+    let stdout = io::stdout();
+    let mut stdout_handle = stdout.lock();
+
     if options.files.is_empty() {
         // Read from stdin
-        let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)
-            .map_err(|e| color_eyre::eyre::eyre!("cat: failed to read from stdin: {}", e))?;
-        print!("{}", buffer);
+        let stdin = io::stdin();
+        let mut stdin_handle = stdin.lock();
+        io::copy(&mut stdin_handle, &mut stdout_handle)
+            .map_err(|e| eyre!("cat: failed to read from stdin: {}", e))?;
     } else {
         // Read from files
         for file_path in &options.files {
-            let content = fs::read_to_string(file_path)
-                .map_err(|e| color_eyre::eyre::eyre!("cat: {}: {}", file_path, e))?;
-            print!("{}", content);
+            let mut file = File::open(file_path)
+                .map_err(|e| eyre!("cat: {}: {}", file_path, e))?;
+            io::copy(&mut file, &mut stdout_handle)
+                .map_err(|e| eyre!("cat: failed to write {}: {}", file_path, e))?;
         }
     }
     Ok(())

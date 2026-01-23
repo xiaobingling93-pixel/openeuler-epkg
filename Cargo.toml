@@ -59,6 +59,7 @@ tempfile = "3.23"
 versions = "6.3"
 rkyv = { version = "0.8", features = ["std", "alloc", "bytecheck"] }
 rancor = "0.1"
+md-5 = "0.10"
 resolvo = { version = "0.10.1", path = "resolvo" }
 mlua = { version = "0.11", features = ["lua54", "send"] }
 

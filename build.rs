@@ -51,13 +51,18 @@ fn generate_applets_modules() {
                         // Map module name to command name
                         // Convention: if module ends with _cmd, remove it (e.g., true_cmd -> "true")
                         // Convert underscores to hyphens (e.g., dpkg_query -> "dpkg-query")
-                        let cmd_name_str = if module_name.ends_with("_cmd") {
-                            &module_name[..module_name.len() - 4]
+                        // Special case: bracket module maps to "[" command
+                        let cmd_name = if module_name == "bracket" {
+                            "[".to_string()
                         } else {
-                            module_name
+                            let cmd_name_str = if module_name.ends_with("_cmd") {
+                                &module_name[..module_name.len() - 4]
+                            } else {
+                                module_name
+                            };
+                            // Convert underscores to hyphens for command names
+                            cmd_name_str.replace('_', "-")
                         };
-                        // Convert underscores to hyphens for command names
-                        let cmd_name = cmd_name_str.replace('_', "-");
 
                         modules.push(module_name.to_string());
                         registrations.push((module_name.to_string(), cmd_name.to_string()));

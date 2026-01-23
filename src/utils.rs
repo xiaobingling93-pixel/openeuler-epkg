@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write, Seek, SeekFrom, ErrorKind};
@@ -14,6 +15,8 @@ use zstd;
 use std::os::unix::fs::PermissionsExt; // For checking execute permissions
 use std::os::unix::fs::symlink;
 use nix::unistd;
+use nix::sys::signal::kill;
+use nix::sys::signal::Signal;
 #[cfg(unix)]
 use users::{get_current_uid, get_effective_uid};
 #[cfg(unix)]
@@ -515,7 +518,7 @@ pub fn is_suid() -> bool {
 pub fn get_username_from_uid() -> Result<String> {
     use color_eyre::eyre;
     let uid = get_current_uid();
-    let user = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+    let user = unistd::User::from_uid(unistd::Uid::from_raw(uid))
         .map_err(|e| eyre::eyre!("Failed to get user info for real UID {}: {}", uid, e))?
         .ok_or_else(|| eyre::eyre!("No user found for real UID {}", uid))?;
     Ok(user.name)
@@ -1197,4 +1200,175 @@ pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
     }
 
     Ok(())
+}
+
+macro_rules! signal_map {
+    ($map:expr, $(($name:expr, $signal:expr)),* $(,)?) => {
+        $(
+            $map.insert($name, $signal);
+        )*
+    };
+}
+
+lazy_static::lazy_static! {
+    static ref SIGNAL_NAME_MAP: HashMap<&'static str, Signal> = {
+        let mut map = HashMap::new();
+        signal_map!(map,
+            ("HUP",     Signal::SIGHUP),
+            ("INT",     Signal::SIGINT),
+            ("QUIT",    Signal::SIGQUIT),
+            ("ILL",     Signal::SIGILL),
+            ("TRAP",    Signal::SIGTRAP),
+            ("ABRT",    Signal::SIGABRT),
+            ("BUS",     Signal::SIGBUS),
+            ("FPE",     Signal::SIGFPE),
+            ("KILL",    Signal::SIGKILL),
+            ("USR1",    Signal::SIGUSR1),
+            ("SEGV",    Signal::SIGSEGV),
+            ("USR2",    Signal::SIGUSR2),
+            ("PIPE",    Signal::SIGPIPE),
+            ("ALRM",    Signal::SIGALRM),
+            ("TERM",    Signal::SIGTERM),
+            ("CHLD",    Signal::SIGCHLD),
+            ("CONT",    Signal::SIGCONT),
+            ("STOP",    Signal::SIGSTOP),
+            ("TSTP",    Signal::SIGTSTP),
+            ("TTIN",    Signal::SIGTTIN),
+            ("TTOU",    Signal::SIGTTOU),
+            ("URG",     Signal::SIGURG),
+            ("XCPU",    Signal::SIGXCPU),
+            ("XFSZ",    Signal::SIGXFSZ),
+            ("VTALRM",  Signal::SIGVTALRM),
+            ("PROF",    Signal::SIGPROF),
+            ("WINCH",   Signal::SIGWINCH),
+            ("IO",      Signal::SIGIO),
+            ("PWR",     Signal::SIGPWR),
+            ("SYS",     Signal::SIGSYS),
+        );
+        map
+    };
+}
+
+/// Parse a signal string into a Signal enum value
+///
+/// Supports standard signal names (HUP, INT, TERM, etc. - with or without SIG prefix),
+/// numeric values, and real-time signals (RTMIN+x, RTMAX-x, SIGRTMIN+x, SIGRTMAX-x formats)
+pub fn parse_signal(signal_str: &str) -> Result<Signal> {
+    let mut lookup_str = signal_str.to_uppercase();
+
+    // Strip SIG prefix if present for lookup
+    if lookup_str.starts_with("SIG") {
+        lookup_str = lookup_str[3..].to_string();
+    }
+
+    // Try to parse as signal name
+    if let Some(&signal) = SIGNAL_NAME_MAP.get(lookup_str.as_str()) {
+        return Ok(signal);
+    }
+
+    // Handle real-time signals like RTMIN+x or RTMAX-x (SIG prefix already stripped)
+    if let Some(rt_signal) = parse_realtime_signal(&lookup_str) {
+        return Ok(rt_signal);
+    }
+
+    // Try to parse as number directly
+    signal_str.parse::<i32>()
+        .map_err(|_| color_eyre::eyre::eyre!("invalid signal: {}", signal_str))
+        .and_then(|num| Signal::try_from(num)
+            .map_err(|_| color_eyre::eyre::eyre!("invalid signal: {}", signal_str)))
+}
+
+/// Parse real-time signal specifications (RTMIN+x, RTMAX-x, etc.)
+fn parse_realtime_signal(signal_str: &str) -> Option<Signal> {
+    let upper = signal_str.to_uppercase();
+
+    // Handle RTMIN+x format
+    if let Some(offset_str) = upper.strip_prefix("RTMIN+") {
+        if let Ok(offset) = offset_str.parse::<i32>() {
+            // SIGRTMIN is typically 34 on Linux
+            let sig_num = 34 + offset;
+            return Signal::try_from(sig_num).ok();
+        }
+    }
+
+    // Handle RTMAX-x format
+    if let Some(offset_str) = upper.strip_prefix("RTMAX-") {
+        if let Ok(offset) = offset_str.parse::<i32>() {
+            // SIGRTMAX is typically 64 on Linux
+            let sig_num = 64 - offset;
+            return Signal::try_from(sig_num).ok();
+        }
+    }
+
+    None
+}
+
+/// Check if a string represents a valid signal name
+pub fn is_signal_name(name: &str) -> bool {
+    // Try parsing - if it succeeds, it's a valid signal
+    parse_signal(name).is_ok()
+}
+
+/// Send a signal to a process by PID
+pub fn kill_process(pid: i32, signal: Signal, command_name: &str) -> Result<()> {
+    kill(unistd::Pid::from_raw(pid), signal)
+        .map_err(|e| color_eyre::eyre::eyre!("{}: ({}) - {}: {}", command_name, pid, signal as i32, e))?;
+    Ok(())
+}
+
+/// Get process name from /proc/<pid>/cmdline
+pub fn get_process_name(pid: u32) -> Option<String> {
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    if let Ok(content) = fs::read_to_string(&cmdline_path) {
+        let name = content.split('\0').next()?;
+        if !name.is_empty() {
+            Path::new(name).file_name()?
+                .to_str()
+                .map(|s| s.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Get full command line from /proc/<pid>/cmdline with spaces instead of null bytes
+pub fn get_process_cmdline(pid: u32) -> Option<String> {
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    if let Ok(content) = fs::read_to_string(&cmdline_path) {
+        if content.is_empty() {
+            None
+        } else {
+            Some(content.replace('\0', " ").trim().to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/// Iterator over all processes in /proc
+pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
+    let proc_dir = Path::new("/proc");
+    if !proc_dir.exists() {
+        return Err(color_eyre::eyre::eyre!("/proc directory not found"));
+    }
+
+    let entries = fs::read_dir(proc_dir)
+        .map_err(|e| color_eyre::eyre::eyre!("error reading /proc: {}", e))?
+        .filter_map(|entry| {
+            match entry {
+                Ok(entry) => {
+                    let file_name = entry.file_name();
+                    let pid_str = file_name.to_str().unwrap_or("");
+                    match pid_str.parse::<u32>() {
+                        Ok(pid) => Some(Ok(pid)),
+                        Err(_) => None, // Skip non-numeric directory names
+                    }
+                }
+                Err(e) => Some(Err(color_eyre::eyre::eyre!("error reading /proc entry: {}", e))),
+            }
+        });
+
+    Ok(entries)
 }

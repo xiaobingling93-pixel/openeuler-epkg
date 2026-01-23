@@ -263,9 +263,9 @@ pub fn posix_chmod(path: &str, mode_str: &str) -> PosixResult<()> {
     Ok(())
 }
 
-pub fn posix_chown(path: &str, user: Option<&str>, group: Option<&str>) -> PosixResult<()> {
-    let path = Path::new(path);
-
+/// Resolve user and group names to UIDs and GIDs
+/// Returns (uid, gid) where None means "don't change"
+pub fn resolve_user_group_ids(user: Option<&str>, group: Option<&str>) -> (Option<u32>, Option<u32>) {
     // Match C++ behavior: return -1 (None) if user/group not found (means "don't change")
     let uid = if let Some(u) = user {
         if let Ok(uid_num) = u.parse::<u32>() {
@@ -293,6 +293,12 @@ pub fn posix_chown(path: &str, user: Option<&str>, group: Option<&str>) -> Posix
         None
     };
 
+    (uid, gid)
+}
+
+pub fn posix_chown(path: &str, user: Option<&str>, group: Option<&str>) -> PosixResult<()> {
+    let (uid, gid) = resolve_user_group_ids(user, group);
+    let path = Path::new(path);
     unistd::chown(path, uid.map(unistd::Uid::from_raw), gid.map(unistd::Gid::from_raw))?;
     Ok(())
 }

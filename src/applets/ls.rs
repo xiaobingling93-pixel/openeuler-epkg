@@ -1,5 +1,6 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 use std::fs;
 use std::path::PathBuf;
 
@@ -24,7 +25,7 @@ pub fn command() -> Command {
 
 pub fn run(options: LsOptions) -> Result<()> {
     let entries = fs::read_dir(&options.directory)
-        .map_err(|e| color_eyre::eyre::eyre!("ls: {}: {}", options.directory.display(), e))?;
+        .map_err(|e| eyre!("ls: {}: {}", options.directory.display(), e))?;
 
     let mut names: Vec<String> = entries
         .filter_map(|entry| {
