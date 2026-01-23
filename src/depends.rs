@@ -3,7 +3,8 @@ use std::sync::Arc;
 use color_eyre::Result;
 use crate::models::*;
 use crate::models::PACKAGE_CACHE;
-use crate::resolvo::GenericDependencyProvider;
+use crate::resolve::provider::GenericDependencyProvider;
+use crate::resolve::types::{DependFieldFlags, NameType, SolverMatchSpec};
 use crate::aur::is_aur_package;
 use crate::world::{remove_from_no_install, get_no_install_set};
 use crate::io::load_installed_packages;
@@ -198,7 +199,7 @@ fn run_solve_pass(
 fn solve_with_resolvo(
     provider: GenericDependencyProvider,
     requirements: Vec<resolvo::ConditionalRequirement>,
-    flags: crate::resolvo::DependFieldFlags,
+    flags: DependFieldFlags,
 ) -> Result<(resolvo::Solver<GenericDependencyProvider>, Vec<resolvo::SolvableId>)> {
     // Update provider with the desired flags before creating solver
     provider.update_depend_fields(flags);
@@ -209,9 +210,9 @@ fn solve_with_resolvo(
     // Determine pass name based on flags
     let package_format = channel_config().format;
     let base_flags = if package_format == PackageFormat::Pacman {
-        crate::resolvo::DependFieldFlags::REQUIRES | crate::resolvo::DependFieldFlags::BUILD_REQUIRES
+        DependFieldFlags::REQUIRES | DependFieldFlags::BUILD_REQUIRES
     } else {
-        crate::resolvo::DependFieldFlags::REQUIRES
+        DependFieldFlags::REQUIRES
     };
     let pass_name = if flags != base_flags {
         "1st pass (with RECOMMENDS/SUGGESTS)"
@@ -245,18 +246,18 @@ fn resolve_dependencies_with_resolvo(
     let package_format = channel_config().format;
     let (base_flags, base_flag_desc) = if package_format == PackageFormat::Pacman {
         (
-            crate::resolvo::DependFieldFlags::REQUIRES | crate::resolvo::DependFieldFlags::BUILD_REQUIRES,
+            DependFieldFlags::REQUIRES | DependFieldFlags::BUILD_REQUIRES,
             "REQUIRES|BUILD_REQUIRES",
         )
     } else {
-        (crate::resolvo::DependFieldFlags::REQUIRES, "REQUIRES")
+        (DependFieldFlags::REQUIRES, "REQUIRES")
     };
     let mut flags = base_flags;
     if !config().install.no_install_recommends {
-        flags = flags | crate::resolvo::DependFieldFlags::RECOMMENDS;
+        flags = flags | DependFieldFlags::RECOMMENDS;
     }
     if config().install.install_suggests {
-        flags = flags | crate::resolvo::DependFieldFlags::SUGGESTS;
+        flags = flags | DependFieldFlags::SUGGESTS;
     }
 
     // Try to solve with RECOMMENDS/SUGGESTS (if configured) - allow failure
@@ -443,7 +444,7 @@ fn get_candidate_pkgkeys_from_capabilities(
     for capability in capabilities_map.keys() {
         // Intern the capability name to get NameId
         let name_id = provider_ref.pool.intern_package_name(
-            crate::resolvo::NameType(capability.clone())
+            NameType(capability.clone())
         );
 
         // Call get_candidates to get packages that satisfy this requirement
@@ -471,7 +472,7 @@ fn get_candidate_pkgkeys_from_capabilities(
 
 /// Create a resolvo dependency provider
 fn create_resolvo_provider(format: PackageFormat, delta_world: &HashMap<String, String>) -> GenericDependencyProvider {
-    use crate::resolvo::DependFieldFlags;
+    use crate::resolve::types::DependFieldFlags;
     let depend_fields = DependFieldFlags::REQUIRES;
 
     let delta_world_keys: std::collections::HashSet<String> = delta_world.keys().cloned().collect();
@@ -577,7 +578,7 @@ fn create_package_name_requirement(
 
     // Intern package name
     let name_id = provider.pool.intern_package_name(
-        crate::resolvo::NameType(pkgname.to_string())
+        NameType(pkgname.to_string())
     );
 
     // Create a version set that matches any version (no constraints)
@@ -589,7 +590,7 @@ fn create_package_name_requirement(
     let and_deps = vec![or_deps];
     let version_set_id = provider.pool.intern_version_set(
         name_id,
-        crate::resolvo::SolverMatchSpec::MatchSpec(and_deps),
+        SolverMatchSpec::MatchSpec(and_deps),
     );
 
     ConditionalRequirement {
@@ -609,7 +610,7 @@ fn create_constrained_requirement(
 
     // Intern package name
     let name_id = provider.pool.intern_package_name(
-        crate::resolvo::NameType(pkgname.to_string())
+        NameType(pkgname.to_string())
     );
 
     // Create a version set with the specified constraints
@@ -621,7 +622,7 @@ fn create_constrained_requirement(
     let and_deps = vec![or_deps];
     let version_set_id = provider.pool.intern_version_set(
         name_id,
-        crate::resolvo::SolverMatchSpec::MatchSpec(and_deps),
+        SolverMatchSpec::MatchSpec(and_deps),
     );
 
     ConditionalRequirement {
@@ -656,7 +657,7 @@ fn build_installed_package_info_map(
     let (pkgkey_to_bdepends, pkgkey_to_rbdepends) = if format == PackageFormat::Pacman {
         log::debug!("[RESOLVO] Building build-dependency graph for Pacman format");
         // Update provider to use BUILD_REQUIRES only
-        provider_ref.update_depend_fields(crate::resolvo::DependFieldFlags::BUILD_REQUIRES);
+        provider_ref.update_depend_fields(DependFieldFlags::BUILD_REQUIRES);
         let (bdepends, rbdepends) = build_dependency_graph(provider_ref, solvables)?;
         (bdepends, rbdepends)
     } else {

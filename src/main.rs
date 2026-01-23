@@ -3,7 +3,7 @@ mod models;
 mod io;
 mod download;
 mod depends;
-mod resolvo;
+mod resolve;
 mod solver_tests;
 mod parse_requires;
 mod rpm_requires;
