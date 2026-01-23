@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet, BTreeMap};
-use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{LazyLock, RwLock};
@@ -937,14 +936,6 @@ pub struct EPKGDirs {
     pub epkg_cache: PathBuf,
     pub epkg_downloads_cache: PathBuf,
     pub epkg_channels_cache: PathBuf,
-}
-
-#[derive(Default)]
-pub struct PackageManager {
-    pub has_worker_process: bool,
-    pub ipc_socket: String,
-    pub ipc_stream: Option<UnixStream>,
-    pub child_pid: Option<nix::unistd::Pid>,
 }
 
 /// Type alias for installed packages map

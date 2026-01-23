@@ -2,32 +2,32 @@ use std::io;
 use std::io::BufRead; // for .read_line()
 use std::io::Write;
 use std::os::unix::fs::chown;
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use nix::{self};
-use nix::unistd::{fork, setuid, Uid, ForkResult};
+use nix::unistd::{fork, ForkResult};
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use users::{get_current_uid, get_effective_uid};
 use color_eyre::eyre::{self, Result};
-use serde_json::{json, Value};
-use crate::models::*;
-use crate::utils::{self, is_suid};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use crate::utils;
 
 // ======================================================================================
 // Design Document: SUID Worker/Master Architecture for `epkg`
 // ======================================================================================
 //
 // OVERVIEW:
-//   The `epkg` package manager supports SUID installation, where it forks a worker process
-//   to manage privileged operations (e.g., unpacking packages to `/opt/epkg/store/`).
+//   The `epkg` package manager may fork a worker process to manage privileged operations
+//   (e.g., unpacking packages to `/opt/epkg/store/`) if installed SUID.
 //   The master process drops privileges and communicates with the worker process via IPC.
 //
 //   Key Features:
-//   - Fork a worker process if `epkg` is SUID.
+//   - Always fork a worker process for privileged operations.
 //   - Drop privileges in the master process.
 //   - Communicate via Unix domain sockets.
-//   - Provide transparent wrapper functions for privileged operations.
 //
 // ARCHITECTURE:
 //
@@ -36,9 +36,9 @@ use crate::utils::{self, is_suid};
 //   |---------------------|       |-----------------------|
 //   | - Drops privileges  |       | - Runs as root        |
 //   | - Handles user I/O  |       | - Manages store       |
-//   | - Calls wrappers    |<----->| - Exposes 2 APIs:     |
-//   |                     |  IPC  |   1) unpack_packages  |
-//   |                     |       |   2) garbage_collect  |
+//   | - Uses PrivilegedClient|<----->| - Handles PrivilegedCall|
+//   |                     |  IPC  |   enum variants:      |
+//   |                     |       |   unpack, gc, moves   |
 //   +---------------------+       +-----------------------+
 //
 //   IPC Communication:
@@ -51,31 +51,16 @@ use crate::utils::{self, is_suid};
 //
 // INTERNAL DATA STRUCTURES:
 //
-// 1. `PackageManager`:
-//    - Manages the state of the package manager and IPC communication.
+// 1. `PrivilegedClient`:
+//    - Provides access to privileged operations via IPC.
+//    - Always forks a worker process for privileged operations.
+//    - Fields:
+//      - `ipc_stream: Option<UnixStream>`: Connection to privileged worker process
+//      - `socket_path: Option<String>`: Path to the Unix socket for IPC
 //
-//    Fields:
-//    - `has_worker_process: bool`:
-//      - Indicates whether a worker process has been forked.
-//      - Set to `true` if `epkg` is SUID and a worker process is running.
-//      - Used to determine whether to use IPC or direct function calls.
-//
-//    - `ipc_socket: String`:
-//      - Path to the Unix domain socket used for IPC communication.
-//      - Created by the master process and passed to the worker process.
-//      - Used by the master process to connect to the worker.
-//
-//    - `ipc_stream: Option<UnixStream>`:
-//      - The Unix stream for IPC communication.
-//      - Initialized when the master process connects to the worker process.
-//      - Used to send commands and receive responses.
-//
-//    - `ipc_connected: bool`:
-//      - Indicates whether the master process is connected to the worker process.
-//      - Set to `true` after successfully connecting to the worker.
-//      - Used to avoid reconnecting unnecessarily.
-//
-// 2. `WorkerCommand`:
+// 2. `PrivilegedCall`:
+//    - Enum representing all supported privileged operations.
+//    - Serialized directly over IPC for type-safe communication.
 //    - Represents commands sent from the master process to the worker process.
 //
 //    Variants:
@@ -93,13 +78,9 @@ use crate::utils::{self, is_suid};
 // CALL FLOW:
 //
 // 1. Master Process:
-//    - Checks if `epkg` is SUID.
-//    - If SUID:
-//      a. Forks a worker process.
-//      b. Drops privileges.
-//      c. Connects to the worker via a Unix socket.
-//    - If not SUID:
-//      a. Directly calls privileged functions.
+//    - Always forks a worker process for privileged operations.
+//    - Drops privileges.
+//    - Connects to the worker via a Unix socket.
 //
 // 2. Worker Process:
 //    - Binds to a Unix socket.
@@ -109,118 +90,180 @@ use crate::utils::{self, is_suid};
 //      b. `garbage_collect()`: Clean up unused dirs in the store.
 //
 // 3. IPC Communication:
-//    - Master sends JSON commands to the worker.
-//    - Worker responds with JSON status messages.
-//
-// USAGE:
-//
-// 1. Transparent Wrapper Functions:
-//    - `unpack_packages(files)`: Unpacks `.epkg` files.
-//    - `garbage_collect()`: Performs garbage collection.
-//
-//    Those functions automatically handle SUID/non-SUID cases:
-//    - If SUID, they send commands to the worker process via IPC.
-//    - If not SUID, they directly call the underlying functions.
-//
-// 2. Example Usage in `PackageManager`:
-//    - `install_packages()`: Downloads packages and calls `unpack_packages()`.
-//    - `store_gc()`: Calls `garbage_collect()`.
-//
-// 3. Example Usage in `main()`:
-//    - Call `fork_on_suid()` before performing privileged operations.
-//    - Call `privdrop_on_suid()` to drop privileges if necessary.
-//
-// IMPLEMENTATION DETAILS:
-//
-// 1. `store.rs`:
-//    - Contains the privileged functions:
-//      a. `unpack_packages(files)`: Unpacks `.epkg` files to `/opt/epkg/store/`.
-//      b. `garbage_collect()`: Cleans up unused files in the store.
-//
-// 2. `privdrop_on_suid()`:
-//    - Drops privileges if `epkg` is SUID.
-//
-// 3. `fork_on_suid()`:
-//    - Forks a worker process if `epkg` is SUID.
-//    - Sets up IPC communication.
-//
-// 4. IPC Communication:
-//    - Uses Unix domain sockets.
-//    - JSON format for messages:
-//      {
-//        "command": "unpack" | "gc",
-//        "params": { "files": ["file1.epkg", "file2.epkg"] }
-//      }
-//
-// 5. Transparent Client Wrappers in master process and PackageManager:
-//    - `unpack_packages(files)`:
-//      - If SUID, sends IPC command to worker.
-//      - If not SUID, directly calls `crate::store::unpack_packages()`.
-//    - `garbage_collect()`:
-//      - If SUID, sends IPC command to worker.
-//      - If not SUID, directly calls `crate::store::garbage_collect()`.
-//
-// EXAMPLE CALLERS:
-//
-// 1. `main()`:
-//    ```
-//    if let Some(matches) = matches.subcommand_matches("remove") {
-//        if let Some(package_specs) = matches.get_many::<String>("package-spec") {
-// =>         package_manager.fork_on_suid()?;
-//            package_manager.remove_packages(package_specs)?;
-//        }
-//    }
-//    ```
-//
-// 2. `PackageManager::store_gc()`:
-//    ```
-// => self.garbage_collect()?;
-//    ```
-//
-// ======================================================================================
+//    - Master sends `PrivilegedCall` enum instances as JSON.
+//    - Worker responds with `PrivilegedResponse` enum instances.
 
-#[derive(Debug)]
-enum WorkerCommand {
-    Unpack(Vec<String>),
+static PRIVILEGED_CLIENT: LazyLock<Mutex<PrivilegedClient>> = LazyLock::new(|| {
+    let mut client = PrivilegedClient::new();
+    // Establish IPC connection at initialization time
+    client.establish_ipc_connection()
+        .expect("Failed to establish IPC connection for privileged client");
+    Mutex::new(client)
+});
+
+#[allow(dead_code)]
+pub fn privileged_client() -> std::sync::MutexGuard<'static, PrivilegedClient> {
+    PRIVILEGED_CLIENT.lock().unwrap()
 }
 
-impl PackageManager {
-    #[allow(dead_code)]
-    pub fn fork_on_suid(&mut self) -> Result<()> {
-        if is_suid() {
-            let socket_path = create_random_socket_path();
+// Handler functions for privileged operations
 
-            match unsafe { fork() } {
-                Ok(ForkResult::Parent { child, .. }) => {
-                    setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
-                    self.has_worker_process = true;
-                    self.child_pid = Some(child);
+fn handle_garbage_collect() -> PrivilegedResponse {
+    PrivilegedResponse::Success {
+        message: "Garbage collection completed".to_string(),
+        data: None,
+    }
+}
 
-                    // wait for worker to create socket
-                    for _ in 0..3 {
-                        if socket_path.exists() {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    if !socket_path.exists() {
-                        return Err(eyre::eyre!("Socket file creation timeout"));
-                    }
-                }
-                Ok(ForkResult::Child) => {
-                    privilege_worker_main(&socket_path)?;
-                }
-                Err(e) => panic!("Fork failed: {}", e),
-            }
+fn handle_move_to_cache(temp_path: &str, final_path: &str) -> PrivilegedResponse {
+    match atomic_move_file(temp_path, final_path) {
+        Ok(msg) => PrivilegedResponse::Success {
+            message: msg,
+            data: None,
+        },
+        Err(e) => PrivilegedResponse::Error {
+            message: format!("Failed to move file: {}", e),
+        },
+    }
+}
 
-            self.ipc_socket = socket_path.to_string_lossy().into_owned();
+#[derive(Serialize, Deserialize, Debug)]
+pub enum PrivilegedCall {
+    GarbageCollect,
+    MoveToDownloadsCache { temp_path: String, final_path: String },
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum PrivilegedResponse {
+    Success { message: String, data: Option<String> },
+    Error { message: String },
+}
+
+/// Client for seamless privileged operations
+///
+/// Provides a clean, minimal API for calling privileged functions with minimal boilerplate.
+/// Features a generic `call()` method for any privileged operation.
+/// Always forks a worker process for privileged operations.
+///
+/// The system uses unified handlers that minimize per-operation code duplication.
+///
+/// # Examples
+///
+/// ## Using the generic call method (for any privileged operation):
+/// ```rust
+/// let mut client = PrivilegedClient::new();
+/// client.call(PrivilegedCall::GarbageCollect)?;
+/// client.call(PrivilegedCall::MoveToDownloadsCache {
+///     temp_path: "/tmp/user_channel".to_string(),
+///     final_path: "/opt/epkg/cache/channels/final".to_string()
+/// })?;
+/// ```
+///
+/// ## Adding a new privileged operation:
+/// 1. Add enum variant to `PrivilegedCall`
+/// 2. Implement a handler function for the operation
+/// 3. Add match arm in the `execute_privileged_call` function
+/// That's it! Simple function-based implementation.
+pub struct PrivilegedClient {
+    ipc_stream: Option<UnixStream>,
+    socket_path: Option<String>,
+}
+
+impl PrivilegedClient {
+    pub fn new() -> Self {
+        Self {
+            ipc_stream: None,
+            socket_path: None,
         }
+    }
+
+    /// Generic privileged call method - use this for any privileged operation
+    ///
+    /// This method eliminates the need for individual wrapper methods per operation.
+    /// Simply pass the PrivilegedCall enum variant directly.
+    #[allow(dead_code)]
+    pub fn call(&mut self, call: PrivilegedCall) -> Result<String> {
+        // Send PrivilegedCall enum directly as JSON
+        let request = serde_json::to_string(&call)?;
+        let response_str = self.send_privileged_request(&request)?;
+        let response: PrivilegedResponse = serde_json::from_str(&response_str)?;
+
+        match response {
+            PrivilegedResponse::Success { message, .. } => Ok(message),
+            PrivilegedResponse::Error { message } => Err(eyre::eyre!("Privileged operation failed: {}", message)),
+        }
+    }
+
+    fn establish_ipc_connection(&mut self) -> Result<()> {
+        if self.ipc_stream.is_some() {
+            return Ok(());
+        }
+
+        // Create random socket path
+        let socket_path = create_random_socket_path();
+        let socket_path_str = socket_path.to_string_lossy().to_string();
+
+        // Fork privileged worker
+        match unsafe { fork() } {
+            Ok(ForkResult::Parent { .. }) => {
+                // Drop privileges in parent
+                nix::unistd::setuid(nix::unistd::Uid::from_raw(nix::unistd::getuid().as_raw()))
+                    .map_err(|e| eyre::eyre!("Failed to drop privileges: {}", e))?;
+
+                // Wait for worker to create socket
+                for _ in 0..10 {
+                    if socket_path.exists() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if !socket_path.exists() {
+                    return Err(eyre::eyre!("Socket file creation timeout"));
+                }
+
+                // Connect to worker
+                self.ipc_stream = Some(UnixStream::connect(&socket_path)?);
+                self.socket_path = Some(socket_path_str);
+            }
+            Ok(ForkResult::Child) => {
+                // Run privileged worker
+                if let Err(e) = privilege_worker_main(&socket_path) {
+                    eprintln!("Privileged worker error: {}", e);
+                    std::process::exit(1);
+                }
+                std::process::exit(0);
+            }
+            Err(e) => return Err(eyre::eyre!("Fork failed: {}", e)),
+        }
+
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn send_privileged_request(&mut self, request: &str) -> Result<String> {
+        let stream = self.ipc_stream.as_mut()
+            .ok_or_else(|| eyre::eyre!("IPC stream not initialized"))?;
+
+        // Send request
+        {
+            let mut writer = io::BufWriter::new(&mut *stream);
+            writer.write_all(request.as_bytes())?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+        } // writer is dropped here
+
+        // Receive response
+        let mut reader = io::BufReader::new(&mut *stream);
+        let mut response_line = String::new();
+        reader.read_line(&mut response_line)?;
+        let response = response_line.trim();
+
+        Ok(response.to_string())
     }
 }
 
 fn create_random_socket_path() -> PathBuf {
-        let mut rng = StdRng::from_entropy();
+    let mut rng = StdRng::from_entropy();
     PathBuf::from(format!(
         "/tmp/epkg-{}-{:x}.sock",
         get_effective_uid(),
@@ -246,110 +289,52 @@ fn privilege_worker_main(socket_path: &Path) -> Result<()> {
 }
 
 fn handle_client(stream: &mut UnixStream) -> Result<()> {
-    let command = read_command(stream)?;
-    match command {
-        WorkerCommand::Unpack(files) => {
-            let res = match crate::store::unpack_packages(files) {
-                Ok(store_dirs) => {
-                    // Convert PathBuf to String for JSON serialization
-                    let paths: Vec<String> = store_dirs.iter()
-                        .map(|path| path.display().to_string())
-                        .collect();
-
-                    send_response(
-                        stream,
-                        json!({"status": "success", "paths": paths})
-                    )
-                },
-                Err(e) => send_response(
-                    stream,
-                    json!({"status": "error", "message": e.to_string()})
-                )
-            };
-            res?;
-        }
-    }
-    Ok(())
+    let call = read_privileged_call(stream)?;
+    let response = execute_privileged_call(call);
+    send_privileged_response(stream, &response)
 }
 
-fn read_command(stream: &mut UnixStream) -> Result<WorkerCommand> {
+fn read_privileged_call(stream: &mut UnixStream) -> Result<PrivilegedCall> {
     let mut buf = String::new();
     io::BufReader::new(stream).read_line(&mut buf)?;
+    let call: PrivilegedCall = serde_json::from_str(buf.trim())?;
+    Ok(call)
+}
 
-    let value: Value = serde_json::from_str(&buf)?;
-    match value["command"].as_str() {
-        Some("unpack") => Ok(WorkerCommand::Unpack(
-            value["params"]["files"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect(),
-        )),
-        _ => Err(eyre::eyre!(io::Error::new(io::ErrorKind::InvalidInput, "Invalid command"))),
+fn execute_privileged_call(call: PrivilegedCall) -> PrivilegedResponse {
+    match call {
+        PrivilegedCall::GarbageCollect => handle_garbage_collect(),
+        PrivilegedCall::MoveToDownloadsCache {
+            temp_path,
+            final_path,
+        } => handle_move_to_cache(&temp_path, &final_path),
     }
 }
 
-fn send_response(stream: &mut UnixStream, response: Value) -> Result<()> {
+fn send_privileged_response(stream: &mut UnixStream, response: &PrivilegedResponse) -> Result<()> {
+    let response_json = serde_json::to_string(response)?;
     let mut writer = io::BufWriter::new(stream);
-    serde_json::to_writer(&mut writer, &response)?;
+    writer.write_all(response_json.as_bytes())?;
     writer.write_all(b"\n")?;
     writer.flush()?;
     Ok(())
 }
 
-#[allow(dead_code)]
-fn receive_response(stream: &UnixStream, command: &str) -> Result<()> {
-    let mut reader = io::BufReader::new(stream);
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line).unwrap();
-    let response: serde_json::Value = serde_json::from_str(&response_line).unwrap();
-    if response["status"] == "error" {
-        return Err(eyre::eyre!("{} command error: {}", command, response["message"].as_str().unwrap_or("Unknown error")));
+fn atomic_move_file(temp_path: &str, final_path: &str) -> Result<String> {
+    use std::fs;
+    let temp = PathBuf::from(temp_path);
+    let final_path = PathBuf::from(final_path);
+
+    // Ensure the destination directory exists
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)?;
     }
-    // else {
-    //     println!("ipc {} command completed successfully", command);
-    // }
-    Ok(())
+
+    // Perform atomic move (rename on same filesystem)
+    fs::rename(&temp, &final_path)?;
+
+    Ok(format!("Successfully moved {} to {}",
+               temp.display(), final_path.display()))
 }
 
 // send side
-impl PackageManager {
-    #[allow(dead_code)]
-    fn send_command(&mut self, command: serde_json::Value) -> Result<()> {
-        // Get ipc stream
-        self.ipc_stream = Some(UnixStream::connect(&self.ipc_socket).unwrap());
-        let stream = self.ipc_stream
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("IPC stream not initialized")).unwrap();
-
-        // Send command
-        let mut writer = io::BufWriter::new(stream);
-        serde_json::to_writer(&mut writer, &command).unwrap();
-        writer.write_all(b"\n").unwrap();
-        writer.flush().unwrap();
-
-        // Receive response
-        receive_response(stream, command["command"].as_str().unwrap()).unwrap();
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn unpack_packages(&mut self, files: Vec<String>) -> Result<()> {
-        if !self.has_worker_process {
-            crate::store::unpack_packages(files)?;
-        } else {
-            self.send_command(
-                json!({
-                    "command": "unpack",
-                    "params": {
-                        "files": files
-                    }
-                })
-            ).unwrap();
-        }
-        Ok(())
-    }
-
-}
