@@ -182,7 +182,7 @@ process_batch() {
     # Install packages with --prefer-low-version
     log "Installing packages in batch $batch_num"
     local install_output install_exit
-    install_output=$(epkg -e "$env_name" install --assume-yes --prefer-low-version $batch_pkgs 2>&1)
+    install_output=$(epkg -e "$env_name" --assume-yes install --prefer-low-version $batch_pkgs 2>&1)
     install_exit=$?
     # Accumulate output for later analysis
     EPKG_BATCH_CMD_OUTPUT="${EPKG_BATCH_CMD_OUTPUT}

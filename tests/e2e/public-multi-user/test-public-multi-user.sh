@@ -13,7 +13,7 @@ log "Starting public multi-user test"
 # For root: create public environment and install ripgrep and busybox-static
 log "Root: creating public environment and installing ripgrep and busybox-static"
 epkg env create --public alpine -c alpine || error "Failed to create public env for root"
-epkg -e alpine install --assume-yes ripgrep busybox-static || error "Failed to install ripgrep and busybox-static for root"
+epkg -e alpine --assume-yes install ripgrep busybox-static || error "Failed to install ripgrep and busybox-static for root"
 
 # Find busybox path in alpine environment
 if [ -x "/opt/epkg/envs/root/alpine/usr/bin/busybox.static" ]; then
@@ -67,7 +67,7 @@ run_as_user "$USER_B" "epkg self install --store auto" || error "Failed to insta
 log "User A: creating public environment and installing jq"
 run_as_user "$USER_A" "epkg env create --public puba -c archlinux" || error "Failed to create public env for user A"
 ls -C /opt/epkg/envs/$USER_A/puba || error "No public env dir created"
-run_as_user "$USER_A" "epkg -e puba install --assume-yes jq" || error "Failed to install jq for user A"
+run_as_user "$USER_A" "epkg -e puba --assume-yes install jq" || error "Failed to install jq for user A"
 # /opt/epkg/envs/ dir in env is empty if separate mounted
 # epkg -e alpine run busybox.static ls /opt/epkg/envs/$USER_A/puba || error "Public env dir not visible in env"
 
@@ -75,7 +75,7 @@ run_as_user "$USER_A" "epkg -e puba install --assume-yes jq" || error "Failed to
 log "User B: creating private environment and installing htop"
 run_as_user "$USER_B" "epkg env create privb -c archlinux" || error "Failed to create private env for user B"
 ls -C /opt/epkg/envs/$USER_B/privb || error "No private env dir created"
-run_as_user "$USER_B" "epkg -e privb install --assume-yes htop" || error "Failed to install htop for user B"
+run_as_user "$USER_B" "epkg -e privb --assume-yes install htop" || error "Failed to install htop for user B"
 # /opt/epkg/envs/ dir in env is empty if separate mounted
 # run_as_user "$USER_B" "epkg -e privb run ls -C /opt/epkg/envs/$USER_B/privb" || error "Private env dir not visible in env"
 

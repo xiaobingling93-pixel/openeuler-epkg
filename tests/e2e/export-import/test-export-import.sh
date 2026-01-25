@@ -16,7 +16,7 @@ log "Creating environment: $ENV_NAME"
 epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
 
 log "Installing jq and htop"
-epkg -e "$ENV_NAME" install --assume-yes jq htop || error "Failed to install packages"
+epkg -e "$ENV_NAME" --assume-yes install jq htop || error "Failed to install packages"
 
 # Export to a file
 EXPORT_FILE="/tmp/epkg-export-$ENV_NAME.yaml"
