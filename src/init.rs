@@ -12,7 +12,7 @@ use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
 
 use crate::deinit::remove_epkg_from_rc_file;
-use crate::dirs::{find_env_base, find_env_root, get_env_root, public_envs_path};
+use crate::dirs::{find_env_base, find_env_root, get_env_root};
 use crate::download::download_urls;
 use crate::mirror;
 use crate::models::*;
@@ -237,7 +237,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
 }
 
 fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
-    let self_env_root = public_envs_path().join("root").join(SELF_ENV);
+    let self_env_root = dirs().user_envs.join(SELF_ENV);
 
     download_package_manager_files(init_plan)
         .context("Failed to download required files for self environment")?;
