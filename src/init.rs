@@ -382,7 +382,9 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
 
     // Set permissions on temporary file before rename
     let mode = if is_epkg && config().init.shared_store {
-        0o4755 // setuid + rwxr-xr-x for epkg in shared store mode
+        // disable for now
+        // 0o4755 // setuid + rwxr-xr-x for epkg in shared store mode
+        0o755 // rwxr-xr-x for standard permissions
     } else {
         0o755 // rwxr-xr-x for standard permissions
     };
