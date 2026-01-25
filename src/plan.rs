@@ -92,7 +92,8 @@ pub enum OperationType {
 /// Filesystem information from statvfs
 #[derive(Debug, Clone, Default)]
 pub struct FilesystemInfo {
-    pub fsid: u64,          // Filesystem ID from statvfs.f_fsid
+    pub path: PathBuf,      // Path used to query filesystem info
+    pub fsid: u64,          // Filesystem ID from statvfs.f_fsid (0 if statvfs failed)
     pub free_space: u64,    // Free space in bytes
     pub free_inodes: u64,   // Free inodes (u64::MAX if unlimited)
 }
@@ -110,9 +111,9 @@ pub struct InstallationPlan {
     pub total_download: u64,
     pub total_install: u64,
 
-    pub store_root_fs:      Option<FilesystemInfo>,
-    pub env_root_fs:        Option<FilesystemInfo>,
-    pub download_cache_fs:  Option<FilesystemInfo>,
+    pub store_root_fs:      FilesystemInfo,
+    pub env_root_fs:        FilesystemInfo,
+    pub download_cache_fs:  FilesystemInfo,
 
     pub store_pkglines_by_pkgname: std::collections::HashMap<String, Vec<String>>,
 
@@ -196,9 +197,9 @@ impl Default for InstallationPlan {
             can_symlink: false,
             total_download: 0,
             total_install: 0,
-            store_root_fs: None,
-            env_root_fs: None,
-            download_cache_fs: None,
+            store_root_fs: FilesystemInfo::default(),
+            env_root_fs: FilesystemInfo::default(),
+            download_cache_fs: FilesystemInfo::default(),
             store_pkglines_by_pkgname: HashMap::new(),
             skipped_reinstalls: InstalledPackagesMap::new(),
             new_pkgs: InstalledPackagesMap::new(),

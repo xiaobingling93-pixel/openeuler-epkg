@@ -217,9 +217,9 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     let download_cache = dirs().epkg_downloads_cache.clone();
 
     // Get filesystem info for all mount points and store in plan
-    plan.env_root_fs = crate::risks::get_filesystem_info(&env_root).ok();
-    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root).ok();
-    plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache).ok();
+    plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
+    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
+    plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
 
     // Copy link type from EnvConfig to InstallationPlan
     // Downgrade hardlink to symlink if store and env are on different filesystems

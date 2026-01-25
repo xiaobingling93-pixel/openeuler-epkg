@@ -12,7 +12,6 @@ use crate::models::InstalledPackagesMap;
 use crate::plan::{InstallationPlan, FilesystemInfo};
 use crate::models::PACKAGE_CACHE;
 use crate::package_cache::map_pkgline2filelist;
-use crate::link::same_filesystem;
 
 /// Calculate total download and install sizes for the installation plan
 pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
@@ -34,25 +33,55 @@ pub fn calculate_plan_sizes(plan: &mut InstallationPlan) -> Result<()> {
 
 /// Get filesystem information for a mount point
 /// Returns FilesystemInfo with filesystem ID, free space, and free inodes
-pub fn get_filesystem_info(mount_point: &Path) -> Result<FilesystemInfo> {
+/// Always returns a FilesystemInfo struct, fsid=0 if statvfs failed
+pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Non-Linux platforms: return default struct with fsid=0
+        FilesystemInfo {
+            path: mount_point.to_path_buf(),
+            fsid: 0,
+            free_space: u64::MAX,
+            free_inodes: u64::MAX,
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         use std::ffi::CString;
-        let c_path = CString::new(mount_point.as_os_str().as_bytes())
-            .map_err(|e| eyre!("Invalid path: {}", e))?;
+
+        // Default struct with fsid = 0 (failure/default)
+        let mut info = FilesystemInfo {
+            path: mount_point.to_path_buf(),
+            fsid: 0,
+            free_space: u64::MAX,
+            free_inodes: u64::MAX, // Assume unlimited by default
+        };
+
+        // Try to convert path to C string
+        let c_path = match CString::new(mount_point.as_os_str().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => {
+                // CString conversion failed, return default (fsid=0)
+                log::warn!("CString conversion failed for path: {}", mount_point.display());
+                return info;
+            }
+        };
 
         let mut statvfs_buf: libc::statvfs = unsafe { std::mem::zeroed() };
         let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut statvfs_buf) };
 
         if rc != 0 {
-            return Err(eyre!("statvfs failed for {}", mount_point.display()));
+            // statvfs failed, return default (fsid=0)
+            let io_err = std::io::Error::last_os_error();
+            log::warn!("statvfs failed for {}: {} (errno: {})", mount_point.display(), io_err, io_err.raw_os_error().unwrap_or(-1));
+            return info;
         }
 
         // Get filesystem ID from statvfs
         // f_fsid may be u64 or a struct depending on the system
         // We'll use unsafe to access it as bytes and convert to u64
         let fsid_bytes = unsafe { std::mem::transmute::<_, [u8; 8]>(statvfs_buf.f_fsid) };
-        let fsid = u64::from_le_bytes(fsid_bytes);
+        info.fsid = u64::from_le_bytes(fsid_bytes);
 
         let bsize = statvfs_buf.f_bsize as u64;
         let bavail = if (statvfs_buf.f_flag & libc::ST_RDONLY) != 0 {
@@ -61,46 +90,40 @@ pub fn get_filesystem_info(mount_point: &Path) -> Result<FilesystemInfo> {
             statvfs_buf.f_bavail as u64
         };
 
-        let free_space = bavail * bsize;
+        info.free_space = bavail * bsize;
 
         // Handle filesystems without inodes (FAT, etc.)
-        let free_inodes = if statvfs_buf.f_ffree == 0 && statvfs_buf.f_files == 0 {
+        info.free_inodes = if statvfs_buf.f_ffree == 0 && statvfs_buf.f_files == 0 {
             u64::MAX // No inode limit
         } else {
             statvfs_buf.f_ffree as u64
         };
 
-        Ok(FilesystemInfo {
-            fsid,
-            free_space,
-            free_inodes,
-        })
+        info
     }
 }
 
 /// Helper function to check disk space with safety margin
 /// Returns error if insufficient space available
 /// Safety margin: 5% of required space or 100MB minimum, whichever is larger
-fn check_space(fs_info: Option<&FilesystemInfo>, required: u64, location: &Path) -> Result<()> {
-    if let Some(fs_info) = fs_info {
-        // Calculate safety margin: 5% of required or 100MB minimum
-        let safety_margin_5pct = required / 20; // 5% = 1/20
-        const MIN_SAFETY_MARGIN: u64 = 100 * 1024 * 1024; // 100MB
-        let safety_margin = safety_margin_5pct.max(MIN_SAFETY_MARGIN);
-        let total_needed = required + safety_margin;
+fn check_space(fs_info: &FilesystemInfo, required: u64, location: &Path) -> Result<()> {
+    // Calculate safety margin: 5% of required or 100MB minimum
+    let safety_margin_5pct = required / 20; // 5% = 1/20
+    const MIN_SAFETY_MARGIN: u64 = 100 * 1024 * 1024; // 100MB
+    let safety_margin = safety_margin_5pct.max(MIN_SAFETY_MARGIN);
+    let total_needed = required + safety_margin;
 
-        if fs_info.free_space < total_needed {
-            let shortage = total_needed.saturating_sub(fs_info.free_space);
-            return Err(eyre!(
-                "Insufficient disk space on {}: need {} bytes ({} + {} safety margin), available {} bytes (shortage: {} bytes)",
-                location.display(),
-                total_needed,
-                crate::utils::format_size(required),
-                crate::utils::format_size(safety_margin),
-                crate::utils::format_size(fs_info.free_space),
-                crate::utils::format_size(shortage)
-            ));
-        }
+    if fs_info.free_space < total_needed {
+        let shortage = total_needed.saturating_sub(fs_info.free_space);
+        return Err(eyre!(
+            "Insufficient disk space on {}: need {} bytes ({} + {} safety margin), available {} bytes (shortage: {} bytes)",
+            location.display(),
+            total_needed,
+            crate::utils::format_size(required),
+            crate::utils::format_size(safety_margin),
+            crate::utils::format_size(fs_info.free_space),
+            crate::utils::format_size(shortage)
+        ));
     }
     Ok(())
 }
@@ -116,23 +139,23 @@ pub fn check_disk_space_for_plan(
     download_cache: &Path,
 ) -> Result<()> {
     // Check if download_cache_fs and store_root_fs are on the same filesystem
-    let same_fs = same_filesystem(
-        plan.download_cache_fs.as_ref(),
-        plan.store_root_fs.as_ref(),
-    ).unwrap_or(false);
+    let same_fs = crate::link::same_filesystem(
+        &plan.download_cache_fs,
+        &plan.store_root_fs,
+    );
 
     if same_fs {
         // Both on same filesystem - check total requirement
         let total_required = plan.total_download + plan.total_install;
         check_space(
-            plan.store_root_fs.as_ref(),
+            &plan.store_root_fs,
             total_required,
             store_root,
         )?;
     } else {
         // Different filesystems - check separately
-        check_space(plan.download_cache_fs.as_ref(), plan.total_download, download_cache)?;
-        check_space(plan.store_root_fs.as_ref(), plan.total_install, store_root)?;
+        check_space(&plan.download_cache_fs, plan.total_download, download_cache)?;
+        check_space(&plan.store_root_fs, plan.total_install, store_root)?;
     }
 
     Ok(())
@@ -240,18 +263,17 @@ pub fn validate_before_linking(
     }
 
     // Get free inodes on env_root mount point and compare to total file count
-    if let Some(ref env_fs) = plan.env_root_fs {
-        let available = env_fs.free_inodes;
-        if available < total_inodes_needed + total_inodes_needed / 20 {
-            let shortage = total_inodes_needed.saturating_sub(available);
-            return Err(eyre!(
-                "Insufficient inodes on {}: need {} inodes, available {} inodes (shortage: {} inodes)",
-                env_root.display(),
-                total_inodes_needed,
-                available,
-                shortage
-            ));
-        }
+    let env_fs = &plan.env_root_fs;
+    let available = env_fs.free_inodes;
+    if available < total_inodes_needed + total_inodes_needed / 20 {
+        let shortage = total_inodes_needed.saturating_sub(available);
+        return Err(eyre!(
+            "Insufficient inodes on {}: need {} inodes, available {} inodes (shortage: {} inodes)",
+            env_root.display(),
+            total_inodes_needed,
+            available,
+            shortage
+        ));
     }
 
     Ok(())

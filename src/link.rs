@@ -166,15 +166,21 @@ pub fn unlink_package_diff(
 }
 
 /// Check if two paths are on the same filesystem by comparing filesystem IDs
-/// Uses filesystem info from plan if provided, otherwise returns an error
+/// Returns true if both filesystems have valid fsid (!= 0) and same fsid, false otherwise
 pub fn same_filesystem(
-    fs1: Option<&crate::plan::FilesystemInfo>,
-    fs2: Option<&crate::plan::FilesystemInfo>,
-) -> Result<bool> {
-    match (fs1, fs2) {
-        (Some(fs1), Some(fs2)) => Ok(fs1.fsid == fs2.fsid),
-        _ => Err(eyre!("Filesystem info not available for same_filesystem check")),
+    fs1: &crate::plan::FilesystemInfo,
+    fs2: &crate::plan::FilesystemInfo,
+) -> bool {
+    // Check if either filesystem info is invalid (fsid == 0)
+    if fs1.fsid == 0 || fs2.fsid == 0 {
+        log::warn!("Filesystem info incomplete on comparing '{}' (fsid={}) with '{}' (fsid={}), assuming different filesystems",
+                fs1.path.display(), fs1.fsid,
+                fs2.path.display(), fs2.fsid);
+        return false;
     }
+
+    // Both have valid fsid, compare them
+    fs1.fsid == fs2.fsid
 }
 
 /// Check if reflink (copy-on-write) is supported on the filesystem
@@ -258,7 +264,10 @@ pub fn compute_link_type_and_reflink(
     let mut can_reflink = false;
 
     // Use stored filesystem info from plan
-    let same_fs = same_filesystem(plan.store_root_fs.as_ref(), plan.env_root_fs.as_ref())?;
+    let same_fs = same_filesystem(
+        &plan.store_root_fs,
+        &plan.env_root_fs,
+    );
 
     // can_hardlink: hardlinks only work on the same filesystem
     let can_hardlink = same_fs;
