@@ -36,10 +36,10 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
+use std::io::{self, BufRead};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use crate::posix::{posix_getpasswd, posix_getgroup};
 use crate::run::{RunOptions, fork_and_execute};
 
 pub struct SystemdSysusersOptions {
@@ -370,7 +370,7 @@ fn validate_user_group_name(name: &str) -> Result<()> {
 
 pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str, home: &str, shell: &str, locked: bool, root: Option<&Path>) -> Result<()> {
     // Check if user already exists
-    if user_exists(name)? {
+    if user_exists(name, root)? {
         return Ok(());
     }
 
@@ -382,7 +382,13 @@ pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str
         args.push(uid.to_string());
     }
 
-    if let Some(gid) = gid {
+    // If no GID specified, try to use group with same name as user
+    let mut actual_gid = gid;
+    if actual_gid.is_none() && group_exists(name, root)? {
+        actual_gid = Some(name);
+    }
+
+    if let Some(gid) = actual_gid {
         args.push("-g".to_string());
         args.push(gid.to_string());
     }
@@ -412,7 +418,7 @@ pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str
 
 pub fn create_group(name: &str, gid: Option<&str>, root: Option<&Path>) -> Result<()> {
     // Check if group already exists
-    if group_exists(name)? {
+    if group_exists(name, root)? {
         return Ok(());
     }
 
@@ -433,12 +439,12 @@ pub fn create_group(name: &str, gid: Option<&str>, root: Option<&Path>) -> Resul
 
 pub fn add_user_to_group(user: &str, group: &str, root: Option<&Path>) -> Result<()> {
     // Ensure group exists
-    if !group_exists(group)? {
+    if !group_exists(group, root)? {
         create_group(group, None, root)?;
     }
 
     // Ensure user exists
-    if !user_exists(user)? {
+    if !user_exists(user, root)? {
         create_user(user, None, None, "", "/", "/sbin/nologin", false, root)?;
     }
 
@@ -455,16 +461,34 @@ pub fn add_user_to_group(user: &str, group: &str, root: Option<&Path>) -> Result
     Ok(())
 }
 
-pub fn user_exists(name: &str) -> Result<bool> {
-    match posix_getpasswd(Some(name), None) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
-    }
+pub fn user_exists(name: &str, root: Option<&Path>) -> Result<bool> {
+    entry_exists(name, "passwd", root)
 }
 
-pub fn group_exists(name: &str) -> Result<bool> {
-    match posix_getgroup(Some(name), None) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+pub fn group_exists(name: &str, root: Option<&Path>) -> Result<bool> {
+    entry_exists(name, "group", root)
+}
+
+fn entry_exists(name: &str, filename: &str, root: Option<&Path>) -> Result<bool> {
+    let file_path = match root {
+        Some(root) => root.join(format!("etc/{}", filename)),
+        None => PathBuf::from(format!("/etc/{}", filename)),
+    };
+    let file = match fs::File::open(&file_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(false), // file doesn't exist, entry doesn't exist
+    };
+    let reader = io::BufReader::new(file);
+    for line in reader.lines() {
+        let line = line.map_err(|e| eyre!("Failed to read {} file: {}", filename, e))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 1 && parts[0] == name {
+            return Ok(true);
+        }
     }
+    Ok(false)
 }
