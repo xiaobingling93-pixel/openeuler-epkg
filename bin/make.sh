@@ -57,30 +57,43 @@ install_to_dev_env() {
 }
 
 # Build Lua library for a specific architecture
-# Usage: build_lua_lib [<arch>]
+# Usage: build_lua_lib [<arch>] [musl|glibc]
 build_lua_lib() {
     local arch=$(get_arch "$1")
+    local lib_type="${2:-musl}"  # Default to musl for backward compatibility
     local compiler=""
 
-    # Deduce compiler based on architecture
-    case "$arch" in
-        x86_64)
-            compiler="musl-gcc"
+    # Deduce compiler based on architecture and library type
+    case "$lib_type" in
+        musl)
+            case "$arch" in
+                x86_64)
+                    compiler="musl-gcc"
+                    ;;
+                aarch64|riscv64|loongarch64)
+                    compiler="$arch-linux-gnu-gcc"
+                    ;;
+                *)
+                    echo "Unknown architecture: $arch"
+                    exit 1
+                    ;;
+            esac
             ;;
-        aarch64|riscv64|loongarch64)
-            compiler="$arch-linux-gnu-gcc"
+        glibc)
+            # For glibc builds, use system gcc (cross-compilers not needed for same arch)
+            compiler="gcc"
             ;;
         *)
-            echo "Unknown architecture: $arch"
+            echo "Unknown library type: $lib_type (must be 'musl' or 'glibc')"
             exit 1
             ;;
     esac
 
-    echo "Building Lua library for $arch using $compiler..."
+    echo "Building Lua library for $arch ($lib_type) using $compiler..."
 
     local lua_download_dir="$PROJECT_ROOT/target/lua-download"
-    local lua_build_dir="$PROJECT_ROOT/target/lua-build-$arch"
-    local lua_lib_dir="$PROJECT_ROOT/target/musl-lua-$arch"
+    local lua_build_dir="$PROJECT_ROOT/target/lua-build-$arch-$lib_type"
+    local lua_lib_dir="$PROJECT_ROOT/target/lua-$lib_type-$arch"
 
     # Download tarball once to shared location
     mkdir -p "$lua_download_dir"
@@ -254,6 +267,24 @@ build_static() {
 # Build development binary
 build() {
     echo "Building debug binary..."
+
+    # Set up static Lua linking for glibc
+    local arch=$(detect_arch)
+    local lua_lib_dir="$PROJECT_ROOT/target/lua-glibc-$arch"
+
+    # Build Lua library if it doesn't exist
+    if [[ ! -f "$lua_lib_dir/liblua.a" ]]; then
+        echo "Lua static library not found at $lua_lib_dir/liblua.a"
+        echo "Building Lua library for $arch (glibc)..."
+        build_lua_lib "$arch" "glibc"
+    fi
+
+    # Export environment variables for static Lua linking
+    export LUA_LIB_NAME=lua
+    export LUA_LIB="$lua_lib_dir"
+    export LUA_LINK=static
+    export LUA_NO_PKG_CONFIG=1
+
     cargo build
 
     echo "Development build completed. Binary is in $PROJECT_ROOT/target/debug/$BINARY_NAME"
