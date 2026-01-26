@@ -45,10 +45,11 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::os::unix::fs::chown;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::posix::{posix_getpasswd, posix_getgroup, posix_mkfifo};
 use crate::utils::set_permissions_from_mode;
+use crate::applets::systemd_sysusers::apply_root;
 
 /// Unescape C-style escape sequences in a string.
 /// Handles common escapes like \n, \t, \", \\, and octal/hex escapes.
@@ -144,6 +145,7 @@ pub struct SystemdTmpfilesOptions {
     pub remove: bool,
     pub boot: bool,
     pub config_files: Vec<String>,
+    pub root: Option<PathBuf>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdTmpfilesOptions> {
@@ -151,6 +153,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdTmpfilesOption
     let clean = matches.get_flag("clean");
     let remove = matches.get_flag("remove");
     let boot = matches.get_flag("boot");
+    let root = matches.get_one::<PathBuf>("root").cloned();
     let config_files: Vec<String> = matches.get_many::<String>("config_files")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
@@ -161,6 +164,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdTmpfilesOption
         remove,
         boot,
         config_files,
+        root,
     })
 }
 
@@ -183,6 +187,10 @@ pub fn command() -> Command {
             .long("boot")
             .help("Execute lines marked with ! (boot-only)")
             .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("root")
+            .long("root")
+            .value_name("DIR")
+            .help("Operate on files relative to DIR"))
         .arg(Arg::new("config_files")
             .num_args(0..)
             .help("Configuration files to process"))
@@ -197,19 +205,19 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
 
     // If no config files specified, use default directories
     let config_files = if options.config_files.is_empty() {
-        find_default_config_files()?
+        find_default_config_files(options.root.as_deref())?
     } else {
         options.config_files
     };
 
     for config_file in config_files {
-        process_config_file(&config_file, do_create, do_clean, do_remove, options.boot)?;
+        process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, options.root.as_deref())?;
     }
 
     Ok(())
 }
 
-fn find_default_config_files() -> Result<Vec<String>> {
+fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
     let mut files = Vec::new();
 
     // Standard directories in order of precedence (higher priority first)
@@ -222,7 +230,8 @@ fn find_default_config_files() -> Result<Vec<String>> {
     ];
 
     for dir in dirs {
-        if let Ok(entries) = fs::read_dir(dir) {
+        let full_dir = apply_root(dir, root);
+        if let Ok(entries) = fs::read_dir(full_dir) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let path = entry.path();
@@ -243,7 +252,7 @@ fn find_default_config_files() -> Result<Vec<String>> {
     Ok(files)
 }
 
-fn process_config_file(config_file: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool) -> Result<()> {
+fn process_config_file(config_file: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool, root: Option<&Path>) -> Result<()> {
     let content = fs::read_to_string(config_file)
         .map_err(|e| eyre!("Failed to read config file {}: {}", config_file, e))?;
 
@@ -253,7 +262,7 @@ fn process_config_file(config_file: &str, do_create: bool, do_clean: bool, do_re
             continue;
         }
 
-        process_line(line, do_create, do_clean, do_remove, boot)?;
+        process_line(line, do_create, do_clean, do_remove, boot, root)?;
     }
 
     Ok(())
@@ -304,7 +313,7 @@ fn parse_line_fields(line: &str) -> Result<Vec<String>> {
     Ok(fields)
 }
 
-fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool) -> Result<()> {
+fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool, root: Option<&Path>) -> Result<()> {
     if std::env::var("DEBUG_TMPFILES").is_ok() {
         eprintln!("DEBUG: process_line called with do_create={}, do_clean={}, do_remove={}", do_create, do_clean, do_remove);
     }
@@ -366,13 +375,13 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
     }
 
     match base_type {
-        "d" | "D" | "v" | "q" | "Q" => execute_with_error_handling(&modifiers, || process_directory_line(&parts, &modifiers, do_create, do_clean, do_remove)),
-        "L" => execute_with_error_handling(&modifiers, || process_symlink_line(&parts, &modifiers)),
-        "f" => execute_with_error_handling(&modifiers, || process_file_line(&parts, &modifiers)),
-        "p" => execute_with_error_handling(&modifiers, || process_pipe_line(&parts, &modifiers)),
-        "w" => execute_with_error_handling(&modifiers, || process_write_line(&parts, &modifiers)),
-        "e" => execute_with_error_handling(&modifiers, || process_empty_directory_line(&parts, &modifiers)),
-        "r" | "R" => execute_with_error_handling(&modifiers, || process_remove_line(&parts, base_type, &modifiers)),
+        "d" | "D" | "v" | "q" | "Q" => execute_with_error_handling(&modifiers, || process_directory_line(&parts, &modifiers, do_create, do_clean, do_remove, root)),
+        "L" => execute_with_error_handling(&modifiers, || process_symlink_line(&parts, &modifiers, root)),
+        "f" => execute_with_error_handling(&modifiers, || process_file_line(&parts, &modifiers, root)),
+        "p" => execute_with_error_handling(&modifiers, || process_pipe_line(&parts, &modifiers, root)),
+        "w" => execute_with_error_handling(&modifiers, || process_write_line(&parts, &modifiers, root)),
+        "e" => execute_with_error_handling(&modifiers, || process_empty_directory_line(&parts, &modifiers, root)),
+        "r" | "R" => execute_with_error_handling(&modifiers, || process_remove_line(&parts, base_type, &modifiers, root)),
         "x" | "X" => {
             // Ignore operations - skip silently
             Ok(())
@@ -445,15 +454,16 @@ fn parse_type_and_modifiers(type_str: &str) -> Result<(&str, Modifiers)> {
     Ok((base_type, modifiers))
 }
 
-fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: bool, _do_clean: bool, do_remove: bool) -> Result<()> {
+fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: bool, do_clean: bool, do_remove: bool, root: Option<&Path>) -> Result<()> {
     if parts.len() < 3 {
         return Err(eyre!("Invalid directory line: not enough fields"));
     }
 
     let (path, mode_str, user_str, group_str) = extract_common_fields(parts);
+    let full_path = apply_root(path, root);
 
     if std::env::var("DEBUG_TMPFILES").is_ok() {
-        eprintln!("DEBUG: process_directory_line called for {} with do_create={}, do_clean={}, do_remove={}", path, do_create, _do_clean, do_remove);
+        eprintln!("DEBUG: process_directory_line called for {} with do_create={}, do_clean={}, do_remove={}", full_path.display(), do_create, do_clean, do_remove);
     }
 
     // Handle different operation modes
@@ -461,9 +471,9 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
         // For 'D' type during remove, we should remove directory contents
         // For now, just warn that this is not implemented
         if std::env::var("DEBUG_TMPFILES").is_ok() {
-            eprintln!("DEBUG: Skipping directory creation for {} during remove", path);
+            eprintln!("DEBUG: Skipping directory creation for {} during remove", full_path.display());
         }
-        eprintln!("Warning: Directory removal operations not implemented: D {}", path);
+        eprintln!("Warning: Directory removal operations not implemented: D {}", full_path.display());
         return Ok(());
     }
 
@@ -476,26 +486,27 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     let mode = parse_mode_with_default(mode_str, 0o755)?;
 
     // Create directory if it doesn't exist
-    if !Path::new(path).exists() {
-        fs::create_dir_all(path)
-            .map_err(|e| eyre!("Failed to create directory {}: {}", path, e))?;
+    if !full_path.exists() {
+        fs::create_dir_all(&full_path)
+            .map_err(|e| eyre!("Failed to create directory {}: {}", full_path.display(), e))?;
     }
 
     // Set permissions
-    set_permissions_from_mode(path, mode)?;
+    set_permissions_from_mode(&full_path, mode)?;
 
     // Set ownership if specified
-    set_ownership_if_specified(path, user_str, group_str)?;
+    set_ownership_if_specified(&full_path, user_str, group_str)?;
 
     Ok(())
 }
 
-fn process_symlink_line(parts: &[String], modifiers: &Modifiers) -> Result<()> {
+fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 6 {
         return Err(eyre!("Invalid symlink line: not enough fields"));
     }
 
     let path = &parts[1];
+    let full_path = apply_root(path, root);
     let target = parts.get(5).map(|s| s.as_str()).unwrap_or("-");
 
     if target == "-" {
@@ -503,10 +514,10 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers) -> Result<()> {
     }
 
     // Remove existing file if + modifier is present
-    if modifiers.append_or_force && Path::new(path).exists() {
-        if Path::new(path).is_symlink() {
-            fs::remove_file(path)
-                .map_err(|e| eyre!("Failed to remove existing symlink {}: {}", path, e))?;
+    if modifiers.append_or_force && full_path.exists() {
+        if full_path.is_symlink() {
+            fs::remove_file(&full_path)
+                .map_err(|e| eyre!("Failed to remove existing symlink {}: {}", full_path.display(), e))?;
         } else {
             // For L+, we might want to replace it, but let's be conservative
             return Ok(());
@@ -514,20 +525,21 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers) -> Result<()> {
     }
 
     // Create symlink if it doesn't exist
-    if !Path::new(path).exists() {
-        std::os::unix::fs::symlink(target, path)
-            .map_err(|e| eyre!("Failed to create symlink {} -> {}: {}", path, target, e))?;
+    if !full_path.exists() {
+        std::os::unix::fs::symlink(target, &full_path)
+            .map_err(|e| eyre!("Failed to create symlink {} -> {}: {}", full_path.display(), target, e))?;
     }
 
     Ok(())
 }
 
-fn process_file_line(parts: &[String], modifiers: &Modifiers) -> Result<()> {
+fn process_file_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 6 {
         return Err(eyre!("Invalid file line: not enough fields"));
     }
 
     let (path, mode_str, user_str, group_str) = extract_common_fields(parts);
+    let full_path = apply_root(path, root);
     // Age is parts[5], content starts from parts[6]
     let content = if parts.len() >= 7 {
         parts[6..].join(" ")
@@ -536,54 +548,57 @@ fn process_file_line(parts: &[String], modifiers: &Modifiers) -> Result<()> {
     };
 
     // Create parent directory if needed
-    ensure_parent_directory(path)?;
+    ensure_parent_directory(&full_path)?;
 
     // For 'f' type: create file if it doesn't exist, or truncate if '+' modifier is present
-    let file_exists = Path::new(path).exists();
+    let file_exists = full_path.exists();
     let should_write = !file_exists || modifiers.append_or_force;
 
     if should_write {
-        fs::write(path, content)
+        fs::write(&full_path, content)
             .map_err(|e| eyre!("Failed to {} file {}: {}",
-                if file_exists { "write to" } else { "create" }, path, e))?;
+                if file_exists { "write to" } else { "create" }, full_path.display(), e))?;
     }
 
     // Set permissions if specified
     if mode_str != "-" {
         let mode = u32::from_str_radix(mode_str, 8)
             .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
-        set_permissions_from_mode(path, mode)?;
+        set_permissions_from_mode(&full_path, mode)?;
     }
 
     // Set ownership if specified
-    set_ownership_if_specified(path, user_str, group_str)?;
+    set_ownership_if_specified(&full_path, user_str, group_str)?;
 
     Ok(())
 }
 
-fn process_pipe_line(parts: &[String], _modifiers: &Modifiers) -> Result<()> {
+fn process_pipe_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 3 {
         return Err(eyre!("Invalid pipe line: not enough fields"));
     }
 
     let (path, mode_str, user_str, group_str) = extract_common_fields(parts);
+    let full_path = apply_root(path, root);
     // Age is parts[5], no argument for pipes
 
     // Create parent directory if needed
-    ensure_parent_directory(path)?;
+    ensure_parent_directory(&full_path)?;
 
     // Create named pipe if it doesn't exist
-    if !Path::new(path).exists() {
-        posix_mkfifo(path)
-            .map_err(|e| eyre!("Failed to create named pipe {}: {}", path, e))?;
+    if !full_path.exists() {
+        let path_str = full_path.to_str()
+            .ok_or_else(|| eyre!("Path contains invalid UTF-8: {}", full_path.display()))?;
+        posix_mkfifo(path_str)
+            .map_err(|e| eyre!("Failed to create named pipe {}: {}", full_path.display(), e))?;
     }
 
     // Set permissions (always, since posix_mkfifo creates with 0o777)
     let mode = parse_mode_with_default(mode_str, 0o644)?;
-    set_permissions_from_mode(path, mode)?;
+    set_permissions_from_mode(&full_path, mode)?;
 
     // Set ownership if specified
-    set_ownership_if_specified(path, user_str, group_str)?;
+    set_ownership_if_specified(&full_path, user_str, group_str)?;
 
     Ok(())
 }
@@ -601,32 +616,32 @@ fn parse_user(user_str: &str) -> Result<u32> {
     }
 }
 
-fn process_remove_line(parts: &[String], remove_type: &str, _modifiers: &Modifiers) -> Result<()> {
+fn process_remove_line(parts: &[String], remove_type: &str, _modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 2 {
         return Err(eyre!("Invalid remove line: not enough fields"));
     }
 
     let path = &parts[1];
-    let path_obj = Path::new(path);
+    let full_path = apply_root(path, root);
 
-    if !path_obj.exists() {
+    if !full_path.exists() {
         return Ok(()); // Nothing to remove
     }
 
     match remove_type {
         "r" => {
             // Remove file
-            if path_obj.is_file() {
-                fs::remove_file(path)
-                    .map_err(|e| eyre!("Failed to remove file {}: {}", path, e))?;
+            if full_path.is_file() {
+                fs::remove_file(&full_path)
+                    .map_err(|e| eyre!("Failed to remove file {}: {}", full_path.display(), e))?;
             } else {
-                return Err(eyre!("Path {} is not a file (use R for directories)", path));
+                return Err(eyre!("Path {} is not a file (use R for directories)", full_path.display()));
             }
         }
         "R" => {
             // Recursively remove directory
-            fs::remove_dir_all(path)
-                .map_err(|e| eyre!("Failed to remove directory {}: {}", path, e))?;
+            fs::remove_dir_all(&full_path)
+                .map_err(|e| eyre!("Failed to remove directory {}: {}", full_path.display(), e))?;
         }
         _ => unreachable!(),
     }
@@ -634,12 +649,13 @@ fn process_remove_line(parts: &[String], remove_type: &str, _modifiers: &Modifie
     Ok(())
 }
 
-fn process_write_line(parts: &[String], _modifiers: &Modifiers) -> Result<()> {
+fn process_write_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 3 {
         return Err(eyre!("Invalid write line: not enough fields"));
     }
 
     let path = &parts[1];
+    let full_path = apply_root(path, root);
     let content = if parts.len() >= 3 {
         // Join all remaining parts with spaces
         parts[2..].join(" ")
@@ -648,41 +664,41 @@ fn process_write_line(parts: &[String], _modifiers: &Modifiers) -> Result<()> {
     };
 
     // For 'w' type, write to existing file only
-    if !Path::new(path).exists() {
-        return Err(eyre!("File {} does not exist (use f to create)", path));
+    if !full_path.exists() {
+        return Err(eyre!("File {} does not exist (use f to create)", full_path.display()));
     }
 
-    fs::write(path, content)
-        .map_err(|e| eyre!("Failed to write to file {}: {}", path, e))?;
+    fs::write(&full_path, content)
+        .map_err(|e| eyre!("Failed to write to file {}: {}", full_path.display(), e))?;
 
     Ok(())
 }
 
-fn process_empty_directory_line(parts: &[String], _modifiers: &Modifiers) -> Result<()> {
+fn process_empty_directory_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 2 {
         return Err(eyre!("Invalid empty directory line: not enough fields"));
     }
 
     let path = &parts[1];
+    let full_path = apply_root(path, root);
 
     // For 'e' type, clean contents of existing directory
-    let path_obj = Path::new(path);
-    if !path_obj.exists() {
+    if !full_path.exists() {
         return Ok(()); // Directory doesn't exist, nothing to clean
     }
 
-    if !path_obj.is_dir() {
-        return Err(eyre!("Path {} is not a directory", path));
+    if !full_path.is_dir() {
+        return Err(eyre!("Path {} is not a directory", full_path.display()));
     }
 
     // Remove all contents of the directory
     // This is a simple implementation - a full implementation would need age-based filtering
-    let entries = fs::read_dir(path)
-        .map_err(|e| eyre!("Failed to read directory {}: {}", path, e))?;
+    let entries = fs::read_dir(&full_path)
+        .map_err(|e| eyre!("Failed to read directory {}: {}", full_path.display(), e))?;
 
     for entry in entries {
         let entry = entry
-            .map_err(|e| eyre!("Failed to read directory entry in {}: {}", path, e))?;
+            .map_err(|e| eyre!("Failed to read directory entry in {}: {}", full_path.display(), e))?;
         let entry_path = entry.path();
 
         if entry_path.is_dir() {
@@ -707,11 +723,11 @@ fn extract_common_fields(parts: &[String]) -> (&str, &str, &str, &str) {
 }
 
 /// Create parent directory for a path if it doesn't exist
-fn ensure_parent_directory(path: &str) -> Result<()> {
-    if let Some(parent) = Path::new(path).parent() {
+fn ensure_parent_directory(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)
-                .map_err(|e| eyre!("Failed to create parent directory for {}: {}", path, e))?;
+                .map_err(|e| eyre!("Failed to create parent directory for {}: {}", path.display(), e))?;
         }
     }
     Ok(())
@@ -728,7 +744,7 @@ fn parse_mode_with_default(mode_str: &str, default_mode: u32) -> Result<u32> {
 }
 
 /// Set ownership for a path if user/group are specified
-fn set_ownership_if_specified(path: &str, user_str: &str, group_str: &str) -> Result<()> {
+fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> Result<()> {
     if user_str != "-" || group_str != "-" {
         let uid = if user_str == "-" {
             None
@@ -743,13 +759,13 @@ fn set_ownership_if_specified(path: &str, user_str: &str, group_str: &str) -> Re
 
         if let (Some(uid), Some(gid)) = (uid, gid) {
             chown(path, Some(uid), Some(gid))
-                .map_err(|e| eyre!("Failed to chown {}: {}", path, e))?;
+                .map_err(|e| eyre!("Failed to chown {}: {}", path.display(), e))?;
         } else if let Some(uid) = uid {
             chown(path, Some(uid), None)
-                .map_err(|e| eyre!("Failed to chown {}: {}", path, e))?;
+                .map_err(|e| eyre!("Failed to chown {}: {}", path.display(), e))?;
         } else if let Some(gid) = gid {
             chown(path, None, Some(gid))
-                .map_err(|e| eyre!("Failed to chown {}: {}", path, e))?;
+                .map_err(|e| eyre!("Failed to chown {}: {}", path.display(), e))?;
         }
     }
     Ok(())

@@ -37,26 +37,32 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::posix::{posix_getpasswd, posix_getgroup};
 
 pub struct SystemdSysusersOptions {
     pub config_files: Vec<String>,
+    pub root: Option<PathBuf>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdSysusersOptions> {
     let config_files: Vec<String> = matches.get_many::<String>("config_files")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
+    let root = matches.get_one::<PathBuf>("root").cloned();
 
-    Ok(SystemdSysusersOptions { config_files })
+    Ok(SystemdSysusersOptions { config_files, root })
 }
 
 pub fn command() -> Command {
     Command::new("systemd-sysusers")
         .about("Create system users and groups")
+        .arg(Arg::new("root")
+            .long("root")
+            .value_name("DIR")
+            .help("Operate on files relative to DIR"))
         .arg(Arg::new("config_files")
             .num_args(0..)
             .help("Configuration files to process"))
@@ -65,19 +71,31 @@ pub fn command() -> Command {
 pub fn run(options: SystemdSysusersOptions) -> Result<()> {
     // If no config files specified, use default directories
     let config_files = if options.config_files.is_empty() {
-        find_default_config_files()?
+        find_default_config_files(options.root.as_deref())?
     } else {
         options.config_files
     };
 
     for config_file in config_files {
-        process_config_file(&config_file)?;
+        process_config_file(&config_file, options.root.as_deref())?;
     }
 
     Ok(())
 }
 
-fn find_default_config_files() -> Result<Vec<String>> {
+/// Apply root prefix to a path if root is specified.
+/// Strips leading slash from the path before joining with root.
+pub fn apply_root(path: &str, root: Option<&Path>) -> PathBuf {
+    match root {
+        Some(root_dir) => {
+            let path_without_slash = path.strip_prefix('/').unwrap_or(path);
+            root_dir.join(path_without_slash)
+        }
+        None => PathBuf::from(path),
+    }
+}
+
+fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
     let mut files = Vec::new();
 
     // Standard directories in order of precedence (higher priority first)
@@ -88,7 +106,8 @@ fn find_default_config_files() -> Result<Vec<String>> {
     ];
 
     for dir in dirs {
-        if let Ok(entries) = fs::read_dir(dir) {
+        let full_dir = apply_root(dir, root);
+        if let Ok(entries) = fs::read_dir(full_dir) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let path = entry.path();
@@ -109,7 +128,7 @@ fn find_default_config_files() -> Result<Vec<String>> {
     Ok(files)
 }
 
-fn process_config_file(config_file: &str) -> Result<()> {
+fn process_config_file(config_file: &str, _root: Option<&Path>) -> Result<()> {
     let content = fs::read_to_string(config_file)
         .map_err(|e| eyre!("Failed to read config file {}: {}", config_file, e))?;
 

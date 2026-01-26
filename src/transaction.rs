@@ -319,6 +319,7 @@ fn run_systemd_utilities(plan: &mut InstallationPlan) -> Result<()> {
     if package_format == PackageFormat::Rpm || package_format == PackageFormat::Pacman {
         systemd_sysusers::run(systemd_sysusers::SystemdSysusersOptions {
             config_files: vec![],
+            root: Some(plan.env_root.clone()),
         })?;
         systemd_tmpfiles::run(systemd_tmpfiles::SystemdTmpfilesOptions {
             create: true,
@@ -326,6 +327,7 @@ fn run_systemd_utilities(plan: &mut InstallationPlan) -> Result<()> {
             remove: false,
             boot: false,
             config_files: vec![],
+            root: Some(plan.env_root.clone()),
         })?;
     }
 
