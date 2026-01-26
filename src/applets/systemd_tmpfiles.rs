@@ -612,7 +612,7 @@ fn parse_user(user_str: &str) -> Result<u32> {
     // Try to look up user by name
     match posix_getpasswd(Some(user_str), None) {
         Ok(passwd) => Ok(passwd.uid),
-        Err(_) => Err(eyre!("Unknown user: {}", user_str)),
+        Err(_) => Err(eyre!("Unknown user: {} (check /etc/passwd or use numeric UID)", user_str)),
     }
 }
 
@@ -757,16 +757,8 @@ fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> R
             Some(parse_group(group_str)?)
         };
 
-        if let (Some(uid), Some(gid)) = (uid, gid) {
-            chown(path, Some(uid), Some(gid))
-                .map_err(|e| eyre!("Failed to chown {}: {}", path.display(), e))?;
-        } else if let Some(uid) = uid {
-            chown(path, Some(uid), None)
-                .map_err(|e| eyre!("Failed to chown {}: {}", path.display(), e))?;
-        } else if let Some(gid) = gid {
-            chown(path, None, Some(gid))
-                .map_err(|e| eyre!("Failed to chown {}: {}", path.display(), e))?;
-        }
+        chown(path, uid, gid)
+            .map_err(|e| eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))?;
     }
     Ok(())
 }
@@ -798,6 +790,6 @@ fn parse_group(group_str: &str) -> Result<u32> {
     // Try to look up group by name
     match posix_getgroup(Some(group_str), None) {
         Ok(group) => Ok(group.gid),
-        Err(_) => Err(eyre!("Unknown group: {}", group_str)),
+        Err(_) => Err(eyre!("Unknown group: {} (check /etc/group or use numeric GID)", group_str)),
     }
 }

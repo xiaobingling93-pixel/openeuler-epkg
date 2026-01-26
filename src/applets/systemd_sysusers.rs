@@ -38,13 +38,31 @@ use color_eyre::eyre::eyre;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
 use crate::posix::{posix_getpasswd, posix_getgroup};
+use crate::run::{RunOptions, fork_and_execute};
 
 pub struct SystemdSysusersOptions {
     pub config_files: Vec<String>,
     pub root: Option<PathBuf>,
+}
+
+/// Helper function to run a system command using RunOptions and fork_and_execute
+fn run_system_command(command: &str, args: Vec<String>, root: Option<&Path>) -> Result<()> {
+    let cmd_str = format!("{} {}", command, args.join(" "));
+    println!("Running: {}", cmd_str);
+
+    let run_options = RunOptions {
+        command: command.to_string(),
+        args,
+        ..Default::default()
+    };
+
+    let env_root = root.unwrap_or_else(|| Path::new("/"));
+    fork_and_execute(env_root, &run_options)
+        .map_err(|e| eyre!("Failed to execute {}: {}", cmd_str, e))?;
+
+    Ok(())
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdSysusersOptions> {
@@ -128,7 +146,7 @@ fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
     Ok(files)
 }
 
-fn process_config_file(config_file: &str, _root: Option<&Path>) -> Result<()> {
+fn process_config_file(config_file: &str, root: Option<&Path>) -> Result<()> {
     let content = fs::read_to_string(config_file)
         .map_err(|e| eyre!("Failed to read config file {}: {}", config_file, e))?;
 
@@ -138,7 +156,7 @@ fn process_config_file(config_file: &str, _root: Option<&Path>) -> Result<()> {
             continue;
         }
 
-        process_line(line)?;
+        process_line(line, root)?;
     }
 
     Ok(())
@@ -185,7 +203,7 @@ fn parse_line_fields(line: &str) -> Result<Vec<String>> {
     Ok(fields)
 }
 
-fn process_line(line: &str) -> Result<()> {
+fn process_line(line: &str, root: Option<&Path>) -> Result<()> {
     let parts = parse_line_fields(line)?;
     if parts.is_empty() {
         return Ok(());
@@ -194,9 +212,9 @@ fn process_line(line: &str) -> Result<()> {
     let line_type = &parts[0];
 
     match line_type.as_str() {
-        "u" | "u!" => process_user_line(&parts, line_type == "u!"),
-        "g" => process_group_line(&parts),
-        "m" => process_member_line(&parts),
+        "u" | "u!" => process_user_line(&parts, line_type == "u!", root),
+        "g" => process_group_line(&parts, root),
+        "m" => process_member_line(&parts, root),
         "r" => process_range_line(&parts),
         _ => {
             eprintln!("Warning: Unknown line type '{}'", line_type);
@@ -205,7 +223,7 @@ fn process_line(line: &str) -> Result<()> {
     }
 }
 
-fn process_user_line(parts: &[String], locked: bool) -> Result<()> {
+fn process_user_line(parts: &[String], locked: bool, root: Option<&Path>) -> Result<()> {
     if parts.len() < 2 {
         return Err(eyre!("Invalid user line: not enough fields"));
     }
@@ -226,12 +244,12 @@ fn process_user_line(parts: &[String], locked: bool) -> Result<()> {
     let shell = if shell == "-" || shell.is_empty() { "/sbin/nologin" } else { shell };
 
     // Create user
-    create_user(name, uid.as_deref(), gid.as_deref(), gecos, home, shell, locked)?;
+    create_user(name, uid.as_deref(), gid.as_deref(), gecos, home, shell, locked, root)?;
 
     Ok(())
 }
 
-fn process_group_line(parts: &[String]) -> Result<()> {
+fn process_group_line(parts: &[String], root: Option<&Path>) -> Result<()> {
     if parts.len() < 2 {
         return Err(eyre!("Invalid group line: not enough fields"));
     }
@@ -242,12 +260,12 @@ fn process_group_line(parts: &[String]) -> Result<()> {
 
     let gid = parse_gid_field(id_field)?;
 
-    create_group(name, gid.as_deref())?;
+    create_group(name, gid.as_deref(), root)?;
 
     Ok(())
 }
 
-fn process_member_line(parts: &[String]) -> Result<()> {
+fn process_member_line(parts: &[String], root: Option<&Path>) -> Result<()> {
     if parts.len() < 3 {
         return Err(eyre!("Invalid member line: not enough fields"));
     }
@@ -258,7 +276,7 @@ fn process_member_line(parts: &[String]) -> Result<()> {
     validate_user_group_name(user)?;
     validate_user_group_name(group)?;
 
-    add_user_to_group(user, group)?;
+    add_user_to_group(user, group, root)?;
 
     Ok(())
 }
@@ -350,111 +368,89 @@ fn validate_user_group_name(name: &str) -> Result<()> {
 }
 
 
-pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str, home: &str, shell: &str, locked: bool) -> Result<()> {
+pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str, home: &str, shell: &str, locked: bool, root: Option<&Path>) -> Result<()> {
     // Check if user already exists
     if user_exists(name)? {
         return Ok(());
     }
 
-    let mut cmd = ProcessCommand::new("useradd");
-    cmd.arg("-r"); // system user
+    // Build useradd command arguments
+    let mut args = vec!["-r".to_string()]; // system user
 
     if let Some(uid) = uid {
-        cmd.arg("-u").arg(uid);
+        args.push("-u".to_string());
+        args.push(uid.to_string());
     }
 
     if let Some(gid) = gid {
-        // Check if gid is numeric or group name
-        if gid.chars().all(|c| c.is_ascii_digit()) {
-            cmd.arg("-g").arg(gid);
-        } else {
-            cmd.arg("-g").arg(gid);
-        }
+        args.push("-g".to_string());
+        args.push(gid.to_string());
     }
 
-    cmd.arg("-d").arg(home);
-    cmd.arg("-s").arg(shell);
+    args.push("-d".to_string());
+    args.push(home.to_string());
+    args.push("-s".to_string());
+    args.push(shell.to_string());
 
     if !gecos.is_empty() {
-        cmd.arg("-c").arg(gecos);
+        args.push("-c".to_string());
+        args.push(gecos.to_string());
     }
 
-    cmd.arg(name);
+    args.push(name.to_string());
 
-    let output = cmd.output()
-        .map_err(|e| eyre!("Failed to execute useradd: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("Warning: useradd failed for {}: {}", name, stderr);
-    }
+    run_system_command("useradd", args, root)?;
 
     if locked {
         // Lock the account
-        let lock_output = ProcessCommand::new("usermod")
-            .arg("-L")
-            .arg(name)
-            .output()
-            .map_err(|e| eyre!("Failed to execute usermod -L: {}", e))?;
-
-        if !lock_output.status.success() {
-            let stderr = String::from_utf8_lossy(&lock_output.stderr);
-            eprintln!("Warning: usermod -L failed for {}: {}", name, stderr);
-        }
+        let lock_args = vec!["-L".to_string(), name.to_string()];
+        run_system_command("usermod", lock_args, root)?;
     }
 
     Ok(())
 }
 
-pub fn create_group(name: &str, gid: Option<&str>) -> Result<()> {
+pub fn create_group(name: &str, gid: Option<&str>, root: Option<&Path>) -> Result<()> {
     // Check if group already exists
     if group_exists(name)? {
         return Ok(());
     }
 
-    let mut cmd = ProcessCommand::new("groupadd");
-    cmd.arg("-r"); // system group
+    // Build groupadd command arguments
+    let mut args = vec!["-r".to_string()]; // system group
 
     if let Some(gid) = gid {
-        cmd.arg("-g").arg(gid);
+        args.push("-g".to_string());
+        args.push(gid.to_string());
     }
 
-    cmd.arg(name);
+    args.push(name.to_string());
 
-    let output = cmd.output()
-        .map_err(|e| eyre!("Failed to execute groupadd: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("Warning: groupadd failed for {}: {}", name, stderr);
-    }
+    run_system_command("groupadd", args, root)?;
 
     Ok(())
 }
 
-pub fn add_user_to_group(user: &str, group: &str) -> Result<()> {
+pub fn add_user_to_group(user: &str, group: &str, root: Option<&Path>) -> Result<()> {
     // Ensure group exists
     if !group_exists(group)? {
-        create_group(group, None)?;
+        create_group(group, None, root)?;
     }
 
     // Ensure user exists
     if !user_exists(user)? {
-        create_user(user, None, None, "", "/", "/sbin/nologin", false)?;
+        create_user(user, None, None, "", "/", "/sbin/nologin", false, root)?;
     }
 
-    let output = ProcessCommand::new("usermod")
-        .arg("-a")
-        .arg("-G")
-        .arg(group)
-        .arg(user)
-        .output()
-        .map_err(|e| eyre!("Failed to execute usermod: {}", e))?;
+    // Build usermod command arguments
+    let args = vec![
+        "-a".to_string(),
+        "-G".to_string(),
+        group.to_string(),
+        user.to_string(),
+    ];
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("Warning: usermod failed for user {} group {}: {}", user, group, stderr);
-    }
+    run_system_command("usermod", args, root)?;
 
     Ok(())
 }
