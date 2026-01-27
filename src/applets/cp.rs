@@ -86,7 +86,7 @@ pub fn command() -> Command {
             .required(true))
 }
 
-fn preserve_attributes(src: &Path, dst: &Path, preserve_timestamps: bool) -> Result<()> {
+pub fn preserve_attributes(src: &Path, dst: &Path, preserve_timestamps: bool) -> Result<()> {
     let metadata = fs::metadata(src)
         .map_err(|e| eyre!("cp: cannot get metadata for '{}': {}", src.display(), e))?;
 
@@ -110,12 +110,12 @@ fn preserve_attributes(src: &Path, dst: &Path, preserve_timestamps: bool) -> Res
 }
 
 #[cfg(not(unix))]
-fn preserve_attributes(_src: &Path, _dst: &Path, _preserve_timestamps: bool) -> Result<()> {
+pub fn preserve_attributes(_src: &Path, _dst: &Path, _preserve_timestamps: bool) -> Result<()> {
     // No-op on non-Unix systems
     Ok(())
 }
 
-fn copy_file(src: &Path, dst: &Path, preserve_attrs: bool, force: bool, dereference: bool) -> Result<()> {
+pub fn copy_file(src: &Path, dst: &Path, preserve_attrs: bool, force: bool, dereference: bool) -> Result<()> {
     // If force is enabled and destination exists, try to remove it first
     if force && dst.exists() {
         if dst.is_dir() {
@@ -166,7 +166,7 @@ fn copy_file(src: &Path, dst: &Path, preserve_attrs: bool, force: bool, derefere
     Ok(())
 }
 
-fn copy_directory_recursive(src: &Path, dst: &Path, preserve_attrs: bool, force: bool, dereference: bool) -> Result<()> {
+pub fn copy_directory_recursive(src: &Path, dst: &Path, preserve_attrs: bool, force: bool, dereference: bool) -> Result<()> {
     for entry in WalkDir::new(src) {
         let entry = entry.map_err(|e| eyre!("cp: error walking directory: {}", e))?;
         let src_path = entry.path();
@@ -197,6 +197,40 @@ fn copy_directory_recursive(src: &Path, dst: &Path, preserve_attrs: bool, force:
     Ok(())
 }
 
+/// Copy a single source to a destination with specified options.
+/// This handles both files and directories (if recursive=true).
+/// If destination exists and is a directory, the source will be copied inside it.
+pub fn copy_single_item(
+    src: &Path,
+    dst: &Path,
+    preserve_attrs: bool,
+    force: bool,
+    dereference: bool,
+    recursive: bool,
+) -> Result<()> {
+    if src.is_dir() && !recursive {
+        return Err(eyre!("cp: -r not specified; omitting directory '{}'", src.display()));
+    }
+
+    if src.is_dir() {
+        // Copy directory to destination
+        let dst_dir = if dst.exists() && dst.is_dir() {
+            dst.join(src.file_name().unwrap())
+        } else {
+            dst.to_path_buf()
+        };
+        copy_directory_recursive(src, &dst_dir, preserve_attrs, force, dereference)
+    } else {
+        // Copy file
+        let dst_file = if dst.is_dir() {
+            dst.join(src.file_name().unwrap())
+        } else {
+            dst.to_path_buf()
+        };
+        copy_file(src, &dst_file, preserve_attrs, force, dereference)
+    }
+}
+
 pub fn run(options: CpOptions) -> Result<()> {
     let dest_path = Path::new(&options.destination);
 
@@ -217,28 +251,14 @@ pub fn run(options: CpOptions) -> Result<()> {
     if options.sources.len() == 1 {
         // Single source
         let src_path = Path::new(&options.sources[0]);
-
-        if src_path.is_dir() && !recursive {
-            return Err(eyre!("cp: -r not specified; omitting directory '{}'", src_path.display()));
-        }
-
-        if src_path.is_dir() {
-            // Copy directory to destination
-            let dst_dir = if dest_path.exists() && dest_path.is_dir() {
-                dest_path.join(src_path.file_name().unwrap())
-            } else {
-                dest_path.to_path_buf()
-            };
-            copy_directory_recursive(src_path, &dst_dir, preserve_attrs, options.force, options.dereference)?;
-        } else {
-            // Copy file
-            if dest_path.is_dir() {
-                let dst_file = dest_path.join(src_path.file_name().unwrap());
-                copy_file(src_path, &dst_file, preserve_attrs, options.force, options.dereference)?;
-            } else {
-                copy_file(src_path, dest_path, preserve_attrs, options.force, options.dereference)?;
-            }
-        }
+        copy_single_item(
+            src_path,
+            dest_path,
+            preserve_attrs,
+            options.force,
+            options.dereference,
+            recursive,
+        )?;
     } else {
         // Multiple sources - destination must be a directory
         if !dest_path.exists() {
@@ -250,19 +270,17 @@ pub fn run(options: CpOptions) -> Result<()> {
 
         for src in &options.sources {
             let src_path = Path::new(src);
-            if src_path.is_dir() && !recursive {
-                return Err(eyre!("cp: -r not specified; omitting directory '{}'", src_path.display()));
-            }
-
             let dst_name = src_path.file_name()
                 .ok_or_else(|| eyre!("cp: cannot get filename from '{}'", src))?;
             let dst_path = dest_path.join(dst_name);
-
-            if src_path.is_dir() {
-                copy_directory_recursive(src_path, &dst_path, preserve_attrs, options.force, options.dereference)?;
-            } else {
-                copy_file(src_path, &dst_path, preserve_attrs, options.force, options.dereference)?;
-            }
+            copy_single_item(
+                src_path,
+                &dst_path,
+                preserve_attrs,
+                options.force,
+                options.dereference,
+                recursive,
+            )?;
         }
     }
 

@@ -4,7 +4,7 @@
 //! - CLI: --create, --clean, --remove, --boot
 //! - Config file discovery: /etc, /run, /usr/local/lib, /usr/lib with .conf extension
 //! - Line parsing: whitespace separation, quotes, C-style escapes (\n\t\"\\ octal/hex)
-//! - Item types: d/D/v/q/Q (dirs), f (files), L (symlinks), p (pipes), r/R (remove), w (write), e (empty dir)
+//! - Item types: d/D/v/q/Q (dirs), f (files), L (symlinks), p (pipes), r/R (remove), w (write), e (empty dir), C (copy)
 //! - Modifiers: ! (boot-only), - (ignore errors), + (append/force), =, ~, $, ?
 //! - Directory/file/symlink/pipe creation with permissions/ownership
 //! - User/group resolution (numeric and name lookup)
@@ -20,7 +20,7 @@
 //! - Age-based cleanup: threshold parsing, timestamp selection (atime/btime/ctime/mtime), cleanup logic
 //! - Specifier expansion: %a, %b, %H, %l, %q, %m, %M, %o, %v, %w, %W, %A, %B, %g, %G, %u, %U, %T, %V, %h, %C, %L, %S, %t
 //! - Operation phases: systemd's PURGE → REMOVE_AND_CLEAN → CREATE ordering
-//! - Advanced item types: C (copy), z/Z (relabel), t/T (xattr), h/H (attributes), a/A (ACLs)
+//! - Advanced item types: z/Z (relabel), t/T (xattr), h/H (attributes), a/A (ACLs)
 //!
 //! MISSING ADVANCED FEATURES:
 //! - Subvolume/quota support for v/q/Q types
@@ -53,6 +53,7 @@ use nix::sys::wait::{waitpid, WaitStatus};
 use crate::posix::{posix_getpasswd, posix_getgroup, posix_mkfifo};
 use crate::utils::set_permissions_from_mode;
 use crate::applets::systemd_sysusers::apply_root;
+use crate::applets::cp::copy_single_item;
 use crate::run::{RunOptions, setup_namespace_and_mounts};
 
 /// Unescape C-style escape sequences in a string.
@@ -446,11 +447,7 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
             // Ignore operations - skip silently
             Ok(())
         }
-        "C" => {
-            // Copy operations - skip with warning
-            eprintln!("Warning: Copy operations (C) not implemented: {}", line_type);
-            Ok(())
-        }
+        "C" => execute_with_error_handling(&modifiers, || process_copy_line(&parts, &modifiers, root)),
         "z" | "Z" | "t" | "T" | "h" | "H" | "a" | "A" => {
             // Attribute operations - skip with warning
             eprintln!("Warning: Attribute operations ({}) not implemented: {}", base_type, line_type);
@@ -774,6 +771,68 @@ fn process_empty_directory_line(parts: &[String], _modifiers: &Modifiers, root: 
                 .map_err(|e| eyre!("Failed to remove file {}: {}", entry_path.display(), e))?;
         }
     }
+
+    Ok(())
+}
+
+fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
+    if parts.len() < 2 {
+        return Err(eyre!("Invalid copy line: not enough fields"));
+    }
+
+    let (path, mode_str, user_str, group_str) = extract_common_fields(parts);
+    let full_path = apply_root(path, root);
+
+    // Determine source path
+    let source = if parts.len() >= 7 {
+        parts[6].clone()
+    } else {
+        // Default to /usr/share/factory/ with same name as destination
+        let file_name = Path::new(path)
+            .file_name()
+            .ok_or_else(|| eyre!("Cannot get filename from path: {}", path))?;
+        let mut factory_path = PathBuf::from("/usr/share/factory");
+        factory_path.push(file_name);
+        factory_path.to_str()
+            .ok_or_else(|| eyre!("Failed to convert factory path to string"))?
+            .to_string()
+    };
+    let full_source = apply_root(&source, root);
+
+    // Check if destination exists and is a non-empty directory
+    if full_path.exists() && full_path.is_dir() {
+        let is_empty = fs::read_dir(&full_path)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if !is_empty && !modifiers.append_or_force {
+            // Skip entire copy operation per man page
+            return Ok(());
+        }
+    }
+
+    // Ensure parent directory exists
+    ensure_parent_directory(&full_path)?;
+
+    // Copy recursively, preserving symlinks (dereference=false)
+    // Use preserve_attrs=true to keep source attributes, but we'll override with specified mode/user/group later
+    copy_single_item(
+        &full_source,
+        &full_path,
+        true,  // preserve_attrs
+        modifiers.append_or_force, // force overwrite if + modifier
+        false, // dereference: do not follow symlinks
+        true,  // recursive
+    )?;
+
+    // Set permissions if specified
+    if mode_str != "-" {
+        let mode = u32::from_str_radix(mode_str, 8)
+            .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
+        set_permissions_from_mode(&full_path, mode)?;
+    }
+
+    // Set ownership if specified
+    set_ownership_if_specified(&full_path, user_str, group_str)?;
 
     Ok(())
 }
