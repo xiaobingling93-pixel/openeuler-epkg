@@ -291,16 +291,21 @@ fn begin_transaction(
 /// Archlinux: need run
 ///   % epkg -e archlinux search --paths usr/share/libalpm/hooks/|grep systemd
 ///   systemd /usr/share/libalpm/hooks/20-systemd-sysusers.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-binfmt.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-catalog.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-daemon-reload-system.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-daemon-reload-user.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-hwdb.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-restart-marked.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-sysctl.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-tmpfiles.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-udev-reload.hook
-///   systemd /usr/share/libalpm/hooks/30-systemd-update.hook
+///   ...
+///   wfg ~/.epkg/store/wdmnsebhj53mrqa224ulxaqur4s4nfyg__systemd__259-2__x86_64/fs/usr/share/libalpm/hooks% ls
+///   20-systemd-sysusers.hook  25-systemd-binfmt.hook   25-systemd-hwdb.hook    30-systemd-daemon-reload-system.hook  35-systemd-restart-marked.hook  35-systemd-update.hook
+///   21-systemd-tmpfiles.hook  25-systemd-catalog.hook  25-systemd-sysctl.hook  30-systemd-daemon-reload-user.hook    35-systemd-udev-reload.hook
+///
+///   wfg ~/.epkg/store/wdmnsebhj53mrqa224ulxaqur4s4nfyg__systemd__259-2__x86_64/fs/usr/share/libalpm/hooks% cat 20-systemd-sysusers.hook
+///   [Trigger]
+///   Type = Path
+///   Operation = Install
+///   Operation = Upgrade
+///   Target = usr/lib/sysusers.d/*.conf
+///   [Action]
+///   Description = Creating system user accounts...
+///   When = PostTransaction
+///   Exec = /usr/share/libalpm/scripts/systemd-hook sysusers
 ///
 /// Alpine: no sysusers.d; explicit adduser in scriptlets
 ///   % grep sysusers.d ~/.epkg/store/*nginx*/info/filelist.txt
