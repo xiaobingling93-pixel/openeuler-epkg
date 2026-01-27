@@ -403,6 +403,24 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
     }
 }
 
+/// Execute a processing function with error handling for ignore_errors modifier
+fn execute_with_error_handling<F>(modifiers: &Modifiers, operation: F) -> color_eyre::Result<()>
+where
+    F: FnOnce() -> color_eyre::Result<()>,
+{
+    match operation() {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if modifiers.ignore_errors {
+                eprintln!("Warning: {} (ignored due to - modifier)", e);
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Modifiers {
     boot_only: bool,                // !
@@ -603,19 +621,6 @@ fn process_pipe_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Pat
     Ok(())
 }
 
-fn parse_user(user_str: &str) -> Result<u32> {
-    // Try to parse as numeric UID first
-    if let Ok(uid) = user_str.parse::<u32>() {
-        return Ok(uid);
-    }
-
-    // Try to look up user by name
-    match posix_getpasswd(Some(user_str), None) {
-        Ok(passwd) => Ok(passwd.uid),
-        Err(_) => Err(eyre!("Unknown user: {} (check /etc/passwd or use numeric UID)", user_str)),
-    }
-}
-
 fn process_remove_line(parts: &[String], remove_type: &str, _modifiers: &Modifiers, root: Option<&Path>) -> Result<()> {
     if parts.len() < 2 {
         return Err(eyre!("Invalid remove line: not enough fields"));
@@ -763,21 +768,16 @@ fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> R
     Ok(())
 }
 
-/// Execute a processing function with error handling for ignore_errors modifier
-fn execute_with_error_handling<F>(modifiers: &Modifiers, operation: F) -> color_eyre::Result<()>
-where
-    F: FnOnce() -> color_eyre::Result<()>,
-{
-    match operation() {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            if modifiers.ignore_errors {
-                eprintln!("Warning: {} (ignored due to - modifier)", e);
-                Ok(())
-            } else {
-                Err(e)
-            }
-        }
+fn parse_user(user_str: &str) -> Result<u32> {
+    // Try to parse as numeric UID first
+    if let Ok(uid) = user_str.parse::<u32>() {
+        return Ok(uid);
+    }
+
+    // Try to look up user by name
+    match posix_getpasswd(Some(user_str), None) {
+        Ok(passwd) => Ok(passwd.uid),
+        Err(_) => Err(eyre!("Unknown user: {} (check /etc/passwd or use numeric UID)", user_str)),
     }
 }
 
