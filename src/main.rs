@@ -58,6 +58,7 @@ mod plan;
 mod version_compare;
 mod scriptlets;
 mod hooks;
+mod userdb;
 mod deb_triggers;
 mod rpm_triggers;
 mod lua;

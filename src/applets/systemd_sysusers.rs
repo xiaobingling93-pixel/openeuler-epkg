@@ -40,30 +40,17 @@ use std::io::{self, BufRead};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use crate::run::{RunOptions, fork_and_execute};
+use crate::userdb;
 
 pub struct SystemdSysusersOptions {
     pub config_files: Vec<String>,
     pub root: Option<PathBuf>,
 }
 
-/// Helper function to run a system command using RunOptions and fork_and_execute
-fn run_system_command(command: &str, args: Vec<String>, root: Option<&Path>) -> Result<()> {
-    let cmd_str = format!("{} {}", command, args.join(" "));
-    println!("Running: {}", cmd_str);
-
-    let run_options = RunOptions {
-        command: command.to_string(),
-        args,
-        ..Default::default()
-    };
-
-    let env_root = root.unwrap_or_else(|| Path::new("/"));
-    fork_and_execute(env_root, &run_options)
-        .map_err(|e| eyre!("Failed to execute {}: {}", cmd_str, e))?;
-
-    Ok(())
-}
+// NOTE: systemd-sysusers previously relied on external useradd/groupadd/usermod
+// via RunOptions. This created a cyclic dependency when those tools are
+// themselves provided by epkg. We now implement the required user/group
+// operations directly in Rust using the internal userdb helpers.
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdSysusersOptions> {
     let config_files: Vec<String> = matches.get_many::<String>("config_files")
@@ -353,7 +340,7 @@ fn validate_gid(gid_str: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_user_group_name(name: &str) -> Result<()> {
+pub fn validate_user_group_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(eyre!("User/group name cannot be empty"));
     }
@@ -371,96 +358,26 @@ fn validate_user_group_name(name: &str) -> Result<()> {
 
 
 pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str, home: &str, shell: &str, locked: bool, root: Option<&Path>) -> Result<()> {
-    // Check if user already exists
-    if user_exists(name, root)? {
-        return Ok(());
-    }
-
-    // Build useradd command arguments
-    let mut args = vec!["-r".to_string()]; // system user
-
-    if let Some(uid) = uid {
-        args.push("-u".to_string());
-        args.push(uid.to_string());
-    }
-
-    // If no GID specified, try to use group with same name as user
-    let mut actual_gid = gid;
-    if actual_gid.is_none() && group_exists(name, root)? {
-        actual_gid = Some(name);
-    }
-
-    if let Some(gid) = actual_gid {
-        args.push("-g".to_string());
-        args.push(gid.to_string());
-    }
-
-    args.push("-d".to_string());
-    args.push(home.to_string());
-    args.push("-s".to_string());
-    args.push(shell.to_string());
-
-    if !gecos.is_empty() {
-        args.push("-c".to_string());
-        args.push(gecos.to_string());
-    }
-
-    args.push(name.to_string());
-
-    run_system_command("useradd", args, root)?;
-
-    if locked {
-        // Lock the account
-        let lock_args = vec!["-L".to_string(), name.to_string()];
-        run_system_command("usermod", lock_args, root)?;
-    }
-
-    Ok(())
+    userdb::create_user(
+        name,
+        uid,
+        gid,
+        gecos,
+        home,
+        shell,
+        true,
+        locked,
+        root,
+    )
 }
 
 pub fn create_group(name: &str, gid: Option<&str>, root: Option<&Path>) -> Result<()> {
-    // Check if group already exists
-    if group_exists(name, root)? {
-        return Ok(());
-    }
-
-    // Build groupadd command arguments
-    let mut args = vec!["-r".to_string()]; // system group
-
-    if let Some(gid) = gid {
-        args.push("-g".to_string());
-        args.push(gid.to_string());
-    }
-
-    args.push(name.to_string());
-
-    run_system_command("groupadd", args, root)?;
-
+    let _ = userdb::ensure_group(name, gid, true, root)?;
     Ok(())
 }
 
 pub fn add_user_to_group(user: &str, group: &str, root: Option<&Path>) -> Result<()> {
-    // Ensure group exists
-    if !group_exists(group, root)? {
-        create_group(group, None, root)?;
-    }
-
-    // Ensure user exists
-    if !user_exists(user, root)? {
-        create_user(user, None, None, "", "/", "/sbin/nologin", false, root)?;
-    }
-
-    // Build usermod command arguments
-    let args = vec![
-        "-a".to_string(),
-        "-G".to_string(),
-        group.to_string(),
-        user.to_string(),
-    ];
-
-    run_system_command("usermod", args, root)?;
-
-    Ok(())
+    userdb::add_user_to_group(user, group, root)
 }
 
 pub fn user_exists(name: &str, root: Option<&Path>) -> Result<bool> {
