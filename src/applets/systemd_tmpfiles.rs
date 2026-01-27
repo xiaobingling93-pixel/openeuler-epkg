@@ -55,6 +55,8 @@ use crate::utils::set_permissions_from_mode;
 use crate::applets::systemd_sysusers::apply_root;
 use crate::applets::cp::copy_single_item;
 use crate::run::{RunOptions, setup_namespace_and_mounts};
+use glob::glob;
+use walkdir::WalkDir;
 
 /// Unescape C-style escape sequences in a string.
 /// Handles common escapes like \n, \t, \", \\, and octal/hex escapes.
@@ -448,7 +450,9 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
             Ok(())
         }
         "C" => execute_with_error_handling(&modifiers, || process_copy_line(&parts, &modifiers, root)),
-        "z" | "Z" | "t" | "T" | "h" | "H" | "a" | "A" => {
+        "z" => execute_with_error_handling(&modifiers, || process_attribute_line(&parts, &modifiers, root, false)),
+        "Z" => execute_with_error_handling(&modifiers, || process_attribute_line(&parts, &modifiers, root, true)),
+        "t" | "T" | "h" | "H" | "a" | "A" => {
             // Attribute operations - skip with warning
             eprintln!("Warning: Attribute operations ({}) not implemented: {}", base_type, line_type);
             Ok(())
@@ -833,6 +837,68 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
 
     // Set ownership if specified
     set_ownership_if_specified(&full_path, user_str, group_str)?;
+
+    Ok(())
+}
+
+/// Process attribute operations (z and Z)
+fn process_attribute_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path>, recursive: bool) -> Result<()> {
+    let (pattern, mode_str, user_str, group_str) = extract_common_fields(parts);
+    // Nothing to do if no attributes specified
+    if mode_str == "-" && user_str == "-" && group_str == "-" {
+        return Ok(());
+    }
+    let full_pattern = apply_root(pattern, root);
+    let full_pattern_str = full_pattern.to_str()
+        .ok_or_else(|| eyre!("Path contains invalid UTF-8: {}", full_pattern.display()))?;
+
+    // Expand glob pattern
+    let entries = glob(full_pattern_str)
+        .map_err(|e| eyre!("Invalid glob pattern '{}': {}", pattern, e))?;
+
+    // Helper to apply attributes to a single path
+    let apply_attributes = |path: &Path| -> Result<()> {
+        // Set permissions if specified
+        if mode_str != "-" {
+            let mode = u32::from_str_radix(mode_str, 8)
+                .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
+            set_permissions_from_mode(path, mode)?;
+        }
+        // Set ownership if specified
+        set_ownership_if_specified(path, user_str, group_str)?;
+        Ok(())
+    };
+
+    for entry in entries {
+        match entry {
+            Ok(path) => {
+                // Skip symlinks as per "Does not follow symlinks"
+                if path.is_symlink() {
+                    continue;
+                }
+
+                if recursive && path.is_dir() {
+                    // Recursively process directory contents (excluding the directory itself)
+                    for entry in WalkDir::new(&path).follow_links(false).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+                        let entry_path = entry.path();
+                        if entry_path.is_symlink() {
+                            continue;
+                        }
+                        apply_attributes(entry_path)?;
+                    }
+                }
+                // Apply to the matched path itself (file or directory)
+                apply_attributes(&path)?;
+            }
+            Err(e) => {
+                if modifiers.ignore_errors {
+                    eprintln!("Warning: glob match error: {} (ignored due to - modifier)", e);
+                } else {
+                    return Err(eyre!("Glob match error: {}", e));
+                }
+            }
+        }
+    }
 
     Ok(())
 }
