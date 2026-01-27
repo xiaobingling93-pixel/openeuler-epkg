@@ -317,23 +317,19 @@ fn begin_transaction(
 ///   /home/wfg/.epkg/store/lc6hz4yb6hw2a3z2yju4ul5apk7g66qg__busybox__1.37.0-r20__x86_64/info/apk/.post-upgrade:adduser -S -D -H -h /dev/null -s /sbin/nologin -G klogd -g klogd klogd 2>/dev/null
 ///
 /// Conda: no triggers, no sysusers.d
-///
-fn run_systemd_utilities(plan: &mut InstallationPlan) -> Result<()> {
+
+fn run_systemd_utilities(plan: &InstallationPlan) -> Result<()> {
     let package_format = plan.package_format;
 
     if package_format == PackageFormat::Rpm || package_format == PackageFormat::Pacman {
+        // Run systemd-sysusers in parent (it uses fork_and_execute internally)
         systemd_sysusers::run(systemd_sysusers::SystemdSysusersOptions {
             config_files: vec![],
             root: Some(plan.env_root.clone()),
         })?;
-        systemd_tmpfiles::run(systemd_tmpfiles::SystemdTmpfilesOptions {
-            create: true,
-            clean: true,
-            remove: false,
-            boot: false,
-            config_files: vec![],
-            root: Some(plan.env_root.clone()),
-        })?;
+
+        // Run systemd-tmpfiles in child (it uses setup_namespace_and_mounts internally)
+        systemd_tmpfiles::fork_run(&plan.env_root)?;
     }
 
     Ok(())

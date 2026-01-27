@@ -47,9 +47,13 @@ use std::fs;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 
+use nix::unistd::{fork, ForkResult};
+use nix::sys::wait::{waitpid, WaitStatus};
+
 use crate::posix::{posix_getpasswd, posix_getgroup, posix_mkfifo};
 use crate::utils::set_permissions_from_mode;
 use crate::applets::systemd_sysusers::apply_root;
+use crate::run::{RunOptions, setup_namespace_and_mounts};
 
 /// Unescape C-style escape sequences in a string.
 /// Handles common escapes like \n, \t, \", \\, and octal/hex escapes.
@@ -196,6 +200,49 @@ pub fn command() -> Command {
             .help("Configuration files to process"))
 }
 
+/// Fork and execute a closure in the child process.
+/// Returns Ok(()) if child exits successfully, otherwise returns an error.
+fn fork_and_call<F>(f: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            match waitpid(child, None) {
+                Ok(WaitStatus::Exited(_, 0)) => Ok(()),
+                Ok(WaitStatus::Exited(_, code)) => Err(eyre!("child exited with code {}", code)),
+                Ok(WaitStatus::Signaled(_, signal, _)) => Err(eyre!("child killed by signal {:?}", signal)),
+                Ok(_) => Err(eyre!("child ended with unexpected status")),
+                Err(e) => Err(eyre!("failed to wait for child: {}", e)),
+            }
+        }
+        Ok(ForkResult::Child) => {
+            match f() {
+                Ok(()) => std::process::exit(0),
+                Err(_) => std::process::exit(1),
+            }
+        }
+        Err(e) => Err(eyre!("fork failed: {}", e)),
+    }
+}
+
+/// Fork is necessary when invoked from epkg, because multi-threaded processes cannot create user namespaces,
+/// and systemd_tmpfiles::run() -> setup_namespace_and_mounts() requires a single-threaded process.
+/// If directly invoked by busybox applet, no threads have been created, so no extra fork needed.
+pub fn fork_run(env_root: &Path) -> Result<()> {
+    fork_and_call(|| {
+        run(SystemdTmpfilesOptions {
+            create: true,
+            clean: true,
+            remove: false,
+            boot: false,
+            config_files: vec![],
+            root: Some(env_root.to_path_buf()),
+        })
+    })
+}
+
+
 pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     // Determine which operations to perform
     // If no specific modes are requested, default to create + clean
@@ -203,15 +250,28 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     let do_clean = options.clean || (!options.create && !options.clean && !options.remove);
     let do_remove = options.remove;
 
+    // If --root is specified, set up namespace and mounts so we can operate as root inside the environment
+    if let Some(root) = &options.root {
+        // Set up namespace and bind mounts to make root the environment root
+        let run_options = RunOptions {
+            ..Default::default()
+        };
+        setup_namespace_and_mounts(root, &run_options)?;
+    };
+
+    // After namespace setup, we are inside the environment root mounted over /
+    // So we should not prefix paths with root anymore
+    let effective_root = None;
+
     // If no config files specified, use default directories
     let config_files = if options.config_files.is_empty() {
-        find_default_config_files(options.root.as_deref())?
+        find_default_config_files(effective_root)?
     } else {
         options.config_files
     };
 
     for config_file in config_files {
-        process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, options.root.as_deref())?;
+        process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, effective_root)?;
     }
 
     Ok(())

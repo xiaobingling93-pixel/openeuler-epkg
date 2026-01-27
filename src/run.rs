@@ -365,7 +365,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
 }
 
 /// Set up namespace and bind mounts
-fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptions) -> Result<()> {
+pub(crate) fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptions) -> Result<()> {
     let euid = geteuid();
     let uid = getuid();
     let gid = getgid();
