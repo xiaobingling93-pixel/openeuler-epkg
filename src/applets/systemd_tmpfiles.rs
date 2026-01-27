@@ -205,6 +205,7 @@ pub fn command() -> Command {
 
 /// Fork and execute a closure in the child process.
 /// Returns Ok(()) if child exits successfully, otherwise returns an error.
+#[allow(dead_code)]
 fn fork_and_call<F>(f: F) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
@@ -232,6 +233,7 @@ where
 /// Fork is necessary when invoked from epkg, because multi-threaded processes cannot create user namespaces,
 /// and systemd_tmpfiles::run() -> setup_namespace_and_mounts() requires a single-threaded process.
 /// If directly invoked by busybox applet, no threads have been created, so no extra fork needed.
+#[allow(dead_code)]
 pub fn fork_run(env_root: &Path) -> Result<()> {
     fork_and_call(|| {
         run(SystemdTmpfilesOptions {
@@ -318,6 +320,8 @@ fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
 fn process_config_file(config_file: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool, root: Option<&Path>) -> Result<()> {
     let content = fs::read_to_string(config_file)
         .map_err(|e| eyre!("Failed to read config file {}: {}", config_file, e))?;
+
+    log::info!("systemd_tmpfiles: handling file {}", config_file);
 
     for line in content.lines() {
         let line = line.trim();

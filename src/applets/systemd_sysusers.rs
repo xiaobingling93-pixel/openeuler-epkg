@@ -150,6 +150,8 @@ fn process_config_file(config_file: &str, root: Option<&Path>) -> Result<()> {
     let content = fs::read_to_string(config_file)
         .map_err(|e| eyre!("Failed to read config file {}: {}", config_file, e))?;
 
+    log::info!("systemd_sysusers: handling file {}", config_file);
+
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {

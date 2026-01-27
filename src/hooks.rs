@@ -81,6 +81,23 @@ pub struct HookTrigger {
     pub type_set: bool, // for input validation
 }
 
+impl Default for HookTrigger {
+    fn default() -> Self {
+        Self {
+            operations: 0,
+            hook_type: HookType::Path,
+            targets: Vec::new(),
+            positive_targets: Vec::new(),
+            negative_targets: Vec::new(),
+            positive_prefixes: Vec::new(),
+            positive_packages: HashMap::new(),
+            positive_patterns: Vec::new(),
+            negative_patterns: Vec::new(),
+            type_set: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HookAction {
     pub description: Option<String>,
@@ -90,6 +107,20 @@ pub struct HookAction {
     pub abort_on_fail: bool,
     pub needs_targets: bool,
     pub priority: u32,
+}
+
+impl Default for HookAction {
+    fn default() -> Self {
+        Self {
+            description: None,
+            when: HookWhen::PostTransaction,
+            exec: String::new(),
+            depends: Vec::new(),
+            abort_on_fail: false,
+            needs_targets: false,
+            priority: RPMTRIGGER_DEFAULT_PRIORITY,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,32 +176,13 @@ fn parse_hook_file(hook_path: &Path, pkgkey: Option<&str>) -> Result<Hook> {
             in_trigger = true;
             in_action = false;
             // Start a new trigger section
-            current_triggers.push(HookTrigger {
-                operations: 0,
-                hook_type: HookType::Path, // Default
-                targets: Vec::new(),
-                positive_targets: Vec::new(),
-                negative_targets: Vec::new(),
-                positive_patterns: Vec::new(),
-                positive_prefixes: Vec::new(),
-                negative_patterns: Vec::new(),
-                type_set: false,
-                positive_packages: HashMap::new(),
-            });
+            current_triggers.push(HookTrigger::default());
             continue;
         } else if line == "[Action]" {
             in_action = true;
             in_trigger = false;
             // Start new action
-            current_action = Some(HookAction {
-                description: None,
-                when: HookWhen::PostTransaction, // Default
-                exec: String::new(),
-                depends: Vec::new(),
-                abort_on_fail: false,
-                needs_targets: false,
-                priority: RPMTRIGGER_DEFAULT_PRIORITY,
-            });
+            current_action = Some(HookAction::default());
             continue;
         }
 
@@ -748,8 +760,193 @@ pub fn load_initial_hooks(plan: &mut InstallationPlan) -> Result<()> {
         load_package_hooks(plan, &pkgkey)?;
     }
 
+    // Add systemd hooks if systemd package is not installed
+    add_systemd_hooks_if_needed(plan)?;
+
     // Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
     build_hook_indices(plan);
+
+    Ok(())
+}
+
+/// Add systemd hooks if systemd package is not installed.  Since we skipped systemd in
+/// no_install_packages[] but still need running systemd-sysusers and systemd-tmpfiles.
+///
+/// Only needed for RPM/ArchLinux distros.
+///
+/// RPM: auto run by triggers, which is not installed, so need run here
+///   wfg /c/os/fedora/systemd% grep '^%' triggers.systemd
+///   %transfiletriggerin -P 1000600 -- /usr/lib/tmpfiles.d/
+///   %transfiletriggerin -P 1000700 -- /usr/lib/sysusers.d/
+///
+///   %transfiletriggerin -P 1000500 -- /usr/lib/sysctl.d/
+///   %transfiletriggerin -P 1000700 -- /usr/lib/binfmt.d/
+///
+///   %transfiletriggerin -P 1000600 udev -- /usr/lib/udev/rules.d/
+///   %transfiletriggerin -P 1000700 udev -- /usr/lib/udev/hwdb.d/
+///
+///   %transfiletriggerin -P 1000700 -- /usr/lib/systemd/catalog/
+///   %transfiletriggerin -P  900899 -- /usr/lib/systemd/user/       /etc/systemd/user/
+///   %transfiletriggerin -P  900900 -- /usr/lib/systemd/system/     /etc/systemd/system/
+///   %transfiletriggerpostun -P 1000099 -- /usr/lib/systemd/user/   /etc/systemd/user/
+///   %transfiletriggerpostun -P   10000 -- /usr/lib/systemd/system/ /etc/systemd/system/
+///   %transfiletriggerpostun -P 1000100 -- /usr/lib/systemd/system/ /etc/systemd/system/
+///   %transfiletriggerpostun -P    9999 -- /usr/lib/systemd/user/   /etc/systemd/user/
+///
+/// Archlinux: need run
+///   % epkg -e archlinux search --paths usr/share/libalpm/hooks/|grep systemd
+///   systemd /usr/share/libalpm/hooks/20-systemd-sysusers.hook
+///   ...
+///   wfg ~/.epkg/store/wdmnsebhj53mrqa224ulxaqur4s4nfyg__systemd__259-2__x86_64/fs/usr/share/libalpm/hooks% ls
+///   20-systemd-sysusers.hook  25-systemd-binfmt.hook   25-systemd-hwdb.hook    30-systemd-daemon-reload-system.hook  35-systemd-restart-marked.hook  35-systemd-update.hook
+///   21-systemd-tmpfiles.hook  25-systemd-catalog.hook  25-systemd-sysctl.hook  30-systemd-daemon-reload-user.hook    35-systemd-udev-reload.hook
+///
+///   wfg ~/.epkg/store/wdmnsebhj53mrqa224ulxaqur4s4nfyg__systemd__259-2__x86_64/fs/usr/share/libalpm/hooks% cat 20-systemd-sysusers.hook
+///   [Trigger]
+///   Type = Path
+///   Operation = Install
+///   Operation = Upgrade
+///   Target = usr/lib/sysusers.d/*.conf
+///   [Action]
+///   Description = Creating system user accounts...
+///   When = PostTransaction
+///   Exec = /usr/share/libalpm/scripts/systemd-hook sysusers
+///
+/// DEB: adduser/chown/chmod are explicitly handled by the package postinst script:
+/// - either run 'adduser', e.g. sddm
+/// - or run 'sysusers-sysusers' on its provided sysusers.d/*.conf
+///   wfg /var/lib/dpkg/info% grep 'systemd-sysusers ' *.p*|wc -l
+///   13
+///   wfg /var/lib/dpkg/info% grep 'usr/lib/sysusers.d/' *.list|wc -l
+///   13
+///   wfg /var/lib/dpkg/info% grep /usr/lib/tmpfiles.d *triggers
+///   wfg /var/lib/dpkg/info% grep /usr/lib/sysusers.d  *triggers
+///   wfg /var/lib/dpkg/info% cat systemd.triggers
+///   interest-noawait /usr/lib/systemd/catalog
+///   interest-noawait /usr/lib/binfmt.d
+///   interest-noawait /usr/lib/sysctl.d
+///   interest-noawait libc-upgrade
+///   wfg /var/lib/dpkg/info% grep -B2 systemd-sysusers *post*
+///   cron-daemon-common.postinst-# Automatically added by dh_installsysusers/13.24.2
+///   cron-daemon-common.postinst-if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+///   cron-daemon-common.postinst:   systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} cron-daemon-common.conf
+///   ---
+///   ... many more, ditto for systemd-tmpfiles
+/// However systemd package carries some .conf files (e.g. basic.conf, tmp.conf) necessary for
+/// setup the base system, so we need provide equivalent setup when systemd is not installed in env:
+///   systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} basic.conf systemd-journal.conf systemd-network.conf
+///   systemd-tmpfiles ${DPKG_ROOT:+--root="$DPKG_ROOT"} --create 20-systemd-shell-extra.conf 20-systemd-ssh-generator.conf 20-systemd-stub.conf credstore.conf debian.conf home.conf journal-nocow.conf legacy.conf provision.conf systemd-network.conf systemd-nologin.conf systemd-pstore.conf systemd-tmp.conf systemd.conf tmp.conf var.conf x11.conf || true
+///
+/// Alpine: no sysusers.d; explicit adduser in scriptlets
+///   % grep sysusers.d ~/.epkg/store/*nginx*/info/filelist.txt
+///   % grep -r sysusers ~/.epkg/store/*/info/apk
+///   % grep -r adduser ~/.epkg/store/*/info/apk
+///   /home/wfg/.epkg/store/46ipnaixxgm2ljjh2bbsknlkbtuwhair__redis__8.0.4-r0__x86_64/info/apk/.pre-install:adduser -S -D -H -h /var/lib/redis -s /sbin/nologin -G redis -g redis redis 2>/dev/null
+///   /home/wfg/.epkg/store/d4qfx4aefytxdjfdjmgoknxzsnorb2ot__nginx__1.28.0-r3__x86_64/info/apk/.pre-install:adduser -S -D -H -h /var/lib/nginx -s /sbin/nologin -G nginx -g nginx nginx 2>/dev/null
+///   /home/wfg/.epkg/store/lc6hz4yb6hw2a3z2yju4ul5apk7g66qg__busybox__1.37.0-r20__x86_64/info/apk/.post-install:adduser -S -D -H -h /dev/null -s /sbin/nologin -G klogd -g klogd klogd 2>/dev/null
+///   /home/wfg/.epkg/store/lc6hz4yb6hw2a3z2yju4ul5apk7g66qg__busybox__1.37.0-r20__x86_64/info/apk/.post-upgrade:adduser -S -D -H -h /dev/null -s /sbin/nologin -G klogd -g klogd klogd 2>/dev/null
+///
+/// Conda: no triggers, no sysusers.d
+
+/// Check if systemd package is installed (present in world)
+fn is_systemd_installed() -> bool {
+    let world = PACKAGE_CACHE.world.read().unwrap();
+    world.contains_key("systemd")
+}
+
+/// Check if systemd package is in the no-install list
+fn is_systemd_in_no_install() -> bool {
+    let world = PACKAGE_CACHE.world.read().unwrap();
+    world.get("no-install")
+        .map(|s| s.split_whitespace().any(|pkg| pkg == "systemd"))
+        .unwrap_or(false)
+}
+
+fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
+
+    // Only add hooks for RPM and Pacman formats
+    if plan.package_format != crate::models::PackageFormat::Rpm &&
+       plan.package_format != crate::models::PackageFormat::Pacman {
+        return Ok(());
+    }
+
+    if is_systemd_installed() {
+        return Ok(());
+    }
+
+    if !is_systemd_in_no_install() {
+        return Ok(());
+    }
+
+    // Check if systemd package is being installed in this transaction
+    // Disabled: the above world[] checks shall be enough
+    // let systemd_in_new_pkgs = plan.new_pkgs.keys().any(|pkgkey| {
+    //     pkgkey2pkgname(pkgkey).map(|name| name == "systemd").unwrap_or(false)
+    // });
+    // if systemd_in_new_pkgs {
+    //     return Ok(());
+    // }
+
+    log::debug!("systemd is in no-install list, adding systemd hooks");
+
+    // Create sysusers hook
+    create_systemd_hook(
+        "usr/lib/sysusers.d/*.conf",
+        "Creating system user accounts...",
+        "systemd-sysusers",
+        1000700,
+        "20-systemd-sysusers",
+        HookWhen::PostTransaction,
+        plan,
+    )?;
+
+    // Create tmpfiles hook
+    create_systemd_hook(
+        "usr/lib/tmpfiles.d/*.conf",
+        "Creating temporary files...",
+        "systemd-tmpfiles",
+        1000600,
+        "21-systemd-tmpfiles",
+        HookWhen::PostTransaction,
+        plan,
+    )?;
+
+    Ok(())
+}
+
+// Helper to create and register a systemd hook
+fn create_systemd_hook(
+    target_pattern: &str,
+    description: &str,
+    exec: &str,
+    priority: u32,
+    hook_name: &str,
+    when: HookWhen,
+    plan: &mut InstallationPlan,
+) -> Result<()> {
+    let suffix = exec.strip_prefix("systemd-").unwrap_or(exec);
+    let mut hook = Hook {
+        triggers: vec![HookTrigger {
+            operations: HookOperation::Install.as_flag() | HookOperation::Upgrade.as_flag(),
+            hook_type: HookType::Path,
+            targets: vec![target_pattern.to_string()],
+            type_set: true,
+            ..Default::default()
+        }],
+        action: HookAction {
+            description: Some(description.to_string()),
+            when,
+            exec: exec.to_string(),
+            priority,
+            ..Default::default()
+        },
+        hook_name: hook_name.to_string(),
+        file_path: format!("[systemd-{}-hook]", suffix),
+        pkgkey: None,
+    };
+
+    populate_hook_target_cache(&mut hook);
+    register_hook_to_plan(hook, hook_name.to_string(), None, plan);
 
     Ok(())
 }

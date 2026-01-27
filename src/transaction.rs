@@ -62,8 +62,6 @@ use crate::hooks::{run_hooks, run_pkgkey_hooks_pair, HookWhen};
 use crate::scriptlets::{run_scriptlet, run_trans_scriptlets, ScriptletType};
 use crate::run;
 use crate::remove::unlink_package;
-use crate::applets::systemd_tmpfiles;
-use crate::applets::systemd_sysusers;
 use log;
 
 /// Package actions (L3: Package Actions)
@@ -252,89 +250,6 @@ fn begin_transaction(
     Ok(())
 }
 
-/// Run systemd-sysusers and systemd-tmpfiles utilities for RPM packages.
-/// This is needed because we skip systemd in no_install_packages[] but still need these utilities.
-/// RPM: auto run by triggers, which is not installed, so need run here
-///   wfg /c/os/fedora/systemd% grep '^%' triggers.systemd
-///   %transfiletriggerin -P 1000600 -- /usr/lib/tmpfiles.d/
-///   %transfiletriggerin -P 1000700 -- /usr/lib/sysusers.d/
-///
-///   %transfiletriggerin -P 1000500 -- /usr/lib/sysctl.d/
-///   %transfiletriggerin -P 1000700 -- /usr/lib/binfmt.d/
-///
-///   %transfiletriggerin -P 1000600 udev -- /usr/lib/udev/rules.d/
-///   %transfiletriggerin -P 1000700 udev -- /usr/lib/udev/hwdb.d/
-///
-///   %transfiletriggerin -P 1000700 -- /usr/lib/systemd/catalog/
-///   %transfiletriggerin -P  900899 -- /usr/lib/systemd/user/       /etc/systemd/user/
-///   %transfiletriggerin -P  900900 -- /usr/lib/systemd/system/     /etc/systemd/system/
-///   %transfiletriggerpostun -P 1000099 -- /usr/lib/systemd/user/   /etc/systemd/user/
-///   %transfiletriggerpostun -P   10000 -- /usr/lib/systemd/system/ /etc/systemd/system/
-///   %transfiletriggerpostun -P 1000100 -- /usr/lib/systemd/system/ /etc/systemd/system/
-///   %transfiletriggerpostun -P    9999 -- /usr/lib/systemd/user/   /etc/systemd/user/
-///
-/// DEB: explicit run by each packages' postinst script, so no need run here:
-///   wfg /var/lib/dpkg/info% grep /usr/lib/tmpfiles.d *triggers
-///   wfg /var/lib/dpkg/info% grep /usr/lib/sysusers.d  *triggers
-///   wfg /var/lib/dpkg/info% cat systemd.triggers
-///   interest-noawait /usr/lib/systemd/catalog
-///   interest-noawait /usr/lib/binfmt.d
-///   interest-noawait /usr/lib/sysctl.d
-///   interest-noawait libc-upgrade
-///   wfg /var/lib/dpkg/info% grep -B2 systemd-sysusers *post*
-///   cron-daemon-common.postinst-# Automatically added by dh_installsysusers/13.24.2
-///   cron-daemon-common.postinst-if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
-///   cron-daemon-common.postinst:   systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} cron-daemon-common.conf
-///   ---
-///   ... many more, ditto for systemd-tmpfiles
-///
-/// Archlinux: need run
-///   % epkg -e archlinux search --paths usr/share/libalpm/hooks/|grep systemd
-///   systemd /usr/share/libalpm/hooks/20-systemd-sysusers.hook
-///   ...
-///   wfg ~/.epkg/store/wdmnsebhj53mrqa224ulxaqur4s4nfyg__systemd__259-2__x86_64/fs/usr/share/libalpm/hooks% ls
-///   20-systemd-sysusers.hook  25-systemd-binfmt.hook   25-systemd-hwdb.hook    30-systemd-daemon-reload-system.hook  35-systemd-restart-marked.hook  35-systemd-update.hook
-///   21-systemd-tmpfiles.hook  25-systemd-catalog.hook  25-systemd-sysctl.hook  30-systemd-daemon-reload-user.hook    35-systemd-udev-reload.hook
-///
-///   wfg ~/.epkg/store/wdmnsebhj53mrqa224ulxaqur4s4nfyg__systemd__259-2__x86_64/fs/usr/share/libalpm/hooks% cat 20-systemd-sysusers.hook
-///   [Trigger]
-///   Type = Path
-///   Operation = Install
-///   Operation = Upgrade
-///   Target = usr/lib/sysusers.d/*.conf
-///   [Action]
-///   Description = Creating system user accounts...
-///   When = PostTransaction
-///   Exec = /usr/share/libalpm/scripts/systemd-hook sysusers
-///
-/// Alpine: no sysusers.d; explicit adduser in scriptlets
-///   % grep sysusers.d ~/.epkg/store/*nginx*/info/filelist.txt
-///   % grep -r sysusers ~/.epkg/store/*/info/apk
-///   % grep -r adduser ~/.epkg/store/*/info/apk
-///   /home/wfg/.epkg/store/46ipnaixxgm2ljjh2bbsknlkbtuwhair__redis__8.0.4-r0__x86_64/info/apk/.pre-install:adduser -S -D -H -h /var/lib/redis -s /sbin/nologin -G redis -g redis redis 2>/dev/null
-///   /home/wfg/.epkg/store/d4qfx4aefytxdjfdjmgoknxzsnorb2ot__nginx__1.28.0-r3__x86_64/info/apk/.pre-install:adduser -S -D -H -h /var/lib/nginx -s /sbin/nologin -G nginx -g nginx nginx 2>/dev/null
-///   /home/wfg/.epkg/store/lc6hz4yb6hw2a3z2yju4ul5apk7g66qg__busybox__1.37.0-r20__x86_64/info/apk/.post-install:adduser -S -D -H -h /dev/null -s /sbin/nologin -G klogd -g klogd klogd 2>/dev/null
-///   /home/wfg/.epkg/store/lc6hz4yb6hw2a3z2yju4ul5apk7g66qg__busybox__1.37.0-r20__x86_64/info/apk/.post-upgrade:adduser -S -D -H -h /dev/null -s /sbin/nologin -G klogd -g klogd klogd 2>/dev/null
-///
-/// Conda: no triggers, no sysusers.d
-
-fn run_systemd_utilities(plan: &InstallationPlan) -> Result<()> {
-    let package_format = plan.package_format;
-
-    if package_format == PackageFormat::Rpm || package_format == PackageFormat::Pacman {
-        // Run systemd-sysusers in parent (it uses fork_and_execute internally)
-        systemd_sysusers::run(systemd_sysusers::SystemdSysusersOptions {
-            config_files: vec![],
-            root: Some(plan.env_root.clone()),
-        })?;
-
-        // Run systemd-tmpfiles in child (it uses setup_namespace_and_mounts internally)
-        systemd_tmpfiles::fork_run(&plan.env_root)?;
-    }
-
-    Ok(())
-}
-
 /// Execute transaction scriptlets and triggers after file operations.
 /// Runs %posttrans, %postuntrans, transfiletriggerpostun, and transfiletriggerin scriptlets/triggers.
 fn end_transaction(
@@ -360,8 +275,6 @@ fn end_transaction(
 
     // DEB trigger processing: await triggers from Unincorp (batched, after all packages are processed)
     crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostTransaction)?;
-
-    run_systemd_utilities(plan)?;
 
     Ok(())
 }
