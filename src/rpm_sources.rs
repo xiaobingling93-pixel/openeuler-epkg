@@ -126,6 +126,16 @@ pub fn load_rpm_system_repos(env_root: &Path) -> Result<Vec<ChannelConfig>> {
     for entry in glob::glob(&pattern.to_string_lossy())? {
         match entry {
             Ok(path) => {
+
+                // Fedora official repos need no special handling, since they all uses only
+                // 'metalink' which will be auto skipped:
+                // % ls /home/wfg/.epkg/envs/fedora/etc/yum.repos.d/
+                // fedora-cisco-openh264.repo  fedora.repo  fedora-updates.repo  fedora-updates-testing.repo
+                let filename = path.file_name().and_then(|n| n.to_str());
+                if matches!(filename, Some("openEuler.repo")) {
+                    continue;
+                }
+
                 match parse_repo_file(&path) {
                     Ok(channel_config) => {
                         all_channel_configs.push(channel_config);
