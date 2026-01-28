@@ -306,17 +306,17 @@ pub fn posix_chown(path: &str, user: Option<&str>, group: Option<&str>) -> Posix
 // File status information structure
 #[derive(Debug, Clone)]
 pub struct PosixStat {
-    pub mode: u32,
-    pub mode_str: String,  // String representation like "rwxr-xr-x"
-    pub ino: u64,
-    pub dev: u64,
-    pub nlink: u64,
-    pub uid: u32,
-    pub gid: u32,
-    pub size: u64,
-    pub atime: u64,
-    pub mtime: u64,
-    pub ctime: u64,
+    pub mode:      u32,
+    pub mode_str:  String,  // String representation like "rwxr-xr-x"
+    pub ino:       u64,
+    pub dev:       u64,
+    pub nlink:     u64,
+    pub uid:       u32,
+    pub gid:       u32,
+    pub size:      u64,
+    pub atime:     u64,
+    pub mtime:     u64,
+    pub ctime:     u64,
     pub file_type: String,
 }
 
@@ -401,11 +401,8 @@ pub fn posix_stat(path: &str) -> PosixResult<PosixStat> {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-        ctime:      metadata.created()
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
+        // Match POSIX `st_ctime` (status change time), not creation time
+        ctime:      metadata.ctime() as u64,
         file_type:  file_type.to_string(),
     })
 }
@@ -525,6 +522,60 @@ pub fn posix_dir(path: &str) -> PosixResult<Vec<String>> {
         entries.push(entry.file_name().to_string_lossy().to_string());
     }
     Ok(entries)
+}
+
+#[derive(Debug, Clone)]
+pub struct PosixStatFs {
+    pub f_type:    i64,
+    pub f_bsize:   u64,
+    pub f_blocks:  u64,
+    pub f_bfree:   u64,
+    pub f_bavail:  u64,
+    pub f_files:   u64,
+    pub f_ffree:   u64,
+    pub f_namelen: u64,
+    pub f_fsid:    u64,
+}
+
+pub fn posix_statfs(path: &str) -> PosixResult<PosixStatFs> {
+    use std::ffi::CString;
+    let path_cstr = CString::new(path)
+        .map_err(|_| PosixError::InvalidArgument("path contains null byte".to_string()))?;
+
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::statfs(path_cstr.as_ptr(), &mut st) };
+    if ret != 0 {
+        return Err(PosixError::Io(io::Error::last_os_error()));
+    }
+
+    Ok(PosixStatFs {
+        f_type:    st.f_type    as i64,
+        f_bsize:   st.f_bsize   as u64,
+        f_blocks:  st.f_blocks  as u64,
+        f_bfree:   st.f_bfree   as u64,
+        f_bavail:  st.f_bavail  as u64,
+        f_files:   st.f_files   as u64,
+        f_ffree:   st.f_ffree   as u64,
+        f_namelen: st.f_namelen as u64,
+        // fsid encoding is platform-specific; extract from f_fsid
+        f_fsid: {
+            #[cfg(target_os = "linux")]
+            {
+                use std::convert::TryInto;
+                // On Linux, f_fsid is fsid_t { int val[2]; }
+                // Combine as high and low 32-bit parts (matching GNU stat)
+                let bytes = unsafe { std::mem::transmute::<_, [u8; 8]>(st.f_fsid) };
+                let val0 = u32::from_ne_bytes(bytes[0..4].try_into().unwrap()) as u64;
+                let val1 = u32::from_ne_bytes(bytes[4..8].try_into().unwrap()) as u64;
+                (val0 << 32) | val1
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // Fallback to f_type for now (matches previous behavior)
+                st.f_type as u64
+            }
+        },
+    })
 }
 
 pub fn posix_mkstemp(template: &str) -> PosixResult<(String, std::fs::File)> {
@@ -760,5 +811,39 @@ pub fn posix_setgid(gid: u32) -> PosixResult<()> {
     match unsafe { libc::setgid(gid) } {
         0 => Ok(()),
         _ => Err(PosixError::Io(io::Error::last_os_error())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_statfs_fsid() {
+        use std::ffi::CString;
+        use std::convert::TryInto;
+        let path = CString::new(".").unwrap();
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        let ret = unsafe { libc::statfs(path.as_ptr(), &mut st) };
+        if ret != 0 {
+            panic!("statfs failed");
+        }
+        println!("f_type: 0x{:x}", st.f_type);
+        // inspect f_fsid
+        let bytes = unsafe { std::mem::transmute::<_, [u8; 8]>(st.f_fsid) };
+        println!("f_fsid bytes: {:02x?}", bytes);
+        // Extract two 32-bit integers in native byte order
+        let val0 = u32::from_ne_bytes(bytes[0..4].try_into().unwrap()) as u64;
+        let val1 = u32::from_ne_bytes(bytes[4..8].try_into().unwrap()) as u64;
+        println!("val0: 0x{:x}, val1: 0x{:x}", val0, val1);
+        let gnu_id = (val0 << 32) | val1;
+        println!("GNU stat ID: 0x{:x}", gnu_id);
+        let le = u64::from_le_bytes(bytes);
+        println!("le: 0x{:x}", le);
+        let be = u64::from_be_bytes(bytes);
+        println!("be: 0x{:x}", be);
+        // check if f_fsid is zero
+        if le != 0 {
+            println!("non-zero fsid");
+        }
     }
 }
