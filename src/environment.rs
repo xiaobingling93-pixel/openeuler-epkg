@@ -281,7 +281,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     }
 
     // Create symlinks for applets in usr/local/bin/
-    create_applet_symlinks(env_root)?;
+    create_applet_symlinks(env_root, pkg_format)?;
 
     // Set owner and permissions if environment is private (public = false)
     if !env_config.public {
@@ -303,7 +303,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
 
 // These symlinks must be created and available before running scriptlets.
 // If the distro provides the commands, they'll overwrite symlink to our implementation.
-fn create_applet_symlinks(env_root: &Path) -> Result<()> {
+fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
     // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
     let systemctl_path = env_root.join("usr/bin/systemctl");
     if !systemctl_path.exists() {
@@ -312,7 +312,7 @@ fn create_applet_symlinks(env_root: &Path) -> Result<()> {
     }
 
     // Automatically discover all applets and create symlinks
-    crate::applets::create_all_applet_symlinks(env_root)?;
+    crate::applets::create_all_applet_symlinks(env_root, pkg_format)?;
 
     Ok(())
 }
