@@ -160,7 +160,10 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdTmpfilesOption
     let clean = matches.get_flag("clean");
     let remove = matches.get_flag("remove");
     let boot = matches.get_flag("boot");
-    let root = matches.get_one::<PathBuf>("root").cloned();
+    let root = matches
+        .get_one::<String>("root")
+        .map(|s| PathBuf::from(s))
+        .clone();
     let config_files: Vec<String> = matches.get_many::<String>("config_files")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();

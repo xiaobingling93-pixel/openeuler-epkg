@@ -56,7 +56,10 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SystemdSysusersOption
     let config_files: Vec<String> = matches.get_many::<String>("config_files")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
-    let root = matches.get_one::<PathBuf>("root").cloned();
+    let root = matches
+        .get_one::<String>("root")
+        .map(|s| PathBuf::from(s))
+        .clone();
 
     Ok(SystemdSysusersOptions { config_files, root })
 }
