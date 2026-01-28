@@ -331,19 +331,19 @@ pub fn create_package_operation(
 }
 
 /// Sort operations by dependency depth
-/// Upgrades and fresh installs are sorted by depth (lowest first)
-/// Removals are sorted by reverse depth (highest first, so dependents before dependencies)
+/// Upgrades and fresh installs are sorted by reverse depth (highest first)
+/// Removals are sorted by depth (lowest first, so apps before libs)
 pub fn sort_operations_by_depth(operations: &mut [PackageOperation]) {
     operations.sort_by(|a, b| {
         let depth_a = match a.op_type {
-            OperationType::Upgrade => a.depend_depth,
-            OperationType::Removal => u16::MAX - a.depend_depth,
-            OperationType::FreshInstall => a.depend_depth,
+            OperationType::Upgrade => u16::MAX - a.depend_depth,
+            OperationType::Removal => a.depend_depth,
+            OperationType::FreshInstall => u16::MAX - a.depend_depth,
         };
         let depth_b = match b.op_type {
-            OperationType::Upgrade => b.depend_depth,
-            OperationType::Removal => u16::MAX - b.depend_depth,
-            OperationType::FreshInstall => b.depend_depth,
+            OperationType::Upgrade => u16::MAX - b.depend_depth,
+            OperationType::Removal => b.depend_depth,
+            OperationType::FreshInstall => u16::MAX - b.depend_depth,
         };
         depth_a.cmp(&depth_b)
     });
