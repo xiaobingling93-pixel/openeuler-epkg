@@ -21,204 +21,189 @@ pub fn command() -> Command {
         .about("Evaluate expressions")
         .arg(Arg::new("expression")
             .num_args(0..)
+            // `test`/`[` expressions include operators like `-n`, `-z`, etc.
+            // Treat all remaining tokens as expression parts, even if they start with `-`.
+            .allow_hyphen_values(true)
+            .trailing_var_arg(true)
             .help("Expression to evaluate"))
 }
 
 fn evaluate_expression(args: &[String]) -> bool {
+    fn parse_i64(s: &str) -> Option<i64> {
+        s.parse::<i64>().ok()
+    }
+
+    fn eval_unary(op: &str, operand: &str) -> bool {
+        match op {
+            "-f" => Path::new(operand).is_file(),
+            "-d" => Path::new(operand).is_dir(),
+            "-e" => Path::new(operand).exists(),
+            "-s" => fs::metadata(operand).map(|m| m.len() > 0).unwrap_or(false),
+            "-r" => {
+                match fs::metadata(operand) {
+                    Ok(metadata) => {
+                        #[cfg(unix)]
+                        {
+                            metadata.permissions().mode() & 0o400 != 0
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            true
+                        }
+                    }
+                    Err(_) => false,
+                }
+            }
+            "-w" => {
+                match fs::metadata(operand) {
+                    Ok(metadata) => {
+                        #[cfg(unix)]
+                        {
+                            metadata.permissions().mode() & 0o200 != 0
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            true
+                        }
+                    }
+                    Err(_) => false,
+                }
+            }
+            "-x" => {
+                match fs::metadata(operand) {
+                    Ok(metadata) => {
+                        #[cfg(unix)]
+                        {
+                            metadata.permissions().mode() & 0o100 != 0
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            true
+                        }
+                    }
+                    Err(_) => false,
+                }
+            }
+            "-z" => operand.is_empty(),
+            "-n" => !operand.is_empty(),
+            _ => false,
+        }
+    }
+
+    fn eval_binary(left: &str, op: &str, right: &str) -> bool {
+        match op {
+            "=" => left == right,
+            "!=" => left != right,
+            "-eq" => match (parse_i64(left), parse_i64(right)) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            },
+            "-ne" => match (parse_i64(left), parse_i64(right)) {
+                (Some(a), Some(b)) => a != b,
+                _ => false,
+            },
+            "-lt" => match (parse_i64(left), parse_i64(right)) {
+                (Some(a), Some(b)) => a < b,
+                _ => false,
+            },
+            "-le" => match (parse_i64(left), parse_i64(right)) {
+                (Some(a), Some(b)) => a <= b,
+                _ => false,
+            },
+            "-gt" => match (parse_i64(left), parse_i64(right)) {
+                (Some(a), Some(b)) => a > b,
+                _ => false,
+            },
+            "-ge" => match (parse_i64(left), parse_i64(right)) {
+                (Some(a), Some(b)) => a >= b,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn parse_primary(tokens: &[String]) -> (bool, &[String]) {
+        if tokens.is_empty() {
+            return (false, tokens);
+        }
+
+        // Parentheses: ( expr )
+        if tokens[0] == "(" {
+            let (v, rest) = parse_or(&tokens[1..]);
+            if !rest.is_empty() && rest[0] == ")" {
+                return (v, &rest[1..]);
+            }
+            return (false, rest);
+        }
+
+        // Unary operators: -n STR, -f PATH, etc.
+        let op = tokens[0].as_str();
+        if matches!(op, "-f" | "-d" | "-e" | "-s" | "-r" | "-w" | "-x" | "-z" | "-n") {
+            if tokens.len() < 2 {
+                return (false, &tokens[1..]);
+            }
+            return (eval_unary(op, &tokens[1]), &tokens[2..]);
+        }
+
+        // Binary operators: STR = STR, STR -eq STR, etc.
+        if tokens.len() >= 3 {
+            let maybe_op = tokens[1].as_str();
+            if matches!(
+                maybe_op,
+                "=" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge"
+            ) {
+                return (
+                    eval_binary(&tokens[0], maybe_op, &tokens[2]),
+                    &tokens[3..],
+                );
+            }
+        }
+
+        // Single word: true if non-empty.
+        (!tokens[0].is_empty(), &tokens[1..])
+    }
+
+    fn parse_not(tokens: &[String]) -> (bool, &[String]) {
+        if !tokens.is_empty() && tokens[0] == "!" {
+            let (v, rest) = parse_not(&tokens[1..]);
+            return (!v, rest);
+        }
+        parse_primary(tokens)
+    }
+
+    fn parse_and(mut tokens: &[String]) -> (bool, &[String]) {
+        let (mut left, mut rest) = parse_not(tokens);
+        tokens = rest;
+        while !tokens.is_empty() && tokens[0] == "-a" {
+            let (right, next) = parse_not(&tokens[1..]);
+            left = left && right;
+            tokens = next;
+            rest = next;
+        }
+        (left, rest)
+    }
+
+    fn parse_or(mut tokens: &[String]) -> (bool, &[String]) {
+        let (mut left, mut rest) = parse_and(tokens);
+        tokens = rest;
+        while !tokens.is_empty() && tokens[0] == "-o" {
+            let (right, next) = parse_and(&tokens[1..]);
+            left = left || right;
+            tokens = next;
+            rest = next;
+        }
+        (left, rest)
+    }
+
     if args.is_empty() {
         return false;
     }
-
-    match args[0].as_str() {
-        "!" => {
-            if args.len() < 2 {
-                return false;
-            }
-            !evaluate_expression(&args[1..])
-        }
-        "-a" => {
-            if args.len() < 3 {
-                return false;
-            }
-            evaluate_expression(&args[1..2]) && evaluate_expression(&args[2..])
-        }
-        "-o" => {
-            if args.len() < 3 {
-                return false;
-            }
-            evaluate_expression(&args[1..2]) || evaluate_expression(&args[2..])
-        }
-        "-f" => {
-            if args.len() < 2 {
-                return false;
-            }
-            Path::new(&args[1]).is_file()
-        }
-        "-d" => {
-            if args.len() < 2 {
-                return false;
-            }
-            Path::new(&args[1]).is_dir()
-        }
-        "-e" => {
-            if args.len() < 2 {
-                return false;
-            }
-            Path::new(&args[1]).exists()
-        }
-        "-s" => {
-            if args.len() < 2 {
-                return false;
-            }
-            match fs::metadata(&args[1]) {
-                Ok(metadata) => metadata.len() > 0,
-                Err(_) => false,
-            }
-        }
-        "-r" => {
-            if args.len() < 2 {
-                return false;
-            }
-            match fs::metadata(&args[1]) {
-                Ok(metadata) => {
-                    #[cfg(unix)]
-                    {
-                        let permissions = metadata.permissions();
-                        permissions.mode() & 0o400 != 0
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true // Assume readable on non-Unix
-                    }
-                }
-                Err(_) => false,
-            }
-        }
-        "-w" => {
-            if args.len() < 2 {
-                return false;
-            }
-            match fs::metadata(&args[1]) {
-                Ok(metadata) => {
-                    #[cfg(unix)]
-                    {
-                        let permissions = metadata.permissions();
-                        permissions.mode() & 0o200 != 0
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true // Assume writable on non-Unix
-                    }
-                }
-                Err(_) => false,
-            }
-        }
-        "-x" => {
-            if args.len() < 2 {
-                return false;
-            }
-            match fs::metadata(&args[1]) {
-                Ok(metadata) => {
-                    #[cfg(unix)]
-                    {
-                        let permissions = metadata.permissions();
-                        permissions.mode() & 0o100 != 0
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        true // Assume executable on non-Unix
-                    }
-                }
-                Err(_) => false,
-            }
-        }
-        "-z" => {
-            if args.len() < 2 {
-                return false;
-            }
-            args[1].is_empty()
-        }
-        "-n" => {
-            if args.len() < 2 {
-                return false;
-            }
-            !args[1].is_empty()
-        }
-        "=" => {
-            if args.len() < 3 {
-                return false;
-            }
-            args[1] == args[2]
-        }
-        "!=" => {
-            if args.len() < 3 {
-                return false;
-            }
-            args[1] != args[2]
-        }
-        "-eq" => {
-            if args.len() < 3 {
-                return false;
-            }
-            match (args[1].parse::<i64>(), args[2].parse::<i64>()) {
-                (Ok(a), Ok(b)) => a == b,
-                _ => false,
-            }
-        }
-        "-ne" => {
-            if args.len() < 3 {
-                return false;
-            }
-            match (args[1].parse::<i64>(), args[2].parse::<i64>()) {
-                (Ok(a), Ok(b)) => a != b,
-                _ => false,
-            }
-        }
-        "-lt" => {
-            if args.len() < 3 {
-                return false;
-            }
-            match (args[1].parse::<i64>(), args[2].parse::<i64>()) {
-                (Ok(a), Ok(b)) => a < b,
-                _ => false,
-            }
-        }
-        "-le" => {
-            if args.len() < 3 {
-                return false;
-            }
-            match (args[1].parse::<i64>(), args[2].parse::<i64>()) {
-                (Ok(a), Ok(b)) => a <= b,
-                _ => false,
-            }
-        }
-        "-gt" => {
-            if args.len() < 3 {
-                return false;
-            }
-            match (args[1].parse::<i64>(), args[2].parse::<i64>()) {
-                (Ok(a), Ok(b)) => a > b,
-                _ => false,
-            }
-        }
-        "-ge" => {
-            if args.len() < 3 {
-                return false;
-            }
-            match (args[1].parse::<i64>(), args[2].parse::<i64>()) {
-                (Ok(a), Ok(b)) => a >= b,
-                _ => false,
-            }
-        }
-        _ => {
-            // Single argument - test if non-empty
-            if args.len() == 1 {
-                !args[0].is_empty()
-            } else {
-                // Default to false for unrecognized expressions
-                false
-            }
-        }
+    let (value, rest) = parse_or(args);
+    // If we couldn't consume a syntactically valid expression, treat as false.
+    if rest.is_empty() {
+        value
+    } else {
+        false
     }
 }
 
