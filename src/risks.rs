@@ -237,14 +237,26 @@ pub fn validate_before_linking(
                 }
 
                 // Check conflicts with installed files
+                // Skip conflict check for same package being upgraded (files will be replaced)
+                let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
                 if let Ok(conflicts) = check_file_conflicts(file_path, pkgkey, &installed_files) {
-                    for (conflict_path, conflict_pkgkey) in conflicts {
-                        return Err(eyre!(
-                            "File conflict: {} (from package {}) conflicts with installed file from package {}",
-                            conflict_path,
-                            pkgkey,
-                            conflict_pkgkey
-                        ));
+                    let real_conflicts: Vec<_> = conflicts
+                        .into_iter()
+                        .filter(|(_, pkg)| {
+                            let pkgname2 = crate::package::pkgkey2pkgname(pkg).unwrap_or_default();
+                            pkgname != pkgname2
+                        })
+                        .collect();
+
+                    if !real_conflicts.is_empty() {
+                        for (conflict_path, conflict_pkgkey) in real_conflicts {
+                            return Err(eyre!(
+                                "File conflict: {} (from package {}) conflicts with installed file from package {}",
+                                conflict_path,
+                                pkgkey,
+                                conflict_pkgkey
+                            ));
+                        }
                     }
                 }
 
