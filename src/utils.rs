@@ -1372,3 +1372,42 @@ pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
 
     Ok(entries)
 }
+
+/// Rename a directory, falling back to copy+remove on cross-device errors
+///
+/// Attempts to use `fs::rename()` first (atomic and fast when on same filesystem).
+/// If rename fails with EXDEV (Invalid cross-device link), falls back to
+/// recursively copying the directory and then removing the source.
+///
+/// Parameters:
+/// - src: Source directory path
+/// - dst: Destination directory path
+///
+/// Returns:
+/// - Ok(()) on success
+/// - Err on failure (including non-EXDEV rename errors)
+pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    // Try rename first (atomic and fast)
+    match fs::rename(src, dst) {
+        Ok(()) => {
+            log::trace!("Renamed directory {} to {}", src.display(), dst.display());
+            Ok(())
+        }
+        Err(e) if e.raw_os_error() == Some(18) => {
+            // EXDEV: Invalid cross-device link - fall back to copy + remove
+            log::debug!("Cross-device rename failed, using copy+remove fallback: {} -> {}",
+                       src.display(), dst.display());
+            crate::applets::cp::copy_directory_recursive(src, dst, true, true, false)
+                .wrap_err_with(|| format!("Failed to copy directory from {} to {}", src.display(), dst.display()))?;
+            fs::remove_dir_all(src)
+                .wrap_err_with(|| format!("Failed to remove source directory after copy: {}", src.display()))?;
+            log::debug!("Successfully copied and removed directory {} -> {}", src.display(), dst.display());
+            Ok(())
+        }
+        Err(e) => {
+            Err(eyre::eyre!("Failed to rename directory from {} to {}: {}", 
+                           src.display(), dst.display(), e))
+                .wrap_err_with(|| format!("Failed to rename directory from {} to {}", src.display(), dst.display()))
+        }
+    }
+}

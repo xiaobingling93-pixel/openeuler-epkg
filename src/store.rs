@@ -318,7 +318,7 @@ pub fn unpack_mv_package(
             .wrap_err_with(|| format!("Failed to create directory: {}", parent_dir.display()))?;
     }
 
-    fs::rename(&store_tmp_dir, &final_dir)
+    crate::utils::rename_or_copy_dir(&store_tmp_dir, &final_dir)
         .wrap_err_with(|| format!("Failed to move package from {} to {}", store_tmp_dir.display(), final_dir.display()))?;
 
     Ok(final_dir)
