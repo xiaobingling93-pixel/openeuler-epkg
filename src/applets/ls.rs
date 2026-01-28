@@ -17,8 +17,9 @@ struct FileEntry {
 }
 
 pub struct LsOptions {
-    pub directories: Vec<PathBuf>,
+    pub paths: Vec<PathBuf>,
     pub all: bool,
+    pub almost_all: bool,
     pub long: bool,
     pub human_readable: bool,
     pub directory: bool,
@@ -30,11 +31,12 @@ pub struct LsOptions {
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
-    let directories: Vec<PathBuf> = matches.get_many::<String>("directory")
+    let paths: Vec<PathBuf> = matches.get_many::<String>("paths")
         .map(|vals| vals.map(|s| PathBuf::from(s)).collect())
         .unwrap_or_else(|| vec![PathBuf::from(".")]);
 
     let all = matches.get_flag("all");
+    let almost_all = matches.get_flag("almost_all");
     let long = matches.get_flag("long");
     let human_readable = matches.get_flag("human_readable");
     let directory = matches.get_flag("directory");
@@ -45,8 +47,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
     let classify  = matches.get_flag("classify");
 
     Ok(LsOptions {
-        directories,
+        paths,
         all,
+        almost_all,
         long,
         human_readable,
         directory,
@@ -61,14 +64,20 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
 pub fn command() -> Command {
     Command::new("ls")
         .about("List directory contents")
-        .arg(Arg::new("directory")
+        .disable_help_flag(true)
+        .arg(Arg::new("paths")
             .num_args(0..)
-            .help("Directory(ies) to list (default: current directory)"))
+            .help("File(s) to list (default: current directory)"))
         .arg(Arg::new("all")
             .short('a')
             .long("all")
             .action(clap::ArgAction::SetTrue)
             .help("Do not ignore entries starting with ."))
+        .arg(Arg::new("almost_all")
+            .short('A')
+            .long("almost-all")
+            .action(clap::ArgAction::SetTrue)
+            .help("Do not list implied . and .."))
         .arg(Arg::new("long")
             .short('l')
             .long("long")
@@ -78,7 +87,7 @@ pub fn command() -> Command {
             .short('h')
             .long("human-readable")
             .action(clap::ArgAction::SetTrue)
-            .help("With -l, print human readable sizes (e.g., 1K 234M 2G)"))
+            .help("With -l and -s, print sizes like 1K 234M 2G etc."))
         .arg(Arg::new("directory")
             .short('d')
             .long("directory")
@@ -92,7 +101,7 @@ pub fn command() -> Command {
         .arg(Arg::new("time_sort")
             .short('t')
             .action(clap::ArgAction::SetTrue)
-            .help("Sort by modification time, newest first"))
+            .help("Sort by time, newest first; see --time"))
         .arg(Arg::new("reverse")
             .short('r')
             .long("reverse")
@@ -241,8 +250,13 @@ fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
             let entry = entry.ok()?;
             let name = entry.file_name().to_string_lossy().to_string();
 
-            // Filter hidden files unless -a
-            if !options.all && name.starts_with('.') {
+            // Filter hidden files unless -a or -A
+            if !options.all && !options.almost_all && name.starts_with('.') {
+                return None;
+            }
+
+            // Filter . and .. unless -a (but allow with -A)
+            if !options.all && (name == "." || name == "..") {
                 return None;
             }
 
@@ -310,50 +324,76 @@ fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn run(options: LsOptions) -> Result<()> {
-    for dir in &options.directories {
-        if options.directories.len() > 1 {
-            println!("{}:", dir.display());
-        }
+fn print_path_header_if_needed(path: &Path, options: &LsOptions) {
+    if options.paths.len() > 1 {
+        println!("{}:", path.display());
+    }
+}
 
-        if options.directory {
-            // List the directory itself
-            let metadata = fs::metadata(dir)
-                .map_err(|e| eyre!("ls: {}: {}", dir.display(), e))?;
-            let mtime = metadata.modified()
-                .map_err(|e| eyre!("ls: {}: {}", dir.display(), e))?
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| eyre!("ls: {}: {}", dir.display(), e))?
-                .as_secs();
-            let entry = FileEntry {
-                name: dir.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| dir.display().to_string()),
-                path: dir.clone(),
-                metadata,
-                mtime,
-            };
+fn file_entry_for_path(path: &Path, metadata: fs::Metadata) -> Result<FileEntry> {
+    let mtime = metadata.modified()
+        .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?
+        .as_secs();
 
-            if options.long {
-                let line = format_long_entry(&entry, options.human_readable)?;
-                println!("{}", line);
-            } else {
-                let mut name = entry.name.clone();
-                if options.classify {
-                    name.push('/');
-                }
-                println!("{}", name);
+    Ok(FileEntry {
+        name: path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| path.display().to_string()),
+        path: path.to_path_buf(),
+        metadata,
+        mtime,
+    })
+}
+
+fn print_single_entry(entry: &FileEntry, options: &LsOptions) -> Result<()> {
+    if options.long {
+        let line = format_long_entry(entry, options.human_readable)?;
+        println!("{}", line);
+    } else {
+        let mut name = entry.name.clone();
+        if options.classify {
+            let indicator = get_classify_indicator(entry);
+            if indicator != '\0' {
+                name.push(indicator);
             }
-        } else {
-            list_directory(dir, &options, "")?;
         }
+        println!("{}", name);
+    }
+    Ok(())
+}
 
-        if options.directories.len() > 1 && dir != options.directories.last().unwrap() {
-            println!();
-        }
+fn list_path(path: &Path, options: &LsOptions) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?;
+
+    if options.directory || metadata.is_file() {
+        // List the file/directory itself (with -d flag or if it's a file)
+        let entry = file_entry_for_path(path, metadata)?;
+        print_single_entry(&entry, options)?;
+        Ok(())
+    } else if metadata.is_dir() {
+        // List directory contents
+        list_directory(path, options, "")
+    } else {
+        Err(eyre!("ls: {}: Not a directory", path.display()))
+    }
+}
+
+fn print_trailing_blank_line_between_paths(path: &Path, options: &LsOptions) {
+    if options.paths.len() > 1 && path != options.paths.last().unwrap() {
+        println!();
+    }
+}
+
+pub fn run(options: LsOptions) -> Result<()> {
+    for path in &options.paths {
+        print_path_header_if_needed(path, &options);
+        list_path(path, &options)?;
+        print_trailing_blank_line_between_paths(path, &options);
     }
 
     Ok(())
 }
-
