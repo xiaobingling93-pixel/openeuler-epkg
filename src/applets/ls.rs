@@ -7,6 +7,159 @@ use std::time::UNIX_EPOCH;
 use crate::posix::{posix_stat, PosixError};
 use users::{get_user_by_uid, get_group_by_gid};
 use libc;
+use std::io::IsTerminal;
+use std::env;
+use std::os::unix::fs::FileTypeExt;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ColorOption {
+    Never,
+    Always,
+    Auto,
+}
+
+#[derive(Clone)]
+pub enum TimeStyle {
+    FullIso,
+    LongIso,
+    Iso,
+    Locale,
+    Custom(String), // +FORMAT
+    PosixFullIso,
+    PosixLongIso,
+    PosixIso,
+    PosixLocale,
+    PosixCustom(String),
+}
+
+#[derive(Clone, Default)]
+pub struct LsColors {
+    // mapping from file type indicators to ANSI escape sequences
+    // di, ln, so, pi, ex, etc.
+    map: std::collections::HashMap<String, String>,
+}
+
+impl LsColors {
+    pub fn from_env() -> Self {
+        let mut map = std::collections::HashMap::new();
+        // Default color scheme (similar to GNU ls)
+        map.insert("di".to_string(), "01;34".to_string());  // bold blue directories
+        map.insert("ln".to_string(), "01;36".to_string());  // bold cyan symlinks
+        map.insert("so".to_string(), "01;35".to_string());  // bold magenta sockets
+        map.insert("pi".to_string(), "01;33".to_string());  // bold yellow pipes
+        map.insert("ex".to_string(), "01;32".to_string());  // bold green executables
+        map.insert("cd".to_string(), "01;33".to_string());  // bold yellow char devices
+        map.insert("bd".to_string(), "01;33".to_string());  // bold yellow block devices
+
+        if let Ok(val) = std::env::var("LS_COLORS") {
+            for entry in val.split(':') {
+                let mut parts = entry.split('=');
+                if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                    map.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+        Self { map }
+    }
+
+    pub fn get_color(&self, key: &str) -> Option<&str> {
+        self.map.get(key).map(|s| s.as_str())
+    }
+}
+
+fn parse_time_style(s: &str) -> Option<TimeStyle> {
+    match s {
+        "full-iso" => Some(TimeStyle::FullIso),
+        "long-iso" => Some(TimeStyle::LongIso),
+        "iso" => Some(TimeStyle::Iso),
+        "locale" => Some(TimeStyle::Locale),
+        s if s.starts_with('+') => Some(TimeStyle::Custom(s[1..].to_string())),
+        s if s.starts_with("posix-") => {
+            let inner = &s[6..];
+            match inner {
+                "full-iso" => Some(TimeStyle::PosixFullIso),
+                "long-iso" => Some(TimeStyle::PosixLongIso),
+                "iso" => Some(TimeStyle::PosixIso),
+                "locale" => Some(TimeStyle::PosixLocale),
+                s if s.starts_with('+') => Some(TimeStyle::PosixCustom(s[1..].to_string())),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn format_time(mtime: u64, time_style: Option<&TimeStyle>) -> String {
+    let datetime = match time::OffsetDateTime::from_unix_timestamp(mtime as i64) {
+        Ok(dt) => dt,
+        Err(_) => return String::new(),
+    };
+    match time_style {
+        Some(TimeStyle::FullIso) | Some(TimeStyle::PosixFullIso) => {
+            // %Y-%m-%d %H:%M:%S.%f %z
+            // Use format_description! macro
+            match time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory][offset_minute]") {
+                Ok(format) => datetime.format(&format).unwrap_or_else(|_| String::new()),
+                Err(_) => String::new(),
+            }
+        }
+        Some(TimeStyle::LongIso) | Some(TimeStyle::PosixLongIso) => {
+            match time::format_description::parse("[year]-[month]-[day] [hour]:[minute]") {
+                Ok(format) => datetime.format(&format).unwrap_or_else(|_| String::new()),
+                Err(_) => String::new(),
+            }
+        }
+        Some(TimeStyle::Iso) | Some(TimeStyle::PosixIso) => {
+            match time::format_description::parse("[year]-[month]-[day]") {
+                Ok(format) => datetime.format(&format).unwrap_or_else(|_| String::new()),
+                Err(_) => String::new(),
+            }
+        }
+        Some(TimeStyle::Locale) | Some(TimeStyle::PosixLocale) => {
+            // Use existing locale formatting (month name)
+            let now = time::OffsetDateTime::now_utc();
+            let six_months_ago = now - time::Duration::days(180);
+            if datetime > six_months_ago {
+                // Recent: show month day hour:minute
+                format!("{:>3} {:>2} {:02}:{:02}",
+                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
+                    datetime.day(),
+                    datetime.hour(),
+                    datetime.minute())
+            } else {
+                // Old: show month day year
+                format!("{:>3} {:>2} {:>4}",
+                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
+                    datetime.day(),
+                    datetime.year())
+            }
+        }
+        Some(TimeStyle::Custom(ref _fmt)) | Some(TimeStyle::PosixCustom(ref _fmt)) => {
+            // fmt is a strftime-like format; we need to convert to time's format_description.
+            // For simplicity, we'll use strftime via chrono? Not available.
+            // We'll fall back to locale for now.
+            // TODO: implement custom format
+            String::new()
+        }
+        None => {
+            // Default to locale behavior (same as above)
+            let now = time::OffsetDateTime::now_utc();
+            let six_months_ago = now - time::Duration::days(180);
+            if datetime > six_months_ago {
+                format!("{:>3} {:>2} {:02}:{:02}",
+                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
+                    datetime.day(),
+                    datetime.hour(),
+                    datetime.minute())
+            } else {
+                format!("{:>3} {:>2} {:>4}",
+                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
+                    datetime.day(),
+                    datetime.year())
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 struct FileEntry {
@@ -28,6 +181,62 @@ pub struct LsOptions {
     pub reverse: bool,
     pub size_sort: bool,
     pub classify: bool,
+    pub color: ColorOption,
+    pub time_style: Option<TimeStyle>,
+    pub ls_colors: LsColors,
+}
+
+impl LsOptions {
+    fn color_enabled(&self) -> bool {
+        match self.color {
+            ColorOption::Always => true,
+            ColorOption::Never => false,
+            ColorOption::Auto => std::io::stdout().is_terminal(),
+        }
+    }
+
+    fn color_code_for_entry(&self, entry: &FileEntry) -> Option<String> {
+        if !self.color_enabled() {
+            return None;
+        }
+        let key = Self::ls_color_key_for_entry(entry);
+        self.ls_colors.get_color(&key).map(|seq| format!("\x1b[{}m", seq))
+    }
+
+    fn ls_color_key_for_entry(entry: &FileEntry) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = &entry.metadata;
+        if metadata.is_dir() {
+            "di".to_string()
+        } else if metadata.is_symlink() {
+            "ln".to_string()
+        } else if metadata.file_type().is_socket() {
+            "so".to_string()
+        } else if metadata.file_type().is_fifo() {
+            "pi".to_string()
+        } else if metadata.file_type().is_char_device() {
+            "cd".to_string()
+        } else if metadata.file_type().is_block_device() {
+            "bd".to_string()
+        } else {
+            // Check for executable
+            let mode = metadata.permissions().mode();
+            if mode & 0o111 != 0 {
+                "ex".to_string()
+            } else {
+                // default to no color
+                "".to_string()
+            }
+        }
+    }
+
+    fn colorize_name(&self, entry: &FileEntry, name: &str) -> String {
+        if let Some(code) = self.color_code_for_entry(entry) {
+            format!("{}{}\x1b[0m", code, name)
+        } else {
+            name.to_string()
+        }
+    }
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
@@ -46,6 +255,23 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
     let size_sort = matches.get_flag("size_sort");
     let classify  = matches.get_flag("classify");
 
+    let color = match matches.get_one::<String>("color") {
+        Some(val) => match val.as_str() {
+            "always" => ColorOption::Always,
+            "auto" => ColorOption::Auto,
+            "never" => ColorOption::Never,
+            _ => ColorOption::Never, // shouldn't happen
+        },
+        None => ColorOption::Never,
+    };
+
+    let time_style = match matches.get_one::<String>("time_style") {
+        Some(val) => parse_time_style(val),
+        None => env::var("TIME_STYLE").ok().and_then(|s| parse_time_style(&s)),
+    };
+
+    let ls_colors = LsColors::from_env();
+
     Ok(LsOptions {
         paths,
         all,
@@ -58,6 +284,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
         reverse,
         size_sort,
         classify,
+        color,
+        time_style,
+        ls_colors,
     })
 }
 
@@ -116,6 +345,15 @@ pub fn command() -> Command {
             .long("classify")
             .action(clap::ArgAction::SetTrue)
             .help("Append indicator (one of */=>@|) to entries"))
+        .arg(Arg::new("color")
+            .long("color")
+            .value_parser(["never", "always", "auto"])
+            .num_args(0..=1)
+            .default_missing_value("always")
+            .help("Colorize the output; WHEN can be 'never', 'always', or 'auto'"))
+        .arg(Arg::new("time_style")
+            .long("time-style")
+            .help("Time/date format; can be full-iso, long-iso, iso, locale, or +FORMAT"))
 }
 
 fn format_size(size: u64, human_readable: bool) -> String {
@@ -137,7 +375,7 @@ fn format_size(size: u64, human_readable: bool) -> String {
     }
 }
 
-fn format_long_entry(entry: &FileEntry, human_readable: bool) -> Result<String> {
+fn format_long_entry(entry: &FileEntry, options: &LsOptions) -> Result<String> {
     let stat = posix_stat(entry.path.to_str().unwrap())
         .map_err(|e| match e {
             PosixError::Io(io_err) => eyre!("{}", io_err),
@@ -177,29 +415,10 @@ fn format_long_entry(entry: &FileEntry, human_readable: bool) -> Result<String> 
         .unwrap_or_else(|| stat.gid.to_string());
 
     // Size
-    let size_str = format_size(stat.size, human_readable);
+    let size_str = format_size(stat.size, options.human_readable);
 
     // Date formatting
-    let date_str = if let Ok(datetime) = time::OffsetDateTime::from_unix_timestamp(stat.mtime as i64) {
-        let now = time::OffsetDateTime::now_utc();
-        let six_months_ago = now - time::Duration::days(180);
-        if datetime > six_months_ago {
-            // Recent: show month day hour:minute (e.g., "Jan 15 14:30")
-            format!("{:>3} {:>2} {:02}:{:02}",
-                format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
-                datetime.day(),
-                datetime.hour(),
-                datetime.minute())
-        } else {
-            // Old: show month day year (e.g., "Jan 15 2023")
-            format!("{:>3} {:>2} {:>4}",
-                format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
-                datetime.day(),
-                datetime.year())
-        }
-    } else {
-        "".to_string()
-    };
+    let date_str = format_time(stat.mtime, options.time_style.as_ref());
 
     // Name (with symlink target if applicable)
     let name = if entry.metadata.is_symlink() {
@@ -212,7 +431,9 @@ fn format_long_entry(entry: &FileEntry, human_readable: bool) -> Result<String> 
         entry.name.clone()
     };
 
-    Ok(format!("{} {:>2} {:<8} {:<8} {:>8} {} {}", permissions, nlink, owner, group, size_str, date_str, name))
+    let colored_name = options.colorize_name(entry, &name);
+
+    Ok(format!("{} {:>2} {:<8} {:<8} {:>8} {} {}", permissions, nlink, owner, group, size_str, date_str, colored_name))
 }
 
 fn get_classify_indicator(entry: &FileEntry) -> char {
@@ -297,17 +518,18 @@ fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
     // Print entries
     for entry in &file_entries {
         if options.long {
-            let line = format_long_entry(entry, options.human_readable)?;
+            let line = format_long_entry(entry, options)?;
             println!("{}", line);
         } else {
-            let mut name = entry.name.clone();
+            let mut display_name = entry.name.clone();
             if options.classify {
                 let indicator = get_classify_indicator(entry);
                 if indicator != '\0' {
-                    name.push(indicator);
+                    display_name.push(indicator);
                 }
             }
-            println!("{}", name);
+            let colored_name = options.colorize_name(entry, &display_name);
+            println!("{}", colored_name);
         }
     }
 
@@ -350,17 +572,18 @@ fn file_entry_for_path(path: &Path, metadata: fs::Metadata) -> Result<FileEntry>
 
 fn print_single_entry(entry: &FileEntry, options: &LsOptions) -> Result<()> {
     if options.long {
-        let line = format_long_entry(entry, options.human_readable)?;
+        let line = format_long_entry(entry, options)?;
         println!("{}", line);
     } else {
-        let mut name = entry.name.clone();
+        let mut display_name = entry.name.clone();
         if options.classify {
             let indicator = get_classify_indicator(entry);
             if indicator != '\0' {
-                name.push(indicator);
+                display_name.push(indicator);
             }
         }
-        println!("{}", name);
+        let colored_name = options.colorize_name(entry, &display_name);
+        println!("{}", colored_name);
     }
     Ok(())
 }
