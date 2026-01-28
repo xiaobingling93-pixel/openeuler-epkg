@@ -1334,6 +1334,11 @@ fn add_rpm_trigger_instance_args(
         return;
     }
 
+    // hooks by create_systemd_hook() do not accept RPM $1 $2 params
+    if hook.pkgkey.is_none() {
+        return;
+    }
+
     // $1: Number of installed instances of the triggered package (package containing the trigger scriptlet)
     let triggered_pkgname = hook.pkgkey.as_ref()
         .and_then(|pkgkey| pkgkey2pkgname(pkgkey).ok());
