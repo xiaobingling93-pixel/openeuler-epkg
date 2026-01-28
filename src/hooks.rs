@@ -640,7 +640,7 @@ fn load_hook_file(
 
     // Only process .hook files
     if path.extension().and_then(|e| e.to_str()) != Some("hook") {
-        log::debug!("skipping non-hook file {}", path.display());
+        log::trace!("skipping non-hook file {}", path.display());
         return;
     }
 
@@ -1310,8 +1310,9 @@ fn get_triggering_pkgname(
 /// For RPM format, adds two arguments:
 /// - $1: Number of installed instances of the triggered package (package containing the trigger scriptlet)
 /// - $2: Number of installed instances of the triggering package (package that set off the trigger)
-/// For DEB format, adds "triggered" and space-separated trigger names:
-/// - "triggered" <trigger-name>...
+/// For DEB hooks, add arguments:
+/// - $1 = "triggered"
+/// - $2 = "<space-separated trigger names>"
 fn add_rpm_trigger_instance_args(
     hook: &Hook,
     matched_targets: &[String],
@@ -1319,10 +1320,9 @@ fn add_rpm_trigger_instance_args(
     args: &mut Vec<String>,
 ) {
     if plan.package_format == PackageFormat::Deb {
-        // For DEB trigger hooks, add "triggered" and trigger names
+        args.push("triggered".to_string());
         // matched_targets contains trigger names for DEB trigger hooks
         if !matched_targets.is_empty() {
-            args.push("triggered".to_string());
             // Join trigger names with space and add as a single argument
             // This matches dpkg's behavior: postinst triggered "trigger-name trigger-name ..."
             args.push(matched_targets.join(" "));
