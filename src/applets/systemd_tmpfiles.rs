@@ -822,14 +822,17 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
     ensure_parent_directory(&full_path)?;
 
     // Copy recursively, preserving symlinks (dereference=false)
-    // Use preserve_attrs=true to keep source attributes, but we'll override with specified mode/user/group later
+    // Use preserve=true to keep source attributes, but we'll override with specified mode/user/group later
+    let mut cp_options = crate::applets::cp::CpOptions::default();
+    cp_options.preserve = true; // preserve attributes
+    cp_options.recursive = true; // recursive copy
+    cp_options.force = modifiers.append_or_force; // force overwrite if + modifier
+    cp_options.no_dereference_d = true; // -d: don't follow symlinks (preserve them)
+    cp_options.compute_derived();
     copy_single_item(
         &full_source,
         &full_path,
-        true,  // preserve_attrs
-        modifiers.append_or_force, // force overwrite if + modifier
-        false, // dereference: do not follow symlinks
-        true,  // recursive
+        &cp_options,
     )?;
 
     // Set permissions if specified
