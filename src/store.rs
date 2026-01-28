@@ -237,7 +237,7 @@ pub fn unpack_mv_package(
 ) -> Result<std::path::PathBuf> {
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
-    let store_tmp_dir = dirs().epkg_cache.join("unpack").join(&temp_name);
+    let store_tmp_dir = crate::dirs::unpack_basedir().join(&temp_name);
     fs::create_dir_all(&store_tmp_dir)
         .wrap_err_with(|| format!("Failed to create temporary directory: {}", store_tmp_dir.display()))?;
 

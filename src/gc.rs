@@ -279,7 +279,7 @@ fn collect_old_items_in_dir(dir: &Path, min_age_seconds: u64) -> Result<Vec<Path
 }
 
 fn collect_old_unpack_dirs() -> Result<Vec<PathBuf>> {
-    let unpack_dir = dirs().epkg_cache.join("unpack");
+    let unpack_dir = crate::dirs::unpack_basedir();
     // Only remove directories older than 1 hour to avoid race conditions
     collect_old_items_in_dir(&unpack_dir, 3600)
 }
@@ -359,7 +359,7 @@ fn display_gc_plan(plan: &GcPlan, is_old_downloads: bool) -> Result<()> {
         }
 
         if !plan.old_unpack_dirs.is_empty() {
-            println!("\nUnused directories to remove under: {}", dirs().epkg_cache.join("unpack").display());
+            println!("\nUnused directories to remove under: {}", crate::dirs::unpack_basedir().display());
             let total_size = plan.old_unpack_dirs.iter()
                 .map(|p| get_dir_size(p).unwrap_or(0))
                 .sum::<u64>();

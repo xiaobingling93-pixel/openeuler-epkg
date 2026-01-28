@@ -57,6 +57,11 @@ impl EPKGDirs {
     }
 }
 
+/// Get the base path to unpack package temporarily
+pub fn unpack_basedir() -> PathBuf {
+    dirs().epkg_store.join("unpack")
+}
+
 pub fn get_env_root(env_name: String) -> Result<PathBuf> {
     let env_config = crate::models::env_config();
     if env_config.name == env_name {
