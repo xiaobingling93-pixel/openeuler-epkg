@@ -105,7 +105,6 @@ fn parse_repo_file(path: &Path) -> Result<ChannelConfig> {
 
     let channel_config = ChannelConfig {
         format: PackageFormat::Rpm,
-        distro: "fedora".to_string(), // Default, will be overridden
         repos,
         file_path: path.to_string_lossy().to_string(),
         ..ChannelConfig::default()
