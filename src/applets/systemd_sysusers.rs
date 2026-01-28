@@ -145,6 +145,7 @@ fn process_config_file(config_file: &str, root: Option<&Path>) -> Result<()> {
             continue;
         }
 
+        log::debug!("systemd_sysusers: processing line: {}", line);
         process_line(line, root)?;
     }
 

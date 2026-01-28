@@ -1,5 +1,6 @@
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use log;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -414,6 +415,19 @@ pub fn create_user(
 
     let uid = resolve_uid(uid_str, system, root)?;
     let gid = resolve_gid(gid_str, name, system, root)?;
+
+    let passwd_path = passwd_path(root);
+    log::info!(
+        "userdb::create_user: name={} uid={} gid={} home={} shell={} system={} locked={} passwd_path={}",
+        name,
+        uid,
+        gid,
+        home,
+        shell,
+        system,
+        locked,
+        passwd_path.display()
+    );
     // Passwd field handling (matching C implementation in useradd.c):
     // - When shadow is enabled (is_shadow_pwd), use SHADOW_PASSWD_STRING ("x") (line 939)
     // - When shadow is not enabled, use user_pass ("!") (line 941)
