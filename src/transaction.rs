@@ -47,14 +47,13 @@
 //! - `process_single_package_upgrade()` - Replaced by `run_action()` with integrated triggers
 //! - `process_fresh_installs()` - Replaced by `process_package_operation()` with integrated triggers
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
 use std::time::SystemTime;
 use color_eyre::Result;
 use std::sync::Arc;
 use color_eyre::eyre::WrapErr;
-use crate::models::{PackageFormat, InstalledPackageInfo, InstalledPackagesMap};
+use crate::models::{PackageFormat, InstalledPackageInfo};
 use crate::models::PACKAGE_CACHE;
 use crate::plan::{InstallationPlan, PackageOperation, OperationType, remove_package_from_cache};
 use crate::hooks;
@@ -106,21 +105,12 @@ fn run_action(
 
     match action {
         PackageAction::PreInstall => {
-            // Hook: PreInstall
             run_pkgkey_hooks_pair(plan, HookWhen::PreInstall, pkgkey)?;
-
-            // Level 3b: Trigger and scriptlet actions
-
-            // RPM triggerprein previously ran here (now covered by hooks).
-
-            // Pre-install scriptlet
-            run_scriptlet(plan, ScriptletType::PreInstall, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
-
-            // DEB activate triggers now handled by hooks (PostInstall/PostTransaction based on await mode)
+            run_scriptlet(plan,    ScriptletType::PreInstall, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PreInstall2, pkgkey)?;
         }
 
         PackageAction::LinkFiles => {
-            // Level 3a: Install action
             // Files are already linked during download/unpack phase, but we may need to handle diff linking for upgrades
             crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, &store_root, &env_root)?;
             // Note: Actual linking happens earlier in the download/unpack phase
@@ -129,97 +119,47 @@ fn run_action(
         }
 
         PackageAction::PostInstall => {
-            // Level 3b: Scriptlet and trigger actions
-
-            // Post-install scriptlet
             run_scriptlet(plan, ScriptletType::PostInstall, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
-
-            // Hook: PostInstall (primary post phase)
             run_pkgkey_hooks_pair(plan, HookWhen::PostInstall, pkgkey)?;
+            run_pkgkey_hooks_pair(plan, HookWhen::PostInstall2, pkgkey)?;
 
-            // RPM triggerin and filetriggerin (low priority) previously ran here (now covered by hooks).
             // DEB trigger processing: noawait triggers from Unincorp (immediate, per-package processing)
             crate::deb_triggers::run_debian_unincorp_triggers(plan, HookWhen::PostInstall)?;
         }
 
         PackageAction::PreRemove => {
-            // Hook: PreRemove
             run_pkgkey_hooks_pair(plan, HookWhen::PreRemove, pkgkey)?;
-
-            // Level 3b: Trigger and scriptlet actions
-
-            // RPM triggerun and filetriggerun (high priority) previously ran here (now covered by hooks).
-
-            // Pre-remove scriptlet
-            // Use pkg_info directly - it's already the correct package info for this action
-            // (old_info for removals/upgrades, pkg_info for pure removals)
-            run_scriptlet(plan, ScriptletType::PreRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
-
-            // Hook: PreRemove2 (low priority path trigger placement)
+            run_scriptlet(plan,    ScriptletType::PreRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
             run_pkgkey_hooks_pair(plan, HookWhen::PreRemove2, pkgkey)?;
-
-            // RPM filetriggerun (low priority) previously ran here (now covered by hooks).
         }
 
         PackageAction::UnlinkFiles => {
-            // Level 3a: Remove action
             unlink_package(pkgkey, &pkg_info.pkgline, &store_root, &env_root)?;
-
             remove_package_from_cache(pkgkey, pkg_info);
         }
 
         PackageAction::PostRemove => {
-            // Level 3b: Scriptlet action
-            // Use pkg_info directly - it's already the correct package info for this action
-            // (old_info for removals/upgrades, pkg_info for pure removals)
-            run_scriptlet(plan, ScriptletType::PostRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
-
-            // Hook: PostRemove (primary post-remove phase)
+            run_scriptlet(plan,    ScriptletType::PostRemove, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
             run_pkgkey_hooks_pair(plan, HookWhen::PostRemove, pkgkey)?;
-
-            // RPM triggerpostun previously ran here (now covered by hooks).
-
-            // Hook: PostRemove2 (secondary post-remove phase)
             run_pkgkey_hooks_pair(plan, HookWhen::PostRemove2, pkgkey)?;
         }
 
         PackageAction::PreUpgrade => {
-            // Hook: PreUpgrade
             run_pkgkey_hooks_pair(plan, HookWhen::PreUpgrade, pkgkey)?;
-
-            // Level 3b: Trigger and scriptlet actions
-            let mut single_pkg: InstalledPackagesMap = HashMap::new();
-            single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-
-            // RPM triggerprein (upgrade) previously ran here (now covered by hooks).
-
-            // Pre-upgrade scriptlet
-            run_scriptlet(plan, ScriptletType::PreUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
+            run_scriptlet(plan,    ScriptletType::PreUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
         }
 
         PackageAction::PostUpgrade => {
-            // Level 3b: Scriptlet and trigger actions
-            let mut single_pkg: InstalledPackagesMap = HashMap::new();
-            single_pkg.insert(pkgkey.to_string(), Arc::clone(pkg_info));
-
-            // Post-upgrade scriptlet
-            run_scriptlet(plan, ScriptletType::PostUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
-
-            // Hook: PostUpgrade
+            run_scriptlet(plan,    ScriptletType::PostUpgrade, pkgkey, pkg_info.as_ref(), old_pkgkey)?;
             run_pkgkey_hooks_pair(plan, HookWhen::PostUpgrade, pkgkey)?;
-
-            // RPM triggerin (upgrade) previously ran here (now covered by hooks).
-            // DEB trigger handling for upgrades now covered by hooks
         }
 
         PackageAction::ExposeExecutables => {
-            // Level 3a: Expose action
             let store_fs_dir = plan.store_root.join(&pkg_info.pkgline).join("fs");
             crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
         }
 
         PackageAction::UnexposeExecutables => {
-            // Level 3a: Unexpose action
             crate::expose::unexpose_package(plan, &env_root, pkgkey)?;
         }
     }
@@ -240,8 +180,6 @@ fn begin_transaction(
 
         // %preuntrans of packages being removed (runs after %pretrans, before removals)
         run_trans_scriptlets(plan, ScriptletType::PreUnTrans)?;
-
-        // RPM transfiletriggerun previously ran here (now covered by hooks).
     }
 
     // Hook: PreTransaction
@@ -545,7 +483,7 @@ fn run_ldconfig_if_needed(env_root: &Path) -> Result<()> {
                 run::fork_and_execute(env_root, &run_options)?;
             }
             Err(_) => {
-                log::warn!("ldconfig command not found in environment, skipping library cache update");
+                log::info!("ldconfig command not found in environment, skipping library cache update");
             }
         }
     } else {
