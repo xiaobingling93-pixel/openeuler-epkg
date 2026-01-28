@@ -796,11 +796,8 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
         parts[6].clone()
     } else {
         // Default to /usr/share/factory/ with same name as destination
-        let file_name = Path::new(path)
-            .file_name()
-            .ok_or_else(|| eyre!("Cannot get filename from path: {}", path))?;
         let mut factory_path = PathBuf::from("/usr/share/factory");
-        factory_path.push(file_name);
+        factory_path.push(path);
         factory_path.to_str()
             .ok_or_else(|| eyre!("Failed to convert factory path to string"))?
             .to_string()
