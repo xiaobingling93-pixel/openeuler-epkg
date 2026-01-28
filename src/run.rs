@@ -14,7 +14,7 @@ use users::{get_current_uid};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
-use log::{info, debug, warn};
+use log::{info, debug, warn, trace};
 use crate::models::*;
 use crate::utils;
 use crate::utils::is_suid;
@@ -140,7 +140,7 @@ fn wait_for_child_with_timeout_polling(child: nix::unistd::Pid, cmd_path: &Path,
 
 /// Wait for child process to complete, with optional timeout
 fn wait_for_child_with_timeout(child: nix::unistd::Pid, cmd_path: &Path, run_options: &RunOptions) -> Result<()> {
-    debug!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
+    trace!("Parent process waiting for child {} (cmd: {})", child, cmd_path.display());
 
     if run_options.timeout > 0 {
         // Handle timeout with polling
@@ -177,7 +177,7 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
                 Ok(rel_path) => {
                     // Convert to absolute path from root (e.g., /usr/bin/htop)
                     let abs_from_root = Path::new("/").join(rel_path);
-                    debug!("Converted command path to env-relative: {} -> {}", cmd_path.display(), abs_from_root.display());
+                    trace!("Converted command path to env-relative: {} -> {}", cmd_path.display(), abs_from_root.display());
                     abs_from_root
                 }
                 Err(_) => {
@@ -186,12 +186,12 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
                 }
             }
         } else {
-            debug!("Command path not under env_root, using original: {}", cmd_path.display());
+            trace!("Command path not under env_root, using original: {}", cmd_path.display());
             cmd_path.to_path_buf()
         };
 
         // Set up namespace and bind mounts
-        debug!("Child process starting namespace setup (cmd: {})", rel_cmd_path.display());
+        trace!("Child process starting namespace setup (cmd: {})", rel_cmd_path.display());
 
         if let Err(e) = setup_namespace_and_mounts(env_root, run_options) {
             eprintln!("Failed to setup namespaces: {}", e);
@@ -370,7 +370,7 @@ pub(crate) fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptio
     let uid = getuid();
     let gid = getgid();
 
-    debug!("Setting up namespace: euid={}, uid={}, gid={}", euid, uid, gid);
+    trace!("Setting up namespace: euid={}, uid={}, gid={}", euid, uid, gid);
 
     // Create namespaces (die on error like C version)
     create_namespaces(euid, uid, gid, &run_options.user)?;
@@ -401,7 +401,7 @@ fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String>) -
         clone_flags |= CloneFlags::CLONE_NEWUSER;
     }
 
-    debug!("Creating namespaces with flags: {:?}", clone_flags);
+    trace!("Creating namespaces with flags: {:?}", clone_flags);
 
     // Handle user mapping if we need to create user namespace
     if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
@@ -411,7 +411,7 @@ fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String>) -
         // Die on error like C version
         unshare_with_error_handling(clone_flags)?;
 
-        debug!("Successfully created namespaces");
+        trace!("Successfully created namespaces");
 
         // Signal child to proceed with ID mapping
         sync_with_idmap_child(child_pid, sync_fd)?;
@@ -419,7 +419,7 @@ fn create_namespaces(euid: Uid, uid: Uid, gid: Gid, opt_user: &Option<String>) -
         // Die on error like C version
         unshare_with_error_handling(clone_flags)?;
 
-        debug!("Successfully created namespaces");
+        trace!("Successfully created namespaces");
     }
 
     if !clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
@@ -469,7 +469,7 @@ fn check_user_namespace_support() -> Result<()> {
 
     for file in proc_files {
         if let Ok(content) = fs::read_to_string(file) {
-            debug!("{}: {}", file, content.trim());
+            trace!("{}: {}", file, content.trim());
             if file.contains("max_user_namespaces") && content.trim() == "0" {
                 return Err(eyre::eyre!("User namespaces disabled: max_user_namespaces = 0"));
             }
@@ -480,21 +480,21 @@ fn check_user_namespace_support() -> Result<()> {
     }
 
     // Try a simple test of user namespace creation
-    debug!("Testing simple user namespace creation...");
+    trace!("Testing simple user namespace creation...");
     match std::process::Command::new("unshare")
         .args(&["--user", "--map-root-user", "true"])
         .output()
     {
         Ok(output) => {
             if output.status.success() {
-                debug!("Simple user namespace test: SUCCESS");
+                trace!("Simple user namespace test: SUCCESS");
             } else {
-                debug!("Simple user namespace test: FAILED - {}",
+                trace!("Simple user namespace test: FAILED - {}",
                     String::from_utf8_lossy(&output.stderr));
             }
         }
         Err(e) => {
-            debug!("Failed to run unshare test command: {}", e);
+            trace!("Failed to run unshare test command: {}", e);
         }
     }
 
@@ -578,7 +578,7 @@ fn bind_mount_host_to_guest(host_path: &Path, guest_path: &Path, error_msg: &str
             return Ok(());
         }
 
-        debug!("Bind mounting host {} -> {}", host_path.display(), guest_path.display());
+        trace!("Bind mounting host {} -> {}", host_path.display(), guest_path.display());
         mount(
             Some(guest_path),
             host_path,
@@ -699,7 +699,7 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
     let opt_epkg_existed = opt_epkg_path.exists();
 
     if opt_epkg_existed {
-        debug!("Bind mounting {} -> {}", opt_epkg_path.display(), opt_real_path.display());
+        trace!("Bind mounting {} -> {}", opt_epkg_path.display(), opt_real_path.display());
         mount(
             Some(opt_epkg_path),
             &opt_real_path,
@@ -717,7 +717,7 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
     // Use the stored value, not a new check, because /opt/epkg is now hidden
     if opt_epkg_existed {
         if opt_real_path.exists() {
-            debug!("Bind mounting {} -> {}", opt_real_path.display(), opt_epkg_path.display());
+            trace!("Bind mounting {} -> {}", opt_real_path.display(), opt_epkg_path.display());
             mount(
                 Some(&opt_real_path),
                 opt_epkg_path,
@@ -751,7 +751,7 @@ fn mount_env_dir(env_root: &Path, dir: &str) -> Result<()> {
     let host_path = Path::new(dir);
 
     if src.exists() {
-        debug!("Bind mounting host {} -> {}", host_path.display(), src.display());
+        trace!("Bind mounting host {} -> {}", host_path.display(), src.display());
 
         mount(
             Some(&src),
@@ -771,7 +771,7 @@ fn mount_additional_dir(env_root: &Path, mount_dir: &str) -> Result<()> {
     let host_path = Path::new(mount_dir);
 
     if src.exists() && host_path.exists() {
-        debug!("Bind mounting additional host {} -> {}", host_path.display(), src.display());
+        trace!("Bind mounting additional host {} -> {}", host_path.display(), src.display());
 
         mount(
             Some(&src),
@@ -818,7 +818,7 @@ fn fork_idmap_child(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<(ni
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child }) => {
             drop(read_fd); // Close read end in parent
-            debug!("Forked ID mapping child process: {}", child);
+            trace!("Forked ID mapping child process: {}", child);
             Ok((child, write_fd))
         }
         Ok(ForkResult::Child) => {
@@ -828,7 +828,7 @@ fn fork_idmap_child(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Result<(ni
             match nix::unistd::read(&read_fd, &mut buffer) {
                 Ok(1) => {
                     if buffer[0] == PIPE_SYNC_BYTE {
-                        debug!("Child received sync signal, proceeding with ID mapping");
+                        trace!("Child received sync signal, proceeding with ID mapping");
                         execute_idmap_for_parent(uid, gid, opt_user)?;
                         std::process::exit(0);
                     } else {
@@ -864,7 +864,7 @@ fn sync_with_idmap_child(child_pid: nix::unistd::Pid, sync_fd: OwnedFd) -> Resul
     } else if result != 1 {
         return Err(eyre::eyre!("Unexpected write size: {}", result));
     }
-    debug!("Sent sync signal to child");
+    trace!("Sent sync signal to child");
     // OwnedFd will close fd when dropped
     drop(sync_fd);
     match nix::sys::wait::waitpid(child_pid, None) {
@@ -875,7 +875,7 @@ fn sync_with_idmap_child(child_pid: nix::unistd::Pid, sync_fd: OwnedFd) -> Resul
                     if exit_code != 0 {
                         return Err(eyre::eyre!("ID mapping child failed with exit code {}", exit_code));
                     }
-                    debug!("ID mapping child completed successfully");
+                    trace!("ID mapping child completed successfully");
                 }
                 WaitStatus::Signaled(_, signal, _) => {
                     return Err(eyre::eyre!("ID mapping child killed by signal {:?}", signal));
@@ -899,20 +899,20 @@ fn execute_idmap_for_parent(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Re
     let uid_raw = uid.as_raw();
     let gid_raw = gid.as_raw();
 
-    debug!("Executing ID mapping for parent PID {} (user: {}, UID: {}, GID: {})",
+    trace!("Executing ID mapping for parent PID {} (user: {}, UID: {}, GID: {})",
            parent_pid, username, uid_raw, gid_raw);
 
     // Check if newuidmap and newgidmap commands are available
     let has_newuidmap = utils::command_exists("newuidmap");
     let has_newgidmap = utils::command_exists("newgidmap");
 
-    debug!("UID mapping tools: newuidmap={}, newgidmap={}", has_newuidmap, has_newgidmap);
+    trace!("UID mapping tools: newuidmap={}, newgidmap={}", has_newuidmap, has_newgidmap);
 
     if has_newuidmap && has_newgidmap {
         // Try Podman's approach with newuidmap/newgidmap
         match execute_newidmap_for_parent(parent_pid, uid_raw, gid_raw, &username) {
             Ok(()) => {
-                debug!("Successfully used newuidmap/newgidmap for UID/GID mapping");
+                trace!("Successfully used newuidmap/newgidmap for UID/GID mapping");
                 return Ok(());
             }
             Err(e) => {
@@ -945,8 +945,8 @@ fn execute_newidmap_for_parent(parent_pid: nix::unistd::Pid, uid_raw: u32, gid_r
     let subuid_ranges = read_subid_ranges(username, "/etc/subuid")?;
     let subgid_ranges = read_subid_ranges(username, "/etc/subgid")?;
 
-    debug!("Subuid ranges: {:?}", subuid_ranges);
-    debug!("Subgid ranges: {:?}", subgid_ranges);
+    trace!("Subuid ranges: {:?}", subuid_ranges);
+    trace!("Subgid ranges: {:?}", subgid_ranges);
 
     // Write setgroups deny first
     write_id_map_for_pid(parent_pid, "/proc/{}/setgroups", "deny")?;
@@ -957,7 +957,7 @@ fn execute_newidmap_for_parent(parent_pid: nix::unistd::Pid, uid_raw: u32, gid_r
     // Set up GID mapping using newgidmap
     execute_newidmap_for_pid("newgidmap", parent_pid, gid_raw, &subgid_ranges)?;
 
-    debug!("Successfully mapped UID/GID ranges using newuidmap/newgidmap");
+    trace!("Successfully mapped UID/GID ranges using newuidmap/newgidmap");
     Ok(())
 }
 
@@ -983,7 +983,7 @@ fn execute_newidmap_for_pid(cmd: &str, target_pid: nix::unistd::Pid, current_id:
         }
     }
 
-    debug!("Executing {} with args: {:?}", cmd, args);
+    trace!("Executing {} with args: {:?}", cmd, args);
     let status = std::process::Command::new(&args[0])
         .args(&args[1..])
         .status()

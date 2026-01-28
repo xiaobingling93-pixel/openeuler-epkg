@@ -760,7 +760,7 @@ pub fn safe_mkdir_p(path: &Path) -> Result<()> {
             log::debug!("Path exists as a file, removing it: {}", path.display());
             remove_any_existing_file(path, false)?;
         } else if metadata.is_dir() {
-            log::debug!("Path exists as a directory: {}", path.display());
+            log::trace!("Path exists as a directory: {}", path.display());
             // Directory already exists, we can proceed
             return Ok(());
         } else {
