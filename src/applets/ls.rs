@@ -186,6 +186,23 @@ pub struct LsOptions {
     pub ls_colors: LsColors,
 }
 
+struct ColumnWidths {
+    nlink: usize,
+    owner: usize,
+    group: usize,
+    size: usize,
+}
+
+struct LongEntryFields {
+    permissions: String,
+    nlink: u64,
+    owner: String,
+    group: String,
+    size_str: String,
+    date_str: String,
+    name: String,
+}
+
 impl LsOptions {
     fn color_enabled(&self) -> bool {
         match self.color {
@@ -204,8 +221,11 @@ impl LsOptions {
     }
 
     fn ls_color_key_for_entry(entry: &FileEntry) -> String {
+        Self::ls_color_key_for_metadata(&entry.metadata)
+    }
+
+    fn ls_color_key_for_metadata(metadata: &fs::Metadata) -> String {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = &entry.metadata;
         if metadata.is_dir() {
             "di".to_string()
         } else if metadata.is_symlink() {
@@ -231,6 +251,45 @@ impl LsOptions {
     }
 
     fn colorize_name(&self, entry: &FileEntry, name: &str) -> String {
+        if !self.color_enabled() {
+            return name.to_string();
+        }
+
+        // For symlinks, try to color based on target type
+        if entry.metadata.is_symlink() {
+            // Split symlink name and target if present
+            if let Some((symlink_name, target_part)) = name.split_once(" -> ") {
+                // Try to get target metadata for coloring
+                let target_color_key = if let Ok(target_path) = fs::read_link(&entry.path) {
+                    // Try to resolve absolute path
+                    let resolved_target = if target_path.is_absolute() {
+                        target_path.clone()
+                    } else {
+                        entry.path.parent().map_or(target_path.clone(), |parent| parent.join(&target_path))
+                    };
+
+                    // Try to get metadata of target
+                    if let Ok(target_metadata) = fs::metadata(&resolved_target) {
+                        Some(Self::ls_color_key_for_metadata(&target_metadata))
+                    } else {
+                        // Fall back to symlink color if target not accessible
+                        Some("ln".to_string())
+                    }
+                } else {
+                    // Fall back to symlink color
+                    Some("ln".to_string())
+                };
+
+                if let Some(key) = target_color_key {
+                    if let Some(color_seq) = self.ls_colors.get_color(&key) {
+                        let color_code = format!("\x1b[{}m", color_seq);
+                        return format!("{}{}\x1b[0m -> {}", color_code, symlink_name, target_part);
+                    }
+                }
+            }
+        }
+
+        // Regular file or symlink without target display
         if let Some(code) = self.color_code_for_entry(entry) {
             format!("{}{}\x1b[0m", code, name)
         } else {
@@ -375,7 +434,7 @@ fn format_size(size: u64, human_readable: bool) -> String {
     }
 }
 
-fn format_long_entry(entry: &FileEntry, options: &LsOptions) -> Result<String> {
+fn get_long_entry_fields(entry: &FileEntry, options: &LsOptions) -> Result<LongEntryFields> {
     let stat = posix_stat(entry.path.to_str().unwrap())
         .map_err(|e| match e {
             PosixError::Io(io_err) => eyre!("{}", io_err),
@@ -431,9 +490,25 @@ fn format_long_entry(entry: &FileEntry, options: &LsOptions) -> Result<String> {
         entry.name.clone()
     };
 
-    let colored_name = options.colorize_name(entry, &name);
+    Ok(LongEntryFields {
+        permissions,
+        nlink,
+        owner,
+        group,
+        size_str,
+        date_str,
+        name,
+    })
+}
 
-    Ok(format!("{} {:>2} {:<8} {:<8} {:>8} {} {}", permissions, nlink, owner, group, size_str, date_str, colored_name))
+fn format_long_entry(fields: &LongEntryFields, entry: &FileEntry, options: &LsOptions, widths: &ColumnWidths) -> Result<String> {
+    let colored_name = options.colorize_name(entry, &fields.name);
+    Ok(format!("{} {:>width_nlink$} {:<width_owner$} {:<width_group$} {:>width_size$} {} {}",
+        fields.permissions, fields.nlink, fields.owner, fields.group, fields.size_str, fields.date_str, colored_name,
+        width_nlink = widths.nlink,
+        width_owner = widths.owner,
+        width_group = widths.group,
+        width_size = widths.size))
 }
 
 fn get_classify_indicator(entry: &FileEntry) -> char {
@@ -516,11 +591,23 @@ fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
     }
 
     // Print entries
-    for entry in &file_entries {
-        if options.long {
-            let line = format_long_entry(entry, options)?;
+    if options.long {
+        let mut fields_vec = Vec::new();
+        let mut widths = ColumnWidths { nlink: 0, owner: 0, group: 0, size: 0 };
+        for entry in &file_entries {
+            let fields = get_long_entry_fields(entry, options)?;
+            widths.nlink = widths.nlink.max(fields.nlink.to_string().len());
+            widths.owner = widths.owner.max(fields.owner.len());
+            widths.group = widths.group.max(fields.group.len());
+            widths.size = widths.size.max(fields.size_str.len());
+            fields_vec.push(fields);
+        }
+        for (entry, fields) in file_entries.iter().zip(fields_vec.iter()) {
+            let line = format_long_entry(fields, entry, options, &widths)?;
             println!("{}", line);
-        } else {
+        }
+    } else {
+        for entry in &file_entries {
             let mut display_name = entry.name.clone();
             if options.classify {
                 let indicator = get_classify_indicator(entry);
@@ -572,7 +659,14 @@ fn file_entry_for_path(path: &Path, metadata: fs::Metadata) -> Result<FileEntry>
 
 fn print_single_entry(entry: &FileEntry, options: &LsOptions) -> Result<()> {
     if options.long {
-        let line = format_long_entry(entry, options)?;
+        let fields = get_long_entry_fields(entry, options)?;
+        let widths = ColumnWidths {
+            nlink: fields.nlink.to_string().len().max(1),
+            owner: fields.owner.len().max(1),
+            group: fields.group.len().max(1),
+            size: fields.size_str.len().max(1),
+        };
+        let line = format_long_entry(&fields, entry, options, &widths)?;
         println!("{}", line);
     } else {
         let mut display_name = entry.name.clone();
