@@ -275,8 +275,13 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         }
     }
 
+    // Debian-specific setup
+    if pkg_format == &PackageFormat::Deb {
+        ensure_triggers_dir(env_root)?;
+    }
+
     // Create symlinks for applets in usr/local/bin/
-    create_applet_symlinks(env_root, pkg_format)?;
+    create_applet_symlinks(env_root)?;
 
     // Set owner and permissions if environment is private (public = false)
     if !env_config.public {
@@ -298,17 +303,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
 
 // These symlinks must be created and available before running scriptlets.
 // If the distro provides the commands, they'll overwrite symlink to our implementation.
-fn create_applet_symlink(env_root: &Path, target: &Path, name: &str) -> Result<()> {
-    let symlink_path = env_root.join(format!("usr/bin/{}", name));
-    force_symlink(target, &symlink_path)
-        .with_context(|| format!("Failed to create {} symlink in {}", name, symlink_path.display()))?;
-    Ok(())
-}
-
-fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
-    let epkg_exe = std::env::current_exe()
-        .with_context(|| "Failed to get current executable path")?;
-
+fn create_applet_symlinks(env_root: &Path) -> Result<()> {
     // Create a symlink from systemctl to /usr/bin/true to prevent blocking on systemctl daemon-reload
     let systemctl_path = env_root.join("usr/bin/systemctl");
     if !systemctl_path.exists() {
@@ -316,19 +311,8 @@ fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result
             .with_context(|| format!("Failed to create systemctl symlink in {}", systemctl_path.display()))?;
     }
 
-    // Create symlinks for applets
-    create_applet_symlink(env_root, &epkg_exe, "systemd-sysusers")?;
-    create_applet_symlink(env_root, &epkg_exe, "systemd-tmpfiles")?;
-    create_applet_symlink(env_root, &epkg_exe, "rpmlua")?;
-
-    // Debian-specific setup
-    if pkg_format == &PackageFormat::Deb {
-        create_applet_symlink(env_root, &epkg_exe, "dpkg-trigger")?;
-        create_applet_symlink(env_root, &epkg_exe, "dpkg-query")?;
-
-        // Ensure triggers directory exists
-        ensure_triggers_dir(env_root)?;
-    }
+    // Automatically discover all applets and create symlinks
+    crate::applets::create_all_applet_symlinks(env_root)?;
 
     Ok(())
 }
