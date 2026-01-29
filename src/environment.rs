@@ -234,7 +234,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     fs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
                                                     // won't go to PATH
     fs::create_dir_all(env_root.join("usr/ebin"))?;
-    fs::create_dir_all(env_root.join("usr/sbin"))?;
+    // usr/sbin creation is delayed to create_environment_dirs() (may be symlink on Fedora)
     fs::create_dir_all(env_root.join("usr/bin"))?;
     fs::create_dir_all(env_root.join("usr/lib"))?;
     fs::create_dir_all(env_root.join("usr/local/bin"))?;
@@ -255,7 +255,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_config: &EnvConfig) -> Result<()> {
+fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_config: &EnvConfig, channel_config: &ChannelConfig) -> Result<()> {
     // Create different lib64 symlinks based on package format
     match pkg_format {
         PackageFormat::Pacman => {
@@ -273,6 +273,13 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             force_symlink("usr/lib64", env_root.join("lib64"))?;
             force_symlink("usr/lib32", env_root.join("lib32"))?;
         }
+    }
+
+    // Fedora: usr/sbin is a symlink to bin (unified /usr/bin and /usr/sbin)
+    if channel_config.distro == "fedora" {
+        force_symlink("bin", env_root.join("usr/sbin"))?;
+    } else {
+        fs::create_dir_all(env_root.join("usr/sbin"))?;
     }
 
     // Debian-specific setup
@@ -376,7 +383,7 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
 }
 
 /// Initialize env_config and channel_configs
-fn initialize_environment_config(env_name: &str, env_root: &Path, env_base: &Path) -> Result<(EnvConfig, PackageFormat)> {
+fn initialize_environment_config(env_name: &str, env_root: &Path, env_base: &Path) -> Result<(EnvConfig, PackageFormat, ChannelConfig)> {
     // Initialize environment config and create channel config files
     let mut env_config = if let Some(import_file) = &config().env.import_file {
         import_environment_from_file(env_root, import_file)?
@@ -393,8 +400,9 @@ fn initialize_environment_config(env_name: &str, env_root: &Path, env_base: &Pat
 
     let channel_configs = io::deserialize_channel_config_from_root(&env_root.to_path_buf())?;
     let pkg_format = channel_configs[0].format.clone();
+    let channel_config = channel_configs[0].clone();
 
-    Ok((env_config, pkg_format))
+    Ok((env_config, pkg_format, channel_config))
 }
 
 /// Setup and validate environment paths, create symlinks if needed
@@ -437,8 +445,8 @@ pub fn create_environment(env_name: &str) -> Result<()> {
     create_environment_dirs_early(&env_root)?;
 
     // Initialize environment config and get package format
-    let (env_config, pkg_format) = initialize_environment_config(env_name, &env_root, &env_base)?;
-    create_environment_dirs(&env_root, &pkg_format, &env_config)?;
+    let (env_config, pkg_format, channel_config) = initialize_environment_config(env_name, &env_root, &env_base)?;
+    create_environment_dirs(&env_root, &pkg_format, &env_config, &channel_config)?;
 
     // Create world.json with default no-install packages
     create_default_world_json(&env_root, &pkg_format)?;
