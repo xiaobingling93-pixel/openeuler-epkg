@@ -1,4 +1,5 @@
-use serde_json;
+use serde::{Deserialize, Serialize};
+use serde_json::{self, Value};
 use serde_yaml;
 use log;
 use std::fs;
@@ -13,6 +14,62 @@ use crate::models::PACKAGE_CACHE;
 use crate::history::get_current_generation_id;
 
 pub const CHANNEL_SEPARATOR: char = '-';
+
+/// Helper struct for serializing/deserializing installed packages in array format
+#[derive(Debug, Serialize, Deserialize)]
+struct InstalledPackageEntry {
+    /// Package key (pkgname__version__arch)
+    pkgkey: String,
+    /// Flattened InstalledPackageInfo fields
+    #[serde(flatten)]
+    info: InstalledPackageInfo,
+}
+
+/// Convert JSON Value to installed packages map (supports both object and array formats)
+fn installed_packages_from_value(value: Value) -> Result<HashMap<String, InstalledPackageInfo>> {
+    match value {
+        Value::Object(obj) => {
+            // Old format: map from pkgkey to InstalledPackageInfo
+            let mut map = HashMap::new();
+            for (pkgkey, val) in obj {
+                let info: InstalledPackageInfo = serde_json::from_value(val)
+                    .with_context(|| format!("Failed to deserialize package info for key: {}", pkgkey))?;
+                map.insert(pkgkey, info);
+            }
+            Ok(map)
+        }
+        Value::Array(arr) => {
+            // New format: array of InstalledPackageEntry
+            let mut map = HashMap::new();
+            for entry_val in arr {
+                let entry: InstalledPackageEntry = serde_json::from_value(entry_val)
+                    .with_context(|| "Failed to deserialize installed package entry")?;
+                map.insert(entry.pkgkey, entry.info);
+            }
+            Ok(map)
+        }
+        _ => {
+            Err(eyre::eyre!("Invalid installed-packages.json: expected object or array"))
+        }
+    }
+}
+
+/// Convert installed packages map to sorted array of entries
+fn installed_packages_to_array(installed: &InstalledPackagesMap) -> Vec<InstalledPackageEntry> {
+    let mut entries: Vec<InstalledPackageEntry> = installed.iter()
+        .map(|(pkgkey, info)| InstalledPackageEntry {
+            pkgkey: pkgkey.clone(),
+            info: (**info).clone(),
+        })
+        .collect();
+
+    // Sort by depend_depth then pkgkey
+    entries.sort_by(|a, b| {
+        a.info.depend_depth.cmp(&b.info.depend_depth)
+            .then_with(|| a.pkgkey.cmp(&b.pkgkey))
+    });
+    entries
+}
 
 /// Deserialize environment configuration from disk
 #[allow(dead_code)] // quiet warning in cargo test calls
@@ -463,7 +520,13 @@ pub fn read_installed_packages(env: &str, generation_id: u32) -> Result<Installe
         return Ok(HashMap::new());
     }
 
-    let packages_raw: HashMap<String, InstalledPackageInfo> = read_json_file(&file_path)?;
+    let contents = fs::read_to_string(&file_path)
+        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+    let value: Value = serde_json::from_str(&contents)
+        .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
+
+    let packages_raw = installed_packages_from_value(value)?;
+
     let packages: InstalledPackagesMap = packages_raw.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
     Ok(packages)
 }
@@ -487,11 +550,12 @@ pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
     // Construct the file path
     let file_path = new_generation.join("installed-packages.json");
 
-    // Convert HashMap to BTreeMap to ensure keys are sorted, dereferencing Arc for serialization
-    let sorted_packages: BTreeMap<_, _> = PACKAGE_CACHE.installed_packages.read().unwrap().iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
+    // Collect installed packages into Vec<InstalledPackageEntry> for array format
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    let entries = installed_packages_to_array(&installed);
 
-    // Serialize the installed packages to JSON (keys will be in sorted order)
-    let json = serde_json::to_string_pretty(&sorted_packages)?;
+    // Serialize the array to JSON
+    let json = serde_json::to_string_pretty(&entries)?;
 
     // Write the JSON to the file
     fs::write(&file_path, json)?;
@@ -564,4 +628,70 @@ pub fn edit_environment_config() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::InstalledPackageInfo;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_installed_packages_conversion() {
+        // Create a simple map with varying depend_depth
+        let mut map = HashMap::new();
+        map.insert(
+            "pkg1__1.0__x86_64".to_string(),
+            Arc::new(InstalledPackageInfo {
+                pkgline: "hash1__pkg1__1.0__x86_64".to_string(),
+                arch: "x86_64".to_string(),
+                depend_depth: 2,
+                ..Default::default()
+            }),
+        );
+        map.insert(
+            "pkg2__2.0__x86_64".to_string(),
+            Arc::new(InstalledPackageInfo {
+                pkgline: "hash2__pkg2__2.0__x86_64".to_string(),
+                arch: "x86_64".to_string(),
+                depend_depth: 0,
+                ..Default::default()
+            }),
+        );
+        map.insert(
+            "pkg3__3.0__x86_64".to_string(),
+            Arc::new(InstalledPackageInfo {
+                pkgline: "hash3__pkg3__3.0__x86_64".to_string(),
+                arch: "x86_64".to_string(),
+                depend_depth: 1,
+                ..Default::default()
+            }),
+        );
+
+        // Convert to array
+        let entries = installed_packages_to_array(&map);
+        assert_eq!(entries.len(), 3);
+        // Check sorting: depend_depth 0 first, then 1, then 2
+        assert_eq!(entries[0].pkgkey, "pkg2__2.0__x86_64");
+        assert_eq!(entries[1].pkgkey, "pkg3__3.0__x86_64");
+        assert_eq!(entries[2].pkgkey, "pkg1__1.0__x86_64");
+        // Ensure pkgkey matches pkgline2pkgkey
+        use crate::package::pkgline2pkgkey;
+        for entry in &entries {
+            let computed = pkgline2pkgkey(&entry.info.pkgline).unwrap();
+            assert_eq!(entry.pkgkey, computed);
+        }
+
+        // Simulate JSON roundtrip: convert to Value array and back
+        let json = serde_json::to_value(&entries).unwrap();
+        let reconstructed = installed_packages_from_value(json).unwrap();
+        assert_eq!(reconstructed.len(), 3);
+        for (pkgkey, info) in reconstructed {
+            assert!(map.contains_key(&pkgkey));
+            let original = &map[&pkgkey];
+            assert_eq!(info.pkgline, original.pkgline);
+            assert_eq!(info.depend_depth, original.depend_depth);
+        }
+    }
 }
