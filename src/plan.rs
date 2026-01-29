@@ -3,7 +3,7 @@
 //! This module defines the InstallationPlan structure that tracks packages to be installed,
 //! upgraded, removed, and exposed during package operations.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeSet};
 use std::sync::Arc;
 use std::path::PathBuf;
 use color_eyre::Result;
@@ -548,7 +548,7 @@ fn find_orphaned_packages(
     }
 
     // Build pkgkey_to_depends for possible orphans
-    let mut pkgkey_to_depends: HashMap<String, Vec<String>> = HashMap::new();
+    let mut pkgkey_to_depends: HashMap<String, BTreeSet<String>> = HashMap::new();
     for pkgkey in &possible_orphans {
         let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
         if let Some(pkg_info) = installed.get(pkgkey.as_str()) {
@@ -560,11 +560,11 @@ fn find_orphaned_packages(
     // Build remaining_rdepends for each possible orphan
     // Filter out rdepends that are being removed or upgraded (old version)
     // Keep rdepends that are staying installed (skipped_reinstalls, upgrades_new, fresh_installs)
-    let mut remaining_rdepends: HashMap<String, Vec<String>> = HashMap::new();
+    let mut remaining_rdepends: HashMap<String, BTreeSet<String>> = HashMap::new();
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
     for pkgkey in &possible_orphans {
         if let Some(pkg_info) = installed.get(pkgkey.as_str()) {
-            let filtered_rdepends: Vec<String> = pkg_info.rdepends
+            let filtered_rdepends: BTreeSet<String> = pkg_info.rdepends
                 .iter()
                 .filter(|rdep_pkgkey| {
                     // Filter out rdepends that are being removed or upgraded (old version)
@@ -589,7 +589,7 @@ fn find_orphaned_packages(
 
     // Ensure all possible orphans have an entry in remaining_rdepends
     for pkgkey in &possible_orphans {
-        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(BTreeSet::new);
     }
 
     // Loop to find orphans recursively (similar to calculate_pkgkey_to_depth)

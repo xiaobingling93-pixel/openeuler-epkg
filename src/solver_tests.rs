@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -178,10 +178,10 @@ impl TestCase {
                                 .unwrap()
                                 .as_secs(),
                             ebin_exposure: true,
-                            rdepends: Vec::new(),
-                            depends: Vec::new(),
-                            bdepends: Vec::new(),
-                            rbdepends: Vec::new(),
+                            rdepends: BTreeSet::new(),
+                            depends: BTreeSet::new(),
+                            bdepends: BTreeSet::new(),
+                            rbdepends: BTreeSet::new(),
                             ebin_links: Vec::new(),
                             xdesktop_links: Vec::new(),
                             pending_triggers: Vec::new(),

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{LazyLock, RwLock};
@@ -255,14 +255,14 @@ pub struct InstalledPackageInfo {
     #[serde(default, skip_serializing_if = "is_false")]
     pub ebin_exposure: bool,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends: Vec<String>, // Stores pkgkeys of packages this package depends on
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bdepends: Vec<String>, // Stores pkgkeys of build dependencies (Pacman only)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rbdepends: Vec<String>, // Stores pkgkeys of packages that have this as a build dependency (Pacman only)
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub rdepends: BTreeSet<String>, // Stores pkgkeys of packages that depend on this one
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub depends: BTreeSet<String>, // Stores pkgkeys of packages this package depends on
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub bdepends: BTreeSet<String>, // Stores pkgkeys of build dependencies (Pacman only)
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub rbdepends: BTreeSet<String>, // Stores pkgkeys of packages that have this as a build dependency (Pacman only)
     #[serde(default, skip_serializing_if = "Vec::is_empty")] // for backward compatibility with older installed-packages.json
     pub ebin_links: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -288,10 +288,10 @@ impl Default for InstalledPackageInfo {
             depend_depth: 0,
             install_time: 0,
             ebin_exposure: false,
-            rdepends: Vec::new(),
-            depends: Vec::new(),
-            bdepends: Vec::new(),
-            rbdepends: Vec::new(),
+            rdepends: BTreeSet::new(),
+            depends: BTreeSet::new(),
+            bdepends: BTreeSet::new(),
+            rbdepends: BTreeSet::new(),
             ebin_links: Vec::new(),
             xdesktop_links: Vec::new(),
             pending_triggers: Vec::new(),

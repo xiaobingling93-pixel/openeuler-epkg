@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeSet};
 use std::sync::Arc;
 use color_eyre::Result;
 use crate::models::*;
@@ -697,14 +697,14 @@ fn build_dependency_graph(
     provider_ref: &GenericDependencyProvider,
     solvables: &[resolvo::SolvableId],
 ) -> Result<(
-    HashMap<String, Vec<String>>,
-    HashMap<String, Vec<String>>,
+    HashMap<String, BTreeSet<String>>,
+    HashMap<String, BTreeSet<String>>,
 )> {
     use resolvo::{DependencyProvider, Interner};
     use resolvo::runtime::{AsyncRuntime, NowOrNeverRuntime};
 
-    let mut pkgkey_to_depends: HashMap<String, Vec<String>> = HashMap::new();
-    let mut pkgkey_to_rdepends: HashMap<String, Vec<String>> = HashMap::new();
+    let mut pkgkey_to_depends: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut pkgkey_to_rdepends: HashMap<String, BTreeSet<String>> = HashMap::new();
 
     // First pass: collect all resolved packages and build dependency graph
     // Ensure each solvable has an entry in pkgkey_to_depends (even if empty)
@@ -713,7 +713,7 @@ fn build_dependency_graph(
         let pkgkey = record.pkgkey.clone();
 
         // Ensure entry exists (may be empty vec)
-        pkgkey_to_depends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+        pkgkey_to_depends.entry(pkgkey.clone()).or_insert_with(BTreeSet::new);
 
         // Load package to get full info
         let _package = match crate::package_cache::load_package_info(&pkgkey) {
@@ -742,16 +742,11 @@ fn build_dependency_graph(
         for dep_pkgkey in &dep_pkgkeys {
             pkgkey_to_rdepends
                 .entry(dep_pkgkey.clone())
-                .or_insert_with(Vec::new)
-                .push(pkgkey.clone());
+                .or_insert_with(BTreeSet::new)
+                .insert(pkgkey.clone());
         }
     }
 
-    // De-duplicate rdepends to remove any entries that were added multiple times
-    for rdepends in pkgkey_to_rdepends.values_mut() {
-        rdepends.sort();
-        rdepends.dedup();
-    }
 
     Ok((pkgkey_to_depends, pkgkey_to_rdepends))
 }
@@ -761,10 +756,10 @@ fn extract_dependency_pkgkeys(
     provider_ref: &GenericDependencyProvider,
     solvables: &[resolvo::SolvableId],
     requirements: &[resolvo::ConditionalRequirement],
-) -> Vec<String> {
+) -> BTreeSet<String> {
     use resolvo::{Interner, VersionSetId};
 
-    let mut dep_pkgkeys = Vec::new();
+    let mut dep_pkgkeys = BTreeSet::new();
 
     for req in requirements {
         // Extract version set IDs from the requirement
@@ -785,12 +780,12 @@ fn extract_dependency_pkgkeys(
                 let other_record = &provider_ref.pool.resolve_solvable(*other_solvable_id).record;
                 // Check direct pkgname match
                 if other_record.pkgname == dep_name {
-                    dep_pkgkeys.push(other_record.pkgkey.clone());
+                    dep_pkgkeys.insert(other_record.pkgkey.clone());
                     break;
                 }
                 // Check if package provides the capability
                 if provider_ref.package_provides_capability(&other_record.pkgkey, &dep_name) {
-                    dep_pkgkeys.push(other_record.pkgkey.clone());
+                    dep_pkgkeys.insert(other_record.pkgkey.clone());
                     break;
                 }
             }
@@ -798,14 +793,12 @@ fn extract_dependency_pkgkeys(
     }
 
     // De-duplicate to avoid storing duplicate dependencies
-    dep_pkgkeys.sort();
-    dep_pkgkeys.dedup();
     dep_pkgkeys
 }
 
 /// Find leaf nodes (packages with no reverse dependencies)
 fn find_leaf_nodes_by_rdepends(
-    remaining_rdepends: &HashMap<String, Vec<String>>,
+    remaining_rdepends: &HashMap<String, BTreeSet<String>>,
 ) -> Vec<String> {
     remaining_rdepends
         .iter()
@@ -816,7 +809,7 @@ fn find_leaf_nodes_by_rdepends(
 
 /// Find leaf nodes by checking build reverse dependencies
 fn find_leaf_nodes_by_rbdepends(
-    remaining_rbdepends: &HashMap<String, Vec<String>>,
+    remaining_rbdepends: &HashMap<String, BTreeSet<String>>,
 ) -> Vec<String> {
     remaining_rbdepends
         .iter()
@@ -827,7 +820,7 @@ fn find_leaf_nodes_by_rbdepends(
 
 /// Find candidate node with least build reverse dependencies for breaking circular dependencies
 fn find_candidate_with_least_rbdepends(
-    remaining_rbdepends: &HashMap<String, Vec<String>>,
+    remaining_rbdepends: &HashMap<String, BTreeSet<String>>,
 ) -> Option<String> {
     remaining_rbdepends
         .iter()
@@ -838,7 +831,7 @@ fn find_candidate_with_least_rbdepends(
 
 /// Find candidate node with least regular reverse dependencies for breaking circular dependencies
 fn find_candidate_with_least_rdepends(
-    remaining_rdepends: &HashMap<String, Vec<String>>,
+    remaining_rdepends: &HashMap<String, BTreeSet<String>>,
 ) -> Option<String> {
     remaining_rdepends
         .iter()
@@ -850,10 +843,10 @@ fn find_candidate_with_least_rdepends(
 /// Remove a node from the dependency graph and update reverse dependencies
 fn remove_node_and_update_dependencies(
     node: &str,
-    pkgkey_to_depends: &HashMap<String, Vec<String>>,
-    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-    remaining_rdepends: &mut HashMap<String, Vec<String>>,
-    remaining_rbdepends: &mut HashMap<String, Vec<String>>,
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
+    remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
+    remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
 ) {
     // Remove node from tracking maps
     remaining_rdepends.remove(node);
@@ -863,7 +856,7 @@ fn remove_node_and_update_dependencies(
     if let Some(depends_list) = pkgkey_to_depends.get(node) {
         for dep_pkgkey in depends_list {
             if let Some(rdepends) = remaining_rdepends.get_mut(dep_pkgkey) {
-                rdepends.retain(|x| x != node);
+                rdepends.remove(node);
             }
         }
     }
@@ -872,7 +865,7 @@ fn remove_node_and_update_dependencies(
     if let Some(bdepends_list) = pkgkey_to_bdepends.get(node) {
         for dep_pkgkey in bdepends_list {
             if let Some(rbdepends) = remaining_rbdepends.get_mut(dep_pkgkey) {
-                rbdepends.retain(|x| x != node);
+                rbdepends.remove(node);
             }
         }
     }
@@ -881,11 +874,11 @@ fn remove_node_and_update_dependencies(
 /// Process leaf nodes: assign depth and remove them from the graph
 fn process_leaf_nodes(
     leaf_nodes: &[String],
-    pkgkey_to_depends: &HashMap<String, Vec<String>>,
-    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_depth: &mut HashMap<String, u16>,
-    remaining_rdepends: &mut HashMap<String, Vec<String>>,
-    remaining_rbdepends: &mut HashMap<String, Vec<String>>,
+    remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
+    remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
     current_depth: u16,
 ) {
     // Set depth for all leaf nodes
@@ -907,11 +900,11 @@ fn process_leaf_nodes(
 
 /// Break circular dependency by trying different strategies
 fn break_circular_dependency(
-    pkgkey_to_depends: &HashMap<String, Vec<String>>,
-    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_depth: &mut HashMap<String, u16>,
-    remaining_rdepends: &mut HashMap<String, Vec<String>>,
-    remaining_rbdepends: &mut HashMap<String, Vec<String>>,
+    remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
+    remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
     request_world_pkgkeys: &std::collections::HashSet<String>,
     current_depth: u16,
 ) -> bool {
@@ -1046,10 +1039,10 @@ fn break_circular_dependency(
 ///
 /// A HashMap mapping package keys to their calculated dependency depths
 pub fn calculate_pkgkey_to_depth(
-    pkgkey_to_depends: &HashMap<String, Vec<String>>,
-    pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
-    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-    pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, BTreeSet<String>>,
     request_world_pkgkeys: &std::collections::HashSet<String>,
 ) -> Result<HashMap<String, u16>> {
     log::debug!("[calculate_pkgkey_to_depth] Input params:");
@@ -1085,13 +1078,13 @@ pub fn calculate_pkgkey_to_depth(
     let mut pkgkey_to_depth: HashMap<String, u16> = HashMap::new();
 
     // Create a mutable copy of pkgkey_to_rdepends for tracking remaining reverse dependencies
-    let mut remaining_rdepends: HashMap<String, Vec<String>> = pkgkey_to_rdepends
+    let mut remaining_rdepends: HashMap<String, BTreeSet<String>> = pkgkey_to_rdepends
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
     // Create a mutable copy of pkgkey_to_rbdepends for tracking remaining reverse build dependencies
-    let mut remaining_rbdepends: HashMap<String, Vec<String>> = pkgkey_to_rbdepends
+    let mut remaining_rbdepends: HashMap<String, BTreeSet<String>> = pkgkey_to_rbdepends
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
@@ -1099,13 +1092,13 @@ pub fn calculate_pkgkey_to_depth(
     // Initialize remaining_rdepends for all packages in pkgkey_to_depends
     // Only initialize remaining_rbdepends for packages that actually have build dependencies
     for pkgkey in pkgkey_to_depends.keys() {
-        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(BTreeSet::new);
     }
 
     // Ensure all packages in pkgkey_to_rbdepends are also in remaining_rdepends
     // (in case a package is only depended on for building, not for runtime)
     for pkgkey in pkgkey_to_rbdepends.keys() {
-        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(Vec::new);
+        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(BTreeSet::new);
     }
 
     let mut current_depth = 0;
@@ -1205,10 +1198,10 @@ pub fn calculate_pkgkey_to_depth(
 fn create_installed_package_info_map(
     provider_ref: &GenericDependencyProvider,
     solvables: &[resolvo::SolvableId],
-    pkgkey_to_depends: &HashMap<String, Vec<String>>,
-    pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
-    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-    pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_depth: &HashMap<String, u16>,
     request_world_pkgkeys: &std::collections::HashSet<String>,
 ) -> Result<InstalledPackagesMap> {
@@ -1254,10 +1247,10 @@ fn create_installed_package_info(
     pkgkey: &str,
     provider_ref: &GenericDependencyProvider,
     solvables: &[resolvo::SolvableId],
-    pkgkey_to_depends: &HashMap<String, Vec<String>>,
-    pkgkey_to_rdepends: &HashMap<String, Vec<String>>,
-    pkgkey_to_bdepends: &HashMap<String, Vec<String>>,
-    pkgkey_to_rbdepends: &HashMap<String, Vec<String>>,
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, BTreeSet<String>>,
     depend_depth: u16,
     ebin_exposure: bool,
 ) -> Result<InstalledPackageInfo> {
@@ -1287,9 +1280,7 @@ fn create_installed_package_info(
     let mut merged_rdepends = pkgkey_to_rdepends.get(pkgkey).cloned().unwrap_or_default();
     if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
         // Merge and de-duplicate
-        merged_rdepends.extend_from_slice(&installed_info.rdepends);
-        merged_rdepends.sort();
-        merged_rdepends.dedup();
+        merged_rdepends.extend(installed_info.rdepends.iter().cloned());
     }
 
     // Merges rbdepends from already installed packages (installed_packages)
@@ -1297,9 +1288,7 @@ fn create_installed_package_info(
     let mut merged_rbdepends = pkgkey_to_rbdepends.get(pkgkey).cloned().unwrap_or_default();
     if let Some(installed_info) = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey) {
         // Merge and de-duplicate
-        merged_rbdepends.extend_from_slice(&installed_info.rbdepends);
-        merged_rbdepends.sort();
-        merged_rbdepends.dedup();
+        merged_rbdepends.extend(installed_info.rbdepends.iter().cloned());
     }
 
     Ok(crate::models::InstalledPackageInfo {
