@@ -160,6 +160,32 @@ compare_test "rpm.vercmp() - complex version comparison" "print(rpm.vercmp('7.3.
 compare_test "rpm.vercmp() - pre-release markers (tilde lowest precedence)" "print(rpm.vercmp('1.0~beta', '1.0'))"
 
 compare_test "rpm.vercmp() - pre-release vs final" "print(rpm.vercmp('1.0', '1.0~beta'))"
+
+# Test rpm.glob() function
+TEST_DIR_GLOB="/tmp/epkg_glob_compare_test"
+mkdir -p "$TEST_DIR_GLOB"
+echo "test1" > "$TEST_DIR_GLOB/file1.txt"
+echo "test2" > "$TEST_DIR_GLOB/file2.txt"
+echo "test3" > "$TEST_DIR_GLOB/file3.log"
+
+# Note: We use double quotes inside the lua string to allow bash variable expansion
+compare_test "rpm.glob() - basic *.txt" "local t = rpm.glob(\"$TEST_DIR_GLOB/*.txt\"); print(type(t) == 'table' and #t or 'nil')"
+
+compare_test "rpm.glob() - count *.txt files" "local t = rpm.glob(\"$TEST_DIR_GLOB/*.txt\"); print(t and #t or 'nil')"
+
+compare_test "rpm.glob() - no matches (should return nil)" "print(rpm.glob(\"$TEST_DIR_GLOB/*.nonexistent\") == nil and 'nil' or 'not nil')"
+
+compare_test "rpm.glob() - NOCHECK with no matches" "local t = rpm.glob(\"$TEST_DIR_GLOB/*.nope\", 'c'); print(type(t) == 'table' and t[1] or 'nil')" 100
+
+compare_test "rpm.glob() - NOCHECK returns pattern" "local t = rpm.glob(\"$TEST_DIR_GLOB/*.xyz\", 'c'); print(t and t[1] or 'nil')" 100
+
+compare_test "rpm.glob() - *.log files" "local t = rpm.glob(\"$TEST_DIR_GLOB/*.log\"); print(type(t) == 'table' and #t or 'nil')"
+
+compare_test "rpm.glob() - all files" "local t = rpm.glob(\"$TEST_DIR_GLOB/*\"); print(type(t) == 'table' and #t or 'nil')"
+
+# Cleanup glob test files
+rm -rf "$TEST_DIR_GLOB"
+
 echo ""
 echo "=== Comparison tests completed ==="
 
