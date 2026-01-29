@@ -622,12 +622,13 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
     })?)?;
 
     // posix.files([path]) - return iterator function for directory entries
-    // Note: This is a simplified implementation. The original uses closures with upvalues.
-    // For now, we return a function that reads all entries at once.
-    posix_table.set("files", lua.create_function(|lua, path: Option<String>| {
+    // On error (e.g. non-existent directory) return nil, matching RPM behavior.
+    posix_table.set("files", lua.create_function(|lua, path: Option<String>| -> LuaResult<mlua::Value> {
         let path = path.as_deref().unwrap_or(".");
-        let entries = posix_dir(path)
-            .map_err(|e| mlua::Error::RuntimeError(format!("files {}: {:?}", path, e)))?;
+        let entries = match posix_dir(path) {
+            Ok(e) => e,
+            Err(_) => return Ok(mlua::Value::Nil),
+        };
         let idx = std::cell::RefCell::new(0);
         let entries_clone = entries.clone();
         let iter_func = lua.create_function(move |lua, ()| {
@@ -640,7 +641,7 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
                 Ok(mlua::Value::String(lua.create_string(name)?))
             }
         })?;
-        Ok(iter_func)
+        Ok(mlua::Value::Function(iter_func))
     })?)?;
 
     // posix.times([selector]) - get process time information
