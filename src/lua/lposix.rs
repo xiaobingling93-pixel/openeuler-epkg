@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static HAVE_FORKED: AtomicBool = AtomicBool::new(false);
 
 /// Helper to match C++ pushresult behavior: returns number on success, (nil, error_string, errno) on failure
-fn pushresult(lua: &Lua, result: i32, info: Option<&str>) -> LuaResult<MultiValue> {
+pub(crate) fn pushresult(lua: &Lua, result: i32, info: Option<&str>) -> LuaResult<MultiValue> {
     if result != -1 {
         let mut ret = MultiValue::new();
         ret.push_front(Value::Integer(result as i64));
@@ -23,19 +23,29 @@ fn pushresult(lua: &Lua, result: i32, info: Option<&str>) -> LuaResult<MultiValu
 }
 
 /// Helper to match C++ pusherror behavior: returns (nil, error_string, errno)
-fn pusherror(lua: &Lua, info: Option<&str>) -> LuaResult<MultiValue> {
-    let errno = unsafe { *libc::__errno_location() };
-    let err_msg = unsafe {
-        let c_str = libc::strerror(errno);
-        std::ffi::CStr::from_ptr(c_str).to_string_lossy().to_string()
-    };
+/// If info is provided, it replaces the strerror message (used for custom errors like exit codes)
+pub(crate) fn pusherror(lua: &Lua, info: Option<&str>) -> LuaResult<MultiValue> {
+    pusherror_with_code(lua, info, None)
+}
+
+/// Helper to match C++ pusherror behavior with explicit error code
+/// This is used by rpm.spawn() to return exit codes/signals as error numbers
+pub(crate) fn pusherror_with_code(lua: &Lua, info: Option<&str>, code: Option<i32>) -> LuaResult<MultiValue> {
+    let error_code = code.unwrap_or_else(|| unsafe { *libc::__errno_location() });
     let error_string = if let Some(i) = info {
-        format!("{}: {}", i, err_msg)
+        // If info is provided, use it as-is (replaces strerror output)
+        // This is for custom error messages like "exit signal 9 (KILL)"
+        i.to_string()
     } else {
+        // Otherwise use strerror message (for syscall errors)
+        let err_msg = unsafe {
+            let c_str = libc::strerror(error_code);
+            std::ffi::CStr::from_ptr(c_str).to_string_lossy().to_string()
+        };
         err_msg
     };
     let mut ret = MultiValue::new();
-    ret.push_front(Value::Integer(errno as i64));
+    ret.push_front(Value::Integer(error_code as i64));
     ret.push_front(Value::String(lua.create_string(&error_string)?));
     ret.push_front(Value::Nil);
     Ok(ret)
@@ -792,6 +802,38 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
         let pid = pid.unwrap_or(-1);
         let mut status = 0;
         let result = unsafe { libc::waitpid(pid, &mut status, 0) };
+        pushresult(lua, result, None)
+    })?)?;
+
+    // posix.redirect2null(fd) - redirect file descriptor to /dev/null (deprecated but still used)
+    // Note: This function is deprecated in RPM but still used in some spec files
+    // Security check: only allowed after fork() has been called
+    // C++ version: if (!_rpmlua_have_forked) return luaL_error(L, "redirect2null not permitted in this context");
+    posix_table.set("redirect2null", lua.create_function(|lua, target_fd: i32| -> LuaResult<MultiValue> {
+        use std::ffi::CString;
+
+        // Security check: redirect2null is only allowed after fork() has been called
+        if !HAVE_FORKED.load(Ordering::Relaxed) {
+            return Err(mlua::Error::RuntimeError("redirect2null not permitted in this context".to_string()));
+        }
+
+        // Open /dev/null for writing
+        let null_path = CString::new("/dev/null")
+            .map_err(|_| mlua::Error::RuntimeError("/dev/null path error".to_string()))?;
+
+        let fd = unsafe { libc::open(null_path.as_ptr(), libc::O_WRONLY) };
+
+        let result = if fd >= 0 && fd != target_fd {
+            // Save errno in case close() modifies it
+            let saved_errno = unsafe { *libc::__errno_location() };
+            let r = unsafe { libc::dup2(fd, target_fd) };
+            unsafe { libc::close(fd) };
+            unsafe { *libc::__errno_location() = saved_errno };
+            r
+        } else {
+            fd
+        };
+
         pushresult(lua, result, None)
     })?)?;
 
