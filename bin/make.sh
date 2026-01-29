@@ -39,21 +39,20 @@ install_to_dev_env() {
         local src_rc="$PROJECT_ROOT/lib/epkg-rc.sh"
         local dst_rc="$DEV_ENV_SRC_DIR/lib/epkg-rc.sh"
         if [[ "$(readlink -f "$src_rc")" != "$(readlink -f "$dst_rc")" ]]; then
-            cp --update "$src_rc" "$dst_rc"
+            cp -v --update "$src_rc" "$dst_rc"
         fi
     fi
 
-    local cp_err=$(cp --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME" 2>&1)
-    local cp_status=$?
-    if [[ $cp_status -ne 0 ]]; then
-        if echo "$cp_err" | grep -q "Text file busy"; then
-            rm -f "$DEV_ENV_BIN_DIR/$BINARY_NAME" &&
-            cp --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+    local cp_output
+    cp_output=$(cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME" 2>&1) && echo "$cp_output" || {
+        if echo "$cp_output" | grep -q "Text file busy"; then
+            rm -v "$DEV_ENV_BIN_DIR/$BINARY_NAME" &&
+            cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         else
-            echo "$cp_err" >&2
+            echo "$cp_output" >&2
             exit $cp_status
         fi
-    fi
+    }
 }
 
 # Build Lua library for a specific architecture
