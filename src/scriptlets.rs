@@ -4,6 +4,9 @@ use crate::plan::InstallationPlan;
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::rpm_triggers::setup_rpm_env_vars;
 use crate::package;
+use crate::run::{RunOptions, setup_namespace_and_mounts};
+use nix::unistd::{fork, ForkResult};
+use nix::sys::wait::{waitpid, WaitStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
@@ -468,6 +471,32 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     }
 }
 
+/// Fork and execute a closure in the child process.
+/// Returns Ok(()) if child exits successfully, otherwise returns an error.
+fn fork_and_call<F>(f: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            match waitpid(child, None) {
+                Ok(WaitStatus::Exited(_, 0)) => Ok(()),
+                Ok(WaitStatus::Exited(_, code)) => Err(eyre!("child exited with code {}", code)),
+                Ok(WaitStatus::Signaled(_, signal, _)) => Err(eyre!("child killed by signal {:?}", signal)),
+                Ok(_) => Err(eyre!("child ended with unexpected status")),
+                Err(e) => Err(eyre!("failed to wait for child: {}", e)),
+            }
+        }
+        Ok(ForkResult::Child) => {
+            match f() {
+                Ok(()) => std::process::exit(0),
+                Err(_) => std::process::exit(1),
+            }
+        }
+        Err(e) => Err(eyre!("fork failed: {}", e)),
+    }
+}
+
 /// Execute Lua scriptlet using embedded Lua interpreter.
 /// Uses the global cached Lua state with extensions pre-registered.
 fn execute_lua_scriptlet(
@@ -611,7 +640,17 @@ pub fn run_scriptlet(
                         script_path.display()
                     );
 
-                    match execute_lua_scriptlet(&script_path, &lua_args, env_root) {
+                    // Run embedded Lua inside a forked child with namespace + mount setup,
+                    // so that operations like ldconfig affect the environment, not the host.
+                    let result = fork_and_call(|| {
+                        let run_options = RunOptions {
+                            ..Default::default()
+                        };
+                        setup_namespace_and_mounts(&env_root, &run_options)?;
+                        execute_lua_scriptlet(&script_path, &lua_args, &env_root)
+                    });
+
+                    match result {
                         Ok(()) => {
                             log::debug!(
                                 "{:?} scriptlet completed successfully for package {} using embedded Lua",

@@ -47,9 +47,6 @@ use std::fs;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 
-use nix::unistd::{fork, ForkResult};
-use nix::sys::wait::{waitpid, WaitStatus};
-
 use crate::posix::{posix_getpasswd, posix_getgroup, posix_mkfifo};
 use crate::utils::set_permissions_from_mode;
 use crate::applets::systemd_sysusers::apply_root;
@@ -205,51 +202,6 @@ pub fn command() -> Command {
             .num_args(0..)
             .help("Configuration files to process"))
 }
-
-/// Fork and execute a closure in the child process.
-/// Returns Ok(()) if child exits successfully, otherwise returns an error.
-#[allow(dead_code)]
-fn fork_and_call<F>(f: F) -> Result<()>
-where
-    F: FnOnce() -> Result<()>,
-{
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { child }) => {
-            match waitpid(child, None) {
-                Ok(WaitStatus::Exited(_, 0)) => Ok(()),
-                Ok(WaitStatus::Exited(_, code)) => Err(eyre!("child exited with code {}", code)),
-                Ok(WaitStatus::Signaled(_, signal, _)) => Err(eyre!("child killed by signal {:?}", signal)),
-                Ok(_) => Err(eyre!("child ended with unexpected status")),
-                Err(e) => Err(eyre!("failed to wait for child: {}", e)),
-            }
-        }
-        Ok(ForkResult::Child) => {
-            match f() {
-                Ok(()) => std::process::exit(0),
-                Err(_) => std::process::exit(1),
-            }
-        }
-        Err(e) => Err(eyre!("fork failed: {}", e)),
-    }
-}
-
-/// Fork is necessary when invoked from epkg, because multi-threaded processes cannot create user namespaces,
-/// and systemd_tmpfiles::run() -> setup_namespace_and_mounts() requires a single-threaded process.
-/// If directly invoked by busybox applet, no threads have been created, so no extra fork needed.
-#[allow(dead_code)]
-pub fn fork_run(env_root: &Path) -> Result<()> {
-    fork_and_call(|| {
-        run(SystemdTmpfilesOptions {
-            create: true,
-            clean: true,
-            remove: false,
-            boot: false,
-            config_files: vec![],
-            root: Some(env_root.to_path_buf()),
-        })
-    })
-}
-
 
 pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     // Determine which operations to perform
