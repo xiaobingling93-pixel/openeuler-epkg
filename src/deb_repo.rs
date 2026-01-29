@@ -63,6 +63,8 @@ lazy_static! {
         m.insert("Original-Vcs-Browser",        "originalVcsBrowser");
         m.insert("Auto-Built-Package",          "autoBuiltPackage");
         m.insert("Ubuntu-Oem-Kernel-Flavour",   "ubuntuOemKernelFlavour");
+        m.insert("Prefer-Variant",              "preferVariant");
+        m.insert("Commands",                    "commands");
 
         m.insert("Ruby-Versions",               "rubyVersions");
         m.insert("Lua-Versions",                "luaVersions");
@@ -72,6 +74,7 @@ lazy_static! {
         m.insert("Static-Built-Using",          "staticBuiltUsing");
         m.insert("Javascript-Built-Using",      "javascriptBuiltUsing");
         m.insert("X-Cargo-Built-Using",         "xCargoBuiltUsing");
+        m.insert("X-Rocm-Gpu-Architecture",     "xRocmGpuArchitecture");
         m.insert("Built-Using-Newlib-Source",   "builtUsingNewlibSource");
         m.insert("Go-Import-Path",              "goImportPath");
         m.insert("Ghc-Package",                 "ghcPackage");
