@@ -15,6 +15,9 @@ else
 	PROJECT_ROOT := .
 endif
 
+# Detect host architecture
+HOST_ARCH := $(shell uname -m | sed -e 's/amd64/x86_64/' -e 's/arm64/aarch64/')
+
 # Default target (development build for local use)
 build:
 	@$(PROJECT_ROOT)/bin/make.sh build
@@ -22,6 +25,9 @@ build:
 # Release build target
 release:
 	@$(PROJECT_ROOT)/bin/make.sh release
+
+# Static build for detected host architecture
+static: static-$(HOST_ARCH)
 
 # Install dependencies and set up Rust toolchain
 install-depends:
@@ -73,4 +79,4 @@ clean:
 clean-all:
 	@$(PROJECT_ROOT)/bin/make.sh clean_all
 
-.PHONY: install-depends build release static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all
+.PHONY: install-depends build release static static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all
