@@ -10,6 +10,7 @@
 use crate::parse_provides::parse_provides;
 use crate::models::PackageFormat;
 use crate::resolve::provider::GenericDependencyProvider;
+use crate::package::pkgkey2pkgname;
 
 impl GenericDependencyProvider {
 
@@ -33,6 +34,28 @@ impl GenericDependencyProvider {
     /// This ensures that packages providing bundled libraries can satisfy dependencies
     /// that require the unbundled capability name.
     pub fn package_provides_capability(&self, pkgkey: &str, capability: &str) -> bool {
+        // Get package name from pkgkey
+        let pkgname = match pkgkey2pkgname(pkgkey) {
+            Ok(name) => name,
+            Err(_) => {
+                log::trace!(
+                    "[RESOLVO] package_provides_capability: {} failed to parse pkgname, skipping",
+                    pkgkey
+                );
+                return false;
+            }
+        };
+
+        // Skip package if its name is in no_install
+        if self.no_install.contains(&pkgname) {
+            log::trace!(
+                "[RESOLVO] package_provides_capability: {} ({}) skipped - in no_install",
+                pkgkey,
+                pkgname
+            );
+            return false;
+        }
+
         // Try to load package info
         let package = match self.load_package_for_solvable(pkgkey) {
             Ok(pkg) => pkg,
