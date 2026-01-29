@@ -214,10 +214,18 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     //  1246e515893d375c5da48a8cae4f6175 7134 Packages.gz
                     //  45f461e8c85b7e33be9bf7953d5e2473 6150 Sources.gz
                     //  => component_name = ""
-                    let mut component_name = location.split('/').next().unwrap_or("").to_string();
+                    // For root-level entries (no '/', e.g. Ubuntu's "Contents-amd64.gz") leave
+                    // component_name empty so the workaround below can attribute them to "main"
+                    // and repodata_name won't become weird things like 'Contents-amd64.gz-security'.
+                    let mut component_name: String = if location.contains('/') {
+                        location.split('/').next().unwrap_or("").to_string()
+                    } else {
+                        String::new()
+                    };
 
                     // Ubuntu has a single Contents file outside of any specific components
                     // As a workaround, attribute it to the "main" repo
+                    //
                     // Origin: Ubuntu
                     // Architectures: amd64 arm64 armhf i386 ppc64el riscv64 s390x
                     // Components: main restricted universe multiverse
@@ -226,8 +234,9 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     //  2fc7d01e0a1c7b351738abcd571eec59         51301092 Contents-amd64.gz
                     //  d9a7b09989b1804788068aa3fc437fbe          1401160 main/binary-amd64/Packages.xz
                     //  e76d3250b16471773a8760583f955010           269224 multiverse/binary-amd64/Packages.xz
-                    if is_contents && component_name.is_empty() && !components.is_empty() {
-                        component_name = components.first().unwrap_or(&"main".to_string()).clone();
+                    if is_contents && !location.contains('/') && !components.is_empty() {
+                        component_name = components.first().cloned().unwrap_or_else(|| "main".to_string());
+                        // log::debug!("Adapt Ubuntu {} to component {}", location, component_name);
                     }
 
                     // Filter components based on repo.components - if components list is not empty,
@@ -275,6 +284,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     // Create a new RepoRevise object with augmented repodata_name with component
                     let component_repo = crate::repo::RepoRevise {
                         repodata_name: repodata_name,
+                        components: vec![component_name.clone()],
                         ..repo.clone()
                     };
 
@@ -379,6 +389,7 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         output_path,
                         download_path: download_path.to_path_buf(),
                     });
+                    // log::debug!("Release line: {}\n {:?}", line, release_items.last());
                 }
             }
         }
