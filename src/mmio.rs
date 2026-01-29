@@ -270,7 +270,7 @@ pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String
 
 // Function to deserialize pkgname2ranges from a file
 pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec<PackageRange>>> {
-    log::debug!("deserialize_pkgname2ranges for {}", path.display());
+    log::trace!("deserialize_pkgname2ranges for {}", path.display());
 
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read index file: {}", path.display()))?;
