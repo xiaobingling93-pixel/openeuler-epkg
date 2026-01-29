@@ -4,10 +4,10 @@ distro_dirs:
 - debian-multimedia
 - deb-multimedia
 versions:
+- trixie    13
 - bookworm  12 12.10 Debian12.10  # First value is official and used for $version interpolation, others are aliases
 - bullseye  11 11.11 Debian11.11
 - buster    10 10.13 Debian10.13
-- trixie    13
 - testing
 - sid unstable
 

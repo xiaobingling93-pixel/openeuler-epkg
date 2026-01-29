@@ -8,8 +8,9 @@ distro_dirs:
 - openSUSE
 - opensuse/opensuse
 - opensuse
+version:  # default to versions[0]
 versions: # Leap versions
-- "16.0"
+- "16.1"
 - "15.6"
 - "15.5"
 - "15.4"

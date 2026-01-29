@@ -1,6 +1,8 @@
 format: rpm
 distro: fedora
+version:  # default to versions[0]
 versions:
+- "43"
 - "42"
 - "41"
 - "40"

@@ -16,19 +16,36 @@ distro_dirs: # longer first
 - ubuntu/archive
 - ubuntuarchive
 - ubuntu
-version: noble
-versions: # First value is official, others are aliases
-- noble   24.04
-- mantic  23.10
-- lunar   23.04
-- jammy   22.04
-- kinetic 22.10
-- focal   20.04
+version: noble  # it's available in all ubuntu-*.yaml repos
+versions: # first column is formal version string, others are aliases
+- questing  25.10
+- resolute  26.04
+- plucky    25.04
+- noble     24.04
+- mantic    23.10
+- lunar     23.04
+- jammy     22.04
+- kinetic   22.10
+- focal     20.04
+
+# DEB specific rule for 'repos' field:
+# - shall contain
+#   - 1 item for the official repo, use "Official" key
+#   - 1 item for all other (3rd party) repos
+# - serves as prefix when composing repodata_name, so
+# - shall have unique values to avoid conflicts in dir layout get_repo_dir()
 repos:
-  main:
-  universe:
-  restricted:
-  multiverse:
+  Official:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - universe
+# - restricted
+# - multiverse
+
 index_url:          $mirror/dists/$version/Release
 amend_index_urls:
   updates:          $mirror/dists/$version-updates/Release

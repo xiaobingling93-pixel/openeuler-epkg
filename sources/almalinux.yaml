@@ -3,13 +3,12 @@ distro: almalinux
 distro_dirs:
 - almalinux
 versions: # RHEL-compatible versions
+- "10.1"
+- "9.7"
 - "9"
-- "8"
-- "9.4"
-- "9.3"
-- "9.2"
 - "8.9"
 - "8.8"
+- "8"
 repos:
   BaseOS:
   extras:

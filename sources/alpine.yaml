@@ -5,6 +5,7 @@ distro_dirs:
 - alpinelinux
 - alpine
 versions: # Stable releases
+- "3.23"
 - "3.22"
 - "3.21"
 - "3.20"

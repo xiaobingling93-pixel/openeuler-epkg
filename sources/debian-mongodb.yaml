@@ -3,6 +3,7 @@ distro: debian
 distro_dirs:
 - mongodb
 versions:
+- trixie    13
 - bookworm  12
 - bullseye  11
 - buster    10

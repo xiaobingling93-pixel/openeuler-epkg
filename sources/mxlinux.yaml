@@ -6,8 +6,8 @@ distro_dirs:
 - mxlinux
 - mx-repo
 versions:
-- bookworm  23
 - trixie    25
+- bookworm  23
 repos:
   main:
   ahs:

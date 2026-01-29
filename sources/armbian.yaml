@@ -6,10 +6,15 @@ distro_dirs:
 - armbian
 - armbian-apt
 versions:
-- noble    24.04
-- jammy    22.04
-- bookworm 12
-- bullseye 11
+- trixie    13
+- bookworm  12
+- bullseye  11
+- sid       unstable
+- questing  25.10
+- resolute  26.04
+- plucky    25.04
+- noble     24.04
+- jammy     22.04
 repos:
   main:
   utils:
