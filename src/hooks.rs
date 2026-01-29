@@ -904,7 +904,7 @@ fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
     create_systemd_hook(
         "usr/lib/tmpfiles.d/*.conf",
         "Creating temporary files...",
-        "systemd-tmpfiles",
+        "systemd-tmpfiles --create",
         1000600,
         "21-systemd-tmpfiles",
         HookWhen::PostTransaction,
