@@ -693,3 +693,50 @@ pub fn modify_user(
     Ok(())
 }
 
+/// Get passwd entry for a given UID by parsing /etc/passwd directly.
+/// This works in statically linked binaries where getpwuid() may fail.
+#[cfg(unix)]
+fn get_passwd_entry_by_uid(uid: u32, root: Option<&Path>) -> Result<PasswdEntry> {
+    let entries = read_passwd(root)?;
+    for entry in entries {
+        if entry.uid == uid {
+            return Ok(entry);
+        }
+    }
+    Err(eyre!("UID {} not found in passwd file", uid))
+}
+
+/// Get username for a given UID by parsing /etc/passwd directly.
+/// This works in statically linked binaries where getpwuid() may fail.
+#[cfg(unix)]
+pub fn get_username_by_uid(uid: u32, root: Option<&Path>) -> Result<String> {
+    Ok(get_passwd_entry_by_uid(uid, root)?.name)
+}
+
+/// Get home directory for a given UID by parsing /etc/passwd directly.
+/// This works in statically linked binaries where getpwuid() may fail.
+#[cfg(unix)]
+pub fn get_home_by_uid(uid: u32, root: Option<&Path>) -> Result<String> {
+    Ok(get_passwd_entry_by_uid(uid, root)?.dir)
+}
+
+/// Get group entry for a given GID by parsing /etc/group directly.
+/// This works in statically linked binaries where getgrgid() may fail.
+#[cfg(unix)]
+fn get_group_entry_by_gid(gid: u32, root: Option<&Path>) -> Result<GroupEntry> {
+    let entries = read_group(root)?;
+    for entry in entries {
+        if entry.gid == gid {
+            return Ok(entry);
+        }
+    }
+    Err(eyre!("GID {} not found in group file", gid))
+}
+
+/// Get group name for a given GID by parsing /etc/group directly.
+/// This works in statically linked binaries where getgrgid() may fail.
+#[cfg(unix)]
+pub fn get_groupname_by_gid(gid: u32, root: Option<&Path>) -> Result<String> {
+    Ok(get_group_entry_by_gid(gid, root)?.name)
+}
+

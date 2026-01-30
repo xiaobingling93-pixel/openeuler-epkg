@@ -818,7 +818,9 @@ fn check_for_updates() -> Result<InitPlan> {
     let is_upgrade = config().subcommand == EpkgCommand::SelfUpgrade;
     let arch = &config().common.arch;
     let dirs = dirs();
-    let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
+    // Use the base downloads cache directory (without "epkg" subdirectory)
+    // The download_urls() function uses epkg_downloads_cache directly, so we need to match that
+    let epkg_download_dir = &dirs.epkg_downloads_cache;
 
     // Check for local repo and local elf-loader BEFORE making API calls
     let repo_root = find_repo_root()?;

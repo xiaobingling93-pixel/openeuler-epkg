@@ -19,9 +19,8 @@ use nix::sys::signal::kill;
 use nix::sys::signal::Signal;
 #[cfg(unix)]
 use users::{get_current_uid, get_effective_uid};
-#[cfg(unix)]
-use libc;
 use crate::models;
+use crate::userdb;
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -514,14 +513,12 @@ pub fn is_suid() -> bool {
 }
 
 /// Get username from real UID (for setuid security)
+/// In statically linked binaries, getpwuid() may not work properly due to NSS limitations,
+/// so we parse /etc/passwd directly.
 #[cfg(unix)]
 pub fn get_username_from_uid() -> Result<String> {
-    use color_eyre::eyre;
     let uid = get_current_uid();
-    let user = unistd::User::from_uid(unistd::Uid::from_raw(uid))
-        .map_err(|e| eyre::eyre!("Failed to get user info for real UID {}: {}", uid, e))?
-        .ok_or_else(|| eyre::eyre!("No user found for real UID {}", uid))?;
-    Ok(user.name)
+    userdb::get_username_by_uid(uid, None)
 }
 
 #[cfg(not(unix))]
@@ -530,32 +527,12 @@ pub fn get_username_from_uid() -> Result<String> {
 }
 
 /// Get home directory from real UID (for setuid security)
+/// In statically linked binaries, getpwuid() may not work properly due to NSS limitations,
+/// so we parse /etc/passwd directly.
 #[cfg(unix)]
 pub fn get_home_from_uid() -> Result<String> {
-    use std::ffi::CStr;
-    use std::os::raw::{c_char, c_int};
-    use color_eyre::eyre;
-
-    extern "C" {
-        fn getuid() -> c_int;
-        fn getpwuid(uid: c_int) -> *mut libc::passwd;
-    }
-
-    unsafe {
-        let uid = getuid();
-        let passwd = getpwuid(uid);
-        if passwd.is_null() {
-            return Err(eyre::eyre!("getpwuid returned null for real UID {}", uid));
-        }
-        let home_dir = (*passwd).pw_dir as *const c_char;
-        if home_dir.is_null() {
-            return Err(eyre::eyre!("Home directory is null for real UID {}", uid));
-        }
-        let home = CStr::from_ptr(home_dir)
-            .to_str()
-            .map_err(|e| eyre::eyre!("Failed to convert home directory to string: {}", e))?;
-        Ok(home.to_string())
-    }
+    let uid = get_current_uid();
+    userdb::get_home_by_uid(uid, None)
 }
 
 #[cfg(not(unix))]
@@ -566,7 +543,6 @@ pub fn get_home_from_uid() -> Result<String> {
 pub fn command_exists(command_name: &str) -> bool {
     find_command_in_paths(command_name).is_some()
 }
-
 
 /// Searches for an executable command in a predefined list of common paths.
 /// Returns the full path to the command if found and executable, otherwise None.

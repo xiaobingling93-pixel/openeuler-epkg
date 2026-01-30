@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::utils;
+use crate::userdb;
 use color_eyre::eyre::{self};
 use color_eyre::Result;
 
@@ -196,28 +197,13 @@ pub fn get_home() -> Result<String> {
         return Ok("/root".to_string());
     }
 
-    // Try using getpwuid on Unix systems
+    // Try using /etc/passwd directly (works in statically linked binaries)
+    // getpwuid() doesn't work reliably in static builds due to NSS limitations
     #[cfg(unix)]
     {
-        use std::ffi::CStr;
-        use std::os::raw::{c_char, c_int};
-
-        extern "C" {
-            fn getuid() -> c_int;
-            fn getpwuid(uid: c_int) -> *mut libc::passwd;
-        }
-
-        unsafe {
-            let uid = getuid(); // Use UID in case epkg is suid
-            let passwd = getpwuid(uid);
-            if !passwd.is_null() {
-                let home_dir = (*passwd).pw_dir as *const c_char;
-                if !home_dir.is_null() {
-                    if let Ok(home) = CStr::from_ptr(home_dir).to_str() {
-                        return Ok(home.to_string());
-                    }
-                }
-            }
+        let uid = unsafe { libc::getuid() };
+        if let Ok(home) = userdb::get_home_by_uid(uid, None) {
+            return Ok(home);
         }
     }
 

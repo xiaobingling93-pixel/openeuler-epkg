@@ -6,7 +6,6 @@ use std::path::Path;
 use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
 use tar::Archive;
 use zstd::stream::Decoder;
-use nix::unistd::{User, Group};
 use nix::unistd;
 use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
@@ -14,6 +13,7 @@ use walkdir::WalkDir;
 use uuid::Uuid;
 use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo};
 use crate::package;
+use crate::userdb;
 use log;
 
 /// Unpack a package file
@@ -461,14 +461,14 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         let egid = unistd::getegid();
 
         if uid != 0 && uid != euid.as_raw() {
-            if let Ok(Some(user)) = User::from_uid(uid.into()) {
-                attrs.push(format!("uname={}", user.name));
+            if let Ok(username) = userdb::get_username_by_uid(uid, None) {
+                attrs.push(format!("uname={}", username));
             }
         }
 
         if gid != 0 && gid != egid.as_raw() {
-            if let Ok(Some(group)) = Group::from_gid(gid.into()) {
-                attrs.push(format!("gname={}", group.name));
+            if let Ok(groupname) = userdb::get_groupname_by_gid(gid, None) {
+                attrs.push(format!("gname={}", groupname));
             }
         }
 
