@@ -29,9 +29,13 @@ release:
 # Static build for detected host architecture
 static: static-$(HOST_ARCH)
 
-# Install dependencies and set up Rust toolchain
-install-depends:
-	@$(PROJECT_ROOT)/bin/make.sh install-depends
+# Install development dependencies (current arch only)
+dev-depends:
+	@$(PROJECT_ROOT)/bin/make.sh dev-depends
+
+# Install release dependencies (all arch cross-compilers)
+crossdev-depends:
+	@$(PROJECT_ROOT)/bin/make.sh crossdev-depends
 
 
 # Build static binaries for all architectures (sequentially to avoid Cargo lock conflicts)
@@ -43,7 +47,7 @@ static-all:
 
 # Build static binary for a specific architecture
 define build_static
-static-$(1): $(PROJECT_ROOT)/target/musl-lua-$(1)/liblua.a
+static-$(1): $(PROJECT_ROOT)/target/lua-musl-$(1)/liblua.a
 	@$(PROJECT_ROOT)/bin/make.sh static $(1)
 endef
 
@@ -56,7 +60,7 @@ $(eval $(call build_static,loongarch64))
 
 # Build Lua library for a specific architecture
 define build_lua_lib
-$(PROJECT_ROOT)/target/musl-lua-$(1)/liblua.a:
+$(PROJECT_ROOT)/target/lua-musl-$(1)/liblua.a:
 	@$(PROJECT_ROOT)/bin/make.sh build_lua_lib $(1)
 endef
 
@@ -79,4 +83,4 @@ clean:
 clean-all:
 	@$(PROJECT_ROOT)/bin/make.sh clean_all
 
-.PHONY: install-depends build release static static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all
+.PHONY: dev-depends crossdev-depends build release static static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all

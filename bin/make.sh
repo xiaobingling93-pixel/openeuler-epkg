@@ -18,11 +18,41 @@ DEV_ENV_SRC_DIR="$HOME/.epkg/envs/self/usr/src/epkg"
 # Detect OS and version
 detect_os() {
     if [[ -f /etc/os-release ]]; then
-        OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2)
+        OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
         OS_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
     else
         OS_ID="unknown"
         OS_VERSION="unknown"
+    fi
+}
+
+# Clone or update a git repository
+clone_or_update_repo() {
+    local repo_url="$1"
+    local dir_name="$2"
+    if [[ -z "$dir_name" ]]; then
+        # Extract directory name from repo URL (remove .git suffix if present)
+        dir_name="${repo_url##*/}"
+        dir_name="${dir_name%.git}"
+    fi
+
+    if [[ -d "$dir_name" ]]; then
+        if [[ -n "$(ls -A "$dir_name" 2>/dev/null)" ]]; then
+            echo "Directory $dir_name already exists and is not empty, attempting to update..."
+            if [[ -d "$dir_name/.git" ]]; then
+                (cd "$dir_name" && git pull)
+            else
+                echo "Warning: $dir_name exists but is not a git repository, skipping update"
+            fi
+        else
+            echo "Directory $dir_name exists but is empty, removing..."
+            rmdir "$dir_name"
+            echo "Cloning $repo_url..."
+            git clone "$repo_url" "$dir_name"
+        fi
+    else
+        echo "Cloning $repo_url..."
+        git clone "$repo_url" "$dir_name"
     fi
 }
 
@@ -33,7 +63,7 @@ cd "$PROJECT_ROOT"
 install_to_dev_env() {
     local binary_path="$1"
 
-    [[ -d "$DEV_ENV_BIN_DIR" ]] || return
+    [[ -d "$DEV_ENV_BIN_DIR" ]] || return 0
 
     if [[ ! -L "$DEV_ENV_SRC_DIR" ]] || [[ "$(readlink "$DEV_ENV_SRC_DIR")" != "$(pwd)" ]]; then
         local src_rc="$PROJECT_ROOT/lib/epkg-rc.sh"
@@ -43,14 +73,15 @@ install_to_dev_env() {
         fi
     fi
 
-    local cp_output
+    local cp_output cp_status
     cp_output=$(cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME" 2>&1) && echo "$cp_output" || {
+        cp_status=$?
         if echo "$cp_output" | grep -q "Text file busy"; then
             rm -v "$DEV_ENV_BIN_DIR/$BINARY_NAME" &&
             cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
         else
             echo "$cp_output" >&2
-            exit $cp_status
+            return $cp_status
         fi
     }
 }
@@ -108,7 +139,8 @@ build_lua_lib() {
     cd "lua-$LUA_VERSION"
     rm -f src/liblua.a
     make clean
-    make CC="$compiler" linux
+    # Add -fPIC for position independent code (required for PIE executables)
+    make CC="$compiler" CFLAGS="-O2 -Wall -fPIC" linux
 
     # Deploy
     mkdir -p "$lua_lib_dir"
@@ -116,33 +148,83 @@ build_lua_lib() {
     cp src/lua.h src/lualib.h src/lauxlib.h src/lua.hpp src/luaconf.h "$lua_lib_dir/"
 }
 
-# Install dependencies
+# Unified dependency installer
 install_depends() {
+    local mode="${1:-dev}"
     detect_os
     echo "Detected OS: $OS_ID $OS_VERSION"
 
-    echo "Installing dependencies..."
+    local current_arch=$(detect_arch)
+    echo "Detected architecture: $current_arch"
+
+    echo "Installing dependencies ($mode mode)..."
     if [[ "$OS_ID" =~ ^(debian|ubuntu)$ ]]; then
         sudo apt-get update
-        sudo apt-get install -y rustup build-essential libssl-dev musl-tools gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu liblua5.4-dev
+        local packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
+        if [[ "$mode" == "crossdev" ]]; then
+            packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
+        fi
+        sudo apt-get install -y $packages
+    elif [[ "$OS_ID" =~ ^(openeuler|openEuler)$ ]]; then
+        sudo dnf update -y
+        local packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel wget"
+        if [[ "$mode" == "crossdev" ]]; then
+            packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
+        fi
+        sudo dnf install -y $packages
     else
         echo "Unsupported OS: $OS_ID"
         exit 1
     fi
 
     echo "Installing Rust toolchain..."
-    rustup default stable
-    rustup target add "$RUST_TARGET_X86_64"
-    rustup target add "$RUST_TARGET_AARCH64"
-    rustup target add "$RUST_TARGET_RISCV64"
-    rustup target add "$RUST_TARGET_LOONGARCH64"
+    if [[ "$OS_ID" =~ ^(debian|ubuntu)$ ]]; then
+        rustup default stable
+        if [[ "$mode" == "dev" ]]; then
+            # Install only the target for current architecture
+            case "$current_arch" in
+                x86_64)
+                    rustup target add "$RUST_TARGET_X86_64"
+                    ;;
+                aarch64)
+                    rustup target add "$RUST_TARGET_AARCH64"
+                    ;;
+                riscv64)
+                    rustup target add "$RUST_TARGET_RISCV64"
+                    ;;
+                loongarch64)
+                    rustup target add "$RUST_TARGET_LOONGARCH64"
+                    ;;
+            esac
+        else
+            # Install all targets for crossdev
+            rustup target add "$RUST_TARGET_X86_64"
+            rustup target add "$RUST_TARGET_AARCH64"
+            rustup target add "$RUST_TARGET_RISCV64"
+            rustup target add "$RUST_TARGET_LOONGARCH64"
+        fi
+    elif [[ "$OS_ID" =~ ^(openeuler|openEuler)$ ]]; then
+        # openEuler uses cargo from dnf, rustup not needed
+        echo "Using system cargo from dnf"
+    fi
 
-    git clone https://gitee.com/wu_fengguang/rpm-rs
-    git clone https://gitee.com/wu_fengguang/resolvo
-    git clone https://gitee.com/openeuler/elf-loader
+    # Clone or update repositories
+    clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
+    clone_or_update_repo "https://gitee.com/openeuler/elf-loader"
 
     cd elf-loader/src && make install-depends
     echo "Installation complete!"
+}
+
+# Install development dependencies (current arch only)
+dev_depends() {
+    install_depends dev
+}
+
+# Install cross-development dependencies (all arch cross-compilers)
+crossdev_depends() {
+    install_depends crossdev
 }
 
 # Clean build artifacts
@@ -209,13 +291,14 @@ get_rustflags() {
     local arch="$1"
     case "$arch" in
         x86_64)
-            echo ""
+            # Disable PIE to avoid relocation issues with Lua static library
+            echo "-C link-arg=-no-pie"
             ;;
         aarch64)
-            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc"
+            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc -C link-arg=-no-pie"
             ;;
         riscv64|loongarch64)
-            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc -C link-arg=-lm"
+            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc -C link-arg=-lm -C link-arg=-no-pie"
             ;;
         *)
             echo "Unknown architecture: $arch" >&2
@@ -235,7 +318,7 @@ build_static() {
 
     # Export environment variables directly
     export LUA_LIB_NAME=lua
-    export LUA_LIB="$PROJECT_ROOT/target/musl-lua-$arch"
+    export LUA_LIB="$PROJECT_ROOT/target/lua-musl-$arch"
     export LUA_LINK=static
     export LUA_NO_PKG_CONFIG=1
 
@@ -365,8 +448,11 @@ case $cmd in
     static|build_static)
         build_static "$2"
         ;;
-    install-depends)
-        install_depends
+    dev-depends)
+        dev_depends
+        ;;
+    crossdev-depends)
+        crossdev_depends
         ;;
     test)
         run_tests
@@ -385,7 +471,8 @@ case $cmd in
         echo "  lua [<arch>]                         Build Lua library for architecture (auto-detects if not specified)"
         echo "  release                              Build release binary"
         echo "  static [<arch>]                      Build static binary (auto-detects arch if not specified)"
-        echo "  install-depends                      Install system dependencies"
+        echo "  dev-depends                          Install development dependencies (current arch only)"
+        echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  test                                 Run module-level unit tests"
         echo "  clean                                Clean build artifacts"
         echo "  clean_all                            Clean all artifacts and distribution files"
