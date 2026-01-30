@@ -740,3 +740,34 @@ pub fn get_groupname_by_gid(gid: u32, root: Option<&Path>) -> Result<String> {
     Ok(get_group_entry_by_gid(gid, root)?.name)
 }
 
+pub fn user_exists(name: &str, root: Option<&Path>) -> Result<bool> {
+    entry_exists(name, "passwd", root)
+}
+
+pub fn group_exists(name: &str, root: Option<&Path>) -> Result<bool> {
+    entry_exists(name, "group", root)
+}
+
+fn entry_exists(name: &str, filename: &str, root: Option<&Path>) -> Result<bool> {
+    let file_path = match root {
+        Some(root) => root.join(format!("etc/{}", filename)),
+        None => PathBuf::from(format!("/etc/{}", filename)),
+    };
+    let file = match fs::File::open(&file_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(false), // file doesn't exist, entry doesn't exist
+    };
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = line.map_err(|e| eyre!("Failed to read {} file: {}", filename, e))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 1 && parts[0] == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}

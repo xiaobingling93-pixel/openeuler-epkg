@@ -2,7 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::path::Path;
 
-use crate::applets::systemd_sysusers::user_exists;
+use crate::userdb::user_exists;
 use crate::userdb;
 
 #[derive(Debug, Clone, Default)]

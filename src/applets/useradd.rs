@@ -2,7 +2,8 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::path::Path;
 
-use crate::applets::systemd_sysusers::{add_user_to_group, group_exists, user_exists};
+use crate::userdb::add_user_to_group;
+use crate::userdb::{group_exists, user_exists};
 use crate::userdb;
 
 #[derive(Debug, Clone, Default)]

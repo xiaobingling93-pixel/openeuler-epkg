@@ -2,7 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::path::Path;
 
-use crate::applets::systemd_sysusers::{group_exists, user_exists};
+use crate::userdb::{group_exists, user_exists};
 use crate::applets::groupdel::{GroupDelOptions, run as run_groupdel};
 use crate::userdb;
 use crate::applets::userdel::UserDelOptions;

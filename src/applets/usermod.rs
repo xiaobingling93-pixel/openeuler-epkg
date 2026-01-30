@@ -4,7 +4,7 @@ use color_eyre::eyre::eyre;
 use std::path::Path;
 use std::fs;
 
-use crate::applets::systemd_sysusers::user_exists;
+use crate::userdb::user_exists;
 use crate::userdb;
 
 #[derive(Debug, Clone, Default)]

@@ -1,7 +1,8 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 
-use crate::applets::systemd_sysusers::{add_user_to_group, create_group, group_exists, user_exists};
+use crate::userdb::{add_user_to_group, ensure_group};
+use crate::userdb::{group_exists, user_exists};
 use crate::userdb;
 use crate::applets::useradd::UserAddOptions;
 
@@ -248,16 +249,17 @@ pub fn run(cmd: AddUserCmd) -> Result<()> {
             add_user_to_group(user, group, None)?;
         }
         AddUserMode::CreateUser => {
+            let mut opts = cmd.options;
+
             // If requested, ensure primary group exists (system group)
-            if let Some(ref g) = cmd.options.primary_group {
+            if let Some(ref g) = opts.primary_group {
                 if !group_exists(g, None)? {
-                    create_group(g, None, None)?;
+                    ensure_group(g, None, opts.system, None)?;
                 }
             }
 
             // Call through to useradd-like implementation
             // Map disabled_password -> lock_password
-            let mut opts = cmd.options;
             // For system daemon users, default home if none given
             if opts.home.is_none() && opts.system {
                 opts.home = Some("/nonexistent".to_string());

@@ -36,7 +36,6 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
-use std::io::{self, BufRead};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -233,11 +232,11 @@ fn process_user_line(parts: &[String], locked: bool, root: Option<&Path>) -> Res
 
     // Set defaults
     let gecos = if gecos == "-" { "" } else { gecos };
-    let home = if home == "-" || home.is_empty() { "/" } else { home };
+    let home  = if home  == "-" || home.is_empty() { "/" } else { home };
     let shell = if shell == "-" || shell.is_empty() { "/sbin/nologin" } else { shell };
 
     // Create user
-    create_user(name, uid.as_deref(), gid.as_deref(), gecos, home, shell, locked, root)?;
+    userdb::create_user(name, uid.as_deref(), gid.as_deref(), gecos, home, shell, true, locked, root)?;
 
     Ok(())
 }
@@ -253,7 +252,7 @@ fn process_group_line(parts: &[String], root: Option<&Path>) -> Result<()> {
 
     let gid = parse_gid_field(id_field)?;
 
-    create_group(name, gid.as_deref(), root)?;
+    let _ = userdb::ensure_group(name, gid.as_deref(), true, root)?;
 
     Ok(())
 }
@@ -269,7 +268,7 @@ fn process_member_line(parts: &[String], root: Option<&Path>) -> Result<()> {
     validate_user_group_name(user)?;
     validate_user_group_name(group)?;
 
-    add_user_to_group(user, group, root)?;
+    userdb::add_user_to_group(user, group, root)?;
 
     Ok(())
 }
@@ -358,60 +357,4 @@ pub fn validate_user_group_name(name: &str) -> Result<()> {
         return Err(eyre!("User/group name cannot start with dash or dot: {}", name));
     }
     Ok(())
-}
-
-
-pub fn create_user(name: &str, uid: Option<&str>, gid: Option<&str>, gecos: &str, home: &str, shell: &str, locked: bool, root: Option<&Path>) -> Result<()> {
-    userdb::create_user(
-        name,
-        uid,
-        gid,
-        gecos,
-        home,
-        shell,
-        true,
-        locked,
-        root,
-    )
-}
-
-pub fn create_group(name: &str, gid: Option<&str>, root: Option<&Path>) -> Result<()> {
-    let _ = userdb::ensure_group(name, gid, true, root)?;
-    Ok(())
-}
-
-pub fn add_user_to_group(user: &str, group: &str, root: Option<&Path>) -> Result<()> {
-    userdb::add_user_to_group(user, group, root)
-}
-
-pub fn user_exists(name: &str, root: Option<&Path>) -> Result<bool> {
-    entry_exists(name, "passwd", root)
-}
-
-pub fn group_exists(name: &str, root: Option<&Path>) -> Result<bool> {
-    entry_exists(name, "group", root)
-}
-
-fn entry_exists(name: &str, filename: &str, root: Option<&Path>) -> Result<bool> {
-    let file_path = match root {
-        Some(root) => root.join(format!("etc/{}", filename)),
-        None => PathBuf::from(format!("/etc/{}", filename)),
-    };
-    let file = match fs::File::open(&file_path) {
-        Ok(f) => f,
-        Err(_) => return Ok(false), // file doesn't exist, entry doesn't exist
-    };
-    let reader = io::BufReader::new(file);
-    for line in reader.lines() {
-        let line = line.map_err(|e| eyre!("Failed to read {} file: {}", filename, e))?;
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() >= 1 && parts[0] == name {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
