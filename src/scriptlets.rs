@@ -644,6 +644,7 @@ pub fn run_scriptlet(
                     // so that operations like ldconfig affect the environment, not the host.
                     let result = fork_and_call(|| {
                         let run_options = RunOptions {
+                            chdir_to_env_root: true,
                             ..Default::default()
                         };
                         setup_namespace_and_mounts(&env_root, &run_options)?;

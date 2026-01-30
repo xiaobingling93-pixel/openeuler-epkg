@@ -178,39 +178,17 @@ impl CondaPackage {
             version: version_with_build,
             arch: arch.to_string(),
             size: self.size.unwrap_or(0) as u32,
-            installed_size: 0, // Conda doesn't typically provide this
+            installed_size: 0,
             build_time,
-            source: None,
             location: filename.to_string(),
-            ca_hash: None,
             sha256sum: self.sha256.clone(),
-            sha1sum: None,
-            depends: Vec::new(), // Will be populated separately if needed
-            requires_pre: Vec::new(),
-            requires: self.depends.clone(), // Store dependencies as-is, let parse_requires handle them
-            build_requires: Vec::new(), // Conda doesn't have build dependencies in repodata
-            check_requires: Vec::new(), // Conda doesn't have check dependencies in repodata
-            provides: vec![self.name.clone()], // Package provides itself
-            recommends: Vec::new(),
-            suggests: Vec::new(),
-            conflicts: Vec::new(),
-            obsoletes: Vec::new(),
-            enhances: Vec::new(),
-            supplements: Vec::new(),
-            files: Vec::new(),
+            requires: self.depends.clone(),
+            provides: vec![self.name.clone()],
             summary: self.summary.clone().unwrap_or_default(),
             description: self.description.clone(),
             homepage: self.url.clone().unwrap_or_default(),
-            section: None,
-            priority: None,
-            maintainer: String::new(),
-            tag: None,
-            origin_url: None,
-            multi_arch: None,
             format: PackageFormat::Conda,
-            pkgkey: String::new(), // Will be set later
-            repodata_name: String::new(), // Will be set later
-            package_baseurl: String::new(), // Will be set later
+            ..Default::default()
         }
     }
 }

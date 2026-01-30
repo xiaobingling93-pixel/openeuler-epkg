@@ -26,17 +26,38 @@ pub struct SearchOptions {
     pub pattern: String,
     pub u8_pattern: Vec<u8>,
     pub regex_pattern: Option<Arc<regex::bytes::Regex>>,
+    pub collected_results: Option<Arc<Mutex<Vec<(String, String)>>>>,
 }
 
 // Constants for package metadata patterns
 static PKGNAME_PATTERN: &[u8] = b"pkgname: ";
 static SUMMARY_PATTERN: &[u8] = b"summary: ";
 
+fn setup_u8_pattern(options: &mut SearchOptions)
+{
+    // Create the pattern for searching and store it in options
+    options.u8_pattern = options.pattern.as_bytes().to_vec();
+
+    // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
+    // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
+    // with relative filelist entries like usr/bin/ls
+    if (channel_config().format == crate::models::PackageFormat::Deb ||
+        channel_config().format == crate::models::PackageFormat::Pacman) &&
+        !options.u8_pattern.is_empty() &&
+        options.u8_pattern[0] == b'/' {
+        options.u8_pattern.remove(0);
+    }
+}
+
 pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
+    crate::repo::sync_channel_metadata()?;
+
     let repodata_indice = repodata_indice();
     let mut any_filelists = false;
     let mut consumer_handles = Vec::new();
     let mut producer_handles = Vec::new();
+
+    setup_u8_pattern(options);
 
     for repo_index in repodata_indice.values() {
         let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
@@ -580,9 +601,14 @@ fn process_simple_line(
     Ok(())
 }
 
-fn print_path(pkgname: &[u8], path: &[u8], _options: &SearchOptions) {
+fn print_path(pkgname: &[u8], path: &[u8], options: &SearchOptions) {
     if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
-        println!("{} {}", pkg_str, path_str);
+        if let Some(ref results) = options.collected_results {
+            let mut results = results.lock().unwrap();
+            results.push((pkg_str.to_string(), path_str.to_string()));
+        } else {
+            println!("{} {}", pkg_str, path_str);
+        }
     }
 }
 

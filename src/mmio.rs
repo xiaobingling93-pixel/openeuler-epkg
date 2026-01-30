@@ -304,52 +304,7 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec
 }
 
 pub fn deserialize_package(paragraph: &str) -> Result<Package> {
-    let mut package = Package {
-        pkgname: String::new(),
-        version: String::new(),
-        arch: String::new(),
-        size: 0,
-        installed_size: 0,
-        build_time: None,
-        source: None,
-        location: String::new(),
-
-        // caHash is only available in installed epkg_store/fs/package.txt,
-        // when the struct is loaded by map_pkgline2package()
-        ca_hash: None,
-
-        // Apk only has sha1sum; other formats only have sha256sum
-        sha256sum: None,
-        sha1sum: None,
-
-        depends: Vec::new(),
-        requires_pre: Vec::new(),
-        requires: Vec::new(),
-        build_requires: Vec::new(),
-        check_requires: Vec::new(),
-        provides: Vec::new(),
-        recommends: Vec::new(),
-        suggests: Vec::new(),
-        conflicts: Vec::new(),
-        obsoletes: Vec::new(),
-        enhances: Vec::new(),
-        supplements: Vec::new(),
-        files: Vec::new(),
-        summary: String::new(),
-        description: None,
-        homepage: String::new(),
-        section: None,
-        priority: None,
-        maintainer: String::new(),
-        tag: None,
-        origin_url: None,
-        multi_arch: None,
-        format: PackageFormat::default(),
-        pkgkey: String::new(),
-        repodata_name: String::new(),
-        package_baseurl: String::new(),
-    };
-
+    let mut package = Package::default();
     // Track the current key and value for multi-line handling
     let mut current_key = String::new();
     let mut current_value = String::new();

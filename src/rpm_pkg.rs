@@ -162,13 +162,13 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
     // Note: Transaction scriptlets (pretrans, posttrans, preuntrans, postuntrans) use distinct filenames
     // to avoid conflicts with regular upgrade scriptlets
     let scriptlet_mapping: HashMap<&str, &str> = [
-        ("prein", "pre_install.sh"),
-        ("postin", "post_install.sh"),
-        ("preun", "pre_uninstall.sh"),
-        ("postun", "post_uninstall.sh"),
-        ("pretrans", "pre_trans.sh"),      // Distinct filename for transaction scriptlets
-        ("posttrans", "post_trans.sh"),    // Distinct filename for transaction scriptlets
-        ("preuntrans", "pre_untrans.sh"),
+        ("prein",       "pre_install.sh"),
+        ("postin",      "post_install.sh"),
+        ("preun",       "pre_uninstall.sh"),
+        ("postun",      "post_uninstall.sh"),
+        ("pretrans",    "pre_trans.sh"),     // Distinct filename for transaction scriptlets
+        ("posttrans",   "post_trans.sh"),    // Distinct filename for transaction scriptlets
+        ("preuntrans",  "pre_untrans.sh"),
         ("postuntrans", "post_untrans.sh"),
     ].into_iter().collect();
 
@@ -196,15 +196,15 @@ pub fn create_scriptlets<P: AsRef<Path>>(package: &Package, store_tmp_dir: P) ->
 /// based on interpreter information from the RPM metadata
 fn get_scriptlet_with_extension(metadata: &rpm::PackageMetadata, scriptlet_name: &str) -> Option<(String, String)> {
     let scriptlet = match scriptlet_name {
-        "prein" => metadata.get_pre_install_script().ok(),
-        "postin" => metadata.get_post_install_script().ok(),
-        "preun" => metadata.get_pre_uninstall_script().ok(),
-        "postun" => metadata.get_post_uninstall_script().ok(),
-        "pretrans" => metadata.get_pre_trans_script().ok(),
-        "posttrans" => metadata.get_post_trans_script().ok(),
-        "preuntrans" => get_scriptlet_from_header(metadata, "preuntrans"),
+        "prein"       => metadata.get_pre_install_script().ok(),
+        "postin"      => metadata.get_post_install_script().ok(),
+        "preun"       => metadata.get_pre_uninstall_script().ok(),
+        "postun"      => metadata.get_post_uninstall_script().ok(),
+        "pretrans"    => metadata.get_pre_trans_script().ok(),
+        "posttrans"   => metadata.get_post_trans_script().ok(),
+        "preuntrans"  => get_scriptlet_from_header(metadata, "preuntrans"),
         "postuntrans" => get_scriptlet_from_header(metadata, "postuntrans"),
-        _ => None,
+        _             => None,
     }?;
 
     let script_content = scriptlet.script.clone();
@@ -217,19 +217,19 @@ fn get_scriptlet_with_extension(metadata: &rpm::PackageMetadata, scriptlet_name:
 /// Used for scriptlets that don't have direct methods in PackageMetadata
 pub fn get_scriptlet_from_header(metadata: &rpm::PackageMetadata, scriptlet_name: &str) -> Option<rpm::Scriptlet> {
     let script_tag = match scriptlet_name {
-        "preuntrans" => IndexTag::RPMTAG_PREUNTRANS,
-        "postuntrans" => IndexTag::RPMTAG_POSTUNTRANS,
-        "triggerprein" => IndexTag::RPMTAG_TRIGGERPREIN,
-        "triggerin" => IndexTag::RPMTAG_TRIGGERIN,
-        "triggerun" => IndexTag::RPMTAG_TRIGGERUN,
-        "triggerpostun" => IndexTag::RPMTAG_TRIGGERPOSTUN,
-        "filetriggerin" => IndexTag::RPMTAG_FILETRIGGERIN,
-        "filetriggerun" => IndexTag::RPMTAG_FILETRIGGERUN,
-        "filetriggerpostun" => IndexTag::RPMTAG_FILETRIGGERPOSTUN,
-        "transfiletriggerin" => IndexTag::RPMTAG_TRANSFILETRIGGERIN,
-        "transfiletriggerun" => IndexTag::RPMTAG_TRANSFILETRIGGERUN,
+        "preuntrans"             => IndexTag::RPMTAG_PREUNTRANS,
+        "postuntrans"            => IndexTag::RPMTAG_POSTUNTRANS,
+        "triggerprein"           => IndexTag::RPMTAG_TRIGGERPREIN,
+        "triggerin"              => IndexTag::RPMTAG_TRIGGERIN,
+        "triggerun"              => IndexTag::RPMTAG_TRIGGERUN,
+        "triggerpostun"          => IndexTag::RPMTAG_TRIGGERPOSTUN,
+        "filetriggerin"          => IndexTag::RPMTAG_FILETRIGGERIN,
+        "filetriggerun"          => IndexTag::RPMTAG_FILETRIGGERUN,
+        "filetriggerpostun"      => IndexTag::RPMTAG_FILETRIGGERPOSTUN,
+        "transfiletriggerin"     => IndexTag::RPMTAG_TRANSFILETRIGGERIN,
+        "transfiletriggerun"     => IndexTag::RPMTAG_TRANSFILETRIGGERUN,
         "transfiletriggerpostun" => IndexTag::RPMTAG_TRANSFILETRIGGERPOSTUN,
-        _ => return None,
+        _                        => return None,
     };
 
     // Check if scriptlet exists
@@ -283,20 +283,29 @@ pub fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &s
     // Process based on scriptlet.program if available
     if let Some(ref program) = scriptlet.program {
         if !program.is_empty() {
-            let interpreter = &program[0];
+            // Deduplicate consecutive identical elements in program array
+            let mut program_dedup = Vec::new();
+            for item in program {
+                let item_str = item.as_str();
+                if program_dedup.last() != Some(&item_str) {
+                    program_dedup.push(item_str);
+                }
+            }
+
+            let interpreter = &program_dedup[0];
 
             // CASE 1: Get extension from scripting language interpreter
             extension = interpreter_to_extension(interpreter);
 
             // CASE 2: Add shebang for path-based interpreters (except Lua which has special handling)
-            if interpreter.starts_with("/") {
-                let shebang = format!("#!{}\n", program.join(" "));
+            if interpreter.starts_with("/") && !content.trim_start().starts_with("#!") {
+                let shebang = format!("#!{}\n", program_dedup.join(" "));
                 content = format!("{}{}", shebang, content);
             }
 
             // CASE 3: Create shell wrapper for empty content with no determined extension
             if content.trim().is_empty() && extension.is_empty() {
-                content = format!("#!/bin/sh\n{}\n", program.join(" "));
+                content = format!("#!/bin/sh\n{}\n", program_dedup.join(" "));
                 extension = "sh".to_string();
             }
         }
@@ -319,19 +328,37 @@ fn interpreter_to_extension(interpreter: &str) -> String {
         .unwrap_or(interpreter);
 
     match interpreter_name {
-        name if name.contains("lua") => "lua".to_string(),
-        name if name.contains("python") => "py".to_string(),
-        name if name.contains("perl") => "pl".to_string(),
-        name if name.contains("node") => "js".to_string(),
-        name if name.contains("ruby") => "rb".to_string(),
-        "tcl" | "tclsh" => "tcl".to_string(),
-        "awk" | "gawk" | "mawk" => "awk".to_string(),
+        name if name.contains("lua")            => "lua".to_string(),
+        name if name.contains("python")         => "py".to_string(),
+        name if name.contains("perl")           => "pl".to_string(),
+        name if name.contains("node")           => "js".to_string(),
+        name if name.contains("ruby")           => "rb".to_string(),
+        "tcl" | "tclsh"                         => "tcl".to_string(),
+        "awk" | "gawk" | "mawk"                 => "awk".to_string(),
         "bash" | "sh" | "dash" | "zsh" | "fish" => "sh".to_string(),
         _ => {
             // If we can't identify the interpreter, log it for debugging
             log::debug!("Unknown interpreter '{}'", interpreter_name);
             "".to_string()
         }
+    }
+}
+
+/// Convert DependencyFlags to an optional operator string.
+/// Returns None for ANY and other non-version-comparison flags.
+pub(crate) fn dependency_flags_to_operator(flags: DependencyFlags) -> Option<&'static str> {
+    if flags.contains(DependencyFlags::LE) {
+        Some("<=")
+    } else if flags.contains(DependencyFlags::GE) {
+        Some(">=")
+    } else if flags.contains(DependencyFlags::LESS) {
+        Some("<")
+    } else if flags.contains(DependencyFlags::GREATER) {
+        Some(">")
+    } else if flags.contains(DependencyFlags::EQUAL) {
+        Some("=")
+    } else {
+        None
     }
 }
 
@@ -347,23 +374,8 @@ fn format_rpm_dependency(dep: &rpm::Dependency) -> String {
     }
 
     // Handle different comparison operators based on flags
-    if flags.contains(DependencyFlags::LE) {
-        // LESS | EQUAL
-        format!("{}<={}", name, version)
-    } else if flags.contains(DependencyFlags::GE) {
-        format!("{}>{}", name, version)
-    } else if flags.contains(DependencyFlags::LESS) {
-        // LESS only
-        format!("{}<{}", name, version)
-    } else if flags.contains(DependencyFlags::GREATER) {
-        format!("{}>{}", name, version)
-    } else if flags.contains(DependencyFlags::EQUAL) || flags == DependencyFlags::ANY {
-        // EQUAL or ANY - use = format
-        format!("{} = {}", name, version) // Added spaces to distinguish from "font(:lang=yap)"
-    } else {
-        // For any other flags (like SCRIPT_PRE, RPMLIB, etc.), default to = format
-        format!("{} = {}", name, version)
-    }
+    let op = dependency_flags_to_operator(flags).unwrap_or("=");
+    format!("{} {} {}", name, op, version)
 }
 
 /// Helper function to format a vector of RPM dependencies
@@ -447,19 +459,24 @@ pub fn create_package_txt<P: AsRef<Path>>(package: &Package, rpm_file: P, store_
     }
 
     // Add dependency information - using custom formatting
-    if let Ok(provides) = metadata.get_provides() {
-        let formatted_provides = format_rpm_dependencies(&provides);
-        if !formatted_provides.is_empty() {
-            raw_fields.push(("provides".to_string(), formatted_provides));
-        }
+    macro_rules! add_dep_field {
+        ($metadata:expr, $method:ident, $field:expr) => {
+            if let Ok(deps) = $metadata.$method() {
+                let formatted = format_rpm_dependencies(&deps);
+                if !formatted.is_empty() {
+                    raw_fields.push(($field.to_string(), formatted));
+                }
+            }
+        };
     }
-
-    if let Ok(requires) = metadata.get_requires() {
-        let formatted_requires = format_rpm_dependencies(&requires);
-        if !formatted_requires.is_empty() {
-            raw_fields.push(("requires".to_string(), formatted_requires));
-        }
-    }
+    add_dep_field!(metadata, get_provides, "provides");
+    add_dep_field!(metadata, get_requires, "requires");
+    add_dep_field!(metadata, get_conflicts, "conflicts");
+    add_dep_field!(metadata, get_obsoletes, "obsoletes");
+    add_dep_field!(metadata, get_enhances, "enhances");
+    add_dep_field!(metadata, get_recommends, "recommends");
+    add_dep_field!(metadata, get_suggests, "suggests");
+    add_dep_field!(metadata, get_supplements, "supplements");
 
     // Add file list
     if let Ok(file_entries) = metadata.get_file_entries() {

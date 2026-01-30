@@ -18,28 +18,34 @@ use std::error::Error;
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
+        macro_rules! map_eq { ($key:expr) => { m.insert($key, $key) }; }
 
         m.insert("name",           "pkgname");
-        m.insert("version",        "version");
-        m.insert("arch",           "arch");
-        m.insert("summary",        "summary");
-        m.insert("description",    "description");
+        map_eq!("version");
+        map_eq!("arch");
+        map_eq!("summary");
+        map_eq!("description");
         m.insert("url",            "homepage");
-        m.insert("license",        "license");
-        m.insert("vendor",         "vendor");
+        map_eq!("license");
+        map_eq!("vendor");
         m.insert("group",          "section");
         m.insert("buildhost",      "buildHost");
         m.insert("sourcerpm",      "source");
         m.insert("packager",       "maintainer");
-        m.insert("size",           "size");
+        map_eq!("size");
         m.insert("installed-size", "installedSize");
-        m.insert("location",       "location");
+        map_eq!("location");
         m.insert("checksum",       "sha256");
         m.insert("time",           "buildTime");
-        m.insert("requires",       "requires");
-        m.insert("recommends",     "recommends");
-        m.insert("provides",       "provides");
-        m.insert("files",          "files");
+        map_eq!("requires");
+        map_eq!("recommends");
+        map_eq!("provides");
+        map_eq!("conflicts");
+        map_eq!("obsoletes");
+        map_eq!("enhances");
+        map_eq!("suggests");
+        map_eq!("supplements");
+        map_eq!("files");
 
         m
     };

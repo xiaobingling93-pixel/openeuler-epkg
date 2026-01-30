@@ -99,7 +99,6 @@ use crate::remove::remove_packages;
 use crate::history::{print_history, rollback_history};
 use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
 use crate::run::{command_run, command_busybox};
-use crate::run::privdrop_on_suid;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use clap::{arg, Command};
@@ -1030,6 +1029,7 @@ fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches)
         pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
         u8_pattern: Vec::new(),     // Will be populated in command_search()
         regex_pattern: None,        // Will be set if regexp is true
+        collected_results: None,
     };
 
     // Warn if using -f (files) flag with a pattern containing path separators
@@ -1158,7 +1158,6 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
         .unwrap_or("");
 
     sync_channel_metadata()?;
-    privdrop_on_suid();
     list_packages_with_scope(scope, pattern)?;
     Ok(())
 }
@@ -1166,7 +1165,6 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
 fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
     // First call sync_channel_metadata to prepare data
     sync_channel_metadata()?;
-    privdrop_on_suid();
 
     // Load installed packages info
     load_installed_packages()?;
@@ -1198,15 +1196,12 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
 fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
         let packages_vec: Vec<String> = package_specs.cloned().collect();
-        sync_channel_metadata()?;
         install_packages(packages_vec).map(|_| ())?;
     }
     Ok(())
 }
 
 fn command_upgrade(sub_matches: &clap::ArgMatches) -> Result<()> {
-    sync_channel_metadata()?;
-
     let package_names: Vec<String> = sub_matches
         .get_many::<String>("PACKAGE_SPEC")
         .map(|vals| vals.cloned().collect())
@@ -1249,7 +1244,6 @@ fn command_repo(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
-        privdrop_on_suid();
         for dir in package_store_dirs {
             let hash = crate::hash::epkg_store_hash(dir)?;
             println!("{}", hash);
@@ -1260,8 +1254,6 @@ fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_build(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_yaml) = sub_matches.get_one::<String>("PACKAGE_YAML") {
-        privdrop_on_suid();
-
         let epkg_src_path = get_epkg_src_path();
         let build_script = epkg_src_path.join("build/scripts/generic-build.sh");
         if !build_script.exists() {
@@ -1340,24 +1332,9 @@ fn command_convert(sub_matches: &clap::ArgMatches) -> Result<()> {
 }
 
 fn command_search(_sub_matches: &clap::ArgMatches) -> Result<()> {
-    sync_channel_metadata()?;
-
     // channel_config() cannot be referenced at parse_options_search() time,
     // so setup the derived options.u8_pattern here
     let mut options = config().search.clone();
-
-    // Create the pattern for searching and store it in options
-    options.u8_pattern = options.pattern.as_bytes().to_vec();
-
-    // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
-    // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
-    // with relative filelist entries like usr/bin/ls
-    if (channel_config().format == crate::models::PackageFormat::Deb ||
-        channel_config().format == crate::models::PackageFormat::Pacman) &&
-        !options.u8_pattern.is_empty() &&
-        options.u8_pattern[0] == b'/' {
-        options.u8_pattern.remove(0);
-    }
 
     search::search_repo_cache(&mut options)?;
     Ok(())

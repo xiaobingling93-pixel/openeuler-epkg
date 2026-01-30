@@ -29,7 +29,7 @@ pub fn install_packages(package_specs: Vec<String>) -> Result<InstallationPlan> 
     // Apply no-install changes from CLI to world.json
     apply_no_install_changes()?;
 
-    // Process package specs: handle local files/URLs, return all package specs ready for installation
+    // handle local files/URLs, return all package specs ready for installation
     let processed_specs = process_url_package_specs(package_specs)?;
 
     // Create delta_world from processed specs (in case local files were converted to specs)
@@ -60,7 +60,7 @@ pub fn install_packages(package_specs: Vec<String>) -> Result<InstallationPlan> 
 // ============================================================================
 
 /// Process package specs: separate regular specs from files/URLs, download URLs, process local files
-fn process_url_package_specs(package_specs: Vec<String>) -> Result<Vec<String>> {
+pub(crate) fn process_url_package_specs(package_specs: Vec<String>) -> Result<Vec<String>> {
     use store::detect_package_format;
     use crate::mirror::{Mirrors, UrlProtocol};
 

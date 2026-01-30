@@ -107,6 +107,7 @@ pub struct HookAction {
     pub abort_on_fail: bool,
     pub needs_targets: bool,
     pub priority: u32,
+    pub script_order: u32,  // for applets/rpm.rs query: in-package list order, not exec order
 }
 
 impl Default for HookAction {
@@ -119,6 +120,7 @@ impl Default for HookAction {
             abort_on_fail: false,
             needs_targets: false,
             priority: RPMTRIGGER_DEFAULT_PRIORITY,
+            script_order: 0,
         }
     }
 }
@@ -149,7 +151,7 @@ fn extract_hook_file_name(hook_path: &Path, pkgkey: Option<&str>) -> String {
 
 /// Parse a hook file from disk
 /// Reference: _alpm_hook_parse_cb in hook.c
-fn parse_hook_file(hook_path: &Path, pkgkey: Option<&str>) -> Result<Hook> {
+pub fn parse_hook_file(hook_path: &Path, pkgkey: Option<&str>) -> Result<Hook> {
     let content = fs::read_to_string(hook_path)
         .with_context(|| format!("Failed to read hook file: {}", hook_path.display()))?;
 
@@ -514,6 +516,18 @@ fn parse_action_line(line: &str, action: &mut HookAction, file: &Path, line_num:
                     )
                 })?;
                 action.priority = prio;
+            }
+            "ScriptOrder" => {
+                let order = value.parse::<u32>().map_err(|e| {
+                    color_eyre::eyre::eyre!(
+                        "hook {} line {}: invalid ScriptOrder {} ({})",
+                        file.display(),
+                        line_num,
+                        value,
+                        e
+                    )
+                })?;
+                action.script_order = order;
             }
             _ => {
                 return Err(color_eyre::eyre::eyre!(

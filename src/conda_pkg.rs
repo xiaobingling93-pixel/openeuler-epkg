@@ -582,44 +582,16 @@ pub fn create_virtual_package(
         pkgname: pkgname.to_string(),
         version: version.to_string(),
         arch: arch.clone(),
-        size: 0,
-        installed_size: 0,
-        build_time: None,
-        source: None,
-        location: String::new(),
-        ca_hash: None,
-        sha256sum: None,
-        sha1sum: None,
-        depends: Vec::new(),
-        requires_pre: Vec::new(),
-        requires: Vec::new(),
-        build_requires: Vec::new(),
-        check_requires: Vec::new(),
-        provides: Vec::new(),
-        recommends: Vec::new(),
-        suggests: Vec::new(),
-        conflicts: Vec::new(),
-        obsoletes: Vec::new(),
-        enhances: Vec::new(),
-        supplements: Vec::new(),
-        files: Vec::new(),
         summary: format!("Virtual package: {}", pkgname),
         description: if let Some(build) = build_string {
             Some(format!("System virtual package for {} (build: {})", pkgname, build))
         } else {
             Some(format!("System virtual package for {}", pkgname))
         },
-        homepage: String::new(),
-        section: None,
-        priority: None,
-        maintainer: String::new(),
-        tag: None,
-        origin_url: None,
-        multi_arch: None,
         format: PackageFormat::Conda,
         pkgkey,
         repodata_name: "virtual".to_string(),
-        package_baseurl: String::new(),
+        ..Default::default()
     }
 }
 

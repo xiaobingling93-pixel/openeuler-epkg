@@ -10,6 +10,7 @@ use crate::world::{remove_from_no_install, get_no_install_set};
 use crate::io::load_installed_packages;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
+use crate::repo::sync_channel_metadata;
 
 /// Package pairs where circular dependencies need to be broken.
 /// Each pair (pkg_a, pkg_b) means: remove pkg_a from pkg_b's reverse dependencies
@@ -388,6 +389,7 @@ pub fn resolve_and_install_packages(
     // Remove "no-install" key - it's not a package
     delta_world.remove("no-install");
 
+    sync_channel_metadata()?;
     load_installed_packages()?;
 
     // Resolve dependencies (pass user_request_world to extract correct candidate pkgkeys)

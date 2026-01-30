@@ -156,6 +156,17 @@ pub struct Package {
     #[serde(default)]
     pub maintainer: String,
     #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "buildHost")]
+    pub build_host: Option<String>,
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub relocations: Option<String>,
+    #[serde(default)]
     pub tag: Option<String>,
     #[serde(default)]
     #[serde(rename = "originUrl")]

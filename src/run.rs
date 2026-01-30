@@ -38,6 +38,7 @@ pub struct RunOptions {
     pub redirect_stdio: bool, // Redirect stdin/stdout/stderr to /dev/null for daemon processes
 }
 
+#[allow(dead_code)]
 pub fn privdrop_on_suid() {
     if is_suid() {
         setuid(Uid::from_raw(get_current_uid())).expect("Failed to drop privileges");
