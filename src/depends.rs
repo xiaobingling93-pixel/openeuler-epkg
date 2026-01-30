@@ -11,6 +11,12 @@ use crate::io::load_installed_packages;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
 
+/// Package pairs where circular dependencies need to be broken.
+/// Each pair (pkg_a, pkg_b) means: remove pkg_a from pkg_b's reverse dependencies
+/// i.e. pretend pkg_a NOT depend on pkg_b
+/// Problem: given ("glibc", "glibc-common"), glibc-common will become depth=0
+const CIRCULAR_DEPENDENCY_FILTER_PAIRS: &[(&str, &str)] = &[];
+
 /*
  * Debian Multi-Arch and Architecture Suffix Rules
  * ===============================================
@@ -807,37 +813,32 @@ fn find_leaf_nodes_by_rdepends(
         .collect()
 }
 
-/// Find leaf nodes by checking build reverse dependencies
-fn find_leaf_nodes_by_rbdepends(
-    remaining_rbdepends: &HashMap<String, BTreeSet<String>>,
-) -> Vec<String> {
-    remaining_rbdepends
-        .iter()
-        .filter(|(_, rbdepends)| rbdepends.is_empty())
-        .map(|(pkgkey, _)| pkgkey.clone())
-        .collect()
-}
-
-/// Find candidate node with least build reverse dependencies for breaking circular dependencies
-fn find_candidate_with_least_rbdepends(
-    remaining_rbdepends: &HashMap<String, BTreeSet<String>>,
-) -> Option<String> {
-    remaining_rbdepends
-        .iter()
-        .filter(|(_, rbdepends)| !rbdepends.is_empty())
-        .min_by_key(|(_, rbdepends)| rbdepends.len())
-        .map(|(pkgkey, _)| pkgkey.clone())
-}
-
-/// Find candidate node with least regular reverse dependencies for breaking circular dependencies
-fn find_candidate_with_least_rdepends(
+/// Find candidate node with least weighted reverse dependencies for breaking circular dependencies
+fn find_candidate_with_least_weighted_rdepends(
     remaining_rdepends: &HashMap<String, BTreeSet<String>>,
-) -> Option<String> {
+    request_world_pkgkeys: &std::collections::HashSet<String>,
+) -> Option<(String, usize)> {
     remaining_rdepends
         .iter()
         .filter(|(_, rdepends)| !rdepends.is_empty())
-        .min_by_key(|(_, rdepends)| rdepends.len())
-        .map(|(pkgkey, _)| pkgkey.clone())
+        .map(|(pkgkey, rdepends)| {
+            let mut weight = 0;
+            for rdepend in rdepends {
+                if rdepend.contains("lib") {
+                    weight += 10;
+                } else {
+                    weight += 1;
+                }
+            }
+            if pkgkey.contains("lib") {
+                weight = weight * 2;
+            }
+            if request_world_pkgkeys.contains(pkgkey) {
+                weight = weight / 2;
+            }
+            (pkgkey.clone(), weight)
+        })
+        .min_by_key(|(_, weight)| *weight)
 }
 
 /// Remove a node from the dependency graph and update reverse dependencies
@@ -846,16 +847,14 @@ fn remove_node_and_update_dependencies(
     pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
-    remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
     pkgkey_to_depth: &mut HashMap<String, u16>,
     current_depth: u16,
 ) {
     // Record depth before removal
     pkgkey_to_depth.insert(node.to_string(), current_depth);
 
-    // Remove node from tracking maps
+    // Remove node from tracking map
     remaining_rdepends.remove(node);
-    remaining_rbdepends.remove(node);
 
     // Update reverse regular dependencies
     if let Some(depends_list) = pkgkey_to_depends.get(node) {
@@ -869,8 +868,8 @@ fn remove_node_and_update_dependencies(
     // Update reverse build dependencies
     if let Some(bdepends_list) = pkgkey_to_bdepends.get(node) {
         for dep_pkgkey in bdepends_list {
-            if let Some(rbdepends) = remaining_rbdepends.get_mut(dep_pkgkey) {
-                rbdepends.remove(node);
+            if let Some(rdepends) = remaining_rdepends.get_mut(dep_pkgkey) {
+                rdepends.remove(node);
             }
         }
     }
@@ -883,7 +882,6 @@ fn process_leaf_nodes(
     pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_depth: &mut HashMap<String, u16>,
     remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
-    remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
     current_depth: u16,
 ) {
     // Remove leaf nodes and update reverse dependencies
@@ -893,7 +891,6 @@ fn process_leaf_nodes(
             pkgkey_to_depends,
             pkgkey_to_bdepends,
             remaining_rdepends,
-            remaining_rbdepends,
             pkgkey_to_depth,
             current_depth,
         );
@@ -906,71 +903,15 @@ fn break_circular_dependency(
     pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_depth: &mut HashMap<String, u16>,
     remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
-    remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
     request_world_pkgkeys: &std::collections::HashSet<String>,
     current_depth: u16,
 ) -> bool {
-    // Strategy 0: Prefer packages from request_world_pkgkeys (user-requested packages)
-    // Find the package from request_world_pkgkeys with the least reverse dependencies
-    let mut world_candidates: Vec<(String, usize)> = remaining_rdepends
-        .iter()
-        .filter(|(pkgkey, _)| request_world_pkgkeys.contains(*pkgkey))
-        .map(|(pkgkey, rdepends)| (pkgkey.clone(), rdepends.len()))
-        .collect();
-
-    if !world_candidates.is_empty() {
-        // Sort by number of reverse dependencies (ascending) to pick the least constrained world package
-        world_candidates.sort_by_key(|(_, count)| *count);
-        let candidate = &world_candidates[0].0;
-        let rdepends_count = remaining_rdepends.get(candidate).map(|v| v.len()).unwrap_or(0);
+    // Strategy: Remove node with least weighted reverse dependencies
+    if let Some((candidate, weight)) = find_candidate_with_least_weighted_rdepends(remaining_rdepends, request_world_pkgkeys) {
         log::debug!(
-            "Breaking circular dependency by removing world package {} with least rdepends ({}) at depth {}",
+            "Breaking circular dependency by removing node {} with weighted rdepends ({}) at depth {}",
             candidate,
-            rdepends_count,
-            current_depth
-        );
-        remove_node_and_update_dependencies(
-            candidate,
-            pkgkey_to_depends,
-            pkgkey_to_bdepends,
-            remaining_rdepends,
-            remaining_rbdepends,
-            pkgkey_to_depth,
-            current_depth,
-        );
-        return true;
-    }
-
-    // Strategy 1: Try to find leaf nodes by remaining_rbdepends
-    let leaf_nodes_by_rbdepends = find_leaf_nodes_by_rbdepends(remaining_rbdepends);
-    if !leaf_nodes_by_rbdepends.is_empty() {
-        log::debug!(
-            "Found {} leaf nodes by rbdepends at depth {}",
-            leaf_nodes_by_rbdepends.len(),
-            current_depth
-        );
-        process_leaf_nodes(
-            &leaf_nodes_by_rbdepends,
-            pkgkey_to_depends,
-            pkgkey_to_bdepends,
-            pkgkey_to_depth,
-            remaining_rdepends,
-            remaining_rbdepends,
-            current_depth,
-        );
-        return true;
-    }
-
-    // Strategy 2: Remove node with least rbdepends (if has non-empty rbdepends)
-    if let Some(candidate) = find_candidate_with_least_rbdepends(remaining_rbdepends) {
-        let rbdepends_count = remaining_rbdepends
-            .get(&candidate)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        log::debug!(
-            "Breaking circular dependency by removing node {} with least rbdepends ({}) at depth {}",
-            candidate,
-            rbdepends_count,
+            weight,
             current_depth
         );
         remove_node_and_update_dependencies(
@@ -978,31 +919,6 @@ fn break_circular_dependency(
             pkgkey_to_depends,
             pkgkey_to_bdepends,
             remaining_rdepends,
-            remaining_rbdepends,
-            pkgkey_to_depth,
-            current_depth,
-        );
-        return true;
-    }
-
-    // Strategy 3: Remove node with least rdepends
-    if let Some(candidate) = find_candidate_with_least_rdepends(remaining_rdepends) {
-        let rdepends_count = remaining_rdepends
-            .get(&candidate)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        log::debug!(
-            "Breaking circular dependency by removing node {} with least rdepends ({}) at depth {}",
-            candidate,
-            rdepends_count,
-            current_depth
-        );
-        remove_node_and_update_dependencies(
-            &candidate,
-            pkgkey_to_depends,
-            pkgkey_to_bdepends,
-            remaining_rdepends,
-            remaining_rbdepends,
             pkgkey_to_depth,
             current_depth,
         );
@@ -1020,14 +936,11 @@ fn break_circular_dependency(
 ///
 /// The algorithm handles both regular dependencies and build dependencies (for Pacman format):
 /// - Regular dependencies: packages that this package depends on at runtime
-/// - Build dependencies: packages needed only during build time (Pacman only)
+/// - Build dependencies: packages needed only during build time (Pacman only, merged with regular dependencies)
 ///
 /// Circular dependency breaking strategy (when no leaf nodes are found):
-/// 0. Prefer packages from request_world_pkgkeys (user-requested packages) with least reverse dependencies
-/// 1. Try to find leaf nodes by checking remaining_rbdepends (build reverse dependencies)
-/// 2. If still no leaf nodes, remove the node with the least rbdepends (build reverse dependencies)
-/// 3. If still no progress, remove the node with the least rdepends (regular reverse dependencies)
-/// 4. Last resort: assign all remaining packages the current depth
+/// Remove node with least weighted reverse dependencies (considering user-requested packages)
+/// Last resort: assign all remaining packages the current depth
 ///
 /// This approach leads to better depth assignments and avoids deadlocks while still maintaining
 /// a reasonable dependency ordering. User-requested packages are prioritized when breaking cycles.
@@ -1037,75 +950,76 @@ fn break_circular_dependency(
 /// * `pkgkey_to_depends` - Map of package keys to their regular dependencies
 /// * `pkgkey_to_rdepends` - Map of package keys to packages that depend on them (reverse regular deps)
 /// * `pkgkey_to_bdepends` - Map of package keys to their build dependencies (Pacman only)
-/// * `pkgkey_to_rbdepends` - Map of package keys to packages that have them as build deps (reverse build deps)
+/// * `pkgkey_to_rbdepends` - Map of package keys to packages that have them as build deps (reverse build deps, merged with regular dependencies)
 /// * `request_world_pkgkeys` - Set of package keys that the user explicitly requested
 ///
 /// # Returns
 ///
 /// A HashMap mapping package keys to their calculated dependency depths
-pub fn calculate_pkgkey_to_depth(
-    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+
+// Helper function to update remaining_rdepends with circular dependency filtering
+fn update_remaining_rdepends_with_filter(
+    remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
+    pkgkey: &str,
+    rdeps: &BTreeSet<String>,
+) {
+    use crate::package::pkgkey2pkgname;
+
+    let entry = remaining_rdepends.entry(pkgkey.to_string()).or_insert_with(BTreeSet::new);
+
+    for rdep in rdeps {
+        let mut should_filter = false;
+        // Convert pkgkey and rdep to pkgname for filtering
+        if let Ok(pkgname) = pkgkey2pkgname(pkgkey) {
+            if let Ok(rdep_pkgname) = pkgkey2pkgname(rdep) {
+                for (pkg_a_name, pkg_b_name) in CIRCULAR_DEPENDENCY_FILTER_PAIRS {
+                    if rdep_pkgname == *pkg_a_name && pkgname == *pkg_b_name {
+                        should_filter = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !should_filter {
+            entry.insert(rdep.clone());
+        }
+    }
+}
+
+
+fn combine_and_filter_reverse_dependencies(
     pkgkey_to_rdepends: &HashMap<String, BTreeSet<String>>,
-    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     pkgkey_to_rbdepends: &HashMap<String, BTreeSet<String>>,
-    request_world_pkgkeys: &std::collections::HashSet<String>,
-) -> Result<HashMap<String, u16>> {
-    log::debug!("[calculate_pkgkey_to_depth] Input params:");
-    log::debug!("  pkgkey_to_depends ({} entries):", pkgkey_to_depends.len());
-    for (pkgkey, depends) in pkgkey_to_depends.iter().take(20) {
-        log::debug!("    {} -> {:?}", pkgkey, depends);
-    }
-    if pkgkey_to_depends.len() > 20 {
-        log::debug!("    ... (and {} more)", pkgkey_to_depends.len() - 20);
-    }
-    log::debug!("  pkgkey_to_rdepends ({} entries):", pkgkey_to_rdepends.len());
-    for (pkgkey, rdepends) in pkgkey_to_rdepends.iter().take(20) {
-        log::debug!("    {} -> {:?}", pkgkey, rdepends);
-    }
-    if pkgkey_to_rdepends.len() > 20 {
-        log::debug!("    ... (and {} more)", pkgkey_to_rdepends.len() - 20);
-    }
-    log::debug!("  pkgkey_to_bdepends ({} entries):", pkgkey_to_bdepends.len());
-    for (pkgkey, bdepends) in pkgkey_to_bdepends.iter().take(20) {
-        log::debug!("    {} -> {:?}", pkgkey, bdepends);
-    }
-    if pkgkey_to_bdepends.len() > 20 {
-        log::debug!("    ... (and {} more)", pkgkey_to_bdepends.len() - 20);
-    }
-    log::debug!("  pkgkey_to_rbdepends ({} entries):", pkgkey_to_rbdepends.len());
-    for (pkgkey, rbdepends) in pkgkey_to_rbdepends.iter().take(20) {
-        log::debug!("    {} -> {:?}", pkgkey, rbdepends);
-    }
-    if pkgkey_to_rbdepends.len() > 20 {
-        log::debug!("    ... (and {} more)", pkgkey_to_rbdepends.len() - 20);
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+) -> HashMap<String, BTreeSet<String>> {
+    let mut remaining_rdepends: HashMap<String, BTreeSet<String>> = HashMap::new();
+
+    // First, add all regular reverse dependencies
+    for (pkgkey, rdepends) in pkgkey_to_rdepends {
+        update_remaining_rdepends_with_filter(&mut remaining_rdepends, pkgkey, rdepends);
     }
 
-    let mut pkgkey_to_depth: HashMap<String, u16> = HashMap::new();
+    // Then add build reverse dependencies (union with existing)
+    for (pkgkey, rbdepends) in pkgkey_to_rbdepends {
+        update_remaining_rdepends_with_filter(&mut remaining_rdepends, pkgkey, rbdepends);
+    }
 
-    // Create a mutable copy of pkgkey_to_rdepends for tracking remaining reverse dependencies
-    let mut remaining_rdepends: HashMap<String, BTreeSet<String>> = pkgkey_to_rdepends
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    // Create a mutable copy of pkgkey_to_rbdepends for tracking remaining reverse build dependencies
-    let mut remaining_rbdepends: HashMap<String, BTreeSet<String>> = pkgkey_to_rbdepends
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    // Initialize remaining_rdepends for all packages in pkgkey_to_depends
-    // Only initialize remaining_rbdepends for packages that actually have build dependencies
+    // Ensure all packages in pkgkey_to_depends have an entry (even if empty)
+    let empty_deps = BTreeSet::new();
     for pkgkey in pkgkey_to_depends.keys() {
-        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(BTreeSet::new);
+        update_remaining_rdepends_with_filter(&mut remaining_rdepends, pkgkey, &empty_deps);
     }
 
-    // Ensure all packages in pkgkey_to_rbdepends are also in remaining_rdepends
-    // (in case a package is only depended on for building, not for runtime)
-    for pkgkey in pkgkey_to_rbdepends.keys() {
-        remaining_rdepends.entry(pkgkey.clone()).or_insert_with(BTreeSet::new);
-    }
+    remaining_rdepends
+}
 
+fn calculate_depths_from_graph(
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
+    mut remaining_rdepends: HashMap<String, BTreeSet<String>>,
+    request_world_pkgkeys: &std::collections::HashSet<String>,
+) -> HashMap<String, u16> {
+    let mut pkgkey_to_depth: HashMap<String, u16> = HashMap::new();
     let mut current_depth = 0;
 
     // Debug: Show initial state of remaining_rdepends
@@ -1134,42 +1048,39 @@ pub fn calculate_pkgkey_to_depth(
     log::debug!("[INITIAL] Total non-leaf nodes: {}", non_leaf_count);
 
     loop {
+        if remaining_rdepends.is_empty() {
+            break;
+        }
         // Find packages with empty remaining_rdepends (leaf nodes at current depth)
         let leaf_nodes = find_leaf_nodes_by_rdepends(&remaining_rdepends);
         log::debug!("[LOOP depth={}] find_leaf_nodes_by_rdepends returned {} nodes",
             current_depth, leaf_nodes.len());
 
         if leaf_nodes.is_empty() {
-            // No more leaf nodes - check if there are any remaining packages
-            if remaining_rdepends.is_empty() {
-                break;
-            } else {
-                // Circular dependency detected - try to break it using helper function
-                if break_circular_dependency(
-                    pkgkey_to_depends,
-                    pkgkey_to_bdepends,
-                    &mut pkgkey_to_depth,
-                    &mut remaining_rdepends,
-                    &mut remaining_rbdepends,
-                    request_world_pkgkeys,
-                    current_depth,
-                ) {
-                    // Successfully broke the cycle, continue to next iteration
-                    current_depth += 1;
-                    continue;
-                }
-
-                // Last resort: assign remaining packages max depth
-                log::warn!(
-                    "Found {} packages with unresolved dependencies, assigning depth {}",
-                    remaining_rdepends.len(),
-                    current_depth
-                );
-                for pkgkey in remaining_rdepends.keys() {
-                    pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
-                }
-                break;
+            // Circular dependency detected - try to break it using helper function
+            if break_circular_dependency(
+                pkgkey_to_depends,
+                pkgkey_to_bdepends,
+                &mut pkgkey_to_depth,
+                &mut remaining_rdepends,
+                request_world_pkgkeys,
+                current_depth,
+            ) {
+                // Successfully broke the cycle, continue to next iteration
+                current_depth += 1;
+                continue;
             }
+
+            // Last resort: assign remaining packages max depth
+            log::warn!(
+                "Found {} packages with unresolved dependencies, assigning depth {}",
+                remaining_rdepends.len(),
+                current_depth
+            );
+            for pkgkey in remaining_rdepends.keys() {
+                pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
+            }
+            break;
         }
 
         log::debug!(
@@ -1185,7 +1096,6 @@ pub fn calculate_pkgkey_to_depth(
             pkgkey_to_bdepends,
             &mut pkgkey_to_depth,
             &mut remaining_rdepends,
-            &mut remaining_rbdepends,
             current_depth,
         );
 
@@ -1193,9 +1103,28 @@ pub fn calculate_pkgkey_to_depth(
     }
 
     log::debug!("Calculated depths for {} packages", pkgkey_to_depth.len());
-    for (pkgkey, depth) in pkgkey_to_depth.iter().take(20) {
-        log::debug!("    {} -> {:?}", pkgkey, depth);
-    }
+    pkgkey_to_depth
+}
+
+pub fn calculate_pkgkey_to_depth(
+    pkgkey_to_depends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
+    pkgkey_to_rbdepends: &HashMap<String, BTreeSet<String>>,
+    request_world_pkgkeys: &std::collections::HashSet<String>,
+) -> Result<HashMap<String, u16>> {
+    let remaining_rdepends = combine_and_filter_reverse_dependencies(
+        pkgkey_to_rdepends,
+        pkgkey_to_rbdepends,
+        pkgkey_to_depends,
+    );
+
+    let pkgkey_to_depth = calculate_depths_from_graph(
+        pkgkey_to_depends,
+        pkgkey_to_bdepends,
+        remaining_rdepends,
+        request_world_pkgkeys,
+    );
     Ok(pkgkey_to_depth)
 }
 
