@@ -847,7 +847,12 @@ fn remove_node_and_update_dependencies(
     pkgkey_to_bdepends: &HashMap<String, BTreeSet<String>>,
     remaining_rdepends: &mut HashMap<String, BTreeSet<String>>,
     remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
+    pkgkey_to_depth: &mut HashMap<String, u16>,
+    current_depth: u16,
 ) {
+    // Record depth before removal
+    pkgkey_to_depth.insert(node.to_string(), current_depth);
+
     // Remove node from tracking maps
     remaining_rdepends.remove(node);
     remaining_rbdepends.remove(node);
@@ -881,11 +886,6 @@ fn process_leaf_nodes(
     remaining_rbdepends: &mut HashMap<String, BTreeSet<String>>,
     current_depth: u16,
 ) {
-    // Set depth for all leaf nodes
-    for pkgkey in leaf_nodes {
-        pkgkey_to_depth.insert(pkgkey.clone(), current_depth);
-    }
-
     // Remove leaf nodes and update reverse dependencies
     for leaf_pkgkey in leaf_nodes {
         remove_node_and_update_dependencies(
@@ -894,6 +894,8 @@ fn process_leaf_nodes(
             pkgkey_to_bdepends,
             remaining_rdepends,
             remaining_rbdepends,
+            pkgkey_to_depth,
+            current_depth,
         );
     }
 }
@@ -927,13 +929,14 @@ fn break_circular_dependency(
             rdepends_count,
             current_depth
         );
-        pkgkey_to_depth.insert(candidate.clone(), current_depth);
         remove_node_and_update_dependencies(
             candidate,
             pkgkey_to_depends,
             pkgkey_to_bdepends,
             remaining_rdepends,
             remaining_rbdepends,
+            pkgkey_to_depth,
+            current_depth,
         );
         return true;
     }
@@ -970,13 +973,14 @@ fn break_circular_dependency(
             rbdepends_count,
             current_depth
         );
-        pkgkey_to_depth.insert(candidate.clone(), current_depth);
         remove_node_and_update_dependencies(
             &candidate,
             pkgkey_to_depends,
             pkgkey_to_bdepends,
             remaining_rdepends,
             remaining_rbdepends,
+            pkgkey_to_depth,
+            current_depth,
         );
         return true;
     }
@@ -993,13 +997,14 @@ fn break_circular_dependency(
             rdepends_count,
             current_depth
         );
-        pkgkey_to_depth.insert(candidate.clone(), current_depth);
         remove_node_and_update_dependencies(
             &candidate,
             pkgkey_to_depends,
             pkgkey_to_bdepends,
             remaining_rdepends,
             remaining_rbdepends,
+            pkgkey_to_depth,
+            current_depth,
         );
         return true;
     }
