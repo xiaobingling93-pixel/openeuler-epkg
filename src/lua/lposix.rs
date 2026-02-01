@@ -775,8 +775,10 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
         let path_cstr = CString::new(path.clone())
             .map_err(|_| mlua::Error::RuntimeError("exec: path contains null byte".to_string()))?;
 
-        let mut argv = Vec::new();
-        argv.push(path_cstr.as_ptr());
+        // Keep all CStrings alive until execvp; otherwise argv pointers become dangling
+        // when each arg_cstr is dropped at end of loop (glibc post_install iconvconfig
+        // then saw garbage paths in argv).
+        let mut cstrings: Vec<CString> = vec![path_cstr];
 
         for arg in args {
             let arg_str = match arg {
@@ -785,12 +787,15 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
             };
             let arg_cstr = CString::new(arg_str)
                 .map_err(|_| mlua::Error::RuntimeError("exec: argument contains null byte".to_string()))?;
-            argv.push(arg_cstr.as_ptr());
+            cstrings.push(arg_cstr);
         }
-        argv.push(std::ptr::null());
+
+        let argv: Vec<*const i8> = cstrings.iter().map(|c| c.as_ptr() as *const i8).collect();
+        let mut argv_with_null = argv;
+        argv_with_null.push(std::ptr::null());
 
         unsafe {
-            libc::execvp(path_cstr.as_ptr(), argv.as_ptr());
+            libc::execvp(cstrings[0].as_ptr(), argv_with_null.as_ptr());
             // execvp only returns on error - return pusherror format (matching C++ line 351)
             return pusherror(lua, Some(&path));
         }
