@@ -159,6 +159,11 @@ fn setup_resolvo_provider_and_requirements(
         crate::package_cache::add_conda_virtual_packages_to_cache()?;
     }
 
+    // Add Debian virtual packages to cache
+    if package_format == PackageFormat::Deb {
+        crate::package_cache::add_deb_virtual_packages_to_cache()?;
+    }
+
     // Create provider and convert delta_world to requirements
     let mut provider = create_resolvo_provider(package_format, delta_world);
     let requirements = convert_initial_packages_to_requirements(delta_world, &mut provider)?;

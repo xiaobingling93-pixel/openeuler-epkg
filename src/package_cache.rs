@@ -34,6 +34,35 @@ impl PackageCache {
     }
 }
 
+/// Create a virtual package with given parameters
+pub fn create_virtual_package(
+    pkgname: &str,
+    version: &str,
+    pkgkey_version: Option<&str>,
+    format: PackageFormat,
+) -> Package {
+    use crate::package;
+
+    let arch = std::env::consts::ARCH.to_string();
+    let pkgkey_version = pkgkey_version.unwrap_or(version);
+    let pkgkey = package::format_pkgkey(pkgname, pkgkey_version, &arch);
+
+    let summary = format!("Virtual package: {}", pkgname);
+    let description = Some(format!("System virtual package for {}", pkgname));
+
+    Package {
+        pkgname: pkgname.to_string(),
+        version: version.to_string(),
+        arch,
+        summary,
+        description,
+        format,
+        pkgkey,
+        repodata_name: "virtual".to_string(),
+        ..Default::default()
+    }
+}
+
 /// Helper to add a package to cache and update indexes
 pub fn add_package_to_cache(package: Arc<Package>, format: PackageFormat) {
     let pkgkey = package.pkgkey.clone();
@@ -89,6 +118,27 @@ pub fn add_conda_virtual_packages_to_cache() -> Result<()> {
             Err(e)
         }
     }
+}
+
+
+/// Add Debian virtual packages to cache
+pub fn add_deb_virtual_packages_to_cache() -> Result<()> {
+    // Add virtual packages to satisfy systemd | systemd-standalone-sysusers | systemd-sysusers
+    let virtual_packages = [
+        "systemd-sysusers",
+        "systemd-standalone-sysusers",
+    ];
+    for pkgname in virtual_packages {
+        let virtual_pkg = create_virtual_package(
+            pkgname,
+            "1",
+            None,
+            PackageFormat::Deb,
+        );
+        log::debug!("Adding Debian virtual package to cache: {}={}", virtual_pkg.pkgname, virtual_pkg.version);
+        add_package_to_cache(Arc::new(virtual_pkg), PackageFormat::Deb);
+    }
+    Ok(())
 }
 
 pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {

@@ -562,10 +562,7 @@ pub fn create_virtual_package(
     version: &str,
     build_string: Option<&str>,
 ) -> crate::models::Package {
-    use crate::models::{Package, PackageFormat};
-    use crate::package;
-
-    let arch = std::env::consts::ARCH.to_string();
+    use crate::models::PackageFormat;
 
     // For __archspec, encode build_string in pkgkey if provided
     // pkgkey format: pkgname__version__arch
@@ -576,23 +573,13 @@ pub fn create_virtual_package(
     } else {
         version.to_string()
     };
-    let pkgkey = package::format_pkgkey(pkgname, &version_for_pkgkey, &arch);
 
-    Package {
-        pkgname: pkgname.to_string(),
-        version: version.to_string(),
-        arch: arch.clone(),
-        summary: format!("Virtual package: {}", pkgname),
-        description: if let Some(build) = build_string {
-            Some(format!("System virtual package for {} (build: {})", pkgname, build))
-        } else {
-            Some(format!("System virtual package for {}", pkgname))
-        },
-        format: PackageFormat::Conda,
-        pkgkey,
-        repodata_name: "virtual".to_string(),
-        ..Default::default()
-    }
+    crate::package_cache::create_virtual_package(
+        pkgname,
+        version,
+        Some(&version_for_pkgkey),
+        PackageFormat::Conda,
+    )
 }
 
 /// Detect CPU microarchitecture for __archspec
