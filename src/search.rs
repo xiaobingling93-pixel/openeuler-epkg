@@ -17,6 +17,35 @@ use regex::bytes::RegexBuilder;
 
 use crate::models::*;
 
+// Helper functions for case-insensitive pattern matching
+fn find_all_matches(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Vec<usize> {
+    if ignore_case {
+        let lower_haystack = haystack.to_ascii_lowercase();
+        memchr::memmem::Finder::new(pattern).find_iter(&lower_haystack).collect()
+    } else {
+        memchr::memmem::Finder::new(pattern).find_iter(haystack).collect()
+    }
+}
+
+fn find_first_match(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Option<usize> {
+    if ignore_case {
+        let lower_haystack = haystack.to_ascii_lowercase();
+        memchr::memmem::Finder::new(pattern).find(&lower_haystack)
+    } else {
+        memchr::memmem::Finder::new(pattern).find(haystack)
+    }
+}
+
+#[allow(dead_code)]
+fn find_last_match(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Option<usize> {
+    if ignore_case {
+        let lower_haystack = haystack.to_ascii_lowercase();
+        memchr::memmem::rfind(&lower_haystack, pattern)
+    } else {
+        memchr::memmem::rfind(haystack, pattern)
+    }
+}
+
 // Search options for RPM filelists
 #[derive(Debug, Default, Clone)]
 pub struct SearchOptions {
@@ -36,8 +65,6 @@ pub struct SearchOptions {
 static PKGNAME_PATTERN: &[u8] = b"pkgname: ";
 static SUMMARY_PATTERN: &[u8] = b"summary: ";
 
-// TODO: --ignore-case is not yet supported since we use memchr::*
-// To support, need wrap all those calls and do extra memory copy&to_lowercase
 fn setup_patterns(options: &mut SearchOptions) -> Result<()> {
     let mut literal_pattern = options.origin_pattern.clone();
 
@@ -529,17 +556,14 @@ fn process_simple_filelists(
     options: &SearchOptions,
     _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
 ) -> Result<()> {
-    // Create a memmem finder for fast substring searching
-    let finder = memchr::memmem::Finder::new(&options.u8_literal);
-
     // Process chunks as they arrive
     while let Ok(arc_chunk) = rx.recv() {
         // Lock the buffer to access its contents
         let mut chunk_guard = arc_chunk.lock().unwrap();
         let chunk_data = chunk_guard.as_slice();
 
-        // Find all matches in the chunk
-        for match_pos in finder.find_iter(chunk_data) {
+        // Find all matches in the chunk (case-insensitive if needed)
+        for match_pos in find_all_matches(chunk_data, &options.u8_literal, options.ignore_case) {
             // For each match, find the line boundaries using find_line_boundaries
             let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
 
@@ -667,12 +691,9 @@ fn check_match_path(path: &[u8], options: &SearchOptions) -> bool {
         } else {
             match_pattern(path, options)
         }
-    } else if options.paths {
+    } else {
         // For --paths, check if the path matches
         match_pattern(path, options)
-    } else {
-        // Default case, check if the path contains the pattern
-        memchr::memmem::Finder::new(&options.u8_literal).find(path).is_some()
     }
 }
 
@@ -694,13 +715,7 @@ fn match_pattern(content: &[u8], options: &SearchOptions) -> bool {
     }
 
     // Fall back to simple substring search
-    if !options.ignore_case {
-        memchr::memmem::Finder::new(&options.u8_literal).find(content).is_some()
-    } else {
-        // Case-insensitive search
-        let content_lower = content.to_ascii_lowercase();
-        memchr::memmem::Finder::new(&options.u8_literal).find(&content_lower).is_some()
-    }
+    find_first_match(content, &options.u8_literal, options.ignore_case).is_some()
 }
 
 // Process RPM filelists using memmem pattern matching with chunked data
@@ -711,7 +726,6 @@ fn process_rpm_filelists(
 ) -> Result<()> {
     let mut current_pkgname = Vec::<u8>::new();
 
-    let finder = memchr::memmem::Finder::new(&options.u8_literal);
 
     // Use the buffer pool's consumer buffer instead of directly receiving from channel
     while let Ok(arc_chunk) = rx.recv() {
@@ -721,7 +735,7 @@ fn process_rpm_filelists(
         // Process the chunk directly - we use a scoped block to ensure the lock is released quickly
         {
             let chunk_data = chunk_guard.as_slice();
-            process_rpm_filelists_with_memmem(&mut current_pkgname, chunk_data, &finder, options)?;
+            process_rpm_filelists_with_memmem(&mut current_pkgname, chunk_data, options)?;
         }
 
         chunk_guard.clear();
@@ -743,8 +757,8 @@ fn process_rpm_filelists(
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], finder: &memchr::memmem::Finder, options: &SearchOptions) -> Result<()> {
-    for match_pos in finder.find_iter(chunk_data) {
+fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], options: &SearchOptions) -> Result<()> {
+    for match_pos in find_all_matches(chunk_data, &options.u8_literal, options.ignore_case) {
         // For each match, find the line boundaries using find_line_boundaries
         let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
 
@@ -974,6 +988,7 @@ fn is_line_start(data: &[u8], pos: usize, _pattern: &[u8]) -> bool {
 
 // Find and extract a pattern value from a line
 fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8], search_backwards: bool) -> Option<(Vec<u8>, usize)> {
+    // Metadata patterns (pkgname:, summary:) are fixed _lowercase_ strings in package files
     let pos = if search_backwards {
         memchr::memmem::rfind(&data[..search_end], pattern)
     } else {
@@ -1042,8 +1057,8 @@ pub fn search_packages(packages_path: &Path, options: &SearchOptions) -> Result<
     // Process the entire mmap
     while pos < mmap.len() {
         // First search for our pattern
-        if let Some(pattern_pos) = memchr::memmem::find(&mmap[pos..], &options.u8_literal) {
-            let pattern_pos = pos + pattern_pos;
+        if let Some(relative_pos) = find_first_match(&mmap[pos..], &options.u8_literal, options.ignore_case) {
+            let pattern_pos = pos + relative_pos;
 
             // Find the line containing this pattern
             let (line_start, line_end) = find_line_boundaries(&mmap, pattern_pos, pattern_pos + 1);
