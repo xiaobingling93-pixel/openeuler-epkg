@@ -508,7 +508,7 @@ fn get_field_order() -> &'static [&'static str] {
     &[
         "pkgname", "source", "version", "release", "format", "repo",
         "summary", "description", "homepage", "license", "arch", "maintainer",
-        "buildRequires", "checkRequires", "requiresPre", "requires", "provides", "conflicts",
+        "buildRequires", "checkRequires", "requiresPre", "requires", "provides", "conflicts", "obsoletes",
         "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "originUrl",
         "recipeMaintainers", "subdir", "constrains", "requirements", "commit", "caHash", "caHashVersion",
         "size", "installedSize", "section", "priority", "provider_priority", "replaces_priority", "buildTime", "buildHost", "group", "cookie", "platform",
@@ -522,7 +522,7 @@ fn get_field_order() -> &'static [&'static str] {
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
         "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
         "xdata", "pkgbase", "backup",
-        "pkgkey", "status",
+        "pkgkey", "status", "storePath", "dependDepth", "installTime",
     ]
 }
 
