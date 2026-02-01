@@ -26,6 +26,28 @@ detect_os() {
     fi
 }
 
+has_cmd()
+{
+    command -v "$1" >/dev/null
+}
+
+# Detect package manager
+detect_package_manager() {
+    # Detect available package manager
+    if   has_cmd apt;       then PKG_MANAGER="apt"
+    elif has_cmd dnf;       then PKG_MANAGER="dnf"
+    elif has_cmd yum;       then PKG_MANAGER="yum"
+    elif has_cmd zypper;    then PKG_MANAGER="zypper"
+    elif has_cmd pacman;    then PKG_MANAGER="pacman"
+    elif has_cmd apk;       then PKG_MANAGER="apk"
+    else
+        PKG_MANAGER="unknown"
+        echo "Warning: Could not detect package manager"
+        exit 1
+    fi
+    echo "Detected package manager: $PKG_MANAGER"
+}
+
 # Clone or update a git repository
 clone_or_update_repo() {
     local repo_url="$1"
@@ -148,75 +170,137 @@ build_lua_lib() {
     cp src/lua.h src/lualib.h src/lauxlib.h src/lua.hpp src/luaconf.h "$lua_lib_dir/"
 }
 
-# Unified dependency installer
-install_depends() {
-    local mode="${1:-dev}"
-    detect_os
-    echo "Detected OS: $OS_ID $OS_VERSION"
+# Helper functions for dependency installation
 
-    local current_arch=$(detect_arch)
-    echo "Detected architecture: $current_arch"
+# Get package manager configuration
+get_package_manager_config() {
+    local mode="$1"
+    packages=""
+    update_cmd=""
+    install_cmd=""
 
-    echo "Installing dependencies ($mode mode)..."
-    if [[ "$OS_ID" =~ ^(debian|ubuntu)$ ]]; then
-        sudo apt-get update
-        local packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
-        if [[ "$mode" == "crossdev" ]]; then
-            packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
-        fi
-        sudo apt-get install -y $packages
-    elif [[ "$OS_ID" =~ ^(openeuler|openEuler)$ ]]; then
-        sudo dnf update -y
-        local packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel wget"
-        if [[ "$mode" == "crossdev" ]]; then
-            packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
-        fi
-        sudo dnf install -y $packages
-    else
-        echo "Unsupported OS: $OS_ID"
-        exit 1
+    case "$PKG_MANAGER" in
+        apt)
+            update_cmd="apt-get update"
+            install_cmd="apt-get install -y"
+            packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
+            if [[ "$mode" == "crossdev" ]]; then
+                packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
+            fi
+            ;;
+        dnf|yum)
+            update_cmd="$PKG_MANAGER update -y"
+            install_cmd="$PKG_MANAGER install -y"
+            # For dnf/yum, install cargo instead of rustup (rustup can be installed via curl if needed)
+            packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel wget"
+            # Crossdev packages may not be available on all distros
+            # no support "$mode" == "crossdev"
+            ;;
+        zypper)
+            update_cmd="zypper refresh"
+            install_cmd="zypper install -y"
+            packages="rustup gcc openssl-devel musl-gcc lua-devel"
+            # Crossdev packages may not be available
+            ;;
+        pacman)
+            update_cmd="pacman -Sy"
+            install_cmd="pacman -S --noconfirm"
+            packages="rustup base-devel openssl musl lua"
+            # Crossdev packages: aarch64-linux-gnu-gcc, riscv64-linux-gnu-gcc, loongarch64-linux-gnu-gcc (from AUR)
+            ;;
+        apk)
+            update_cmd="apk update"
+            install_cmd="apk add"
+            packages="rustup build-base openssl-dev musl-dev lua-dev"
+            # Crossdev packages: cross-compile tools may be in community repos
+            ;;
+        *)
+            echo "Unsupported package manager: $PKG_MANAGER"
+            exit 1
+            ;;
+    esac
+}
+
+# Install packages using detected package manager
+install_packages() {
+    # Run update command
+    if [[ -n "$update_cmd" ]]; then
+        echo "Updating package lists..."
+        sudo $update_cmd || echo "Warning: Package update failed, continuing..."
     fi
 
+    # Install packages
+    if [[ -n "$packages" ]]; then
+        echo "Installing packages: $packages"
+        sudo $install_cmd $packages || {
+            echo "Error: Package installation failed"
+            exit 1
+        }
+    fi
+}
+
+# Install Rust toolchain (common across distros)
+install_rust_toolchain() {
+    local mode="$1"
+    local current_arch="$2"
+
     echo "Installing Rust toolchain..."
-    if [[ "$OS_ID" =~ ^(debian|ubuntu)$ ]]; then
+
+    # For all other distros, try to use rustup if available
+    if has_cmd rustup; then
+        echo "Using rustup installation"
         rustup default stable
         if [[ "$mode" == "dev" ]]; then
-            # Install only the target for current architecture
-            case "$current_arch" in
-                x86_64)
-                    rustup target add "$RUST_TARGET_X86_64"
-                    ;;
-                aarch64)
-                    rustup target add "$RUST_TARGET_AARCH64"
-                    ;;
-                riscv64)
-                    rustup target add "$RUST_TARGET_RISCV64"
-                    ;;
-                loongarch64)
-                    rustup target add "$RUST_TARGET_LOONGARCH64"
-                    ;;
-            esac
+            local rust_target=$(get_rust_target "$current_arch")
+            rustup target add "$rust_target"
         else
-            # Install all targets for crossdev
             rustup target add "$RUST_TARGET_X86_64"
             rustup target add "$RUST_TARGET_AARCH64"
             rustup target add "$RUST_TARGET_RISCV64"
             rustup target add "$RUST_TARGET_LOONGARCH64"
         fi
-    elif [[ "$OS_ID" =~ ^(openeuler|openEuler)$ ]]; then
-        # openEuler uses cargo from dnf, rustup not needed
-        echo "Using system cargo from dnf"
+    else
+        echo "rustup not found, using system cargo if available"
+        if ! has_cmd cargo; then
+            echo "Warning: Neither rustup nor cargo found. Rust toolchain may be missing."
+        fi
     fi
-
-    # Clone or update repositories
+}
+# Clone required repositories
+install_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/openeuler/elf-loader"
-
-    cd elf-loader/src && make install-depends
-    echo "Installation complete!"
+    cd elf-loader/src && make $mode-depends
 }
 
+# Unified dependency installer
+install_depends() {
+    local mode="${1:-dev}"
+    detect_os
+    detect_package_manager
+    echo "Detected OS: $OS_ID $OS_VERSION"
+    echo "Detected package manager: $PKG_MANAGER"
+
+    local current_arch=$(detect_arch)
+    echo "Detected architecture: $current_arch"
+
+    echo "Installing dependencies ($mode mode)..."
+
+    # Get package manager configuration
+    get_package_manager_config "$mode"
+
+    # Install packages
+    install_packages
+
+    # Install Rust toolchain
+    install_rust_toolchain "$mode" "$current_arch"
+
+    # Clone repositories
+    install_repos
+
+    echo "Installation complete!"
+}
 # Install development dependencies (current arch only)
 dev_depends() {
     install_depends dev
