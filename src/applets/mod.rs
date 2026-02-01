@@ -1,4 +1,4 @@
-use clap::Command;
+use clap::{Command, error::ErrorKind};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use color_eyre::eyre::Context;
@@ -121,8 +121,46 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
                 std::process::exit(0);
             }
             // For other errors, return them as-is so clap can format them properly
-            e.print().expect("Failed to print error");
-            std::process::exit(2);
+            // Special handling for rpm applet to match system rpm error messages
+            // Note: This only applies when invoked directly as "rpm" applet (via symlink),
+            // not when invoked via "epkg busybox rpm" where clap errors occur earlier
+            if applet_name == "rpm" {
+                match e.kind() {
+                    ErrorKind::UnknownArgument => {
+                        let msg = e.to_string();
+                        // Try to extract argument between single quotes
+                        let arg = if let Some(start) = msg.find('\'') {
+                            if let Some(end) = msg[start+1..].find('\'') {
+                                Some(msg[start+1..start+1+end].to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(arg) = arg {
+                            eprintln!("rpm: {}: unknown option", arg);
+                        } else {
+                            eprintln!("rpm: {}", msg.strip_prefix("error: ").unwrap_or(&msg));
+                        }
+                    }
+                    ErrorKind::MissingRequiredArgument => {
+                        eprintln!("rpm: no arguments given for query");
+                    }
+                    _ => {
+                        let msg = e.to_string();
+                        if msg.starts_with("error: ") {
+                            eprintln!("rpm: {}", &msg[7..]);
+                        } else {
+                            eprintln!("rpm: {}", msg);
+                        }
+                    }
+                }
+                std::process::exit(2);
+            } else {
+                e.print().expect("Failed to print error");
+                std::process::exit(2);
+            }
         }
     };
 
