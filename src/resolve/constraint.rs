@@ -5,13 +5,11 @@
 //! - Constraint inversion for conflicts/obsoletes (resolvo forbids what doesn't match)
 //! - Self-version constraint normalization (RPM format specific)
 //! - Self-contradictory constraint filtering to prevent solver panics
-//! - Support for OpenEuler-specific constraint filtering
 
 use std::borrow::Cow;
 use resolvo::{ConditionalRequirement, KnownDependencies};
 use resolvo::Interner;
 
-use crate::models::channel_config;
 use crate::package_cache;
 use crate::parse_requires::VersionConstraint;
 use crate::provides::check_provider_satisfies_constraints;
@@ -90,10 +88,9 @@ impl crate::resolve::provider::GenericDependencyProvider {
     ) -> Cow<'a, crate::parse_requires::AndDepends> {
         use crate::parse_requires::PkgDepend;
 
-        // Only apply the filtering for OpenEuler; other distros keep constraints unchanged.
-        if channel_config().distro != "openeuler" {
-            return Cow::Borrowed(and_depends);
-        }
+        // Apply self-contradictory constraint filtering for all distros
+        // This prevents packages from creating constraints that conflict with their own provides
+        // which would cause resolution failures or solver panics.
 
         let filtered = and_depends
             .iter()
