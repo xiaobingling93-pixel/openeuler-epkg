@@ -330,18 +330,33 @@ pub fn extract_install_prefixes<P: AsRef<Path>>(package: &Package, store_tmp_dir
     Ok(())
 }
 
+/// Returns string list from header: STRING_ARRAY / I18NString, or single STRING tag split by null byte (RPM convention).
+fn get_entry_data_as_string_list(
+    metadata: &rpm::PackageMetadata,
+    tag: IndexTag,
+) -> Result<Vec<String>, rpm::Error> {
+    let header = &metadata.header;
+    header
+        .get_entry_data_as_string_array(tag)
+        .map(|a| a.iter().map(String::from).collect())
+        .or_else(|_| {
+            header.get_entry_data_as_string(tag).map(|s| {
+                s.split('\0')
+                    .filter(|x| !x.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+        })
+}
+
 /// Extract string array from RPM metadata header.
 /// Returns an empty vector if the tag is not present or extraction fails.
-/// Uses rpm-rs get_entry_data_as_string_list (handles both string array and null-separated string).
 fn extract_string_array(metadata: &rpm::PackageMetadata, tag: IndexTag) -> Vec<String> {
     if !metadata.header.entry_is_present(tag) {
         return Vec::new();
     }
-    metadata
-        .header
-        .get_entry_data_as_string_list(tag)
-        .unwrap_or_default()
-    }
+    get_entry_data_as_string_list(metadata, tag).unwrap_or_default()
+}
 
 // -----------------------------------------------------------------------------
 // RPM header storage: file / transaction file triggers
@@ -530,7 +545,7 @@ fn extract_trigger_type_strings(metadata: &rpm::PackageMetadata, type_tag: Index
         }
     }
     // Then string list (null-separated), then string array
-    if let Ok(list) = metadata.header.get_entry_data_as_string_list(type_tag) {
+    if let Ok(list) = get_entry_data_as_string_list(metadata, type_tag) {
         if !list.is_empty() {
             return list
                 .iter()
@@ -804,7 +819,7 @@ fn extract_package_trigger_type_strings(
                 })
                 .collect()
         })
-        .or_else(|_| metadata.header.get_entry_data_as_string_list(IndexTag::RPMTAG_TRIGGERTYPE))
+        .or_else(|_| get_entry_data_as_string_list(metadata, IndexTag::RPMTAG_TRIGGERTYPE))
         .or_else(|_| {
             metadata
                 .header
@@ -969,9 +984,7 @@ fn extract_rpm_package_triggers<P: AsRef<Path>>(metadata: &rpm::PackageMetadata,
 
     // Modern format: TRIGGERSCRIPTS array with TRIGGERTYPE and TRIGGERINDEX.
     // Try reading TRIGGERSCRIPTS first (string list is common for script arrays in RPM).
-    let script_contents: Vec<String> = metadata
-        .header
-        .get_entry_data_as_string_list(IndexTag::RPMTAG_TRIGGERSCRIPTS)
+    let script_contents: Vec<String> = get_entry_data_as_string_list(metadata, IndexTag::RPMTAG_TRIGGERSCRIPTS)
         .or_else(|_| {
             metadata
                 .header
