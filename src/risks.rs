@@ -79,9 +79,9 @@ pub fn get_filesystem_info(mount_point: &Path) -> FilesystemInfo {
 
         // Get filesystem ID from statvfs
         // f_fsid may be u64 or a struct depending on the system
-        // We'll use unsafe to access it as bytes and convert to u64
-        let fsid_bytes = unsafe { std::mem::transmute::<_, [u8; 8]>(statvfs_buf.f_fsid) };
-        info.fsid = u64::from_le_bytes(fsid_bytes);
+        // Convert to bytes using native endianness
+        let fsid_bytes = u64::to_ne_bytes(statvfs_buf.f_fsid);
+        info.fsid = u64::from_ne_bytes(fsid_bytes);
 
         let bsize = statvfs_buf.f_bsize as u64;
         let bavail = if (statvfs_buf.f_flag & libc::ST_RDONLY) != 0 {

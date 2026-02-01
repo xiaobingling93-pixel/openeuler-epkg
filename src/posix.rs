@@ -537,6 +537,7 @@ pub struct PosixStatFs {
     pub f_fsid:    u64,
 }
 
+#[allow(unnecessary_transmutes)]
 pub fn posix_statfs(path: &str) -> PosixResult<PosixStatFs> {
     use std::ffi::CString;
     let path_cstr = CString::new(path)
@@ -818,6 +819,7 @@ pub fn posix_setgid(gid: u32) -> PosixResult<()> {
 mod tests {
 
     #[test]
+    #[allow(unnecessary_transmutes)]
     fn test_statfs_fsid() {
         use std::ffi::CString;
         use std::convert::TryInto;
