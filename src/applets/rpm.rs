@@ -1117,14 +1117,10 @@ fn select_packages_by_path(path: &str, options: &mut RpmOptions) -> Result<()> {
 
     // Not found in installed packages, search repositories
     let mut search_opts = SearchOptions {
-        ignore_case: false,
-        files: false,
         paths: true,
-        regexp: false,
-        pattern: path.to_string(),
-        u8_pattern: Vec::new(),
-        regex_pattern: None,
+        origin_pattern: path.to_string(),
         collected_results: Some(Arc::new(Mutex::new(Vec::new()))),
+        ..Default::default()
     };
 
     // search_repo_cache will fill collected_results

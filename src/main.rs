@@ -78,8 +78,6 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::io::Write;
-use std::sync::Arc;
-
 use std::panic;
 
 use time::OffsetDateTime;
@@ -105,7 +103,6 @@ use clap::{arg, Command};
 use ctrlc;
 use env_logger;
 use log;
-use regex::bytes::RegexBuilder;
 use list::ListScope;
 
 fn main() -> Result<()> {
@@ -1021,44 +1018,19 @@ fn parse_options_run(_options: &mut EPKGConfig, _sub_matches: &clap::ArgMatches)
 }
 
 fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    let mut options = search::SearchOptions {
+    let options = search::SearchOptions {
         files: sub_matches.get_flag("files"),
         paths: sub_matches.get_flag("paths"),
         regexp: sub_matches.get_flag("regexp"),
         ignore_case: sub_matches.get_flag("ignore-case"),
-        pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
-        u8_pattern: Vec::new(),     // Will be populated in command_search()
-        regex_pattern: None,        // Will be set if regexp is true
-        collected_results: None,
+        origin_pattern: sub_matches.get_one::<String>("PATTERN").unwrap().to_string(),
+        ..Default::default()
     };
 
     // Warn if using -f (files) flag with a pattern containing path separators
-    if options.files && options.pattern.contains('/') {
-        eprintln!("Warning: Using -f|--files flag with pattern '{}' that contains '/'.\nConsider using -p|--paths flag instead for path-based searches.", options.pattern);
+    if options.files && options.origin_pattern.contains('/') {
+        eprintln!("Warning: Using -f|--files flag with pattern '{}' that contains '/'.\nConsider using -p|--paths flag instead for path-based searches.", options.origin_pattern);
         exit(0);
-    }
-
-    // Process the filelists based on the options
-    if options.regexp {
-        // Create a regex from the pattern
-        let mut regex_builder = RegexBuilder::new(&options.pattern);
-        let regex = Arc::new(regex_builder.case_insensitive(options.ignore_case).build()?);
-
-        // Try to extract a literal prefix for optimization
-        // If we can't extract a prefix, we'll just use the original pattern
-        // This is less efficient but will still work correctly
-        if let Some(literal) = crate::search::extract_literal_string(&options.pattern) {
-            options.pattern = literal;
-        } else {
-            log::warn!("Failed to extract literal, cannot handle complex regexp now");
-        }
-
-        // Set the regex pattern in options
-        options.regex_pattern = Some(Arc::clone(&regex));
-    }
-
-    if options.ignore_case {
-        options.pattern = options.pattern.to_lowercase();
     }
 
     config.search = options;
@@ -1333,7 +1305,7 @@ fn command_convert(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_search(_sub_matches: &clap::ArgMatches) -> Result<()> {
     // channel_config() cannot be referenced at parse_options_search() time,
-    // so setup the derived options.u8_pattern here
+    // so setup the derived options.u8_literal here
     let mut options = config().search.clone();
 
     search::search_repo_cache(&mut options)?;
