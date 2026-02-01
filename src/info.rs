@@ -141,6 +141,13 @@ fn process_package_spec(
         }
     }
 
+    // Deduplicate packages by pkgkey (same package may appear from multiple repos/providers)
+    let mut dedup_map = HashMap::new();
+    for pkg in packages {
+        dedup_map.insert(pkg.pkgkey.clone(), pkg);
+    }
+    packages = dedup_map.into_values().collect();
+
     // Apply key=val filtering if provided
     if !filters.is_empty() {
         packages.retain(|pkg| apply_filters(pkg, filters));

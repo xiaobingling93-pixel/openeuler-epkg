@@ -222,10 +222,12 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
     // Convert Vec<String> to space-separated String for more compact storage
     let mut filtered_map: HashMap<String, String> = HashMap::new();
     for (key, values) in provide2pkgnames {
-        let filtered_values: Vec<String> = values.iter()
+        let mut filtered_values: Vec<String> = values.iter()
             .filter(|value| *value != key)
             .cloned()
             .collect();
+        filtered_values.sort();
+        filtered_values.dedup();
 
         // Only include if there are non-trivial values
         // Join with spaces for compact storage (package names don't contain spaces)
