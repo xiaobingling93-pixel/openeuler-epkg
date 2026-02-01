@@ -126,13 +126,11 @@ pub fn parse_aur_metadata(repo: &RepoRevise, _release_path: &PathBuf) -> Result<
         url,
         package_baseurl: AUR_BASE_URL.to_string(),
         hash_type: "SHA256".to_string(),
-        hash: String::new(),
-        size: 0,
         location,
         is_packages: true,
-        is_adb: false,
         output_path,
         download_path,
+        ..Default::default()
     });
 
     Ok(release_items)

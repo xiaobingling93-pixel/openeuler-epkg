@@ -6,8 +6,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, Duration};
 use sha2::{Sha256, Sha512, Digest};
-use filetime;
-use glob;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::models::*;
@@ -22,7 +20,6 @@ use crate::mmio;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseStatus {
     NeedDownload,
-    NeedConvert,
     NeedUpdate,
     FineExist,
     FineRecent,
@@ -30,6 +27,7 @@ pub enum ReleaseStatus {
 
 #[derive(Clone)]
 #[derive(Debug)]
+#[derive(Default)]
 pub struct RepoRevise {
     #[allow(dead_code)]
     pub format: PackageFormat,
@@ -42,7 +40,7 @@ pub struct RepoRevise {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct RepoReleaseItem {
     pub repo_revise: RepoRevise,        // Repository information
     pub need_download: bool,
@@ -354,34 +352,28 @@ fn deduplicate_release_items_by_url(release_items: Vec<RepoReleaseItem>) -> Vec<
     filtered_items
 }
 
-fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
+fn has_recent_download(path: &PathBuf, max_age: Duration) -> Result<bool> {
+    if !is_file_recent(path, &max_age)? {
+        return Ok(false);
+    }
+    let etag_path = path.join(".etag.json");
+    is_file_recent(&etag_path, &max_age)
+}
+
+fn is_file_recent(path: &PathBuf, max_age: &Duration) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
     let metadata = fs::metadata(path)
         .with_context(|| format!("Failed to get metadata for file: {}", path.display()))?;
     let modified = metadata.modified()
         .with_context(|| format!("Failed to get modification time for file: {}", path.display()))?;
     let now = SystemTime::now();
     if let Ok(duration) = now.duration_since(modified) {
-        Ok(duration < max_age)
+        Ok(duration < *max_age)
     } else {
         Ok(false)
     }
-}
-
-fn touch_file_mtime(path: &PathBuf) -> Result<()> {
-    let now = SystemTime::now();
-    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now))
-        .with_context(|| format!("Failed to update modification time for file: {}", path.display()))?;
-    Ok(())
-}
-
-fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> Result<bool> {
-    let is_recent = is_file_recent(&index_path, duration)
-        .with_context(|| format!("Failed to check if file is recent: {}", index_path.display()))?;
-    if !is_recent {
-        touch_file_mtime(&index_path)
-            .with_context(|| format!("Failed to update modification time for index file: {}", index_path.display()))?;
-    }
-    Ok(is_recent)
 }
 
 pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<ReleaseStatus> {
@@ -396,31 +388,6 @@ pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<
         return Ok(ReleaseStatus::NeedDownload);
     }
 
-    let repo_dir = dirs::get_repo_dir(&repo);
-    let index_path = repo_dir.join("RepoIndex.json");
-    if !index_path.exists() {
-        log::debug!("should_refresh_release_file: RepoIndex.json does not exist: {}, returning NeedConvert", index_path.display());
-        return Ok(ReleaseStatus::NeedConvert);
-    }
-
-    // Check if filelists are needed and collect .filelists.*.json files
-    let need_filelists = need_filelists();
-    let filelists_paths = if need_filelists {
-        let filelists_pattern = repo_dir.join("filelists.*");
-        let pattern_str = filelists_pattern.to_str()
-            .ok_or_else(|| eyre::eyre!("Invalid filelists pattern path"))?;
-        glob::glob(pattern_str)
-            .map_err(|_| eyre::eyre!("Failed to glob filelists pattern"))?
-            .filter_map(|p| p.ok())
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    if need_filelists && filelists_paths.is_empty() {
-        log::debug!("should_refresh_release_file: need_filelists=true but no filelists.* files found in {}, returning NeedUpdate", repo_dir.display());
-        return Ok(ReleaseStatus::NeedUpdate);
-    }
-
     if config().subcommand != EpkgCommand::Update {
         let expire_secs = config().common.metadata_expire;
 
@@ -433,21 +400,9 @@ pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<
             let duration = std::time::Duration::from_secs(expire_secs.try_into()
                 .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
             // Check if release file download cache is recent
-            if is_file_recent(path, duration)? {
-                if check_repo_index_age(&index_path, duration)? {
-                    // Check all filelists download cache are recent
-                    let mut all_filelists_recent = true;
-                    for filelists_path in &filelists_paths {
-                        if !is_file_recent(filelists_path, duration)? {
-                            all_filelists_recent = false;
-                            break;
-                        }
-                    }
-                    if all_filelists_recent {
-                        log::debug!("should_refresh_release_file: all files are recent, returning FineRecent");
-                        return Ok(ReleaseStatus::FineRecent);
-                    }
-                }
+            if has_recent_download(&path, duration)? {
+                log::debug!("should_refresh_release_file: all files are recent, returning FineRecent");
+                return Ok(ReleaseStatus::FineRecent);
             }
         }
     }
@@ -531,9 +486,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) ->
         .to_string();
 
     let need_download = should_update == ReleaseStatus::NeedDownload ||
-                       should_update == ReleaseStatus::NeedUpdate ||
-                       should_update == ReleaseStatus::FineRecent;
-    let need_convert = should_update == ReleaseStatus::NeedConvert;
+                        should_update == ReleaseStatus::NeedUpdate;
 
     release_items.push(RepoReleaseItem {
         repo_revise: RepoRevise {
@@ -541,18 +494,15 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) ->
             ..repo.clone()
         },
         need_download: need_download,
-        need_convert: need_convert,
         arch: repo.arch.clone(),
         url: index_url,
         package_baseurl: package_baseurl,
-        hash_type: "".to_string(),
-        hash: "".to_string(),
-        size: 0,
         location: location,
         is_packages: true,
         is_adb: true,  // Mark as ADB file (Alpine/Arch Database)
         output_path: repo_dir.join("packages.txt"),
         download_path: packages_path.clone(),
+        ..Default::default()
     });
 
     Ok(release_items)

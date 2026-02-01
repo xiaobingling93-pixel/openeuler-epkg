@@ -244,13 +244,11 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
         url,
         package_baseurl: package_baseurl.to_string(),
         hash_type: "SHA256".to_string(),
-        hash: String::new(),
-        size: 0,
         location,
         is_packages: true,
-        is_adb: false,
         output_path,
         download_path,
+        ..Default::default()
     });
 
     Ok(release_items)

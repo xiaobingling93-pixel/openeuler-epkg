@@ -92,18 +92,15 @@ pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, relea
     let revise = RepoReleaseItem {
         repo_revise: repo.clone(),
         need_download: false,
-        need_convert: status == ReleaseStatus::NeedConvert || !output_path.exists(),
+        need_convert: !output_path.exists(),
         arch: repo.arch.clone(),
         url: repo.index_url.clone(),
         package_baseurl: repo.index_url.clone(),
-        hash_type: "".to_string(),
-        hash: "".to_string(),
-        size: 0,
         location: "index.html".to_string(),
         is_packages: true,
-        is_adb: false,
         download_path: index_html_path.clone(),
         output_path: output_path.clone(),
+        ..Default::default()
     };
 
     let mut derived_files = packages_stream::PackagesStreamline::new(&revise, &repo_dir, process_line)
