@@ -1,4 +1,4 @@
-use std::collections::{HashMap, BTreeSet};
+use std::collections::{HashMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use color_eyre::Result;
 use crate::models::*;
@@ -11,6 +11,7 @@ use crate::io::load_installed_packages;
 use crate::plan::prepare_installation_plan;
 use crate::install::execute_installation_plan;
 use crate::repo::sync_channel_metadata;
+use crate::parse_provides::parse_provides;
 
 /// Package pairs where circular dependencies need to be broken.
 /// Each pair (pkg_a, pkg_b) means: remove pkg_a from pkg_b's reverse dependencies
@@ -478,6 +479,38 @@ fn get_candidate_pkgkeys_from_capabilities(
     Ok(candidate_pkgkeys)
 }
 
+/// Expand no_install set with provides of packages in the set.
+/// For each package name in no_install, look up its packages and parse their provides.
+/// Adds all provided capabilities to the no_install set.
+fn expand_no_install_with_provides(format: PackageFormat, no_install: HashSet<String>) -> HashSet<String> {
+    let mut expanded = no_install.clone();
+    for pkgname in &no_install {
+        match crate::package_cache::map_pkgname2packages(pkgname) {
+            Ok(packages) => {
+                for package in packages {
+                    for provide_str in &package.provides {
+                        let provide_map = parse_provides(provide_str, format);
+                        for (provide_name, _version) in provide_map {
+                            expanded.insert(provide_name);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::debug!("[RESOLVO] Could not lookup packages for no_install package '{}': {}", pkgname, e);
+            }
+        }
+    }
+    let original_len = no_install.len();
+    let expanded_len = expanded.len();
+    if expanded_len > original_len {
+        let added: Vec<&String> = expanded.difference(&no_install).collect();
+        log::debug!("[RESOLVO] Expanded no_install set with {} capabilities ({} -> {}): {:?}",
+                   expanded_len - original_len, original_len, expanded_len, added);
+    }
+    expanded
+}
+
 /// Create a resolvo dependency provider
 fn create_resolvo_provider(format: PackageFormat, delta_world: &HashMap<String, String>) -> GenericDependencyProvider {
     use crate::resolve::types::DependFieldFlags;
@@ -487,6 +520,7 @@ fn create_resolvo_provider(format: PackageFormat, delta_world: &HashMap<String, 
 
     // Extract no-install list from world (space-separated string)
     let no_install = get_no_install_set();
+    let no_install = expand_no_install_with_provides(format, no_install);
 
     GenericDependencyProvider::new(
         format,
