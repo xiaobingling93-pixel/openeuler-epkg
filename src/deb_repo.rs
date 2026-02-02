@@ -477,6 +477,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     log::debug!("Finalizing processing for {}", revise.location);
     derived_files.on_essential("mawk".to_string());
+    derived_files.on_essential("dpkg".to_string());
     derived_files.on_finish(revise)
         .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
 }
