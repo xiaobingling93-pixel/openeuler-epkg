@@ -169,6 +169,39 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
     Ok(file_infos)
 }
 
+/// Normalize a file path from package filelist: remove leading '.' and trailing '/'
+pub fn normalize_file_path(path: &str) -> &str {
+    let normalized = if path.starts_with('.') {
+        &path[1..]
+    } else {
+        path
+    };
+    normalized.trim_end_matches('/')
+}
+
+/// Get normalized file paths for a package store directory (package root).
+/// Reads info/filelist.txt via the "fs" subdir convention.
+pub fn list_package_file_paths_normalized(store_root: &Path) -> Result<Vec<String>> {
+    let fs_dir = store_root.join("fs");
+    let fs_dir_str = fs_dir
+        .to_str()
+        .ok_or_else(|| eyre::eyre!("Package store path is not valid UTF-8"))?;
+    let file_infos = list_package_files_with_info(fs_dir_str)?;
+    Ok(file_infos
+        .into_iter()
+        .map(|info| normalize_file_path(&info.path).to_string())
+        .collect())
+}
+
+/// Truncate a string for display, appending "..." if longer than max_len.
+pub fn truncate_display(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
 // Parse a single mtree format line
 fn parse_mtree_line(line: &str) -> Result<Option<MtreeFileInfo>> {
     let parts: Vec<&str> = line.split_whitespace().collect();

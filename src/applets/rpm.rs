@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::collections::{HashMap, HashSet};
 use crate::models::{InstalledPackageInfo, Package, SUPPORT_ARCH_LIST};
 use std::sync::{Arc, Mutex};
@@ -14,8 +14,11 @@ use time::macros::format_description;
 use time::UtcOffset;
 use crate::store::unpack_package;
 use crate::search::SearchOptions;
-use crate::package_cache::map_pkgname2packages;
+use crate::package::{self, PackageNVRA};
+use crate::package_cache::{map_pkgline2package, map_pkgname2packages, load_package_info};
 use crate::hooks::parse_hook_file;
+use crate::repo::sync_channel_metadata;
+use glob::Pattern;
 
 #[derive(Debug)]
 pub struct RpmOptions {
@@ -49,8 +52,7 @@ pub struct RpmOptions {
     pub install: bool,
     pub upgrade: bool,
     pub erase: bool,
-    pub packages: Vec<String>,
-    pub store_packages: HashMap<String, (Package, PathBuf)>,
+    pub package_specs: Vec<String>,
     pub allow_repo_query: bool,
 }
 
@@ -152,35 +154,35 @@ where
     Ok(())
 }
 
-/// Generic function to select packages by predicate
-fn select_packages_by_predicate<P>(
+
+/// Generic function to select installed packages by predicate
+/// Returns vector of pkgline strings for matching packages
+pub(crate) fn select_installed_packages_by_predicate<P>(
     predicate: P,
-    options: &mut RpmOptions,
-) -> Result<usize>
+) -> Result<Vec<String>>
 where
     P: Fn(&Package, &InstalledPackageInfo) -> bool,
 {
     crate::io::load_installed_packages()?;
 
+    let mut pkglines = Vec::new();
     let mut found_keys = HashSet::new();
 
     for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        let package = match load_package_info(pkgkey, installed_info.as_ref()) {
+        let package = match load_package_info(pkgkey) {
             Ok(pkg) => pkg,
             Err(_) => continue,
         };
 
         if predicate(&package, installed_info.as_ref()) {
-            found_keys.insert(pkgkey.clone());
+            // Deduplicate by pkgkey
+            if found_keys.insert(pkgkey.clone()) {
+                pkglines.push(installed_info.pkgline.clone());
+            }
         }
     }
 
-    let count = found_keys.len();
-    for pkgkey in found_keys {
-        options.packages.push(pkgkey);
-    }
-
-    Ok(count)
+    Ok(pkglines)
 }
 
 /// Process package paths with a custom formatter
@@ -287,52 +289,24 @@ fn format_rpm_date(timestamp: u64) -> String {
     }
 }
 
-/// Normalize a file path from package filelist: remove leading '.' and trailing '/'
-fn normalize_file_path(path: &str) -> &str {
-    let normalized = if path.starts_with('.') {
-        &path[1..]
-    } else {
-        path
-    };
-    normalized.trim_end_matches('/')
+/// Get normalized file paths for a package store directory (package root).
+pub(crate) fn normalized_package_file_paths(store_path: &Path) -> Result<Vec<String>> {
+    utils::list_package_file_paths_normalized(store_path)
 }
 
-/// Get normalized file paths for a package store directory
-fn normalized_package_file_paths(store_path: &Path) -> Result<Vec<String>> {
-    let file_infos = utils::list_package_files_with_info(store_path.to_str().unwrap())?;
-    let mut paths = Vec::new();
-    for file_info in file_infos {
-        paths.push(normalize_file_path(&file_info.path).to_string());
-    }
-    Ok(paths)
-}
-
-/// Unpack an RPM file or load a pkgline from store for querying
-/// Returns (Package, store_directory_path)
-fn unpack_rpm_for_query(rpm_path: &str) -> Result<(Package, std::path::PathBuf)> {
+/// Unpack an RPM file or load a pkgline from store for querying.
+/// Returns Package with pkgline set (use dirs().epkg_store.join(pkgline) for store path).
+fn unpack_rpm_for_query(rpm_path: &str) -> Result<Package> {
     let parts: Vec<&str> = rpm_path.split("__").collect();
     match parts.len() {
         4 => {
             // pkgline format: ca_hash__name__version__arch
-            let package = crate::mmio::map_pkgline2package(rpm_path)
-                .wrap_err_with(|| format!("Failed to load package from pkgline: {}", rpm_path))?;
-
-            // Get store directory path
-            let store_dir = crate::models::dirs().epkg_store.join(rpm_path);
-
-            return Ok((package, store_dir));
+            mmio::map_pkgline2package(rpm_path)
+                .wrap_err_with(|| format!("Failed to load package from pkgline: {}", rpm_path))
         }
-        // 3 => {
-        //     // pkgkey format: name__version__arch
-        //     let package = crate::mmio::map_pkgkey2package(rpm_path)
-        //         .wrap_err_with(|| format!("Failed to load package from pkgkey: {}", rpm_path))?;
-
-        //     return Ok((package, PathBuf::from("")));
-        // }
         1 => {
             let path = Path::new(rpm_path);
             if !path.exists() {
-                // return Err(color_eyre::eyre::eyre!("open of {} failed: No such file or directory", rpm_path));
                 eprintln!("error: open of {} failed: No such file or directory", rpm_path);
                 std::process::exit(1);
             }
@@ -347,14 +321,9 @@ fn unpack_rpm_for_query(rpm_path: &str) -> Result<(Package, std::path::PathBuf)>
                 &store_pkglines_by_pkgname,
             ).wrap_err_with(|| format!("Failed to unpack RPM file: {}", rpm_path))?;
 
-            // Load package from store using pkgline
-            let package = crate::mmio::map_pkgline2package(&pkgline)
-                .wrap_err_with(|| format!("Failed to load package from store pkgline: {}", pkgline))?;
-
-            // Get store directory path
-            let store_dir = crate::models::dirs().epkg_store.join(&pkgline);
-
-            return Ok((package, store_dir));
+            // Load package from store using pkgline (sets package.pkgline)
+            mmio::map_pkgline2package(&pkgline)
+                .wrap_err_with(|| format!("Failed to load package from store pkgline: {}", pkgline))
         }
         _ => {
             Err(color_eyre::eyre::eyre!("Invalid package or path: {}", rpm_path))
@@ -403,7 +372,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<RpmOptions> {
     let install         = matches.get_flag("install");
     let upgrade         = matches.get_flag("upgrade");
     let erase           = matches.get_flag("erase");
-    let packages: Vec<String> = matches.get_many::<String>("packages")
+    let package_specs: Vec<String> = matches.get_many::<String>("packages")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
@@ -438,8 +407,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<RpmOptions> {
         install,
         upgrade,
         erase,
-        packages,
-        store_packages: HashMap::new(),
+        package_specs,
         allow_repo_query: false,
     })
 }
@@ -626,18 +594,145 @@ pub fn command() -> Command {
             .num_args(0..))
 }
 
-/// Helper function to load package info from pkgline or fallback to pkgkey
-fn load_package_info(pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<Package> {
-    match mmio::map_pkgline2package(&installed_info.pkgline) {
-        Ok(pkg) => Ok(pkg),
-        Err(_) => {
-            // Fallback to repository lookup
-            mmio::map_pkgkey2package(pkgkey)
+/// Resolve pkgline to (Package, InstalledPackageInfo). Returns None if not installed or load fails.
+/// Shared by rpm and dpkg-query applets; other distro query applets should use this.
+pub(crate) fn pkgline_to_package_and_installed_info(pkgline: &str) -> Option<(Package, Arc<InstalledPackageInfo>)> {
+    let installed_info = PACKAGE_CACHE.pkgline2installed.read().unwrap().get(pkgline).cloned()
+        .or_else(|| {
+            let pkgkey = package::pkgline2pkgkey(pkgline).ok()?;
+            PACKAGE_CACHE.installed_packages.read().unwrap().get(&pkgkey).cloned()
+        })?;
+    let package = map_pkgline2package(pkgline).ok()?;
+    Some((package.as_ref().clone(), installed_info))
+}
+
+/// Select installed pkglines by PackageNVRA (name as glob, optional version and arch).
+/// Use name "*" and version/arch None for all installed.
+/// Shared by rpm and dpkg-query applets; other distro query applets should use this.
+pub(crate) fn select_installed_pkglines_by_nvra(spec: &PackageNVRA) -> Result<Vec<String>> {
+    let name_pattern_glob = Pattern::new(&spec.name).ok();
+    let name_pattern = spec.name.clone();
+    select_installed_packages_by_predicate(move |package, _installed_info| {
+        let name_ok = if let Some(ref pat) = name_pattern_glob {
+            pat.matches(&package.pkgname)
+        } else {
+            package.pkgname == name_pattern
+        };
+        if !name_ok {
+            return false;
+        }
+        if let Some(ref arch) = spec.arch {
+            if package.arch != *arch {
+                return false;
+            }
+        }
+        if let Some(ref version) = spec.version {
+            if package.version != *version {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+/// Select installed pkglines that own a path matching the given pattern.
+/// Pattern can be exact path, path prefix, substring, or glob (*?[).
+/// Shared by rpm and dpkg-query applets; other distro query applets should use this.
+pub(crate) fn select_installed_pkglines_owning_path(path_pattern: &str) -> Result<Vec<String>> {
+    crate::io::load_installed_packages()?;
+    let state = path_match_prepare(path_pattern);
+    let mut pkglines = Vec::new();
+    for (_pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
+        let store_path = dirs().epkg_store.join(&installed_info.pkgline);
+        let paths = match utils::list_package_file_paths_normalized(&store_path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        for normalized_path in paths {
+            if path_match_matches(&state, &normalized_path) {
+                pkglines.push(installed_info.pkgline.clone());
+                break;
+            }
+        }
+    }
+    Ok(pkglines)
+}
+
+/// True if the string contains glob metacharacters (*?[).
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Pre-compiled path pattern for matching many paths without re-parsing.
+/// Build once with path_match_prepare(), then call path_match_matches() in a loop.
+pub(crate) enum PathMatchState {
+    Glob(Pattern),
+    Literal(String),
+}
+
+/// Setup path matching once; use path_match_matches() in the loop.
+pub(crate) fn path_match_prepare(path_pattern: &str) -> PathMatchState {
+    if is_glob_pattern(path_pattern) {
+        if let Ok(pat) = Pattern::new(path_pattern) {
+            return PathMatchState::Glob(pat);
+        }
+    }
+    PathMatchState::Literal(path_pattern.to_string())
+}
+
+/// Returns true if normalized_path matches the pre-prepared state.
+pub(crate) fn path_match_matches(state: &PathMatchState, normalized_path: &str) -> bool {
+    match state {
+        PathMatchState::Glob(pat) => pat.matches(normalized_path),
+        PathMatchState::Literal(path_pattern) => {
+            normalized_path.contains(path_pattern.as_str())
         }
     }
 }
 
-/// Resolve a package specification to a Package, store path, and optional installed info.
+/// Resolve pkgline (ca_hash__name__version__arch) to (Package, InstalledPackageInfo).
+/// Uses pkgline2installed for O(1) lookup when populated; falls back to pkgkey lookup.
+/// Returned Package has pkgline set (from store load).
+fn resolve_from_pkgline(pkgline: &str) -> Option<(Package, Option<Arc<InstalledPackageInfo>>)> {
+    let installed_info = PACKAGE_CACHE.pkgline2installed.read().unwrap().get(pkgline).cloned()?;
+    let package_arc = map_pkgline2package(pkgline).ok()?;
+    Some((package_arc.as_ref().clone(), Some(installed_info)))
+}
+
+/// Resolve installed packages by PackageNVRA (name/version/arch spec).
+/// Returns (Package, Some(InstalledPackageInfo)) for each matching installed package.
+fn resolve_installed_by_spec(spec: &PackageNVRA) -> Vec<(Package, Option<Arc<InstalledPackageInfo>>)> {
+    let pkglines = match select_installed_pkglines_by_nvra(spec) {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    pkglines
+        .into_iter()
+        .filter_map(|pkgline| resolve_from_pkgline(&pkgline))
+        .collect()
+}
+
+/// Resolve pkgkey (name__version__arch). If installed, returns (Package, Some(info));
+/// if only in repo and allow_repo_query, returns (Package, None).
+fn resolve_from_pkgkey(
+    pkgkey: &str,
+    allow_repo_query: bool,
+) -> Option<(Package, Option<Arc<InstalledPackageInfo>>)> {
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    if let Some(info) = installed.get(pkgkey) {
+        let pkgline = info.pkgline.clone();
+        drop(installed);
+        return resolve_from_pkgline(&pkgline);
+    }
+    drop(installed);
+    if allow_repo_query {
+        return load_package_info(pkgkey).ok().map(|pkg| (pkg.as_ref().clone(), None));
+    }
+    None
+}
+
+/// Resolve a package specification to a Package and optional installed info.
+/// Package has pkgline set when in store; use dirs().epkg_store.join(pkgline) for store path.
 ///
 /// Supported package specification formats:
 /// 1. Simple package name: "bash"
@@ -649,40 +744,49 @@ fn load_package_info(pkgkey: &str, installed_info: &InstalledPackageInfo) -> Res
 /// 7. pkgline format: "ca_hash__bash__5.2.15-9.oe2403__x86_64"
 /// 8. Legacy format with colon separator: "bash:x86_64"
 ///
-/// Returns (Package, store_path, Option<Arc<InstalledPackageInfo>>) if found.
-/// For in-store packages (unpacked RPM files), installed_info is None.
-fn resolve_package_spec(
+/// Returns matches: (Package, Option<Arc<InstalledPackageInfo>>). Package has pkgline set when in store.
+/// For repo-only packages, installed_info is None and pkgline is None.
+pub(crate) fn resolve_package_spec(
     pkg_spec: &str,
-    options: &RpmOptions,
-) -> Option<(Package, PathBuf, Option<Arc<InstalledPackageInfo>>)> {
-    let spec = parse_rpm_package_spec(pkg_spec);
-
-    // First search installed packages
-    if let Some((package, store_path, installed_info)) = resolve_from_installed(&spec, pkg_spec) {
-        return Some((package, store_path, Some(installed_info)));
-    }
-
-    // Then search in-store packages
-    if let Some((package, store_path)) = resolve_from_store(&spec, pkg_spec, &options.store_packages) {
-        return Some((package, store_path, None));
-    }
-
-    // Query repository packages if allowed
-    if options.allow_repo_query {
-        if let Some(package) = resolve_from_repo(&spec) {
-            // Repository package has no store path (empty)
-            return Some((package, PathBuf::from(""), None));
+    allow_repo_query: bool,
+) -> Vec<(Package, Option<Arc<InstalledPackageInfo>>)> {
+    let parts: Vec<&str> = pkg_spec.split("__").collect();
+    match parts.len() {
+        4 => { // pkgline format: ca_hash__name__version__arch
+            resolve_from_pkgline(pkg_spec)
+                .into_iter()
+                .collect()
+        }
+        3 => { // pkgkey format: name__version__arch
+            resolve_from_pkgkey(pkg_spec, allow_repo_query).into_iter().collect()
+        }
+        1 => { // pkgname
+            let _ = sync_channel_metadata();
+            if is_glob_pattern(pkg_spec) {
+                resolve_installed_by_spec(&parse_rpm_nvra(pkg_spec))
+            } else {
+                let repo_packages = match map_pkgname2packages(pkg_spec) {
+                    Ok(pkgs) => pkgs,
+                    Err(_) => vec![],
+                };
+                let mut results = Vec::new();
+                for pkg in &repo_packages {
+                    if let Some(r) = resolve_from_pkgkey(&pkg.pkgkey, allow_repo_query) {
+                        results.push(r);
+                    }
+                }
+                if results.is_empty() {
+                    resolve_installed_by_spec(&parse_rpm_nvra(pkg_spec))
+                } else {
+                    results
+                }
+            }
+        }
+        _ => {
+            log::warn!("invalid pkgkey format {}", pkg_spec);
+            vec![]
         }
     }
-
-    None
-}
-
-#[derive(Debug)]
-struct PackageSpec {
-    name: String,
-    version: Option<String>,
-    arch: Option<String>,
 }
 
 /// Extract architecture suffix from spec using colon or dot separator.
@@ -720,169 +824,45 @@ fn split_version_from_name(name: &str) -> (Option<String>, &str) {
     (None, name)
 }
 
-/// Parse pkgline or pkgkey format (contains "__").
-fn parse_pkgline_pkgkey_spec(spec: &str) -> PackageSpec {
-    let parts: Vec<&str> = spec.split("__").collect();
-    match parts.len() {
-        4 => {
-            // pkgline format: ca_hash__name__version__arch
-            PackageSpec {
-                name: parts[1].to_string(),
-                version: Some(parts[2].to_string()),
-                arch: Some(parts[3].to_string()),
-            }
-        }
-        3 => {
-            // pkgkey format: name__version__arch
-            PackageSpec {
-                name: parts[0].to_string(),
-                version: Some(parts[1].to_string()),
-                arch: Some(parts[2].to_string()),
-            }
-        }
-        2 => {
-            PackageSpec {
-                name: parts[0].to_string(),
-                version: Some(parts[1].to_string()),
-                arch: None,
-            }
-        }
-        _ => {
-            // Fallback: treat entire spec as name (should not happen with contains "__")
-            PackageSpec {
-                name: spec.to_string(),
-                version: None,
-                arch: None,
-            }
-        }
-    }
-}
-
 /// Parse RPM style spec: name-version-release.arch or name-version-release or name.arch
-fn parse_rpm_style_spec(spec: &str) -> PackageSpec {
+fn parse_rpm_nvra(spec: &str) -> PackageNVRA {
     let (arch, name_without_arch) = extract_arch_suffix(spec);
     let (version, name_only) = split_version_from_name(name_without_arch);
-    PackageSpec {
+    PackageNVRA {
         name: name_only.to_string(),
         version,
         arch,
     }
 }
 
-/// Parse RPM package specification into components.
-/// Supports formats documented in resolve_package_spec().
-fn parse_rpm_package_spec(spec: &str) -> PackageSpec {
-    // Check for pkgline or pkgkey format (contains "__")
-    if spec.contains("__") {
-        parse_pkgline_pkgkey_spec(spec)
-    } else {
-        parse_rpm_style_spec(spec)
-    }
-}
-
-/// Check if a package matches the specification fields (name, version, arch).
-/// Wildcards: None values in spec match any value.
-fn field_matches(package: &Package, spec: &PackageSpec) -> bool {
-    if package.pkgname != spec.name {
-        return false;
-    }
-    let version_matches = match &spec.version {
-        Some(v) => package.version == *v,
-        None => true,
-    };
-    let arch_matches = match &spec.arch {
-        Some(a) => package.arch == *a,
-        None => true,
-    };
-    version_matches && arch_matches
-}
-
-/// Search installed packages for a match.
-fn resolve_from_installed(
-    spec: &PackageSpec,
-    pkg_spec: &str,
-) -> Option<(Package, PathBuf, Arc<InstalledPackageInfo>)> {
-    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        let package = match load_package_info(pkgkey, installed_info.as_ref()) {
-            Ok(pkg) => pkg,
-            Err(_) => continue,
-        };
-
-        // Check exact matches first (pkgkey or pkgline)
-        if pkgkey == pkg_spec || installed_info.pkgline == pkg_spec {
-            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
-            return Some((package, store_path, Arc::clone(installed_info)));
-        }
-
-        // Check if spec matches package fields
-        if field_matches(&package, spec) {
-            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
-            return Some((package, store_path, Arc::clone(installed_info)));
-        }
-    }
-    None
-}
-
-/// Search in-store packages for a match.
-fn resolve_from_store(
-    spec: &PackageSpec,
-    pkg_spec: &str,
-    store_packages: &HashMap<String, (Package, PathBuf)>,
-) -> Option<(Package, PathBuf)> {
-    for (pkgline, (package, store_path)) in store_packages {
-        // Exact pkgline match
-        if pkgline == pkg_spec {
-            return Some((package.clone(), store_path.clone()));
-        }
-
-        // Field-based match
-        if field_matches(package, spec) {
-            return Some((package.clone(), store_path.clone()));
-        }
-    }
-    None
-}
-
-/// Query repository packages for a match.
-fn resolve_from_repo(spec: &PackageSpec) -> Option<Package> {
-    match map_pkgname2packages(&spec.name) {
-        Ok(repo_packages) => {
-            for package in repo_packages {
-                if field_matches(&package, spec) {
-                    return Some(package);
-                }
-            }
-        }
-        Err(_) => {
-            // If error loading repository packages, fall through
-        }
-    }
-    None
-}
-
-
 /// Generic function to process each package in a list.
 /// Loads installed packages, resolves each spec, and calls the closure.
 /// Handles error reporting and exit codes.
+/// store_path is Some when package.pkgline is set (in-store packages).
 fn for_each_package<F>(
-    packages: &[String],
+    package_specs: &[String],
     options: &RpmOptions,
     mut f: F,
 ) -> Result<()>
 where
-    F: FnMut(&Package, &Path, Option<&InstalledPackageInfo>) -> Result<()>,
+    F: FnMut(&Package, Option<&Path>, Option<&InstalledPackageInfo>) -> Result<()>,
 {
     crate::io::load_installed_packages()?;
     let mut exit_code = 0;
-    for pkg_spec in packages {
-        if let Some((package, store_path, installed_info)) = resolve_package_spec(pkg_spec, options) {
-            if let Err(e) = f(&package, &store_path, installed_info.as_deref()) {
-                eprintln!("error processing {}: {}", pkg_spec, e);
-                exit_code = 1;
-            }
-        } else {
+    for pkg_spec in package_specs {
+        let matches = resolve_package_spec(pkg_spec, options.allow_repo_query);
+        if matches.is_empty() {
             eprintln!("package {} is not installed", pkg_spec);
             exit_code = 1;
+        } else {
+            for (package, installed_info) in matches {
+                let store_path = package.pkgline.as_ref().map(|p| dirs().epkg_store.join(p));
+                let store_path = store_path.as_deref();
+                if let Err(e) = f(&package, store_path, installed_info.as_deref()) {
+                    eprintln!("error processing {}: {}", pkg_spec, e);
+                    exit_code = 1;
+                }
+            }
         }
     }
     if exit_code != 0 {
@@ -1048,74 +1028,16 @@ fn show_dependency_list(items: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn select_packages_by_file(file_pattern: &str, options: &mut RpmOptions) -> Result<usize> {
-    let pattern_path = Path::new(file_pattern);
-    select_packages_by_predicate(
-        |_package, installed_info| {
-            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
-            let paths = match normalized_package_file_paths(&store_path) {
-                Ok(paths) => paths,
-                Err(_) => return false,
-            };
-
-            for normalized_path in paths {
-                let file_path_obj = Path::new(&normalized_path);
-                if file_path_obj == pattern_path ||
-                   file_path_obj.starts_with(pattern_path) ||
-                   normalized_path.contains(file_pattern) {
-                    return true;
-                }
-            }
-            false
-        },
-        options,
-    )
+fn select_installed_packages_by_file(file_pattern: &str, options: &mut RpmOptions) -> Result<usize> {
+    let pkglines = select_installed_pkglines_owning_path(file_pattern)?;
+    let count = pkglines.len();
+    options.package_specs.extend(pkglines);
+    Ok(count)
 }
 
-fn select_packages_by_path(path: &str, options: &mut RpmOptions) -> Result<()> {
-    crate::io::load_installed_packages()?;
-
-    let pattern_path = Path::new(path);
-    let mut candidates = Vec::new(); // (install_time, pkgkey)
-
-    // Closure to check if a package contains the exact path
-    let path_matches = |installed_info: &InstalledPackageInfo| -> bool {
-        let store_path = dirs().epkg_store.join(&installed_info.pkgline);
-        let paths = match normalized_package_file_paths(&store_path) {
-            Ok(paths) => paths,
-            Err(_) => return false,
-        };
-        for normalized_path in paths {
-            let file_path_obj = Path::new(&normalized_path);
-            if file_path_obj == pattern_path {
-                return true;
-            }
-        }
-        false
-    };
-
-    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        let _package = match load_package_info(pkgkey, installed_info.as_ref()) {
-            Ok(pkg) => pkg,
-            Err(_) => continue,
-        };
-
-        if path_matches(installed_info.as_ref()) {
-            candidates.push((installed_info.install_time, pkgkey.clone()));
-        }
-    }
-
-    if !candidates.is_empty() {
-        log::debug!("Found package in installed packages for path: {}", path);
-        // Sort by install_time descending (most recent first)
-        candidates.sort_by(|a, b| b.0.cmp(&a.0));
-        // Select the most recent package
-        let (_, pkgkey) = candidates.remove(0);
-        options.packages.push(pkgkey);
-        return Ok(());
-    }
-
-    // Not found in installed packages, search repositories
+/// Find repository packages that own the given path.
+/// Returns a de-duplicated list of package names.
+fn select_repo_packages_by_path(path: &str) -> Result<Vec<String>> {
     let mut search_opts = SearchOptions {
         paths: true,
         origin_pattern: path.to_string(),
@@ -1131,21 +1053,29 @@ fn select_packages_by_path(path: &str, options: &mut RpmOptions) -> Result<()> {
         .expect("collected_results should be Some");
     let results = results_arc.lock().unwrap();
 
-    if results.is_empty() {
+    // For each matching package, collect pkgname
+    // Deduplicate by pkgname first
+    let unique_pkgnames: HashSet<String> = results.iter().map(|(pkgname, _)|
+        pkgname.split('/').last().unwrap_or(pkgname).to_string()    // Deb may return "section/pkgname"
+    ).collect();
+
+    log::debug!("Adding repository packages for path query: '{:?}'", unique_pkgnames);
+    Ok(unique_pkgnames.into_iter().collect())
+}
+
+fn select_packages_by_path(path: &str, options: &mut RpmOptions) -> Result<()> {
+    let repo_pkgnames = select_repo_packages_by_path(path)?;
+
+    if repo_pkgnames.is_empty() {
         eprintln!("error: path {}: No package owns this path", path);
-        std::process::exit(1);
+        return Ok(());
     }
 
     // Set flag to allow repository queries
     options.allow_repo_query = true;
 
-    // For each matching package, add pkgname to options.packages
-    // Deduplicate by pkgname first
-    let unique_pkgnames: HashSet<_> = results.iter().map(|(pkgname, _)| pkgname).collect();
-    log::debug!("Adding repository packages for path query: '{:?}'", unique_pkgnames);
-    for pkgname in unique_pkgnames {
-        options.packages.push(pkgname.clone());
-    }
+    // Add repository packages to package specs
+    options.package_specs.extend(repo_pkgnames);
 
     Ok(())
 }
@@ -1158,21 +1088,25 @@ fn select_packages_by_dependency<F>(
 where
     F: Fn(&Package) -> &[String]
 {
-    select_packages_by_predicate(
+    let pkglines = select_installed_packages_by_predicate(
         |package, _installed_info| {
             get_field(package).iter().any(|dep| dep == capability)
         },
-        options,
-    )
+    )?;
+
+    let count = pkglines.len();
+    // Directly append all pkglines as package specs
+    options.package_specs.extend(pkglines);
+    Ok(count)
 }
 
 pub fn run(mut options: RpmOptions) -> Result<()> {
     if options.install {
-        crate::install::install_packages(options.packages.clone())?;
+        crate::install::install_packages(options.package_specs.clone())?;
     } else if options.upgrade {
-        crate::upgrade::upgrade_packages(options.packages.clone())?;
+        crate::upgrade::upgrade_packages(options.package_specs.clone())?;
     } else if options.erase {
-        crate::remove::remove_packages(options.packages.clone())?;
+        crate::remove::remove_packages(options.package_specs.clone())?;
     } else {
         query_verify_packages(&mut options)?;
     }
@@ -1181,14 +1115,12 @@ pub fn run(mut options: RpmOptions) -> Result<()> {
 
 fn handle_package_file_query(options: &mut RpmOptions) -> Result<()> {
     if let Some(package_file) = options.package.take() {
-        let (package, store_dir) = unpack_rpm_for_query(&package_file)?;
-        let dir_name = store_dir.file_name()
-            .expect("store dir has file name")
-            .to_str()
-            .expect("store dir name valid utf8");
-        let pkgline = dir_name.to_string();
-        options.store_packages.insert(pkgline.clone(), (package, store_dir));
-        options.packages.push(pkgline);
+        let package = unpack_rpm_for_query(&package_file)?;
+        let pkgline = package.pkgline
+            .as_ref()
+            .expect("unpack_rpm_for_query sets pkgline")
+            .clone();
+        options.package_specs.push(pkgline);
     }
     Ok(())
 }
@@ -1201,8 +1133,8 @@ fn validate_query_options(options: &mut RpmOptions) -> Result<()> {
                      options.supplements || options.state;
 
     // Default query mode if no action specified but packages given
-    if !has_action && !options.packages.is_empty() {
-        for_each_package(&options.packages, &options, |package, _, _| {
+    if !has_action && !options.package_specs.is_empty() {
+        for_each_package(&options.package_specs, &options, |package, _, _| {
             println!("{}-{}.{}", package.pkgname, package.version, package.arch);
             Ok(())
         })?;
@@ -1210,14 +1142,14 @@ fn validate_query_options(options: &mut RpmOptions) -> Result<()> {
     }
 
     // No action and no packages
-    if !has_action && options.packages.is_empty() {
+    if !has_action && options.package_specs.is_empty() {
         eprintln!("rpm: no action specified");
         eprintln!("Type rpm --help for help.");
         std::process::exit(1);
     }
 
     // Ensure packages are specified for any action
-    if options.packages.is_empty() {
+    if options.package_specs.is_empty() {
         // Match system rpm error message format
         eprintln!("rpm: no arguments given for query");
         std::process::exit(1);
@@ -1226,24 +1158,29 @@ fn validate_query_options(options: &mut RpmOptions) -> Result<()> {
 }
 
 fn execute_query_actions(options: &RpmOptions) -> Result<()> {
-    for_each_package(&options.packages, &options, |package, store_path, installed_info| {
+    for_each_package(&options.package_specs, &options, |package, store_path, installed_info| {
         if options.info {
             display_package_info(package, installed_info);
         }
-        if options.list {
-            list_package_files(store_path)?;
-        }
-        if options.verify {
-            verify_packages(store_path)?;
-        }
-        if options.scripts {
-            show_package_scripts(store_path)?;
-        }
-        if options.triggers {
-            show_package_triggers(store_path)?;
-        }
-        if options.filetriggers {
-            show_file_triggers(store_path)?;
+        if let Some(store_path) = store_path {
+            if options.list {
+                list_package_files(store_path)?;
+            }
+            if options.verify {
+                verify_packages(store_path)?;
+            }
+            if options.scripts {
+                show_package_scripts(store_path)?;
+            }
+            if options.triggers {
+                show_package_triggers(store_path)?;
+            }
+            if options.filetriggers {
+                show_file_triggers(store_path)?;
+            }
+            if options.state {
+                show_package_state(store_path)?;
+            }
         }
 
         /// Execute show_dependency_list if the corresponding flag is true
@@ -1262,9 +1199,6 @@ fn execute_query_actions(options: &RpmOptions) -> Result<()> {
         show_if_flag!(recommends);
         show_if_flag!(suggests);
         show_if_flag!(supplements);
-        if options.state {
-            show_package_state(store_path)?;
-        }
         Ok(())
     })
 }
@@ -1296,7 +1230,7 @@ fn query_verify_packages(options: &mut RpmOptions) -> Result<()> {
 
     // Handle file query (select-option)
     if let Some(file_pattern) = options.file.clone() {
-        let found = select_packages_by_file(&file_pattern, options)?;
+        let found = select_installed_packages_by_file(&file_pattern, options)?;
         if found == 0 {
             // No package owns the file, exit with error (maintains current behavior)
             eprintln!("error: file {}: No such file or directory", file_pattern);
@@ -1311,14 +1245,14 @@ fn query_verify_packages(options: &mut RpmOptions) -> Result<()> {
 
     // Handle whatXXX capability queries (select-options)
     let what_queries: Vec<(Option<String>, Box<dyn Fn(&Package) -> &[String]>, &str)> = vec![
-        (options.whatprovides.clone(), Box::new(|pkg| &pkg.provides), "provides"),
-        (options.whatrequires.clone(), Box::new(|pkg| &pkg.requires), "requires"),
-        (options.whatconflicts.clone(), Box::new(|pkg| &pkg.conflicts), "conflicts"),
-        (options.whatobsoletes.clone(), Box::new(|pkg| &pkg.obsoletes), "obsoletes"),
-        (options.whatrecommends.clone(), Box::new(|pkg| &pkg.recommends), "recommends"),
-        (options.whatsuggests.clone(), Box::new(|pkg| &pkg.suggests), "suggests"),
-        (options.whatsupplements.clone(), Box::new(|pkg| &pkg.supplements), "supplements"),
-        (options.whatenhances.clone(), Box::new(|pkg| &pkg.enhances), "enhances"),
+        (options.whatprovides.clone(),      Box::new(|pkg| &pkg.provides),      "provides"),
+        (options.whatrequires.clone(),      Box::new(|pkg| &pkg.requires),      "requires"),
+        (options.whatconflicts.clone(),     Box::new(|pkg| &pkg.conflicts),     "conflicts"),
+        (options.whatobsoletes.clone(),     Box::new(|pkg| &pkg.obsoletes),     "obsoletes"),
+        (options.whatrecommends.clone(),    Box::new(|pkg| &pkg.recommends),    "recommends"),
+        (options.whatsuggests.clone(),      Box::new(|pkg| &pkg.suggests),      "suggests"),
+        (options.whatsupplements.clone(),   Box::new(|pkg| &pkg.supplements),   "supplements"),
+        (options.whatenhances.clone(),      Box::new(|pkg| &pkg.enhances),      "enhances"),
     ];
 
     for (capability_opt, get_field, verb) in what_queries.into_iter() {
@@ -1327,7 +1261,7 @@ fn query_verify_packages(options: &mut RpmOptions) -> Result<()> {
 
     // Expand --all to all package specs
     if options.all {
-        options.packages = get_all_package_specs()?;
+        options.package_specs = get_all_package_specs()?;
     }
 
     validate_query_options(options)?;
@@ -1343,69 +1277,70 @@ mod tests {
     #[test]
     fn test_parse_rpm_package_spec() {
         // Simple name
-        let spec = parse_rpm_package_spec("bash");
+        let spec = parse_rpm_nvra("bash");
         assert_eq!(spec.name, "bash");
         assert_eq!(spec.version, None);
         assert_eq!(spec.arch, None);
 
         // Name with architecture suffix
-        let spec = parse_rpm_package_spec("bash.x86_64");
+        let spec = parse_rpm_nvra("bash.x86_64");
         assert_eq!(spec.name, "bash");
         assert_eq!(spec.version, None);
         assert_eq!(spec.arch, Some("x86_64".to_string()));
 
         // Name with colon architecture (legacy)
-        let spec = parse_rpm_package_spec("bash:x86_64");
+        let spec = parse_rpm_nvra("bash:x86_64");
         assert_eq!(spec.name, "bash");
         assert_eq!(spec.version, None);
         assert_eq!(spec.arch, Some("x86_64".to_string()));
 
         // Name-version
-        let spec = parse_rpm_package_spec("bash-5.2.15");
+        let spec = parse_rpm_nvra("bash-5.2.15");
         assert_eq!(spec.name, "bash");
         assert_eq!(spec.version, Some("5.2.15".to_string()));
         assert_eq!(spec.arch, None);
 
         // Name-version-release
-        let spec = parse_rpm_package_spec("bash-5.2.15-9.oe2403");
+        let spec = parse_rpm_nvra("bash-5.2.15-9.oe2403");
         assert_eq!(spec.name, "bash");
         assert_eq!(spec.version, Some("5.2.15-9.oe2403".to_string()));
         assert_eq!(spec.arch, None);
 
         // Name-version-release.arch
-        let spec = parse_rpm_package_spec("bash-5.2.15-9.oe2403.x86_64");
-        assert_eq!(spec.name, "bash");
-        assert_eq!(spec.version, Some("5.2.15-9.oe2403".to_string()));
-        assert_eq!(spec.arch, Some("x86_64".to_string()));
-
-        // pkgkey format
-        let spec = parse_rpm_package_spec("bash__5.2.15-9.oe2403__x86_64");
-        assert_eq!(spec.name, "bash");
-        assert_eq!(spec.version, Some("5.2.15-9.oe2403".to_string()));
-        assert_eq!(spec.arch, Some("x86_64".to_string()));
-
-        // pkgline format (ca_hash__name__version__arch)
-        let spec = parse_rpm_package_spec("ca_hash__bash__5.2.15-9.oe2403__x86_64");
+        let spec = parse_rpm_nvra("bash-5.2.15-9.oe2403.x86_64");
         assert_eq!(spec.name, "bash");
         assert_eq!(spec.version, Some("5.2.15-9.oe2403".to_string()));
         assert_eq!(spec.arch, Some("x86_64".to_string()));
 
         // Package name with hyphen (ncurses-base)
-        let spec = parse_rpm_package_spec("ncurses-base");
+        let spec = parse_rpm_nvra("ncurses-base");
         assert_eq!(spec.name, "ncurses-base");
         assert_eq!(spec.version, None);
         assert_eq!(spec.arch, None);
 
         // Package name with hyphen and version
-        let spec = parse_rpm_package_spec("ncurses-base-6.4-8.oe2403");
+        let spec = parse_rpm_nvra("ncurses-base-6.4-8.oe2403");
         assert_eq!(spec.name, "ncurses-base");
         assert_eq!(spec.version, Some("6.4-8.oe2403".to_string()));
         assert_eq!(spec.arch, None);
 
         // Package name with hyphen, version, and arch
-        let spec = parse_rpm_package_spec("ncurses-base-6.4-8.oe2403.noarch");
+        let spec = parse_rpm_nvra("ncurses-base-6.4-8.oe2403.noarch");
         assert_eq!(spec.name, "ncurses-base");
         assert_eq!(spec.version, Some("6.4-8.oe2403".to_string()));
         assert_eq!(spec.arch, Some("noarch".to_string()));
+
+        // Glob patterns (name only, no version/arch)
+        let spec = parse_rpm_nvra("*bash");
+        assert_eq!(spec.name, "*bash");
+        let spec = parse_rpm_nvra("bash*");
+        assert_eq!(spec.name, "bash*");
+    }
+
+    #[test]
+    fn test_glob_pattern_matches_package_names() {
+        assert!(Pattern::new("*bash").unwrap().matches("bash"));
+        assert!(Pattern::new("bash*").unwrap().matches("bash"));
+        assert!(Pattern::new("bash*").unwrap().matches("bash-completion"));
     }
 }

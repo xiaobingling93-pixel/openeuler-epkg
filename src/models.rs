@@ -185,6 +185,10 @@ pub struct Package {
     #[serde(default)] // necessary for solver_tests::tests
     pub pkgkey: String, // != pkgline
 
+    /// Store directory name for installed/in-store packages (pkgline format).
+    #[serde(default)]
+    pub pkgline: Option<String>,
+
     #[serde(skip)]
     #[serde(rename = "packageBaseurl")]
     pub package_baseurl: String,
@@ -978,6 +982,8 @@ pub struct PackageCache {
     /// Maps pkgkey -> InstalledPackageInfo (loaded from env installed-packages.json)
     /// key is pkgkey (!= pkgline)
     pub installed_packages: RwLock<InstalledPackagesMap>,
+    /// Maps pkgline -> Arc<InstalledPackageInfo> (mirror of installed_packages for O(1) pkgline lookup)
+    pub pkgline2installed: RwLock<InstalledPackagesMap>,
     /// Maps pkgname -> version constraint string (loaded from env world.json)
     /// Special key "no-install" stores space-separated list of package names to exclude
     pub world: RwLock<HashMap<String, String>>,

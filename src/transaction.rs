@@ -116,6 +116,7 @@ fn run_action(
             // Note: Actual linking happens earlier in the download/unpack phase
 
             PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.to_string(), Arc::clone(pkg_info));
+            PACKAGE_CACHE.pkgline2installed.write().unwrap().insert(pkg_info.pkgline.clone(), Arc::clone(pkg_info));
         }
 
         PackageAction::PostInstall => {

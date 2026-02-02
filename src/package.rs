@@ -80,6 +80,15 @@ pub fn pkgkey2arch(pkgkey: &str) -> Result<String> {
     parse_pkgkey_parts(pkgkey).map(|(_, _, arch)| arch.to_string())
 }
 
+/// Name, version, and architecture from a package spec (e.g. name or name:arch).
+/// Used by dpkg-query and rpm-style query applets.
+#[derive(Debug, Clone)]
+pub struct PackageNVRA {
+    pub name: String,
+    pub version: Option<String>,
+    pub arch: Option<String>,
+}
+
 // Extract a package key from a pkgline
 pub fn pkgline2pkgkey(pkgline: &str) -> Result<String> {
     let parts: Vec<&str> = pkgline.split("__").collect();

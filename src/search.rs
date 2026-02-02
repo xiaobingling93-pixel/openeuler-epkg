@@ -46,6 +46,10 @@ fn find_last_match(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Option
     }
 }
 
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
 // Search options for RPM filelists
 #[derive(Debug, Default, Clone)]
 pub struct SearchOptions {
@@ -79,7 +83,7 @@ fn setup_patterns(options: &mut SearchOptions) -> Result<()> {
     }
 
     // Auto-detect glob pattern if not using regexp
-    if !options.regexp && (options.origin_pattern.contains('*') || options.origin_pattern.contains('?') || options.origin_pattern.contains('[')) {
+    if !options.regexp && is_glob_pattern(&options.origin_pattern) {
         options.glob = true;
         options.glob_pattern = Some(glob::Pattern::new(&options.origin_pattern).unwrap());
     }

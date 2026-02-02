@@ -893,6 +893,7 @@ pub fn build_all_pkgs_from_operations(plan: &mut InstallationPlan) {
 /// * `pkg_info` - Package info containing the depends list
 pub fn remove_package_from_cache(pkgkey: &str, pkg_info: &InstalledPackageInfo) {
     PACKAGE_CACHE.installed_packages.write().unwrap().remove(pkgkey);
+    PACKAGE_CACHE.pkgline2installed.write().unwrap().remove(&pkg_info.pkgline);
     // Update rdepends
     for dep_on_key in &pkg_info.depends {
         let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();

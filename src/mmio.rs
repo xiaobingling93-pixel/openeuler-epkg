@@ -563,6 +563,7 @@ pub fn map_pkgline2package(pkgline: &str) -> Result<Package> {
 
     // Set a default repodata_name for locally installed packages
     package.repodata_name = "local".to_string();
+    package.pkgline = Some(pkgline.to_string());
 
     Ok(package)
 }

@@ -17,6 +17,7 @@ impl PackageCache {
             pkgname2packages: RwLock::new(HashMap::new()),
             provide2pkgnames: RwLock::new(HashMap::new()),
             installed_packages: RwLock::<InstalledPackagesMap>::default(),
+            pkgline2installed: RwLock::<InstalledPackagesMap>::default(),
             world: RwLock::new(HashMap::new()),
             pkgline2filelist: RwLock::new(HashMap::new()),
         }
@@ -29,6 +30,7 @@ impl PackageCache {
         self.pkgname2packages.write().unwrap().clear();
         self.provide2pkgnames.write().unwrap().clear();
         self.installed_packages.write().unwrap().clear();
+        self.pkgline2installed.write().unwrap().clear();
         self.world.write().unwrap().clear();
         self.pkgline2filelist.write().unwrap().clear();
     }

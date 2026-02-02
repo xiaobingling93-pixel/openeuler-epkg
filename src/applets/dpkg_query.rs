@@ -1,49 +1,55 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use std::fs;
-use std::path::Path;
-use crate::models::{InstalledPackageInfo, Package};
-use std::sync::Arc;
-use crate::mmio;
-use crate::list;
+use crate::models::InstalledPackageInfo;
 use crate::models::dirs;
-use crate::models::PACKAGE_CACHE;
+use crate::applets::rpm::{
+    path_match_matches, path_match_prepare, pkgline_to_package_and_installed_info,
+    resolve_package_spec, select_installed_pkglines_owning_path,
+};
+use crate::utils::{list_package_file_paths_normalized, truncate_display};
+
+/// Command selected; matches dpkg-query "Commands" (one of -l, -W, -L, -S, -c).
+#[derive(Clone, Copy)]
+pub enum DpkgQueryCommand {
+    List,        // -l, --list [<pattern>...]
+    Show,        // -W, --show [<pattern>...]
+    Listfiles,   // -L, --listfiles <package>...
+    Search,      // -S, --search <pattern>...
+    ControlPath, // -c, --control-path <package> [<file>]
+}
 
 pub struct DpkgQueryOptions {
-    pub list: bool,
-    pub list_pattern: Option<String>,
-    pub show: bool,
+    pub command: Option<DpkgQueryCommand>,
     pub showformat: Option<String>,
-    pub listfiles: bool,
-    pub search: Option<String>,
-    pub control_path: Option<String>,
-    pub control_file: Option<String>,
-    pub packages: Vec<String>,
+    /// Positional args: patterns for List/Show, packages for Listfiles, pattern(s) for Search, package [file] for ControlPath.
+    pub args: Vec<String>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgQueryOptions> {
-    let list = matches.get_flag("list");
-    let list_pattern = matches.get_one::<String>("list-pattern").cloned();
-    let show = matches.get_flag("show");
     let showformat = matches.get_one::<String>("showformat").cloned();
-    let listfiles = matches.get_flag("listfiles");
-    let search = matches.get_one::<String>("search").cloned();
-    let control_path = matches.get_one::<String>("control-path").cloned();
-    let control_file = matches.get_one::<String>("control-file").cloned();
-    let packages: Vec<String> = matches.get_many::<String>("packages")
+    let args: Vec<String> = matches.get_many::<String>("args")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
+    let command = if matches.get_flag("list") {
+        Some(DpkgQueryCommand::List)
+    } else if matches.get_flag("show") {
+        Some(DpkgQueryCommand::Show)
+    } else if matches.get_flag("listfiles") {
+        Some(DpkgQueryCommand::Listfiles)
+    } else if matches.get_flag("search") {
+        Some(DpkgQueryCommand::Search)
+    } else if matches.get_flag("control-path") {
+        Some(DpkgQueryCommand::ControlPath)
+    } else {
+        None
+    };
+
     Ok(DpkgQueryOptions {
-        list,
-        list_pattern,
-        show,
+        command,
         showformat,
-        listfiles,
-        search,
-        control_path,
-        control_file,
-        packages,
+        args,
     })
 }
 
@@ -54,39 +60,33 @@ pub fn command() -> Command {
             .short('l')
             .long("list")
             .action(clap::ArgAction::SetTrue)
-            .help("List packages matching pattern"))
-        .arg(Arg::new("list-pattern")
-            .help("Pattern to match package names (used with --list)"))
+            .help("List packages concisely."))
         .arg(Arg::new("show")
             .short('W')
             .long("show")
             .action(clap::ArgAction::SetTrue)
-            .help("Show information about packages"))
+            .help("Show information on package(s)."))
         .arg(Arg::new("showformat")
             .short('f')
             .long("showformat")
-            .value_name("FORMAT")
-            .help("Use alternative format for output"))
+            .value_name("format")
+            .help("Use alternative format for --show."))
         .arg(Arg::new("listfiles")
             .short('L')
             .long("listfiles")
             .action(clap::ArgAction::SetTrue)
-            .help("List files installed by package"))
+            .help("List files 'owned' by package(s)."))
         .arg(Arg::new("search")
             .short('S')
             .long("search")
-            .value_name("FILENAME-PATTERN")
-            .help("Search for packages owning files"))
+            .action(clap::ArgAction::SetTrue)
+            .help("Find package(s) owning file(s)."))
         .arg(Arg::new("control-path")
+            .short('c')
             .long("control-path")
-            .value_name("PACKAGE")
-            .help("Print path to control file"))
-        .arg(Arg::new("control-file")
-            .long("control-file")
-            .value_name("FILE")
-            .help("Control file name (used with --control-path)"))
-        .arg(Arg::new("packages")
-            .help("Package names to query")
+            .action(clap::ArgAction::SetTrue)
+            .help("Print path for package control file."))
+        .arg(Arg::new("args")
             .num_args(0..))
 }
 
@@ -220,7 +220,7 @@ fn format_output(format_str: &str, package: &crate::models::Package, installed_i
 }
 
 fn list_packages(pattern: Option<&str>) -> Result<()> {
-    crate::io::load_installed_packages()?;
+    let pkglines = select_pkglines(pattern)?;
 
     // Print header
     println!("Desired=Unknown/Install/Remove/Purge/Hold");
@@ -231,46 +231,23 @@ fn list_packages(pattern: Option<&str>) -> Result<()> {
 
     let mut packages: Vec<(String, String, String, String, String)> = Vec::new();
 
-    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        // Get package info
-        let package = match mmio::map_pkgline2package(&installed_info.pkgline) {
-            Ok(pkg) => pkg,
-            Err(_) => {
-                // Try to get from repository
-                match mmio::map_pkgkey2package(pkgkey) {
-                    Ok(pkg) => pkg,
-                    Err(_) => continue,
-                }
-            }
+    for pkgline in pkglines {
+        let (package, installed_info) = match pkgline_to_package_and_installed_info(&pkgline) {
+            Some(p) => p,
+            None => continue,
         };
-
-        let pkgname = &package.pkgname;
-
-        // Apply pattern filter if provided
-        if let Some(pat) = pattern {
-            if !list::matches_glob_pattern(pkgname, pat) {
-                continue;
-            }
-        }
-
-        let status = get_package_status(installed_info);
-        let version = &package.version;
-        let arch = &package.arch;
-        let summary = &package.summary;
-
+        let status = get_package_status(installed_info.as_ref());
         packages.push((
             status,
-            pkgname.clone(),
-            version.clone(),
-            arch.clone(),
-            summary.clone(),
+            package.pkgname.clone(),
+            package.version.clone(),
+            package.arch.clone(),
+            package.summary.clone(),
         ));
     }
 
-    // Sort by package name
     packages.sort_by(|a, b| a.1.cmp(&b.1));
 
-    // Print packages
     for (status, pkgname, version, arch, summary) in packages {
         let status_display = if status.len() >= 2 {
             format!("{} ", &status[..2])
@@ -279,118 +256,99 @@ fn list_packages(pattern: Option<&str>) -> Result<()> {
         };
         println!("{:<3} {:<55} {:<36} {:<12} {}",
             status_display,
-            truncate(&pkgname, 55),
-            truncate(&version, 36),
-            truncate(&arch, 12),
-            truncate(&summary, 80)
+            truncate_display(&pkgname, 55),
+            truncate_display(&version, 36),
+            truncate_display(&arch, 12),
+            truncate_display(&summary, 80)
         );
     }
 
     Ok(())
 }
 
-/// Helper function to load package info from pkgline or fallback to pkgkey
-fn load_package_info(pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<Package> {
-    match mmio::map_pkgline2package(&installed_info.pkgline) {
-        Ok(pkg) => Ok(pkg),
-        Err(_) => {
-            // Fallback to repository lookup
-            mmio::map_pkgkey2package(pkgkey)
-        }
-    }
-}
-
-/// Helper function to find installed package by name (with optional arch suffix)
-/// Returns (Package, Arc<InstalledPackageInfo>) if found
-fn find_installed_package_by_name(
-    pkgname: &str,
-    arch_suffix: Option<&str>,
-) -> Option<(Package, Arc<InstalledPackageInfo>)> {
-    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        let package = match load_package_info(pkgkey, installed_info.as_ref()) {
-            Ok(pkg) => pkg,
-            Err(_) => continue,
-        };
-
-        if package.pkgname == pkgname {
-            if let Some(arch) = arch_suffix {
-                if package.arch != arch {
-                    continue;
-                }
-            }
-            return Some((package, Arc::clone(installed_info)));
-        }
-    }
-    None
-}
-
-/// Parse package spec (name or name:arch) into (pkgname, arch_suffix)
-fn parse_package_spec(pkg_spec: &str) -> (&str, Option<&str>) {
-    if let Some((name, arch)) = pkg_spec.split_once(':') {
-        (name, Some(arch))
-    } else {
-        (pkg_spec, None)
-    }
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
-}
-
-fn show_packages(packages: &[String], format: Option<&str>) -> Result<()> {
+/// Select installed package pkglines by one pattern. Use None or "*" for all installed.
+fn select_pkglines(pattern: Option<&str>) -> Result<Vec<String>> {
     crate::io::load_installed_packages()?;
+    let spec = pattern.unwrap_or("*");
+    let matches = resolve_package_spec(spec, false);
+    let pkglines = matches
+        .into_iter()
+        .filter_map(|(_, inst)| inst.map(|i| i.pkgline.clone()))
+        .collect();
+    Ok(pkglines)
+}
+
+/// Select installed pkglines by multiple patterns. Returns (pkglines, patterns_that_matched_nothing).
+/// When dedup is true, pkglines are ordered by first occurrence across patterns.
+fn select_pkglines_by_patterns(
+    patterns: &[String],
+    dedup: bool,
+) -> Result<(Vec<String>, Vec<String>)> {
+    use std::collections::HashSet;
+    let mut pkglines = Vec::new();
+    let mut seen = HashSet::new();
+    let mut unmatched = Vec::new();
+
+    for pattern in patterns {
+        let matched = select_pkglines(Some(pattern))?;
+        if matched.is_empty() {
+            unmatched.push(pattern.clone());
+            continue;
+        }
+        for pkgline in matched {
+            if dedup {
+                if seen.insert(pkgline.clone()) {
+                    pkglines.push(pkgline);
+                }
+            } else {
+                pkglines.push(pkgline);
+            }
+        }
+    }
+
+    Ok((pkglines, unmatched))
+}
+
+fn show_packages(package_specs: &[String], format: Option<&str>) -> Result<()> {
+    let (pkglines, unmatched) = select_pkglines_by_patterns(package_specs, true)?;
+    for pattern in &unmatched {
+        eprintln!("dpkg-query: no packages found matching '{}'", pattern);
+    }
 
     let default_format = format.unwrap_or("${binary:Package}\t${Version}\n");
-
-    for pkg_spec in packages {
-        let (pkgname, arch_suffix) = parse_package_spec(pkg_spec);
-
-        if let Some((package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
+    for pkgline in pkglines {
+        if let Some((package, installed_info)) = pkgline_to_package_and_installed_info(&pkgline) {
             let output = format_output(default_format, &package, Some(installed_info.as_ref()));
             print!("{}", output);
-        } else {
-            eprintln!("dpkg-query: no packages found matching '{}'", pkg_spec);
         }
     }
 
     Ok(())
 }
 
-fn list_files(packages: &[String]) -> Result<()> {
-    crate::io::load_installed_packages()?;
-
-    for pkg_spec in packages {
-        let (pkgname, arch_suffix) = parse_package_spec(pkg_spec);
-
-        if let Some((_package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
-            // Read filelist
-            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
-            let filelist_path = store_path.join("info/filelist.txt");
-
-            if filelist_path.exists() {
-                if let Ok(content) = fs::read_to_string(&filelist_path) {
-                    // Parse mtree format and extract file paths
-                    for line in content.lines() {
-                        if line.trim().is_empty() || line.starts_with('#') {
-                            continue;
-                        }
-                        // mtree format: path type=file ...
-                        if let Some(path) = line.split_whitespace().next() {
-                            if !path.starts_with('.') {
-                                println!("/{}", path.trim_start_matches('/'));
-                            } else {
-                                println!("{}", path);
-                            }
-                        }
+fn list_files(package_specs: &[String]) -> Result<()> {
+    let mut printed_any = false;
+    for pkg_spec in package_specs {
+        let pkglines = select_pkglines(Some(pkg_spec))?;
+        if pkglines.is_empty() {
+            eprintln!("dpkg-query: no packages found matching '{}'", pkg_spec);
+            continue;
+        }
+        for pkgline in pkglines {
+            let store_path = dirs().epkg_store.join(pkgline);
+            if let Ok(paths) = list_package_file_paths_normalized(&store_path) {
+                if printed_any {
+                    println!();
+                }
+                printed_any = true;
+                for path in paths {
+                    if path.starts_with('/') {
+                        println!("{}", path);
+                    } else {
+                        println!("/{}", path);
                     }
                 }
             }
-        } else {
-            eprintln!("dpkg-query: no packages found matching '{}'", pkg_spec);
         }
     }
 
@@ -398,66 +356,36 @@ fn list_files(packages: &[String]) -> Result<()> {
 }
 
 fn search_files(pattern: &str) -> Result<()> {
-    crate::io::load_installed_packages()?;
-
-    let pattern_path = Path::new(pattern);
-    let mut found_any = false;
-
-    for (pkgkey, installed_info) in PACKAGE_CACHE.installed_packages.read().unwrap().iter() {
-        let package = match load_package_info(pkgkey, installed_info) {
-            Ok(pkg) => pkg,
-            Err(_) => continue,
+    let pkglines = select_installed_pkglines_owning_path(pattern)?;
+    if pkglines.is_empty() {
+        eprintln!("dpkg-query: no path found matching pattern '{}'", pattern);
+        std::process::exit(1);
+    }
+    let state = path_match_prepare(pattern);
+    for pkgline in pkglines {
+        let (package, installed_info) = match pkgline_to_package_and_installed_info(&pkgline) {
+            Some(p) => p,
+            None => continue,
         };
-
-        // Read filelist
         let store_path = dirs().epkg_store.join(&installed_info.pkgline);
-        let filelist_path = store_path.join("info/filelist.txt");
-
-        if !filelist_path.exists() {
-            continue;
-        }
-
-        if let Ok(content) = fs::read_to_string(&filelist_path) {
-            for line in content.lines() {
-                if line.trim().is_empty() || line.starts_with('#') {
-                    continue;
-                }
-
-                if let Some(file_path) = line.split_whitespace().next() {
-                    let normalized_path = if file_path.starts_with('.') {
-                        &file_path[1..]
-                    } else {
-                        file_path
-                    };
-
-                    let file_path_obj = Path::new(normalized_path);
-
-                    // Check if pattern matches
-                    if file_path_obj == pattern_path ||
-                       file_path_obj.starts_with(pattern_path) ||
-                       normalized_path.contains(pattern) {
-                        println!("{}: {}", package.pkgname, normalized_path);
-                        found_any = true;
-                    }
+        if let Ok(paths) = list_package_file_paths_normalized(&store_path) {
+            for normalized_path in paths {
+                if path_match_matches(&state, &normalized_path) {
+                    println!("{}: {}", package.pkgname, normalized_path);
                 }
             }
         }
     }
-
-    if !found_any {
-        eprintln!("dpkg-query: no path found matching pattern '{}'", pattern);
-        std::process::exit(1);
-    }
-
     Ok(())
 }
 
 fn show_control_path(package_spec: &str, control_file: Option<&str>) -> Result<()> {
     crate::io::load_installed_packages()?;
 
-    let (pkgname, arch_suffix) = parse_package_spec(package_spec);
+    let pkglines = select_pkglines(Some(package_spec))?;
+    let maybe_package = pkglines.first().and_then(|pkgline| pkgline_to_package_and_installed_info(pkgline));
 
-    if let Some((_package, installed_info)) = find_installed_package_by_name(pkgname, arch_suffix) {
+    if let Some((_package, installed_info)) = maybe_package {
         let store_path = dirs().epkg_store.join(&installed_info.pkgline);
         let control_file_name = control_file.unwrap_or("control");
         let control_path = store_path.join("info/deb").join(control_file_name);
@@ -476,32 +404,54 @@ fn show_control_path(package_spec: &str, control_file: Option<&str>) -> Result<(
 }
 
 pub fn run(options: DpkgQueryOptions) -> Result<()> {
-    if options.list {
-        list_packages(options.list_pattern.as_deref())?;
-    } else if options.listfiles {
-        if options.packages.is_empty() {
-            eprintln!("dpkg-query: --listfiles requires at least one package name");
+    let cmd = match options.command {
+        Some(c) => c,
+        None => {
+            eprintln!("dpkg-query: no action specified");
+            eprintln!("Type dpkg-query --help for help.");
             std::process::exit(2);
         }
-        list_files(&options.packages)?;
-    } else if let Some(search_pattern) = &options.search {
-        search_files(search_pattern)?;
-    } else if let Some(control_pkg) = &options.control_path {
-        show_control_path(control_pkg, options.control_file.as_deref())?;
-    } else if options.show || !options.packages.is_empty() {
-        // Default to --show if packages are specified
-        let format = options.showformat.as_deref();
-        if options.packages.is_empty() {
-            eprintln!("dpkg-query: --show requires at least one package name");
-            std::process::exit(2);
+    };
+
+    let format = options.showformat.as_deref();
+    match cmd {
+        DpkgQueryCommand::List => list_packages(options.args.first().map(String::as_str))?,
+        DpkgQueryCommand::Show => {
+            if options.args.is_empty() {
+                show_packages(&[String::from("*")], format)?;
+            } else {
+                show_packages(&options.args, format)?;
+            }
         }
-        show_packages(&options.packages, format)?;
-    } else {
-        eprintln!("dpkg-query: no action specified");
-        eprintln!("Type dpkg-query --help for help.");
-        std::process::exit(2);
+        DpkgQueryCommand::Listfiles => {
+            if options.args.is_empty() {
+                eprintln!("dpkg-query: --listfiles requires at least one package name");
+                std::process::exit(2);
+            }
+            list_files(&options.args)?;
+        }
+        DpkgQueryCommand::Search => {
+            let pattern = match options.args.first() {
+                Some(p) => p.as_str(),
+                None => {
+                    eprintln!("dpkg-query: --search needs at least one pattern");
+                    std::process::exit(2);
+                }
+            };
+            search_files(pattern)?;
+        }
+        DpkgQueryCommand::ControlPath => {
+            let package = match options.args.first() {
+                Some(p) => p.as_str(),
+                None => {
+                    eprintln!("dpkg-query: --control-path needs a package name");
+                    std::process::exit(2);
+                }
+            };
+            let file = options.args.get(1).map(String::as_str);
+            show_control_path(package, file)?;
+        }
     }
 
     Ok(())
 }
-

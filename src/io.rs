@@ -543,6 +543,12 @@ pub fn load_installed_packages() -> Result<()> {
     for (k, v) in packages {
         installed.insert(k, v);
     }
+    drop(installed);
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    let mut pkgline2installed = PACKAGE_CACHE.pkgline2installed.write().unwrap();
+    for (_, info) in installed.iter() {
+        pkgline2installed.insert(info.pkgline.clone(), Arc::clone(info));
+    }
     Ok(())
 }
 

@@ -4,6 +4,7 @@ use crate::models::PACKAGE_CACHE;
 use crate::io::load_installed_packages;
 use color_eyre::Result;
 use memchr::{memchr, memmem::Finder};
+use glob::Pattern;
 use std::sync::Arc;
 
 // ======================================================================================
@@ -106,6 +107,17 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
 fn process_installed_packages(pattern: &str, upgradable_only: bool, list_title: &str) -> Result<usize> {
     let mut local_items = Vec::new();
 
+    // Pre-compile glob pattern if provided (empty or "*" means match all)
+    let pattern_glob = if pattern.is_empty() || pattern == "*" {
+        None
+    } else {
+        match Pattern::new(pattern) {
+            Ok(p) => Some(p),
+            // Invalid pattern: treat as no matches
+            Err(_) => return Ok(0),
+        }
+    };
+
     // Collect keys and info to avoid borrowing conflicts
     let installed_data: Vec<(String, Arc<InstalledPackageInfo>)> = PACKAGE_CACHE.installed_packages
         .read()
@@ -125,8 +137,10 @@ fn process_installed_packages(pattern: &str, upgradable_only: bool, list_title: 
         };
 
         // Apply pattern filtering early
-        if !matches_glob_pattern(&pkgname, pattern) {
-            continue;
+        if let Some(ref pat) = pattern_glob {
+            if !pat.matches(&pkgname) {
+                continue;
+            }
         }
 
         // Check upgrade requirement if needed
@@ -242,9 +256,14 @@ fn collect_matching_pkgnames(pattern: &str) -> Result<Vec<String>> {
 
             let handle = std::thread::spawn(move || {
                 let mut local_matches = Vec::new();
+                // Compile glob pattern once per thread; empty/"*" should have been handled earlier
+                let pat = match Pattern::new(&pattern_clone) {
+                    Ok(p) => p,
+                    // Invalid pattern: no matches in this shard
+                    Err(_) => return local_matches,
+                };
                 for pkgname in shard_pkgnames {
-                    // Simple glob pattern matching (can be optimized further)
-                    if matches_glob_pattern(&pkgname, &pattern_clone) {
+                    if pat.matches(&pkgname) {
                         local_matches.push(pkgname);
                     }
                 }
@@ -636,221 +655,4 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     // println!("  Position 3 - Upgrade: U=upgrade available, (space)=no upgrade available");
 
     Ok(())
-}
-
-/// Static version of matches_glob_pattern for use in threads
-/// Also exported for use in other modules like dpkg_query
-pub fn matches_glob_pattern(name: &str, pattern: &str) -> bool {
-    // Handle simple cases
-    if pattern.is_empty() || pattern == "*" {
-        return true; // matches everything
-    }
-
-    if !pattern.contains('*') {
-        // No wildcards, exact match
-        return name == pattern;
-    }
-
-    // Split pattern by '*' to get parts that must be matched in order
-    let parts: Vec<&str> = pattern.split('*').collect();
-
-    // Filter out empty parts (from consecutive '*' or leading/trailing '*')
-    let parts: Vec<&str> = parts.into_iter().filter(|&p| !p.is_empty()).collect();
-
-    if parts.is_empty() {
-        return true; // Pattern is all '*', matches everything
-    }
-
-    let mut search_start = 0;
-
-    for (i, part) in parts.iter().enumerate() {
-        if i == 0 && !pattern.starts_with('*') {
-            // First part and pattern doesn't start with '*' - must match at beginning
-            if !name.starts_with(part) {
-                return false;
-            }
-            search_start = part.len();
-        } else if i == parts.len() - 1 && !pattern.ends_with('*') {
-            // Last part and pattern doesn't end with '*' - must match at end
-            if !name[search_start..].ends_with(part) {
-                return false;
-            }
-        } else {
-            // Middle part or flexible end - find it after current position
-            if let Some(pos) = name[search_start..].find(part) {
-                search_start += pos + part.len();
-            } else {
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_matches_glob_pattern_no_wildcards() {
-        // Exact matching when no wildcards
-        assert!(matches_glob_pattern("bash", "bash"));
-        assert!(!matches_glob_pattern("bash-completion", "bash"));
-        assert!(!matches_glob_pattern("mybash", "bash"));
-        assert!(!matches_glob_pattern("bash123", "bash"));
-        assert!(!matches_glob_pattern("bsh", "bash"));
-        assert!(!matches_glob_pattern("base", "bash"));
-    }
-
-    #[test]
-    fn test_matches_glob_pattern_prefix() {
-        // Prefix matching (pattern*)
-        assert!(matches_glob_pattern("bash", "bash*"));
-        assert!(matches_glob_pattern("bash-completion", "bash*"));
-        assert!(matches_glob_pattern("bashrc", "bash*"));
-        assert!(!matches_glob_pattern("mybash", "bash*"));
-        assert!(!matches_glob_pattern("abc", "bash*"));
-
-        assert!(matches_glob_pattern("java-8", "java*"));
-        assert!(matches_glob_pattern("java", "java*"));
-        assert!(!matches_glob_pattern("python-java", "java*"));
-    }
-
-    #[test]
-    fn test_matches_glob_pattern_suffix() {
-        // Suffix matching (*pattern)
-        assert!(matches_glob_pattern("bash", "*bash"));
-        assert!(matches_glob_pattern("mybash", "*bash"));
-        assert!(matches_glob_pattern("zsh-bash", "*bash"));
-        assert!(!matches_glob_pattern("bash-completion", "*bash"));
-        assert!(!matches_glob_pattern("bashrc", "*bash"));
-
-        assert!(matches_glob_pattern("lib-dev", "*dev"));
-        assert!(matches_glob_pattern("something-dev", "*dev"));
-        assert!(!matches_glob_pattern("development", "*dev"));
-    }
-
-    #[test]
-    fn test_matches_glob_pattern_contains() {
-        // Contains matching (*pattern*)
-        assert!(matches_glob_pattern("bash", "*bash*"));
-        assert!(matches_glob_pattern("mybash", "*bash*"));
-        assert!(matches_glob_pattern("bash-completion", "*bash*"));
-        assert!(matches_glob_pattern("my-bash-script", "*bash*"));
-        assert!(!matches_glob_pattern("bsh", "*bash*"));
-        assert!(!matches_glob_pattern("base", "*bash*"));
-
-        assert!(matches_glob_pattern("java-openjdk", "*java*"));
-        assert!(matches_glob_pattern("javac", "*java*"));
-        assert!(!matches_glob_pattern("python", "*java*"));
-    }
-
-    #[test]
-    fn test_matches_glob_pattern_complex() {
-        // Complex patterns (pre*suf)
-        assert!(matches_glob_pattern("bash", "b*sh"));
-        assert!(matches_glob_pattern("bush", "b*sh"));
-        assert!(matches_glob_pattern("brush", "b*sh"));
-        assert!(!matches_glob_pattern("zsh", "b*sh"));
-        assert!(!matches_glob_pattern("bash-completion", "b*sh"));
-
-        // Multiple wildcards
-        assert!(matches_glob_pattern("java-openjdk-headless", "java*openjdk*headless"));
-        assert!(matches_glob_pattern("java-11-openjdk-headless", "java*openjdk*headless"));
-        assert!(matches_glob_pattern("java-17-openjdk-devel-headless", "java*openjdk*headless"));
-        assert!(!matches_glob_pattern("java-openjdk", "java*openjdk*headless"));
-        assert!(!matches_glob_pattern("openjdk-headless", "java*openjdk*headless"));
-
-        // Pattern with parts in different positions
-        assert!(matches_glob_pattern("abc-def-ghi", "a*d*i"));
-        assert!(matches_glob_pattern("apple-dog-igloo", "a*d*o"));
-        assert!(!matches_glob_pattern("abc-ghi", "a*d*i"));
-        assert!(!matches_glob_pattern("def-ghi", "a*d*i"));
-    }
-
-    #[test]
-    fn test_matches_glob_pattern_edge_cases() {
-        // Empty pattern should match everything (fix for "epkg list" without pattern)
-        assert!(matches_glob_pattern("anything", ""));
-        assert!(matches_glob_pattern("bash", ""));
-        assert!(matches_glob_pattern("", ""));
-        assert!(matches_glob_pattern("java-openjdk", ""));
-
-        // Just wildcard
-        assert!(matches_glob_pattern("anything", "*"));
-        assert!(matches_glob_pattern("", "*"));
-        assert!(matches_glob_pattern("bash", "*"));
-
-        // Multiple consecutive wildcards
-        assert!(matches_glob_pattern("bash", "**bash**"));
-        assert!(matches_glob_pattern("mybash", "**bash**"));
-        assert!(matches_glob_pattern("bash-completion", "**bash**"));
-
-        // Empty pattern parts
-        assert!(matches_glob_pattern("bash", "*bash*"));
-        assert!(matches_glob_pattern("bash", "bash**"));
-        assert!(matches_glob_pattern("bash", "**bash"));
-
-        // Pattern longer than name
-        assert!(!matches_glob_pattern("sh", "bash"));
-        assert!(!matches_glob_pattern("ba", "bash*"));
-
-        // Empty name
-        assert!(!matches_glob_pattern("", "bash"));
-        assert!(matches_glob_pattern("", "*"));
-        assert!(!matches_glob_pattern("", "a*"));
-    }
-
-    #[test]
-    fn test_matches_glob_pattern_real_world_examples() {
-        // Real package names and patterns
-        let packages = vec![
-            "bash",
-            "bash-completion",
-            "bash-static",
-            "java-1.8.0-openjdk",
-            "java-1.8.0-openjdk-headless",
-            "java-11-openjdk-headless",
-            "java-17-openjdk-headless",
-            "lib-dev",
-            "python3-dev",
-            "gcc-c++",
-            "kernel-headers",
-        ];
-
-        // Test *bash* pattern
-        let bash_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| matches_glob_pattern(pkg, "*bash*"))
-            .collect();
-        assert_eq!(bash_matches, vec![&"bash", &"bash-completion", &"bash-static"]);
-
-        // Test java* pattern
-        let java_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| matches_glob_pattern(pkg, "java*"))
-            .collect();
-        assert_eq!(java_matches, vec![
-            &"java-1.8.0-openjdk",
-            &"java-1.8.0-openjdk-headless",
-            &"java-11-openjdk-headless",
-            &"java-17-openjdk-headless"
-        ]);
-
-        // Test *dev pattern
-        let dev_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| matches_glob_pattern(pkg, "*dev"))
-            .collect();
-        assert_eq!(dev_matches, vec![&"lib-dev", &"python3-dev"]);
-
-        // Test *openjdk*headless pattern
-        let openjdk_headless_matches: Vec<_> = packages.iter()
-            .filter(|&pkg| matches_glob_pattern(pkg, "*openjdk*headless"))
-            .collect();
-        assert_eq!(openjdk_headless_matches, vec![
-            &"java-1.8.0-openjdk-headless",
-            &"java-11-openjdk-headless",
-            &"java-17-openjdk-headless"
-        ]);
-    }
 }
