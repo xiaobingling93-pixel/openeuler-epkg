@@ -114,24 +114,31 @@ fn main() -> Result<()> {
     setup_logging();
     setup_ctrlc();
 
+    let argv: Vec<String> = std::env::args().collect();
+    log::debug!("argv[{}]: {:?}", argv.len(), argv);
+
     // Gracefully exit instead of panic with BACKTRACE on `epkg info bash | head`
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    // Check if invoked as an applet (via symlink/hardlink)
-    // If so, handle it and return early
-    match crate::applets::handle_applet_invocation()? {
-        Some(_) => return Ok(()), // Handled as applet, exit
-        None => {} // Not an applet, continue with normal flow
+    // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
+    let invoked_as_applet = crate::applets::is_invoked_as_applet();
+    crate::models::init_config(invoked_as_applet)?;
+
+    // If invoked as an applet (via symlink/hardlink), handle it and return early
+    if invoked_as_applet {
+        match crate::applets::handle_applet_invocation()? {
+            Some(_) => return Ok(()), // Handled as applet, exit
+            None => {} // Should not happen after is_invoked_as_applet()
+        }
     }
 
-    // 第一次访问会触发命令行解析和配置初始化
-    log::trace!("Application starting with config: {:#?}", config());
+    log::trace!("Application starting with config: {:#?}", &*config());
 
     try_light_init()?;
 
-    let matches = &CLAP_MATCHES;
+    let matches = clap_matches();
     match matches.subcommand() {
         Some(("self",       sub_matches))  =>  command_self(sub_matches)?,
         Some(("env",        sub_matches))  =>  command_env(sub_matches)?,
@@ -368,7 +375,7 @@ fn parse_gen_id(s: &str) -> Result<i32, String> {
         .map_err(|e| format!("Invalid generation ID '{}': {}", s, e))
 }
 
-pub fn parse_cmdline() -> clap::ArgMatches {
+fn build_epkg_command() -> Command {
     Command::new("epkg")
         .author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
         .author("Duan Pengjie <pengjieduan@gmail.com>")
@@ -671,7 +678,17 @@ OPTIONS:
                         .arg(arg!(<SERVICE_NAME> "Name of the service to restart (without .service extension)"))
                 )
         )
-        .get_matches()
+}
+
+/// Parse command line from environment args (normal epkg invocation).
+pub fn parse_cmdline() -> clap::ArgMatches {
+    build_epkg_command().get_matches_from(env::args())
+}
+
+/// Parse command line from given args (used when running as applet so main parser is not run on applet argv).
+#[allow(dead_code)]
+pub fn parse_cmdline_from(args: Vec<String>) -> clap::ArgMatches {
+    build_epkg_command().get_matches_from(args)
 }
 
 pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {

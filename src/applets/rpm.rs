@@ -416,6 +416,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<RpmOptions> {
 pub fn command() -> Command {
     Command::new("rpm")
         .about("RPM package manager query tool")
+        .arg_required_else_help(true) // This will show help if no args are provided
         .arg(Arg::new("query")
             .short('q')
             .long("query")
@@ -440,8 +441,7 @@ pub fn command() -> Command {
             .short('f')
             .long("file")
             .value_name("FILE")
-            // Use 0..=1 to allow missing argument, so we can produce RPM-specific error message
-            .num_args(0..=1)
+            .num_args(1)
             .action(clap::ArgAction::Set)
             .value_parser(clap::value_parser!(String))
             .help("Query package owning FILE"))
@@ -456,8 +456,7 @@ pub fn command() -> Command {
             .short('p')
             .long("package")
             .value_name("PACKAGE_FILE")
-            // Use 0..=1 to allow missing argument, so we can produce RPM-specific error message
-            .num_args(0..=1)
+            .num_args(1)
             .action(clap::ArgAction::Set)
             .value_parser(clap::value_parser!(String))
             .help("Query an (uninstalled) package file"))
@@ -589,7 +588,7 @@ pub fn command() -> Command {
             .action(clap::ArgAction::SetTrue)
             .help("Remove package(s)"))
         .arg(Arg::new("packages")
-            .value_name("PACKAGE_NAME")
+            .value_name("PACKAGE_SPECS")
             .help("Package name(s) to query")
             .num_args(0..))
 }
@@ -1141,17 +1140,15 @@ fn validate_query_options(options: &mut RpmOptions) -> Result<()> {
         return Ok(());
     }
 
-    // No action and no packages
-    if !has_action && options.package_specs.is_empty() {
-        eprintln!("rpm: no action specified");
-        eprintln!("Type rpm --help for help.");
-        std::process::exit(1);
-    }
-
     // Ensure packages are specified for any action
     if options.package_specs.is_empty() {
-        // Match system rpm error message format
-        eprintln!("rpm: no arguments given for query");
+        if !has_action {
+            eprintln!("rpm: no action specified");
+            eprintln!("Type rpm --help for help.");
+        } else {
+            // Match system rpm error message format
+            eprintln!("rpm: no arguments given for query");
+        }
         std::process::exit(1);
     }
     Ok(())

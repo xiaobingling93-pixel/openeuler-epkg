@@ -1,4 +1,4 @@
-use clap::{Command, error::ErrorKind};
+use clap::Command;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use color_eyre::eyre::Context;
@@ -75,6 +75,20 @@ fn get_applet_name_from_invocation() -> Option<String> {
     Some(applet_name)
 }
 
+/// Returns true if the binary was invoked as a registered applet (e.g. symlink named "rpm").
+pub fn is_invoked_as_applet() -> bool {
+    let invoked = match get_applet_name_from_invocation() {
+        Some(name) => name,
+        None => return false,
+    };
+    let (applet_name, _) = if invoked == "[" {
+        ("test".to_string(), true)
+    } else {
+        (invoked, false)
+    };
+    busybox_subcommands().iter().any(|cmd| cmd.get_name() == applet_name)
+}
+
 /// Handle applet invocation - parse arguments and execute the applet
 /// Returns Ok(Some(())) if handled as an applet, Ok(None) if not an applet, Err on error
 pub fn handle_applet_invocation() -> Result<Option<()>> {
@@ -111,58 +125,7 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
     args.insert(0, applet_name.clone());
 
     // Try to parse arguments - handle help requests specially
-    let matches = match applet_cmd.clone().try_get_matches_from(args) {
-        Ok(m) => m,
-        Err(e) => {
-            // If it's a help request or display help error, print it and exit
-            if e.kind() == clap::error::ErrorKind::DisplayHelp ||
-               e.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
-                e.print().expect("Failed to print help");
-                std::process::exit(0);
-            }
-            // For other errors, return them as-is so clap can format them properly
-            // Special handling for rpm applet to match system rpm error messages
-            // Note: This only applies when invoked directly as "rpm" applet (via symlink),
-            // not when invoked via "epkg busybox rpm" where clap errors occur earlier
-            if applet_name == "rpm" {
-                match e.kind() {
-                    ErrorKind::UnknownArgument => {
-                        let msg = e.to_string();
-                        // Try to extract argument between single quotes
-                        let arg = if let Some(start) = msg.find('\'') {
-                            if let Some(end) = msg[start+1..].find('\'') {
-                                Some(msg[start+1..start+1+end].to_string())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        if let Some(arg) = arg {
-                            eprintln!("rpm: {}: unknown option", arg);
-                        } else {
-                            eprintln!("rpm: {}", msg.strip_prefix("error: ").unwrap_or(&msg));
-                        }
-                    }
-                    ErrorKind::MissingRequiredArgument => {
-                        eprintln!("rpm: no arguments given for query");
-                    }
-                    _ => {
-                        let msg = e.to_string();
-                        if msg.starts_with("error: ") {
-                            eprintln!("rpm: {}", &msg[7..]);
-                        } else {
-                            eprintln!("rpm: {}", msg);
-                        }
-                    }
-                }
-                std::process::exit(2);
-            } else {
-                e.print().expect("Failed to print error");
-                std::process::exit(2);
-            }
-        }
-    };
+    let matches = applet_cmd.clone().get_matches_from(args);
 
     // Execute the applet
     exec_builtin_command(&applet_name, &matches)?;

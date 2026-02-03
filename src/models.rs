@@ -1,13 +1,17 @@
 use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::Arc;
+use crate::parse_cmdline;
+use crate::parse_cmdline_from;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use crate::search::SearchOptions;
 use color_eyre::Result;
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
 
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
@@ -994,111 +998,139 @@ pub struct PackageCache {
 /// Global package cache instance
 pub static PACKAGE_CACHE: LazyLock<PackageCache> = LazyLock::new(|| PackageCache::new());
 
-pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
-    // During tests, create a minimal ArgMatches to avoid command-line parsing errors
-    // This allows tests to run without requiring valid epkg command-line arguments
+static CLAP_MATCHES: OnceLock<clap::ArgMatches> = OnceLock::new();
+
+/// Returns the parsed command-line matches. Requires `init_config()` to have been called first (non-test).
+pub fn clap_matches() -> &'static clap::ArgMatches {
     #[cfg(test)]
     {
-        use clap::{Command, Arg, ArgAction};
-        Command::new("epkg")
-            .arg(Arg::new("arch").long("arch").default_value(std::env::consts::ARCH))
-            .arg(Arg::new("env").short('e').long("env"))
-            .arg(Arg::new("config").short('C').long("config"))
-            .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
-            .arg(Arg::new("download-only").long("download-only").action(ArgAction::SetTrue))
-            .arg(Arg::new("quiet").short('q').long("quiet").action(ArgAction::SetTrue))
-            .arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))
-            .arg(Arg::new("assume-yes").short('y').long("assume-yes").action(ArgAction::SetTrue))
-            .arg(Arg::new("assume-no").long("assume-no").action(ArgAction::SetTrue))
-            .arg(Arg::new("ignore-missing").short('m').long("ignore-missing").action(ArgAction::SetTrue))
-            .arg(Arg::new("metadata-expire").long("metadata-expire"))
-            .arg(Arg::new("proxy").long("proxy"))
-            // Keep test ArgMatches in sync with options used in parse_options_common/setup_parallel_params
-            .arg(
-                Arg::new("retry")
-                    .long("retry")
-                    .value_parser(clap::value_parser!(usize)),
-            )
-            .arg(
-                Arg::new("parallel-download")
-                    .long("parallel-download")
-                    .value_parser(clap::value_parser!(usize)),
-            )
-            .arg(
-                Arg::new("parallel-processing")
-                    .long("parallel-processing")
-                    .value_parser(clap::value_parser!(bool)),
-            )
-            // Add a dummy subcommand so parsing doesn't fail
-            .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
-            .arg_required_else_help(false) // Don't require subcommand during tests
-            .get_matches_from(vec!["epkg", "--dry-run", "info"]) // Use a valid subcommand with dry-run enabled
+        CLAP_MATCHES.get_or_init(|| {
+            use clap::{Arg, ArgAction, Command};
+            Command::new("epkg")
+                .arg(Arg::new("arch").long("arch").default_value(std::env::consts::ARCH))
+                .arg(Arg::new("env").short('e').long("env"))
+                .arg(Arg::new("config").short('C').long("config"))
+                .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
+                .arg(Arg::new("download-only").long("download-only").action(ArgAction::SetTrue))
+                .arg(Arg::new("quiet").short('q').long("quiet").action(ArgAction::SetTrue))
+                .arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))
+                .arg(Arg::new("assume-yes").short('y').long("assume-yes").action(ArgAction::SetTrue))
+                .arg(Arg::new("assume-no").long("assume-no").action(ArgAction::SetTrue))
+                .arg(Arg::new("ignore-missing").short('m').long("ignore-missing").action(ArgAction::SetTrue))
+                .arg(Arg::new("metadata-expire").long("metadata-expire"))
+                .arg(Arg::new("proxy").long("proxy"))
+                .arg(Arg::new("retry").long("retry").value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("parallel-download").long("parallel-download").value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("parallel-processing").long("parallel-processing").value_parser(clap::value_parser!(bool)))
+                .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
+                .arg_required_else_help(false)
+                .get_matches_from(vec!["epkg", "--dry-run", "info"])
+        })
     }
     #[cfg(not(test))]
     {
-        use crate::parse_cmdline;
-        parse_cmdline()
-    }
-});
-
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
-
-#[cfg(test)]
-static CONFIG_MUTEX: LazyLock<Mutex<EPKGConfig>> = LazyLock::new(|| {
-    let matches = &CLAP_MATCHES;
-    let config = parse_options_common(&matches)
-        .expect("Failed to parse common options for CONFIG");
-    let config = parse_options_subcommand(&matches, config)
-        .expect("Failed to parse subcommand options for CONFIG");
-    Mutex::new(config)
-});
-
-#[cfg(test)]
-static CONFIG_PTR: OnceLock<usize> = OnceLock::new();
-
-#[cfg(not(test))]
-static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
-    let matches = &CLAP_MATCHES;
-    let config = parse_options_common(&matches)
-        .expect("Failed to parse common options for CONFIG");
-    parse_options_subcommand(&matches, config)
-        .expect("Failed to parse subcommand options for CONFIG")
-});
-
-static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
-    EPKGDirs::build_dirs(&config())
-        .expect("Failed to initialize EPKGDirs")
-});
-
-#[cfg(test)]
-pub fn config() -> &'static EPKGConfig {
-    // SAFETY: In test mode, we use a Mutex for interior mutability.
-    // We initialize a raw pointer (as usize) once and reuse it. This is safe because:
-    // 1. CONFIG_MUTEX is a static LazyLock, so it lives for the entire program
-    // 2. The Mutex ensures thread safety for mutations
-    // 3. We're only reading, and the pointer points to data in the static Mutex
-    unsafe {
-        let ptr_usize = *CONFIG_PTR.get_or_init(|| {
-            let mutex = LazyLock::force(&CONFIG_MUTEX);
-            let guard = mutex.lock().unwrap();
-            &*guard as *const EPKGConfig as usize
-        });
-        &*(ptr_usize as *const EPKGConfig)
+        CLAP_MATCHES.get().expect("init_config() must be called at startup")
     }
 }
 
+/// Initialize global CONFIG and CLAP_MATCHES. Call once at startup for either applet or epkg main invocation.
 #[cfg(not(test))]
-pub fn config() -> &'static EPKGConfig {
-    &CONFIG
+pub fn init_config(invoked_as_applet: bool) -> Result<()> {
+    let matches = if invoked_as_applet {
+        parse_cmdline_from(vec![
+            "epkg".to_string(),
+            "busybox".to_string(),
+            "true".to_string(),
+        ])
+    } else {
+        parse_cmdline()
+    };
+    let cfg = parse_options_common(&matches).wrap_err("Failed to parse common options for CONFIG")?;
+    let cfg = parse_options_subcommand(&matches, cfg).wrap_err("Failed to parse subcommand options for CONFIG")?;
+    *CONFIG.write().expect("CONFIG lock") = Some(cfg);
+    CLAP_MATCHES
+        .set(matches)
+        .map_err(|_| eyre::eyre!("init_config() must be called only once"))?;
+    Ok(())
+}
+
+// RwLock (not OnceLock): written once in init_config(), read by config(). We keep RwLock because
+// config_mut() is used in solver_tests to reset and override the global config per test; OnceLock
+// cannot be mutated after init, so tests would need a different design.
+static CONFIG: RwLock<Option<EPKGConfig>> = RwLock::new(None);
+
+/// Guard that derefs to `EPKGConfig` (read-only).
+pub struct ConfigGuard(std::sync::RwLockReadGuard<'static, Option<EPKGConfig>>);
+
+impl std::fmt::Debug for ConfigGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.as_ref().unwrap().fmt(f)
+    }
+}
+
+impl std::ops::Deref for ConfigGuard {
+    type Target = EPKGConfig;
+    fn deref(&self) -> &EPKGConfig {
+        self.0.as_ref().unwrap()
+    }
+}
+
+static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
+    let _guard = config();
+    EPKGDirs::build_dirs(&*_guard).expect("Failed to initialize EPKGDirs")
+});
+
+pub fn config() -> ConfigGuard {
+    {
+        let guard = CONFIG.read().expect("CONFIG lock");
+        if guard.is_some() {
+            return ConfigGuard(guard);
+        }
+    }
+    {
+        let mut w = CONFIG.write().expect("CONFIG lock");
+        if w.is_none() {
+            let matches = clap_matches();
+            let cfg = parse_options_common(matches).expect("Failed to parse common options for CONFIG");
+            *w = Some(
+                parse_options_subcommand(matches, cfg).expect("Failed to parse subcommand options for CONFIG"),
+            );
+        }
+    }
+    ConfigGuard(CONFIG.read().expect("CONFIG lock"))
+}
+
+#[cfg(test)]
+/// Guard for mutable config access in tests.
+pub struct ConfigMutGuard(std::sync::RwLockWriteGuard<'static, Option<EPKGConfig>>);
+
+#[cfg(test)]
+impl std::ops::Deref for ConfigMutGuard {
+    type Target = EPKGConfig;
+    fn deref(&self) -> &EPKGConfig {
+        self.0.as_ref().unwrap()
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for ConfigMutGuard {
+    fn deref_mut(&mut self) -> &mut EPKGConfig {
+        self.0.as_mut().unwrap()
+    }
 }
 
 #[cfg(test)]
 /// Get mutable access to the global config for test customization.
-/// This function locks the Mutex, so it should be used carefully in tests.
-pub fn config_mut() -> std::sync::MutexGuard<'static, EPKGConfig> {
-    // In test mode, we use Mutex for interior mutability
-    CONFIG_MUTEX.lock().unwrap()
+pub fn config_mut() -> ConfigMutGuard {
+    let mut guard = CONFIG.write().unwrap();
+    if guard.is_none() {
+        let matches = clap_matches();
+        let cfg = parse_options_common(matches).expect("Failed to parse common options for CONFIG");
+        *guard = Some(
+            parse_options_subcommand(matches, cfg).expect("Failed to parse subcommand options for CONFIG"),
+        );
+    }
+    ConfigMutGuard(guard)
 }
 
 pub fn dirs() -> &'static EPKGDirs {

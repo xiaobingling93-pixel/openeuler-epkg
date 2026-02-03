@@ -340,7 +340,7 @@ impl TestCase {
         self.setup_package_manager();
 
         // Determine which operation to perform and get the plan
-        // dry_run is already set to true in test mode via CLAP_MATCHES
+        // dry_run is already set to true in test mode via clap_matches()
         let plan_result = if !self.metadata.install.is_empty() {
             println!("  Install: {:?}", self.metadata.install);
             // Set config.subcommand for install

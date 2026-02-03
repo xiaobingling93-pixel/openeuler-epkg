@@ -279,7 +279,8 @@ pub fn filter_packages_by_arch_spec(packages: Vec<Package>, arch_spec: Option<&s
 // This is to handle situation when both x86_64 and i686 packages are available with same
 // pkgname and version, e.g. fedora fcitx5-qt 5.1.9-3.fc42 has 2 packages for x86_64/i686.
 pub fn filter_packages_by_arch(packages: Vec<Package>, format: PackageFormat) -> Vec<Package> {
-    let target_arch = crate::models::config().common.arch.as_str();
+    let config = crate::models::config();
+    let target_arch = config.common.arch.as_str();
 
     // For RPM format, noarch packages should be included regardless of target arch
     // This is standard RPM behavior - noarch packages are architecture-independent
@@ -600,7 +601,8 @@ mod tests {
                 "Conda package with arch='all' should be included regardless of target architecture");
 
         // Packages matching target arch should be included
-        let target_arch = crate::models::config().common.arch.as_str();
+        let config = crate::models::config();
+        let target_arch = config.common.arch.as_str();
         if target_arch == "x86_64" {
             assert!(filtered.iter().any(|p| p.pkgkey == pkg_x86_64.pkgkey),
                     "Package with arch='x86_64' should be included when target is x86_64");
