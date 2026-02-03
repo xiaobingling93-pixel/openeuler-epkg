@@ -9,9 +9,9 @@
 //!
 //! ## Systemd Service Files
 //!
-//! Services are found in systemd service files located in standard system directories:
-//! - `/etc/systemd/system` (highest priority)
-//! - `/usr/lib/systemd/system` (fallback)
+//! Services are found in systemd service files located within the environment root:
+//! - `etc/systemd/system` (highest priority)
+//! - `usr/lib/systemd/system` (fallback)
 //!
 //! The module reads service configuration including
 //! - ExecStart/ExecStop commands
@@ -112,23 +112,23 @@ macro_rules! parse_directive {
     };
 }
 
-/// Find a systemd service file by checking standard search paths in precedence order
-fn find_systemd_service_file(service_name: &str) -> Result<PathBuf> {
-    // systemd service file search paths in order of precedence
+/// Find a systemd service file by checking search paths within the environment root
+fn find_systemd_service_file(service_name: &str, env_root: &Path) -> Result<PathBuf> {
+    // systemd service file search paths in order of precedence within environment root
     let search_paths = [
-        "/etc/systemd/system",
-        "/usr/lib/systemd/system",
+        "etc/systemd/system",
+        "usr/lib/systemd/system",
     ];
 
     // Find the first service file that exists (highest precedence first)
-    for base_path in &search_paths {
-        let candidate = Path::new(base_path).join(format!("{}.service", service_name));
+    for relative_path in &search_paths {
+        let candidate = env_root.join(relative_path).join(format!("{}.service", service_name));
         if candidate.exists() {
             return Ok(candidate);
         }
     }
 
-    Err(eyre::eyre!("Service file not found for '{}'", service_name))
+    Err(eyre::eyre!("Service file not found for '{}' in environment root {:?}", service_name, env_root))
 }
 
 /// Parse a systemd service file and extract service configuration
@@ -177,8 +177,10 @@ fn parse_systemd_service_file(service_file: &Path) -> Result<SystemdService> {
 }
 
 /// Parse a systemd service file and extract service configuration
-fn parse_systemd_service(service_name: &str) -> Result<SystemdService> {
-    let service_file = find_systemd_service_file(service_name)?;
+fn parse_systemd_service(service_name: &str, env_name: &str) -> Result<SystemdService> {
+    let env_root = crate::dirs::find_env_base(env_name)
+        .ok_or_else(|| eyre::eyre!("Environment '{}' not found", env_name))?;
+    let service_file = find_systemd_service_file(service_name, &env_root)?;
     parse_systemd_service_file(&service_file)
 }
 
@@ -446,7 +448,7 @@ fn start_service(service_name: &str, env_name: &str) -> Result<()> {
     println!("Starting service: {} in environment: {}", service_name, env_name);
 
     // Parse service file
-    let service_config = parse_systemd_service(service_name)?;
+    let service_config = parse_systemd_service(service_name, env_name)?;
 
     // Start the service daemon
     start_service_daemon(service_name, env_name, &service_config)
@@ -457,7 +459,7 @@ fn stop_service(service_name: &str, env_name: &str) -> Result<()> {
     println!("Stopping service: {} in environment: {}", service_name, env_name);
 
     // Parse service file to get ExecStop commands
-    let service_config = parse_systemd_service(service_name)?;
+    let service_config = parse_systemd_service(service_name, env_name)?;
 
     // Stop the service daemon
     stop_service_daemon(service_name, env_name, &service_config)
