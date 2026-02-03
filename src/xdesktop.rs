@@ -321,6 +321,7 @@ fn run_desktop_update_command(
         Err(e) => {
             if e.to_string().contains("not found") || e.to_string().contains("ENOENT") {
                 // Retry with root filesystem
+                run_options.skip_namespace_isolation = true;
                 match crate::run::fork_and_execute(Path::new("/"), &run_options) {
                     Ok(_) => {
                         log::debug!("Updated {} (retried with /)", command_name.to_lowercase());

@@ -163,7 +163,7 @@ fn wait_for_child_with_timeout(child: nix::unistd::Pid, cmd_path: &Path, run_opt
 /// Execute command in child process with namespace setup
 fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) -> ! {
     // Kkip namespace isolation when env_root is the system root
-    let skip_namespace_isolation = run_options.skip_namespace_isolation || env_root == Path::new("/");
+    let skip_namespace_isolation = run_options.skip_namespace_isolation || env_root.as_os_str() == "/";
 
     // Resolve command path (if namespace isolation is used, canonicalize before mounts)
     let final_cmd_path = if skip_namespace_isolation {
