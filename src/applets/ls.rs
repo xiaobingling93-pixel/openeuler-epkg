@@ -1,4 +1,4 @@
-use clap::{Arg, Command};
+use clap::{Arg, Command, ArgAction};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
@@ -413,6 +413,7 @@ pub fn command() -> Command {
         .arg(Arg::new("time_style")
             .long("time-style")
             .help("Time/date format; can be full-iso, long-iso, iso, locale, or +FORMAT"))
+        .arg(Arg::new("help").long("help").action(ArgAction::Help).help("Print help information"))
 }
 
 fn format_size(size: u64, human_readable: bool) -> String {
