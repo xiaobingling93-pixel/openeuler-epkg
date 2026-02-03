@@ -499,6 +499,12 @@ fn expand_no_install_with_provides(format: PackageFormat, no_install: HashSet<St
                             expanded.insert(provide_name);
                         }
                     }
+                    for provide_str in &package.files {
+                        let provide_map = parse_provides(provide_str, format);
+                        for (provide_name, _version) in provide_map {
+                            expanded.insert(provide_name);
+                        }
+                    }
                 }
             }
             Err(e) => {
