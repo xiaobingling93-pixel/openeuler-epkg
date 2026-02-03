@@ -336,10 +336,6 @@ fn parse_line_fields(line: &str) -> Result<Vec<String>> {
 }
 
 fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool, root: Option<&Path>) -> Result<()> {
-    if std::env::var("DEBUG_TMPFILES").is_ok() {
-        eprintln!("DEBUG: process_line called with do_create={}, do_clean={}, do_remove={}", do_create, do_clean, do_remove);
-    }
-
     let parts = parse_line_fields(line)?;
     if parts.len() < 2 {
         return Ok(());
@@ -351,16 +347,8 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
     // Parse type and modifiers
     let (base_type, modifiers) = parse_type_and_modifiers(line_type)?;
 
-    if std::env::var("DEBUG_TMPFILES").is_ok() {
-        eprintln!("DEBUG: Line '{}' -> base_type='{}', modifiers={:?}, do_create={}, do_clean={}, do_remove={}, boot={}",
-            line, base_type, modifiers, do_create, do_clean, do_remove, boot);
-    }
-
     // Skip boot-only lines if --boot is not specified
     if modifiers.boot_only && !boot {
-        if std::env::var("DEBUG_TMPFILES").is_ok() {
-            eprintln!("DEBUG: Skipping boot-only line '{}'", line);
-        }
         return Ok(());
     }
 
@@ -387,10 +375,6 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
         // Unknown types
         _ => true, // Process unknown types to show warnings
     };
-
-    if std::env::var("DEBUG_TMPFILES").is_ok() {
-        eprintln!("DEBUG: Line '{}' should_process={}, base_type='{}', do_create={}, do_remove={}", line, should_process, base_type, do_create, do_remove);
-    }
 
     if !should_process {
         return Ok(());
@@ -492,7 +476,7 @@ fn parse_type_and_modifiers(type_str: &str) -> Result<(&str, Modifiers)> {
     Ok((base_type, modifiers))
 }
 
-fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: bool, do_clean: bool, do_remove: bool, root: Option<&Path>) -> Result<()> {
+fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: bool, _do_clean: bool, do_remove: bool, root: Option<&Path>) -> Result<()> {
     if parts.len() < 3 {
         return Err(eyre!("Invalid directory line: not enough fields"));
     }
@@ -500,17 +484,10 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     let (path, mode_str, user_str, group_str) = extract_common_fields(parts);
     let full_path = apply_root(path, root);
 
-    if std::env::var("DEBUG_TMPFILES").is_ok() {
-        eprintln!("DEBUG: process_directory_line called for {} with do_create={}, do_clean={}, do_remove={}", full_path.display(), do_create, do_clean, do_remove);
-    }
-
     // Handle different operation modes
     if do_remove {
         // For 'D' type during remove, we should remove directory contents
         // For now, just warn that this is not implemented
-        if std::env::var("DEBUG_TMPFILES").is_ok() {
-            eprintln!("DEBUG: Skipping directory creation for {} during remove", full_path.display());
-        }
         eprintln!("Warning: Directory removal operations not implemented: D {}", full_path.display());
         return Ok(());
     }
@@ -600,8 +577,7 @@ fn process_file_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
 
     // Set permissions if specified
     if mode_str != "-" {
-        let mode = u32::from_str_radix(mode_str, 8)
-            .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
+        let mode = parse_mode_with_default(mode_str, 0)?;
         set_permissions_from_mode(&full_path, mode)?;
     }
 
@@ -788,8 +764,7 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
 
     // Set permissions if specified
     if mode_str != "-" {
-        let mode = u32::from_str_radix(mode_str, 8)
-            .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
+        let mode = parse_mode_with_default(mode_str, 0)?;
         set_permissions_from_mode(&full_path, mode)?;
     }
 
@@ -818,8 +793,7 @@ fn process_attribute_line(parts: &[String], modifiers: &Modifiers, root: Option<
     let apply_attributes = |path: &Path| -> Result<()> {
         // Set permissions if specified
         if mode_str != "-" {
-            let mode = u32::from_str_radix(mode_str, 8)
-                .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
+            let mode = parse_mode_with_default(mode_str, 0)?;
             set_permissions_from_mode(path, mode)?;
         }
         // Set ownership if specified
@@ -881,14 +855,37 @@ fn ensure_parent_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Parse mode string to u32, with default fallback
-fn parse_mode_with_default(mode_str: &str, default_mode: u32) -> Result<u32> {
+/// Parse mode string that may have prefix '~' or ':'.
+/// Returns (prefix, mode) where prefix is None, '~', or ':'.
+/// If mode_str is "-", returns (None, default_mode).
+fn parse_mode_with_prefix(mode_str: &str, default_mode: u32) -> Result<(Option<char>, u32)> {
     if mode_str == "-" {
-        Ok(default_mode)
-    } else {
-        u32::from_str_radix(mode_str, 8)
-            .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))
+        return Ok((None, default_mode));
     }
+    // Strip optional prefix
+    let (prefix, rest) = if let Some(stripped) = mode_str.strip_prefix('~') {
+        (Some('~'), stripped)
+    } else if let Some(stripped) = mode_str.strip_prefix(':') {
+        (Some(':'), stripped)
+    } else {
+        (None, mode_str)
+    };
+    // Parse octal mode
+    let mode = u32::from_str_radix(rest, 8)
+        .map_err(|e| eyre!("Invalid mode '{}': {}", mode_str, e))?;
+    Ok((prefix, mode))
+}
+
+/// Parse mode string to u32, with default fallback
+/// Supports prefixes '~' (mask based on existing access bits) and ':' (apply only when creating).
+/// Prefixes are currently ignored (warning logged).
+fn parse_mode_with_default(mode_str: &str, default_mode: u32) -> Result<u32> {
+    let (prefix, mode) = parse_mode_with_prefix(mode_str, default_mode)?;
+    // Warn about unimplemented prefix behavior
+    if let Some(p) = prefix {
+        log::warn!("Mode prefix '{}' not fully implemented (mode: {})", p, mode_str);
+    }
+    Ok(mode)
 }
 
 /// Set ownership for a path if user/group are specified
