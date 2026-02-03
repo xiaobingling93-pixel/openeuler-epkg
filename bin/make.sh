@@ -373,16 +373,18 @@ export_linker_var() {
 # Get Rust flags for architecture
 get_rustflags() {
     local arch="$1"
+    local common_opts=
+    local common_cross_opts="$common_opts -C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc"
     case "$arch" in
         x86_64)
             # Disable PIE to avoid relocation issues with Lua static library
-            echo "-C link-arg=-no-pie"
+            echo "$common_opts"
             ;;
         aarch64)
-            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc -C link-arg=-no-pie"
+            echo "$common_cross_opts"
             ;;
         riscv64|loongarch64)
-            echo "-C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc -C link-arg=-lm -C link-arg=-no-pie"
+            echo "$common_cross_opts -C link-arg=-lm"
             ;;
         *)
             echo "Unknown architecture: $arch" >&2
