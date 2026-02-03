@@ -242,8 +242,7 @@ fn symlink_desktop_files(
 
         // Create parent directories if they don't exist
         if let Some(parent) = dst_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+            crate::utils::safe_mkdir_p(parent)?;
         }
 
         // Handle existing destination
