@@ -14,6 +14,7 @@ use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::link::compute_link_type_and_reflink;
 use crate::io::{load_world, save_installed_packages, save_world};
+use crate::repo::sync_channel_metadata;
 use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_packages_to_delta_world, create_delta_world_from_specs};
 use crate::depends::resolve_and_install_packages;
 use crate::plan::prompt_and_confirm_install_plan;
@@ -44,6 +45,8 @@ pub fn install_packages(package_specs: Vec<String>) -> Result<InstallationPlan> 
     // Add essential packages to delta_world if not already in world
     // this extended delta_world won't be saved to disk
     if !models::config().install.no_install_essentials {
+        // Load repo indexes first so get_essential_pkgnames() can read essential_pkgnames from shards
+        sync_channel_metadata()?;
         add_essential_packages_to_delta_world(&mut delta_world)?;
     }
 

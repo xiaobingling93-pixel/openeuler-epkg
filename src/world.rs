@@ -124,13 +124,19 @@ pub fn apply_no_install_changes() -> Result<()> {
 pub fn add_essential_packages_to_delta_world(delta_world: &mut HashMap<String, String>) -> Result<()> {
     let essential_pkgnames = crate::mmio::get_essential_pkgnames()?;
     let world = PACKAGE_CACHE.world.read().unwrap();
+    let mut added = 0usize;
     for essential_pkgname in &essential_pkgnames {
         // Only add if not already in world or delta_world
         if !world.contains_key(essential_pkgname) && !delta_world.contains_key(essential_pkgname) {
-            // Add with empty constraint string (no version constraint)
             delta_world.insert(essential_pkgname.clone(), String::new());
+            added += 1;
         }
     }
+    log::info!(
+        "add_essential_packages_to_delta_world: {} essential from repo, {} added to delta_world",
+        essential_pkgnames.len(),
+        added
+    );
     Ok(())
 }
 
