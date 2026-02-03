@@ -510,25 +510,27 @@ pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
     Ok(())
 }
 
-pub fn read_installed_packages(env: &str, generation_id: u32) -> Result<InstalledPackagesMap> {
-    let generations_root = get_generations_root(env)?;
-    let file_path = generations_root.join(generation_id.to_string()).join("installed-packages.json");
-
-    // If the installed-packages file doesn't exist (common in tests or very
-    // new environments), treat it as an empty set of installed packages.
+/// Read installed packages from an arbitrary path (supports both object and array JSON formats).
+pub fn read_installed_packages_from_path(file_path: &Path) -> Result<InstalledPackagesMap> {
     if !file_path.exists() {
         return Ok(HashMap::new());
     }
-
-    let contents = fs::read_to_string(&file_path)
+    let contents = fs::read_to_string(file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
     let value: Value = serde_json::from_str(&contents)
         .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
-
     let packages_raw = installed_packages_from_value(value)?;
-
-    let packages: InstalledPackagesMap = packages_raw.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+    let packages: InstalledPackagesMap =
+        packages_raw.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
     Ok(packages)
+}
+
+pub fn read_installed_packages(env: &str, generation_id: u32) -> Result<InstalledPackagesMap> {
+    let generations_root = get_generations_root(env)?;
+    let file_path = generations_root
+        .join(generation_id.to_string())
+        .join("installed-packages.json");
+    read_installed_packages_from_path(&file_path)
 }
 
 pub fn load_installed_packages() -> Result<()> {

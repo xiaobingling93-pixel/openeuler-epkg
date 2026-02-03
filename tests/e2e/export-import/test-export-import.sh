@@ -21,7 +21,7 @@ epkg -e "$ENV_NAME" --assume-yes install jq htop || error "Failed to install pac
 # Export to a file
 EXPORT_FILE="/tmp/epkg-export-$ENV_NAME.yaml"
 log "Exporting environment to $EXPORT_FILE"
-epkg -e "$ENV_NAME" env export --output "$EXPORT_FILE" || error "Failed to export environment"
+epkg env export "$ENV_NAME" --output "$EXPORT_FILE" || error "Failed to export environment"
 
 if [ ! -f "$EXPORT_FILE" ]; then
     error "Export file not found"

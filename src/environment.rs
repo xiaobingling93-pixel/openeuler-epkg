@@ -2,7 +2,7 @@ use std::fs;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -20,7 +20,6 @@ use crate::utils::{self, force_symlink};
 use crate::deinit::force_remove_dir_all;
 use crate::deb_triggers::ensure_triggers_dir;
 use crate::plan::prepare_installation_plan;
-use std::sync::Arc;
 use crate::install::execute_installation_plan;
 use crate::history::record_history;
 use crate::path::update_path;
@@ -358,18 +357,17 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
     let gen_1_dir = env_root.join("generations/1");
     let installed_packages_path = gen_1_dir.join("installed-packages.json");
 
-    // Read packages to install from JSON if importing
-    let packages_to_import = if let Some(_) = &config().env.import_file {
-        io::read_json_file::<HashMap<String, InstalledPackageInfo>>(&installed_packages_path)?
+    // Read packages to install from JSON if importing (supports both object and array format)
+    let packages_to_import = if config().env.import_file.is_some() {
+        io::read_installed_packages_from_path(&installed_packages_path)?
     } else {
-        HashMap::new()
+        InstalledPackagesMap::new()
     };
 
     // Install packages if any
     if !packages_to_import.is_empty() {
         sync_channel_metadata()?;
-        let packages_map: InstalledPackagesMap = packages_to_import.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
-        let plan = prepare_installation_plan(&packages_map, None)?;
+        let plan = prepare_installation_plan(&packages_to_import, None)?;
         execute_installation_plan(plan)?;
     } else {
         // Create metadata files
