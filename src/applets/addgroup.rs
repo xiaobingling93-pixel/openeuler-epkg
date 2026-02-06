@@ -20,11 +20,10 @@ pub struct AddGroupCmd {
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<AddGroupCmd> {
-    let system = matches.get_flag("system") || matches.get_flag("system_short");
+    let system = matches.get_flag("system");
     let quiet = matches.get_flag("quiet");
     let gid = matches
         .get_one::<String>("gid")
-        .or_else(|| matches.get_one::<String>("gid_short"))
         .cloned();
 
     let mut positionals: Vec<String> = matches
@@ -67,10 +66,34 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<AddGroupCmd> {
 }
 
 pub fn command() -> Command {
+    // Debian addgroup --help:
+    //
+    // addgroup
+    //         [--gid ID] [--firstgid id] [--lastgid id]
+    //         [--conf file] [--quiet] [--verbose] [--debug]
+    //         group
+    //    Add a user group
+    //
+    // addgroup --system
+    //         [--gid id]
+    //         [--conf file] [--quiet] [--verbose] [--debug]
+    //         group
+    //    Add a system group
+    //
+    // Short options used in Alpine scripts, refer to busybox addgroup:
+    //
+    // BusyBox v1.37.0 (2025-01-17 18:12:01 UTC) multi-call binary.
+    // Usage: addgroup [-g GID] [-S] [USER] GROUP
+    // Add a group or add a user to a group
+    //         -g GID  Group id
+    //         -S      Create a system group
+    // Positional: group [user]
     Command::new("addgroup")
         .about("Debian compatible addgroup (subset)")
+        .disable_help_flag(true)
         .arg(
             Arg::new("system")
+                .short('S')
                 .long("system")
                 .help("Create a system group")
                 .action(clap::ArgAction::SetTrue),
@@ -83,6 +106,7 @@ pub fn command() -> Command {
         )
         .arg(
             Arg::new("gid")
+                .short('g')
                 .long("gid")
                 .value_name("GID")
                 .help("Numeric GID"),
@@ -90,29 +114,17 @@ pub fn command() -> Command {
         .arg(
             Arg::new("force_badname")
                 .long("force-badname")
+                .visible_alias("allow-bad-names")
                 .help("Allow bad group names (ignored)")
                 .action(clap::ArgAction::SetTrue),
         )
-        // Short options used in Alpine scripts
-        .arg(
-            Arg::new("system_short")
-                .short('S')
-                .help("Create a system group")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("gid_short")
-                .short('g')
-                .value_name("GID")
-                .help("Numeric GID"),
-        )
-        // Positional: group [user]
         .arg(
             Arg::new("args")
                 .value_name("ARGS")
                 .num_args(1..=2)
                 .help("group [user]"),
         )
+        .arg(Arg::new("help").long("help").action(clap::ArgAction::Help))
 }
 
 pub fn run(cmd: AddGroupCmd) -> Result<()> {

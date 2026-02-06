@@ -208,6 +208,45 @@ fn process_options(
 }
 
 /// Run interactive Lua session
+
+fn handle_multi_line_input(
+    lua: &Lua,
+    reader: &mut BufReader<io::StdinLock>,
+    mut full_code: String,
+) -> Result<()> {
+    loop {
+        print!(">> ");
+        io::stdout().flush()?;
+
+        let mut cont_line = String::new();
+        let cont_bytes = reader.read_line(&mut cont_line)?;
+        if cont_bytes == 0 {
+            break;
+        }
+
+        full_code.push('\n');
+        full_code.push_str(cont_line.trim());
+
+        match execute_interactive_line(lua, &full_code) {
+            Ok(_) => break,
+            Err(e2) => {
+                let e2_str = e2.to_string();
+                if !e2_str.contains("near `<eof>'") && !e2_str.contains("unexpected <eof>") {
+                    eprintln!("{}", e2);
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+enum Control {
+    Continue,
+    Break,
+    Skip,
+}
+
 fn run_interactive(lua: &Lua) -> Result<()> {
     // Check if we're in a TTY
     let is_tty = unsafe {
@@ -238,64 +277,57 @@ fn run_interactive(lua: &Lua) -> Result<()> {
             break;
         }
 
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        if line == "exit" || line == "quit" {
-            break;
-        }
-
-        // Handle '=' prefix for print shorthand (like Lua standalone)
-        let code = if line.starts_with('=') {
-            format!("print({})", &line[1..])
-        } else {
-            line.to_string()
-        };
-
-        // Try to execute the line
-        match execute_interactive_line(lua, &code) {
-            Ok(_) => {}
-            Err(e) => {
-                // Check if it's a syntax error that might need more input
-                let error_str = e.to_string();
-                if error_str.contains("near `<eof>'") || error_str.contains("unexpected <eof>") {
-                    // Multi-line input - read continuation lines
-                    let mut full_code = code;
-                    loop {
-                        print!(">> ");
-                        io::stdout().flush()?;
-
-                        let mut cont_line = String::new();
-                        let cont_bytes = reader.read_line(&mut cont_line)?;
-                        if cont_bytes == 0 {
-                            break;
-                        }
-
-                        full_code.push('\n');
-                        full_code.push_str(cont_line.trim());
-
-                        match execute_interactive_line(lua, &full_code) {
-                            Ok(_) => break,
-                            Err(e2) => {
-                                let e2_str = e2.to_string();
-                                if !e2_str.contains("near `<eof>'") && !e2_str.contains("unexpected <eof>") {
-                                    eprintln!("{}", e2);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    eprintln!("{}", e);
-                }
-            }
+        match process_line(lua, &mut reader, line)? {
+            Control::Continue => (),
+            Control::Break => break,
+            Control::Skip => continue,
         }
     }
 
     println!();
     Ok(())
+}
+
+fn execute_interactive_code(
+    lua: &Lua,
+    reader: &mut BufReader<io::StdinLock>,
+    code: String,
+) -> Result<()> {
+    match execute_interactive_line(lua, &code) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // Check if it's a syntax error that might need more input
+            let error_str = e.to_string();
+            if error_str.contains("near `<eof>'") || error_str.contains("unexpected <eof>") {
+                handle_multi_line_input(lua, reader, code)?;
+                Ok(())
+            } else {
+                eprintln!("{}", e);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn process_line(
+    lua: &Lua,
+    reader: &mut BufReader<io::StdinLock>,
+    line: String,
+) -> Result<Control> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(Control::Skip);
+    }
+    if line == "exit" || line == "quit" {
+        return Ok(Control::Break);
+    }
+    let code = if line.starts_with('=') {
+        format!("print({})", &line[1..])
+    } else {
+        line.to_string()
+    };
+    execute_interactive_code(lua, reader, code)?;
+    Ok(Control::Continue)
 }
 
 /// Execute a single line of Lua code in interactive mode

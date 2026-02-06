@@ -10,19 +10,29 @@ pub struct MvOptions {
     pub force: bool,
     pub no_clobber: bool,
     pub selinux_context: bool,
+    #[allow(dead_code)] pub target_directory: Option<String>, // -t (used during parsing, converted to destination)
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<MvOptions> {
+    let target_directory = matches.get_one::<String>("target_directory").cloned();
     let mut args: Vec<String> = matches.get_many::<String>("args")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    if args.len() < 2 {
-        return Err(eyre!("mv: missing destination operand"));
-    }
-
-    let destination = args.pop().unwrap();
-    let sources = args;
+    let (sources, destination) = if let Some(tdir) = &target_directory {
+        // -t flag: format is mv -t DIRECTORY SOURCE...
+        if args.is_empty() {
+            return Err(eyre!("mv: missing file operand"));
+        }
+        (args, tdir.clone())
+    } else {
+        // Normal format: mv SOURCE... DEST
+        if args.len() < 2 {
+            return Err(eyre!("mv: missing destination operand"));
+        }
+        let dest = args.pop().unwrap();
+        (args, dest)
+    };
 
     let force = matches.get_flag("force");
     let no_clobber = matches.get_flag("no_clobber");
@@ -34,6 +44,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<MvOptions> {
         force,
         no_clobber,
         selinux_context,
+        target_directory,
     })
 }
 
@@ -54,10 +65,16 @@ pub fn command() -> Command {
             .short('Z')
             .help("Set SELinux security context (not implemented)")
             .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("target_directory")
+            .short('t')
+            .long("target-directory")
+            .value_name("DIRECTORY")
+            .help("Move all SOURCE arguments into DIRECTORY")
+            .action(clap::ArgAction::Set))
         .arg(Arg::new("args")
-            .num_args(2..)
+            .num_args(0..)
             .help("Source files/directories and destination")
-            .required(true))
+            .required(false))
 }
 
 fn move_file(src: &Path, dst: &Path, force: bool, no_clobber: bool) -> Result<()> {

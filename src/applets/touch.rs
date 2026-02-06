@@ -1,17 +1,18 @@
-use clap::{Arg, Command};
+use clap::{value_parser, Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use std::ffi::OsString;
 use std::fs::File;
 use std::path::Path;
 use crate::posix::posix_utime;
 
 pub struct TouchOptions {
-    pub files: Vec<String>,
+    pub files: Vec<OsString>,
     pub no_create: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<TouchOptions> {
-    let files: Vec<String> = matches.get_many::<String>("files")
+    let files: Vec<OsString> = matches.get_many::<OsString>("files")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
@@ -33,6 +34,7 @@ pub fn command() -> Command {
             .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("files")
             .num_args(1..)
+            .value_parser(value_parser!(OsString))
             .help("Files to touch")
             .required(true))
 }
@@ -42,16 +44,12 @@ pub fn run(options: TouchOptions) -> Result<()> {
         let path = Path::new(file_path);
 
         if path.exists() {
-            // Update both access and modification times to current time
-            posix_utime(file_path, None, None)
-                .map_err(|e| eyre!("touch: cannot touch '{}': {:?}", file_path, e))?;
+            posix_utime(path, None, None)
+                .map_err(|e| eyre!("touch: cannot touch '{}': {:?}", path.display(), e))?;
         } else if !options.no_create {
-            // Create the file
             File::create(path)
-                .map_err(|e| eyre!("touch: cannot touch '{}': {}", file_path, e))?;
-            // File was just created, so times are already current
+                .map_err(|e| eyre!("touch: cannot touch '{}': {}", path.display(), e))?;
         }
-        // If file doesn't exist and no_create is true, do nothing
     }
     Ok(())
 }

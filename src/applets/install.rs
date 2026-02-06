@@ -128,96 +128,92 @@ fn set_permissions(path: &Path, mode_str: &str) -> Result<()> {
     Ok(())
 }
 
+fn create_directory_with_attrs(path: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
+    fs::create_dir_all(path)
+        .map_err(|e| eyre!("install: cannot create directory '{}': {}", path.display(), e))?;
+    if let Some(mode) = mode {
+        set_permissions(path, mode)?;
+    }
+    set_ownership(path, owner, group)?;
+    Ok(())
+}
+
+fn copy_file_with_attrs(src: &Path, dst: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
+    // Special handling for /dev/null - create an empty file
+    if src == Path::new("/dev/null") {
+        fs::File::create(dst)
+            .map_err(|e| eyre!("install: cannot create '{}': {}", dst.display(), e))?;
+    } else {
+        fs::copy(src, dst)
+            .map_err(|e| eyre!("install: cannot copy '{}' to '{}': {}", src.display(), dst.display(), e))?;
+    }
+    if let Some(mode) = mode {
+        set_permissions(dst, mode)?;
+    }
+    set_ownership(dst, owner, group)?;
+    Ok(())
+}
+
+fn copy_single_source(src: &Path, dest: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
+    if dest.is_dir() {
+        let file_name = src.file_name()
+            .ok_or_else(|| eyre!("install: cannot get filename from '{}'", src.display()))?;
+        let dst_path = dest.join(file_name);
+        copy_file_with_attrs(src, &dst_path, mode, owner, group)?;
+    } else {
+        copy_file_with_attrs(src, dest, mode, owner, group)?;
+    }
+    Ok(())
+}
+
+fn copy_multiple_sources(sources: &[String], dest: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
+    if !dest.exists() {
+        fs::create_dir_all(dest)
+            .map_err(|e| eyre!("install: cannot create directory '{}': {}", dest.display(), e))?;
+    } else if !dest.is_dir() {
+        return Err(eyre!("install: target '{}' is not a directory", dest.display()));
+    }
+
+    for src in sources {
+        let src_path = Path::new(src);
+        let file_name = src_path.file_name()
+            .ok_or_else(|| eyre!("install: cannot get filename from '{}'", src))?;
+        let dst_path = dest.join(file_name);
+        copy_file_with_attrs(src_path, &dst_path, mode, owner, group)?;
+    }
+    Ok(())
+}
+
+fn run_directory_mode(options: &InstallOptions, dest_path: &Path) -> Result<()> {
+    // Create directories from sources
+    for dir_path in &options.sources {
+        let path = Path::new(dir_path);
+        create_directory_with_attrs(path, options.mode.as_deref(), options.owner.as_deref(), options.group.as_deref())?;
+    }
+
+    // Also create destination if it's a directory
+    if !dest_path.exists() {
+        create_directory_with_attrs(dest_path, options.mode.as_deref(), options.owner.as_deref(), options.group.as_deref())?;
+    }
+    Ok(())
+}
+
+fn run_copy_mode(options: &InstallOptions, dest_path: &Path) -> Result<()> {
+    if options.sources.len() == 1 {
+        let src_path = Path::new(&options.sources[0]);
+        copy_single_source(src_path, dest_path, options.mode.as_deref(), options.owner.as_deref(), options.group.as_deref())?;
+    } else {
+        copy_multiple_sources(&options.sources, dest_path, options.mode.as_deref(), options.owner.as_deref(), options.group.as_deref())?;
+    }
+    Ok(())
+}
+
 pub fn run(options: InstallOptions) -> Result<()> {
     let dest_path = Path::new(&options.destination);
 
     if options.directory {
-        // Create directories
-        for dir_path in &options.sources {
-            let path = Path::new(dir_path);
-            fs::create_dir_all(path)
-                .map_err(|e| eyre!("install: cannot create directory '{}': {}", dir_path, e))?;
-
-            if let Some(ref mode) = options.mode {
-                set_permissions(path, mode)?;
-            }
-            set_ownership(path, options.owner.as_deref(), options.group.as_deref())?;
-        }
-
-        // Also create destination if it's a directory
-        if !dest_path.exists() {
-            fs::create_dir_all(dest_path)
-                .map_err(|e| eyre!("install: cannot create directory '{}': {}", options.destination, e))?;
-
-            if let Some(ref mode) = options.mode {
-                set_permissions(dest_path, mode)?;
-            }
-            set_ownership(dest_path, options.owner.as_deref(), options.group.as_deref())?;
-        }
+        run_directory_mode(&options, dest_path)
     } else {
-        // Copy files
-        if options.sources.len() == 1 {
-            // Single source
-            let src_path = Path::new(&options.sources[0]);
-
-            if dest_path.is_dir() {
-                let file_name = src_path.file_name()
-                    .ok_or_else(|| eyre!("install: cannot get filename from '{}'", options.sources[0]))?;
-                let dst_path = dest_path.join(file_name);
-
-                // Special handling for /dev/null - create an empty file
-                if src_path == Path::new("/dev/null") {
-                    fs::File::create(&dst_path)
-                        .map_err(|e| eyre!("install: cannot create '{}': {}", dst_path.display(), e))?;
-                } else {
-                    fs::copy(src_path, &dst_path)
-                        .map_err(|e| eyre!("install: cannot copy '{}' to '{}': {}", src_path.display(), dst_path.display(), e))?;
-                }
-
-                if let Some(ref mode) = options.mode {
-                    set_permissions(&dst_path, mode)?;
-                }
-                set_ownership(&dst_path, options.owner.as_deref(), options.group.as_deref())?;
-            } else {
-                // Special handling for /dev/null - create an empty file
-                if src_path == Path::new("/dev/null") {
-                    fs::File::create(dest_path)
-                        .map_err(|e| eyre!("install: cannot create '{}': {}", options.destination, e))?;
-                } else {
-                    fs::copy(src_path, dest_path)
-                        .map_err(|e| eyre!("install: cannot copy '{}' to '{}': {}", src_path.display(), options.destination, e))?;
-                }
-
-                if let Some(ref mode) = options.mode {
-                    set_permissions(dest_path, mode)?;
-                }
-                set_ownership(dest_path, options.owner.as_deref(), options.group.as_deref())?;
-            }
-        } else {
-            // Multiple sources - destination must be a directory
-            if !dest_path.exists() {
-                fs::create_dir_all(dest_path)
-                    .map_err(|e| eyre!("install: cannot create directory '{}': {}", options.destination, e))?;
-            } else if !dest_path.is_dir() {
-                return Err(eyre!("install: target '{}' is not a directory", options.destination));
-            }
-
-            for src in &options.sources {
-                let src_path = Path::new(src);
-                let file_name = src_path.file_name()
-                    .ok_or_else(|| eyre!("install: cannot get filename from '{}'", src))?;
-                let dst_path = dest_path.join(file_name);
-
-                fs::copy(src_path, &dst_path)
-                    .map_err(|e| eyre!("install: cannot copy '{}' to '{}': {}", src_path.display(), dst_path.display(), e))?;
-
-                if let Some(ref mode) = options.mode {
-                    set_permissions(&dst_path, mode)?;
-                }
-                set_ownership(&dst_path, options.owner.as_deref(), options.group.as_deref())?;
-            }
-        }
+        run_copy_mode(&options, dest_path)
     }
-
-    Ok(())
 }

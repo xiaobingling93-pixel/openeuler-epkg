@@ -1098,8 +1098,16 @@ pub fn command_run(sub_matches: &clap::ArgMatches) -> Result<()> {
 pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
     match sub_matches.subcommand() {
         Some((cmd_name, cmd_matches)) => {
-            debug!("Running built-in command: {}", cmd_name);
-            crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+            let known = crate::applets::busybox_subcommands()
+                .iter()
+                .any(|c| c.get_name() == cmd_name);
+            if known {
+                debug!("Running built-in command: {}", cmd_name);
+                crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+            } else {
+                eprintln!("{}: applet not found", cmd_name);
+                std::process::exit(127);
+            }
         }
         None => {
             Err(eyre::eyre!("No command specified"))

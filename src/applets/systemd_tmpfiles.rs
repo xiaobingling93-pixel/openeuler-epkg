@@ -57,6 +57,60 @@ use walkdir::WalkDir;
 
 /// Unescape C-style escape sequences in a string.
 /// Handles common escapes like \n, \t, \", \\, and octal/hex escapes.
+fn parse_simple_escape(ch: char) -> Option<char> {
+    match ch {
+        'a' => Some('\x07'), // bell
+        'b' => Some('\x08'), // backspace
+        'f' => Some('\x0c'), // form feed
+        'n' => Some('\n'),   // newline
+        'r' => Some('\r'),   // carriage return
+        't' => Some('\t'),   // tab
+        'v' => Some('\x0b'), // vertical tab
+        '\\' => Some('\\'),  // backslash
+        '"' => Some('"'),    // quote
+        '\'' => Some('\''),  // single quote
+        '?' => Some('?'),    // question mark
+        _ => None,
+    }
+}
+
+fn parse_octal_escape(first: char, chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) -> Result<char> {
+    let mut octal = String::from(first);
+    // Read up to 2 more octal digits
+    for _ in 0..2 {
+        if let Some(&next) = chars.peek() {
+            if next.is_digit(8) {
+                octal.push(chars.next().unwrap());
+            } else {
+                break;
+            }
+        }
+    }
+    let code = u32::from_str_radix(&octal, 8)
+        .map_err(|_| eyre!("Invalid octal escape sequence: \\{}", octal))?;
+    char::from_u32(code).ok_or_else(|| eyre!("Invalid octal escape sequence: \\{}", octal))
+}
+
+fn parse_hex_escape(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) -> Result<char> {
+    let mut hex = String::new();
+    // Read up to 2 hex digits
+    for _ in 0..2 {
+        if let Some(&next) = chars.peek() {
+            if next.is_ascii_hexdigit() {
+                hex.push(chars.next().unwrap());
+            } else {
+                break;
+            }
+        }
+    }
+    if hex.is_empty() {
+        return Err(eyre!("Invalid hex escape sequence: \\x (no digits)"));
+    }
+    let code = u32::from_str_radix(&hex, 16)
+        .map_err(|_| eyre!("Invalid hex escape sequence: \\x{}", hex))?;
+    char::from_u32(code).ok_or_else(|| eyre!("Invalid hex escape sequence: \\x{}", hex))
+}
+
 fn cunescape(input: &str) -> Result<String> {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -64,75 +118,20 @@ fn cunescape(input: &str) -> Result<String> {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('a') => result.push('\x07'), // bell
-                Some('b') => result.push('\x08'), // backspace
-                Some('f') => result.push('\x0c'), // form feed
-                Some('n') => result.push('\n'),   // newline
-                Some('r') => result.push('\r'),   // carriage return
-                Some('t') => result.push('\t'),   // tab
-                Some('v') => result.push('\x0b'), // vertical tab
-                Some('\\') => result.push('\\'),  // backslash
-                Some('"') => result.push('"'),    // quote
-                Some('\'') => result.push('\''),  // single quote
-                Some('?') => result.push('?'),    // question mark
-
-                // Octal escape: \ooo (1-3 octal digits)
-                Some(d1) if d1.is_digit(8) => {
-                    let mut octal = String::from(d1);
-                    // Read up to 2 more octal digits
-                    for _ in 0..2 {
-                        if let Some(&next) = chars.peek() {
-                            if next.is_digit(8) {
-                                octal.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    if let Ok(code) = u32::from_str_radix(&octal, 8) {
-                        if let Some(ch) = char::from_u32(code) {
-                            result.push(ch);
-                        } else {
-                            return Err(eyre!("Invalid octal escape sequence: \\{}", octal));
-                        }
+                Some(esc) => {
+                    if let Some(simple) = parse_simple_escape(esc) {
+                        result.push(simple);
+                    } else if esc.is_digit(8) {
+                        let decoded = parse_octal_escape(esc, &mut chars)?;
+                        result.push(decoded);
+                    } else if esc == 'x' {
+                        let decoded = parse_hex_escape(&mut chars)?;
+                        result.push(decoded);
                     } else {
-                        return Err(eyre!("Invalid octal escape sequence: \\{}", octal));
+                        return Err(eyre!("Unknown escape sequence: \\{}", esc));
                     }
                 }
-
-                // Hexadecimal escape: \xhh (1-2 hex digits)
-                Some('x') => {
-                    let mut hex = String::new();
-                    // Read up to 2 hex digits
-                    for _ in 0..2 {
-                        if let Some(&next) = chars.peek() {
-                            if next.is_ascii_hexdigit() {
-                                hex.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    if hex.is_empty() {
-                        return Err(eyre!("Invalid hex escape sequence: \\x (no digits)"));
-                    }
-                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                        if let Some(ch) = char::from_u32(code) {
-                            result.push(ch);
-                        } else {
-                            return Err(eyre!("Invalid hex escape sequence: \\x{}", hex));
-                        }
-                    } else {
-                        return Err(eyre!("Invalid hex escape sequence: \\x{}", hex));
-                    }
-                }
-
-                Some(other) => {
-                    return Err(eyre!("Unknown escape sequence: \\{}", other));
-                }
-                None => {
-                    return Err(eyre!("Incomplete escape sequence at end of string"));
-                }
+                None => return Err(eyre!("Incomplete escape sequence at end of string")),
             }
         } else {
             result.push(ch);
@@ -355,58 +354,11 @@ fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, bo
     }
 
     // Determine if this line should be processed based on the requested operation modes
-    let should_process = match base_type {
-        // Create operations
-        "d" | "v" | "q" | "Q" | "f" | "p" | "L" => do_create,
-        // Directory operations (can create, clean, or remove)
-        "D" => do_create || do_clean || do_remove,
-        // Remove operations
-        "r" | "R" => do_remove,
-        // Clean operations (directories with age, copy operations)
-        "C" => do_clean,
-        // Ignore operations (always processed to maintain correct behavior)
-        "x" | "X" => true,
-        // Attribute operations (could be considered create or separate)
-        "z" | "Z" | "t" | "T" | "h" | "H" | "a" | "A" => do_create,
-        // Device operations
-        "c" | "b" => do_create,
-        // Write operations
-        "w" => do_create,
-        // Empty directory operations
-        "e" => do_clean,
-        // Unknown types
-        _ => true, // Process unknown types to show warnings
-    };
-
-    if !should_process {
+    if !should_process_line(base_type, do_create, do_clean, do_remove) {
         return Ok(());
     }
 
-    match base_type {
-        "d" | "D" | "v" | "q" | "Q" => execute_with_error_handling(&modifiers, || process_directory_line(&parts, &modifiers, do_create, do_clean, do_remove, root)),
-        "L" => execute_with_error_handling(&modifiers, || process_symlink_line(&parts, &modifiers, root)),
-        "f" => execute_with_error_handling(&modifiers, || process_file_line(&parts, &modifiers, root)),
-        "p" => execute_with_error_handling(&modifiers, || process_pipe_line(&parts, &modifiers, root)),
-        "w" => execute_with_error_handling(&modifiers, || process_write_line(&parts, &modifiers, root)),
-        "e" => execute_with_error_handling(&modifiers, || process_empty_directory_line(&parts, &modifiers, root)),
-        "r" | "R" => execute_with_error_handling(&modifiers, || process_remove_line(&parts, base_type, &modifiers, root)),
-        "x" | "X" => {
-            // Ignore operations - skip silently
-            Ok(())
-        }
-        "C" => execute_with_error_handling(&modifiers, || process_copy_line(&parts, &modifiers, root)),
-        "z" => execute_with_error_handling(&modifiers, || process_attribute_line(&parts, &modifiers, root, false)),
-        "Z" => execute_with_error_handling(&modifiers, || process_attribute_line(&parts, &modifiers, root, true)),
-        "t" | "T" | "h" | "H" | "a" | "A" => {
-            // Attribute operations - skip with warning
-            eprintln!("Warning: Attribute operations ({}) not implemented: {}", base_type, line_type);
-            Ok(())
-        }
-        _ => {
-            eprintln!("Warning: Unsupported line type '{}'", line_type);
-            Ok(())
-        }
-    }
+    dispatch_line(base_type, line_type, &parts, &modifiers, do_create, do_clean, do_remove, root)
 }
 
 /// Execute a processing function with error handling for ignore_errors modifier
@@ -476,6 +428,55 @@ fn parse_type_and_modifiers(type_str: &str) -> Result<(&str, Modifiers)> {
     }
 
     Ok((base_type, modifiers))
+}
+
+fn should_process_line(base_type: &str, do_create: bool, do_clean: bool, do_remove: bool) -> bool {
+    match base_type {
+        // Create operations
+        "d" | "v" | "q" | "Q" | "f" | "p" | "L" => do_create,
+        // Directory operations (can create, clean, or remove)
+        "D" => do_create || do_clean || do_remove,
+        // Remove operations
+        "r" | "R" => do_remove,
+        // Clean operations (directories with age, copy operations)
+        "C" => do_clean,
+        // Ignore operations (always processed to maintain correct behavior)
+        "x" | "X" => true,
+        // Attribute operations (could be considered create or separate)
+        "z" | "Z" | "t" | "T" | "h" | "H" | "a" | "A" => do_create,
+        // Device operations
+        "c" | "b" => do_create,
+        // Write operations
+        "w" => do_create,
+        // Empty directory operations
+        "e" => do_clean,
+        // Unknown types
+        _ => true, // Process unknown types to show warnings
+    }
+}
+
+fn dispatch_line(base_type: &str, line_type: &str, parts: &[String], modifiers: &Modifiers, do_create: bool, do_clean: bool, do_remove: bool, root: Option<&Path>) -> Result<()> {
+    match base_type {
+        "d" | "D" | "v" | "q" | "Q" => execute_with_error_handling(modifiers, || process_directory_line(parts, modifiers, do_create, do_clean, do_remove, root)),
+        "L" => execute_with_error_handling(modifiers, || process_symlink_line(parts, modifiers, root)),
+        "f" => execute_with_error_handling(modifiers, || process_file_line(parts, modifiers, root)),
+        "p" => execute_with_error_handling(modifiers, || process_pipe_line(parts, modifiers, root)),
+        "w" => execute_with_error_handling(modifiers, || process_write_line(parts, modifiers, root)),
+        "e" => execute_with_error_handling(modifiers, || process_empty_directory_line(parts, modifiers, root)),
+        "r" | "R" => execute_with_error_handling(modifiers, || process_remove_line(parts, base_type, modifiers, root)),
+        "x" | "X" => Ok(()),
+        "C" => execute_with_error_handling(modifiers, || process_copy_line(parts, modifiers, root)),
+        "z" => execute_with_error_handling(modifiers, || process_attribute_line(parts, modifiers, root, false)),
+        "Z" => execute_with_error_handling(modifiers, || process_attribute_line(parts, modifiers, root, true)),
+        "t" | "T" | "h" | "H" | "a" | "A" => {
+            eprintln!("Warning: Attribute operations ({}) not implemented: {}", base_type, line_type);
+            Ok(())
+        }
+        _ => {
+            eprintln!("Warning: Unsupported line type '{}'", line_type);
+            Ok(())
+        }
+    }
 }
 
 fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: bool, _do_clean: bool, do_remove: bool, root: Option<&Path>) -> Result<()> {

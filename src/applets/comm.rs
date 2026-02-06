@@ -72,12 +72,12 @@ pub fn command() -> Command {
             .help("Two sorted files to compare (use - for stdin)"))
 }
 
-fn open_file_or_stdin(name: &str) -> Result<Box<dyn BufRead>> {
-    if name == "-" {
-        Ok(Box::new(BufReader::new(std::io::stdin())))
+pub fn open_file_or_stdin(path: &str, applet_name: &str) -> Result<Box<dyn BufRead>> {
+    if path == "-" {
+        Ok(Box::new(BufReader::new(io::stdin())))
     } else {
-        let file = File::open(name)
-            .map_err(|e| eyre!("comm: cannot open '{}': {}", name, e))?;
+        let file = File::open(path)
+            .map_err(|e| eyre!("{}: cannot open '{}': {}", applet_name, path, e))?;
         Ok(Box::new(BufReader::new(file)))
     }
 }
@@ -111,6 +111,8 @@ fn output_line(line: &[u8], columns: usize, delimiter: &str) -> Result<()> {
     }
     io::stdout().write_all(line)
         .map_err(|e| eyre!("comm: error writing: {}", e))?;
+    io::stdout().write_all(b"\n")
+        .map_err(|e| eyre!("comm: error writing: {}", e))?;
     Ok(())
 }
 
@@ -130,7 +132,7 @@ fn process_comparison(
         std::cmp::Ordering::Less => {
             // Line only in file1
             if !options.suppress1 {
-                output_line(line1, 0, "")?;
+                output_line(&line1_content, 0, "")?;
             }
             *has_line1 = read_line(reader1, line1, options.zero_terminated)
                 .map_err(|e| eyre!("comm: error reading '{}': {}", options.file1, e))?;
@@ -138,7 +140,7 @@ fn process_comparison(
         std::cmp::Ordering::Greater => {
             // Line only in file2
             if !options.suppress2 {
-                output_line(line2, 1, &options.output_delimiter)?;
+                output_line(&line2_content, 1, &options.output_delimiter)?;
             }
             *has_line2 = read_line(reader2, line2, options.zero_terminated)
                 .map_err(|e| eyre!("comm: error reading '{}': {}", options.file2, e))?;
@@ -146,7 +148,7 @@ fn process_comparison(
         std::cmp::Ordering::Equal => {
             // Line in both files
             if !options.suppress3 {
-                output_line(line1, 2, &options.output_delimiter)?;
+                output_line(&line1_content, 2, &options.output_delimiter)?;
             }
             *has_line1 = read_line(reader1, line1, options.zero_terminated)
                 .map_err(|e| eyre!("comm: error reading '{}': {}", options.file1, e))?;
@@ -158,8 +160,8 @@ fn process_comparison(
 }
 
 pub fn run(options: CommOptions) -> Result<()> {
-    let mut reader1 = open_file_or_stdin(&options.file1)?;
-    let mut reader2 = open_file_or_stdin(&options.file2)?;
+    let mut reader1 = open_file_or_stdin(&options.file1, "comm")?;
+    let mut reader2 = open_file_or_stdin(&options.file2, "comm")?;
 
     let mut line1 = Vec::new();
     let mut line2 = Vec::new();
@@ -173,14 +175,14 @@ pub fn run(options: CommOptions) -> Result<()> {
         if !has_line1 {
             // Only file2 has lines
             if !options.suppress2 {
-                output_line(&line2, 1, &options.output_delimiter)?;
+                output_line(&strip_delimiter(&line2, options.zero_terminated), 1, &options.output_delimiter)?;
             }
             has_line2 = read_line(&mut reader2, &mut line2, options.zero_terminated)
                 .map_err(|e| eyre!("comm: error reading '{}': {}", options.file2, e))?;
         } else if !has_line2 {
             // Only file1 has lines
             if !options.suppress1 {
-                output_line(&line1, 0, "")?;
+                output_line(&strip_delimiter(&line1, options.zero_terminated), 0, "")?;
             }
             has_line1 = read_line(&mut reader1, &mut line1, options.zero_terminated)
                 .map_err(|e| eyre!("comm: error reading '{}': {}", options.file1, e))?;

@@ -5,13 +5,17 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::Arc;
+#[cfg(not(test))]
 use crate::parse_cmdline;
+#[cfg(not(test))]
 use crate::parse_cmdline_from;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use crate::search::SearchOptions;
 use color_eyre::Result;
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre;
+#[cfg(not(test))]
+use color_eyre::eyre::WrapErr;
 
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];

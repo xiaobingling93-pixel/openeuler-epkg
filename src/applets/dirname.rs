@@ -25,15 +25,19 @@ pub fn command() -> Command {
 
 pub fn run(options: DirnameOptions) -> Result<()> {
     let path = Path::new(&options.name);
-    let dirname = path.parent()
-        .map(|p| {
-            if p.as_os_str().is_empty() {
-                "."
-            } else {
-                p.as_os_str().to_str().unwrap_or(".")
-            }
-        })
-        .unwrap_or(".");
+    let dirname = if path.as_os_str() == "/" {
+        "/"
+    } else {
+        path.parent()
+            .map(|p| {
+                if p.as_os_str().is_empty() {
+                    "."
+                } else {
+                    p.as_os_str().to_str().unwrap_or(".")
+                }
+            })
+            .unwrap_or(".")
+    };
 
     println!("{}", dirname);
     Ok(())

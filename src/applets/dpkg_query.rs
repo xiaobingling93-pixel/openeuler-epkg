@@ -113,6 +113,56 @@ fn get_status_abbrev(installed_info: &InstalledPackageInfo) -> String {
     }
 }
 
+fn format_conffiles(installed_info: Option<&InstalledPackageInfo>) -> String {
+    // Read conffiles from info/deb/conffiles
+    if let Some(info) = installed_info {
+        let store_path = dirs().epkg_store.join(&info.pkgline);
+        let conffiles_path = store_path.join("info/deb/conffiles");
+        if conffiles_path.exists() {
+            if let Ok(content) = fs::read_to_string(&conffiles_path) {
+                // Format: each line is "path md5sum" or "path md5sum obsolete"
+                return content.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn format_colon_field(
+    field: &str,
+    package: &crate::models::Package,
+    installed_info: Option<&InstalledPackageInfo>,
+) -> String {
+    if let Some((prefix, suffix)) = field.split_once(':') {
+        match prefix {
+            "binary" => match suffix {
+                "Package" => package.pkgname.clone(),
+                _ => String::new(),
+            },
+            "db" => match suffix {
+                "Status-Abbrev" => {
+                    if let Some(info) = installed_info {
+                        get_status_abbrev(info)
+                    } else {
+                        String::new()
+                    }
+                },
+                "Status-Want" => {
+                    if installed_info.is_some() {
+                        String::from("install")
+                    } else {
+                        String::from("unknown")
+                    }
+                },
+                _ => String::new(),
+            },
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    }
+}
+
 fn format_field(field: &str, package: &crate::models::Package, installed_info: Option<&InstalledPackageInfo>) -> String {
     match field {
         "Package" | "binary:Package" => package.pkgname.clone(),
@@ -141,51 +191,8 @@ fn format_field(field: &str, package: &crate::models::Package, installed_info: O
         },
         "Description" => package.summary.clone(),
         "Summary" => package.summary.clone(),
-        "Conffiles" => {
-            // Read conffiles from info/deb/conffiles
-            if let Some(info) = installed_info {
-                let store_path = dirs().epkg_store.join(&info.pkgline);
-                let conffiles_path = store_path.join("info/deb/conffiles");
-                if conffiles_path.exists() {
-                    if let Ok(content) = fs::read_to_string(&conffiles_path) {
-                        // Format: each line is "path md5sum" or "path md5sum obsolete"
-                        return content.trim().to_string();
-                    }
-                }
-            }
-            String::new()
-        },
-        _ => {
-            // Try to match field names with colons (e.g., "binary:Package")
-            if let Some((prefix, suffix)) = field.split_once(':') {
-                match prefix {
-                    "binary" => match suffix {
-                        "Package" => package.pkgname.clone(),
-                        _ => String::new(),
-                    },
-                    "db" => match suffix {
-                        "Status-Abbrev" => {
-                            if let Some(info) = installed_info {
-                                get_status_abbrev(info)
-                            } else {
-                                String::new()
-                            }
-                        },
-                        "Status-Want" => {
-                            if installed_info.is_some() {
-                                String::from("install")
-                            } else {
-                                String::from("unknown")
-                            }
-                        },
-                        _ => String::new(),
-                    },
-                    _ => String::new(),
-                }
-            } else {
-                String::new()
-            }
-        }
+        "Conffiles" => format_conffiles(installed_info),
+        _ => format_colon_field(field, package, installed_info),
     }
 }
 

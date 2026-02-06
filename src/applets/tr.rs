@@ -23,8 +23,8 @@ fn expand_character_class(class_name: &str) -> Result<Vec<u8>> {
             Ok(bytes)
         }
         "blank" => {
-            // Space and tab
-            Ok(vec![32, 9]) // space, tab
+            // Tab and space (GNU order)
+            Ok(vec![9, 32]) // tab, space
         }
         "cntrl" => {
             let mut bytes = Vec::new();
@@ -63,8 +63,8 @@ fn expand_character_class(class_name: &str) -> Result<Vec<u8>> {
             Ok(bytes)
         }
         "space" => {
-            // Whitespace: space, tab, newline, carriage return, form feed, vertical tab
-            Ok(vec![32, 9, 10, 11, 12, 13]) // space, tab, \n, \v, \f, \r
+            // Whitespace: tab, newline, vertical tab, form feed, carriage return, space (GNU order)
+            Ok(vec![9, 10, 11, 12, 13, 32]) // tab, \n, \v, \f, \r, space
         }
         "upper" => {
             // ASCII uppercase: A-Z
@@ -139,6 +139,103 @@ fn parse_escape_sequence(s: &str) -> Result<(u8, usize)> {
 
 /// Parse a string that may contain character classes and escape sequences into a set of bytes
 fn parse_set(input: &str) -> Result<Vec<u8>> {
+    let bytes = parse_set_inner(input)?;
+    expand_ranges(bytes)
+}
+
+/// Parse a character class sequence [:...:] and expand it
+fn parse_character_class(chars: &[char], i: &mut usize, bytes: &mut Vec<u8>) -> Result<()> {
+    // i points to '['; caller ensures i+2 < chars.len() and chars[i+1] == ':'
+    *i += 2; // Skip [:
+    let mut class_name = String::new();
+
+    // Collect class name until :]
+    while *i + 1 < chars.len() && !(chars[*i] == ':' && chars[*i + 1] == ']') {
+        class_name.push(chars[*i]);
+        *i += 1;
+    }
+
+    // If we didn't find :], treat the whole thing as literal characters
+    if *i + 1 >= chars.len() || chars[*i] != ':' || chars[*i + 1] != ']' {
+        // Push the literal '[' and ':' we skipped, plus collected chars
+        bytes.push(b'[');
+        bytes.push(b':');
+        for c in class_name.chars() {
+            bytes.push(c as u8);
+        }
+        // i already at position after collected chars, continue parsing from here
+        return Ok(());
+    }
+
+    *i += 2; // Skip :]
+    bytes.extend(expand_character_class(&class_name)?);
+    Ok(())
+}
+
+/// Parse an equivalence class sequence [=...=] and expand it
+fn parse_equivalence_class(chars: &[char], i: &mut usize, bytes: &mut Vec<u8>) -> Result<()> {
+    // i points to '['; caller ensures i+2 < chars.len() and chars[i+1] == '='
+    *i += 2; // Skip [=
+    let mut class_char = String::new();
+
+    // Collect until =]
+    while *i + 1 < chars.len() && !(chars[*i] == '=' && chars[*i + 1] == ']') {
+        class_char.push(chars[*i]);
+        *i += 1;
+    }
+
+    // If we didn't find =], treat as literal '[=' plus collected chars
+    if *i + 1 >= chars.len() || chars[*i] != '=' || chars[*i + 1] != ']' {
+        bytes.push(b'[');
+        bytes.push(b'=');
+        for c in class_char.chars() {
+            bytes.push(c as u8);
+        }
+        // i already at position after collected chars, continue parsing from here
+        return Ok(());
+    }
+
+    *i += 2; // Skip =]
+    // Equivalence class expands to the single character (first char of class)
+    if let Some(c) = class_char.chars().next() {
+        bytes.push(c as u8);
+    }
+    Ok(())
+}
+
+/// Parse a collating symbol sequence [....] and expand it
+fn parse_collating_symbol(chars: &[char], i: &mut usize, bytes: &mut Vec<u8>) -> Result<()> {
+    // i points to '['; caller ensures i+2 < chars.len() and chars[i+1] == '.'
+    *i += 2; // Skip [.
+    let mut symbol = String::new();
+
+    // Collect until .]
+    while *i + 1 < chars.len() && !(chars[*i] == '.' && chars[*i + 1] == ']') {
+        symbol.push(chars[*i]);
+        *i += 1;
+    }
+
+    // If we didn't find .], treat as literal '[.' plus collected chars
+    if *i + 1 >= chars.len() || chars[*i] != '.' || chars[*i + 1] != ']' {
+        bytes.push(b'[');
+        bytes.push(b'.');
+        for c in symbol.chars() {
+            bytes.push(c as u8);
+        }
+        // i already at position after collected chars, continue parsing from here
+        return Ok(());
+    }
+
+    *i += 2; // Skip .]
+    // Collating symbol expands to the single character (first char of symbol)
+    if let Some(c) = symbol.chars().next() {
+        bytes.push(c as u8);
+    }
+    Ok(())
+}
+
+/// Inner parser that expands character classes, escapes, equivalence classes, and collating symbols
+fn parse_set_inner(input: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;
@@ -146,23 +243,24 @@ fn parse_set(input: &str) -> Result<Vec<u8>> {
     while i < chars.len() {
         let ch = chars[i];
 
-        if ch == '[' && i + 2 < chars.len() && chars[i + 1] == ':' {
-            // Start of character class
-            i += 2; // Skip [:
-            let mut class_name = String::new();
-
-            // Collect class name until :]
-            while i + 1 < chars.len() && !(chars[i] == ':' && chars[i + 1] == ']') {
-                class_name.push(chars[i]);
-                i += 1;
+        if ch == '[' && i + 2 < chars.len() {
+            let next = chars[i + 1];
+            if next == ':' {
+                parse_character_class(&chars, &mut i, &mut bytes)?;
+                continue;
+            } else if next == '=' {
+                parse_equivalence_class(&chars, &mut i, &mut bytes)?;
+                continue;
+            } else if next == '.' {
+                parse_collating_symbol(&chars, &mut i, &mut bytes)?;
+                continue;
             }
+        }
 
-            if i + 1 >= chars.len() || chars[i] != ':' || chars[i + 1] != ']' {
-                return Err(eyre!("tr: unterminated character class"));
-            }
-
-            i += 2; // Skip :]
-            bytes.extend(expand_character_class(&class_name)?);
+        // If we get here, '[' is not part of a special sequence, treat as literal
+        if ch == '[' {
+            bytes.push(b'[');
+            i += 1;
         } else if ch == '\\' {
             // Escape sequence
             i += 1;
@@ -187,6 +285,34 @@ fn parse_set(input: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Expand ranges like a-z and A-Z in a byte sequence
+fn expand_ranges(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 2 < bytes.len() && bytes[i + 1] == b'-' {
+            let start = bytes[i];
+            let end = bytes[i + 2];
+            // Check if start and end are both digits, both lowercase, or both uppercase
+            let is_valid_range = (b'0' <= start && start <= b'9' && b'0' <= end && end <= b'9')
+                || (b'a' <= start && start <= b'z' && b'a' <= end && end <= b'z')
+                || (b'A' <= start && start <= b'Z' && b'A' <= end && end <= b'Z');
+            if is_valid_range && start <= end {
+                // Expand range
+                for c in start..=end {
+                    result.push(c);
+                }
+                i += 3;
+                continue;
+            }
+        }
+        // Not a range, push byte as is
+        result.push(bytes[i]);
+        i += 1;
+    }
+    Ok(result)
+}
+
 pub struct TrOptions {
     #[allow(dead_code)]
     pub set1: String, // Original string for error messages
@@ -195,11 +321,13 @@ pub struct TrOptions {
     pub set1_bytes: Vec<u8>,
     pub set2_bytes: Option<Vec<u8>>,
     pub delete: bool,
+    pub complement: bool,
     pub squeeze: Option<String>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<TrOptions> {
     let delete = matches.get_flag("delete");
+    let complement = matches.get_flag("complement");
     let squeeze = matches.get_one::<String>("squeeze").cloned();
 
     let args: Vec<String> = matches.get_many::<String>("args")
@@ -223,6 +351,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<TrOptions> {
         set1_bytes,
         set2_bytes,
         delete,
+        complement,
         squeeze,
     })
 }
@@ -235,6 +364,11 @@ pub fn command() -> Command {
             .long("delete")
             .help("Delete characters in SET1")
             .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("complement")
+            .short('c')
+            .long("complement")
+            .help("Complement the set of characters in SET1")
+            .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("squeeze")
             .short('s')
             .long("squeeze-repeats")
@@ -246,17 +380,25 @@ pub fn command() -> Command {
             .required(true))
 }
 
-pub fn run(options: TrOptions) -> Result<()> {
-    let mut translation_map: HashMap<u8, Option<u8>> = HashMap::new();
+fn build_translation_map(options: &TrOptions) -> HashMap<u8, Option<u8>> {
+    let mut translation_map = HashMap::new();
+
+    // Compute effective set1 bytes (complement if needed)
+    let effective_set1 = if options.complement {
+        let set1_set: std::collections::HashSet<u8> = options.set1_bytes.iter().cloned().collect();
+        (0..=255u8).filter(|b| !set1_set.contains(b)).collect::<Vec<_>>()
+    } else {
+        options.set1_bytes.clone()
+    };
 
     if options.delete {
-        // Delete bytes in set1
-        for &byte in &options.set1_bytes {
+        // Delete bytes in effective set1
+        for &byte in &effective_set1 {
             translation_map.insert(byte, None);
         }
     } else if let Some(ref set2_bytes) = options.set2_bytes {
-        // Translate bytes from set1 to set2
-        for (i, &byte1) in options.set1_bytes.iter().enumerate() {
+        // Translate bytes from effective set1 to set2
+        for (i, &byte1) in effective_set1.iter().enumerate() {
             if i < set2_bytes.len() {
                 translation_map.insert(byte1, Some(set2_bytes[i]));
             } else {
@@ -266,13 +408,56 @@ pub fn run(options: TrOptions) -> Result<()> {
         }
     }
 
+    translation_map
+}
+
+fn build_squeeze_set(options: &TrOptions) -> Result<HashSet<u8>> {
     let mut squeeze_set = HashSet::new();
-    if let Some(squeeze_str) = options.squeeze {
-        let squeeze_bytes = parse_set(&squeeze_str)?;
+    if let Some(squeeze_str) = &options.squeeze {
+        let squeeze_bytes = parse_set(squeeze_str)?;
         for &byte in &squeeze_bytes {
             squeeze_set.insert(byte);
         }
     }
+    Ok(squeeze_set)
+}
+
+fn process_chunk(chunk: &[u8], translation_map: &HashMap<u8, Option<u8>>, squeeze_set: &HashSet<u8>, delete: bool, last_byte: &mut Option<u8>) -> Vec<u8> {
+    let mut output = Vec::new();
+
+    for &byte in chunk {
+        let translated_byte = if delete {
+            if translation_map.contains_key(&byte) {
+                None
+            } else {
+                Some(byte)
+            }
+        } else {
+            translation_map.get(&byte).cloned().unwrap_or(Some(byte))
+        };
+
+        if let Some(translated) = translated_byte {
+            // Handle squeezing
+            if squeeze_set.contains(&translated) {
+                if Some(translated) != *last_byte {
+                    output.push(translated);
+                    *last_byte = Some(translated);
+                }
+            } else {
+                output.push(translated);
+                *last_byte = Some(translated);
+            }
+        } else {
+            *last_byte = None;
+        }
+    }
+
+    output
+}
+
+pub fn run(options: TrOptions) -> Result<()> {
+    let translation_map = build_translation_map(&options);
+    let squeeze_set = build_squeeze_set(&options)?;
 
     let mut stdin = io::stdin();
     let mut buffer = [0u8; 8192];
@@ -286,34 +471,7 @@ pub fn run(options: TrOptions) -> Result<()> {
             break;
         }
 
-        let mut output = Vec::new();
-
-        for &byte in &buffer[..bytes_read] {
-            let translated_byte = if options.delete {
-                if translation_map.contains_key(&byte) {
-                    None
-                } else {
-                    Some(byte)
-                }
-            } else {
-                translation_map.get(&byte).cloned().unwrap_or(Some(byte))
-            };
-
-            if let Some(translated) = translated_byte {
-                // Handle squeezing
-                if squeeze_set.contains(&translated) {
-                    if Some(translated) != last_byte {
-                        output.push(translated);
-                        last_byte = Some(translated);
-                    }
-                } else {
-                    output.push(translated);
-                    last_byte = Some(translated);
-                }
-            } else {
-                last_byte = None;
-            }
-        }
+        let output = process_chunk(&buffer[..bytes_read], &translation_map, &squeeze_set, options.delete, &mut last_byte);
 
         // Write output as bytes
         io::stdout().write_all(&output)

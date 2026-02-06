@@ -20,6 +20,23 @@ fn parse_key_spec(key_str: &str) -> Result<KeySpec> {
     Ok(KeySpec { field })
 }
 
+/// Compare two strings numerically (leading digits as number, then rest lexicographically).
+fn numeric_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_trim = a.trim_start();
+    let b_trim = b.trim_start();
+    let a_num = a_trim.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect::<String>();
+    let b_num = b_trim.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect::<String>();
+    if !a_num.is_empty() && !b_num.is_empty() {
+        if let (Ok(na), Ok(nb)) = (a_num.parse::<i64>(), b_num.parse::<i64>()) {
+            let ord = na.cmp(&nb);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+    }
+    a.cmp(b)
+}
+
 fn get_sort_key(line: &str, key_spec: &KeySpec, separator: Option<&str>) -> String {
     if let Some(sep) = separator {
         // Split by custom separator
@@ -43,6 +60,7 @@ fn get_sort_key(line: &str, key_spec: &KeySpec, separator: Option<&str>) -> Stri
 pub struct SortOptions {
     pub files: Vec<String>,
     pub reverse: bool,
+    pub numeric: bool,
     pub key: Option<KeySpec>,
     pub separator: Option<String>,
     pub stable: bool,
@@ -55,6 +73,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SortOptions> {
         .unwrap_or_default();
 
     let reverse = matches.get_flag("reverse");
+    let numeric = matches.get_flag("numeric");
     let key = if let Some(key_str) = matches.get_one::<String>("key") {
         Some(parse_key_spec(key_str)?)
     } else {
@@ -64,7 +83,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<SortOptions> {
     let stable = matches.get_flag("stable");
     let unique = matches.get_flag("unique");
 
-    Ok(SortOptions { files, reverse, key, separator, stable, unique })
+    Ok(SortOptions { files, reverse, numeric, key, separator, stable, unique })
 }
 
 pub fn command() -> Command {
@@ -74,6 +93,11 @@ pub fn command() -> Command {
             .short('r')
             .long("reverse")
             .help("Reverse the sort order")
+            .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("numeric")
+            .short('n')
+            .long("numeric")
+            .help("Compare according to string numerical value")
             .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("key")
             .short('k')
@@ -102,9 +126,8 @@ pub fn command() -> Command {
             .help("Files to sort (if none, read from stdin)"))
 }
 
-pub fn run(options: SortOptions) -> Result<()> {
+fn read_lines(options: &SortOptions) -> Result<Vec<String>> {
     let mut lines = Vec::new();
-
     if options.files.is_empty() {
         // Read from stdin
         let stdin = io::stdin();
@@ -127,11 +150,13 @@ pub fn run(options: SortOptions) -> Result<()> {
             }
         }
     }
+    Ok(lines)
+}
 
-    // Sort the lines
+fn sort_lines(lines: &mut Vec<String>, options: &SortOptions) {
     if let Some(key_spec) = &options.key {
         // Sort by key
-        let mut keyed_lines: Vec<(String, String)> = lines.into_iter()
+        let mut keyed_lines: Vec<(String, String)> = lines.drain(..)
             .map(|line| {
                 let key = get_sort_key(&line, key_spec, options.separator.as_deref());
                 (key, line)
@@ -155,13 +180,21 @@ pub fn run(options: SortOptions) -> Result<()> {
         }
 
         // Extract the sorted lines
-        lines = keyed_lines.into_iter().map(|(_, line)| line).collect();
+        *lines = keyed_lines.into_iter().map(|(_, line)| line).collect();
     } else {
-        // Regular sort: use stable sort when --stable flag is set, unstable otherwise
-        if options.stable {
-            lines.sort();
+        // Regular sort: numeric or string, stable when --stable
+        if options.numeric {
+            if options.stable {
+                lines.sort_by(|a, b| numeric_cmp(a, b));
+            } else {
+                lines.sort_unstable_by(|a, b| numeric_cmp(a, b));
+            }
         } else {
-            lines.sort_unstable();
+            if options.stable {
+                lines.sort();
+            } else {
+                lines.sort_unstable();
+            }
         }
 
         if options.reverse {
@@ -172,11 +205,14 @@ pub fn run(options: SortOptions) -> Result<()> {
             lines.dedup();
         }
     }
+}
 
+pub fn run(options: SortOptions) -> Result<()> {
+    let mut lines = read_lines(&options)?;
+    sort_lines(&mut lines, &options);
     // Output the sorted lines
     for line in lines {
         println!("{}", line);
     }
-
     Ok(())
 }

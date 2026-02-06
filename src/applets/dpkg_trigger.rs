@@ -32,6 +32,68 @@ fn validate_trigger_name(name: &str) -> Option<String> {
     None
 }
 
+fn handle_check_supported() -> ! {
+    // Scriptlets already run inside the environment, so use "/" directly
+    let env_root = PathBuf::from("/");
+    let triggers_dir = env_root.join(TRIGGERSDIR);
+    let unincorp_file = triggers_dir.join(TRIGGERSDEFERREDFILE);
+
+    // Check if triggers system is available
+    // dpkg checks if directory exists or Unincorp file exists
+    if triggers_dir.exists() || unincorp_file.exists() || std::fs::create_dir_all(&triggers_dir).is_ok() {
+        process::exit(0);
+    } else {
+        eprintln!("dpkg-trigger: triggers data directory not yet created");
+        process::exit(1);
+    }
+}
+
+fn determine_activating_package(options: &DpkgTriggerOptions) -> Result<(Option<String>, bool)> {
+    let await_mode = options.await_mode.unwrap_or(true); // Default to await
+
+    if !await_mode {
+        // --no-await: no package awaits
+        Ok((None, true))
+    } else if let Some(ref by_pkg) = options.by_package {
+        // --by-package specified
+        Ok((Some(by_pkg.clone()), false))
+    } else {
+        // Try to get from environment variables (set by maintainer scripts)
+        // dpkg requires both DPKG_MAINTSCRIPT_PACKAGE and DPKG_MAINTSCRIPT_ARCH
+        match (env::var("DPKG_MAINTSCRIPT_PACKAGE"), env::var("DPKG_MAINTSCRIPT_ARCH")) {
+            (Ok(pkgname), Ok(arch)) => {
+                // Format: pkgname:arch (dpkg uses this format)
+                Ok((Some(format!("{}:{}", pkgname, arch)), false))
+            }
+            (Ok(pkgname), Err(_)) => {
+                // Only package name available, use it
+                Ok((Some(pkgname), false))
+            }
+            (Err(_), _) => {
+                // Not called from maintainer script and no --by-package
+                Err(color_eyre::eyre::eyre!("dpkg-trigger: must be called from a maintainer script (or with a --by-package option"))
+            }
+        }
+    }
+}
+
+fn get_trigger_name(options: &DpkgTriggerOptions) -> String {
+    match &options.trigger_name {
+        Some(name) => name.clone(),
+        None => {
+            eprintln!("dpkg-trigger: trigger name required");
+            process::exit(2);
+        }
+    }
+}
+
+fn validate_trigger_name_or_exit(name: &str) {
+    if let Some(error_msg) = validate_trigger_name(name) {
+        eprintln!("dpkg-trigger: invalid trigger name '{}': {}", name, error_msg);
+        process::exit(2);
+    }
+}
+
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgTriggerOptions> {
     let check_supported = matches.get_flag("check-supported");
     let trigger_name = if check_supported {
@@ -107,35 +169,12 @@ pub fn command() -> Command {
 pub fn run(options: DpkgTriggerOptions) -> Result<()> {
     // Handle --check-supported command
     if options.check_supported {
-        // Scriptlets already run inside the environment, so use "/" directly
-        let env_root = PathBuf::from("/");
-        let triggers_dir = env_root.join(TRIGGERSDIR);
-        let unincorp_file = triggers_dir.join(TRIGGERSDEFERREDFILE);
-
-        // Check if triggers system is available
-        // dpkg checks if directory exists or Unincorp file exists
-        if triggers_dir.exists() || unincorp_file.exists() || std::fs::create_dir_all(&triggers_dir).is_ok() {
-            process::exit(0);
-        } else {
-            eprintln!("dpkg-trigger: triggers data directory not yet created");
-            process::exit(1);
-        }
+        handle_check_supported();
     }
 
     // Must have trigger name for activation (unless --check-supported)
-    let trigger_name = match options.trigger_name {
-        Some(name) => name,
-        None => {
-            eprintln!("dpkg-trigger: trigger name required");
-            process::exit(2);
-        }
-    };
-
-    // Validate trigger name
-    if let Some(error_msg) = validate_trigger_name(&trigger_name) {
-        eprintln!("dpkg-trigger: invalid trigger name '{}': {}", trigger_name, error_msg);
-        process::exit(2);
-    }
+    let trigger_name = get_trigger_name(&options);
+    validate_trigger_name_or_exit(&trigger_name);
 
     if options.no_act {
         // Just validate, don't actually activate
@@ -150,33 +189,11 @@ pub fn run(options: DpkgTriggerOptions) -> Result<()> {
     // Reference: dpkg-trigger main.c parse_awaiter_package()
     // If --no-await, set to "-" (no awaiter)
     // Otherwise, get from --by-package or DPKG_MAINTSCRIPT_PACKAGE + DPKG_MAINTSCRIPT_ARCH
-    let (activating_package, no_await): (Option<String>, bool) = {
-        let await_mode = options.await_mode.unwrap_or(true); // Default to await
-
-        if !await_mode {
-            // --no-await: no package awaits
-            (None, true)
-        } else if let Some(ref by_pkg) = options.by_package {
-            // --by-package specified
-            (Some(by_pkg.clone()), false)
-        } else {
-            // Try to get from environment variables (set by maintainer scripts)
-            // dpkg requires both DPKG_MAINTSCRIPT_PACKAGE and DPKG_MAINTSCRIPT_ARCH
-            match (env::var("DPKG_MAINTSCRIPT_PACKAGE"), env::var("DPKG_MAINTSCRIPT_ARCH")) {
-                (Ok(pkgname), Ok(arch)) => {
-                    // Format: pkgname:arch (dpkg uses this format)
-                    (Some(format!("{}:{}", pkgname, arch)), false)
-                }
-                (Ok(pkgname), Err(_)) => {
-                    // Only package name available, use it
-                    (Some(pkgname), false)
-                }
-                (Err(_), _) => {
-                    // Not called from maintainer script and no --by-package
-                    eprintln!("dpkg-trigger: must be called from a maintainer script (or with a --by-package option)");
-                    process::exit(2);
-                }
-            }
+    let (activating_package, no_await) = match determine_activating_package(&options) {
+        Ok(tuple) => tuple,
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(2);
         }
     };
 

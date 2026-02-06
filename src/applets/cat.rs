@@ -21,7 +21,7 @@ pub fn command() -> Command {
         .about("Concatenate and print files")
         .arg(Arg::new("files")
             .num_args(0..)
-            .help("Files to concatenate (if none, read from stdin)"))
+            .help("Files to concatenate (if none, read from stdin; - means stdin)"))
 }
 
 pub fn run(options: CatOptions) -> Result<()> {
@@ -35,11 +35,16 @@ pub fn run(options: CatOptions) -> Result<()> {
         io::copy(&mut stdin_handle, &mut stdout_handle)
             .map_err(|e| eyre!("cat: failed to read from stdin: {}", e))?;
     } else {
-        // Read from files
+        // Read from files (- means stdin)
         for file_path in &options.files {
-            let mut file = File::open(file_path)
-                .map_err(|e| eyre!("cat: {}: {}", file_path, e))?;
-            io::copy(&mut file, &mut stdout_handle)
+            let mut input: Box<dyn io::Read> = if file_path == "-" {
+                Box::new(io::stdin())
+            } else {
+                let file = File::open(file_path)
+                    .map_err(|e| eyre!("cat: {}: {}", file_path, e))?;
+                Box::new(file)
+            };
+            io::copy(&mut input, &mut stdout_handle)
                 .map_err(|e| eyre!("cat: failed to write {}: {}", file_path, e))?;
         }
     }

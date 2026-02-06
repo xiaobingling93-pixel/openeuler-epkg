@@ -1,6 +1,10 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use std::env;
+use std::path::{Path, PathBuf};
+use crate::run::is_executable;
+
+const DEFAULT_PATH: &str = "/sbin:/usr/sbin:/bin:/usr/bin";
 
 pub struct WhichOptions {
     pub commands: Vec<String>,
@@ -24,26 +28,26 @@ pub fn command() -> Command {
 }
 
 fn find_command_in_path(command: &str) -> Option<String> {
-    if let Some(paths) = env::var_os("PATH") {
-        for path_dir in env::split_paths(&paths) {
-            let full_path = path_dir.join(command);
-            if full_path.exists() && full_path.is_file() {
-                // Check if executable (on Unix systems)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(metadata) = full_path.metadata() {
-                        let permissions = metadata.permissions();
-                        if permissions.mode() & 0o111 != 0 {
-                            return Some(full_path.to_string_lossy().to_string());
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    return Some(full_path.to_string_lossy().to_string());
-                }
-            }
+    // If command contains a slash, treat as direct path
+    if command.contains('/') {
+        let path = Path::new(command);
+        if path.exists() && path.is_file() && is_executable(path).ok()? {
+            return Some(command.to_string());
+        }
+        return None;
+    }
+
+    // Determine search directories
+    let path_dirs: Vec<PathBuf> = if let Some(paths) = env::var_os("PATH") {
+        env::split_paths(&paths).collect()
+    } else {
+        DEFAULT_PATH.split(':').map(PathBuf::from).collect()
+    };
+
+    for path_dir in path_dirs {
+        let full_path = path_dir.join(command);
+        if full_path.exists() && full_path.is_file() && is_executable(&full_path).ok()? {
+            return Some(full_path.to_string_lossy().to_string());
         }
     }
     None

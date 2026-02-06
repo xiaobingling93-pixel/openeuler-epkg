@@ -11,11 +11,13 @@ pub struct WgetOptions {
     pub output_file: Option<String>,
     pub prefix_dir: Option<String>,
     pub urls: Vec<String>,
+    #[allow(dead_code)] pub quiet: bool,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<WgetOptions> {
     let output_file = matches.get_one::<String>("output").cloned();
     let prefix_dir = matches.get_one::<String>("directory-prefix").cloned();
+    let quiet = matches.get_flag("quiet");
     let urls: Vec<String> = matches.get_many::<String>("urls")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
@@ -25,15 +27,12 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<WgetOptions> {
         return Err(eyre::eyre!("wget: option '-O' can only be used with a single URL"));
     }
 
-    // Validate: -O and -P cannot be used together
-    if output_file.is_some() && prefix_dir.is_some() {
-        return Err(eyre::eyre!("wget: options '-O' and '-P' cannot be used together"));
-    }
 
     Ok(WgetOptions {
         output_file,
         prefix_dir,
         urls,
+        quiet,
     })
 }
 
@@ -51,6 +50,11 @@ pub fn command() -> Command {
             .long("directory-prefix")
             .value_name("DIR")
             .help("Save files to DIR"))
+        .arg(Arg::new("quiet")
+            .short('q')
+            .long("quiet")
+            .help("Quiet mode (no output)")
+            .action(clap::ArgAction::SetTrue))
         .arg(Arg::new("urls")
             .required(true)
             .num_args(1..)

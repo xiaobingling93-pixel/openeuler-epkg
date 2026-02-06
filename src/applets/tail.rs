@@ -1,65 +1,28 @@
-use clap::{Arg, Command};
+use clap::Command;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs::File;
-use std::io::{self, BufRead, Read};
+use std::io::{BufRead, Read};
+use crate::applets::head::{open_file_as_bufread, open_file_as_read, print_file_header, parse_head_tail_options, head_tail_command};
 
 pub struct TailOptions {
     pub files: Vec<String>,
-    pub lines: Option<usize>,
+    pub lines: Option<i64>, // Can be negative for 'last N lines' or positive for 'from line N'
     pub bytes: Option<i64>, // Can be negative for "last N bytes" or positive for "from byte N"
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<TailOptions> {
-    let files: Vec<String> = matches.get_many::<String>("files")
-        .map(|vals| vals.cloned().collect())
-        .unwrap_or_default();
-
-    let lines = matches.get_one::<String>("lines")
-        .and_then(|s| s.parse().ok());
-
-    let bytes_str = matches.get_one::<String>("bytes");
-
-    let bytes = if let Some(bytes_str) = bytes_str {
-        if bytes_str.starts_with('+') {
-            // +N means start from byte N (1-indexed)
-            bytes_str[1..].parse::<i64>().ok().map(|n| n)
-        } else {
-            // N means last N bytes (negative to indicate this)
-            bytes_str.parse::<i64>().ok().map(|n| -n)
-        }
-    } else {
-        None
-    };
-
-    // If neither is specified, default to 10 lines
-    let lines = if lines.is_none() && bytes.is_none() {
-        Some(10)
-    } else {
-        lines
-    };
-
+    let (files, lines, bytes) = parse_head_tail_options(matches, true, -10)?;
     Ok(TailOptions { files, lines, bytes })
 }
 
+
 pub fn command() -> Command {
-    Command::new("tail")
-        .about("Output the last part of files")
-        .arg(Arg::new("lines")
-            .short('n')
-            .long("lines")
-            .help("Print the last N lines (default 10)")
-            .value_name("NUM")
-            .conflicts_with("bytes"))
-        .arg(Arg::new("bytes")
-            .short('c')
-            .long("bytes")
-            .help("Print the last N bytes, or +N to start from byte N")
-            .value_name("NUM")
-            .conflicts_with("lines"))
-        .arg(Arg::new("files")
-            .num_args(0..)
-            .help("Files to process (if none, read from stdin)"))
+    head_tail_command(
+        "tail",
+        "Output the last part of files",
+        "Number of lines (positive for start from line, negative for last N lines)",
+        "Number of bytes (positive for start from byte, negative for last N bytes)",
+    )
 }
 
 fn print_last_lines(reader: &mut dyn BufRead, num_lines: usize) -> Result<()> {
@@ -123,53 +86,50 @@ fn print_from_byte(reader: &mut dyn Read, start_byte: usize) -> Result<()> {
 
     Ok(())
 }
+fn print_from_line(reader: &mut dyn BufRead, start_line: usize) -> Result<()> {
+    let mut lines = Vec::new();
+    for line_result in reader.lines() {
+        let line = line_result
+            .map_err(|e| eyre!("tail: error reading input: {}", e))?;
+        lines.push(line);
+    }
+    // start_line is 1-indexed, convert to 0-indexed
+    let start_idx = if start_line == 0 { 0 } else { start_line - 1 };
+    if start_idx < lines.len() {
+        for line in &lines[start_idx..] {
+            println!("{}", line);
+        }
+    }
+    Ok(())
+}
 
 pub fn run(options: TailOptions) -> Result<()> {
-    if options.files.is_empty() {
-        // Read from stdin
-        let stdin = io::stdin();
-        if let Some(num_lines) = options.lines {
-            let mut reader = stdin.lock();
-            print_last_lines(&mut reader, num_lines)?;
+
+    let mut first_file = true;
+    for file_path in &options.files {
+        if options.files.len() > 1 {
+            print_file_header(file_path, &mut first_file);
+        }
+
+        if let Some(lines_val) = options.lines {
+            let mut reader = open_file_as_bufread(file_path)
+                .map_err(|e| eyre!("tail: {}", e))?;
+            if lines_val > 0 {
+                print_from_line(&mut *reader, lines_val as usize)?;
+            } else {
+                print_last_lines(&mut *reader, (-lines_val) as usize)?;
+            }
         } else if let Some(bytes_val) = options.bytes {
             if bytes_val > 0 {
                 // +N: start from byte N
-                let mut reader = stdin;
-                print_from_byte(&mut reader, bytes_val as usize)?;
+                let mut reader = open_file_as_read(file_path)
+                    .map_err(|e| eyre!("tail: {}", e))?;
+                print_from_byte(&mut *reader, bytes_val as usize)?;
             } else {
                 // -N: last N bytes
-                let mut reader = stdin;
-                print_last_bytes(&mut reader, (-bytes_val) as usize)?;
-            }
-        }
-    } else {
-        // Process files
-        let mut first_file = true;
-        for file_path in &options.files {
-            if options.files.len() > 1 {
-                if !first_file {
-                    println!();
-                }
-                println!("==> {} <==", file_path);
-                first_file = false;
-            }
-
-            let file = File::open(file_path)
-                .map_err(|e| eyre!("tail: cannot open '{}': {}", file_path, e))?;
-
-            if let Some(num_lines) = options.lines {
-                let mut reader = io::BufReader::new(&file);
-                print_last_lines(&mut reader, num_lines)?;
-            } else if let Some(bytes_val) = options.bytes {
-                if bytes_val > 0 {
-                    // +N: start from byte N
-                    let mut reader = &file;
-                    print_from_byte(&mut reader, bytes_val as usize)?;
-                } else {
-                    // -N: last N bytes
-                    let mut reader = &file;
-                    print_last_bytes(&mut reader, (-bytes_val) as usize)?;
-                }
+                let mut reader = open_file_as_read(file_path)
+                    .map_err(|e| eyre!("tail: {}", e))?;
+                print_last_bytes(&mut *reader, (-bytes_val) as usize)?;
             }
         }
     }

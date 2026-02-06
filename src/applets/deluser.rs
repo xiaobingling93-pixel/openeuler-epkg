@@ -111,74 +111,78 @@ pub fn command() -> Command {
         )
 }
 
-pub fn run(cmd: DelUserCmd) -> Result<()> {
-    match cmd.mode {
-        DelUserMode::DeleteAccount => {
-            // Delegate to userdel core
-            crate::applets::userdel::run(cmd.options)?;
+fn delete_account(cmd: DelUserCmd) -> Result<()> {
+    // Delegate to userdel core
+    crate::applets::userdel::run(cmd.options)
+}
+
+fn delete_group(cmd: DelUserCmd) -> Result<()> {
+    // --group flag: delete the group (group name is in username position)
+    let group_name = &cmd.options.username;
+    if !group_exists(group_name, None)? {
+        // Group doesn't exist - exit successfully (Debian behavior when --system is set)
+        if cmd.system {
+            return Ok(());
+        } else {
+            return Err(color_eyre::eyre::eyre!("The group `{}' does not exist.", group_name));
         }
-        DelUserMode::DeleteGroup => {
-            // --group flag: delete the group (group name is in username position)
-            let group_name = &cmd.options.username;
-            if !group_exists(group_name, None)? {
-                // Group doesn't exist - exit successfully (Debian behavior when --system is set)
-                if cmd.system {
-                    return Ok(());
-                } else {
-                    return Err(color_eyre::eyre::eyre!("The group `{}' does not exist.", group_name));
-                }
-            }
-            // Use groupdel to delete the group
-            let groupdel_opts = GroupDelOptions {
-                force: false,
-                root: None,
-                prefix: None,
-                name: group_name.clone(),
-            };
-            run_groupdel(groupdel_opts)?;
-        }
-        DelUserMode::RemoveFromGroup => {
-            let user = &cmd.options.username;
-            let group = cmd
-                .group
-                .as_ref()
-                .expect("group must be provided for group removal");
+    }
+    // Use groupdel to delete the group
+    let groupdel_opts = GroupDelOptions {
+        force: false,
+        root: None,
+        prefix: None,
+        name: group_name.clone(),
+    };
+    run_groupdel(groupdel_opts)
+}
 
-            // Both user and group must exist (Debian deluser behavior)
-            if !user_exists(user, None)? {
-                return Err(color_eyre::eyre::eyre!("The user `{}' does not exist.", user));
-            }
-            if !group_exists(group, None)? {
-                return Err(color_eyre::eyre::eyre!("The group `{}' does not exist.", group));
-            }
+fn remove_from_group(cmd: DelUserCmd) -> Result<()> {
+    let user = &cmd.options.username;
+    let group = cmd
+        .group
+        .as_ref()
+        .expect("group must be provided for group removal");
 
-            // Check if trying to remove from primary group (not allowed)
-            let users = userdb::read_passwd(Some(Path::new("/")))?;
-            let groups = userdb::read_group(Some(Path::new("/")))?;
-            if let Some(user_entry) = users.iter().find(|u| u.name == *user) {
-                if let Some(group_entry) = groups.iter().find(|g| g.name == *group) {
-                    if user_entry.gid == group_entry.gid {
-                        return Err(color_eyre::eyre::eyre!("You may not remove the user from their primary group."));
-                    }
-                }
-            }
+    // Both user and group must exist (Debian deluser behavior)
+    if !user_exists(user, None)? {
+        return Err(color_eyre::eyre::eyre!("The user `{}' does not exist.", user));
+    }
+    if !group_exists(group, None)? {
+        return Err(color_eyre::eyre::eyre!("The group `{}' does not exist.", group));
+    }
 
-            // Check if user is a member of the group
-            let groups = userdb::read_group(Some(Path::new("/")))?;
-            if let Some(g) = groups.iter().find(|g| g.name == *group) {
-                if !g.members.iter().any(|m| m == user) {
-                    return Err(color_eyre::eyre::eyre!("The user `{}' is not a member of group `{}'.", user, group));
-                }
+    // Check if trying to remove from primary group (not allowed)
+    let users = userdb::read_passwd(Some(Path::new("/")))?;
+    let groups = userdb::read_group(Some(Path::new("/")))?;
+    if let Some(user_entry) = users.iter().find(|u| u.name == *user) {
+        if let Some(group_entry) = groups.iter().find(|g| g.name == *group) {
+            if user_entry.gid == group_entry.gid {
+                return Err(color_eyre::eyre::eyre!("You may not remove the user from their primary group."));
             }
-
-            // Remove user from group
-            // If --group was specified (group_mode), also remove empty groups
-            // This matches Debian deluser behavior for system groups
-            let remove_empty = cmd.group_mode || cmd.system;
-            userdb::remove_user_from_group(user, group, remove_empty, Some(Path::new("/")))?;
         }
     }
 
-    Ok(())
+    // Check if user is a member of the group
+    let groups = userdb::read_group(Some(Path::new("/")))?;
+    if let Some(g) = groups.iter().find(|g| g.name == *group) {
+        if !g.members.iter().any(|m| m == user) {
+            return Err(color_eyre::eyre::eyre!("The user `{}' is not a member of group `{}'.", user, group));
+        }
+    }
+
+    // Remove user from group
+    // If --group was specified (group_mode), also remove empty groups
+    // This matches Debian deluser behavior for system groups
+    let remove_empty = cmd.group_mode || cmd.system;
+    userdb::remove_user_from_group(user, group, remove_empty, Some(Path::new("/")))
+}
+
+pub fn run(cmd: DelUserCmd) -> Result<()> {
+    match cmd.mode {
+        DelUserMode::DeleteAccount => delete_account(cmd),
+        DelUserMode::DeleteGroup => delete_group(cmd),
+        DelUserMode::RemoveFromGroup => remove_from_group(cmd),
+    }
 }
 

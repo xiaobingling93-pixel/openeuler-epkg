@@ -413,15 +413,8 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<RpmOptions> {
 }
 
 
-pub fn command() -> Command {
-    Command::new("rpm")
-        .about("RPM package manager query tool")
-        .arg_required_else_help(true) // This will show help if no args are provided
-        .arg(Arg::new("query")
-            .short('q')
-            .long("query")
-            .action(clap::ArgAction::SetTrue)
-            .help("Query mode (default)"))
+fn add_query_flags(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("all")
             .short('a')
             .long("all")
@@ -460,6 +453,10 @@ pub fn command() -> Command {
             .action(clap::ArgAction::Set)
             .value_parser(clap::value_parser!(String))
             .help("Query an (uninstalled) package file"))
+}
+
+fn add_what_query_flags(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("whatprovides")
             .long("whatprovides")
             .value_name("CAPABILITY")
@@ -516,6 +513,10 @@ pub fn command() -> Command {
             .action(clap::ArgAction::Set)
             .value_parser(clap::value_parser!(String))
             .help("Query packages that enhance CAPABILITY"))
+}
+
+fn add_script_flags(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("scripts")
             .long("scripts")
             .action(clap::ArgAction::SetTrue)
@@ -529,6 +530,10 @@ pub fn command() -> Command {
             .long("filetriggers")
             .action(clap::ArgAction::SetTrue)
             .help("List file triggers"))
+}
+
+fn add_dependency_flags(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("provides")
             .long("provides")
             .action(clap::ArgAction::SetTrue)
@@ -562,6 +567,10 @@ pub fn command() -> Command {
             .long("supplements")
             .action(clap::ArgAction::SetTrue)
             .help("List packages supplemented by package"))
+}
+
+fn add_verify_state_flags(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("verify")
             .short('V')
             .long("verify")
@@ -572,6 +581,10 @@ pub fn command() -> Command {
             .long("state")
             .action(clap::ArgAction::SetTrue)
             .help("Display file states"))
+}
+
+fn add_install_flags(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("install")
             .short('I')
             .long("install")
@@ -587,10 +600,27 @@ pub fn command() -> Command {
             .long("erase")
             .action(clap::ArgAction::SetTrue)
             .help("Remove package(s)"))
-        .arg(Arg::new("packages")
-            .value_name("PACKAGE_SPECS")
-            .help("Package name(s) to query")
-            .num_args(0..))
+}
+
+pub fn command() -> Command {
+    let cmd = Command::new("rpm")
+        .about("RPM package manager query tool")
+        .arg_required_else_help(true) // This will show help if no args are provided
+        .arg(Arg::new("query")
+            .short('q')
+            .long("query")
+            .action(clap::ArgAction::SetTrue)
+            .help("Query mode (default)"));
+    let cmd = add_query_flags(cmd);
+    let cmd = add_what_query_flags(cmd);
+    let cmd = add_script_flags(cmd);
+    let cmd = add_dependency_flags(cmd);
+    let cmd = add_verify_state_flags(cmd);
+    let cmd = add_install_flags(cmd);
+    cmd.arg(Arg::new("packages")
+        .value_name("PACKAGE_SPECS")
+        .help("Package name(s) to query")
+        .num_args(0..))
 }
 
 /// Resolve pkgline to (Package, InstalledPackageInfo). Returns None if not installed or load fails.
@@ -941,28 +971,18 @@ fn show_file_triggers(store_path: &Path) -> Result<()> {
 /// Generic function to show triggers (package or file triggers).
 /// `filter` decides which script files to include based on filename.
 /// Calls parse_hook_file() to extract script_order and targets from the corresponding .hook file.
-fn show_triggers_generic<F>(
-    store_path: &Path,
-    filter: F,
-) -> Result<()>
+fn collect_trigger_items<F>(scripts_dir: &Path, filter: F) -> Vec<(u32, String, String, Vec<String>)>
 where
     F: Fn(&str) -> bool,
 {
-    let scripts_dir = store_path.join("info/install");
-    if !scripts_dir.exists() {
-        return Ok(());
-    }
-
-    let entries = match std::fs::read_dir(&scripts_dir) {
+    let mut items = Vec::new();
+    let entries = match std::fs::read_dir(scripts_dir) {
         Ok(entries) => entries,
         Err(e) => {
             eprintln!("failed to read scripts directory: {}", e);
-            return Ok(());
+            return items;
         }
     };
-
-    let mut items: Vec<(u32, String, String, Vec<String>)> = Vec::new();
-
     for entry in entries.flatten() {
         let filename = match entry.file_name().into_string() {
             Ok(s) => s,
@@ -996,9 +1016,10 @@ where
         };
         items.push((script_order, filename, content, targets));
     }
+    items
+}
 
-    items.sort_by_key(|(ord, _, _, _)| *ord);
-
+fn print_trigger_items(items: &[(u32, String, String, Vec<String>)]) {
     for (_order, filename, content, targets) in items {
         let scriptlet_name = filename
             .split('-')
@@ -1016,6 +1037,23 @@ where
 
         print_script_content(&content);
     }
+}
+
+fn show_triggers_generic<F>(
+    store_path: &Path,
+    filter: F,
+) -> Result<()>
+where
+    F: Fn(&str) -> bool,
+{
+    let scripts_dir = store_path.join("info/install");
+    if !scripts_dir.exists() {
+        return Ok(());
+    }
+
+    let mut items = collect_trigger_items(&scripts_dir, filter);
+    items.sort_by_key(|(ord, _, _, _)| *ord);
+    print_trigger_items(&items);
 
     Ok(())
 }

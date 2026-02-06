@@ -81,24 +81,9 @@ enum SizeModifier {
     RoundUp,  // '%'
 }
 
-fn parse_size(size_str: &str) -> Result<(i64, SizeModifier)> {
-    if size_str.is_empty() {
-        return Err(eyre!("truncate: invalid size '{}'", size_str));
-    }
-
-    // Check for modifier prefix
-    let (modifier, size_part) = match size_str.chars().next() {
-        Some('+') => (SizeModifier::Extend, &size_str[1..]),
-        Some('-') => (SizeModifier::Reduce, &size_str[1..]),
-        Some('<') => (SizeModifier::AtMost, &size_str[1..]),
-        Some('>') => (SizeModifier::AtLeast, &size_str[1..]),
-        Some('/') => (SizeModifier::RoundDown, &size_str[1..]),
-        Some('%') => (SizeModifier::RoundUp, &size_str[1..]),
-        _ => (SizeModifier::Set, size_str),
-    };
-
+fn split_number_and_suffix(size_part: &str) -> (&str, Option<&str>) {
     // Parse suffix (K, M, G, etc. or KB, MB, etc.)
-    let (number_str, suffix) = if size_part.len() >= 2 {
+    if size_part.len() >= 2 {
         let last_two = &size_part[size_part.len() - 2..];
         match last_two {
             "KB" | "MB" | "GB" | "TB" | "PB" | "EB" | "ZB" | "YB" | "RB" | "QB" |
@@ -130,11 +115,11 @@ fn parse_size(size_str: &str) -> Result<(i64, SizeModifier)> {
         }
     } else {
         (size_part, None)
-    };
+    }
+}
 
-    let number = number_str.parse::<i64>()
-        .map_err(|e| eyre!("truncate: invalid size '{}': {}", size_str, e))?;
-
+#[allow(dead_code)]
+fn apply_suffix(number: i64, suffix: Option<&str>, size_str: &str) -> Result<i64> {
     let bytes = match suffix {
         Some("K") | Some("KiB") => number * 1024,
         Some("M") | Some("MiB") => number * 1024 * 1024,
@@ -159,6 +144,32 @@ fn parse_size(size_str: &str) -> Result<(i64, SizeModifier)> {
         None => number,
         _ => return Err(eyre!("truncate: invalid size suffix in '{}'", size_str)),
     };
+    Ok(bytes)
+}
+
+fn parse_size(size_str: &str) -> Result<(i64, SizeModifier)> {
+    if size_str.is_empty() {
+        return Err(eyre!("truncate: invalid size '{}'", size_str));
+    }
+
+    // Check for modifier prefix
+    let (modifier, size_part) = match size_str.chars().next() {
+        Some('+') => (SizeModifier::Extend, &size_str[1..]),
+        Some('-') => (SizeModifier::Reduce, &size_str[1..]),
+        Some('<') => (SizeModifier::AtMost, &size_str[1..]),
+        Some('>') => (SizeModifier::AtLeast, &size_str[1..]),
+        Some('/') => (SizeModifier::RoundDown, &size_str[1..]),
+        Some('%') => (SizeModifier::RoundUp, &size_str[1..]),
+        _ => (SizeModifier::Set, size_str),
+    };
+
+    // Parse suffix (K, M, G, etc. or KB, MB, etc.)
+    let (number_str, suffix) = split_number_and_suffix(size_part);
+
+    let number = number_str.parse::<i64>()
+        .map_err(|e| eyre!("truncate: invalid size '{}': {}", size_str, e))?;
+
+    let bytes = apply_suffix(number, suffix, size_str)?;
 
     Ok((bytes, modifier))
 }

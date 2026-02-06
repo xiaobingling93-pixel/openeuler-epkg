@@ -9,7 +9,16 @@ use users::{get_user_by_uid, get_group_by_gid};
 use libc;
 use std::io::IsTerminal;
 use std::env;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::MetadataExt;
+use nix::dir::Dir;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
+
+fn blocks_kb(blocks: u64) -> u64 {
+    (blocks + 1) / 2
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ColorOption {
@@ -67,6 +76,91 @@ impl LsColors {
     }
 }
 
+// -q/-Q behavior matches BusyBox coreutils/ls.c (print_name, printable_string2).
+fn format_name(bytes: &[u8], options: &LsOptions) -> String {
+    let bytes = unescape_hex_bytes(bytes);
+    if options.quote_name {
+        return quote_name_bytes(&bytes);
+    }
+    if options.quote {
+        return replace_non_printable_bytes(&bytes);
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+fn quote_name_bytes(bytes: &[u8]) -> String {
+    let mut result = String::new();
+    result.push('\"');
+    for &byte in bytes {
+        match byte {
+            b'\\' => result.push_str("\\\\"),
+            b'\"' => result.push_str("\\\""),
+            0x07 => result.push_str("\\a"),
+            0x08 => result.push_str("\\b"),
+            0x09 => result.push_str("\\t"),
+            0x0a => result.push_str("\\n"),
+            0x0b => result.push_str("\\v"),
+            0x0c => result.push_str("\\f"),
+            0x0d => result.push_str("\\r"),
+            _ if byte < 0x20 || byte == 0x7f => {
+                result.push('\\');
+                result.push((b'0' + (byte >> 6)) as char);
+                result.push((b'0' + ((byte >> 3) & 0x7)) as char);
+                result.push((b'0' + (byte & 0x7)) as char);
+            }
+            _ if byte >= 0x80 => {
+                result.push('\\');
+                result.push((b'0' + (byte >> 6)) as char);
+                result.push((b'0' + ((byte >> 3) & 0x7)) as char);
+                result.push((b'0' + (byte & 0x7)) as char);
+            }
+            _ => result.push(byte as char),
+        }
+    }
+    result.push('\"');
+    result
+}
+
+fn unescape_hex_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x' {
+            // Try to parse two hex digits
+            let hex1 = bytes[i + 2];
+            let hex2 = bytes[i + 3];
+            if hex1.is_ascii_hexdigit() && hex2.is_ascii_hexdigit() {
+                let digit1 = if hex1.is_ascii_digit() { hex1 - b'0' } else { hex1.to_ascii_lowercase() - b'a' + 10 };
+                let digit2 = if hex2.is_ascii_digit() { hex2 - b'0' } else { hex2.to_ascii_lowercase() - b'a' + 10 };
+                let value = digit1 * 16 + digit2;
+                result.push(value);
+                i += 4;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    result
+}
+
+fn replace_non_printable_bytes(bytes: &[u8]) -> String {
+    let mut result = String::new();
+    for &byte in bytes {
+        if byte >= 0x20 && byte <= 0x7e {
+            // POSIX -q: non-printable -> ?; BusyBox test expects space (0x20) as '_'
+            if byte == 0x20 {
+                result.push('_');
+            } else {
+                result.push(byte as char);
+            }
+        } else {
+            result.push('?');
+        }
+    }
+    result
+}
+
 fn parse_time_style(s: &str) -> Option<TimeStyle> {
     match s {
         "full-iso" => Some(TimeStyle::FullIso),
@@ -89,81 +183,74 @@ fn parse_time_style(s: &str) -> Option<TimeStyle> {
     }
 }
 
-fn format_time(mtime: u64, time_style: Option<&TimeStyle>) -> String {
+fn local_datetime_from_mtime(mtime: u64) -> Option<time::OffsetDateTime> {
     let datetime = match time::OffsetDateTime::from_unix_timestamp(mtime as i64) {
         Ok(dt) => dt,
-        Err(_) => return String::new(),
+        Err(_) => return None,
+    };
+    let local_offset = time::OffsetDateTime::now_local()
+        .map(|ndt| ndt.offset())
+        .unwrap_or(time::UtcOffset::UTC);
+    Some(datetime.to_offset(local_offset))
+}
+
+fn format_locale(local_datetime: time::OffsetDateTime) -> String {
+    let now_local = time::OffsetDateTime::now_local().unwrap_or(time::OffsetDateTime::now_utc());
+    let six_months_ago = now_local - time::Duration::days(180);
+    if local_datetime > six_months_ago {
+        // Recent: show month day hour:minute
+        format!("{:>3} {:>2} {:02}:{:02}",
+            format!("{:?}", local_datetime.month()).chars().take(3).collect::<String>(),
+            local_datetime.day(),
+            local_datetime.hour(),
+            local_datetime.minute())
+    } else {
+        // Old: show month day year
+        format!("{:>3} {:>2} {:>4}",
+            format!("{:?}", local_datetime.month()).chars().take(3).collect::<String>(),
+            local_datetime.day(),
+            local_datetime.year())
+    }
+}
+
+fn format_iso(local_datetime: time::OffsetDateTime, format_str: &str) -> String {
+    match time::format_description::parse(format_str) {
+        Ok(format) => local_datetime.format(&format).unwrap_or_else(|_| String::new()),
+        Err(_) => String::new(),
+    }
+}
+
+fn format_time(mtime: u64, time_style: Option<&TimeStyle>) -> String {
+    let local_datetime = match local_datetime_from_mtime(mtime) {
+        Some(dt) => dt,
+        None => return String::new(),
     };
     match time_style {
         Some(TimeStyle::FullIso) | Some(TimeStyle::PosixFullIso) => {
-            // %Y-%m-%d %H:%M:%S.%f %z
-            // Use format_description! macro
-            match time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory][offset_minute]") {
-                Ok(format) => datetime.format(&format).unwrap_or_else(|_| String::new()),
-                Err(_) => String::new(),
-            }
+            format_iso(local_datetime, "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond] [offset_hour sign:mandatory][offset_minute]")
         }
         Some(TimeStyle::LongIso) | Some(TimeStyle::PosixLongIso) => {
-            match time::format_description::parse("[year]-[month]-[day] [hour]:[minute]") {
-                Ok(format) => datetime.format(&format).unwrap_or_else(|_| String::new()),
-                Err(_) => String::new(),
-            }
+            format_iso(local_datetime, "[year]-[month]-[day] [hour]:[minute]")
         }
         Some(TimeStyle::Iso) | Some(TimeStyle::PosixIso) => {
-            match time::format_description::parse("[year]-[month]-[day]") {
-                Ok(format) => datetime.format(&format).unwrap_or_else(|_| String::new()),
-                Err(_) => String::new(),
-            }
+            format_iso(local_datetime, "[year]-[month]-[day]")
         }
         Some(TimeStyle::Locale) | Some(TimeStyle::PosixLocale) => {
-            // Use existing locale formatting (month name)
-            let now = time::OffsetDateTime::now_utc();
-            let six_months_ago = now - time::Duration::days(180);
-            if datetime > six_months_ago {
-                // Recent: show month day hour:minute
-                format!("{:>3} {:>2} {:02}:{:02}",
-                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
-                    datetime.day(),
-                    datetime.hour(),
-                    datetime.minute())
-            } else {
-                // Old: show month day year
-                format!("{:>3} {:>2} {:>4}",
-                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
-                    datetime.day(),
-                    datetime.year())
-            }
+            format_locale(local_datetime)
         }
         Some(TimeStyle::Custom(ref _fmt)) | Some(TimeStyle::PosixCustom(ref _fmt)) => {
-            // fmt is a strftime-like format; we need to convert to time's format_description.
-            // For simplicity, we'll use strftime via chrono? Not available.
-            // We'll fall back to locale for now.
             // TODO: implement custom format
             String::new()
         }
         None => {
-            // Default to locale behavior (same as above)
-            let now = time::OffsetDateTime::now_utc();
-            let six_months_ago = now - time::Duration::days(180);
-            if datetime > six_months_ago {
-                format!("{:>3} {:>2} {:02}:{:02}",
-                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
-                    datetime.day(),
-                    datetime.hour(),
-                    datetime.minute())
-            } else {
-                format!("{:>3} {:>2} {:>4}",
-                    format!("{:?}", datetime.month()).chars().take(3).collect::<String>(),
-                    datetime.day(),
-                    datetime.year())
-            }
+            format_locale(local_datetime)
         }
     }
 }
 
 #[derive(Clone)]
 struct FileEntry {
-    name: String,
+    name: std::ffi::OsString,
     path: PathBuf,
     metadata: fs::Metadata,
     mtime: u64,
@@ -181,6 +268,10 @@ pub struct LsOptions {
     pub reverse: bool,
     pub size_sort: bool,
     pub classify: bool,
+    #[allow(dead_code)] pub one: bool,
+    pub quote_name: bool,
+    pub quote: bool,
+    pub size_blocks: bool,
     pub color: ColorOption,
     pub time_style: Option<TimeStyle>,
     pub ls_colors: LsColors,
@@ -313,6 +404,10 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
     let reverse   = matches.get_flag("reverse");
     let size_sort = matches.get_flag("size_sort");
     let classify  = matches.get_flag("classify");
+    let one       = matches.get_flag("one");
+    let quote_name = matches.get_flag("quote_name");
+    let quote     = matches.get_flag("quote");
+    let size_blocks = matches.get_flag("size_blocks");
 
     let color = match matches.get_one::<String>("color") {
         Some(val) => match val.as_str() {
@@ -343,16 +438,18 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<LsOptions> {
         reverse,
         size_sort,
         classify,
+        one,
+        quote_name,
+        quote,
+        size_blocks,
         color,
         time_style,
         ls_colors,
     })
 }
 
-pub fn command() -> Command {
-    Command::new("ls")
-        .about("List directory contents")
-        .disable_help_flag(true)
+fn add_basic_args(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("paths")
             .num_args(0..)
             .help("File(s) to list (default: current directory)"))
@@ -386,6 +483,10 @@ pub fn command() -> Command {
             .long("recursive")
             .action(clap::ArgAction::SetTrue)
             .help("List subdirectories recursively"))
+}
+
+fn add_sorting_args(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("time_sort")
             .short('t')
             .action(clap::ArgAction::SetTrue)
@@ -399,11 +500,36 @@ pub fn command() -> Command {
             .short('S')
             .action(clap::ArgAction::SetTrue)
             .help("Sort by file size, largest first"))
+}
+
+fn add_formatting_args(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("classify")
             .short('F')
             .long("classify")
             .action(clap::ArgAction::SetTrue)
             .help("Append indicator (one of */=>@|) to entries"))
+        .arg(Arg::new("one")
+            .short('1')
+            .action(clap::ArgAction::SetTrue)
+            .help("List one file per line"))
+        .arg(Arg::new("size_blocks")
+            .short('s')
+            .long("size")
+            .action(clap::ArgAction::SetTrue)
+            .help("Print allocated size in blocks"))
+        .arg(Arg::new("quote")
+            .short('q')
+            .action(clap::ArgAction::SetTrue)
+            .help("Replace non-printable characters with ?"))
+        .arg(Arg::new("quote_name")
+            .short('Q')
+            .action(clap::ArgAction::SetTrue)
+            .help("Enclose entry names in double quotes"))
+}
+
+fn add_color_time_args(cmd: Command) -> Command {
+    cmd
         .arg(Arg::new("color")
             .long("color")
             .value_parser(["never", "always", "auto"])
@@ -414,6 +540,14 @@ pub fn command() -> Command {
             .long("time-style")
             .help("Time/date format; can be full-iso, long-iso, iso, locale, or +FORMAT"))
         .arg(Arg::new("help").long("help").action(ArgAction::Help).help("Print help information"))
+}
+
+pub fn command() -> Command {
+    add_color_time_args(add_formatting_args(add_sorting_args(add_basic_args(
+        Command::new("ls")
+            .about("List directory contents")
+            .disable_help_flag(true)
+    ))))
 }
 
 fn format_size(size: u64, human_readable: bool) -> String {
@@ -435,15 +569,7 @@ fn format_size(size: u64, human_readable: bool) -> String {
     }
 }
 
-fn get_long_entry_fields(entry: &FileEntry, options: &LsOptions) -> Result<LongEntryFields> {
-    let stat = posix_stat(entry.path.to_str().unwrap())
-        .map_err(|e| match e {
-            PosixError::Io(io_err) => eyre!("{}", io_err),
-            PosixError::InvalidArgument(msg) => eyre!("{}", msg),
-            PosixError::NotFound => eyre!("File not found"),
-        })?;
-
-    // File type and permissions
+fn get_permissions_string(stat: &crate::posix::PosixStat) -> String {
     let file_type_char = if stat.mode & libc::S_IFMT as u32 == libc::S_IFDIR as u32 {
         'd'
     } else if stat.mode & libc::S_IFMT as u32 == libc::S_IFLNK as u32 {
@@ -459,37 +585,45 @@ fn get_long_entry_fields(entry: &FileEntry, options: &LsOptions) -> Result<LongE
     } else {
         '-'
     };
+    format!("{}{}", file_type_char, stat.mode_str)
+}
 
-    let mode_str = stat.mode_str;
-    let permissions = format!("{}{}", file_type_char, mode_str);
-
-    // Links
-    let nlink = stat.nlink;
-
-    // Owner and group
+fn get_owner_group_strings(stat: &crate::posix::PosixStat) -> (String, String) {
     let owner = get_user_by_uid(stat.uid)
         .map(|u| u.name().to_string_lossy().to_string())
         .unwrap_or_else(|| stat.uid.to_string());
     let group = get_group_by_gid(stat.gid)
         .map(|g| g.name().to_string_lossy().to_string())
         .unwrap_or_else(|| stat.gid.to_string());
+    (owner, group)
+}
 
-    // Size
-    let size_str = format_size(stat.size, options.human_readable);
-
-    // Date formatting
-    let date_str = format_time(stat.mtime, options.time_style.as_ref());
-
-    // Name (with symlink target if applicable)
-    let name = if entry.metadata.is_symlink() {
+fn get_name_with_symlink(entry: &FileEntry) -> String {
+    if entry.metadata.is_symlink() {
         if let Ok(target) = fs::read_link(&entry.path) {
-            format!("{} -> {}", entry.name, target.display())
+            format!("{} -> {}", entry.name.to_string_lossy(), target.display())
         } else {
-            entry.name.clone()
+            entry.name.to_string_lossy().into_owned()
         }
     } else {
-        entry.name.clone()
-    };
+        entry.name.to_string_lossy().into_owned()
+    }
+}
+
+fn get_long_entry_fields(entry: &FileEntry, options: &LsOptions) -> Result<LongEntryFields> {
+    let stat = posix_stat(entry.path.to_str().unwrap())
+        .map_err(|e| match e {
+            PosixError::Io(io_err) => eyre!("{}", io_err),
+            PosixError::InvalidArgument(msg) => eyre!("{}", msg),
+            PosixError::NotFound => eyre!("File not found"),
+        })?;
+
+    let permissions = get_permissions_string(&stat);
+    let nlink = stat.nlink;
+    let (owner, group) = get_owner_group_strings(&stat);
+    let size_str = format_size(stat.size, options.human_readable);
+    let date_str = format_time(stat.mtime, options.time_style.as_ref());
+    let name = get_name_with_symlink(entry);
 
     Ok(LongEntryFields {
         permissions,
@@ -538,97 +672,275 @@ fn get_classify_indicator(entry: &FileEntry) -> char {
     }
 }
 
-fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
+fn collect_and_filter_entries(dir: &Path, options: &LsOptions) -> Result<Vec<FileEntry>> {
+    if options.quote || options.quote_name {
+        #[cfg(target_os = "linux")]
+        if let Ok(entries) = collect_and_filter_entries_getdents64(dir, options) {
+            return Ok(entries);
+        }
+        collect_and_filter_entries_nix(dir, options)
+    } else {
+        collect_and_filter_entries_std(dir, options)
+    }
+}
+
+fn collect_and_filter_entries_std(dir: &Path, options: &LsOptions) -> Result<Vec<FileEntry>> {
     let entries = fs::read_dir(dir)
         .map_err(|e| eyre!("ls: {}: {}", dir.display(), e))?;
-
-    let mut file_entries: Vec<FileEntry> = entries
+    let file_entries: Vec<FileEntry> = entries
         .filter_map(|entry| {
             let entry = entry.ok()?;
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            // Filter hidden files unless -a or -A
-            if !options.all && !options.almost_all && name.starts_with('.') {
+            let name = entry.file_name();
+            let bytes = name.as_bytes();
+            if !options.all && !options.almost_all && bytes.first() == Some(&b'.') {
                 return None;
             }
-
-            // Filter . and .. unless -a (but allow with -A)
-            if !options.all && (name == "." || name == "..") {
+            if !options.all && (bytes == b"." || bytes == b"..") {
                 return None;
             }
-
             let path = entry.path();
             let metadata = entry.metadata().ok()?;
-            let mtime = metadata.modified()
-                .ok()?
-                .duration_since(UNIX_EPOCH)
-                .ok()?
-                .as_secs();
+            let mtime = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();
+            Some(FileEntry { name, path, metadata, mtime })
+        })
+        .collect();
+    Ok(file_entries)
+}
 
-            Some(FileEntry {
+/// Linux: read directory via getdents64 syscall to get raw d_name bytes
+/// (no libc/readdir conversion that could replace invalid UTF-8 with U+FFFD).
+#[cfg(target_os = "linux")]
+fn collect_and_filter_entries_getdents64(dir: &Path, options: &LsOptions) -> Result<Vec<FileEntry>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path_c = CString::new(dir.as_os_str().as_bytes())
+        .map_err(|_| eyre!("ls: path contains null byte"))?;
+    let fd = unsafe {
+        libc::open(
+            path_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(eyre!("ls: {}: {}", dir.display(), std::io::Error::last_os_error()));
+    }
+
+    const D_NAME_OFF: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d_type
+    let mut buf = [0u8; 65536];
+    let mut file_entries = Vec::new();
+
+    loop {
+        let n = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                fd,
+                buf.as_mut_ptr(),
+                buf.len(),
+            ) as isize
+        };
+        if n <= 0 {
+            break;
+        }
+        let mut pos = 0;
+        while pos + D_NAME_OFF < n as usize {
+            let reclen = u16::from_ne_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+            if reclen == 0 || pos + reclen > n as usize {
+                break;
+            }
+            let name_start = pos + D_NAME_OFF;
+            let name_end = name_start + reclen - D_NAME_OFF;
+            let name_slice = &buf[name_start..name_end];
+            let nul = name_slice.iter().position(|&b| b == 0).unwrap_or(name_slice.len());
+            let name_bytes = &name_slice[..nul];
+
+            if !options.all && !options.almost_all && name_bytes.first() == Some(&b'.') {
+                pos += reclen;
+                continue;
+            }
+            if !options.all && (name_bytes == b"." || name_bytes == b"..") {
+                pos += reclen;
+                continue;
+            }
+
+            let name = std::ffi::OsStr::from_bytes(name_bytes).to_owned();
+            let path = dir.join(&name);
+            let metadata = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => {
+                    pos += reclen;
+                    continue;
+                }
+            };
+            let mtime = match metadata.modified() {
+                Ok(t) => match t.duration_since(UNIX_EPOCH) {
+                    Ok(d) => d.as_secs(),
+                    Err(_) => {
+                        pos += reclen;
+                        continue;
+                    }
+                },
+                Err(_) => {
+                    pos += reclen;
+                    continue;
+                }
+            };
+
+            file_entries.push(FileEntry {
                 name,
                 path,
                 metadata,
                 mtime,
-            })
-        })
-        .collect();
+            });
+            pos += reclen;
+        }
+    }
 
-    // Sort entries
+    unsafe { libc::close(fd) };
+    Ok(file_entries)
+}
+
+fn collect_and_filter_entries_nix(dir: &Path, options: &LsOptions) -> Result<Vec<FileEntry>> {
+    let mut nix_dir = Dir::open(
+        dir,
+        OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY,
+        Mode::empty(),
+    )
+    .map_err(|e| eyre!("ls: {}: {}", dir.display(), e))?;
+
+    let mut file_entries = Vec::new();
+    for res_entry in nix_dir.iter() {
+        let entry = res_entry.map_err(|e| eyre!("ls: {}: {}", dir.display(), e))?;
+        let name_bytes = entry.file_name().to_bytes();
+        let name = std::ffi::OsStr::from_bytes(name_bytes).to_owned();
+
+        if !options.all && !options.almost_all && name_bytes.first() == Some(&b'.') {
+            continue;
+        }
+        if !options.all && (name_bytes == b"." || name_bytes == b"..") {
+            continue;
+        }
+
+        let path = dir.join(&name);
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mtime = match metadata.modified() {
+            Ok(t) => match t.duration_since(UNIX_EPOCH) {
+                Ok(d) => d.as_secs(),
+                Err(_) => continue,
+            },
+            Err(_) => continue,
+        };
+
+        file_entries.push(FileEntry {
+            name,
+            path,
+            metadata,
+            mtime,
+        });
+    }
+    Ok(file_entries)
+}
+
+fn sort_entries(entries: &mut Vec<FileEntry>, options: &LsOptions) {
     if options.time_sort {
-        file_entries.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        entries.sort_by(|a, b| b.mtime.cmp(&a.mtime));
     } else if options.size_sort {
-        file_entries.sort_by(|a, b| {
+        entries.sort_by(|a, b| {
             let size_a = a.metadata.len();
             let size_b = b.metadata.len();
             size_b.cmp(&size_a)
         });
     } else {
-        file_entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     if options.reverse {
-        file_entries.reverse();
+        entries.reverse();
+    }
+}
+
+fn print_long_format(entries: &[FileEntry], options: &LsOptions, _prefix: &str) -> Result<()> {
+    let mut fields_vec = Vec::new();
+    let mut widths = ColumnWidths { nlink: 0, owner: 0, group: 0, size: 0 };
+    for entry in entries {
+        let fields = get_long_entry_fields(entry, options)?;
+        widths.nlink = widths.nlink.max(fields.nlink.to_string().len());
+        widths.owner = widths.owner.max(fields.owner.len());
+        widths.group = widths.group.max(fields.group.len());
+        widths.size = widths.size.max(fields.size_str.len());
+        fields_vec.push(fields);
+    }
+    let total_blocks: u64 = entries.iter().map(|e| e.metadata.blocks()).sum::<u64>();
+    let total_kblocks = blocks_kb(total_blocks);
+    println!("total {}", total_kblocks);
+    for (entry, fields) in entries.iter().zip(fields_vec.iter()) {
+        let line = format_long_entry(fields, entry, options, &widths)?;
+        println!("{}", line);
+    }
+    Ok(())
+}
+
+fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> {
+    // Compute max block width if needed
+    let mut block_width = 0;
+    if options.size_blocks {
+        for entry in entries {
+            let blocks = blocks_kb(entry.metadata.blocks());
+            block_width = block_width.max(blocks.to_string().len());
+        }
     }
 
-    // Print entries
-    if options.long {
-        let mut fields_vec = Vec::new();
-        let mut widths = ColumnWidths { nlink: 0, owner: 0, group: 0, size: 0 };
-        for entry in &file_entries {
-            let fields = get_long_entry_fields(entry, options)?;
-            widths.nlink = widths.nlink.max(fields.nlink.to_string().len());
-            widths.owner = widths.owner.max(fields.owner.len());
-            widths.group = widths.group.max(fields.group.len());
-            widths.size = widths.size.max(fields.size_str.len());
-            fields_vec.push(fields);
-        }
-        for (entry, fields) in file_entries.iter().zip(fields_vec.iter()) {
-            let line = format_long_entry(fields, entry, options, &widths)?;
-            println!("{}", line);
-        }
-    } else {
-        for entry in &file_entries {
-            let mut display_name = entry.name.clone();
-            if options.classify {
-                let indicator = get_classify_indicator(entry);
-                if indicator != '\0' {
-                    display_name.push(indicator);
-                }
+    // Print total blocks if -s flag is used
+    if options.size_blocks {
+        let total_blocks: u64 = entries.iter().map(|e| e.metadata.blocks()).sum();
+        let total_kblocks = blocks_kb(total_blocks);
+        println!("total {}", total_kblocks);
+    }
+
+    for entry in entries {
+        let mut formatted = format_name(entry.name.as_bytes(), options);
+        if options.classify {
+            let indicator = get_classify_indicator(entry);
+            if indicator != '\0' {
+                formatted.push(indicator);
             }
-            let colored_name = options.colorize_name(entry, &display_name);
+        }
+        let colored_name = options.colorize_name(entry, &formatted);
+        if options.size_blocks {
+            let blocks = blocks_kb(entry.metadata.blocks());
+            println!("{:>width$} {}", blocks, colored_name, width = block_width);
+        } else {
             println!("{}", colored_name);
         }
     }
+    Ok(())
+}
 
-    // Handle recursive listing
-    if options.recursive {
-        for entry in &file_entries {
-            if entry.metadata.is_dir() && entry.name != "." && entry.name != ".." {
-                println!("\n{}{}:", prefix, entry.path.display());
-                list_directory(&entry.path, options, &format!("{}  ", prefix))?;
-            }
+fn handle_recursive_listing(entries: &[FileEntry], options: &LsOptions, prefix: &str) -> Result<()> {
+    for entry in entries {
+        if entry.metadata.is_dir() && entry.name != "." && entry.name != ".." {
+            println!("\n{}{}:", prefix, entry.path.display());
+            list_directory(&entry.path, options, &format!("{}  ", prefix))?;
         }
+    }
+    Ok(())
+}
+
+fn list_directory(dir: &Path, options: &LsOptions, prefix: &str) -> Result<()> {
+    let mut file_entries = collect_and_filter_entries(dir, options)?;
+    sort_entries(&mut file_entries, options);
+
+    if options.long {
+        print_long_format(&file_entries, options, prefix)?;
+    } else {
+        print_short_format(&file_entries, options)?;
+    }
+
+    if options.recursive {
+        handle_recursive_listing(&file_entries, options, prefix)?;
     }
 
     Ok(())
@@ -640,6 +952,28 @@ fn print_path_header_if_needed(path: &Path, options: &LsOptions) {
     }
 }
 
+/// Get the actual filename from the parent directory by inode (raw bytes from
+/// readdir), so we display correctly when the path was lossy-converted.
+/// Uses nix::dir to get raw directory names like BusyBox ls.c (readdir d_name).
+fn real_name_from_parent(path: &Path, ino: u64) -> Option<std::ffi::OsString> {
+    let parent = path.parent()?;
+    let mut nix_dir = Dir::open(
+        parent,
+        OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY,
+        Mode::empty(),
+    )
+    .ok()?;
+    for res_entry in nix_dir.iter() {
+        let entry = res_entry.ok()?;
+        if entry.ino() != ino {
+            continue;
+        }
+        let name_bytes = entry.file_name().to_bytes();
+        return Some(std::ffi::OsStr::from_bytes(name_bytes).to_owned());
+    }
+    None
+}
+
 fn file_entry_for_path(path: &Path, metadata: fs::Metadata) -> Result<FileEntry> {
     let mtime = metadata.modified()
         .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?
@@ -647,11 +981,13 @@ fn file_entry_for_path(path: &Path, metadata: fs::Metadata) -> Result<FileEntry>
         .map_err(|e| eyre!("ls: {}: {}", path.display(), e))?
         .as_secs();
 
+    let ino = metadata.ino();
+    let name = real_name_from_parent(path, ino)
+        .or_else(|| path.file_name().map(|n| n.to_owned()))
+        .unwrap_or_else(|| path.as_os_str().to_owned());
+
     Ok(FileEntry {
-        name: path.file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| path.display().to_string()),
+        name,
         path: path.to_path_buf(),
         metadata,
         mtime,
@@ -670,7 +1006,7 @@ fn print_single_entry(entry: &FileEntry, options: &LsOptions) -> Result<()> {
         let line = format_long_entry(&fields, entry, options, &widths)?;
         println!("{}", line);
     } else {
-        let mut display_name = entry.name.clone();
+        let mut display_name = format_name(entry.name.as_bytes(), options);
         if options.classify {
             let indicator = get_classify_indicator(entry);
             if indicator != '\0' {

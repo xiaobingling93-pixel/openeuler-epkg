@@ -98,13 +98,15 @@ use crate::history::{print_history, rollback_history};
 use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
 use crate::run::{command_run, command_busybox};
 use color_eyre::Result;
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre;
+use color_eyre::eyre::WrapErr;
 use clap::{arg, Command};
 use ctrlc;
 use env_logger;
 use log;
 use list::ListScope;
 
+#[cfg(not(test))]
 fn main() -> Result<()> {
     color_eyre::config::HookBuilder::default()
         .display_env_section(false)                 // Don't show environment variables by default
@@ -114,7 +116,9 @@ fn main() -> Result<()> {
     setup_logging();
     setup_ctrlc();
 
-    let argv: Vec<String> = std::env::args().collect();
+    let argv: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     log::debug!("argv[{}]: {:?}", argv.len(), argv);
 
     // Gracefully exit instead of panic with BACKTRACE on `epkg info bash | head`
@@ -166,6 +170,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 fn setup_logging() {
     env_logger::Builder::from_default_env()
         .format(|buf, record| {
@@ -185,6 +190,7 @@ fn setup_logging() {
         .init();
 }
 
+#[cfg(not(test))]
 fn setup_ctrlc() {
     // Enable backtrace collection if RUST_BACKTRACE is set
     if !std::env::var("RUST_BACKTRACE").is_ok() {
@@ -608,7 +614,8 @@ OPTIONS:
         .subcommand({
             let mut busybox_cmd = Command::new("busybox")
                 .about("Run built-in command implementations")
-                .arg_required_else_help(true);
+                .arg_required_else_help(true)
+                .allow_external_subcommands(true);
             for subcmd in crate::applets::busybox_subcommands() {
                 busybox_cmd = busybox_cmd.subcommand(subcmd);
             }
@@ -664,7 +671,10 @@ OPTIONS:
 
 /// Parse command line from environment args (normal epkg invocation).
 pub fn parse_cmdline() -> clap::ArgMatches {
-    build_epkg_command().get_matches_from(env::args())
+    let args: Vec<String> = env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    build_epkg_command().get_matches_from(args)
 }
 
 /// Parse command line from given args (used when running as applet so main parser is not run on applet argv).
@@ -744,7 +754,9 @@ pub fn parse_options_common(matches: &clap::ArgMatches) -> Result<EPKGConfig> {
         config.common.ignore_missing    = matches.get_flag("ignore-missing");
     }
 
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let command_line = if args.len() > 1 {
         // Remove program path and join the rest
         "epkg ".to_owned() + &args[1..].join(" ")

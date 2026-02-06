@@ -35,9 +35,9 @@ pub fn run(options: BasenameOptions) -> Result<()> {
         .unwrap_or("")
         .to_string();
 
-    // Remove suffix if provided
+    // Remove suffix if provided (do not remove when result would be empty — POSIX/busybox behavior)
     if let Some(ref suffix) = options.suffix {
-        if basename.ends_with(suffix) {
+        if basename.ends_with(suffix) && basename.len() > suffix.len() {
             basename.truncate(basename.len() - suffix.len());
         }
     }

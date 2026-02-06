@@ -103,37 +103,41 @@ pub fn command() -> Command {
         )
 }
 
-pub fn run(options: GroupAddOptions) -> Result<()> {
+fn validate_options(options: &GroupAddOptions) -> Result<()> {
     // Check that -o (non_unique) is not used without -g (gid)
     if options.non_unique && options.gid.is_none() {
         return Err(color_eyre::eyre::eyre!(
             "option --non-unique (-o) requires --gid (-g)"
         ));
     }
+    Ok(())
+}
 
-    // Validate group name format
-    validate_user_group_name(&options.name)?;
-
+fn determine_root_path<'a>(options: &'a GroupAddOptions) -> Option<&'a Path> {
     // Determine root path: -R takes precedence over -P, then default to /
-    let root_path = if let Some(ref root) = options.root {
+    if let Some(ref root) = options.root {
         Some(Path::new(root))
     } else if let Some(ref prefix) = options.prefix {
         Some(Path::new(prefix))
     } else {
         Some(Path::new("/"))
-    };
+    }
+}
 
-    // Check if group already exists
-    let group_exists_flag = group_exists(&options.name, root_path)?;
+fn check_group_exists(group_name: &str, root_path: Option<&Path>, force: bool) -> Result<bool> {
+    let group_exists_flag = group_exists(group_name, root_path)?;
     if group_exists_flag {
-        if options.force {
+        if force {
             // With -f, exit successfully if group already exists (like the C code)
-            return Ok(());
+            return Ok(true);
         } else {
-            return Err(color_eyre::eyre::eyre!("group '{}' already exists", options.name));
+            return Err(color_eyre::eyre::eyre!("group '{}' already exists", group_name));
         }
     }
+    Ok(false)
+}
 
+fn handle_gid_specification<'a>(options: &'a GroupAddOptions, root_path: Option<&'a Path>) -> Result<Option<&'a str>> {
     // Read existing groups to check for GID conflicts
     let groups = userdb::read_group(root_path)?;
     let used_gids: std::collections::HashSet<u32> = groups.iter().map(|g| g.gid).collect();
@@ -161,25 +165,44 @@ pub fn run(options: GroupAddOptions) -> Result<()> {
     } else {
         None
     };
+    Ok(gid_str)
+}
+
+fn add_users_to_group(users_str: &str, group_name: &str, root_path: Option<&Path>) -> Result<()> {
+    for user in users_str.split(',') {
+        let user = user.trim();
+        if !user.is_empty() {
+            // Validate that the user exists (like the C code does)
+            if !user_exists(user, root_path)? {
+                return Err(color_eyre::eyre::eyre!(
+                    "Invalid member username {}",
+                    user
+                ));
+            }
+            userdb::add_user_to_group(user, group_name, root_path)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn run(options: GroupAddOptions) -> Result<()> {
+    validate_options(&options)?;
+    validate_user_group_name(&options.name)?;
+
+    let root_path = determine_root_path(&options);
+
+    if check_group_exists(&options.name, root_path, options.force)? {
+        return Ok(());
+    }
+
+    let gid_str = handle_gid_specification(&options, root_path)?;
 
     // Create the group
     let _ = userdb::ensure_group(&options.name, gid_str, options.system, root_path)?;
 
     // Add users to the group if specified
     if let Some(ref users_str) = options.users {
-        for user in users_str.split(',') {
-            let user = user.trim();
-            if !user.is_empty() {
-                // Validate that the user exists (like the C code does)
-                if !user_exists(user, root_path)? {
-                    return Err(color_eyre::eyre::eyre!(
-                        "Invalid member username {}",
-                        user
-                    ));
-                }
-                userdb::add_user_to_group(user, &options.name, root_path)?;
-            }
-        }
+        add_users_to_group(users_str, &options.name, root_path)?;
     }
 
     Ok(())

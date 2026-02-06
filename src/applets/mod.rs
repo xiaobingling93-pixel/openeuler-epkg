@@ -48,7 +48,9 @@ include!(concat!(env!("OUT_DIR"), "/applets_modules.rs"));
 /// Get the applet name from the invocation (if any)
 /// Returns None if not invoked as an applet
 fn get_applet_name_from_invocation() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     if args.is_empty() {
         return None;
     }
@@ -108,6 +110,19 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
         (invoked_applet_name, false)
     };
 
+    // Handle busybox multicall invocation: busybox <applet> [args...]
+    let (applet_name, args_skip) = if applet_name == "busybox" {
+        let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        if args.is_empty() {
+            // No applet specified, fall back to normal epkg operation
+            return Ok(None);
+        }
+        let real_applet = args.remove(0).to_string_lossy().into_owned();
+        (real_applet, 2) // skip both "busybox" and the applet name
+    } else {
+        (applet_name, 1) // skip only the program name
+    };
+
     // Get all applet commands and find the matching one in a single pass
     let applet_commands = busybox_subcommands();
     let applet_cmd = match applet_commands.iter()
@@ -116,13 +131,13 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
         None => return Ok(None), // Not a valid applet, fall back to normal epkg operation
     };
 
-    // Parse arguments using the applet's command structure
-    // Clap expects the command name as the first argument, so prepend the applet name
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if strip_trailing_bracket && args.last().is_some_and(|a| a == "]") {
+    // Parse arguments using the applet's command structure.
+    // Pass raw OsString so path args (e.g. touch) keep bytes that are not valid UTF-8.
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(args_skip).collect();
+    if strip_trailing_bracket && args.last().is_some_and(|a| a == std::ffi::OsStr::new("]")) {
         args.pop();
     }
-    args.insert(0, applet_name.clone());
+    args.insert(0, std::ffi::OsString::from(applet_name.as_str()));
 
     // Try to parse arguments - handle help requests specially
     let matches = applet_cmd.clone().get_matches_from(args);

@@ -54,62 +54,13 @@ fn format_output(path: &Path, stat: &PosixStat, format: &str) -> Result<String> 
     let mut chars = format.chars().peekable();
 
     // File type character (for %A, matches coreutils stat)
-    let file_type_char = {
-        use libc::{S_IFMT, S_IFLNK, S_IFDIR, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK};
-        let ft = stat.mode & S_IFMT as u32;
-        if ft == S_IFDIR as u32 {
-            'd'
-        } else if ft == S_IFLNK as u32 {
-            'l'
-        } else if ft == S_IFCHR as u32 {
-            'c'
-        } else if ft == S_IFBLK as u32 {
-            'b'
-        } else if ft == S_IFIFO as u32 {
-            'p'
-        } else if ft == S_IFSOCK as u32 {
-            's'
-        } else {
-            '-'
-        }
-    };
+    let file_type_char = file_type_char(stat.mode);
 
     while let Some(ch) = chars.next() {
         if ch == '%' {
             if let Some(spec) = chars.next() {
-                match spec {
-                    'u' => result.push_str(&stat.uid.to_string()),
-                    'g' => result.push_str(&stat.gid.to_string()),
-                    'U' => {
-                        let uid = stat.uid;
-                        if let Some(user) = get_user_by_uid(uid) {
-                            result.push_str(user.name().to_string_lossy().as_ref());
-                        } else {
-                            result.push_str(&uid.to_string());
-                        }
-                    }
-                    'G' => {
-                        let gid = stat.gid;
-                        if let Some(group) = get_group_by_gid(gid) {
-                            result.push_str(group.name().to_string_lossy().as_ref());
-                        } else {
-                            result.push_str(&gid.to_string());
-                        }
-                    }
-                    'a' => result.push_str(&format!("{:o}", stat.mode & 0o777)),
-                    'h' => result.push_str(&stat.nlink.to_string()),
-                    'd' => result.push_str(&stat.dev.to_string()),
-                    'i' => result.push_str(&stat.ino.to_string()),
-                    'f' => result.push_str(&format!("{:x}", stat.mode)),
-                    's' => result.push_str(&stat.size.to_string()),
-                    'X' => result.push_str(&stat.atime.to_string()),
-                    'Y' => result.push_str(&stat.mtime.to_string()),
-                    'Z' => result.push_str(&stat.ctime.to_string()),
-                    'A' => result.push_str(&format!("{}{}", file_type_char, stat.mode_str)),
-                    'n' => result.push_str(&path.display().to_string()),
-                    '%' => result.push('%'),
-                    _ => return Err(eyre!("stat: invalid format specifier '%{}'", spec)),
-                }
+                let spec_str = handle_format_specifier(spec, path, stat, file_type_char)?;
+                result.push_str(&spec_str);
             } else {
                 result.push('%');
             }
@@ -119,6 +70,62 @@ fn format_output(path: &Path, stat: &PosixStat, format: &str) -> Result<String> 
     }
 
     Ok(result)
+}
+
+fn file_type_char(mode: u32) -> char {
+    use libc::{S_IFMT, S_IFLNK, S_IFDIR, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK};
+    let ft = mode & S_IFMT as u32;
+    if ft == S_IFDIR as u32 {
+        'd'
+    } else if ft == S_IFLNK as u32 {
+        'l'
+    } else if ft == S_IFCHR as u32 {
+        'c'
+    } else if ft == S_IFBLK as u32 {
+        'b'
+    } else if ft == S_IFIFO as u32 {
+        'p'
+    } else if ft == S_IFSOCK as u32 {
+        's'
+    } else {
+        '-'
+    }
+}
+
+fn handle_format_specifier(spec: char, path: &Path, stat: &PosixStat, file_type_char: char) -> Result<String> {
+    match spec {
+        'u' => Ok(stat.uid.to_string()),
+        'g' => Ok(stat.gid.to_string()),
+        'U' => {
+            let uid = stat.uid;
+            if let Some(user) = get_user_by_uid(uid) {
+                Ok(user.name().to_string_lossy().to_string())
+            } else {
+                Ok(uid.to_string())
+            }
+        }
+        'G' => {
+            let gid = stat.gid;
+            if let Some(group) = get_group_by_gid(gid) {
+                Ok(group.name().to_string_lossy().to_string())
+            } else {
+                Ok(gid.to_string())
+            }
+        }
+        'a' => Ok(format!("{:o}", stat.mode & 0o777)),
+        'h' => Ok(stat.nlink.to_string()),
+        'd' => Ok(stat.dev.to_string()),
+        'i' => Ok(stat.ino.to_string()),
+        'f' => Ok(format!("{:x}", stat.mode)),
+        's' => Ok(stat.size.to_string()),
+        'X' => Ok(stat.atime.to_string()),
+        'Y' => Ok(stat.mtime.to_string()),
+        'Z' => Ok(stat.ctime.to_string()),
+        'A' => Ok(format!("{}{}", file_type_char, stat.mode_str)),
+        'n' => Ok(path.display().to_string()),
+        '%' => Ok("%".to_string()),
+        _ => Err(eyre!("stat: invalid format specifier '%{}'", spec)),
+    }
 }
 
 fn format_timestamp(secs: i64, nsec: i64) -> Option<String> {
@@ -147,28 +154,26 @@ fn resolve_stat_path(path: &Path, dereference: bool) -> Result<String> {
     }
 }
 
-fn format_file_status(
-    path: &Path,
-    stat: &PosixStat,
-    metadata: &fs::Metadata,
-    dereference: bool,
-) -> Result<String> {
+fn compute_device_info(metadata: &fs::Metadata) -> (u64, u64, u32, u32) {
     let blocks = metadata.blocks();
     let blksize = metadata.blksize();
-
-    // Device: major,minor (still use raw dev for %d via format_output)
     let dev = metadata.dev();
     let major = libc::major(dev);
     let minor = libc::minor(dev);
+    (blocks, blksize, major, minor)
+}
 
+fn compute_user_names(stat: &PosixStat) -> (String, String) {
     let uid_name = get_user_by_uid(stat.uid)
         .map(|u| u.name().to_string_lossy().to_string())
         .unwrap_or_else(|| stat.uid.to_string());
     let gid_name = get_group_by_gid(stat.gid)
         .map(|g| g.name().to_string_lossy().to_string())
         .unwrap_or_else(|| stat.gid.to_string());
+    (uid_name, gid_name)
+}
 
-    // Timestamps from metadata with nanosecond precision
+fn compute_timestamps(metadata: &fs::Metadata) -> (String, String, String, Option<String>) {
     let atime_secs = metadata.atime();
     let atime_nsec = metadata.atime_nsec();
     let mtime_secs = metadata.mtime();
@@ -180,43 +185,45 @@ fn format_file_status(
     let modify_ts = format_timestamp(mtime_secs, mtime_nsec).unwrap_or_default();
     let change_ts = format_timestamp(ctime_secs, ctime_nsec).unwrap_or_default();
 
-    // Birth time (may not be available on all filesystems)
     let birth_ts = metadata.created().ok().and_then(|t| {
         let dur = t.duration_since(std::time::UNIX_EPOCH).ok()?;
         format_timestamp(dur.as_secs() as i64, dur.subsec_nanos() as i64)
     });
 
-    // Permissions string with file type character, matching coreutils' Access line
-    let permissions = {
-        use libc::{S_IFMT, S_IFLNK, S_IFDIR, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK};
-        let ft = stat.mode & S_IFMT as u32;
-        let ch = if ft == S_IFDIR as u32 {
-            'd'
-        } else if ft == S_IFLNK as u32 {
-            'l'
-        } else if ft == S_IFCHR as u32 {
-            'c'
-        } else if ft == S_IFBLK as u32 {
-            'b'
-        } else if ft == S_IFIFO as u32 {
-            'p'
-        } else if ft == S_IFSOCK as u32 {
-            's'
-        } else {
-            '-'
-        };
-        format!("{}{}", ch, stat.mode_str)
-    };
+    (access_ts, modify_ts, change_ts, birth_ts)
+}
 
-    // Human-readable file type for IO Block line
-    let file_type_human = match stat.file_type.as_str() {
+fn compute_permissions(stat: &PosixStat) -> String {
+    use libc::{S_IFMT, S_IFLNK, S_IFDIR, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK};
+    let ft = stat.mode & S_IFMT as u32;
+    let ch = if ft == S_IFDIR as u32 {
+        'd'
+    } else if ft == S_IFLNK as u32 {
+        'l'
+    } else if ft == S_IFCHR as u32 {
+        'c'
+    } else if ft == S_IFBLK as u32 {
+        'b'
+    } else if ft == S_IFIFO as u32 {
+        'p'
+    } else if ft == S_IFSOCK as u32 {
+        's'
+    } else {
+        '-'
+    };
+    format!("{}{}", ch, stat.mode_str)
+}
+
+fn compute_file_type_human(stat: &PosixStat) -> String {
+    match stat.file_type.as_str() {
         "regular" => "regular file",
         "link" => "symbolic link",
         other => other,
-    };
+    }.to_string()
+}
 
-    // For symlinks, coreutils `stat` shows "path -> target" on the File: line
-    let file_display = if metadata.file_type().is_symlink() && !dereference {
+fn compute_file_display(path: &Path, metadata: &fs::Metadata, dereference: bool) -> String {
+    if metadata.file_type().is_symlink() && !dereference {
         if let Ok(target) = fs::read_link(path) {
             format!("{} -> {}", path.display(), target.display())
         } else {
@@ -224,7 +231,21 @@ fn format_file_status(
         }
     } else {
         path.display().to_string()
-    };
+    }
+}
+
+fn format_file_status(
+    path: &Path,
+    stat: &PosixStat,
+    metadata: &fs::Metadata,
+    dereference: bool,
+) -> Result<String> {
+    let (blocks, blksize, major, minor) = compute_device_info(metadata);
+    let (uid_name, gid_name) = compute_user_names(stat);
+    let (access_ts, modify_ts, change_ts, birth_ts) = compute_timestamps(metadata);
+    let permissions = compute_permissions(stat);
+    let file_type_human = compute_file_type_human(stat);
+    let file_display = compute_file_display(path, metadata, dereference);
 
     Ok(format!(
         "  File: {}\n  Size: {}\tBlocks: {}\tIO Block: {}   {}\nDevice: {},{}\tInode: {}\tLinks: {}\nAccess: ({:04o}/{})  Uid: ({:>5}/ {:>8})   Gid: ({:>5}/ {:>8})\nAccess: {}\nModify: {}\nChange: {}\n Birth: {}",
