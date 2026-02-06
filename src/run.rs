@@ -338,14 +338,14 @@ fn is_executable(path: &Path) -> Result<bool> {
 
 /// Find command in environment PATH
 pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathBuf> {
-    let paths = env::var("PATH")
-        .unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".to_string());
+    // Collect non-empty PATH directories; if none, use default system paths
+    let path_str = env::var("PATH").unwrap_or_default();
+    let mut dirs: Vec<&str> = path_str.split(':').filter(|d| !d.is_empty()).collect();
+    if dirs.is_empty() {
+        dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"]);
+    }
 
-    for path_dir in paths.split(':') {
-        if path_dir.is_empty() {
-            continue;
-        }
-
+    for path_dir in dirs {
         // Skip paths ending with "/ebin"
         if path_dir.ends_with("/ebin") {
             continue;
