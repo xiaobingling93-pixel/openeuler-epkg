@@ -171,6 +171,8 @@ pub fn print_history() -> Result<()> {
 }
 
 pub fn rollback_history(rollback_id: i32) -> Result<()> {
+    crate::repo::sync_channel_metadata()?;
+
     let generations_root = crate::dirs::get_default_generations_root()?;
     let current_generation_id = get_current_generation_id()?;
 

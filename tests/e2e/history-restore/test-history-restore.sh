@@ -41,9 +41,9 @@ fi
 
 log "History shows $GEN_COUNT generations"
 
-# Restore to ~2 (2 generations ago)
-log "Restoring to ~2"
-epkg -e "$ENV_NAME" --assume-yes restore ~2 || error "Failed to restore to ~2"
+# Restore to -2 (2 generations ago)
+log "Restoring to -2"
+epkg -e "$ENV_NAME" --assume-yes restore -2 || error "Failed to restore to -2"
 
 # Verify that jq/htop are installed, curl/rg are not
 log "Verifying installed packages after restore"

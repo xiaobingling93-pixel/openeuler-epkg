@@ -357,24 +357,6 @@ fn try_print_backtrace() {
     }
 }
 
-/// Parse generation ID, supporting both `-N` and `~N` forms.
-/// The `~N` form is converted to `-N` for relative rollback.
-/// Valid cmdline forms:
-/// - epkg restore M
-/// - epkg restore ~N
-/// - epkg restore -- -N
-fn parse_gen_id(s: &str) -> Result<i32, String> {
-    let s = s.trim();
-    // Handle ~N form by converting to -N
-    let normalized = if s.starts_with('~') {
-        format!("-{}", &s[1..])
-    } else {
-        s.to_string()
-    };
-    normalized.parse::<i32>()
-        .map_err(|e| format!("Invalid generation ID '{}': {}", s, e))
-}
-
 fn build_epkg_command() -> Command {
     Command::new("epkg")
         .author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
@@ -575,7 +557,7 @@ OPTIONS:
         .subcommand(
             Command::new("restore")
                 .about("Restore environment to a specific generation")
-                .arg(arg!(<GEN_ID> "Generation ID to restore to (negative number or ~N for relative rollback)").value_parser(parse_gen_id))
+                .arg(arg!(<GEN_ID> "Generation ID to restore to (negative number for relative rollback)").value_parser(clap::value_parser!(i32)).allow_negative_numbers(true))
         )
         .subcommand(
             Command::new("update")
@@ -1213,7 +1195,6 @@ fn command_history(_sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_restore(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(rollback_id) = sub_matches.get_one::<i32>("GEN_ID") {
-        sync_channel_metadata()?;
         rollback_history(*rollback_id)?;
     }
     Ok(())
