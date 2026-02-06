@@ -201,13 +201,16 @@ pub fn rollback_history(rollback_id: i32) -> Result<()> {
 
     // Compute delta_removes: packages in installed but not in target
     crate::io::load_installed_packages()?;
-    let installed = &*crate::models::PACKAGE_CACHE.installed_packages.read().unwrap();
-    let mut delta_removes = crate::models::InstalledPackagesMap::new();
-    for (pkgkey, pkg_info) in installed.iter() {
-        if !target_packages.contains_key(pkgkey) {
-            delta_removes.insert(pkgkey.clone(), pkg_info.clone());
+    let delta_removes = {
+        let installed = &*crate::models::PACKAGE_CACHE.installed_packages.read().unwrap();
+        let mut delta_removes = crate::models::InstalledPackagesMap::new();
+        for (pkgkey, pkg_info) in installed.iter() {
+            if !target_packages.contains_key(pkgkey) {
+                delta_removes.insert(pkgkey.clone(), pkg_info.clone());
+            }
         }
-    }
+        delta_removes
+    }; // <- read lock dropped here, avoiding dead-lock
 
     // Create InstallationPlan by diffing the two generations
     // PACKAGE_CACHE.installed_packages represents current state, target_packages is desired state

@@ -483,8 +483,7 @@ pub fn prepare_installation_plan(
     classify_packages(all_packages_for_session, &mut plan)?;
 
     // Snapshot currently installed package keys for later use.
-    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-    plan.installed = installed.keys().cloned().collect();
+    plan.installed = PACKAGE_CACHE.installed_packages.read().unwrap().keys().cloned().collect();
 
     // Determine which packages should be removed
     if let Some(old_removes) = explicit_removes {
