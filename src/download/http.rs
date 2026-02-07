@@ -317,11 +317,13 @@ fn validate_response_content_type(
                 return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg));
             }
 
-            // Reject HTML content for other URLs - HTML can be gzip-compressed
-            // but that doesn't make it legitimate file content
-            let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
-            task.set_message(error_msg.to_string());
-            return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg.to_string()));
+            if task.file_type == FileType::Immutable ||
+               task.file_type == FileType::AppendOnly {
+                // Reject HTML content for known file types
+                let error_msg = "Received HTML page instead of file. This may indicate an authentication issue with the server.";
+                task.set_message(error_msg.to_string());
+                return Err(eyre!("Fatal error while downloading from {}: {}", url, error_msg.to_string()));
+            }
         }
     }
     Ok(())
