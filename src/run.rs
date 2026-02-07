@@ -328,7 +328,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 }
 
 /// Check if a file is executable
-fn is_executable(path: &Path) -> Result<bool> {
+pub fn is_executable(path: &Path) -> Result<bool> {
     let metadata = fs::metadata(path)
         .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", path.display(), e))?;
 

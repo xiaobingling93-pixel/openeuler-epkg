@@ -296,13 +296,15 @@ impl Mirrors {
     /// Resolve HTTP(S) URL to a cache path by substituting protocol prefix with output_dir.
     ///
     /// Simply replaces "http://" or "https://" with "$output_dir/", preserving the rest of the path.
-    /// If URL ends with '/', appends 'index.html'.
+    /// Saves to index.html when the URL is a site or directory:
+    /// - No path (e.g. `http://www.bing.com`) → site, use index.html
+    /// - Path ends with '/' (e.g. `http://example.com/foo/`) → dir, use index.html
     ///
     /// Note: Security validation is performed by the caller (detect_url_proto_path).
     ///
     /// Examples:
+    /// - `https://example.com` -> `output_dir/example.com/index.html`
     /// - `https://example.com/path/to/file.txt` -> `output_dir/example.com/path/to/file.txt`
-    /// - `https://mirror.com/repo/linux-64/file.gz` -> `output_dir/mirror.com/repo/linux-64/file.gz`
     /// - `https://example.com/path/` -> `output_dir/example.com/path/index.html`
     pub fn resolve_http_url_path(url: &str, output_dir: &Path) -> PathBuf {
         let url_stripped = match url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) {
@@ -310,19 +312,18 @@ impl Mirrors {
             None => url
         };
 
-        // Check if URL ends with / (directory)
-        let ends_with_slash = url.ends_with('/');
+        // Site: no '/' after host (e.g. http://www.bing.com). Dir: path ends with /
+        let is_site = !url_stripped.contains('/');
+        let is_dir = url.ends_with('/');
 
         // Build path by joining output_dir with the stripped URL path segments
-        // Split the stripped URL into parts and join them properly
         let parts: Vec<&str> = url_stripped.split('/').filter(|s| !s.is_empty()).collect();
         let mut path = output_dir.to_path_buf();
         for part in parts {
             path = path.join(part);
         }
 
-        // If URL ends with /, add index.html
-        if ends_with_slash {
+        if is_site || is_dir {
             path.join("index.html")
         } else {
             path

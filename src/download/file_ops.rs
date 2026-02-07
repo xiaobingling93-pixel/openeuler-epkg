@@ -265,6 +265,15 @@ pub(crate) fn finalize_file(task: &DownloadTask) -> Result<()> {
     // Check if the final path already exists and remove it if it does
     if task.final_path.exists() {
         log::debug!("Final path already exists, removing: {}", task.final_path.display());
+        let meta = fs::metadata(&task.final_path)
+            .with_context(|| format!("Failed to stat final path: {}", task.final_path.display()))?;
+        if meta.is_dir() {
+            return Err(eyre!(
+                "Final path {} is a directory; cannot replace with a single file. \
+                Remove the directory or use a different output path.",
+                task.final_path.display()
+            ));
+        }
         fs::remove_file(&task.final_path)
             .with_context(|| format!("Failed to remove existing final file: {}", task.final_path.display()))?;
     }
@@ -563,6 +572,22 @@ pub(crate) fn setup_download_file(task: &DownloadTask, existing_bytes: u64) -> R
     Ok(file)
 }
 
+/// True if saved metadata has at least one of etag, last_modified/timestamp, or remote_size,
+/// so we can validate that the remote content is still consistent with a local part file.
+fn can_validate_resume_from_metadata(metadata: &Option<DownloadMetadata>) -> bool {
+    metadata
+        .as_ref()
+        .and_then(|m| m.serving_metadata.as_ref())
+        .map(|s| {
+            s.etag.is_some()
+                || (
+                    s.last_modified.is_some()
+                    && s.remote_size.is_some()
+                )
+        })
+        .unwrap_or(false)
+}
+
 /// Check existing file size and validate chunk completion
 /// Returns existing bytes and whether the chunk is already complete
 pub(crate) fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)> {
@@ -570,6 +595,31 @@ pub(crate) fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)
 
     // Check existing file size for resumption
     let existing_bytes = get_existing_file_size(chunk_path)?;
+
+    // For Mutable files we must not resume unless we can validate the remote is unchanged
+    // (etag, last_modified, or remote_size). Otherwise we might append to stale data.
+    if existing_bytes > 0
+        && task.is_master_task()
+        && task.file_type == FileType::Mutable
+    {
+        let loaded = task.load_remote_metadata().ok().flatten();
+        if !can_validate_resume_from_metadata(&loaded) {
+            log::info!(
+                "Dropping existing part file {} ({} bytes): no etag/last_modified to validate resume for {}",
+                chunk_path.display(),
+                existing_bytes,
+                &task.url
+            );
+            if chunk_path.exists() {
+                fs::remove_file(chunk_path).with_context(|| {
+                    format!("Failed to remove part file {} before fresh download", chunk_path.display())
+                })?;
+            }
+            let is_complete = check_chunk_completion(task, 0)?;
+            return Ok((0, is_complete));
+        }
+    }
+
     if existing_bytes > 0 {
         task.resumed_bytes.store(existing_bytes, Ordering::Relaxed);
         log::debug!("Resuming download from {} bytes for {}", existing_bytes, &task.url);
