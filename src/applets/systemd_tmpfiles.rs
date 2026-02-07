@@ -210,14 +210,16 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     let do_clean = options.clean || (!options.create && !options.clean && !options.remove);
     let do_remove = options.remove;
 
-    // If --root is specified, set up namespace and mounts so we can operate as root inside the environment
+    // If --root is specified (and not "/"), set up namespace and mounts so we can operate as root inside the environment.
+    // When root is "/", we are already on the root; skip setup to avoid creating /opt_real and permission errors.
     if let Some(root) = &options.root {
-        // Set up namespace and bind mounts to make root the environment root
-        let run_options = RunOptions {
-            ..Default::default()
-        };
-        setup_namespace_and_mounts(root, &run_options)?;
-    };
+        if root.as_os_str() != "/" {
+            let run_options = RunOptions {
+                ..Default::default()
+            };
+            setup_namespace_and_mounts(root, &run_options)?;
+        }
+    }
 
     // After namespace setup, we are inside the environment root mounted over /
     // So we should not prefix paths with root anymore
