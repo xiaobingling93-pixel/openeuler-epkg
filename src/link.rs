@@ -386,6 +386,11 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
         let fhs_file = &fs_file_info.path;
         let target_path = env_root.join(fhs_file);
 
+        // No modify top-level directories/symlinks created by create_environment_directories()
+        if matches!(fhs_file.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
+            continue;
+        }
+
         if fs_file_info.is_dir() {
             // Check if target path exists and is not a directory
             if target_path.exists() && !target_path.is_dir() {
@@ -405,9 +410,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
         //         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
         // }
 
-        if matches!(fhs_file.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
-            // No modify top-level directories/symlinks created by create_environment_directories()
-        } else if fs_file_info.is_link() {
+        if fs_file_info.is_link() {
             mirror_symlink_file(&fs_file, &target_path)
                 .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))?;
         } else {
