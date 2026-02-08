@@ -369,7 +369,6 @@ pub fn determine_shared_store() -> Result<bool> {
     use std::env;
     use std::path::Path;
     use crate::dirs::get_home;
-    use color_eyre::eyre;
 
     let is_root = is_running_as_root();
 
@@ -410,11 +409,8 @@ pub fn determine_shared_store() -> Result<bool> {
         return Ok(true);
     }
 
-    // Rule 7: Otherwise: print error and abort
-    Err(eyre::eyre!(
-        "Cannot determine shared_store mode. Neither $HOME/.epkg/store/ nor /opt/epkg/store/ exists. \
-         Please run 'epkg self install' first to set up the store."
-    ))
+    // Rule 7: Otherwise: neither store exists, default to private (false)
+    Ok(false)
 }
 
 /// Check if the process is running with setuid privileges
