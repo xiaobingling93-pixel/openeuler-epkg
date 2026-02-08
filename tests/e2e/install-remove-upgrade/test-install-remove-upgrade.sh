@@ -182,7 +182,7 @@ process_batch() {
     # Install packages with --prefer-low-version
     log "Installing packages in batch $batch_num"
     local install_output install_exit
-    install_output=$(epkg -e "$env_name" --assume-yes install --prefer-low-version $batch_pkgs 2>&1)
+    install_output=$(epkg -e "$env_name" $epkg_opts --assume-yes install --prefer-low-version $batch_pkgs 2>&1)
     install_exit=$?
     # Accumulate output for later analysis
     EPKG_BATCH_CMD_OUTPUT="${EPKG_BATCH_CMD_OUTPUT}
@@ -213,9 +213,11 @@ ${upgrade_output}"
     local remove_count=$((pkg_count / 2))
     local remove_pkgs
     remove_pkgs=$(echo "$batch_pkgs" | tr ' ' '\n' | head -n $remove_count | tr '\n' ' ')
+    [ -z "$remove_pkgs" ] && return
+
     log "Removing packages: $remove_pkgs"
     local remove_output remove_exit
-    remove_output=$(epkg -e "$env_name" --assume-yes remove $remove_pkgs 2>&1)
+    remove_output=$(epkg -e "$env_name" $epkg_opts --assume-yes remove $remove_pkgs 2>&1)
     remove_exit=$?
     EPKG_BATCH_CMD_OUTPUT="${EPKG_BATCH_CMD_OUTPUT}
 ${remove_output}"
@@ -301,17 +303,38 @@ main() {
     test_epkg_help_commands
 
     # If arguments are provided, treat them as:
-    #   $1: OS name
-    #   $2...: explicit package list to test (single batch)
+    #   $1: OS name (or "all-os" to test all OSes)
+    #   $2...: explicit package list to test (single batch, applied to each OS if $1 is "all-os")
     #
     # This allows reproducing a failing batch directly via:
     #   tests/e2e/test.sh install-remove-upgrade/test-install-remove-upgrade.sh <os> <packages...>
-    if [ "$#" -ge 1 ]; then
+    # Special case: first argument is "all-os" (test all OSes)
+    if [ "$#" -ge 1 ] && [ "$1" = "all-os" ]; then
+        shift
+        # If there are remaining arguments, treat as explicit package list for all OSes
+        if [ "$#" -gt 0 ]; then
+            local pkg_list="$*"
+            local epkg_opts='--ignore-missing'
+            for os in $ALL_OS; do
+                log "Testing OS '$os' with explicit package list: $pkg_list"
+                create_test_environment "$os"
+                process_batch "$os" "repro" "$pkg_list"
+                cleanup_environment "$os"
+                batch_has_error && error "batch failed for $os"
+            done
+        else
+            # No packages: test all OSes normally
+            for os in $ALL_OS; do
+                process_os "$os"
+            done
+        fi
+    elif [ "$#" -ge 1 ]; then
         local os="$1"
         shift
 
         if [ "$#" -gt 0 ]; then
             local pkg_list="$*"
+            local epkg_opts='--ignore-missing'
             log "Reproducing failure for OS '$os' with explicit package list: $pkg_list"
 
             # Create a dedicated environment and run a single batch with the
