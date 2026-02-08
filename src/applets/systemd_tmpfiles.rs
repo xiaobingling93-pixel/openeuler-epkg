@@ -43,6 +43,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
@@ -224,12 +225,9 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     // So we should not prefix paths with root anymore
     let effective_root = None;
 
-    // If no config files specified, use default directories
-    let config_files = if options.config_files.is_empty() {
-        find_default_config_files(effective_root)?
-    } else {
-        options.config_files
-    };
+    // Always call find_default_config_files to get full paths to config files
+    // It handles both explicit config files (relative/absolute) and default scanning
+    let config_files = find_default_config_files(effective_root, &options.config_files)?;
 
     for config_file in config_files {
         process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, effective_root)?;
@@ -238,8 +236,9 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     Ok(())
 }
 
-fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
-    let mut files = Vec::new();
+fn scan_config_directories(root: Option<&Path>) -> Result<(Vec<String>, HashMap<String, String>)> {
+    let mut all_files = Vec::new();
+    let mut relative_map = HashMap::new();
 
     // Standard directories in order of precedence (higher priority first)
     // Matches systemd's CONF_PATHS macro
@@ -252,14 +251,25 @@ fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
 
     for dir in dirs {
         let full_dir = apply_root(dir, root);
-        if let Ok(entries) = fs::read_dir(full_dir) {
+        if let Ok(entries) = fs::read_dir(&full_dir) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     let path = entry.path();
                     if let Some(ext) = path.extension() {
                         if ext == "conf" {
                             if let Some(path_str) = path.to_str() {
-                                files.push(path_str.to_string());
+                                // Add to all_files
+                                all_files.push(path_str.to_string());
+                                // Compute relative path from this directory
+                                if let Ok(relative) = path.strip_prefix(&full_dir) {
+                                    if let Some(relative_str) = relative.to_str() {
+                                        // Remove leading slash if present
+                                        let relative_str = relative_str.trim_start_matches('/');
+                                        // Only insert if not already present (first occurrence wins)
+                                        relative_map.entry(relative_str.to_string())
+                                            .or_insert(path_str.to_string());
+                                    }
+                                }
                             }
                         }
                     }
@@ -268,8 +278,52 @@ fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
         }
     }
 
+    all_files.sort();
+    Ok((all_files, relative_map))
+}
+
+fn find_default_config_files(root: Option<&Path>, config_files: &[String]) -> Result<Vec<String>> {
+    // If config_files is empty, scan all .conf files in default directories
+    let scan_all = config_files.is_empty();
+    log::info!("find_default_config_files: scan_all={}, config_files={:?}", scan_all, config_files);
+
+    let (all_files, relative_map) = scan_config_directories(root)?;
+    let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if scan_all {
+        // Return all .conf files found in directories
+        files = all_files;
+    } else {
+        // Process each explicitly provided config file
+        for file in config_files {
+            let path = Path::new(file);
+            if path.is_absolute() {
+                // Absolute path: use as is (apply_root will handle root prefix later)
+                if seen.insert(file.clone()) {
+                    files.push(file.clone());
+                }
+            } else {
+                // Relative path: look up in relative map
+                if let Some(full_path) = relative_map.get(file) {
+                    if seen.insert(full_path.clone()) {
+                        files.push(full_path.clone());
+                    }
+                } else {
+                    // Not found in default directories, keep relative path
+                    // (will be resolved relative to current working directory)
+                    log::info!("Relative config file '{}' not found in default directories", file);
+                    if seen.insert(file.clone()) {
+                        files.push(file.clone());
+                    }
+                }
+            }
+        }
+    }
+
     // Sort files by name for consistent processing
     files.sort();
+    log::info!("find_default_config_files returning: {:?}", files);
     Ok(files)
 }
 
@@ -338,6 +392,7 @@ fn parse_line_fields(line: &str) -> Result<Vec<String>> {
 
 fn process_line(line: &str, do_create: bool, do_clean: bool, do_remove: bool, boot: bool, root: Option<&Path>) -> Result<()> {
     let parts = parse_line_fields(line)?;
+    log::info!("Parsed fields: {:?}", parts);
     if parts.len() < 2 {
         return Ok(());
     }
@@ -431,6 +486,7 @@ fn parse_type_and_modifiers(type_str: &str) -> Result<(&str, Modifiers)> {
 }
 
 fn should_process_line(base_type: &str, do_create: bool, do_clean: bool, do_remove: bool) -> bool {
+    log::info!("should_process_line: base_type={}, do_create={}, do_clean={}, do_remove={}", base_type, do_create, do_clean, do_remove);
     match base_type {
         // Create operations
         "d" | "v" | "q" | "Q" | "f" | "p" | "L" => do_create,
@@ -480,12 +536,16 @@ fn dispatch_line(base_type: &str, line_type: &str, parts: &[String], modifiers: 
 }
 
 fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: bool, _do_clean: bool, do_remove: bool, root: Option<&Path>) -> Result<()> {
+    log::info!("process_directory_line called");
     if parts.len() < 3 {
         return Err(eyre!("Invalid directory line: not enough fields"));
     }
 
     let (path, mode_str, user_str, group_str) = extract_common_fields(parts);
     let full_path = apply_root(path, root);
+    log::info!("Directory path: {}, full_path: {}", path, full_path.display());
+    log::info!("Canonical path: {:?}", full_path.canonicalize().ok());
+    log::info!("Metadata: {:?}", full_path.metadata());
 
     // Handle different operation modes
     if do_remove {
@@ -501,9 +561,12 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     }
 
     // Parse mode (octal)
+    log::info!("Mode string: {}", mode_str);
     let mode = parse_mode_with_default(mode_str, 0o755)?;
+    log::info!("Parsed mode: {}", mode);
 
     // Create directory if it doesn't exist
+    log::info!("Directory exists? {}", full_path.exists());
     if !full_path.exists() {
         fs::create_dir_all(&full_path)
             .map_err(|e| eyre!("Failed to create directory {}: {}", full_path.display(), e))?;
