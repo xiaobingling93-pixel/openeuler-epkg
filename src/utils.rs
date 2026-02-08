@@ -1205,15 +1205,17 @@ pub fn kill_process(pid: i32, signal: Signal, command_name: &str) -> Result<()> 
     Ok(())
 }
 
-/// Get process name from /proc/<pid>/cmdline
+/// Get process name from /proc/<pid>/comm
+///
+/// Uses the comm file instead of cmdline because comm is visible to all users,
+/// while cmdline may not be readable due to process permissions (e.g., setuid).
+/// Note that comm is limited to 16 bytes (including null terminator).
 pub fn get_process_name(pid: u32) -> Option<String> {
-    let cmdline_path = format!("/proc/{}/cmdline", pid);
-    if let Ok(content) = fs::read_to_string(&cmdline_path) {
-        let name = content.split('\0').next()?;
-        if !name.is_empty() {
-            Path::new(name).file_name()?
-                .to_str()
-                .map(|s| s.to_string())
+    let comm_path = format!("/proc/{}/comm", pid);
+    if let Ok(content) = fs::read_to_string(&comm_path) {
+        let trimmed = content.trim_end_matches('\n');
+        if !trimmed.is_empty() {
+            Some(trimmed.to_string())
         } else {
             None
         }
@@ -1222,15 +1224,29 @@ pub fn get_process_name(pid: u32) -> Option<String> {
     }
 }
 
-/// Get full command line from /proc/<pid>/cmdline with spaces instead of null bytes
+/// Get full command line from /proc/<pid>/cmdline
+///
+/// Returns the complete command line with null bytes replaced by spaces.
+/// This may fail if cmdline is not readable (e.g., due to process permissions).
 pub fn get_process_cmdline(pid: u32) -> Option<String> {
     let cmdline_path = format!("/proc/{}/cmdline", pid);
     if let Ok(content) = fs::read_to_string(&cmdline_path) {
-        if content.is_empty() {
-            None
+        let trimmed = content.trim_end_matches('\0');
+        if !trimmed.is_empty() {
+            Some(trimmed.replace('\0', " "))
         } else {
-            Some(content.replace('\0', " ").trim().to_string())
+            None
         }
+    } else {
+        None
+    }
+}
+
+/// Get the executable path from /proc/<pid>/exe symlink
+pub fn get_process_exe(pid: u32) -> Option<String> {
+    let exe_path = format!("/proc/{}/exe", pid);
+    if let Ok(target) = std::fs::read_link(&exe_path) {
+        target.to_str().map(|s| s.to_string())
     } else {
         None
     }

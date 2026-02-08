@@ -84,7 +84,7 @@ pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
         .unwrap()
         .as_secs();
 
-    let pid_content = format!("pid={}\ntime={}\n", pid, timestamp);
+    let pid_content = format!("epkg=1\npid={}\ntime={}\n", pid, timestamp);
 
     // Try to create the PID file atomically
     let temp_pid_file = get_temp_pid_file_path(final_path);
@@ -95,6 +95,29 @@ pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
 
     log::debug!("Created PID file: {}", pid_file.display());
     Ok(pid_file)
+}
+
+/// Check if a process is likely an epkg download process
+fn is_epkg_process(pid: u32) -> bool {
+    // First try to get executable path (symlink target) - handles symlinked binaries like 'wget' -> 'epkg'
+    if let Some(exe) = utils::get_process_exe(pid) {
+        if let Some(name) = Path::new(&exe).file_name().and_then(|n| n.to_str()) {
+            if name.to_lowercase().contains("epkg") {
+                return true;
+            }
+        }
+    }
+
+    // Then try process name (executable basename)
+    if let Some(name) = utils::get_process_name(pid) {
+        if name.to_lowercase().contains("epkg") {
+            return true;
+        }
+    }
+
+    // If we can't determine, assume it might be epkg for safety
+    // (prevents deleting PID file of a live epkg process we can't inspect)
+    true
 }
 
 /// Check if a PID file represents an active download
@@ -108,14 +131,24 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Parse the new format: pid=123\ntime=456\n
+    // Parse the new format: epkg=1\npid=123\ntime=456\n
     let mut pid_opt = None;
+    let mut has_epkg_magic = false;
 
     for line in content.lines() {
+        if let Some(value) = line.strip_prefix("epkg=") {
+            if value == "1" {
+                has_epkg_magic = true;
+            }
+        }
         if let Some(value) = line.strip_prefix("pid=") {
             pid_opt = value.parse::<u32>().ok();
-            break;
+            // Continue parsing to also check for epkg= line
         }
+    }
+
+    if has_epkg_magic {
+        log::debug!("PID file {} has epkg magic", pid_file.display());
     }
 
     let pid = match pid_opt {
@@ -134,7 +167,11 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
     // If not our PID, check if the process is still running (Unix-like systems)
     #[cfg(unix)]
     {
-        utils::process_exists(pid)
+        if !utils::process_exists(pid) {
+            return false;
+        }
+        // Process exists, check if it's an epkg process
+        is_epkg_process(pid)
     }
 
     // For Windows or if we can't check, assume it's active for safety
