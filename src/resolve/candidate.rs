@@ -354,14 +354,11 @@ impl GenericDependencyProvider {
         // Get installed packages map for favored candidate lookup
         let installed_pkgname2keys = self.get_installed_pkgname2keys().unwrap_or_default();
 
-        // Direct lookup by package name
+        // Direct lookup by package name (when name_string is a pkgname, e.g. "bash")
         if let Some(installed_pkgkeys) = installed_pkgname2keys.get(name_string) {
-            // Find the first candidate whose pkgkey is in the installed list
-            candidates_vec.iter().find_map(|&solvable_id| {
+            return candidates_vec.iter().find_map(|&solvable_id| {
                 let record = &self.pool.resolve_solvable(solvable_id).record;
                 if installed_pkgkeys.contains(&record.pkgkey) {
-                    // For upgrade/install commands, check if package is in delta_world
-                    // If so, don't favor installed version to allow upgrade/install to latest
                     if self.delta_world_keys.contains(name_string) {
                         log::debug!("[RESOLVO] Package '{}' (pkgkey: {}) is installed and in delta_world, not favoring to allow upgrade", name_string, record.pkgkey);
                         None
@@ -372,10 +369,24 @@ impl GenericDependencyProvider {
                 } else {
                     None
                 }
-            })
-        } else {
-            None
+            });
         }
+
+        // Capability lookup: name_string is a capability (e.g. "/bin/sh"), not a pkgname.
+        // Check each candidate by its pkgname so we favor an already-installed provider.
+        candidates_vec.iter().find_map(|&solvable_id| {
+            let record = &self.pool.resolve_solvable(solvable_id).record;
+            let installed_pkgkeys = installed_pkgname2keys.get(&record.pkgname)?;
+            if !installed_pkgkeys.contains(&record.pkgkey) {
+                return None;
+            }
+            if self.delta_world_keys.contains(&record.pkgname) {
+                log::debug!("[RESOLVO] Capability provider '{}' (pkgkey: {}) is installed and in delta_world, not favoring", record.pkgname, record.pkgkey);
+                return None;
+            }
+            log::debug!("[RESOLVO] Capability '{}' provider '{}' (pkgkey: {}) is installed, favoring to avoid file conflicts", name_string, record.pkgname, record.pkgkey);
+            Some(solvable_id)
+        })
     }
 
 
