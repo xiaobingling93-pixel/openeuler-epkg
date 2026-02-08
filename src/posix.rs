@@ -598,8 +598,9 @@ pub fn posix_mkstemp(template: &str) -> PosixResult<(String, std::fs::File)> {
     Ok((path, file))
 }
 
-pub fn posix_utime(path: &str, mtime: Option<u64>, atime: Option<u64>) -> PosixResult<()> {
-    let path_cstr = std::ffi::CString::new(path)
+pub fn posix_utime(path: impl AsRef<Path>, mtime: Option<u64>, atime: Option<u64>) -> PosixResult<()> {
+    let path = path.as_ref();
+    let path_cstr = std::ffi::CString::new(path.as_os_str().as_bytes().to_vec())
         .map_err(|_| PosixError::InvalidArgument("path contains null byte".to_string()))?;
 
     let currtime = std::time::SystemTime::now()

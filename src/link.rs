@@ -380,7 +380,7 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     Ok(())
 }
 
-fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
+fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::MtreeFileInfo], link_type: LinkType, can_reflink: bool) -> Result<()> {
     for fs_file_info in fs_files {
         let fs_file = store_fs_dir.join(&fs_file_info.path);
         let fhs_file = &fs_file_info.path;

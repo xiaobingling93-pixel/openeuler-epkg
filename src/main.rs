@@ -23,6 +23,7 @@ mod xdesktop;
 mod transaction;
 mod world;
 mod utils;
+mod mtree;
 mod posix;
 mod history;
 mod environment;

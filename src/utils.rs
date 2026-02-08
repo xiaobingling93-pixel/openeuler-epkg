@@ -21,6 +21,7 @@ use nix::sys::signal::Signal;
 use users::{get_current_uid, get_effective_uid};
 use crate::models;
 use crate::userdb;
+use crate::mtree::{self, MtreeFileInfo};
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -35,44 +36,6 @@ pub enum FileType {
     Others,
 }
 
-#[derive(Debug, Clone)]
-pub struct MtreeFileInfo {
-    pub path: String,
-    pub file_type: MtreeFileType,
-    pub mode: Option<u32>,
-    #[allow(dead_code)]
-    pub sha256: Option<String>,
-    #[allow(dead_code)]
-    pub link_target: Option<String>,
-    #[allow(dead_code)]
-    pub uname: Option<String>,
-    #[allow(dead_code)]
-    pub gname: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MtreeFileType {
-    File,
-    Dir,
-    Link,
-    Device,
-}
-
-impl MtreeFileInfo {
-    pub fn is_dir(&self) -> bool {
-        self.file_type == MtreeFileType::Dir
-    }
-
-    #[allow(dead_code)]
-    pub fn is_file(&self) -> bool {
-        self.file_type == MtreeFileType::File
-    }
-
-    #[allow(dead_code)]
-    pub fn is_link(&self) -> bool {
-        self.file_type == MtreeFileType::Link
-    }
-}
 
 impl FileType {
     #[allow(dead_code)]
@@ -148,25 +111,7 @@ pub fn list_package_files_with_info(package_fs_dir: &str) -> Result<Vec<MtreeFil
     let content = fs::read_to_string(&filelist_path)
         .wrap_err_with(|| format!("Failed to read filelist.txt from {}", filelist_path.display()))?;
 
-    let mut file_infos = Vec::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        match parse_mtree_line(line) {
-            Ok(Some(file_info)) => file_infos.push(file_info),
-            Ok(None) => continue, // Skip this line
-            Err(e) => {
-                log::debug!("Failed to parse mtree line '{}': {}", line, e);
-                continue; // Skip malformed lines
-            }
-        }
-    }
-
-    Ok(file_infos)
+    mtree::parse_simplified_mtree(&content)
 }
 
 /// Normalize a file path from package filelist: remove leading '.' and trailing '/'
@@ -200,67 +145,6 @@ pub fn truncate_display(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
     }
-}
-
-// Parse a single mtree format line
-fn parse_mtree_line(line: &str) -> Result<Option<MtreeFileInfo>> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.is_empty() {
-        return Ok(None);
-    }
-
-    let relative_path = parts[0];
-
-    let mut file_type = MtreeFileType::Device;
-    let mut mode = None;
-    let mut sha256 = None;
-    let mut link_target = None;
-    let mut uname = None;
-    let mut gname = None;
-
-    // Parse key=value pairs
-    for part in &parts[1..] {
-        if let Some((key, value)) = part.split_once('=') {
-            match key {
-                "type" => {
-                    file_type = match value {
-                        "file" => MtreeFileType::File,
-                        "dir" => MtreeFileType::Dir,
-                        "link" => MtreeFileType::Link,
-                        _ => MtreeFileType::Device,
-                    };
-                }
-                "mode" => {
-                    mode = u32::from_str_radix(value, 8).ok();
-                }
-                "sha256" => {
-                    sha256 = Some(value.to_string());
-                }
-                "link" => {
-                    link_target = Some(value.to_string());
-                }
-                "uname" => {
-                    uname = Some(value.to_string());
-                }
-                "gname" => {
-                    gname = Some(value.to_string());
-                }
-                _ => {
-                    // Skip unknown attributes
-                }
-            }
-        }
-    }
-
-    Ok(Some(MtreeFileInfo {
-        path: relative_path.to_string(),
-        file_type,
-        mode,
-        sha256,
-        link_target,
-        uname,
-        gname,
-    }))
 }
 
 

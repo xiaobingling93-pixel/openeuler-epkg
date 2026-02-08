@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo};
 use crate::package;
 use crate::userdb;
+use crate::mtree::escape_mtree_path;
 use log;
 
 /// Unpack a package file
@@ -81,7 +82,7 @@ fn build_sha256_mapping_for_package(
 
     for file_info in file_infos {
         // Only process regular files with sha256
-        if file_info.file_type != crate::utils::MtreeFileType::File {
+        if file_info.file_type != crate::mtree::MtreeFileType::File {
             continue;
         }
 
@@ -396,7 +397,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         }
 
         // Skip files under info/ directory (metadata files that are commonly duplicated)
-        let mut relative_path_str = relative_path.to_string_lossy().to_string();
+        let relative_path_str = relative_path.to_string_lossy().to_string();
         if relative_path_str.starts_with("info/") {
             continue;
         }
@@ -427,7 +428,6 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         } else if file_type.is_dir() {
             attrs.push("type=dir".to_string());
 
-            relative_path_str += "/";
 
             // Add mode if not default (755)
             let mode = metadata.permissions().mode() & 0o777;
@@ -439,7 +439,17 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
             // Add link target
             if let Ok(target) = fs::read_link(path) {
-                attrs.push(format!("link={}", target.display()));
+                let target_str = target.to_string_lossy();
+                // Note: mtree specification is ambiguous about whether link targets should be escaped.
+                // While pathnames require escaping of backslashes and non-printable ASCII,
+                // some mtree implementations allow unescaped spaces in link targets.
+                // We follow the pathname escaping rules for consistency.
+                // IMPORTANT: Since we don't escape spaces (0x20), link targets containing spaces
+                // will produce unparseable mtree output (spaces separate tokens in mtree format).
+                // Link targets with spaces are effectively not supported by this implementation.
+                // Alternative: escape spaces as \040 would support link targets with spaces,
+                // but violates the mtree specification.
+                attrs.push(format!("link={}", escape_mtree_path(&target_str)));
             }
         } else {
             // Handle special files
@@ -474,7 +484,11 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
         // Write entry to filelist
         let attrs_str = attrs.join(" ");
-        output.push_str(&format!("{} {}\n", relative_path_str, attrs_str));
+        let mut escaped_path = escape_mtree_path(&relative_path_str);
+        if file_type.is_dir() {
+            escaped_path.push('/');
+        }
+        output.push_str(&format!("{} {}\n", escaped_path, attrs_str));
     }
 
     fs::write(&filelist_path, output)

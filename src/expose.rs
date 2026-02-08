@@ -116,7 +116,7 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
     Ok(())
 }
 
-fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[utils::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
+fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::MtreeFileInfo]) -> Result<Vec<PathBuf>> {
     let mut created_ebin_paths: Vec<PathBuf> = Vec::new();
     for fs_file_info in fs_files {
         let fs_file = &fs_file_info.path;
