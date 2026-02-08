@@ -134,11 +134,7 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
     // If not our PID, check if the process is still running (Unix-like systems)
     #[cfg(unix)]
     {
-        use std::process::Command;
-        match Command::new("kill").args(&["-0", &pid.to_string()]).output() {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        }
+        utils::process_exists(pid)
     }
 
     // For Windows or if we can't check, assume it's active for safety

@@ -1240,6 +1240,11 @@ pub fn get_process_cmdline(pid: u32) -> Option<String> {
     }
 }
 
+/// Check if a process exists by checking /proc/<pid> directory
+pub fn process_exists(pid: u32) -> bool {
+    Path::new(&format!("/proc/{}", pid)).exists()
+}
+
 /// Iterator over all processes in /proc
 pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
     let proc_dir = Path::new("/proc");
