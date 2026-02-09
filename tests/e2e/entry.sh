@@ -17,6 +17,14 @@ mount -t tmpfs tmpfs /opt/epkg/envs 2>/dev/null || true
 # Create directories
 mkdir -p /root/.epkg/envs /opt/epkg/envs /root/.cache/epkg /opt/epkg/cache /opt/epkg/store
 
+# Set up timezone symlink if TZ is set and zoneinfo exists
+if [ -n "$TZ" ] && [ -f "/usr/share/zoneinfo/$TZ" ]; then
+    ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
+    echo "Set /etc/localtime to /usr/share/zoneinfo/$TZ"
+elif [ -n "$TZ" ] && [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
+    echo "Warning: TZ=$TZ but zoneinfo file not found, timezone may not work correctly"
+fi
+
 # Initialize epkg
 "$EPKG_BINARY" --version
 "$EPKG_BINARY" self install

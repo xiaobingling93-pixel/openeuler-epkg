@@ -27,14 +27,22 @@ if [ -z "$HOST_TZ" ] && [ -f /etc/timezone ]; then
 elif [ -z "$HOST_TZ" ] && [ -L /etc/localtime ]; then
     HOST_TZ=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
 fi
+echo "Detected host timezone: $HOST_TZ"
+# If still empty, default to UTC to ensure timezone is set
+if [ -z "$HOST_TZ" ]; then
+    HOST_TZ="UTC"
+    echo "Warning: Could not detect host timezone, defaulting to UTC"
+fi
 
 # Run docker with proper mounts
 # Mount E2E_DIR at the same path inside docker for easier debugging
 # Mount entire /opt/epkg/ as a single mount to avoid cross-device link errors
 # Sync timezone to prevent timestamp-related download conflicts
 CONTAINER_NAME="epkg-e2e"
+zoneinfo=$(readlink /etc/localtime)
 docker run --name $CONTAINER_NAME --privileged --rm $DOCKER_FLAGS \
     -v "$PROJECT_ROOT:$PROJECT_ROOT:ro" \
+    -v "$zoneinfo:$zoneinfo:ro" \
     -v "$PERSISTENT_OPT_EPKG:/opt/epkg:rw" \
     -v "$PERSISTENT_CACHE:/root/.cache/epkg:rw" \
     -v "$PERSISTENT_STORE:/root/.epkg/store:rw" \
