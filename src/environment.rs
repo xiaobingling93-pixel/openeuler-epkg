@@ -329,7 +329,11 @@ fn create_default_world_json(env_root: &Path, pkg_format: &PackageFormat) -> Res
     // Set default no-install packages for Pacman/Rpm/Deb formats
     match pkg_format {
         PackageFormat::Pacman | PackageFormat::Rpm | PackageFormat::Deb => {
-            let mut no_install_packages = vec!["systemd", "udev", "dbus"];
+            let mut no_install_packages = vec!["systemd", "systemd-udev", "udev", "dbus",
+                "grubby", "grub2", "dracut", "kpartx", "e2fsprogs",
+                "pam", "kbd", "kmod",
+                "cron", "cronie", "crontabs",
+            ];
 
             // Add format-specific packages
             match pkg_format {
