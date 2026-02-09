@@ -270,6 +270,12 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     // Step 2b: Link all packages (after risk checks pass)
     link_packages(plan)?;
 
+    // Build trigger indices used by hooks/trigger mapping.
+    crate::deb_triggers::load_initial_deb_triggers(plan)?;
+
+    // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
+    crate::hooks::load_initial_hooks(plan)?;
+
     // Step 3: Process upgrades and fresh installations
     // Set is_first flag for the first batch
     plan.batch.is_first = true;

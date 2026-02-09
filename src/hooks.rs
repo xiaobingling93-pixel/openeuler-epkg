@@ -11,6 +11,7 @@ use crate::package_cache::map_pkgline2filelist;
 use crate::plan::{InstallationPlan, pkgkey2pkgline};
 use crate::parse_requires::VersionConstraint;
 use crate::rpm_triggers::{parse_rpm_trigger_condition, RPMTRIGGER_DEFAULT_PRIORITY};
+use crate::run::{fork_and_execute, RunOptions};
 use shlex;
 use glob::Pattern;
 
@@ -878,12 +879,6 @@ fn is_systemd_in_no_install() -> bool {
 
 fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
 
-    // Only add hooks for RPM and Pacman formats
-    if plan.package_format != crate::models::PackageFormat::Rpm &&
-       plan.package_format != crate::models::PackageFormat::Pacman {
-        return Ok(());
-    }
-
     if is_systemd_installed() {
         return Ok(());
     }
@@ -902,6 +897,8 @@ fn add_systemd_hooks_if_needed(plan: &mut InstallationPlan) -> Result<()> {
     // }
 
     log::debug!("systemd is in no-install list, adding systemd hooks");
+
+    create_deb_sysusers(plan);
 
     // Create sysusers hook
     create_systemd_hook(
@@ -963,6 +960,91 @@ fn create_systemd_hook(
     register_hook_to_plan(hook, hook_name.to_string(), None, plan);
 
     Ok(())
+}
+
+// When skipped installing systemd package, we need provide its
+// usr/lib/sysusers.d/basic.conf file to create system users.
+fn create_deb_sysusers(plan: &InstallationPlan)
+{
+    if plan.package_format != crate::models::PackageFormat::Deb {
+        return;
+    }
+
+    // Write basic.conf if missing
+    let basic_conf_path = plan.env_root.join("usr/lib/sysusers.d/basic.conf");
+    if basic_conf_path.exists() {
+        return;
+    }
+
+    if let Some(parent) = basic_conf_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let content = r#"g adm        4     -
+g tty        5     -
+g disk       6     -
+g man        12    -
+g kmem       15    -
+g dialout    20    -
+g fax        21    -
+g voice      22    -
+g cdrom      24    -
+g floppy     25    -
+g tape       26    -
+g sudo       27    -
+g audio      29    -
+g dip        30    -
+g operator   37    -
+g src        40    -
+g shadow     42    -
+g utmp       43    -
+g video      44    -
+g sasl       45    -
+g plugdev    46    -
+g staff      50    -
+g games      60    -
+g users      100   -
+g nogroup    65534 -
+
+u root       0       - /root                /bin/bash
+u daemon     1       - /usr/sbin            /usr/sbin/nologin
+u bin        2       - /bin                 /usr/sbin/nologin
+u sys        3       - /dev                 /usr/sbin/nologin
+u sync       4:65534 - /bin                 /bin/sync
+u games      5:60    - /usr/games           /usr/sbin/nologin
+u man        6:12    - /var/cache/man       /usr/sbin/nologin
+u lp         7       - /var/spool/lpd       /usr/sbin/nologin
+u mail       8       - /var/mail            /usr/sbin/nologin
+u news       9       - /var/spool/news      /usr/sbin/nologin
+u uucp       10      - /var/spool/uucp      /usr/sbin/nologin
+u proxy      13      - /bin                 /usr/sbin/nologin
+u www-data   33      - /var/www             /usr/sbin/nologin
+u backup     34      - /var/backups         /usr/sbin/nologin
+u list       38      - /var/list            /usr/sbin/nologin
+u irc        39      - /run/ircd            /usr/sbin/nologin
+u _apt       42:65534 - /nonexistent         /usr/sbin/nologin
+u nobody     65534:65534 - /nonexistent         /usr/sbin/nologin"#;
+
+    if let Err(e) = fs::write(&basic_conf_path, content) {
+        log::warn!("Failed to write {}: {}", basic_conf_path.display(), e);
+    } else {
+        log::debug!("Created missing {}", basic_conf_path.display());
+        run_in_env(&plan.env_root, "systemd-sysusers", &["basic.conf"]);
+    }
+}
+
+fn run_in_env(env_root: &Path, cmd: &str, args: &[&str])
+{
+    let run_options = RunOptions {
+        command: cmd.to_string(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        no_exit: true,
+        chdir_to_env_root: true,
+        timeout: 30,
+        ..Default::default()
+    };
+    if let Err(e) = fork_and_execute(env_root, &run_options) {
+        log::warn!("Failed to run {}: {}", cmd, e);
+    }
 }
 
 /// Load hooks for packages in the current batch
