@@ -1415,7 +1415,6 @@ fn add_rpm_trigger_instance_args(
     args: &mut Vec<String>,
 ) {
     if plan.package_format == PackageFormat::Deb {
-        args.push("triggered".to_string());
         // matched_targets contains trigger names for DEB trigger hooks
         if !matched_targets.is_empty() {
             // Join trigger names with space and add as a single argument

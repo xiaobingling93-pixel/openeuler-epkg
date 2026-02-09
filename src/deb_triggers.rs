@@ -493,7 +493,7 @@ pub fn write_deb_trigger_hooks<P: AsRef<Path>>(
         // Use %PKGINFO_DIR placeholder that will be replaced at runtime with the actual package info directory
         // The hook engine will add "triggered" and trigger names as arguments:
         // postinst triggered <trigger-name>...
-        writeln!(buf, "Exec = %PKGINFO_DIR/deb/postinst")?;
+        writeln!(buf, "Exec = %PKGINFO_DIR/deb/postinst triggered")?;
 
         // For DEB triggers, use the trigger name itself as the hook name
         // Sanitize the trigger name for use as a filename (replace '/' with '__' for file triggers)
