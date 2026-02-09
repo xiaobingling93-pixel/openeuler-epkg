@@ -22,7 +22,7 @@ batch_has_error() {
     if [ "${EPKG_BATCH_ERROR:-0}" -ne 0 ]; then
         return 0
     fi
-    echo "${EPKG_BATCH_CMD_OUTPUT:-}" | grep -q "Command '.*' exited with code .* (no_exit=true, continuing)"
+    echo "${EPKG_BATCH_CMD_OUTPUT:-}" | grep -B6 "Command '.*' exited with code .* (no_exit=true, continuing)"
 }
 
 # Test all epkg --help commands
