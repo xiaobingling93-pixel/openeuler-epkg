@@ -339,7 +339,21 @@ fn execute_interactive_line(lua: &Lua, code: &str) -> Result<()> {
 
     match chunk.exec() {
         Ok(_) => Ok(()),
-        Err(e) => Err(eyre!("{}", e)),
+        Err(e) => {
+            let err_str = e.to_string();
+            // Check if it's an "unexpected symbol" error for what might be a bare expression
+            if err_str.contains("unexpected symbol") || err_str.contains("syntax error near") {
+                // Try wrapping in print() as it might be a bare expression
+                let wrapped = format!("print({})", code);
+                let chunk2 = lua.load(&wrapped).set_name("<interactive>");
+                match chunk2.exec() {
+                    Ok(_) => Ok(()),
+                    Err(e2) => Err(eyre!("{}", e2)),
+                }
+            } else {
+                Err(eyre!("{}", e))
+            }
+        },
     }
 }
 
