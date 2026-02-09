@@ -89,11 +89,11 @@ pub fn register_rpm_extensions(lua: &Lua) -> LuaResult<()> {
         }
 
         // Build argv pointer array (references must stay valid)
-        // posix_spawnp expects *const *mut i8 (array of mutable pointers, const array)
+        // posix_spawnp expects *const *mut c_char (array of mutable pointers, const array)
         // The array must be NULL-terminated
-        let mut argv_ptrs: Vec<*mut i8> = Vec::with_capacity(argv_strings.len() + 1);
+        let mut argv_ptrs: Vec<*mut libc::c_char> = Vec::with_capacity(argv_strings.len() + 1);
         for s in &argv_strings {
-            argv_ptrs.push(s.as_ptr() as *mut i8);
+            argv_ptrs.push(s.as_ptr() as *mut libc::c_char);
         }
         argv_ptrs.push(std::ptr::null_mut()); // NULL terminator for argv
 

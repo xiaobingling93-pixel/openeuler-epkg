@@ -162,7 +162,12 @@ build_lua_lib() {
     rm -f src/liblua.a
     make clean
     # Add -fPIC for position independent code (required for PIE executables)
-    make CC="$compiler" CFLAGS="-O2 -Wall -fPIC" linux
+    make CC="$compiler" CFLAGS="-O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE" linux
+
+    # Add musl compatibility shims for missing *64 functions
+    echo "Adding musl compatibility shims..."
+    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/target/musl_compat.c" || echo "Failed to compile musl_compat.c"
+    ar rcs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
 
     # Deploy
     mkdir -p "$lua_lib_dir"
@@ -410,6 +415,25 @@ build_static() {
 
     # Export linker variable for this architecture
     export_linker_var "$arch"
+
+    # Set C compiler for mlua-sys build
+    case "$arch" in
+        x86_64)
+            export CC="musl-gcc"
+            ;;
+        aarch64|riscv64|loongarch64)
+            export CC="$arch-linux-gnu-gcc"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+    export CFLAGS="-D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE"
+    # Set target-specific CFLAGS for cc crate (hyphens to underscores)
+    local target_var="${rust_target//-/_}"
+    export "CFLAGS_${target_var}"="$CFLAGS"
+    export "CC_${target_var}"="$CC"
 
     if [[ -n "$rustflags" ]]; then
         export RUSTFLAGS="$rustflags"

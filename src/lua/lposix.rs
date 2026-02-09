@@ -414,7 +414,7 @@ fn register_env_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResult
             .map_err(|_| mlua::Error::RuntimeError("putenv: string contains null byte".to_string()))?;
         // Note: putenv requires the string to remain valid, so we leak it (matching C++ behavior)
         let leaked = Box::leak(Box::new(env_cstr));
-        let result = unsafe { libc::putenv(leaked.as_ptr() as *mut i8) };
+        let result = unsafe { libc::putenv(leaked.as_ptr() as *mut libc::c_char) };
         pushresult(lua, result, Some(&env_str))
     })?)?;
 
@@ -790,7 +790,7 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
             cstrings.push(arg_cstr);
         }
 
-        let argv: Vec<*const i8> = cstrings.iter().map(|c| c.as_ptr() as *const i8).collect();
+        let argv: Vec<*const libc::c_char> = cstrings.iter().map(|c| c.as_ptr() as *const libc::c_char).collect();
         let mut argv_with_null = argv;
         argv_with_null.push(std::ptr::null());
 

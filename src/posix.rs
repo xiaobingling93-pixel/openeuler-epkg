@@ -495,7 +495,7 @@ pub fn posix_ttyname(fd: i32) -> Option<String> {
 pub fn posix_ctermid() -> String {
     // L_ctermid is typically 1024 on most systems
     let mut buf = vec![0u8; 1024];
-    let ctermid_str = unsafe { libc::ctermid(buf.as_mut_ptr() as *mut i8) };
+    let ctermid_str = unsafe { libc::ctermid(buf.as_mut_ptr() as *mut libc::c_char) };
     if ctermid_str.is_null() {
         String::new()
     } else {
@@ -584,7 +584,7 @@ pub fn posix_mkstemp(template: &str) -> PosixResult<(String, std::fs::File)> {
     let mut template_vec = template_bytes.to_vec();
     template_vec.push(0); // null terminator
 
-    let fd = unsafe { libc::mkstemp(template_vec.as_mut_ptr() as *mut i8) };
+    let fd = unsafe { libc::mkstemp(template_vec.as_mut_ptr() as *mut libc::c_char) };
     if fd == -1 {
         return Err(PosixError::Io(io::Error::last_os_error()));
     }

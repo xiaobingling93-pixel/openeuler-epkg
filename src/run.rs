@@ -1045,8 +1045,8 @@ fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collect
     }
 
     // Convert to pointers for execvp
-    let mut c_args_ptrs: Vec<*const i8> = c_args.iter()
-        .map(|arg| arg.as_ptr() as *const i8)
+    let mut c_args_ptrs: Vec<*const libc::c_char> = c_args.iter()
+        .map(|arg| arg.as_ptr() as *const libc::c_char)
         .collect();
     c_args_ptrs.push(std::ptr::null());
 
