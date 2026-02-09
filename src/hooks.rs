@@ -935,7 +935,6 @@ fn create_systemd_hook(
     when: HookWhen,
     plan: &mut InstallationPlan,
 ) -> Result<()> {
-    let suffix = exec.strip_prefix("systemd-").unwrap_or(exec);
     let mut hook = Hook {
         triggers: vec![HookTrigger {
             operations: HookOperation::Install.as_flag() | HookOperation::Upgrade.as_flag(),
@@ -952,7 +951,7 @@ fn create_systemd_hook(
             ..Default::default()
         },
         hook_name: hook_name.to_string(),
-        file_path: format!("[systemd-{}-hook]", suffix),
+        file_path: format!("VirtualFile({})", hook_name),
         pkgkey: None,
     };
 
@@ -1456,22 +1455,8 @@ fn add_rpm_trigger_instance_args(
     args.push(triggering_count.to_string());
 }
 
-/// This function handles various Exec command formats found in real-world hooks:
-/// - Direct execution:
-///     `/usr/bin/appstreamcli refresh-cache --force`
-/// - Shell commands with -c and nested quotes:
-///     `/bin/sh -c 'while read -r f; do install-info "$f" /usr/share/info/dir 2> /dev/null; done'`
-///     `/bin/sh -c 'killall -q -s USR1 gvfsd || true'`
-/// - Commands with quoted arguments:
-///     `/usr/bin/vim -es --cmd ":helptags /usr/share/vim/vimfiles/doc" --cmd ":q"`
-pub fn execute_hook(
-    hook: &Hook,
-    plan: &InstallationPlan,
-    matched_targets: &[String],
-) -> Result<()> {
-    let env_root = &plan.env_root;
-
-    // Check dependencies (reference: checks before execution)
+/// Check hook dependencies before execution
+fn check_hook_dependencies(hook: &Hook, plan: &InstallationPlan) -> Result<()> {
     for dep in &hook.action.depends {
         if !check_dependency(&plan.batch.fresh_installs, dep) {
             return Err(color_eyre::eyre::eyre!(
@@ -1480,15 +1465,12 @@ pub fn execute_hook(
             ));
         }
     }
+    Ok(())
+}
 
-    // Parse exec command using shlex (reference: wordsplit)
-    // shlex correctly handles:
-    // - Shell commands with single quotes: '/bin/sh -c 'script''
-    //   → Parses as: ["/bin/sh", "-c", "script"]
-    // - Nested quotes within shell scripts: 'install-info "$f" ...'
-    //   → Preserves inner quotes as escaped: "install-info \"$f\" ..."
-    // - Quoted arguments: '--cmd ":helptags ..."'
-    //   → Parses as separate argument with quotes preserved
+/// Parse hook Exec command, handling %PKGINFO_DIR placeholder and shell quoting
+/// Returns (command, args) tuple
+fn parse_hook_exec(hook: &Hook) -> Result<(String, Vec<String>)> {
     // Replace %PKGINFO_DIR placeholder with the actual package info directory path
     // The hook file is at: store_dir/pkgline/info/install/hook_name.hook
     // So pkginfo_dir is: hook.file_path.parent().parent() (== store_dir/pkgline/info)
@@ -1521,8 +1503,31 @@ pub fn execute_hook(
         }
     };
 
-    let command = &exec_parts[0];
-    let mut args: Vec<String> = exec_parts[1..].iter().map(|s| s.to_string()).collect();
+    let command = exec_parts[0].clone();
+    let args = exec_parts[1..].iter().map(|s| s.to_string()).collect();
+    Ok((command, args))
+}
+
+/// This function handles various Exec command formats found in real-world hooks:
+/// - Direct execution:
+///     `/usr/bin/appstreamcli refresh-cache --force`
+/// - Shell commands with -c and nested quotes:
+///     `/bin/sh -c 'while read -r f; do install-info "$f" /usr/share/info/dir 2> /dev/null; done'`
+///     `/bin/sh -c 'killall -q -s USR1 gvfsd || true'`
+/// - Commands with quoted arguments:
+///     `/usr/bin/vim -es --cmd ":helptags /usr/share/vim/vimfiles/doc" --cmd ":q"`
+pub fn execute_hook(
+    hook: &Hook,
+    plan: &InstallationPlan,
+    matched_targets: &[String],
+) -> Result<()> {
+    let env_root = &plan.env_root;
+
+    // Check dependencies (reference: checks before execution)
+    check_hook_dependencies(hook, plan)?;
+
+    // Parse exec command using shlex (reference: wordsplit)
+    let (command, mut args) = parse_hook_exec(hook)?;
 
     // For RPM format, add $1 and $2 arguments for trigger instance counts
     // For DEB format, add "triggered" and trigger names
@@ -1542,7 +1547,7 @@ pub fn execute_hook(
 
     // Execute the hook
     let run_options = crate::run::RunOptions {
-        command: command.to_string(),
+        command,
         args,
         env_vars,
         stdin: stdin_data,
