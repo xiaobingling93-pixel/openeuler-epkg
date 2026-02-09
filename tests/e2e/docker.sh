@@ -15,10 +15,6 @@ else
     DOCKER_FLAGS=""
 fi
 
-# Create /opt/epkg directory structure on host if it doesn't exist
-# This ensures cache, store, and envs are all on the same filesystem
-mkdir -p "$PERSISTENT_OPT_EPKG/cache" "$PERSISTENT_OPT_EPKG/store" "$PERSISTENT_OPT_EPKG/envs"
-
 # Detect host timezone and sync with Docker to avoid timestamp issues
 # This helps prevent "Another download process is already active" errors due to timezone differences
 HOST_TZ="${TZ:-}"
@@ -44,9 +40,6 @@ docker run --name $CONTAINER_NAME --privileged --rm $DOCKER_FLAGS \
     -v "$PROJECT_ROOT:$PROJECT_ROOT:ro" \
     -v "$zoneinfo:$zoneinfo:ro" \
     -v "$PERSISTENT_OPT_EPKG:/opt/epkg:rw" \
-    -v "$PERSISTENT_CACHE:/root/.cache/epkg:rw" \
-    -v "$PERSISTENT_STORE:/root/.epkg/store:rw" \
-    -v "$TMPFS_ENVS_ROOT:/root/.epkg/envs:rw" \
     ${HOST_TZ:+-e TZ="$HOST_TZ"} \
     ${LIGHT_TEST:+-e LIGHT_TEST="$LIGHT_TEST"} \
     -e CONTAINER_NAME="$CONTAINER_NAME" \

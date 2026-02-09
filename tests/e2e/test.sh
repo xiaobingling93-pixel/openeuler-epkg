@@ -31,10 +31,6 @@ if [ ! -x "$TEST_SCRIPT" ]; then
     exit 1
 fi
 
-# Create persistent directories
-sudo rm -fr "$TMPFS_ENVS_ROOT" "$PERSISTENT_OPT_EPKG/envs"
-mkdir -p "$TMPFS_ENVS_ROOT" "$PERSISTENT_CACHE" "$PERSISTENT_STORE" "$PERSISTENT_OPT_EPKG/cache" "$PERSISTENT_OPT_EPKG/store" "$PERSISTENT_OPT_EPKG/envs"
-
 # Export variables for docker.sh
 export TEST_SCRIPT
 export INTERACTIVE

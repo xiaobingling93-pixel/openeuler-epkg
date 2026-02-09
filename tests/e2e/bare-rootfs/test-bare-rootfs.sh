@@ -22,18 +22,13 @@ rm -rf "$TAR_DIR" "$TAR_TMP"
 # Start a long-running docker container with sleep to persist state
 log "Starting long-running docker container"
 # Built-in commands like sleep work without initialization, so we can run directly
-# Pre-create directories on host (they're mounted as volumes)
-mkdir -p "$PERSISTENT_OPT_EPKG/envs" "$PERSISTENT_CACHE" "$PERSISTENT_STORE" "$TMPFS_ENVS_ROOT"
 
 CONTAINER_NAME="epkg-e2e"
 docker run -d --name="$CONTAINER_NAME" --privileged --rm \
 	-v "$PROJECT_ROOT:$PROJECT_ROOT:ro" \
 	-v "$PERSISTENT_OPT_EPKG:/opt/epkg:rw" \
-        -v "$PERSISTENT_CACHE:/root/.cache/epkg:rw" \
-	-v "$PERSISTENT_STORE:/root/.epkg/store:rw" \
-	-v "$TMPFS_ENVS_ROOT:/root/.epkg/envs:rw" \
-        epkg-scratch-temp \
-        $EPKG_BINARY busybox sleep 10000
+    epkg-scratch-temp \
+    $EPKG_BINARY busybox sleep 10000
 
 # Check if container is running
 if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then

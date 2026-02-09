@@ -19,19 +19,10 @@ if [ ! -x "$EPKG_BINARY" ]; then
 	make -C $PROJECT_ROOT static-$ARCH
 fi
 
-# Docker volume mounts (host paths)
-TMPFS_ENVS_ROOT="/tmp/epkg-envs-root"
-
 # Mount entire /opt/epkg/ as a single mount point to avoid cross-device link errors
 # This ensures cache/unpack and store are on the same filesystem
-PERSISTENT_OPT_EPKG="/srv/os-repo/epkg-opt"
-[ -w $PERSISTENT_OPT_EPKG ] || {
-PERSISTENT_OPT_EPKG="/tmp/epkg-opt"
-LIGHT_TEST=1
-}
-
-PERSISTENT_CACHE="$PERSISTENT_OPT_EPKG/cache"
-PERSISTENT_STORE="$PERSISTENT_OPT_EPKG/store"
+PERSISTENT_OPT_EPKG="/opt/epkg"
+[ -z "$LIGHT_TEST" ] && LIGHT_TEST=1
 
 # Docker configuration
 DOCKER_IMAGE=alpine
