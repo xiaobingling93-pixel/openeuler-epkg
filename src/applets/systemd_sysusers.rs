@@ -40,6 +40,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::userdb;
+use crate::applets::systemd_tmpfiles::find_default_config_files;
+
+const SYSUSERS_DIRS: &[&str] = &[
+    "/etc/sysusers.d",
+    "/run/sysusers.d",
+    "/usr/lib/sysusers.d",
+];
 
 pub struct SystemdSysusersOptions {
     pub config_files: Vec<String>,
@@ -76,12 +83,9 @@ pub fn command() -> Command {
 }
 
 pub fn run(options: SystemdSysusersOptions) -> Result<()> {
-    // If no config files specified, use default directories
-    let config_files = if options.config_files.is_empty() {
-        find_default_config_files(options.root.as_deref())?
-    } else {
-        options.config_files
-    };
+    // Always call find_default_config_files to get full paths to config files
+    // It handles both explicit config files (relative/absolute) and default scanning
+    let config_files = find_default_config_files(options.root.as_deref(), &options.config_files, SYSUSERS_DIRS)?;
 
     for config_file in config_files {
         process_config_file(&config_file, options.root.as_deref())?;
@@ -102,44 +106,13 @@ pub fn apply_root(path: &str, root: Option<&Path>) -> PathBuf {
     }
 }
 
-fn find_default_config_files(root: Option<&Path>) -> Result<Vec<String>> {
-    let mut files = Vec::new();
-
-    // Standard directories in order of precedence (higher priority first)
-    let dirs = vec![
-        "/etc/sysusers.d",
-        "/run/sysusers.d",
-        "/usr/lib/sysusers.d",
-    ];
-
-    for dir in dirs {
-        let full_dir = apply_root(dir, root);
-        if let Ok(entries) = fs::read_dir(full_dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if let Some(ext) = path.extension() {
-                        if ext == "conf" {
-                            if let Some(path_str) = path.to_str() {
-                                files.push(path_str.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Sort files by name for consistent processing
-    files.sort();
-    Ok(files)
-}
 
 fn process_config_file(config_file: &str, root: Option<&Path>) -> Result<()> {
-    let content = fs::read_to_string(config_file)
-        .map_err(|e| eyre!("Failed to read config file {}: {}", config_file, e))?;
+    let full_path = apply_root(config_file, root);
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| eyre!("Failed to read config file {}: {}", full_path.display(), e))?;
 
-    log::info!("systemd_sysusers: handling file {}", config_file);
+    log::info!("systemd_sysusers: handling file {}", full_path.display());
 
     for line in content.lines() {
         let line = line.trim();

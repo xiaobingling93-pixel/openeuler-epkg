@@ -56,6 +56,13 @@ use crate::run::{RunOptions, setup_namespace_and_mounts};
 use glob::glob;
 use walkdir::WalkDir;
 
+const TMPFILES_DIRS: &[&str] = &[
+    "/etc/tmpfiles.d",
+    "/run/tmpfiles.d",
+    "/usr/local/lib/tmpfiles.d",
+    "/usr/lib/tmpfiles.d",
+];
+
 /// Unescape C-style escape sequences in a string.
 /// Handles common escapes like \n, \t, \", \\, and octal/hex escapes.
 fn parse_simple_escape(ch: char) -> Option<char> {
@@ -227,7 +234,7 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
 
     // Always call find_default_config_files to get full paths to config files
     // It handles both explicit config files (relative/absolute) and default scanning
-    let config_files = find_default_config_files(effective_root, &options.config_files)?;
+    let config_files = find_default_config_files(effective_root, &options.config_files, TMPFILES_DIRS)?;
 
     for config_file in config_files {
         process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, effective_root)?;
@@ -236,18 +243,12 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     Ok(())
 }
 
-fn scan_config_directories(root: Option<&Path>) -> Result<(Vec<String>, HashMap<String, String>)> {
+fn scan_config_directories(root: Option<&Path>, dirs: &[&str]) -> Result<(Vec<String>, HashMap<String, String>)> {
     let mut all_files = Vec::new();
     let mut relative_map = HashMap::new();
 
-    // Standard directories in order of precedence (higher priority first)
-    // Matches systemd's CONF_PATHS macro
-    let dirs = vec![
-        "/etc/tmpfiles.d",
-        "/run/tmpfiles.d",
-        "/usr/local/lib/tmpfiles.d",
-        "/usr/lib/tmpfiles.d",
-    ];
+    // Directories are searched in the order given by `dirs`.
+    // Matches systemd's CONF_PATHS macro behavior.
 
     for dir in dirs {
         let full_dir = apply_root(dir, root);
@@ -282,12 +283,34 @@ fn scan_config_directories(root: Option<&Path>) -> Result<(Vec<String>, HashMap<
     Ok((all_files, relative_map))
 }
 
-fn find_default_config_files(root: Option<&Path>, config_files: &[String]) -> Result<Vec<String>> {
+/// Find configuration files in specified directories.
+///
+/// Valid `config_files` entries:
+/// - Absolute paths: `/usr/lib/sysusers.d/basic.conf` (root prefix applied later)
+/// - Relative filenames (no slashes): `basic.conf` (looked up in `dirs`, first match)
+/// - Relative paths with slashes: `usr/lib/sysusers.d/basic.conf` (if not found in `dirs`, kept as relative path resolved relative to cwd)
+///
+/// Note: `dirs` point to configuration directories (e.g., `/usr/lib/sysusers.d`),
+/// so lookup only matches filenames within those directories.
+/// If `config_files` is empty, scan all `.conf` files in `dirs`.
+///
+/// When `root` is `Some(dir)`, directory paths are prefixed with `dir` (leading slash stripped).
+///
+/// # Examples
+///
+/// ```ignore
+/// // Scan all .conf files in default tmpfiles.d directories
+/// let files = find_default_config_files(None, &[], TMPFILES_DIRS)?;
+///
+/// // Process specific config file "foo.conf"
+/// let files = find_default_config_files(None, &["foo.conf".to_string()], TMPFILES_DIRS)?;
+/// ```
+pub fn find_default_config_files(root: Option<&Path>, config_files: &[String], dirs: &[&str]) -> Result<Vec<String>> {
     // If config_files is empty, scan all .conf files in default directories
     let scan_all = config_files.is_empty();
     log::info!("find_default_config_files: scan_all={}, config_files={:?}", scan_all, config_files);
 
-    let (all_files, relative_map) = scan_config_directories(root)?;
+    let (all_files, relative_map) = scan_config_directories(root, dirs)?;
     let mut files = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
