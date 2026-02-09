@@ -1401,29 +1401,37 @@ fn get_triggering_pkgname(
     None
 }
 
+/// Add DEB trigger arguments ($2) to the args vector
+/// For DEB hooks, adds trigger names as a single argument:
+/// - $2 = "<space-separated trigger names>"
+/// Note: $1 = "triggered" is already part of the Exec command
+fn add_deb_trigger_args(
+    _hook: &Hook,
+    matched_targets: &[String],
+    plan: &InstallationPlan,
+    args: &mut Vec<String>,
+) {
+    if plan.package_format != PackageFormat::Deb {
+        return;
+    }
+    // matched_targets contains trigger names for DEB trigger hooks
+    if !matched_targets.is_empty() {
+        // Join trigger names with space and add as a single argument
+        // This matches dpkg's behavior: postinst triggered "trigger-name trigger-name ..."
+        args.push(matched_targets.join(" "));
+    }
+}
+
 /// Add RPM trigger instance count arguments ($1 and $2) to the args vector
 /// For RPM format, adds two arguments:
 /// - $1: Number of installed instances of the triggered package (package containing the trigger scriptlet)
 /// - $2: Number of installed instances of the triggering package (package that set off the trigger)
-/// For DEB hooks, add arguments:
-/// - $1 = "triggered"
-/// - $2 = "<space-separated trigger names>"
 fn add_rpm_trigger_instance_args(
     hook: &Hook,
     matched_targets: &[String],
     plan: &InstallationPlan,
     args: &mut Vec<String>,
 ) {
-    if plan.package_format == PackageFormat::Deb {
-        // matched_targets contains trigger names for DEB trigger hooks
-        if !matched_targets.is_empty() {
-            // Join trigger names with space and add as a single argument
-            // This matches dpkg's behavior: postinst triggered "trigger-name trigger-name ..."
-            args.push(matched_targets.join(" "));
-        }
-        return;
-    }
-
     if plan.package_format != PackageFormat::Rpm {
         return;
     }
@@ -1528,12 +1536,15 @@ pub fn execute_hook(
     // Parse exec command using shlex (reference: wordsplit)
     let (command, mut args) = parse_hook_exec(hook)?;
 
-    // For RPM format, add $1 and $2 arguments for trigger instance counts
-    // For DEB format, add "triggered" and trigger names
-    add_rpm_trigger_instance_args(hook, matched_targets, plan, &mut args);
+    if plan.package_format == PackageFormat::Deb {
+        // For DEB format, add trigger names
+        add_deb_trigger_args(hook, matched_targets, plan, &mut args);
+    } else if plan.package_format == PackageFormat::Rpm {
+        // For RPM format, add $1 and $2 arguments for trigger instance counts
+        add_rpm_trigger_instance_args(hook, matched_targets, plan, &mut args);
+    }
 
-    log::debug!("Parsed Exec command: {:?}, args: {:?}", command, args);
-    log::info!("Executing hook {}: {}", hook.file_path, hook.action.exec);
+    log::info!("Executing hook {}: {} {:?}", hook.file_path, command, args);
 
     let env_vars = HashMap::new();
     // For hooks with NeedsTargets, matched file paths are passed via stdin
