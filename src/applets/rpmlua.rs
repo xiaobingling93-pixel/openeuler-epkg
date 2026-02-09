@@ -4,6 +4,7 @@ use color_eyre::eyre::eyre;
 use std::io::{self, Write, BufRead, BufReader};
 use std::fs;
 use mlua::Lua;
+use crate::shebang::strip_shebang;
 
 pub struct RpmluaOptions {
     pub execute: Option<String>,
@@ -108,7 +109,8 @@ fn run_script(
     }
 
     // Wrap script with local opt, arg = ...; prefix (as in reference implementation)
-    let wrapped_script = format!("local opt, arg = ...; {}", script);
+    let stripped_script = strip_shebang(script);
+    let wrapped_script = format!("local opt, arg = ...; {}", stripped_script);
 
     // Load the script as a function
     let func: mlua::Function = lua.load(&wrapped_script)

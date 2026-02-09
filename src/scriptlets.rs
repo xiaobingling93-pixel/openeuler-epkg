@@ -7,6 +7,7 @@ use crate::package;
 use crate::run::{RunOptions, setup_namespace_and_mounts};
 use nix::unistd::{fork, ForkResult};
 use nix::sys::wait::{waitpid, WaitStatus};
+use crate::shebang::strip_shebang;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
@@ -510,6 +511,7 @@ fn execute_lua_scriptlet(
     // Read script content
     let script_content = std::fs::read_to_string(script_path)
         .map_err(|e| eyre!("Failed to read Lua scriptlet {}: {}", script_path.display(), e))?;
+    let stripped_content = strip_shebang(&script_content);
 
     // Setup scriptlet environment (arg table) - this changes per scriptlet
     crate::lua::setup_arg_table(&lua, args)
@@ -524,7 +526,7 @@ fn execute_lua_scriptlet(
         .and_then(|n| n.to_str())
         .unwrap_or("<lua>");
 
-    lua.load(&script_content)
+    lua.load(stripped_content)
         .set_name(script_name)
         .exec()
         .map_err(|e| eyre!("Lua scriptlet execution failed: {}", e))?;

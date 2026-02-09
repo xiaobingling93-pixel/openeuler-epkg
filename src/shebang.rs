@@ -176,6 +176,26 @@ pub fn parse_shebang_for_wrapper(first_line: &str) -> Result<ShebangInfo> {
     })
 }
 
+/// Strip shebang line from the beginning of a script if present.
+/// Returns the script without the shebang line, preserving the rest of the content.
+pub fn strip_shebang(script: &str) -> &str {
+    let mut lines = script.lines();
+    if let Some(first_line) = lines.next() {
+        if first_line.trim_start().starts_with("#!") {
+            // Calculate the byte offset after the first line and its newline character(s)
+            let offset = first_line.len() + match script[first_line.len()..].chars().next() {
+                Some('\n') => 1,
+                Some('\r') => if script[first_line.len()..].starts_with("\r\n") { 2 } else { 1 },
+                _ => 0,
+            };
+            &script[offset..]
+        } else {
+            script
+        }
+    } else {
+        script
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -590,5 +610,38 @@ mod tests {
         assert_eq!(info.interpreter_path, "/usr/bin/python3");
         assert_eq!(info.interpreter_basename, "python3");
         assert_eq!(info.remaining_params, "");
+    }
+
+    #[test]
+    fn test_strip_shebang() {
+        // Script with shebang
+        let script = "#!/usr/bin/env lua\nprint('Hello')";
+        let stripped = strip_shebang(script);
+        assert_eq!(stripped, "print('Hello')");
+
+        // Shebang with spaces
+        let script2 = "#! /usr/bin/lua\nprint('Hello')";
+        let stripped2 = strip_shebang(script2);
+        assert_eq!(stripped2, "print('Hello')");
+
+        // Shebang with Windows newline
+        let script3 = "#!/usr/bin/env lua\r\nprint('Hello')";
+        let stripped3 = strip_shebang(script3);
+        assert_eq!(stripped3, "print('Hello')");
+
+        // No shebang
+        let script4 = "print('Hello')";
+        let stripped4 = strip_shebang(script4);
+        assert_eq!(stripped4, script4);
+
+        // Only shebang line
+        let script5 = "#!/usr/bin/lua";
+        let stripped5 = strip_shebang(script5);
+        assert_eq!(stripped5, "");
+
+        // Empty script
+        let script6 = "";
+        let stripped6 = strip_shebang(script6);
+        assert_eq!(stripped6, "");
     }
 }
