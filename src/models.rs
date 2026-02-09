@@ -787,7 +787,7 @@ pub struct CommonOptions {
     // N: expire after N seconds
     // 0: never expire (the default)
     // -1: always expire
-    #[serde(default)]
+    #[serde(default = "default_metadata_expire")]
     pub metadata_expire: i32,
 
     #[serde(default)]
@@ -812,6 +812,10 @@ pub struct CommonOptions {
 // Default function for arch
 pub fn default_arch() -> String {
     std::env::consts::ARCH.to_string()
+}
+
+fn default_metadata_expire() -> i32 {
+    7 * 24 * 3600  // seconds
 }
 
 fn default_nr_retry() -> usize {
