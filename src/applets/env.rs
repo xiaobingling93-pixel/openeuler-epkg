@@ -1,6 +1,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use shlex;
 use std::env;
 use std::process;
 
@@ -12,6 +13,8 @@ pub struct EnvOptions {
     pub unset: Vec<String>,
     pub chdir: Option<String>,
     pub argv0: Option<String>,
+    #[allow(dead_code)]
+    pub split_strings: Vec<String>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
@@ -22,6 +25,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
         .unwrap_or_default();
     let chdir = matches.get_one::<String>("chdir").cloned();
     let argv0 = matches.get_one::<String>("argv0").cloned();
+    let split_strings: Vec<String> = matches.get_many::<String>("split-string")
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_default();
 
     // Parse arguments - everything before -- is an assignment or option
     // Everything after -- is the command
@@ -35,7 +41,16 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    for arg in args {
+    let mut processed_args = Vec::new();
+    for s in &split_strings {
+        match shlex::split(s) {
+            Some(tokens) => processed_args.extend(tokens),
+            None => processed_args.push(s.clone()),
+        }
+    }
+    processed_args.extend(args);
+
+    for arg in processed_args {
         if arg == "--" {
             found_separator = true;
             continue;
@@ -65,6 +80,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
         unset,
         chdir,
         argv0,
+        split_strings,
     })
 }
 
@@ -97,8 +113,15 @@ pub fn command() -> Command {
             .long("argv0")
             .help("Pass ARG as the zeroth argument of COMMAND")
             .value_name("ARG"))
+        .arg(Arg::new("split-string")
+            .short('S')
+            .long("split-string")
+            .help("Process and split S into separate arguments; used to pass multiple arguments on shebang lines")
+            .value_name("STRING")
+            .action(clap::ArgAction::Append))
         .arg(Arg::new("args")
             .num_args(0..)
+            .allow_hyphen_values(true)
             .help("VARIABLE=VALUE assignments and command (use - for -i)"))
 }
 
@@ -109,8 +132,15 @@ fn print_environment(options: &EnvOptions) -> Result<()> {
         env::vars().collect()
     };
 
-    // Apply assignments
+    // Build modified environment
     let mut modified_env = env_vars.into_iter().collect::<std::collections::HashMap<_, _>>();
+
+    // Remove unset variables
+    for var in &options.unset {
+        modified_env.remove(var);
+    }
+
+    // Apply assignments
     for assignment in &options.assignments {
         if let Some(pos) = assignment.find('=') {
             let key = &assignment[..pos];
