@@ -241,7 +241,6 @@ process_os() {
     local pkg_list
     pkg_list=$(get_package_list "$os")
     if [ $? -ne 0 ]; then
-        cleanup_environment "$os"
         return 1
     fi
 
@@ -319,7 +318,6 @@ main() {
                 log "Testing OS '$os' with explicit package list: $pkg_list"
                 create_test_environment "$os"
                 process_batch "$os" "repro" "$pkg_list"
-                cleanup_environment "$os"
                 batch_has_error && error "batch failed for $os"
             done
         else
@@ -342,7 +340,6 @@ main() {
             # isolate_problematic_package/process_batch.
             create_test_environment "$os"
             process_batch "$os" "repro" "$pkg_list"
-            cleanup_environment "$os"
             batch_has_error && error "batch failed"
         else
             # Only override the OS list (no explicit packages)
