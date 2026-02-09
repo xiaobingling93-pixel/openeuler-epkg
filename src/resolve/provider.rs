@@ -340,12 +340,9 @@ impl GenericDependencyProvider {
         );
 
         // Look up packages for all found provider names
-        let mut success_count = 0;
-        let mut fail_count = 0;
         for (idx, provider_pkgname) in provider_list.iter().enumerate() {
             match crate::package_cache::map_pkgname2packages(provider_pkgname) {
                 Ok(mut provider_packages) => {
-                    success_count += 1;
                     log::debug!(
                         "[RESOLVO] [{}/{}] Found {} packages for provider '{}'",
                         idx + 1,
@@ -356,7 +353,6 @@ impl GenericDependencyProvider {
                     packages.append(&mut provider_packages);
                 }
                 Err(e) => {
-                    fail_count += 1;
                     log::debug!(
                         "[RESOLVO] [{}/{}] Failed to load packages for provider '{}': {}",
                         idx + 1,
@@ -368,13 +364,6 @@ impl GenericDependencyProvider {
                 }
             }
         }
-
-        log::debug!(
-            "[RESOLVO] Provider lookup summary for '{}': {} succeeded, {} failed",
-            name,
-            success_count,
-            fail_count
-        );
 
         log::debug!(
             "[RESOLVO] lookup_packages_by_capability('{}') returning {} total packages",
