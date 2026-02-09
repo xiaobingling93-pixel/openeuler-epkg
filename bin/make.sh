@@ -472,14 +472,7 @@ build_release() {
 
 # Run tests (module-level unit tests)
 run_tests() {
-    echo "Running module-level tests..."
-
-    # Since we cd to PROJECT_ROOT at the beginning, we're always in project root
-    for module in $(grep -Fxl "#[cfg(test)]" "src"/*.rs 2>/dev/null | sed 's|src/||' | sed 's|\.rs||'); do
-        echo "Testing module: $module"
-        cargo test "$module::tests" || true
-    done
-    echo "Tests completed"
+    RUSTFLAGS="-A dead_code -A unused_imports -A unused_variables" cargo test
 }
 
 # Detect current system architecture
