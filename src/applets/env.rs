@@ -17,7 +17,7 @@ pub struct EnvOptions {
     pub split_strings: Vec<String>,
 }
 
-pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
+fn extract_basic_options(matches: &clap::ArgMatches) -> (bool, bool, Vec<String>, Option<String>, Option<String>, Vec<String>) {
     let ignore_environment = matches.get_flag("ignore-environment");
     let null = matches.get_flag("null");
     let unset: Vec<String> = matches.get_many::<String>("unset")
@@ -28,27 +28,91 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
     let split_strings: Vec<String> = matches.get_many::<String>("split-string")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
+    (ignore_environment, null, unset, chdir, argv0, split_strings)
+}
 
-    // Parse arguments - everything before -- is an assignment or option
-    // Everything after -- is the command
-    // A mere "-" implies -i
+fn process_split_strings(args: Vec<String>, split_strings: Vec<String>) -> Vec<String> {
+    let mut processed_args = Vec::new();
+    let mut remaining_args = Vec::new();
+    let mut all_split_strings = Vec::new();
+
+    // Start with split_strings from command line
+    all_split_strings.extend(split_strings);
+
+    // Process args to extract -S/--split-string flags that might be combined with their values
+    // (e.g., "-S rpmlua" or "--split-string rpmlua" from shebang lines where kernel passes it as single argument)
+    let mut args_iter = args.into_iter();
+
+    while let Some(arg) = args_iter.next() {
+        if arg == "--" {
+            remaining_args.push(arg);
+            // Add all remaining arguments without -S processing
+            remaining_args.extend(args_iter);
+            break;
+        }
+
+        if arg.starts_with("-S") || arg.starts_with("--split-string") {
+            // Handle -S or --split-string flag
+            let value = if arg == "-S" || arg == "--split-string" {
+                // Just the flag, value should be next argument
+                match args_iter.next() {
+                    Some(next_arg) => next_arg,
+                    None => {
+                        // Flag without value is an error, skip
+                        continue;
+                    }
+                }
+            } else if arg.starts_with("-S") {
+                // -S with value attached (e.g., "-Srpmlua" or "-S rpmlua")
+                let rest = &arg[2..]; // Everything after "-S"
+                if rest.starts_with(' ') {
+                    // "-S rpmlua" - has leading space
+                    rest.trim_start().to_string()
+                } else {
+                    // "-Srpmlua" - value attached directly
+                    rest.to_string()
+                }
+            } else if arg.starts_with("--split-string=") {
+                // --split-string=value
+                arg["--split-string=".len()..].to_string()
+            } else {
+                // --split-string value (with space, as single argument from shebang)
+                // arg is "--split-string value" or "--split-string value more"
+                let rest = &arg["--split-string".len()..];
+                if rest.starts_with(' ') {
+                    rest.trim_start().to_string()
+                } else {
+                    // Shouldn't happen, but handle gracefully
+                    rest.to_string()
+                }
+            };
+
+            if !value.is_empty() {
+                all_split_strings.push(value);
+            }
+        } else {
+            remaining_args.push(arg);
+        }
+    }
+
+    // Process all strings to split
+    for s in all_split_strings {
+        match shlex::split(&s) {
+            Some(tokens) => processed_args.extend(tokens),
+            None => processed_args.push(s),
+        }
+    }
+
+    // Add remaining arguments
+    processed_args.extend(remaining_args);
+    processed_args
+}
+
+fn process_assignments_and_command(processed_args: Vec<String>, ignore_environment: bool) -> (Vec<String>, Vec<String>, bool) {
     let mut assignments = Vec::new();
     let mut command = Vec::new();
     let mut found_separator = false;
     let mut ignore_env = ignore_environment;
-
-    let args: Vec<String> = matches.get_many::<String>("args")
-        .map(|vals| vals.cloned().collect())
-        .unwrap_or_default();
-
-    let mut processed_args = Vec::new();
-    for s in &split_strings {
-        match shlex::split(s) {
-            Some(tokens) => processed_args.extend(tokens),
-            None => processed_args.push(s.clone()),
-        }
-    }
-    processed_args.extend(args);
 
     for arg in processed_args {
         if arg == "--" {
@@ -71,6 +135,19 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
             found_separator = true;
         }
     }
+
+    (assignments, command, ignore_env)
+}
+
+pub fn parse_options(matches: &clap::ArgMatches) -> Result<EnvOptions> {
+    let (ignore_environment, null, unset, chdir, argv0, split_strings) = extract_basic_options(matches);
+
+    let args: Vec<String> = matches.get_many::<String>("args")
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_default();
+
+    let processed_args = process_split_strings(args, split_strings.clone());
+    let (assignments, command, ignore_env) = process_assignments_and_command(processed_args, ignore_environment);
 
     Ok(EnvOptions {
         assignments,
