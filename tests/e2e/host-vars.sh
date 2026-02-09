@@ -25,5 +25,6 @@ PERSISTENT_OPT_EPKG="/opt/epkg"
 [ -z "$LIGHT_TEST" ] && LIGHT_TEST=1
 
 # Docker configuration
-DOCKER_IMAGE=alpine
+DOCKER_IMAGE=alpine  # Cannot run conda, which relies on host __glibc
+DOCKER_IMAGE=debian
 BUSYBOX_DOCKER=busybox
