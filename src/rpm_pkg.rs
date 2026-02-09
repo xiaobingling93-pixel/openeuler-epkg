@@ -252,26 +252,27 @@ pub fn get_scriptlet_from_header(metadata: &rpm::PackageMetadata, scriptlet_name
 }
 
 /**
- * CASE 1: <lua>
- * - scriptlet.program could be vec!["<lua>"]
- * - This is handled correctly by interpreter_to_extension() which returns ext = "lua"
- * - Content remains unchanged
- * - Example: program = ["<lua>"] -> ext = "lua", content unchanged
+ * Determines file extension and adds shebang for RPM scriptlets.
  *
- * CASE 2: /bin/sh -c and similar common scripting language interpreter programs
- * - scriptlet.program could be vec!["/bin/sh", "-c"] or vec!["/usr/bin/texhash"]
- * - When interpreter starts with '/', we add a shebang line to script_content
- * - Format: "#!{program.join(' ')}\n{original_content}"
- * - Extension determined by interpreter_to_extension()
- * - Example: program = ["/bin/sh", "-c"] -> adds "#!/bin/sh -c\n" to content, ext = "sh"
+ * Step 1: Process scriptlet.program (if present and non-empty)
+ *   - Deduplicate consecutive identical elements in program array
+ *   - Determine extension via interpreter_to_extension()
+ *   - Add shebang if content lacks one and interpreter is either:
+ *        * A path starting with '/' (use full program vector)
+ *        * Maps to a known extension (use "/usr/bin/env" with stripped interpreter name)
+ *   - Lua interpreter mapped to "rpmlua" for RPM compatibility
+ *   - Examples:
+ *        program = ["<lua>"] -> ext = "lua", adds "#!/usr/bin/env -S rpmlua\n"
+ *        program = ["/bin/sh", "-c"] -> ext = "sh", adds "#!/bin/sh -c\n"
  *
- * CASE 3: One-liner utility programs like /sbin/ldconfig, /sbin/ldconfig libs, /usr/bin/texhash
- * - These have empty script_content but meaningful program fields
- * - When script_content is empty and no extension is determined, create a .sh wrapper
- * - Format: "#!/bin/sh\n{program.join(' ')}\n"
- * - Extension set to "sh"
- * - Example: program = ["/sbin/ldconfig", "libs"], content = "" ->
- *           content = "#!/bin/sh\n/sbin/ldconfig libs\n", ext = "sh"
+ * Step 2: Handle empty content with no extension (one-liner utility programs)
+ *   - When script_content is empty and no extension determined, create a .sh wrapper
+ *   - Format: "#!/bin/sh\n{program.join(' ')}\n"
+ *   - Example: program = ["/sbin/ldconfig", "libs"], content = "" ->
+ *              content = "#!/bin/sh\n/sbin/ldconfig libs\n", ext = "sh"
+ *
+ * Step 3: Default fallback
+ *   - If no extension determined yet, default to "sh"
  */
 /// Determines the appropriate file extension based on scriptlet interpreter information
 /// Returns a tuple of (extension, modified_content)
@@ -280,10 +281,13 @@ pub fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &s
     let mut content = script_content.to_string();
     // log::debug!("interpreter '{:?}' {:?}", scriptlet.program, content);
 
-    // Process based on scriptlet.program if available
+    // Step 1: Process scriptlet.program if available
     if let Some(ref program) = scriptlet.program {
-        if !program.is_empty() {
-            // Deduplicate consecutive identical elements in program array
+        if program.is_empty() {
+            // Empty program array - nothing to do
+            // Fall through to default shell script handling
+        } else {
+            // Step 1a: Deduplicate consecutive identical elements in program array
             let mut program_dedup = Vec::new();
             for item in program {
                 let item_str = item.as_str();
@@ -294,16 +298,33 @@ pub fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &s
 
             let interpreter = &program_dedup[0];
 
-            // CASE 1: Get extension from scripting language interpreter
+            // Step 1b: Determine extension from interpreter
             extension = interpreter_to_extension(interpreter);
 
-            // CASE 2: Add shebang for path-based interpreters (except Lua which has special handling)
-            if interpreter.starts_with("/") && !content.trim_start().starts_with("#!") {
-                let shebang = format!("#!{}\n", program_dedup.join(" "));
-                content = format!("{}{}", shebang, content);
+            // Step 1c: Add shebang if needed (for both path-based and scripting language interpreters)
+            if !content.trim_start().starts_with("#!") {
+                // Shebang needed for:
+                // - Path-based interpreters (starts with '/')
+                // - Scripting language interpreters (extension determined)
+                if interpreter.starts_with("/") || !extension.is_empty() {
+                    let shebang = if interpreter.starts_with("/") {
+                        // Path-based interpreter: use full program vector
+                        format!("#!{}\n", program_dedup.join(" "))
+                    } else {
+                        // Scripting language interpreter: use /usr/bin/env to locate it
+                        // Strip angle brackets from interpreter name (e.g., "<lua>" -> "lua")
+                        let interpreter_clean = interpreter.trim_matches(|c| c == '<' || c == '>');
+                        // Map Lua interpreter to rpmlua for RPM compatibility
+                        let interpreter_name = if interpreter_clean == "lua" { "rpmlua" } else { interpreter_clean };
+                        let mut parts = vec!["/usr/bin/env", "-S", interpreter_name];
+                        parts.extend_from_slice(&program_dedup[1..]);
+                        format!("#!{}\n", parts.join(" "))
+                    };
+                    content = format!("{}{}", shebang, content);
+                }
             }
 
-            // CASE 3: Create shell wrapper for empty content with no determined extension
+            // Step 2: Handle empty content with no extension (one-liner utility programs)
             if content.trim().is_empty() && extension.is_empty() {
                 content = format!("#!/bin/sh\n{}\n", program_dedup.join(" "));
                 extension = "sh".to_string();
@@ -311,7 +332,7 @@ pub fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &s
         }
     }
 
-    // Default to shell script if still no extension determined
+    // Step 3: Default to shell script if still no extension determined
     if extension.is_empty() {
         extension = "sh".to_string();
     }
