@@ -390,26 +390,26 @@ pub fn determine_shared_store() -> Result<bool> {
         return Ok(true);
     }
 
-    // Rule 4: If running as root and /opt/epkg/store/ exists, set to public
-    let opt_store = Path::new("/opt/epkg/store");
-    let has_opt_store = opt_store.exists();
-    if is_root && has_opt_store {
+    // Rule 4: If running as root and /opt/epkg/envs/ exists, set to public
+    let opt_envs = Path::new("/opt/epkg/envs");
+    let has_opt_envs = opt_envs.exists();
+    if is_root && has_opt_envs {
         return Ok(true);
     }
 
-    // Rule 5: If $HOME/.epkg/store/ exists, set to private
+    // Rule 5: If $HOME/.epkg/envs/ exists, set to private
     let home = get_home()?;
-    let home_store = Path::new(&home).join(".epkg/store");
-    if home_store.exists() {
+    let home_envs = Path::new(&home).join(".epkg/envs");
+    if home_envs.exists() {
         return Ok(false);
     }
 
-    // Rule 6: If /opt/epkg/store/ exists, set to public
-    if has_opt_store {
+    // Rule 6: If /opt/epkg/envs/ exists, set to public
+    if has_opt_envs {
         return Ok(true);
     }
 
-    // Rule 7: Otherwise: neither store exists, default to private (false)
+    // Rule 7: Otherwise: neither envs exists, default to private (false)
     Ok(false)
 }
 
