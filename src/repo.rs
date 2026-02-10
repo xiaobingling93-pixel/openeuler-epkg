@@ -16,6 +16,8 @@ use crate::download::{submit_download_task, has_download_task, DownloadStatus};
 use crate::download::DOWNLOAD_MANAGER;
 use crate::io::read_json_file;
 use crate::mmio;
+use crate::utils::append_suffix;
+use crate::posix::posix_utime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseStatus {
@@ -353,15 +355,22 @@ fn deduplicate_release_items_by_url(release_items: Vec<RepoReleaseItem>) -> Vec<
 }
 
 fn has_recent_download(path: &PathBuf, max_age: Duration) -> Result<bool> {
-    if !is_file_recent(path, &max_age)? {
-        return Ok(false);
+    if is_file_recent(path, &max_age)? {
+        return Ok(true);
     }
-    let etag_path = path.join(".etag.json");
-    is_file_recent(&etag_path, &max_age)
+    let etag_path = append_suffix(path, "etag.json");
+    log::debug!("has_recent_download: checking etag file, path={}, etag_path={}, max_age={}s", path.display(), etag_path.display(), max_age.as_secs());
+    if is_file_recent(&etag_path, &max_age)? {
+        Ok(true)
+    } else {
+        let _ = posix_utime(etag_path, None, None);
+        Ok(false)
+    }
 }
 
 fn is_file_recent(path: &PathBuf, max_age: &Duration) -> Result<bool> {
     if !path.exists() {
+        log::debug!("is_file_recent: file does not exist, returning false, path={}, max_age={}s", path.display(), max_age.as_secs());
         return Ok(false);
     }
     let metadata = fs::metadata(path)
@@ -369,9 +378,12 @@ fn is_file_recent(path: &PathBuf, max_age: &Duration) -> Result<bool> {
     let modified = metadata.modified()
         .with_context(|| format!("Failed to get modification time for file: {}", path.display()))?;
     let now = SystemTime::now();
-    if let Ok(duration) = now.duration_since(modified) {
-        Ok(duration < *max_age)
+    if let Ok(age) = now.duration_since(modified) {
+        let is_recent = age < *max_age;
+        log::debug!("is_file_recent: file age={}s, max_age={}s, is_recent={}, path={}", age.as_secs(), max_age.as_secs(), is_recent, path.display());
+        Ok(is_recent)
     } else {
+        log::debug!("is_file_recent: modified time is in the future, returning false, path={}, max_age={}s", path.display(), max_age.as_secs());
         Ok(false)
     }
 }
