@@ -200,10 +200,10 @@ mount_ide_config() {
 # --- epkg state and project (incl. 3rd-party source trees) ---
 mount_epkg_and_project() {
     mount_rw "$HOME/.epkg"
-    mount_rw "$HOME/.cache"
+    mount_rw "$HOME/.cache/epkg"
+    mount_rw /opt/epkg
     mount_ro /c/os/
     mount_ro /c/rust/
-    mount_rw /c/busybox/  # its testsuite/ dir needs rw
     mount_ro /c/package-managers/
     mount_ro /c/rpm-software-management/
     mount_rw "$PROJECT_DIR"
