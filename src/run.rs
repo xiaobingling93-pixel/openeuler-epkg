@@ -10,6 +10,7 @@ use nix::unistd::{Uid, Gid, getuid, getgid, geteuid, dup2, pipe, close, write, f
 use nix::sys::signal::{self, Signal};
 use nix::sched::{unshare, CloneFlags};
 use nix::mount::{mount, MsFlags};
+use nix::errno::Errno;
 use users::{get_current_uid};
 use color_eyre::Result;
 use color_eyre::eyre;
@@ -275,6 +276,11 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                         Ok(0) => break, // Should not happen, but avoid infinite loop
                         Ok(n) => written += n,
                         Err(e) => {
+                            // EPIPE means child closed stdin (doesn't need input)
+                            // This is OK for hooks with NeedsTargets but scripts that ignore stdin
+                            if e == Errno::EPIPE {
+                                break;
+                            }
                             let _ = close(write_fd);
                             return Err(eyre::eyre!("Failed to write to child stdin: {}", e));
                         }

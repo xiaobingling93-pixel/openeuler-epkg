@@ -122,11 +122,6 @@ fn main() -> Result<()> {
         .collect();
     log::debug!("argv[{}]: {:?}", argv.len(), argv);
 
-    // Gracefully exit instead of panic with BACKTRACE on `epkg info bash | head`
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
     let invoked_as_applet = crate::applets::is_invoked_as_applet();
     crate::models::init_config(invoked_as_applet)?;
@@ -136,6 +131,12 @@ fn main() -> Result<()> {
         match crate::applets::handle_applet_invocation()? {
             Some(_) => return Ok(()), // Handled as applet, exit
             None => {} // Should not happen after is_invoked_as_applet()
+        }
+    } else {
+        // Ignore SIGPIPE to prevent termination when writing to broken pipes
+        // This avoids both Rust panics and sudden termination on `epkg info bash | head`
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
     }
 
