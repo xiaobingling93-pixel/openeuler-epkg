@@ -367,6 +367,12 @@ fn download_file_with_retries(
                         if !guard.is_empty() {
                             log::debug!("Clearing {} stale chunk tasks before retry", guard.len());
                             guard.clear();
+                            // Restore master expected size to full file so the next attempt
+                            // resumes correctly (ondemand had reduced it to the parent range only).
+                            let file_size = task.file_size.load(Ordering::Relaxed);
+                            if file_size > 0 {
+                                task.chunk_size.store(file_size, Ordering::Relaxed);
+                            }
                         }
                     }
                     if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {

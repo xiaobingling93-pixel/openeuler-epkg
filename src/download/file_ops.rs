@@ -280,7 +280,15 @@ pub(crate) fn finalize_file(task: &DownloadTask) -> Result<()> {
 
     // Validate that the completed download size matches the expected file size.
     // This prevents prematurely finalising a partially downloaded or oversized file.
-    let expected_size = task.chunk_size.load(Ordering::Relaxed);
+    // Use the total file size (task.file_size) when known: after on-demand chunking
+    // and retry we may have cleared chunk_tasks and task.chunk_size can still be the
+    // parent range only; requiring the full file size avoids accepting a truncated file.
+    let file_size = task.file_size.load(Ordering::Relaxed);
+    let expected_size = if file_size > 0 {
+        file_size
+    } else {
+        task.chunk_size.load(Ordering::Relaxed)
+    };
     if expected_size > 0 {
         let actual_size = fs::metadata(&task.chunk_path)?.len();
         if actual_size != expected_size {
