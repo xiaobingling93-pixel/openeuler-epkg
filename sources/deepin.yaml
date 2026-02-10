@@ -4,6 +4,7 @@ distro_dirs:
 - packages.deepin.com
 - deepin.org
 - deepin
+- Deepin
 - deepin-store
 versions:
 - apricot  23

@@ -2,6 +2,7 @@ format: rpm
 distro: almalinux
 distro_dirs:
 - almalinux
+- AlmaLinux
 versions: # RHEL-compatible versions
 - "10.1"
 - "9.7"

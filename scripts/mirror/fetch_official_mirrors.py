@@ -8,31 +8,146 @@ import sys
 from collections import OrderedDict
 import glob
 from urllib.parse import urlparse, urlunparse
+import time
 
-# debug_print is now imported from common.py
+# URLs for fetching mirror lists
+ALPINE_MIRRORS_URL          = "https://dl-cdn.alpinelinux.org/MIRRORS.txt"
+DEBIAN_MIRRORS_URL          = "https://www.debian.org/mirror/list"
+UBUNTU_MIRRORS_URL          = "https://launchpad.net/ubuntu/+archivemirrors"
+FEDORA_MIRRORS_URL          = "https://mirrormanager.fedoraproject.org/mirrors?page_size=500"
+ARCH_HTML_MIRRORLIST_URL    = "https://archlinux.org/mirrorlist/all/"
+OPENSUSE_MIRRORS_URL        = "https://mirrors.opensuse.org/"
+
+# Cache file names (to be located in BASE_DIR, which is 'scripts/')
+ALPINE_CACHE_TXT            = "mirrors-alpine.txt"
+ARCH_CACHE_TXT              = "mirrors-archlinux.txt"
+DEBIAN_CACHE_HTML           = "mirrors-debian.html"
+OPENSUSE_CACHE_HTML         = "mirrors-opensuse.html"
+FEDORA_CACHE_HTML           = "mirrors-fedora.html"
+UBUNTU_CACHE_HTML           = "mirrors-ubuntu.html"
 
 # Define paths for local mirror files
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FEDORA_MIRRORS_PATH = os.path.join(BASE_DIR, 'mirrors-fedora.html')
-UBUNTU_MIRRORS_PATH = os.path.join(BASE_DIR, 'mirrors-ubuntu.html')
-NEW_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'new-mirrors.json')
-
-# Cache file names (to be located in BASE_DIR, which is 'scripts/')
-ALPINE_CACHE_TXT = "mirrors-alpine.txt"
-ARCH_CACHE_TXT = "mirrors-archlinux.txt"
-DEBIAN_CACHE_HTML = "mirrors-debian.html"
-OPENSUSE_CACHE_HTML = "mirrors-opensuse.html"
-
-# URLs for fetching mirror lists
-ALPINE_MIRRORS_URL = "https://www.alpinelinux.org/mirrors/"
-DEBIAN_MIRRORS_URL = "https://www.debian.org/mirror/list"
-UBUNTU_MIRRORS_URL = "https://launchpad.net/ubuntu/+archivemirrors"
-ARCH_HTML_MIRRORLIST_URL = "https://archlinux.org/mirrorlist/all/"
-OPENSUSE_MIRRORS_URL = "https://mirrors.opensuse.org/"
-OPENEULER_MIRRORS_PATH = os.path.join(BASE_DIR, 'mirrors-openeuler.html')
+FEDORA_MIRRORS_PATH             = os.path.join(BASE_DIR, FEDORA_CACHE_HTML)
+UBUNTU_MIRRORS_PATH             = os.path.join(BASE_DIR, UBUNTU_CACHE_HTML)
+OPENEULER_MIRRORS_PATH          = os.path.join(BASE_DIR, 'mirrors-openeuler.html')
+OFFICIAL_MIRRORS_OUTPUT_PATH    = os.path.join(BASE_DIR, 'official-mirrors.json')
 
 # Import common utilities
-from common import load_distro_configs, get_distro_configs, debug_print
+from common import load_distro_configs, get_distro_configs, debug_print, get_valid_dirs
+
+
+def load_url_blacklist(filepath):
+    """Load URL blacklist from file, extracting hostnames from URLs.
+
+    File format: one entry per line, can be full URL (http://host/path) or hostname.
+    Lines starting with '#' are treated as comments and ignored.
+    Returns list of hostnames (netloc).
+    """
+    blacklist = set()
+    if not os.path.exists(filepath):
+        return blacklist
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                # Extract hostname from URL if it contains ://
+                if '://' in line:
+                    # Parse URL and get netloc (hostname:port)
+                    hostname = urlparse(line).netloc
+                else:
+                    # Treat as plain hostname
+                    hostname = line
+                blacklist.add(hostname)
+    except Exception as e:
+        print(f"Warning: Failed to load blacklist from {filepath}: {e}")
+    return blacklist
+
+URL_BLACKLIST = load_url_blacklist(os.path.join(BASE_DIR, 'blacklist-mirrors.txt'))
+
+def should_update_cache(cache_file_path, max_age_days=30):
+    """Check if cache file should be updated based on age.
+
+    Returns True if cache file doesn't exist or is older than max_age_days.
+    Returns False if cache file exists and is recent (younger than max_age_days).
+    """
+    if not os.path.exists(cache_file_path):
+        return True
+    try:
+        mtime = os.path.getmtime(cache_file_path)
+        age_days = (time.time() - mtime) / (24 * 3600)
+        return age_days >= max_age_days
+    except OSError:
+        # If we can't get mtime, assume we should update
+        return True
+
+def update_cache(url, cache_filename, base_dir, is_json=False, timeout=15):
+    """Fetch content from URL and update cache file.
+
+    Returns True if fetch succeeded and cache was updated, False otherwise.
+    """
+    cache_filepath = os.path.join(base_dir, cache_filename)
+    debug_print(f"Fetching from {url} to update cache at {cache_filepath}", "cache")
+    try:
+        response = requests.get(url, timeout=timeout)
+        response.raise_for_status()
+        os.makedirs(base_dir, exist_ok=True)
+        if is_json:
+            try:
+                parsed_json = response.json()
+                with open(cache_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(parsed_json, f, indent=4)
+                debug_print(f"Cached JSON to {cache_filepath}", "cache")
+                return True
+            except json.JSONDecodeError as e:
+                debug_print(f"Downloaded content from {url} is not valid JSON: {e}")
+                return False
+        else:
+            with open(cache_filepath, 'wb') as f:
+                f.write(response.content)
+            debug_print(f"Cached HTML to {cache_filepath}", "cache")
+            return True
+    except requests.RequestException as e:
+        debug_print(f"Failed to fetch {url}: {e}")
+        return False
+    except IOError as e:
+        debug_print(f"File I/O error for {cache_filepath}: {e}")
+        return False
+
+def read_cache(cache_filename, base_dir, is_json=False):
+    """Read content from cache file.
+
+    Returns content (JSON dict or bytes) if successful, None otherwise.
+    """
+    cache_filepath = os.path.join(base_dir, cache_filename)
+    if not os.path.exists(cache_filepath):
+        debug_print(f"Cache file does not exist: {cache_filepath}", "cache")
+        return None
+    try:
+        if is_json:
+            with open(cache_filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        else:
+            with open(cache_filepath, 'rb') as f:
+                return f.read()
+    except Exception as e:
+        debug_print(f"Error reading cache file {cache_filepath}: {e}")
+        return None
+
+def maybe_update_cache(url, cache_filename, base_dir, is_json=False, timeout=15):
+    """Update cache if it's stale or missing.
+
+    Returns True if cache is fresh or update succeeded, False otherwise.
+    """
+    cache_filepath = os.path.join(base_dir, cache_filename)
+    if should_update_cache(cache_filepath):
+        debug_print(f"Cache stale or missing: attempting to update from {url}", "cache")
+        return update_cache(url, cache_filename, base_dir, is_json, timeout)
+    else:
+        debug_print(f"Cache is fresh: {cache_filepath}", "cache")
+        return True
 
 def parse_bandwidth(bandwidth_text):
     """Parse bandwidth text (like '10 Gbps') to a numerical value in Mbps.
@@ -81,7 +196,7 @@ def add_mirror(temp_mirror_groups, original_url, canonical_distro_name_from_pars
     """
     debug_print(f"Called for {canonical_distro_name_from_parser}. URL='{original_url}'", "mirror")
 
-    original_url_cleaned = original_url.rstrip('/')
+    original_url_cleaned = original_url.rstrip('/.').rstrip('/')
     parsed_url = urlparse(original_url_cleaned)
     netloc = parsed_url.netloc
     original_path = parsed_url.path
@@ -89,17 +204,17 @@ def add_mirror(temp_mirror_groups, original_url, canonical_distro_name_from_pars
     if parsed_url.scheme.lower() == 'rsync':
         pass  # Still process for grouping purposes
 
+    if netloc in URL_BLACKLIST:
+        print(f"Skipping blacklisted URL: {original_url}")
+        return
+
     common_path_for_grouping = original_path
-    path_was_stripped = False
+    path_stripped = None
 
     # Get prefixes from config only
     distro_configs = get_distro_configs()
     prefixes_from_config = distro_configs.get(canonical_distro_name_from_parser, [])
-
-    if not prefixes_from_config:
-        # If we don't have any prefixes, use the distro name itself as a fallback
-        prefixes_from_config = [canonical_distro_name_from_parser]
-
+    prefixes_from_config.append(canonical_distro_name_from_parser)
     prefixes_from_config.sort(key=len, reverse=True) # Longest first for specificity
 
     for prefix_to_try in prefixes_from_config:
@@ -108,23 +223,8 @@ def add_mirror(temp_mirror_groups, original_url, canonical_distro_name_from_pars
             common_path_for_grouping = original_path[:-len(prefix_to_try)-1]
             if not common_path_for_grouping:
                 common_path_for_grouping = "/"
-            path_was_stripped = True
+            path_stripped = prefix_to_try
             debug_print(f"Stripped trailing '{prefix_to_try}' from URL path: '{original_path}' -> '{common_path_for_grouping}'", "strip")
-            break
-
-        # Case 2: URL path starts with /<prefix>/ or is exactly /<prefix>
-        elif original_path.startswith(f"/{prefix_to_try}/") or original_path == f"/{prefix_to_try}":
-            common_path_for_grouping = "/" # Group at the host's root level
-            path_was_stripped = True
-            debug_print(f"Stripped leading '{prefix_to_try}' from URL path: '{original_path}' -> '/'", "strip")
-            break
-
-        # Case 3: URL contains /pub/<prefix> pattern - very common in mirror directories
-        elif f"/pub/{prefix_to_try}" in original_path:
-            parts = original_path.split(f"/pub/{prefix_to_try}")
-            common_path_for_grouping = parts[0] + "/pub"
-            path_was_stripped = True
-            debug_print(f"Stripped '{prefix_to_try}' from /pub/ path: '{original_path}' -> '{common_path_for_grouping}'", "strip")
             break
 
     group_key = (netloc, common_path_for_grouping)
@@ -140,20 +240,16 @@ def add_mirror(temp_mirror_groups, original_url, canonical_distro_name_from_pars
         }
 
     entry = temp_mirror_groups[group_key]
-    entry['distros'].add(canonical_distro_name_from_parser)
 
-    if path_was_stripped:
-        if common_path_for_grouping == '/':
-            stripped_dirs = original_path[1:].strip('/')
-        else:
-            stripped_dirs = original_path[len(common_path_for_grouping):].strip('/')
-
-        if stripped_dirs:
-            entry['distro_dirs'].add(stripped_dirs)
-            debug_print(f"Added stripped directory '{stripped_dirs}' to distro_dirs", "strip")
-        else:
-            entry['distro_dirs'].add(canonical_distro_name_from_parser)
-            debug_print(f"Fallback: Using canonical name '{canonical_distro_name_from_parser}' for distro_dirs", "strip")
+    if path_stripped:
+        if entry['distros']:
+            print("Skipping unexpected mixup with top_level {original_url}")
+            return
+        entry['distro_dirs'].add(path_stripped)
+        debug_print(f"Added stripped directory '{path_stripped}' to distro_dirs", "strip")
+    else:
+        entry['metadata_store']['top_level'] = True
+        entry['distros'].add(canonical_distro_name_from_parser)
 
     entry['protocols'].add(parsed_url.scheme.lower())
     entry['original_urls'].add(original_url_cleaned)
@@ -177,50 +273,16 @@ def add_mirror(temp_mirror_groups, original_url, canonical_distro_name_from_pars
         if meta_val is not None:
             entry['metadata_store'][meta_key] = meta_val
 
-    # Set top_level=True when distro_dirs is empty (indicating a top-level mirror)
-    if not entry['distro_dirs']:
-        entry['metadata_store']['top_level'] = True
-
 def get_content_from_url_or_cache(url, cache_filename, base_dir, is_json=False, timeout=15):
-    cache_filepath = os.path.join(base_dir, cache_filename)
-    debug_print(f"Attempting to use cache for {url} at {cache_filepath}", "cache")
-    try:
-        if os.path.exists(cache_filepath):
-            debug_print(f"Cache hit: Reading from {cache_filepath}", "cache")
-            if is_json:
-                with open(cache_filepath, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            else: # HTML
-                with open(cache_filepath, 'rb') as f: # Read as bytes for BeautifulSoup
-                    return f.read()
-        else:
-            debug_print(f"Cache miss: Downloading from {url}", "cache")
-            response = requests.get(url, timeout=timeout)
-            response.raise_for_status()
+    """Get content from URL using cache.
 
-            os.makedirs(base_dir, exist_ok=True)
-
-            if is_json:
-                try:
-                    parsed_json = response.json() # Parse to validate and to pretty debug_print
-                    with open(cache_filepath, 'w', encoding='utf-8') as f:
-                        json.dump(parsed_json, f, indent=4)
-                    debug_print(f"Cached JSON to {cache_filepath}", "cache")
-                    return parsed_json # Return parsed JSON
-                except json.JSONDecodeError as e:
-                    debug_print(f"Downloaded content from {url} is not valid JSON: {e}")
-                    return None
-            else: # HTML
-                with open(cache_filepath, 'wb') as f: # Write as bytes
-                    f.write(response.content)
-                debug_print(f"Cached HTML to {cache_filepath}", "cache")
-                return response.content # Return bytes
-
-    except requests.RequestException as e:
-        debug_print(f"Failed to fetch {url}: {e}")
-    except IOError as e:
-        debug_print(f"File I/O error for {cache_filepath}: {e}")
-    return None # General failure or if JSON parsing failed after download
+    First updates cache if stale or missing, then reads from cache.
+    Returns content (JSON dict or bytes) if successful, None otherwise.
+    """
+    # First, ensure cache is up-to-date (fetch if needed)
+    maybe_update_cache(url, cache_filename, base_dir, is_json, timeout)
+    # Then read from cache (which may be fresh, stale, or missing)
+    return read_cache(cache_filename, base_dir, is_json)
 
 def parse_alpine_mirrors(temp_mirror_groups):
     debug_print("Fetching and parsing Alpine Linux mirrors...")
@@ -573,30 +635,22 @@ def parse_opensuse_mirrors(temp_mirror_groups):
     debug_print(f"openSUSE: Total mirrors passed to add_mirror: {opensuse_added_count}")
 
 def parse_fedora_mirrors(temp_mirror_groups):
-    debug_print(f"Parsing Fedora mirrors from {FEDORA_MIRRORS_PATH}")
+    debug_print(f"Fetching and parsing Fedora mirrors from {FEDORA_MIRRORS_URL}")
     fedora_added_count = 0
     centos_added_count = 0
     rocky_added_count = 0
 
-    # Try to read the file content directly first to check its size
-    try:
-        with open(FEDORA_MIRRORS_PATH, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read()
-            debug_print(f"Fedora content loaded, size: {len(content)} bytes")
-
-            # If file is empty or very small, try fallback
-            if len(content) < 100:  # Consider it empty or corrupted
-                debug_print("Fedora file appears to be empty or corrupted.")
-                return
-
-            # If file has content, try to parse it with BeautifulSoup
-            soup = BeautifulSoup(content, 'html.parser')
-    except FileNotFoundError:
-        debug_print(f"Fedora mirror file not found at {FEDORA_MIRRORS_PATH}. Skipping.")
+    html_content = get_content_from_url_or_cache(FEDORA_MIRRORS_URL, FEDORA_CACHE_HTML, BASE_DIR)
+    if not html_content:
+        print("Failed to get Fedora mirrors content.")
         return
-    except Exception as e:
-        debug_print(f"Error loading Fedora HTML: {e}")
+
+    debug_print(f"Fedora HTML content length: {len(html_content) if html_content else 0}")
+    if len(html_content) < 100:
+        debug_print("Fedora content appears to be empty or corrupted.")
         return
+
+    soup = BeautifulSoup(html_content, 'html.parser')
 
     mirror_rows = soup.select('tr.mirror-row')
     debug_print(f"Found {len(mirror_rows)} mirror rows in Fedora HTML")
@@ -650,7 +704,7 @@ def parse_fedora_mirrors(temp_mirror_groups):
             canonical_distro_name_for_config = None
             # Determine canonical_distro_name based on category text for config lookup
             if 'EPEL' in category_name.upper(): # Check EPEL first (case-insensitive)
-                canonical_distro_name_for_config = "rocky"
+                canonical_distro_name_for_config = "EPEL"
             elif 'CentOS' in category_name: # Covers "CentOS Stream", "CentOS Linux"
                 canonical_distro_name_for_config = "centos"
             elif 'Fedora' in category_name: # Covers "Fedora Linux", "Fedora Secondary"
@@ -700,9 +754,19 @@ def parse_fedora_mirrors(temp_mirror_groups):
 
                         # Log which mirror we're adding
                         debug_print(f"Fedora: Adding {canonical_distro_name_for_config} mirror: {href}")
+                        # Filter out fedora-alt mirrors
+                        if re.search(r'\balt\b', href):
+                            debug_print(f"Fedora: Skipping fedora-alt mirror: {href}")
+                            continue
+                        if re.search(r'\beln\b', href):
+                            debug_print(f"Fedora: Skipping fedora-eln mirror: {href}")
+                            continue
+                        if re.search(r'\barchive\b', href):
+                            debug_print(f"Fedora: Skipping fedora-archive mirror: {href}")
+                            continue
                         # Pass the original href and the determined canonical_distro_name_for_config
                         # add_mirror will use canonical_distro_name_for_config to find the correct
-                        # list of suffixes (e.g., DISTRO_CONFIGS['rocky']) for stripping.
+                        # list of suffixes (e.g., DISTRO_CONFIGS['EPEL']) for stripping.
                         add_mirror(temp_mirror_groups, href, canonical_distro_name_for_config, metadata)
 
                         # Track counts by distro type
@@ -710,7 +774,7 @@ def parse_fedora_mirrors(temp_mirror_groups):
                             fedora_added_count += 1
                         elif canonical_distro_name_for_config == "centos":
                             centos_added_count += 1
-                        elif canonical_distro_name_for_config == "rocky":
+                        elif canonical_distro_name_for_config == "EPEL":
                             rocky_added_count += 1
 
     print(f"Fedora: Total mirrors passed to add_mirror: Fedora={fedora_added_count}, CentOS={centos_added_count}, EPEL={rocky_added_count}")
@@ -720,7 +784,7 @@ def parse_ubuntu_mirrors(temp_mirror_groups):
     ubuntu_added_count = 0
 
     # Try fetching from URL first, then fall back to local file if that fails
-    content_bytes = get_content_from_url_or_cache(UBUNTU_MIRRORS_URL, "mirrors-ubuntu.html", BASE_DIR)
+    content_bytes = get_content_from_url_or_cache(UBUNTU_MIRRORS_URL, UBUNTU_CACHE_HTML, BASE_DIR)
     if not content_bytes:
         debug_print(f"Failed to fetch Ubuntu mirrors from URL. Trying local file {UBUNTU_MIRRORS_PATH}")
         try:
@@ -976,11 +1040,9 @@ def parse_openeuler_mirrors(temp_mirror_groups):
     else:
         print("No openEuler mirrors found or parsed from {OPENEULER_MIRRORS_PATH}. Check HTML structure and parsing logic.")
 
-def main():
-    print("Starting new mirror generation...")
-    load_distro_configs(BASE_DIR)
-
-    temp_mirror_groups = {} # Temporary dict for grouping by (netloc, common_path)
+def collect_mirrors():
+    """Collect mirrors from all distro sources and return temporary groups."""
+    temp_mirror_groups = {}  # Temporary dict for grouping by (netloc, common_path)
 
     # Parsers will now populate temp_mirror_groups
     parse_alpine_mirrors(temp_mirror_groups)
@@ -1018,9 +1080,38 @@ def main():
                 debug_print(f"DEBUG_RSYNC_ONLY: {key_tuple} - Distros: {group_data['distros']}")
     print(f"Total: {rsync_only_count} rsync-only mirrors will be skipped\n")
 
-    new_mirrors = {} # This will be the final dict for JSON output
+    return temp_mirror_groups
 
-    # Process aggregated groups to create the final new_mirrors structure
+
+def process_mirror_groups(temp_mirror_groups, valid_dirs):
+    """Process temporary mirror groups into final mirror structure."""
+    def find_matching_distro_dir(path, valid_dirs):
+        """Find the longest suffix of path that matches a valid directory.
+
+        Given a path like '/pub/fedora/linux', check if the entire path
+        (without leading slash) is in valid_dirs, then 'fedora/linux', then 'linux'.
+        Returns (matched_suffix, parent_segments) where parent_segments are the
+        segments before the matched suffix (original case).
+        If no match, returns (None, None).
+        """
+        # Remove leading slash and split into segments, filtering empty segments
+        path_stripped = path.lstrip('/')
+        if not path_stripped:
+            return None, None
+        segments = [seg for seg in path_stripped.split('/') if seg]
+        # Try from longest suffix to shortest
+        for i in range(len(segments)):
+            candidate = '/'.join(segments[i:])
+            if candidate in valid_dirs:
+                # Return matched suffix with original case
+                matched_suffix = '/'.join(segments[i:])
+                parent_segments = segments[:i] if i > 0 else []
+                return matched_suffix, parent_segments
+        return None, None
+
+    official_mirrors = {}  # This will be the final dict for JSON output
+
+    # Process aggregated groups to create the final official_mirrors structure
     for (netloc, common_path), group_data in temp_mirror_groups.items():
         # Skip mirrors that only support rsync protocol
         protocols = group_data['protocols']
@@ -1044,7 +1135,6 @@ def main():
             # Let's ensure the final key is clean.
             final_url_key = final_url_key.rstrip('/')
 
-
         final_entry = {
             'distro_dirs': sorted(list(group_data['distro_dirs'])),
             'protocols': sorted(list(group_data['protocols'])),
@@ -1055,21 +1145,97 @@ def main():
         # Add merged metadata from metadata_store
         final_entry.update(group_data['metadata_store'])
 
-        new_mirrors[final_url_key] = final_entry
+        official_mirrors[final_url_key] = final_entry
+
+    # Transform top-level entries where some suffix of the path matches a valid distro directory
+    # We match the longest suffix (starting from full path) that is in valid_dirs.
+    # This converts URLs like "https://mirror.example.com/epel" to base URL with distro_dirs
+    # Example conversion:
+    #   "https://syd.mirror.rackspace.com/epel": {top_level: true, distros: ["rocky"], distro_dirs: []}
+    #   => "https://syd.mirror.rackspace.com": {distro_dirs: ["epel"]}
+    # If base URL already exists, merge distro_dir into existing entry's distro_dirs
+    # Group transformable top-level entries by their base URL
+    from collections import defaultdict
+    base_groups = defaultdict(list)  # base_url -> list of (url_key, entry, distro_dir)
+    to_delete = []
+
+    for url_key, entry in list(official_mirrors.items()):
+        if entry.get('top_level'):
+            parsed = urlparse(url_key)
+            path = parsed.path
+            distro_dir, parent_segments = find_matching_distro_dir(path, valid_dirs)
+            if distro_dir is not None:
+                debug_print(f"Transforming top-level entry: {url_key} -> will move '{distro_dir}' to distro_dirs", "transform")
+                parent_path = '/' + '/'.join(parent_segments) if parent_segments else '/'
+                base_url = urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', '')).rstrip('/')
+                if parent_path == '/':
+                    base_url = urlunparse((parsed.scheme, parsed.netloc, '', '', '', '')).rstrip('/')
+                base_groups[base_url].append((url_key, entry, distro_dir))
+                to_delete.append(url_key)
+
+    # Process each base URL group
+    for base_url, items in base_groups.items():
+        # Collect all distro_dirs, protocols, and original_urls from items
+        distro_dirs = []
+        all_protocols = set()
+        all_original_urls = set()
+        # Use the first entry's metadata as template (bandwidth, country_code, etc.)
+        template_entry = items[0][1]
+
+        for _, entry, distro_dir in items:
+            if distro_dir not in distro_dirs:
+                distro_dirs.append(distro_dir)
+            all_protocols.update(entry.get('protocols', []))
+            all_original_urls.update(entry.get('original_urls', []))
+
+        # Sort for consistency
+        distro_dirs.sort()
+
+        if base_url in official_mirrors and base_url not in to_delete:
+            # Merge into existing entry (which is not a top-level being deleted)
+            existing = official_mirrors[base_url]
+            # Add missing distro_dirs
+            for dd in distro_dirs:
+                if dd not in existing.get('distro_dirs', []):
+                    existing.setdefault('distro_dirs', []).append(dd)
+            existing['distro_dirs'].sort()
+            # Merge protocols
+            existing_protocols = set(existing.get('protocols', []))
+            existing['protocols'] = sorted(list(existing_protocols | all_protocols))
+            # Merge original_urls
+            existing_original = set(existing.get('original_urls', []))
+            existing['original_urls'] = sorted(list(existing_original | all_original_urls))
+            # Remove top_level and distros fields if present
+            existing.pop('top_level', None)
+            existing.pop('distros', None)
+        else:
+            # Create new entry
+            new_entry = template_entry.copy()
+            new_entry.pop('top_level', None)
+            new_entry.pop('distros', None)
+            new_entry['distro_dirs'] = distro_dirs
+            new_entry['protocols'] = sorted(list(all_protocols))
+            new_entry['original_urls'] = sorted(list(all_original_urls))
+            official_mirrors[base_url] = new_entry
+
+    # Delete original top-level entries
+    for url in to_delete:
+        if url in official_mirrors:
+            del official_mirrors[url]
 
     # The old post-processing loop for 'top_level' based distro_dirs formatting is removed,
     # as 'top_level' is no longer explicitly managed in this way. The 'distro_dirs' is always a list.
     # Sets were already converted to sorted lists above.
 
-    debug_print("\n--- DEBUG: Checking final new_mirrors for all distros ---")
+    debug_print("\n--- DEBUG: Checking final official_mirrors for all distros ---")
     final_distro_counts = {}
-    for url_key_final, entry_data_final in new_mirrors.items():
+    for url_key_final, entry_data_final in official_mirrors.items():
         for distro in entry_data_final.get('distro_dirs', []):
             final_distro_counts[distro] = final_distro_counts.get(distro, 0) + 1
 
             # Print first mirror of each distro type as an example
             if final_distro_counts[distro] <= 1:
-                debug_print(f"DEBUG_FINAL: Found {distro} in new_mirrors: Key={url_key_final}")
+                debug_print(f"DEBUG_FINAL: Found {distro} in official_mirrors: Key={url_key_final}")
                 if distro in ['fedora', 'ubuntu', 'alpine'] or '163.com' in url_key_final or 'ustc.edu' in url_key_final:
                     debug_print(f"DEBUG_FINAL: Notable mirror found: {url_key_final}, Data={entry_data_final}")
 
@@ -1081,7 +1247,7 @@ def main():
     # Check for specific problematic mirrors in the final output
     for target_mirror in ['mirrors.163.com', 'mirrors.ustc.edu.cn']:
         found = False
-        for url_key_final in new_mirrors.keys():
+        for url_key_final in official_mirrors.keys():
             if target_mirror in url_key_final:
                 found = True
                 debug_print(f"DEBUG_FINAL: {target_mirror} IS present in the final output: {url_key_final}")
@@ -1095,12 +1261,26 @@ def main():
         if final_distro_counts.get(expected_distro, 0) == 0:
             debug_print(f"DEBUG_FINAL: WARNING! No {expected_distro} mirrors in final output!")
 
-    print(f"Writing {len(new_mirrors)} new/updated mirrors to {NEW_MIRRORS_OUTPUT_PATH}")
-    os.makedirs(os.path.dirname(NEW_MIRRORS_OUTPUT_PATH), exist_ok=True)
-    with open(NEW_MIRRORS_OUTPUT_PATH, 'w') as f:
-        json.dump(new_mirrors, f, indent=4, sort_keys=True) # sort_keys for consistent output
+    return official_mirrors
 
+
+def write_mirrors_output(official_mirrors, output_path):
+    """Write new mirrors dictionary to JSON file."""
+    print(f"Writing {len(official_mirrors)} new/updated mirrors to {output_path}")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w') as f:
+        json.dump(official_mirrors, f, indent=4, sort_keys=True)  # sort_keys for consistent output
     print("New mirror generation complete.")
+
+
+def main():
+    print("Starting new mirror generation...")
+    load_distro_configs(BASE_DIR)
+    valid_dirs = get_valid_dirs(BASE_DIR)
+
+    temp_mirror_groups = collect_mirrors()
+    official_mirrors = process_mirror_groups(temp_mirror_groups, valid_dirs)
+    write_mirrors_output(official_mirrors, OFFICIAL_MIRRORS_OUTPUT_PATH)
 
 if __name__ == "__main__":
     main()

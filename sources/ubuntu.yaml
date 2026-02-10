@@ -3,6 +3,8 @@ distro: ubuntu
 distro_dirs: # longer first
 - releases.ubuntu.com/ubuntu
 - archive.ubuntu.com/ubuntu
+- ubuntu-mirror/ubuntu
+- ubuntu-mirror/archive
 - archive.ubuntu.com
 - ubuntu/ubuntu-archive
 - ubuntu/ubuntu
@@ -16,6 +18,7 @@ distro_dirs: # longer first
 - ubuntu/archive
 - ubuntuarchive
 - ubuntu
+- Ubuntu
 version: noble  # it's available in all ubuntu-*.yaml repos
 versions: # first column is formal version string, others are aliases
 - questing  25.10

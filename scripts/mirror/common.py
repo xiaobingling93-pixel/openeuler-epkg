@@ -5,6 +5,7 @@ import glob
 
 # Global configurations loaded from YAML files
 DISTRO_CONFIGS = {}
+VALID_DIRS = None
 
 # Debug output function
 def debug_print(message, category=None):
@@ -57,3 +58,23 @@ def load_distro_configs(base_dir):
 def get_distro_configs():
     """Get the loaded DISTRO_CONFIGS dictionary."""
     return DISTRO_CONFIGS
+
+def get_valid_dirs(base_dir):
+    """Get the set of valid directory names, loading configs if needed."""
+    global VALID_DIRS
+    if VALID_DIRS is not None:
+        return VALID_DIRS
+
+    # Ensure distro configs are loaded
+    if not DISTRO_CONFIGS:
+        load_distro_configs(base_dir)
+
+    # Compute valid directories
+    VALID_DIRS = set()
+    for distro_name, distro_dirs in DISTRO_CONFIGS.items():
+        # Strip leading/trailing slashes and add to valid dirs
+        normalized_dirs = [d.strip('/') for d in distro_dirs]
+        VALID_DIRS.update(normalized_dirs)
+
+    debug_print(f"Computed VALID_DIRS: {VALID_DIRS}", "config")
+    return VALID_DIRS

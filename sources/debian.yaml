@@ -7,6 +7,7 @@ distro_dirs:
 - debian/debian
 - debian-security
 - debian
+- Debian
 version:  # default to versions[0]
 versions: # first column is standard version string and used for $version interpolation, others are aliases
 - trixie    13

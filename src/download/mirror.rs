@@ -131,7 +131,7 @@ fn format_and_resolve_mirror_url(
     let url_formatted = {
         let mirrors = mirror::MIRRORS.lock()
             .map_err(|e| eyre!("Failed to lock mirrors: {}", e))?;
-        mirrors.format_mirror_url(&mirror.url, mirror.top_level, &final_distro_dir)?
+        mirrors.format_mirror_url(&mirror.url, mirror.top_os.is_some(), &final_distro_dir)?
     };
 
     Ok(url.replace("$mirror", &url_formatted))

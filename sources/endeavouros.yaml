@@ -4,6 +4,7 @@ distro_dirs:
 - mirror.alpix.eu/endeavouros
 - endeavouros.com
 - endeavouros
+- EndeavourOS
 - eos
 versions:
 - "latest"

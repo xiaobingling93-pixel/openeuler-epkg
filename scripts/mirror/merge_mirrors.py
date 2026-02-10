@@ -10,19 +10,11 @@ import sys
 import pycountry
 
 # Import common utilities
-from common import debug_print
-
-# URL blacklist for problematic mirrors
-URL_BLACKLIST = [
-    'http://mirror.one.com',    # redirects to mirror.group.one
-    'http://fedora-alt.c3sl.ufpr.br',
-    'https://linux2.yz.yamagata-u.ac.jp/pub/linux', # duplicate DNS
-    #  'https://ftp.funet.fi/pub/mirrors/ftp.opensuse.com/pub',
-]
+from common import debug_print, load_distro_configs, get_valid_dirs
 
 # Define paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-NEW_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'new-mirrors.json')
+OFFICIAL_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'official-mirrors.json')
 LS_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
 PROBE_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'probe-mirrors.json')
 NOREACH_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'noreach-mirrors.txt')
@@ -41,18 +33,20 @@ KEY_ORDER = ['country_code', 'distros', 'distro_dirs', 'probe_dirs', 'ls', 'top_
 # Mapping of old keys to new compact keys (for final output)
 # It's unused, real mapping is in code compact_mirror_data()
 KEY_MAP = {
-    'distros': 'os',
-    'distro_dirs': 'dir',
-    'probe_dirs': 'pdir',   # lftp cls probed directories
+    'distros': 'top',
+    'distro_dirs': 'ls',
+    'probe_dirs': 'ls',    # lftp cls probed directories
     'ls': 'ls',             # lftp ls directories
-    'top_level': 'root',
+    'top_level': 'top',
     'country_code': 'cc',
     'protocols': 'p',
     'bandwidth': 'bw',
     'internet2': 'i2',
 }
 
+
 # debug_print is now imported from common.py
+
 
 def get_country_code(country_name):
     """Convert a country name to its ISO 3166-1 alpha-2 code using pycountry.
@@ -237,7 +231,7 @@ def merge_mirror_data(existing_mirrors, new_mirror_url, new_mirror_info):
             ordered_entry[key_in_order] = current_entry[key_in_order]
     existing_mirrors[new_mirror_url] = ordered_entry
 
-def compact_mirror_data(data):
+def compact_mirror_data(url, data):
     """Convert mirror data to compact format."""
     compact = {}
 
@@ -245,42 +239,40 @@ def compact_mirror_data(data):
     if 'country_code' in data:
         compact['cc'] = data['country_code']
 
-    # Handle distros → os
-    if 'distros' in data:
-        compact['os'] = data['distros']
+    # Handle top_level → top (1)
+    if data.get('top_level') or data.get('root'):
+        distros = data.get('distros', [])
+        if len(distros) != 1:
+            print(f"WARN: top_level url shall have 1 distros: {url} {data}")
+        compact['top'] = distros[0]
 
-    # Handle distro_dirs → dir, removing duplicates with distros
+        if 'distro_dirs' in data and data['distro_dirs']:
+            print(f"WARN: top_level url shall not have distro_dirs entry: {url} {data}")
+        if 'ls' in data and data['ls']:
+            print(f"WARN: top_level url shall not have ls entry: {url} {data}")
+        if 'probe_dirs' in data and data['probe_dirs']:
+            print(f"WARN: top_level url shall not have probe_dirs entry: {url} {data}")
+
+    # Combine all directories into ls (remove dir and pdir)
+    all_dirs = []
+
+    # Add distro_dirs (filter out fedora 'alt')
     if 'distro_dirs' in data:
-        # Remove fedora 'alt'
         distro_dirs = [d for d in data['distro_dirs'] if 'alt' not in d]
-        # Remove duplicates in distros
-        unique_dirs = set(distro_dirs) - set(data.get('distros', []))
-        if unique_dirs:
-            compact['dir'] = sorted(list(unique_dirs))
+        all_dirs.extend(distro_dirs)
 
-    # Handle probe_dirs → pdir (remove duplicates with distros, distro_dirs, and ls)
+    # Add probe_dirs
     if 'probe_dirs' in data and data['probe_dirs']:
-        probe_dirs = data['probe_dirs']
-        distros_set = set(data.get('distros', []))
-        distro_dirs_set = set(data.get('distro_dirs', []))
-        ls_set = set(data.get('ls', [])) if 'ls' in data else set()
-        unique_pdir = [d for d in probe_dirs if d not in distros_set and d not in distro_dirs_set and d not in ls_set]
-        if unique_pdir:
-            compact['pdir'] = unique_pdir
+        all_dirs.extend(data['probe_dirs'])
 
-    # Handle ls → ls (remove duplicates with distros and distro_dirs)
+    # Add ls directories
     if 'ls' in data and data['ls']:
-        ls_dirs = data['ls']
-        # Remove duplicates that exist in distros and distro_dirs
-        distros_set = set(data.get('distros', []))
-        distro_dirs_set = set(data.get('distro_dirs', []))
-        unique_ls = [d for d in ls_dirs if d not in distros_set and d not in distro_dirs_set]
-        if unique_ls:
-            compact['ls'] = unique_ls
+        all_dirs.extend(data['ls'])
 
-    # Handle top_level → root (1)
-    if data.get('top_level'):
-        compact['root'] = 1
+    # Remove duplicates and sort
+    if all_dirs:
+        unique_dirs = sorted(set(all_dirs))
+        compact['ls'] = unique_dirs
 
     # Handle protocols → p (bitmask)
     if 'protocols' in data:
@@ -308,7 +300,8 @@ def compact_mirror_data(data):
 
 def deduplicate_mirrors_by_base_url(mirrors):
     """
-    Deduplicate mirrors by keeping the one with the longer path when the same base site exists.
+    Deduplicate mirrors by keeping the one with the shortest path when the same base site exists.
+    Merges data from longer path URLs into the shortest path URL, adding path components to distro_dirs if valid.
 
     Args:
         mirrors (OrderedDict): Dictionary of URL -> mirror data
@@ -316,14 +309,47 @@ def deduplicate_mirrors_by_base_url(mirrors):
     Returns:
         OrderedDict: Deduplicated mirrors
     """
-    from urllib.parse import urlparse
+    # Ensure valid directories are computed
+    valid_dirs = get_valid_dirs(BASE_DIR)
 
-    # Group mirrors by base URL (scheme + netloc)
+    def get_delta_suffix(parent_path, child_path):
+        """Return the path suffix of child_path relative to parent_path.
+        Returns empty string if child_path is not a descendant of parent_path."""
+        # Remove leading/trailing slashes
+        parent = parent_path.strip('/')
+        child = child_path.strip('/')
+        if parent == '':
+            # root parent
+            return child
+        # Check if child starts with parent + '/'
+        if child.startswith(parent + '/'):
+            return child[len(parent) + 1:]  # Remove parent and the slash
+        return ''
+
+    def should_merge_long_url(shortest_path, long_path, long_data, valid_dirs):
+        """Determine whether a longer URL should be merged into the shortest URL.
+        Returns tuple (should_merge, delta_suffix)."""
+        if long_path == shortest_path:
+            # Same path duplicate (different scheme). Merge all fields.
+            return True, ''
+        delta = get_delta_suffix(shortest_path, long_path)
+        if not delta:
+            # Not a descendant
+            return False, ''
+        # Check delta suffix is in valid_dirs (case-insensitive)
+        if delta not in valid_dirs:
+            return False, ''
+        # Check top_level field is true
+        if not long_data.get('top_level'):
+            return False, ''
+        return True, delta
+
+    # Group mirrors by site (netloc only, ignoring scheme)
     base_url_groups = {}
 
     for url, data in mirrors.items():
         parsed = urlparse(url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        base_url = parsed.netloc
 
         if base_url not in base_url_groups:
             base_url_groups[base_url] = []
@@ -338,18 +364,83 @@ def deduplicate_mirrors_by_base_url(mirrors):
             url, data, _ = url_group[0]
             deduplicated_mirrors[url] = data
         else:
-            # Multiple URLs for the same base, find the one with the longest path
-            # Sort by path length (descending) and then by path (for consistency)
-            url_group.sort(key=lambda x: (-len(x[2]), x[2]))
+            # Multiple URLs for the same base
+            # Sort by path length (ascending) and then by path (for consistency)
+            url_group.sort(key=lambda x: (len(x[2]), x[2]))
 
-            longest_url, longest_data, longest_path = url_group[0]
+            # Check if the shortest is root (empty path) and has minimal data
+            # If so, we might want to drop it in favor of more specific paths
+            shortest_url, shortest_data, shortest_path = url_group[0]
 
-            # Remove shorter path URLs and keep only the longest one
-            for url, data, path in url_group[1:]:
-                print(f"Removing duplicate base URL with shorter path: {url} (keeping {longest_url})")
+            # Count distros in shortest entry
+            shortest_distros = len(shortest_data.get('distros', []))
+            shortest_has_ls = 'ls' in shortest_data and shortest_data['ls']
+            shortest_has_pdir = 'pdir' in shortest_data and shortest_data['pdir']
 
-            # Keep only the URL with the longest path
-            deduplicated_mirrors[longest_url] = longest_data
+            # If shortest is root and has minimal data, consider dropping it
+            drop_root = False
+            if shortest_path == '' and len(url_group) > 1:
+                # Root with only 0-1 distros and no ls data is likely not a real mirror
+                # when there are more specific paths available
+                if shortest_distros <= 1 and not shortest_has_ls:
+                    print(f"Dropping root URL with minimal data: {shortest_url}")
+                    drop_root = True
+                    # Remove the root from consideration
+                    url_group = url_group[1:]
+                    if not url_group:
+                        continue
+                    # Get new shortest
+                    shortest_url, shortest_data, shortest_path = url_group[0]
+
+            # Create a temporary entry for merging valid paths
+            merged_entry = OrderedDict()
+            merged_entry[shortest_url] = shortest_data
+
+            # URLs to keep separate (with structural path components)
+            separate_urls = []
+
+            # Process longer path URLs (starting from index 1 if we didn't drop root, 0 if we did)
+            start_idx = 0 if drop_root else 1
+            for url, data, path in url_group[start_idx:]:
+                # Skip if this is the shortest (which we already have in merged_entry)
+                if url == shortest_url and path == shortest_path:
+                    continue
+
+                # Debug for specific site
+                if 'mirrors.mit.edu' in url:
+                    print(f"DEBUG mirrors.mit.edu: processing {url}, path={path}, data={data}, shortest_url={shortest_url}")
+
+                # Determine whether to merge this longer URL
+                should_merge, delta_suffix = should_merge_long_url(shortest_path, path, data, valid_dirs)
+
+                if should_merge:
+                    if delta_suffix:
+                        # Delta suffix is valid and long URL has top_level true
+                        print(f"Merging duplicate base URL with longer path: {url} into {shortest_url} (delta suffix: {delta_suffix})")
+                        # Add delta suffix to distro_dirs of the canonical entry
+                        current_dirs = merged_entry[shortest_url].get('distro_dirs', [])
+                        if not isinstance(current_dirs, list):
+                            current_dirs = [current_dirs]
+                        if delta_suffix not in current_dirs:
+                            current_dirs.append(delta_suffix)
+                        merged_entry[shortest_url]['distro_dirs'] = current_dirs
+                        # Do NOT merge any other fields from the longer URL
+                    else:
+                        # Same path duplicate (different scheme) - merge all fields
+                        print(f"Merging duplicate base URL with same path: {url} into {shortest_url}")
+                        merge_mirror_data(merged_entry, shortest_url, data)
+                else:
+                    # Keep as separate entry
+                    print(f"Keeping separate due to invalid delta suffix or missing top_level: {url}")
+                    separate_urls.append((url, data))
+
+            # Add the merged entry (if we merged anything or even if just the shortest)
+            if not drop_root or merged_entry[shortest_url].get('distros') or merged_entry[shortest_url].get('ls') or merged_entry[shortest_url].get('pdir'):
+                deduplicated_mirrors[shortest_url] = merged_entry[shortest_url]
+
+            # Add separate entries
+            for url, data in separate_urls:
+                deduplicated_mirrors[url] = data
 
     return deduplicated_mirrors
 
@@ -432,23 +523,23 @@ def main():
     # Load blacklist first
     blacklist = load_blacklist()
 
-    # 1. Load new mirrors from new-mirrors.json
-    if os.path.exists(NEW_MIRRORS_INPUT_PATH):
-        print(f"Loading new mirrors from {NEW_MIRRORS_INPUT_PATH}...")
+    # 1. Load new mirrors from official-mirrors.json
+    if os.path.exists(OFFICIAL_MIRRORS_INPUT_PATH):
+        print(f"Loading new mirrors from {OFFICIAL_MIRRORS_INPUT_PATH}...")
         try:
-            with open(NEW_MIRRORS_INPUT_PATH, 'r') as f:
-                new_mirrors_data = json.load(f)
-            print(f"Loaded {len(new_mirrors_data)} mirrors from {NEW_MIRRORS_INPUT_PATH}.")
-            for url, data in new_mirrors_data.items():
+            with open(OFFICIAL_MIRRORS_INPUT_PATH, 'r') as f:
+                official_mirrors = json.load(f)
+            print(f"Loaded {len(official_mirrors)} mirrors from {OFFICIAL_MIRRORS_INPUT_PATH}.")
+            for url, data in official_mirrors.items():
                 # Skip blacklisted URLs
                 if url.rstrip('/') in blacklist:
-                    print(f"Skipping blacklisted URL from new-mirrors.json: {url}")
+                    print(f"Skipping blacklisted URL from official-mirrors.json: {url}")
                     continue
                 merge_mirror_data(final_mirrors, url, data)
         except Exception as e:
-            print(f"Error loading or parsing {NEW_MIRRORS_INPUT_PATH}: {e}")
+            print(f"Error loading or parsing {OFFICIAL_MIRRORS_INPUT_PATH}: {e}")
     else:
-        print(f"{NEW_MIRRORS_INPUT_PATH} not found. No new mirrors to merge.")
+        print(f"{OFFICIAL_MIRRORS_INPUT_PATH} not found. No new mirrors to merge.")
 
     # 2. Load and merge ls data from ls-mirrors.json
     if os.path.exists(LS_MIRRORS_INPUT_PATH):
@@ -481,8 +572,6 @@ def main():
                     debug_print(f"Merged ls data for {url}: {len(ls_data['ls'])} directories")
                 if 'cc' in ls_data and ls_data['cc']:
                     final_mirrors[url]['country_code'] = ls_data['cc']
-                if 'root' in ls_data and ls_data['root']:
-                    final_mirrors[url]['top_level'] = ls_data['root']
         except Exception as e:
             print(f"Error loading or parsing {LS_MIRRORS_INPUT_PATH}: {e}")
     else:
@@ -513,10 +602,6 @@ def main():
 
     for url, data in final_mirrors.items():
 
-        if url in URL_BLACKLIST:
-            print(f"Skipping blacklisted URL: {url}")
-            continue
-
         # Try to guess country code from domain
         domain = urlparse(url).netloc
         if domain:
@@ -539,17 +624,21 @@ def main():
                     data['country_code'] = guessed_cc
 
         # Compact the data
-        ordered_data = compact_mirror_data(data)
+        ordered_data = compact_mirror_data(url, data)
 
-        if ordered_data.get('root') == 1 and ordered_data.get('os') == ['debian']:
-            print(f"Skipping root Debian") # a bit too complex for mirror.rs to handle this case
+        if 'cc' not in ordered_data:
+            print(f"Skipping no-cc {url} {ordered_data}")
+            continue
+
+        if ordered_data.get('top') == 'debian':
+            print(f"Skipping root Debian {url} {ordered_data}") # a bit too complex for mirror.rs to handle this case
             continue
 
         # Add mirror if it has required fields and valid ls data
-        if ordered_data.get('os') or ordered_data.get('dir') or ordered_data.get('ls') or ordered_data.get('pdir'):
+        if ordered_data.get('top') or ordered_data.get('ls'):
             processed_final_mirrors[url] = ordered_data
         else:
-            print(f"Skipping mirror {url}: missing os/dir/ls/pdir data")
+            print(f"Skipping mirror {url}: missing top/ls data")
 
     print(f"Writing {len(processed_final_mirrors)} merged mirrors to {FINAL_JSON_OUTPUT_PATH}...")
     os.makedirs(os.path.dirname(FINAL_JSON_OUTPUT_PATH), exist_ok=True)
@@ -557,7 +646,7 @@ def main():
         f.write('{')
 
         # Get sorted list of URLs for consistent output
-        urls = list(processed_final_mirrors.keys())
+        urls = sorted(list(processed_final_mirrors.keys()))
 
         for i, url in enumerate(urls):
             url_json = json.dumps(url)
@@ -575,7 +664,7 @@ def main():
                 f.write(',')
 
         # Close the entire JSON object
-        f.write('\n}')
+        f.write('\n}\n')
 
     print("Mirror merging complete.")
 

@@ -3,6 +3,7 @@ distro: openeuler
 distro_dirs:
 - openeuler.org
 - openeuler
+- openEuler
 version:  # default to versions[0]
 versions: # LTS versions are marked with -lts suffix
 - 25.09

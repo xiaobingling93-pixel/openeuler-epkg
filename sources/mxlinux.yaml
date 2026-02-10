@@ -4,6 +4,7 @@ distro_dirs:
 - mxrepo.com
 - mx-linux.org
 - mxlinux
+- MXLinux
 - mx-repo
 versions:
 - trixie    25

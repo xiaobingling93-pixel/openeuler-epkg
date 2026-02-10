@@ -8,13 +8,11 @@ distro_dirs:
 - centos-stream
 - centosstream
 - CentOS-stream
+- centOS-Stream
 
 versions:
   - "10-stream"
   - "9-stream"
-  - "8-stream"
-  - "8"
-  - "7"
 repos:
   BaseOS:
   AppStream:

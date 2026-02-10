@@ -3,6 +3,7 @@ distro: rocky
 distro_dirs:
 - rocky-linux
 - rocky
+- Rocky
 versions: # RHEL-compatible versions
 - "10.1"
 - "10"

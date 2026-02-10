@@ -12,10 +12,10 @@ import warnings
 import hashlib
 import argparse
 import socket
-import subprocess
+import subprocess, tempfile, shutil
 
 # Import common utilities first so debug_print is available
-from common import load_distro_configs, get_distro_configs, debug_print
+from common import load_distro_configs, get_distro_configs, debug_print, get_valid_dirs
 
 # For JavaScript rendering
 import asyncio
@@ -36,6 +36,29 @@ except ImportError as e:
 
 # Global cache for country code resolutions to avoid repeated lookups
 COUNTRY_CODE_CACHE = {}
+
+# File-level overview:
+#
+# Inputs:
+# - OFFICIAL_MIRRORS_PATH (`official-mirrors.json`): primary mirror source; main iteration is over this file.
+# - FINAL_MIRRORS_PATH (`sources/mirrors.json`): legacy mirror data, used only as a cache for
+#   country code (`cc`/`country_code`/`country`) lookup when OFFICIAL_MIRRORS_PATH and GeoIP do not have it.
+#   It is never used as the iteration key for processing mirrors.
+#
+# Outputs:
+# - LS_MIRRORS_OUTPUT_PATH (`ls-mirrors.json`): per-mirror scan results (`ls`, `cc`).
+# - FAILED_MIRRORS_LOG_PATH (`failed-mirrors.log`): log of mirrors that could not be fetched.
+# - INDEX_HTML_CACHE_DIR (`index/`): cached HTML / lftp / JS-rendered directory listings.
+#
+# Data flow / policies:
+# - Load distro configs and directory allow-list once.
+# - Load `official_mirrors` from OFFICIAL_MIRRORS_PATH and iterate over its HTTP(S) mirrors.
+# - For each mirror URL:
+#   - Determine country code from `official_mirrors`, then fall back to FINAL_MIRRORS_PATH (cc only),
+#     then finally GeoIP resolution; write any discovered `cc` into ls_data.
+#   - Fetch and parse directory listings (HTML, then lftp, optionally JS) and filter directories based
+#     on distro configs; store the resulting `ls` in ls_data.
+# - `ls-mirrors.json` is treated strictly as output, not as an input cache for control flow.
 
 """
 COMMON MIRROR FAILURE REASONS AND ANALYSIS
@@ -77,10 +100,106 @@ Based on processing thousands of mirror URLs, the most common failure categories
 # Define paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LS_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
-NEW_MIRRORS_PATH = os.path.join(BASE_DIR, 'new-mirrors.json')
-EXISTING_MIRRORS_PATH = os.path.join(BASE_DIR, '../../sources/mirrors.json')
+OFFICIAL_MIRRORS_PATH = os.path.join(BASE_DIR, 'official-mirrors.json')
+FINAL_MIRRORS_PATH = os.path.join(BASE_DIR, '../../sources/mirrors.json')
 INDEX_HTML_CACHE_DIR = os.path.join(BASE_DIR, 'index')
 FAILED_MIRRORS_LOG_PATH = os.path.join(BASE_DIR, 'failed-mirrors.log')
+
+def should_update_cache(cache_file_path, max_age_days=30):
+    """Check if cache file should be updated based on age.
+
+    Returns True if cache file doesn't exist or is older than max_age_days.
+    Returns False if cache file exists and is recent (younger than max_age_days).
+    """
+    if not os.path.exists(cache_file_path):
+        return True
+    try:
+        mtime = os.path.getmtime(cache_file_path)
+        age_days = (time.time() - mtime) / (24 * 3600)
+        return age_days >= max_age_days
+    except OSError:
+        # If we can't get mtime, assume we should update
+        return True
+
+def update_cache_if_needed(cache_file, fetch_callback, max_age_days=30):
+    """Update cache file if stale or missing.
+
+    Args:
+        cache_file: Path to cache file.
+        fetch_callback: Function that returns (content, error_msg) where content is string or None.
+        max_age_days: Max age of cache before considered stale.
+
+    Returns:
+        (content, error_msg) where content is from cache (fresh or stale) or None if no cache.
+    """
+    # Step 1: If we have recent cached content, use it
+    if os.path.exists(cache_file) and not should_update_cache(cache_file, max_age_days):
+        debug_print(f"Using recent cached content for: {cache_file}")
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return f.read(), None
+        except Exception as e:
+            debug_print(f"Error reading cache file {cache_file}: {e}")
+            return "", None  # Return empty content rather than None
+
+    # Step 2: Cache is missing or stale: attempt to fetch fresh content
+    temp_file = None
+    fetch_succeeded = False
+    try:
+        content, error_msg = fetch_callback()
+        if content is not None:
+            fetch_succeeded = True
+            # Write fresh content to a temporary file
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False, dir=os.path.dirname(cache_file)) as tf:
+                temp_file = tf.name
+                tf.write(content)
+            # Atomically move the temporary file to the cache location
+            shutil.move(temp_file, cache_file)
+            debug_print(f"Updated cache with fresh content: {cache_file}")
+            return content, None
+        # else: fetch failed, error_msg is set by fetch_callback
+    except Exception as e:
+        error_msg = f"Unexpected error during fetch: {str(e)}"
+        debug_print(f"Unexpected error for {cache_file}: {error_msg}")
+
+    # Fetch failed (either content is None or exception)
+    if not fetch_succeeded:
+        if os.path.exists(cache_file):
+            # Update mtime of existing cache file to prevent repeated failed fetches
+            try:
+                os.utime(cache_file, None)  # None sets both atime and mtime to current time
+                debug_print(f"Touched cache file to update mtime: {cache_file}")
+            except Exception as e:
+                debug_print(f"Failed to touch cache file {cache_file}: {e}")
+        else:
+            # Create empty file as a placeholder to avoid repeated fetch attempts
+            try:
+                os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    pass  # Create empty file
+                debug_print(f"Created empty cache file as placeholder: {cache_file}")
+            except Exception as e:
+                debug_print(f"Failed to create empty cache file {cache_file}: {e}")
+
+    # Clean up temporary file if it exists (fetch failed before move)
+    if temp_file and os.path.exists(temp_file):
+        try:
+            os.unlink(temp_file)
+        except Exception:
+            pass
+
+    # Fetch failed: if we have cache file (old or newly created empty), use it
+    if os.path.exists(cache_file):
+        debug_print(f"Fetch failed, using existing cache for: {cache_file}")
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return f.read(), None
+        except Exception as e:
+            debug_print(f"Error reading cache file {cache_file}: {e}")
+            return "", None  # Return empty content rather than None
+
+    # No cache at all and fetch failed (and we couldn't create empty file)
+    return None, error_msg
 
 # Global variables for directory filtering (computed once for all mirrors)
 DISTRO_CONFIGS = None
@@ -93,16 +212,15 @@ def initialize_distro_configs():
     if DISTRO_CONFIGS is not None:
         return  # Already initialized
 
+    # Load distro configs if not already loaded
     DISTRO_CONFIGS = get_distro_configs()
+    if not DISTRO_CONFIGS:
+        load_distro_configs(BASE_DIR)
+        DISTRO_CONFIGS = get_distro_configs()
 
-    # Collect all valid distro directories from DISTRO_CONFIGS
-    VALID_DIRS = set()
-    for distro_name, distro_dirs in DISTRO_CONFIGS.items():
-        # Strip leading/trailing slashes and add to valid dirs
-        normalized_dirs = [d.strip('/').lower() for d in distro_dirs]
-        VALID_DIRS.update(normalized_dirs)
-        # Also add the distro name itself
-        VALID_DIRS.add(distro_name.lower())
+    # Compute valid directories using common function
+    VALID_DIRS = get_valid_dirs(BASE_DIR)
+    print(VALID_DIRS)
 
 def load_existing_ls_data():
     """Load existing ls-mirrors.json data."""
@@ -115,22 +233,22 @@ def load_existing_ls_data():
             return {}
     return {}
 
-def load_new_mirrors_data():
-    """Load mirrors.json data."""
-    if os.path.exists(NEW_MIRRORS_PATH):
+def load_official_mirrors_data():
+    """Load primary mirror data from official-mirrors.json."""
+    if os.path.exists(OFFICIAL_MIRRORS_PATH):
         try:
-            with open(NEW_MIRRORS_PATH, 'r') as f:
+            with open(OFFICIAL_MIRRORS_PATH, 'r') as f:
                 return json.load(f)
         except Exception as e:
             debug_print(f"Error loading mirrors.json: {e}")
             return {}
     return {}
 
-def load_mirrors_data():
-    """Load mirrors.json data."""
-    if os.path.exists(EXISTING_MIRRORS_PATH):
+def load_final_mirrors_data():
+    """Load legacy mirrors.json data (used only as cc cache)."""
+    if os.path.exists(FINAL_MIRRORS_PATH):
         try:
-            with open(EXISTING_MIRRORS_PATH, 'r') as f:
+            with open(FINAL_MIRRORS_PATH, 'r') as f:
                 return json.load(f)
         except Exception as e:
             debug_print(f"Error loading mirrors.json: {e}")
@@ -335,18 +453,8 @@ def fetch_directory_listing(mirror_url, timeout=5):
 
     cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url))
 
-    # Check if we already have cached content
-    if os.path.exists(cache_file):
-        debug_print(f"Using cached content for: {mirror_url}")
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                return f.read(), None  # Return content and no error
-        except Exception as e:
-            debug_print(f"Error reading cache file {cache_file}: {e}")
-            return "", None  # Return content and no error
-
-    # Fetch from URL
-    try:
+    def fetch_html():
+        """Fetch HTML content from mirror_url, return (content, error_msg)."""
         debug_print(f"Fetching directory listing from: {mirror_url}")
         headers = {
             'User-Agent': 'Mozilla/5.0 (compatible; epkg-mirror-scanner/1.0)'
@@ -355,42 +463,37 @@ def fetch_directory_listing(mirror_url, timeout=5):
         # Ensure URL ends with / for directory listing
         url = mirror_url if mirror_url.endswith('/') else mirror_url + '/'
 
-        # If you want retry HTTP GET, confirm and delete this 0-sized file list:
-        # cd index && find -type f -name '*.html' -size 0 -ls
-        os.system(f"touch {cache_file}")
-
-        response = requests.get(url, headers=headers, timeout=timeout)
-        response.raise_for_status()
-
-        # Save to cache
         try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            debug_print(f"Cached content to: {cache_file}")
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.text, None
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP {e.response.status_code}: {e.response.reason}"
+            debug_print(f"HTTP error fetching {url}: {error_msg}")
+            log_failed_mirror(url, error_msg)
+            return None, error_msg
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Connection error: {str(e)}"
+            debug_print(f"Connection error fetching {url}: {error_msg}")
+            log_failed_mirror(url, error_msg)
+            return None, error_msg
+        except requests.exceptions.Timeout as e:
+            error_msg = f"Timeout after {timeout}s"
+            debug_print(f"Timeout fetching {url}: {error_msg}")
+            log_failed_mirror(url, error_msg)
+            return None, error_msg
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Request error: {str(e)}"
+            debug_print(f"Failed to fetch {url}: {error_msg}")
+            log_failed_mirror(url, error_msg)
+            return None, error_msg
         except Exception as e:
-            debug_print(f"Error saving to cache file {cache_file}: {e}")
+            error_msg = f"Unexpected error: {str(e)}"
+            debug_print(f"Unexpected error for {url}: {error_msg}")
+            return None, error_msg
 
-        return response.text, None  # Return content and no error
-    except requests.exceptions.HTTPError as e:
-        error_msg = f"HTTP {e.response.status_code}: {e.response.reason}"
-        debug_print(f"HTTP error fetching {url}: {error_msg}")
-        log_failed_mirror(url, error_msg)
-        return None, error_msg
-    except requests.exceptions.ConnectionError as e:
-        error_msg = f"Connection error: {str(e)}"
-        debug_print(f"Connection error fetching {url}: {error_msg}")
-        log_failed_mirror(url, error_msg)
-        return None, error_msg
-    except requests.exceptions.Timeout as e:
-        error_msg = f"Timeout after {timeout}s"
-        debug_print(f"Timeout fetching {url}: {error_msg}")
-        log_failed_mirror(url, error_msg)
-        return None, error_msg
-    except requests.exceptions.RequestException as e:
-        error_msg = f"Request error: {str(e)}"
-        debug_print(f"Failed to fetch {url}: {error_msg}")
-        log_failed_mirror(url, error_msg)
-        return None, error_msg
+    # Use generic cache update logic
+    return update_cache_if_needed(cache_file, fetch_html)
 
 def parse_apache_style(soup):
     """Parse Apache-style directory listing."""
@@ -577,61 +680,53 @@ def fetch_and_parse_with_js(mirror_url):
         print("To enable, install: pip install pyppeteer asyncio")
         return None
 
-    try:
-        # Create cache filename for JS-rendered content
-        js_cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url) + '.js.html')
-        js_html_content = None
+    # Create cache filename for JS-rendered content
+    js_cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url) + '.js.html')
+    # Ensure cache directory exists
+    os.makedirs(os.path.dirname(js_cache_file), exist_ok=True)
 
-        # Check if we have cached JS-rendered content
-        if os.path.exists(js_cache_file):
-            debug_print(f"Using cached JS-rendered content for: {mirror_url}")
-            try:
-                with open(js_cache_file, 'r', encoding='utf-8') as f:
-                    js_html_content = f.read()
-                print(f"Using cached JS-rendered content from {js_cache_file}")
-            except Exception as e:
-                debug_print(f"Error reading cached JS content: {e}")
-                return None
-        else:
-            print(f"Fetching with JavaScript rendering: {mirror_url}")
-            # Ensure URL ends with / for directory listing
-            url = mirror_url if mirror_url.endswith('/') else mirror_url + '/'
+    def fetch_js_html():
+        """Fetch JS-rendered HTML, return (content, error_msg)."""
+        print(f"Fetching with JavaScript rendering: {mirror_url}")
+        # Ensure URL ends with / for directory listing
+        url = mirror_url if mirror_url.endswith('/') else mirror_url + '/'
 
-            try:
-                # Use pyppeteer to render JavaScript with proper asyncio handling
-                try:
-                    js_html_content = asyncio.run(render_with_pyppeteer(url))
-                except RuntimeError as e:
-                    if "Event loop is closed" in str(e):
-                        debug_print("Event loop error, skipping JavaScript rendering")
-                        return None
-                    else:
-                        raise
-
-                # Save rendered HTML to cache
-                if js_html_content:
-                    with open(js_cache_file, 'w', encoding='utf-8') as f:
-                        f.write(js_html_content)
-                    print(f"Saved JS-rendered content to {js_cache_file}")
-                else:
-                    os.system(f"touch {js_cache_file}")
-                    print("Failed to get content from pyppeteer")
-                    return None
-            except Exception as e:
-                print(f"Error during JavaScript rendering: {str(e)}")
-                return None
-
-        # Try parsing the JS-rendered content
-        if js_html_content:
-            directories = parse_directory_listing(js_html_content)
-            if directories:
-                print(f"Found {len(directories)} directories with JavaScript rendering")
-                return directories
+        try:
+            content = asyncio.run(render_with_pyppeteer(url))
+            if content:
+                return content, None
             else:
-                print("No directories found in JavaScript-rendered content")
+                # pyppeteer returned None (fetch failed)
+                raise Exception("pyppeteer returned no content")
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e):
+                debug_print("Event loop error, skipping JavaScript rendering")
+                if os.path.exists(js_cache_file):
+                    debug_print(f"Event loop error, will use stale cache for: {mirror_url}")
+                    return None, "Event loop error"
+                else:
+                    return None, "Event loop error"
+            else:
+                raise
+        except Exception as e:
+            debug_print(f"JavaScript rendering error: {str(e)}")
+            if os.path.exists(js_cache_file):
+                debug_print(f"JavaScript rendering failed, will use stale cache for: {mirror_url}")
+                return None, str(e)
+            else:
+                return None, str(e)
 
-    except Exception as e:
-        print(f"JavaScript rendering process failed: {str(e)}")
+    # Use generic cache update logic
+    js_html_content, error_msg = update_cache_if_needed(js_cache_file, fetch_js_html)
+
+    # Try parsing the JS-rendered content
+    if js_html_content:
+        directories = parse_directory_listing(js_html_content)
+        if directories:
+            print(f"Found {len(directories)} directories with JavaScript rendering")
+            return directories
+        else:
+            print("No directories found in JavaScript-rendered content")
 
     return None
 
@@ -672,69 +767,57 @@ async def render_with_pyppeteer(url):
 
 def fetch_directory_listing_with_lftp(mirror_url, timeout=30):
     """Fetch directory listing using lftp as fallback method."""
-    try:
-        # Create cache filename for lftp output
-        lftp_cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url).replace('.html', '.lftp'))
+    # Create cache filename for lftp output
+    lftp_cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url).replace('.html', '.lftp'))
+    # Ensure cache directory exists
+    os.makedirs(os.path.dirname(lftp_cache_file), exist_ok=True)
 
-        # Check if we have cached lftp output
-        if os.path.exists(lftp_cache_file):
-            debug_print(f"Using cached lftp output for: {mirror_url}")
-            try:
-                with open(lftp_cache_file, 'r', encoding='utf-8') as f:
-                    lftp_output = f.read()
-                print(f"Using cached lftp content from {lftp_cache_file}")
-                return lftp_output
-            except Exception as e:
-                debug_print(f"Error reading cached lftp content: {e}")
-                # Continue to fetch fresh content
-
+    def fetch_lftp():
+        """Fetch using lftp, return (content, error_msg)."""
         debug_print(f"Attempting lftp directory listing for: {mirror_url}")
+        try:
+            # Prepare lftp command
+            lftp_cmd = ['lftp', '-c', f'set ssl:verify-certificate no; open {mirror_url}/; ls']
 
-        # Prepare lftp command
-        lftp_cmd = ['lftp', '-c', f'set ssl:verify-certificate no; open {mirror_url}/; ls']
-        os.system(f"touch {lftp_cache_file}")
+            # Run lftp with timeout
+            result = subprocess.run(
+                lftp_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Capture stderr in stdout
+                text=True,
+                timeout=timeout
+            )
 
-        # Run lftp with timeout
-        result = subprocess.run(
-            lftp_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Capture stderr in stdout
-            text=True,
-            timeout=timeout
-        )
+            if result.returncode == 0:
+                return result.stdout, None
+            else:
+                # LFTP command failed (non-zero exit code)
+                debug_print(f"LFTP failed for {mirror_url}: {result.stdout}")
+                # If stale cache exists, let helper fall back to it
+                if os.path.exists(lftp_cache_file):
+                    debug_print(f"LFTP failed, will use stale cache for: {mirror_url}")
+                    return None, f"LFTP failed: {result.stdout}"
+                # No existing cache, create a failure marker
+                failure_content = f"# LFTP FAILED: {result.stdout}"
+                return failure_content, None
+        except subprocess.TimeoutExpired:
+            debug_print(f"LFTP timeout for {mirror_url}")
+            if os.path.exists(lftp_cache_file):
+                debug_print(f"LFTP timeout, will use stale cache for: {mirror_url}")
+                return None, "LFTP timeout"
+            return None, "LFTP timeout"
+        except FileNotFoundError:
+            debug_print("LFTP not found - install lftp package for enhanced directory listing")
+            return None, "LFTP not found"
+        except Exception as e:
+            debug_print(f"LFTP error for {mirror_url}: {e}")
+            if os.path.exists(lftp_cache_file):
+                debug_print(f"LFTP error, will use stale cache for: {mirror_url}")
+                return None, str(e)
+            return None, str(e)
 
-        if result.returncode == 0:
-            debug_print(f"LFTP successful for {mirror_url}")
-            # Save to cache
-            try:
-                os.makedirs(os.path.dirname(lftp_cache_file), exist_ok=True)
-                with open(lftp_cache_file, 'w', encoding='utf-8') as f:
-                    f.write(result.stdout)
-                debug_print(f"Saved lftp output to {lftp_cache_file}")
-            except Exception as e:
-                debug_print(f"Error saving lftp cache: {e}")
-            return result.stdout
-        else:
-            debug_print(f"LFTP failed for {mirror_url}: {result.stdout}")
-            # Save failed result to cache to avoid retrying
-            try:
-                os.makedirs(os.path.dirname(lftp_cache_file), exist_ok=True)
-                with open(lftp_cache_file, 'w', encoding='utf-8') as f:
-                    f.write(f"# LFTP FAILED: {result.stdout}")
-                debug_print(f"Saved failed lftp result to {lftp_cache_file}")
-            except Exception as e:
-                debug_print(f"Error saving failed lftp cache: {e}")
-            return None
-
-    except subprocess.TimeoutExpired:
-        debug_print(f"LFTP timeout for {mirror_url}")
-        return None
-    except FileNotFoundError:
-        debug_print("LFTP not found - install lftp package for enhanced directory listing")
-        return None
-    except Exception as e:
-        debug_print(f"LFTP error for {mirror_url}: {e}")
-        return None
+    content, error_msg = update_cache_if_needed(lftp_cache_file, fetch_lftp)
+    return content
 
 def parse_lftp_output(lftp_output, mirror_url):
     """Parse lftp output and extract directories, handle redirections."""
@@ -790,7 +873,7 @@ def parse_lftp_output(lftp_output, mirror_url):
         if directories:
             # Filter directories to only include valid distro directories
             initialize_distro_configs()  # Ensure VALID_DIRS is initialized
-            filtered_dirs = [d for d in directories if d.lower() in VALID_DIRS]
+            filtered_dirs = [d for d in directories if d in VALID_DIRS]
             if filtered_dirs:
                 entry_data["ls"] = sorted(filtered_dirs)
         entry_json = json.dumps(entry_data, separators=(',', ':'))
@@ -884,7 +967,7 @@ def parse_directory_listing(html_content, mirror_url=None):
         debug_print(f"Error parsing directory listing: {e}")
         return []
 
-def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_dirs, mirror_url=None):
+def filter_directories(official_mirrors, directories, mirror_distros, mirror_distro_dirs, mirror_url=None):
     """Filter directories based on DISTRO_CONFIGS and mirror's distro information."""
     if not directories:
         return []
@@ -926,10 +1009,8 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
         directory = directory.strip('/').strip('./')
         processed_directories.append((original_directory, directory))
 
-        normalized_dir = directory.lower()
-
         # Full matching only - no partial matching
-        if normalized_dir in VALID_DIRS and directory not in filtered:
+        if directory in VALID_DIRS and directory not in filtered:
             filtered.append(directory)
 
     debug_print(f"Filtered {len(directories)} directories to {len(filtered)}: {filtered}")
@@ -980,9 +1061,9 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
 
             # Check if this directory ends with any valid directory name
             for valid_dir in VALID_DIRS:
-                if dir_path.lower().endswith('/' + valid_dir.lower()) or dir_path.lower() == valid_dir.lower():
+                if dir_path.endswith('/' + valid_dir) or dir_path == valid_dir:
                     # Extract the prefix
-                    if dir_path.lower() == valid_dir.lower():
+                    if dir_path == valid_dir:
                         prefix = ''
                     else:
                         prefix = dir_path[:-(len(valid_dir)+1)]  # +1 for the slash
@@ -1016,7 +1097,7 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
                 for valid_dir, original_path in matches:
                     print(f"  - {original_path} (matches '{valid_dir}')")
                     # Only collect if prefix matches mirror URL structure AND valid_dir is in VALID_DIRS
-                    if prefix_matches_mirror and valid_dir.lower() in VALID_DIRS:
+                    if prefix_matches_mirror and valid_dir in VALID_DIRS:
                         collected_dirs.add(valid_dir)
 
                 if '://' in prefix:
@@ -1028,14 +1109,14 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
                     else:
                         new_url = f"{mirror_url}/{prefix.strip('/')}"
 
-                # Check if this exact URL or a similar one already exists in mirrors_data
-                if new_url in mirrors_data:
+                # Check if this exact URL or a similar one already exists in official_mirrors
+                if new_url in official_mirrors:
                     continue
 
                 print("\n### RECOMMENDED CONFIGURATION for sources/manual-mirrors.json")
                 new_url_json = json.dumps(new_url)
                 # Filter valid_dir entries to only include those in VALID_DIRS
-                filtered_ls_entries = [valid_dir for valid_dir, _ in matches if valid_dir.lower() in VALID_DIRS]
+                filtered_ls_entries = [valid_dir for valid_dir, _ in matches if valid_dir in VALID_DIRS]
                 entry_data = {"ls": filtered_ls_entries}
                 entry_json = json.dumps(entry_data, separators=(',', ':'))
                 print(f"{new_url_json}:{entry_json},")
@@ -1048,28 +1129,24 @@ def filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_
 
 def should_skip_mirror(mirror_url, mirror_info):
     """Check if mirror should be skipped based on criteria."""
-    # Skip if top_level is true
-    if mirror_info.get('root') == 1:
-        return "root"
-
     if mirror_info.get('top_level'):
         return "top_level"
 
     return False
 
-def process_mirrors(force_update=False):
+def process_mirrors():
     """Process mirrors and update ls data."""
-    # Load existing data
-    ls_data = load_existing_ls_data()
-    mirrors_data = load_mirrors_data()
-    new_mirrors_data = load_new_mirrors_data()
+    # Always start from a fresh ls_data; ls-mirrors.json is output-only.
+    ls_data = {}
+    final_mirrors_data = load_final_mirrors_data()
+    official_mirrors = load_official_mirrors_data()
 
     processed_count = 0
     updated_count = 0
     skipped_count = 0
-    total_mirrors = len(mirrors_data)
+    total_mirrors = len(official_mirrors)
 
-    for i, (mirror_url, mirror_info) in enumerate(mirrors_data.items(), 1):
+    for i, (mirror_url, mirror_info) in enumerate(official_mirrors.items(), 1):
         # Print progress with inline result
         print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing mirror {i}/{total_mirrors}: {mirror_url}", end=" ... ", flush=True)
 
@@ -1077,31 +1154,24 @@ def process_mirrors(force_update=False):
         if mirror_url not in ls_data:
             ls_data[mirror_url] = {}
 
-        # Check if mirror is missing country code and try to resolve it
-        has_country_code = mirror_info.get('cc') or mirror_info.get('country_code') or mirror_info.get('country')
-        resolved_cc = 'cc' in ls_data[mirror_url] or (mirror_url in new_mirrors_data and 'cc' in new_mirrors_data[mirror_url])
-        if not has_country_code and not resolved_cc:
+        # Determine country code from primary data, then legacy cache, then GeoIP.
+        cc = mirror_info.get('country_code') or mirror_info.get('country')
+        if not cc:
+            final_info = final_mirrors_data.get(mirror_url, {})
+            cc = final_info.get('cc') or final_info.get('country_code') or final_info.get('country')
+        if cc:
+            if len(cc) == 2:
+                ls_data[mirror_url]['cc'] = cc
+        else:
             debug_print(f"Mirror {mirror_url} missing country code, attempting GeoIP resolution")
             resolved_cc = resolve_mirror_country_code(mirror_url)
             if resolved_cc:
                 ls_data[mirror_url]['cc'] = resolved_cc
                 debug_print(f"Resolved country code {resolved_cc} for {mirror_url}")
-                print(f"(resolved cc: {resolved_cc})", end = " ")
+                print(f"(resolved cc: {resolved_cc})", end=" ")
             else:
                 debug_print(f"Failed to resolve country code for {mirror_url}")
-                print(f"(no cc resolved) ", end = " ")
-
-        # Check if mirror already has 'ls' data
-        if mirror_url in ls_data and 'ls' in ls_data[mirror_url] and ls_data[mirror_url]['ls']:
-            print("already has ls data, skipping")
-            skipped_count += 1
-            continue
-
-        # Check if mirror_info has 'ls' field
-        if not force_update and 'ls' in mirror_info:
-            print("already has ls in mirrors.json, skipping")
-            skipped_count += 1
-            continue
+                print("(no cc resolved) ", end=" ")
 
         # Skip non-HTTP mirrors
         if not mirror_url.startswith(('http://', 'https://')):
@@ -1117,6 +1187,7 @@ def process_mirrors(force_update=False):
             continue
 
         processed_count += 1
+        lftp_tried = False
 
         # Fetch directory listing
         html_content, error_msg = fetch_directory_listing(mirror_url)
@@ -1132,6 +1203,7 @@ def process_mirrors(force_update=False):
         # If no directories found, try lftp as fallback
         if not directories:
             print("no directories found with HTML parsing, trying lftp...")
+            lftp_tried = True
             lftp_output = fetch_directory_listing_with_lftp(mirror_url)
             if lftp_output:
                 directories = parse_lftp_output(lftp_output, mirror_url)
@@ -1143,25 +1215,38 @@ def process_mirrors(force_update=False):
                 print("LFTP failed")
 
         # Get mirror's distro information
-        mirror_distros = mirror_info.get('os', mirror_info.get('distros', []))
-        mirror_distro_dirs = mirror_info.get('dir', mirror_info.get('distro_dirs', []))
+        mirror_distros = mirror_info.get('distros', [])
+        mirror_distro_dirs = mirror_info.get('distro_dirs', [])
 
         # Filter directories
-        filtered_dirs = filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_dirs, mirror_url)
+        filtered_dirs = filter_directories(official_mirrors, directories, mirror_distros, mirror_distro_dirs, mirror_url)
+
+        # If no directories found after filtering and lftp not tried yet, try lftp
+        if filtered_dirs == [] and not lftp_tried:
+            print("no directories found after filtering, trying lftp...")
+            lftp_tried = True
+            lftp_output = fetch_directory_listing_with_lftp(mirror_url)
+            if lftp_output:
+                directories = parse_lftp_output(lftp_output, mirror_url)
+                if directories:
+                    print(f"LFTP found {len(directories)} directories: {directories}")
+                    # Re-filter with new directories
+                    filtered_dirs = filter_directories(official_mirrors, directories, mirror_distros, mirror_distro_dirs, mirror_url)
+                else:
+                    print("LFTP found no directories (or redirection detected)")
+            else:
+                print("LFTP failed")
+
         if filtered_dirs is None:
             continue
-        if filtered_dirs == 1:
-            ls_data[mirror_url]['root'] = 1
-            print("root=1")
-            continue
-        if not filtered_dirs and '.js' in html_content and '</script>' in html_content:
+        if not filtered_dirs and html_content and '.js' in html_content and '</script>' in html_content:
             print("no directories found with standard parsing, trying JavaScript rendering...")
 
             # Try with JavaScript rendering
             js_directories = fetch_and_parse_with_js(mirror_url)
             if js_directories:
                 directories = js_directories
-                filtered_dirs = filter_directories(mirrors_data, directories, mirror_distros, mirror_distro_dirs, mirror_url)
+                filtered_dirs = filter_directories(official_mirrors, directories, mirror_distros, mirror_distro_dirs, mirror_url)
                 if filtered_dirs is None:
                     continue
                 print(f"Filtered {len(filtered_dirs)} directories with JavaScript rendering")
@@ -1211,10 +1296,10 @@ def debug_parse_single_file(html_file):
         print(f"Error reading file: {e}")
         return
 
-    mirrors_data = load_mirrors_data()
+    official_mirrors = load_official_mirrors_data()
     html_filename = os.path.basename(html_file)
 
-    for i, (mirror_url, mirror_info) in enumerate(mirrors_data.items(), 1):
+    for i, (mirror_url, mirror_info) in enumerate(official_mirrors.items(), 1):
 
         cache_filename = get_cache_filename(mirror_url)
         if cache_filename != html_filename:
@@ -1244,20 +1329,17 @@ def debug_parse_single_file(html_file):
 
         # Show what would be filtered
         print(f"\n=== Filtering test ===")
-        filtered_dirs = filter_directories(mirrors_data, directories, [], [], mirror_url)
+        filtered_dirs = filter_directories(official_mirrors, directories, [], [], mirror_url)
         if filtered_dirs is None:
             continue
-        if filtered_dirs == 1:
-            print("root=1")
-            continue
-        if not filtered_dirs and '.js' in html_content and '</script>' in html_content:
+        if not filtered_dirs and html_content and '.js' in html_content and '</script>' in html_content:
             print("no directories found with standard parsing, trying JavaScript rendering...")
 
             # Try with JavaScript rendering
             js_directories = fetch_and_parse_with_js(mirror_url)
             if js_directories:
                 directories = js_directories
-                filtered_dirs = filter_directories(mirrors_data, directories, [], [], mirror_url)
+                filtered_dirs = filter_directories(official_mirrors, directories, [], [], mirror_url)
                 if filtered_dirs is None:
                     continue
                 print(f"found {len(directories)} directories with JavaScript rendering")
@@ -1271,7 +1353,6 @@ def debug_parse_single_file(html_file):
 def main():
     parser = argparse.ArgumentParser(description='Process mirror directory listings')
     parser.add_argument('--parse', help='Debug mode: parse a single HTML file (e.g., index/example.com.html)')
-    parser.add_argument('--update', action='store_true', help='force update existing ls fields')
 
     args = parser.parse_args()
 
@@ -1288,7 +1369,7 @@ def main():
     initialize_distro_configs()
 
     # Process mirrors and get updated ls data
-    ls_data = process_mirrors(force_update=args.update)
+    ls_data = process_mirrors()
 
     # Save results
     save_ls_data(ls_data)

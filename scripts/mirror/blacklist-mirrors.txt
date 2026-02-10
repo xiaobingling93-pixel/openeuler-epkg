@@ -1,0 +1,32 @@
+# Connection errors - sites with network/connection problems (3 mirrors)
+alpine.ccns.ncku.edu.tw
+archlinux.mirror.py
+dafi.inf.um.es
+
+# No distribution directories found (1 mirrors)
+cesium.di.uminho.pt
+
+mirror.solnode.io
+fedora-alt.c3sl.ufpr.br
+
+# redirects to mirror.group.one
+mirror.one.com
+
+# duplicate DNS
+linux2.yz.yamagata-u.ac.jp
+
+# has wrong url paths
+216.211.30.218
+ftp.iij.ad.jp
+ftp.nsc.ru
+mirror.5i.fi
+mirror.netone.nl
+mirror.netsite.dk
+mirrors.20i.com
+mirrors.centos.behostings.net
+atl.mirrors.knownhost.com
+mirror.cs.siue.edu
+plug-mirror.rcac.purdue.edu
+mirror.eu.oneandone.net
+mirror.us.oneandone.net
+download.opensuse.org

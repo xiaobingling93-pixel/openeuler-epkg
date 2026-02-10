@@ -114,20 +114,12 @@ pub struct Mirror {
     #[serde(default)]
     #[serde(skip_serializing)]
     pub url: String,
-    #[serde(rename = "os")]
+    #[serde(rename = "top")]
     #[serde(default)]
-    pub distros: HashSet<String>,
-    #[serde(rename = "dir")]
-    #[serde(default)]
-    pub distro_dirs: HashSet<String>,
-    #[serde(rename = "pdir")]
-    #[serde(default)]
-    pub probe_dirs: HashSet<String>,    // will be merged into distro_dirs after JSON loading
+    pub top_os: Option<String>,
     #[serde(rename = "ls")]
     #[serde(default)]
-    pub ls_dirs: HashSet<String>,       // will be merged into distro_dirs after JSON loading
-    #[serde(rename = "root", default, deserialize_with = "crate::mirror::bool_from_number")]
-    pub top_level: bool,
+    pub distro_dirs: HashSet<String>,
     #[serde(rename = "cc")]
     #[serde(default)]
     pub country_code: Option<String>,
@@ -222,11 +214,8 @@ impl Default for Mirror {
     fn default() -> Self {
         Self {
             url: String::new(),
-            distros: HashSet::new(),
+            top_os: None,
             distro_dirs: HashSet::new(),
-            probe_dirs: HashSet::new(),
-            ls_dirs: HashSet::new(),
-            top_level: false,
             country_code: None,
             protocols: 0,
             bandwidth: None,
@@ -244,11 +233,8 @@ impl Clone for Mirror {
     fn clone(&self) -> Self {
         Self {
             url: self.url.clone(),
-            distros: self.distros.clone(),
+            top_os: self.top_os.clone(),
             distro_dirs: self.distro_dirs.clone(),
-            probe_dirs: self.distro_dirs.clone(),
-            ls_dirs: self.ls_dirs.clone(),
-            top_level: self.top_level,
             country_code: self.country_code.clone(),
             protocols: self.protocols,
             bandwidth: self.bandwidth,

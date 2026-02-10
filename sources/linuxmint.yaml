@@ -5,6 +5,7 @@ distro_dirs:
 - www.linuxmint.com
 - linuxmint.com
 - linuxmint
+- LinuxMint
 - mint
 versions: # https://www.linuxmint.com/download_all.php
 - zena      22.3

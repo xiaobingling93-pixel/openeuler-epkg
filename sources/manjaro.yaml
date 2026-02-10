@@ -7,6 +7,7 @@ distro_dirs:
 - manjaro-repo
 - manjaro-pkg
 - manjaro
+- Manjaro
 versions:
 - stable
 - testing

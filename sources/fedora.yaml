@@ -13,20 +13,21 @@ distro_dirs:
 - download.fedora.redhat.com/pub/fedora/linux
 - dl.fedoraproject.org/pub/fedora/linux
 - fedoraproject.org/fedora/linux
+- fedoraproject.org/linux
 - fedora-projects/fedora-secondary
 - fedora-projects/fedora/linux
 - fedora.redhat.com/linux
 - Fedora/fedora/linux
 - fedora/fedora/linux
-- fedora/fedora
 - fedora/linux
 - fedora/fedora-secondary
+- fedora/second
 - fedora-linux/fedora-secondary
 - fedora-linux/fedora/linux
 - fedora-linux
 - fedora-secondary # Common suffix for secondary archs: AArch64 (ARM64), ARMhfp (ARM 32-bit), PowerPC (ppc64le), s390x
-- Fedora
-- fedora
+- fedora-second    # Ditto
+- fedora-altarch   # Ditto
 repos:
   Everything:
 index_url:         $mirror/releases/$version/$repo/$arch/os/repodata/repomd.xml

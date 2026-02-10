@@ -4,6 +4,7 @@ distro_dirs:
 - mirror.cachyos.org
 - cachyos.org
 - cachyos
+- cachyOS
 versions:
 - "latest"
 repos:

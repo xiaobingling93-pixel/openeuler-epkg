@@ -53,14 +53,8 @@ fn merge_single_manual_mirror(
         if !manual_mirror.country_code.is_none() {
             existing_mirror.country_code = manual_mirror.country_code.clone();
         }
-        if !manual_mirror.probe_dirs.is_empty() {
-            existing_mirror.probe_dirs = manual_mirror.probe_dirs.clone();
-        }
-        if !manual_mirror.ls_dirs.is_empty() {
-            existing_mirror.ls_dirs = manual_mirror.ls_dirs.clone();
-        }
-        if !manual_mirror.distros.is_empty() {
-            existing_mirror.distros = manual_mirror.distros.clone();
+        if manual_mirror.top_os.is_some() {
+            existing_mirror.top_os = manual_mirror.top_os.clone();
         }
         if !manual_mirror.distro_dirs.is_empty() {
             existing_mirror.distro_dirs = manual_mirror.distro_dirs.clone();
@@ -101,14 +95,14 @@ fn load_and_merge_manual_mirrors(
 }
 
 
-/// Convert URL keys to site keys and merge distros and ls_dirs into distro_dirs
+/// Convert URL keys to site keys and merge top_os into distro_dirs
 fn convert_mirror_data_structure(all_mirrors_raw: HashMap<String, Mirror>) -> HashMap<String, Mirror> {
     let mut all_mirrors: HashMap<String, Mirror> = HashMap::new();
 
     for (url, mut mirror) in all_mirrors_raw {
-        mirror.distro_dirs.extend(mirror.probe_dirs.clone());
-        mirror.distro_dirs.extend(mirror.ls_dirs.clone());
-        mirror.distro_dirs.extend(mirror.distros.clone());
+        if let Some(ref top_os) = mirror.top_os {
+            mirror.distro_dirs.insert(top_os.clone());
+        }
         mirror.url = url.clone();
 
         // Use site name as key instead of full URL
@@ -163,7 +157,7 @@ fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
     // Load and merge manual-mirrors.json if it exists
     load_and_merge_manual_mirrors(&mut all_mirrors_raw, &manual_mirrors_file_path)?;
 
-    // Convert URL keys to site keys and merge distros and ls_dirs into distro_dirs
+    // Convert URL keys to site keys and merge top_os into distro_dirs
     let all_mirrors = convert_mirror_data_structure(all_mirrors_raw);
 
     // Apply filtering by channel_config().distro AND channel_config().distro_dirs
@@ -180,10 +174,10 @@ fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
     Ok(filtered_mirrors)
 }
 
-/// Check if a mirror is suitable for the channel config, considering distro OR distro_dirs
+/// Check if a mirror is suitable for the channel config, considering top_os/distro OR distro_dirs
 fn is_mirror_suitable_for_channel_config(mirror: &Mirror, target_distro: &str, target_distro_dirs: &[String]) -> bool {
-    // Check if mirror supports the target distro OR any of the required distro_dirs
-    let has_distro = mirror.distros.contains(&target_distro.to_string());
+    // Check if mirror supports the target distro (via top_os or distro_dirs) OR any of the required distro_dirs
+    let has_distro = mirror.top_os.as_ref() == Some(&target_distro.to_string()) || mirror.distro_dirs.contains(&target_distro.to_string());
     let has_dirs = target_distro_dirs.iter().any(|required_dir| {
         mirror.distro_dirs.contains(required_dir)
     });
@@ -199,7 +193,7 @@ fn is_mirror_suitable_for_channel_config(mirror: &Mirror, target_distro: &str, t
     if target_distro == "fedora" {
         if arch != "x86_64" && arch != "aarch64" {
             // For non-primary architectures, mirror must support secondary repos
-            return mirror.distro_dirs.iter().any(|dir| dir.contains("secondary"));
+            return mirror.distro_dirs.iter().any(|dir| dir.contains("secondary") || dir.contains("altarch"));
         }
     }
 
