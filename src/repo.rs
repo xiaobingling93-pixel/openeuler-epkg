@@ -502,6 +502,8 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) ->
 
     let need_convert = if !need_download {
         // Check if output file exists and is non-empty
+        // .files.tar.gz archives contain both desc and files, but processing may fail
+        // or be interrupted, leaving packages.txt empty. Force conversion in such cases.
         let output_path = repo_dir.join("packages.txt");
         let output_exists = output_path.exists();
         let output_size = if output_exists {
