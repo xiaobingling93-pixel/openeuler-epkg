@@ -175,26 +175,17 @@ pub fn is_immutable_filename(file_path: &str) -> bool {
 pub fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType {
     let path_str = final_path.to_string_lossy();
 
-    // Check for mutable repository metadata files first
-    let file_name = final_path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-
-    // Known mutable files
-    if matches!(file_name,
-        "Release" | "Release.gpg" | "InRelease" |
-        "repomd.xml" | "repomd.xml.asc" |
-        "APKINDEX.tar.gz" | "APKINDEX.tar.gz.sig" |
-        "elf-loader" | "elf-loader.sig"
-    ) {
-        return FileType::Mutable;
-    }
-
-    // Check by path patterns for mutable files
-    if path_str.contains("/Release") ||
-       path_str.contains("/repomd.xml") ||
-       path_str.contains("/APKINDEX") ||
-       path_str.contains("/elf-loader") {
+    // These are mainly repo index files, marking them Mutable here will produce .etag.json
+    // file that can be touch/checked by has_recent_download().
+    if path_str.contains("/Release")                || // DEB, Release[.gpg]
+       path_str.contains("/InRelease")              || // DEB
+       path_str.contains("/repomd.xml")             || // RPM, repomd.xml[.asc]
+       path_str.ends_with(".db.tar.gz")             || // Archlinux, (core|extra|..).db.tar.gz
+       path_str.ends_with(".files.tar.gz")          || // Archlinux, (core|extra|..).files.tar.gz, superset of .db.tar.gz
+       path_str.contains("/APKINDEX")               || // Alpine, APKINDEX.tar.gz[.sig]
+       path_str.contains("/repodata.json")          || // Conda, repodata.json.(zst|bz2)
+       path_str.contains("/current_repodata.json")  || // Conda, current_repodata.json.gz
+       path_str.contains("/elf-loader") {              // epkg elf-loader[.sig]
         return FileType::Mutable;
     }
 
