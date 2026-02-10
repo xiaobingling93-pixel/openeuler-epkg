@@ -148,7 +148,7 @@ pub fn unlink_package_diff(
                     }
                 }
             } else {
-                log::debug!("Removing file: {}", env_file_path.display());
+                log::trace!("Removing file: {}", env_file_path.display());
                 std::fs::remove_file(&env_file_path)
                     .with_context(|| format!("Failed to remove file {}", env_file_path.display()))?;
             }

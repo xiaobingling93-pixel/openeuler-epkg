@@ -135,7 +135,9 @@ fn run_action(
         }
 
         PackageAction::UnlinkFiles => {
-            unlink_package(pkgkey, &pkg_info.pkgline, &store_root, &env_root)?;
+            if old_pkgkey.is_none() {   // Upgrade is handled by unlink_package_diff()
+                unlink_package(pkgkey, &pkg_info.pkgline, &store_root, &env_root)?;
+            }
             remove_package_from_cache(pkgkey, pkg_info);
         }
 

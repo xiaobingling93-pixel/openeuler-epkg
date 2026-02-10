@@ -215,7 +215,7 @@ fn deduplicate_files_by_hardlink(
                         log::debug!("Failed to remove temporary file {}: {}", temp_file_path.display(), e);
                     }
                     dedup_count += 1;
-                    log::debug!("De-duplicated file {} by hardlink to {}",
+                    log::trace!("De-duplicated file {} by hardlink to {}",
                                current_file_path.display(), existing_file_path.display());
                 }
             }
