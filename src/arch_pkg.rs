@@ -298,7 +298,7 @@ fn extract_package_contents<R: Read>(
                 log::warn!("Failed to create hard link from {} to {}: {}",
                     source_path.display(), target_path.display(), e);
             } else {
-                log::debug!("Created hard link: {} -> {}", target_path.display(), source_path.display());
+                log::trace!("Created hard link: {} -> {}", target_path.display(), source_path.display());
             }
         } else {
             log::warn!("Cannot create hard link {}: source file {} does not exist",
