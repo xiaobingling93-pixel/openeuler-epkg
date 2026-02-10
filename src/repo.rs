@@ -500,12 +500,30 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) ->
     let need_download = should_update == ReleaseStatus::NeedDownload ||
                         should_update == ReleaseStatus::NeedUpdate;
 
+    let need_convert = if !need_download {
+        // Check if output file exists and is non-empty
+        let output_path = repo_dir.join("packages.txt");
+        let output_exists = output_path.exists();
+        let output_size = if output_exists {
+            std::fs::metadata(&output_path).ok().map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        let need_convert = !output_exists || output_size == 0;
+        log::debug!("need_convert check: output_path={}, exists={}, size={}, need_convert={}",
+                   output_path.display(), output_exists, output_size, need_convert);
+        need_convert
+    } else {
+        false
+    };
+
     release_items.push(RepoReleaseItem {
         repo_revise: RepoRevise {
             repodata_name: repo.repodata_name.to_string(),
             ..repo.clone()
         },
         need_download: need_download,
+        need_convert: need_convert,
         arch: repo.arch.clone(),
         url: index_url,
         package_baseurl: package_baseurl,
