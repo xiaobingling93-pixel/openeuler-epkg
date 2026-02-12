@@ -33,6 +33,8 @@ pub enum LinkType {
     Hardlink,
     #[serde(rename = "symlink")]
     Symlink,
+    #[serde(rename = "reflink")]
+    Reflink,
     #[serde(rename = "move")]
     Move,
     #[serde(rename = "runpath")]

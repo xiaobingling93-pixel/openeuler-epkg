@@ -16,9 +16,9 @@ use log;
 
 /// File action types (simplified version for config file handling)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileAction {
+pub enum EtcFileAction {
     Create,
-    Skip,
+    Identical,
     Backup,
     AltName, // For NOREPLACE configs - creates .rpmnew file
 }
@@ -30,28 +30,102 @@ fn is_config_file_path(file_path: &Path) -> bool {
 
 /// Get config file action based on existing file and flags
 fn get_config_file_action(
-    existing_path: &Path,
-    new_path: &Path,
-    is_noreplace: bool,
-) -> FileAction {
+    target_path: &Path,
+    fs_file: &Path,
+) -> EtcFileAction {
     // Check if existing file exists
-    if !existing_path.exists() {
-        return FileAction::Create;
+    if !target_path.exists() {
+        return EtcFileAction::Create;
     }
 
     // Check if files are identical (simplified - just check if they exist and are same size)
-    if let (Ok(meta1), Ok(meta2)) = (fs::metadata(existing_path), fs::metadata(new_path)) {
+    if let (Ok(meta1), Ok(meta2)) = (fs::metadata(target_path), fs::metadata(fs_file)) {
         if meta1.len() == meta2.len() && meta1.mode() == meta2.mode() {
-            return FileAction::Skip;
+            return EtcFileAction::Identical;
         }
     }
 
+    // For config files, use transaction module to decide file action
+    // For now, we'll infer NOREPLACE from common patterns (can be enhanced later with RPM metadata)
+    let is_noreplace = target_path.file_name().and_then(|n| n.to_str())
+            .map(|s| s.contains("config") || s.contains("conf") || s.contains(".cfg"))
+            .unwrap_or(false);
+
     // Files differ - handle based on flags
     if is_noreplace {
-        FileAction::AltName // Create .rpmnew file
+        EtcFileAction::AltName // Create .rpmnew file
     } else {
-        FileAction::Backup // Backup existing, then create new
+        EtcFileAction::Backup // Backup existing, then create new
     }
+}
+
+/// Process config file actions (skip, create .rpmnew, backup, or continue)
+fn process_config_file(
+    fs_file: &Path,
+    target_path: &Path,
+    can_reflink: bool,
+) -> Result<EtcFileAction> {
+    // Use transaction module to decide config file fate
+    let action = get_config_file_action(target_path, fs_file);
+
+    match action {
+        EtcFileAction::Identical => {
+            log::debug!("Skipping config file {} (identical to existing)", target_path.display());
+            Ok(EtcFileAction::Identical)
+        }
+        EtcFileAction::AltName => {
+            // Create .rpmnew file for NOREPLACE configs
+            let rpmnew_path = target_path.with_extension(format!(
+                "{}.rpmnew",
+                target_path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+            ));
+            log::info!("Creating .rpmnew file for config {}: {}", target_path.display(), rpmnew_path.display());
+            lfs::reflink_or_copy(fs_file, &rpmnew_path, can_reflink)?;
+            Ok(EtcFileAction::AltName)
+        }
+        EtcFileAction::Backup => {
+            // Backup existing config file
+            let backup_path = target_path.with_extension(format!(
+                "{}.rpmsave",
+                target_path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+            ));
+            log::info!("Backing up config {} to {}", target_path.display(), backup_path.display());
+            lfs::copy(target_path, &backup_path)?;
+            Ok(EtcFileAction::Backup)
+        }
+        _ => {
+            // Create or overwrite (default behavior)
+            Ok(EtcFileAction::Create)
+        }
+    }
+}
+
+/// Handle config files (/etc/ files) with special processing
+fn mirror_config_file(
+    fs_file: &Path,
+    target_path: &Path,
+    can_reflink: bool,
+) -> Result<()> {
+    // Process config file actions
+    let config_result = process_config_file(fs_file, target_path, can_reflink)?;
+    match config_result {
+        EtcFileAction::Identical => return Ok(()),
+        EtcFileAction::AltName => return Ok(()),
+        _ => (), // Continue with linking
+    }
+
+    // Remove existing target file if present (already backed up if needed)
+    if target_path.exists() {
+        lfs::remove_file(target_path)?;
+    }
+
+    // Copy config file using reflink if supported, otherwise regular copy
+    lfs::reflink_or_copy(fs_file, target_path, can_reflink)?;
+    Ok(())
 }
 
 // link files from env_root to store_fs_dir
@@ -206,18 +280,30 @@ pub fn compute_link_type_and_reflink(
     // can_symlink: symlinks work across filesystems, but not if link type is Move
     let can_symlink = link_type != LinkType::Move;
 
+    // Check reflink support only once when needed
+    let should_check_reflink = plan.package_format == PackageFormat::Conda
+                                || link_type == LinkType::Hardlink
+                                || link_type == LinkType::Reflink;
+    if should_check_reflink {
+        can_reflink = lfs::check_reflink_support(&plan.env_root, same_fs);
+        if can_reflink {
+            log::debug!("Reflink support detected on filesystem");
+        }
+    }
+
     if link_type == LinkType::Hardlink {
         if same_fs {
-            // Same filesystem, keep hardlink and check for reflink support
-            can_reflink = lfs::check_reflink_support(&plan.env_root, same_fs);
-            if can_reflink {
-                log::debug!("Reflink support detected on filesystem");
-            }
+            // Same filesystem, keep hardlink (reflink support already checked)
+            // can_reflink already set above
         } else {
             // Different filesystems, downgrade to symlink
             log::debug!("Store root and env root are on different filesystems, downgrading hardlink to symlink");
             link_type = LinkType::Symlink;
         }
+    } else if link_type == LinkType::Reflink {
+        // Reflink can attempt reflink on same filesystem, fall back to copy otherwise
+        // can_reflink already set above if same_fs, otherwise remains false
+        // If not same_fs, can_reflink remains false, link_type stays Reflink (will fall back to copy)
     } else if link_type == LinkType::Move || link_type == LinkType::Runpath {
         if !same_fs {
             // Different filesystems, rename() will fail
@@ -326,15 +412,41 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
         //         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
         // }
 
-        if fs_file_info.is_link() {
-            mirror_symlink_file(&fs_file, &target_path)
-                .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))?;
-        } else {
-            mirror_regular_file(&fs_file, &target_path, Path::new(fhs_file), link_type, can_reflink)
-                .with_context(|| format!("Failed to handle regular file {}", fs_file.display()))?;
-        }
+        mirror_file(&fs_file, &target_path, Path::new(fhs_file), fs_file_info.is_link(), link_type, can_reflink)?
     }
     Ok(())
+}
+
+/// Handle a single file (symlink or regular) in mirror_dir function
+///
+/// This function decides whether to call mirror_symlink_file() or mirror_regular_file()
+/// based on the is_link parameter.
+///
+/// Parameters:
+/// - fs_file: Path to the file in the store
+/// - target_path: Where to create the file/symlink in the environment
+/// - fhs_file: Relative path from store_fs_dir (used to determine if file is in /etc/)
+/// - is_link: Whether the file is a symlink (true) or regular file (false)
+/// - link_type: Link type to use (hardlink, symlink, move, runpath)
+/// - can_reflink: Whether reflink (copy-on-write) is supported
+pub fn mirror_file(
+    fs_file: &Path,
+    target_path: &Path,
+    fhs_file: &Path,
+    is_link: bool,
+    link_type: LinkType,
+    can_reflink: bool,
+) -> Result<()> {
+    if is_link {
+        mirror_symlink_file(fs_file, target_path)
+            .with_context(|| format!("Failed to handle symlink file {}", fs_file.display()))
+    } else if is_config_file_path(fhs_file) {
+        mirror_config_file(fs_file, target_path, can_reflink)
+            .with_context(|| format!("Failed to handle config file {}", fs_file.display()))
+    } else {
+        mirror_regular_file(fs_file, target_path, fhs_file, link_type, can_reflink)
+            .with_context(|| format!("Failed to handle regular file {}", fs_file.display()))
+    }
 }
 
 /// Try to create a hardlink from source to target.
@@ -423,64 +535,15 @@ fn mirror_symlink_file(fs_file: &Path, target_path: &Path) -> Result<()> {
 /// - fhs_file: Relative path from store_fs_dir (used to determine if file is in /etc/)
 /// - link_type: Link type to use (hardlink, symlink, move, runpath)
 /// - can_reflink: Whether reflink (copy-on-write) is supported
-fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
-    // Check if this is a config file (in /etc/)
-    let is_config_file = is_config_file_path(fhs_file);
 
-    // For config files, use transaction module to decide file action
-    // For now, we'll infer NOREPLACE from common patterns (can be enhanced later with RPM metadata)
-    let is_noreplace = is_config_file && target_path.exists() &&
-        (target_path.file_name().and_then(|n| n.to_str())
-            .map(|s| s.contains("config") || s.contains("conf") || s.contains(".cfg"))
-            .unwrap_or(false));
-
-    if is_config_file && target_path.exists() {
-        // Use transaction module to decide config file fate
-        let action = get_config_file_action(target_path, fs_file, is_noreplace);
-
-        match action {
-            FileAction::Skip => {
-                log::debug!("Skipping config file {} (identical to existing)", target_path.display());
-                return Ok(());
-            }
-            FileAction::AltName => {
-                // Create .rpmnew file for NOREPLACE configs
-                let rpmnew_path = target_path.with_extension(format!(
-                    "{}.rpmnew",
-                    target_path.extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("")
-                ));
-                log::info!("Creating .rpmnew file for config {}: {}", target_path.display(), rpmnew_path.display());
-                if can_reflink {
-                    if lfs::reflink_copy(fs_file, &rpmnew_path).is_err() {
-                        lfs::copy(fs_file, &rpmnew_path)?;
-                    }
-                } else {
-                    lfs::copy(fs_file, &rpmnew_path)?;
-                }
-                return Ok(());
-            }
-            FileAction::Backup => {
-                // Backup existing config file
-                let backup_path = target_path.with_extension(format!(
-                    "{}.rpmsave",
-                    target_path.extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("")
-                ));
-                log::info!("Backing up config {} to {}", target_path.display(), backup_path.display());
-                lfs::copy(target_path, &backup_path)?;
-                // Continue to create new file below
-            }
-            _ => {
-                // Create or overwrite (default behavior)
-            }
-        }
-    }
-
-    // Remove any existing file/dirs (if not already handled by config logic)
-    if lfs::symlink_metadata(target_path).is_ok() && !is_config_file {
+/// Clean up existing target file or directory before linking
+fn cleanup_existing_target(
+    fs_file: &Path,
+    target_path: &Path,
+    _fhs_file: &Path,
+) -> Result<()> {
+    // Remove any existing file/dirs
+    if lfs::symlink_metadata(target_path).is_ok() {
         // On upgrade, it's normal to overwrite old files from previous version
         log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
         // Check if target path is a directory and handle accordingly
@@ -489,27 +552,13 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
         } else {
             lfs::remove_file(target_path)?;
         }
-    } else if is_config_file && target_path.exists() {
-        // For config files, remove old file before creating new one (unless we're creating .rpmnew)
-        if !matches!(get_config_file_action(target_path, fs_file, is_noreplace),
-                     FileAction::AltName) {
-            lfs::remove_file(target_path)?;
-        }
     }
+    Ok(())
+}
 
-    // /etc/ files: use reflink if supported and link_type is hardlink, otherwise copy
-    if is_config_file {
-        if can_reflink {
-            // Try to use reflink (copy-on-write) for /etc/ files
-            if lfs::reflink_copy(fs_file, target_path).is_ok() {
-                return Ok(());
-            }
-            // Fall back to regular copy if reflink fails
-            log::debug!("Reflink failed for {} -> {}, falling back to copy", fs_file.display(), target_path.display());
-        }
-        lfs::copy(fs_file, target_path)?;
-        return Ok(());
-    }
+fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
+    // Clean up existing target (remove old file/dir if needed)
+    cleanup_existing_target(fs_file, target_path, fhs_file)?;
 
     // Apply link_type for regular files
     match link_type {
@@ -530,6 +579,10 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
         LinkType::Symlink => {
             // Current behavior: prefer symlink
             symlink_or_copy(fs_file, target_path, fhs_file)?;
+        }
+        LinkType::Reflink => {
+            // Try reflink first, fall back to copy
+            lfs::reflink_or_copy(fs_file, target_path, can_reflink)?;
         }
         LinkType::Move => {
             // Move file from store to env (will be removed from store later)

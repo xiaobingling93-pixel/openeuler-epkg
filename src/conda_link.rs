@@ -21,7 +21,8 @@ use crate::io::read_json_file;
 use memchr::memmem;
 use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
-use crate::link::{hard_link_or_copy, symlink_or_copy, link_package_generic};
+use crate::models::LinkType;
+use crate::link::{link_package_generic, mirror_file};
 use crate::utils;
 use crate::lfs;
 use log;
@@ -723,14 +724,23 @@ fn link_file_without_prefix_replacement(
     path_type: &str,
     fhs_file: &Path,
 ) -> Result<()> {
-    if path_type == "hardlink" && plan.can_hardlink {
-        hard_link_or_copy(source_path, target_path, false)?;
+    // Detect if source is a symlink
+    let is_link = fs::symlink_metadata(source_path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+
+    // Determine link type based on path_type and plan capabilities
+    let link_type = if path_type == "hardlink" && plan.can_hardlink {
+        LinkType::Hardlink
     } else if path_type == "softlink" && plan.can_symlink {
-        symlink_or_copy(source_path, target_path, fhs_file)?;
+        LinkType::Symlink
     } else {
-        // Default to file copy
-        lfs::copy(source_path, target_path)?;
-    }
+        // Default to reflink or copy
+        LinkType::Reflink
+    };
+
+    // Single call to mirror_file
+    mirror_file(source_path, target_path, fhs_file, is_link, link_type, plan.can_reflink)?;
     Ok(())
 }
 

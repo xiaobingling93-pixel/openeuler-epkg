@@ -245,9 +245,10 @@ fn parse_link_type(link_str: &str) -> Result<LinkType> {
     match link_str {
         "hardlink"  => Ok(LinkType::Hardlink),
         "symlink"   => Ok(LinkType::Symlink),
+        "reflink"   => Ok(LinkType::Reflink),
         "move"      => Ok(LinkType::Move),
         "runpath"   => Ok(LinkType::Runpath),
-        _ => Err(eyre::eyre!("Invalid link type: '{}'. Valid options are: hardlink, symlink, move, runpath", link_str)),
+        _ => Err(eyre::eyre!("Invalid link type: '{}'. Valid options are: hardlink, symlink, reflink, move, runpath", link_str)),
     }
 }
 
