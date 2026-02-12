@@ -159,6 +159,7 @@ mount_runtime() {
 # --- Container runtimes and config ---
 mount_containers() {
     mount_rw "/run/user/$SUDO_UID/podman"
+    # mount_rw "/run/docker.sock"
     mount_rw "/run/user/$SUDO_UID/containers"
     mount_ro /etc/containers
     mount_ro "$HOME/.config/containers"
