@@ -319,6 +319,7 @@ pub fn unpack_mv_package(
             .wrap_err_with(|| format!("Failed to create directory: {}", parent_dir.display()))?;
     }
 
+    log::info!("Unpacking pkgkey {:?} file to store: {} -> {}", pkgkey, package_file, final_dir.display());
     crate::utils::rename_or_copy_dir(&store_tmp_dir, &final_dir)
         .wrap_err_with(|| format!("Failed to move package from {} to {}", store_tmp_dir.display(), final_dir.display()))?;
 
@@ -521,7 +522,7 @@ pub fn calculate_file_sha256(path: &Path) -> Result<String> {
 fn get_field_order() -> &'static [&'static str] {
     &[
         "pkgname", "source", "version", "release", "format", "repo",
-        "summary", "description", "homepage", "license", "arch", "maintainer",
+        "summary", "description", "homepage", "license", "licenseFamily", "arch", "maintainer",
         "buildRequires", "checkRequires", "requiresPre", "requires", "provides", "conflicts", "obsoletes",
         "suggests", "recommends", "supplements", "enhances", "breaks", "replaces", "originUrl",
         "recipeMaintainers", "subdir", "constrains", "requirements", "commit", "caHash", "caHashVersion",
@@ -536,6 +537,7 @@ fn get_field_order() -> &'static [&'static str] {
         "gstreamerVersion", "gstreamerElements", "gstreamerUriSources", "gstreamerUriSinks",
         "gstreamerEncoders", "gstreamerDecoders", "postgresqlCatversion", "vendor", "files",
         "xdata", "pkgbase", "backup",
+        "buildString", "buildNumber", "trackFeatures", "noarch",  // conda
         "pkgkey", "status", "storePath", "dependDepth", "installTime",
     ]
 }
@@ -574,6 +576,9 @@ pub fn save_package_txt<P: AsRef<Path>>(mut package_fields: HashMap<String, Stri
         if let Ok(repo_package) = crate::mmio::map_pkgkey2package(pkgkey) {
             // First verify fields (read-only, logs warnings)
             verify_repo_fields(&package_fields, &repo_package, &package_txt_path);
+
+            // Check and update core package fields (pkgname, version, arch)
+            check_and_update_core_fields(&mut package_fields, &repo_package, &package_txt_path);
 
             // Then add repo-only fields
             add_repo_fields(&mut package_fields, &repo_package);
@@ -771,6 +776,47 @@ fn verify_repo_fields(
                     repo_build_time, store_build_time, package_txt_path.display());
             }
         }
+    }
+}
+
+/// Check and update pkgkey fields (pkgname, version, arch) with repo package values
+/// If fields differ, warn and update with repo package values to ensure pkgkey consistency
+fn check_and_update_core_fields(
+    package_fields: &mut HashMap<String, String>,
+    repo_package: &Package,
+    package_txt_path: &Path,
+) {
+    // Check pkgname, version, arch for consistency with repo package
+    // If different, warn and update with repo package values
+    if let Some(store_pkgname) = package_fields.get("pkgname") {
+        if store_pkgname != &repo_package.pkgname {
+            log::warn!("pkgname mismatch: repo={}, store={} ({})",
+                repo_package.pkgname, store_pkgname, package_txt_path.display());
+            package_fields.insert("pkgname".to_string(), repo_package.pkgname.clone());
+        }
+    } else {
+        // Field missing, add it
+        package_fields.insert("pkgname".to_string(), repo_package.pkgname.clone());
+    }
+
+    if let Some(store_version) = package_fields.get("version") {
+        if store_version != &repo_package.version {
+            log::warn!("version mismatch: repo={}, store={} ({})",
+                repo_package.version, store_version, package_txt_path.display());
+            package_fields.insert("version".to_string(), repo_package.version.clone());
+        }
+    } else {
+        package_fields.insert("version".to_string(), repo_package.version.clone());
+    }
+
+    if let Some(store_arch) = package_fields.get("arch") {
+        if store_arch != &repo_package.arch {
+            log::warn!("arch mismatch: repo={}, store={} ({})",
+                repo_package.arch, store_arch, package_txt_path.display());
+            package_fields.insert("arch".to_string(), repo_package.arch.clone());
+        }
+    } else {
+        package_fields.insert("arch".to_string(), repo_package.arch.clone());
     }
 }
 
