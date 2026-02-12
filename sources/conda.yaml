@@ -9,9 +9,9 @@ repos:
   free:
   pro:
   r:
-index_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/$repo/$conda_arch/$conda_repofile
+index_url: $mirror/pkgs/$repo/$conda_arch/$conda_repofile
 amend_index_urls:
-  noarch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/$repo/noarch/$conda_repofile
+  noarch: $mirror/pkgs/$repo/noarch/$conda_repofile
 
 # Example URLs:
 # https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-aarch64/current_repodata.json.gz
