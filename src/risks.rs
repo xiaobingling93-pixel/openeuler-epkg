@@ -161,34 +161,20 @@ pub fn check_disk_space_for_plan(
     Ok(())
 }
 
-
-/// Check for file conflicts with installed packages
-/// Returns list of conflicting file paths with their owning packages
-pub fn check_file_conflicts(
-    file_path: &str,
-    pkgkey: &str,
-    installed_files: &HashMap<String, String>, // relative path -> pkgkey
-) -> Result<Vec<(String, String)>> {
-    let mut conflicts = Vec::new();
-
-    if let Some(installed_pkgkey) = installed_files.get(file_path) {
-        if installed_pkgkey != pkgkey {
-            conflicts.push((file_path.to_string(), installed_pkgkey.clone()));
-        }
-    }
-
-    Ok(conflicts)
-}
-
-
-/// Load installed files from installed packages for conflict detection
-pub fn load_installed_files(
+/// Build file map from installed packages, excluding those being removed or upgraded
+pub fn build_installed_file_map(
     packages: &InstalledPackagesMap,
     store_root: &Path,
+    old_removes: &std::collections::HashSet<String>,
+    upgrades_old: &std::collections::HashSet<String>,
 ) -> Result<HashMap<String, String>> {
     let mut installed_files = HashMap::new();
 
     for (pkgkey, pkg_info) in packages.iter() {
+        // Skip packages that are being removed or upgraded
+        if old_removes.contains(pkgkey) || upgrades_old.contains(pkgkey) {
+            continue;
+        }
         // Get filelist using the cached function (already filters out dirs)
         if let Ok(file_list) = map_pkgline2filelist(store_root, &pkg_info.pkgline) {
             // Process file list - all entries are files (dirs already filtered)
@@ -209,16 +195,30 @@ pub fn load_installed_files(
 pub fn validate_before_linking(
     plan: &crate::plan::InstallationPlan,
 ) -> Result<()> {
+    let total_inodes_needed = validate_file_conflicts(plan)?;
+    validate_inode_space(plan, total_inodes_needed)?;
+    Ok(())
+}
+
+/// Validate file conflicts for all packages before linking
+/// Returns total number of inodes (files) needed across all packages
+pub fn validate_file_conflicts(
+    plan: &crate::plan::InstallationPlan,
+) -> color_eyre::Result<u64> {
     let store_root = &plan.store_root;
-    let env_root = &plan.env_root;
 
     // Count total files (inodes) needed across all packages
     let mut total_inodes_needed: u64 = 0;
-    let mut all_transaction_files: HashMap<String, String> = HashMap::new();
 
-    // Load installed files once for all packages
+    // Build file map from installed packages (excluding those being removed or upgraded)
+    // This map will also track files from new packages to detect all conflicts
     let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
-    let installed_files = load_installed_files(&installed, store_root)?;
+    let mut file_map = build_installed_file_map(
+        &installed,
+        store_root,
+        &plan.old_removes,
+        &plan.upgrades_old,
+    )?;
     drop(installed);
 
     // Process each package
@@ -226,54 +226,51 @@ pub fn validate_before_linking(
         if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
             // Get filelist from cache or store (already filters out dirs)
             let file_list = map_pkgline2filelist(store_root, &package_info.pkgline)?;
+            total_inodes_needed += file_list.len() as u64;
 
-            // Count files (inodes) needed
+            // Count files (inodes) needed and check conflicts
             for file_path in &file_list {
-                total_inodes_needed += 1;
-
                 // Skip directories for conflict checking (they end with /)
                 if file_path.ends_with('/') {
                     continue;
                 }
 
-                // Check conflicts with installed files
-                // Skip conflict check for same package being upgraded (files will be replaced)
-                let pkgname = crate::package::pkgkey2pkgname(pkgkey).unwrap_or_default();
-                if let Ok(conflicts) = check_file_conflicts(file_path, pkgkey, &installed_files) {
-                    let real_conflicts: Vec<_> = conflicts
-                        .into_iter()
-                        .filter(|(_, pkg)| {
-                            let pkgname2 = crate::package::pkgkey2pkgname(pkg).unwrap_or_default();
-                            pkgname != pkgname2
-                        })
-                        .collect();
-
-                    if !real_conflicts.is_empty() {
-                        for (conflict_path, conflict_pkgkey) in real_conflicts {
-                            return Err(eyre!(
-                                "File conflict: {} (from package {}) conflicts with installed file from package {}",
-                                conflict_path,
-                                pkgkey,
-                                conflict_pkgkey
-                            ));
-                        }
+                // Check for file conflicts at insertion time
+                if let Some(existing_pkgkey) = file_map.insert(file_path.clone(), pkgkey.clone()) {
+                    // File already exists in map - conflict detected
+                    // Check if conflict is with another new package (transaction conflict) or installed package
+                    if plan.batch.new_pkgkeys.contains(&existing_pkgkey) {
+                        // Transaction conflict: file provided by multiple new packages
+                        return Err(eyre!(
+                            "Transaction file conflict: {} is provided by multiple packages: {} and {}",
+                            file_path,
+                            existing_pkgkey,
+                            pkgkey
+                        ));
+                    } else {
+                        // Conflict with installed package
+                        return Err(eyre!(
+                            "File conflict: {} (from package {}) conflicts with installed file from package {}",
+                            file_path,
+                            pkgkey,
+                            existing_pkgkey
+                        ));
                     }
-                }
-
-                // Track files in transaction for conflict detection
-                if let Some(existing_pkgkey) = all_transaction_files.insert(file_path.clone(), pkgkey.clone()) {
-                    // Conflict detected: file is provided by multiple packages
-                    return Err(eyre!(
-                        "Transaction file conflict: {} is provided by multiple packages: {} and {}",
-                        file_path,
-                        existing_pkgkey,
-                        pkgkey
-                    ));
                 }
             }
         }
     }
 
+    Ok(total_inodes_needed)
+}
+
+/// Validate inode space for installation plan
+/// Requires total_inodes_needed (count of files) to check against free inodes on env_root
+pub fn validate_inode_space(
+    plan: &crate::plan::InstallationPlan,
+    total_inodes_needed: u64,
+) -> color_eyre::Result<()> {
+    let env_root = &plan.env_root;
     // Get free inodes on env_root mount point and compare to total file count
     let env_fs = &plan.env_root_fs;
     let available = env_fs.free_inodes;
@@ -287,6 +284,5 @@ pub fn validate_before_linking(
             shortage
         ));
     }
-
     Ok(())
 }
