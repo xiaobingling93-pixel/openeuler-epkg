@@ -127,21 +127,17 @@ pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P, pkgkey: O
     }
 
     // Generate filelist.txt following project pattern
-    log::debug!("Creating filelist.txt");
     crate::store::create_filelist_txt(store_tmp_dir)
         .wrap_err_with(|| format!("Failed to create filelist.txt for {}", store_tmp_dir.display()))?;
 
     // Create package.txt from metadata
-    log::debug!("Creating package.txt");
     create_package_txt(store_tmp_dir, pkgkey)
         .wrap_err_with(|| format!("Failed to create package.txt for {}", store_tmp_dir.display()))?;
 
     // Create scriptlets (if any)
-    log::debug!("Creating scriptlets");
     create_scriptlets(store_tmp_dir)
         .wrap_err_with(|| format!("Failed to create scriptlets for {}", store_tmp_dir.display()))?;
 
-    log::debug!("Conda package unpacking completed successfully");
     Ok(())
 }
 
@@ -240,10 +236,9 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Following conda-package-streaming.extract.extract_stream pattern
     // Strip "info/" prefix from paths since the info component tar contains paths like "info/index.json"
     if let Some(info_name) = info_component {
-        log::debug!("Extracting info component: {}", info_name);
         let info_reader = archive.by_name(&info_name)?;
         extract_zstd_tar_stream(info_reader, &store_tmp_dir.join("info/conda"), Some("info/"))
-            .wrap_err("Failed to extract info component")?;
+            .wrap_err_with(|| format!("Failed to extract info component: {} for {}", info_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No info component found in .conda package"));
     }
@@ -251,10 +246,9 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Extract pkg component to fs/
     // Following conda-package-streaming component extraction logic
     if let Some(pkg_name) = pkg_component {
-        log::debug!("Extracting pkg component: {}", pkg_name);
         let pkg_reader = archive.by_name(&pkg_name)?;
         extract_zstd_tar_stream(pkg_reader, &store_tmp_dir.join("fs"), None)
-            .wrap_err("Failed to extract pkg component")?;
+            .wrap_err_with(|| format!("Failed to extract pkg component: {} for {}", pkg_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No pkg component found in .conda package"));
     }
@@ -407,6 +401,15 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) ->
     if recipe_path.exists() {
         log::debug!("Found recipe metadata");
         // Could extract additional recipe information here
+    }
+
+    // Conda's version in index.json is upstream version, need append buildString to match
+    // the version used in repo package and encoded in online conda package file name.
+    if let Some(build_string) = package_fields.get("buildString").cloned() {
+        if let Some(version) = package_fields.get_mut("version") {
+            version.push_str(VERSION_BUILD_SEPARATOR);
+            version.push_str(&build_string);
+        }
     }
 
     package_fields.insert("format".to_string(), "conda".to_string());
