@@ -60,7 +60,12 @@ pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<(
     if plan.package_format == PackageFormat::Conda {
         return crate::conda_link::link_conda_package(plan, store_fs_dir);
     }
+    link_package_generic(plan, store_fs_dir)
+}
 
+/// Link package files using generic (non-format-specific) linking
+/// This handles standard file linking without format-specific metadata processing
+pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<()> {
     // Standard linking for non-conda packages
     let fs_files = utils::list_package_files_with_info(store_fs_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid store_fs_dir path: {}", store_fs_dir.display()))?)
         .with_context(|| format!("Failed to list package files in {}", store_fs_dir.display()))?;

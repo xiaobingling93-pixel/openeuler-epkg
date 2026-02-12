@@ -17,10 +17,11 @@ use std::borrow::Cow;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use serde_json::Value;
+use crate::io::read_json_file;
 use memchr::memmem;
 use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
-use crate::link::{hard_link_or_copy, symlink_or_copy};
+use crate::link::{hard_link_or_copy, symlink_or_copy, link_package_generic};
 use crate::utils;
 use log;
 
@@ -179,10 +180,18 @@ fn parse_paths_entry(path_entry: &Value) -> Result<PathsEntry> {
 }
 
 /// Read paths.json from conda package
+/// Returns empty vector if paths.json does not exist (fallback to generic linking)
 fn read_paths_json(package_dir: &Path) -> Result<Vec<PathsEntry>> {
     let paths_path = package_dir.join("info/conda/paths.json");
 
-    let paths_data: Value = crate::io::read_json_file(&paths_path)
+    // Check if file exists first
+    if !paths_path.exists() {
+        log::info!("paths.json not found: {}", paths_path.display());
+        return Ok(Vec::new());
+    }
+
+    // File exists, read and parse JSON
+    let paths_data: Value = read_json_file(&paths_path)
         .wrap_err_with(|| format!("Failed to read paths.json from {}", package_dir.display()))?;
 
     let mut entries = Vec::new();
@@ -658,6 +667,7 @@ fn create_unix_python_entry_point(
 }
 
 /// Prepare conda package metadata (index.json, paths.json, Python info)
+/// Returns empty paths vector if paths.json does not exist (caller should fall back to generic linking)
 fn prepare_conda_package_metadata(
     package_dir: &Path,
 ) -> Result<(IndexJson, Vec<PathsEntry>, Option<PythonInfo>)> {
@@ -800,6 +810,12 @@ pub fn link_conda_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Re
 
     // Prepare metadata
     let (index_json, paths_entries, python_info) = prepare_conda_package_metadata(package_dir)?;
+
+    // If paths.json is missing (empty entries), fall back to generic linking
+    if paths_entries.is_empty() {
+        log::info!("paths.json missing or empty for {}, falling back to generic linking", package_dir.display());
+        return link_package_generic(plan, store_fs_dir);
+    }
 
     // Compute final paths (with noarch remapping if needed)
     let final_paths = compute_paths(&index_json, &paths_entries, python_info.as_ref());
