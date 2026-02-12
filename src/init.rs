@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::WrapErr;
@@ -19,6 +18,7 @@ use crate::models::*;
 use crate::models::dirs;
 use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
+use crate::lfs;
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -140,8 +140,7 @@ pub fn install_epkg() -> Result<()> {
         });
 
     // Set up installation paths
-    fs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))
-        .context("Failed to create epkg downloads directory")?;
+    lfs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))?;
 
     print_banner();
 
@@ -180,12 +179,9 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     if let Some(ref local_loader) = init_plan.local_elf_loader_path {
         // Ensure parent directory exists before copying
         if let Some(parent) = init_plan.elf_loader_path.parent() {
-            fs::create_dir_all(parent)
-                .context(format!("Failed to create parent directory for {}", init_plan.elf_loader_path.display()))?;
+            lfs::create_dir_all(parent)?;
         }
-        fs::copy(local_loader, &init_plan.elf_loader_path)
-            .context(format!("Failed to copy local elf-loader from {} to {}",
-                local_loader.display(), init_plan.elf_loader_path.display()))?;
+        lfs::copy(local_loader, &init_plan.elf_loader_path)?;
         println!("Using local elf-loader from {}", local_loader.display());
     } else if init_plan.need_download_elf_loader {
         println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
@@ -204,10 +200,7 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
     let sha256_files_to_delete = vec![&init_plan.elf_loader_sha_path, &init_plan.epkg_binary_sha_path];
     for sha256_path in sha256_files_to_delete {
         if sha256_path.exists() {
-            log::debug!("Deleting existing .sha256 file: {}", sha256_path.display());
-            if let Err(e) = fs::remove_file(sha256_path) {
-                log::warn!("Failed to delete existing .sha256 file {}: {}", sha256_path.display(), e);
-            }
+            lfs::remove_file(sha256_path)?;
         }
     }
 
@@ -256,14 +249,12 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     if init_plan.using_local_repo {
         // Create symlink directly to git working directory
         if !usr_src.exists() {
-            fs::create_dir_all(&usr_src)
-                .context("Failed to create usr/src directory in environment")?;
+            lfs::create_dir_all(&usr_src)?;
         }
 
         if !epkg_src.exists() {
             let repo_root = find_repo_root()?;
-            symlink(repo_root.to_str().unwrap(), &epkg_src)
-                .context("Failed to create symlink to local repository")?;
+            lfs::symlink(&repo_root, &epkg_src)?;
         }
 
         println!("Using local git repository for epkg source code");
@@ -277,10 +268,9 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     println!("Extracting epkg source code to: {}", usr_src.display());
 
     if epkg_extracted_path.exists() {
-        fs::remove_dir_all(&epkg_extracted_path)?;
+        lfs::remove_dir_all(&epkg_extracted_path)?;
     } else {
-        fs::create_dir_all(&usr_src)
-            .context(format!("Failed to create opt directory at {}", usr_src.display()))?;
+        lfs::create_dir_all(&usr_src)?;
     }
 
     // Extract tar.gz file with error handling
@@ -299,8 +289,7 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
 fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
     let usr_bin = env_root.join("usr/bin");
 
-    fs::create_dir_all(&usr_bin)
-        .context(format!("Failed to create usr/bin directory at {}", usr_bin.display()))?;
+    lfs::create_dir_all(&usr_bin)?;
 
     let target_epkg = usr_bin.join("epkg");
 
@@ -340,7 +329,7 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
             return Ok(());
         } else if target.exists() {
             // Check if target is a symlink pointing to current executable
-            if let Ok(target_metadata) = fs::symlink_metadata(target) {
+            if let Ok(target_metadata) = lfs::symlink_metadata(target) {
                 if target_metadata.file_type().is_symlink() {
                     if let Ok(target_link) = fs::read_link(target) {
                         if target_link == source {
@@ -356,8 +345,6 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
                     // Target exists and is not a symlink, proceed with copy
                     log::info!("Target epkg binary exists, proceeding with copy");
                 }
-            } else {
-                log::warn!("Failed to get target metadata, proceeding with copy");
             }
         } else {
             // Target doesn't exist, proceed with copy
@@ -370,15 +357,13 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
 
     // Clean up any existing temporary file
     if temp_target.exists() {
-        if let Err(e) = fs::remove_file(&temp_target) {
+        if let Err(e) = lfs::remove_file(&temp_target) {
             log::warn!("Failed to remove existing temporary file {}: {}", temp_target.display(), e);
         }
     }
 
     // Copy to temporary file first
-    fs::copy(source, &temp_target)
-        .context(format!("Failed to copy binary to temporary file: {} -> {}",
-            source.display(), temp_target.display()))?;
+    lfs::copy(source, &temp_target)?;
 
     // Set permissions on temporary file before rename
     let mode = if is_epkg && config().init.shared_store {
@@ -392,20 +377,13 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
         .context(format!("Failed to set permissions on temporary binary"))?;
 
     // Atomically rename temporary file to target
-    match fs::rename(&temp_target, target) {
+    match lfs::rename(&temp_target, target) {
         Ok(_) => {
-            log::debug!("Successfully copied binary using atomic operation: {} -> {}",
-                source.display(), target.display());
             Ok(())
         }
-        Err(e) => {
+        Err(_) => {
             // Clean up temporary file on failure
-            if let Err(cleanup_err) = fs::remove_file(&temp_target) {
-                log::warn!("Failed to clean up temporary file {} after rename failure: {}",
-                    temp_target.display(), cleanup_err);
-            }
-            Err(eyre::eyre!("Failed to atomically rename binary: {} -> {}: {}",
-                temp_target.display(), target.display(), e))
+            lfs::remove_file(&temp_target)
         }
     }
 }
@@ -434,8 +412,7 @@ fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
     // Symlink to /usr/local/bin
     if config().init.shared_store {
         let usr_local_bin = PathBuf::from("/usr/local/bin");
-        fs::create_dir_all(&usr_local_bin)
-            .context(format!("Failed to create /usr/local/bin directory at {}", usr_local_bin.display()))?;
+        lfs::create_dir_all(&usr_local_bin)?;
         println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
         if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
             log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
@@ -585,7 +562,7 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
             let epkg_src_symlink = self_env_root.join("usr/src/epkg");
             if epkg_src_symlink.exists() {
                 // Check if it's a symlink
-                if let Ok(metadata) = fs::symlink_metadata(&epkg_src_symlink) {
+                if let Ok(metadata) = lfs::symlink_metadata(&epkg_src_symlink) {
                     if metadata.file_type().is_symlink() {
                         // Follow the symlink to get the actual repo root
                         // Use canonicalize on the symlink itself to handle both absolute and relative paths
@@ -909,7 +886,7 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     let usr_lib64_target = Path::new("usr/lib64");
 
     // Check if /lib64 already exists as a symlink
-    if let Ok(metadata) = fs::symlink_metadata(lib64_path) {
+    if let Ok(metadata) = lfs::symlink_metadata(lib64_path) {
         if metadata.file_type().is_symlink() {
             if let Ok(target) = fs::read_link(lib64_path) {
                 // Check if it points to usr/lib64 (correct)
@@ -923,8 +900,7 @@ fn fixup_host_lib64_symlink() -> Result<()> {
                 if target == usr_lib_target {
                     if utils::is_running_as_root() {
                         // Remove the old symlink so we can create the correct one
-                        fs::remove_file(lib64_path)
-                            .wrap_err_with(|| format!("Failed to remove existing /lib64 symlink"))?;
+                        lfs::remove_file(lib64_path)?;
                         // Fall through to create the correct symlink
                     } else {
                         // Not root, can't fix it
@@ -949,8 +925,7 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     }
 
     // Create the symlink using relative path
-    symlink(usr_lib64_target, lib64_path)
-        .wrap_err_with(|| format!("Failed to create /lib64 -> usr/lib64 symlink"))?;
+    lfs::symlink(usr_lib64_target, lib64_path)?;
 
     Ok(())
 }
