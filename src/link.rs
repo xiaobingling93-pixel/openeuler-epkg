@@ -3,15 +3,15 @@
 //! This module provides functions for linking package files from the store to the environment,
 //! supporting different link types (hardlink, symlink, move, runpath).
 
-use std::path::{Path, PathBuf};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
 use color_eyre::Result;
-use color_eyre::eyre::{self, eyre, WrapErr};
+use color_eyre::eyre::{self, WrapErr};
 use crate::models::{LinkType, InstalledPackageInfo, PackageFormat};
 use crate::plan::InstallationPlan;
 use crate::utils;
+use crate::lfs;
 use log;
 
 /// File action types (simplified version for config file handling)
@@ -77,7 +77,7 @@ pub fn link_package_generic(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> 
         // Remove the fs directory after all files have been moved
         if store_fs_dir.exists() {
             // Try to remove the directory (should be empty or nearly empty after moves)
-            if let Err(e) = fs::remove_dir_all(store_fs_dir) {
+            if let Err(e) = lfs::remove_dir_all(store_fs_dir) {
                 log::warn!("Failed to remove fs directory {} after move: {}", store_fs_dir.display(), e);
                 // Don't fail the entire operation if we can't remove the dir
             } else {
@@ -141,9 +141,7 @@ pub fn unlink_package_diff(
                 match std::fs::read_dir(&env_file_path) {
                     Ok(mut entries) => {
                         if entries.next().is_none() {
-                            log::debug!("Removing empty directory: {}", env_file_path.display());
-                            std::fs::remove_dir(&env_file_path)
-                                .with_context(|| format!("Failed to remove directory {}", env_file_path.display()))?;
+                            lfs::remove_dir(&env_file_path)?;
                         } else {
                             log::debug!("Directory not empty, skipping: {}", env_file_path.display());
                         }
@@ -153,9 +151,7 @@ pub fn unlink_package_diff(
                     }
                 }
             } else {
-                log::trace!("Removing file: {}", env_file_path.display());
-                std::fs::remove_file(&env_file_path)
-                    .with_context(|| format!("Failed to remove file {}", env_file_path.display()))?;
+                lfs::remove_file(&env_file_path)?;
             }
         }
     }
@@ -188,76 +184,6 @@ pub fn same_filesystem(
     fs1.fsid == fs2.fsid
 }
 
-/// Check if reflink (copy-on-write) is supported on the filesystem
-/// This is done by attempting a test reflink operation using reflink_copy()
-/// Requires that paths are on the same filesystem (checked via same_fs parameter)
-#[cfg(target_os = "linux")]
-fn check_reflink_support(env_root: &Path, same_fs: bool) -> bool {
-    use std::io::Write;
-
-    // Only check if paths are on the same filesystem
-    if same_fs {
-        // Create a temporary test file
-        let test_file = env_root.join(".epkg_reflink_test");
-
-        // Create a small test file
-        if let Ok(mut file) = fs::File::create(&test_file) {
-            if file.write_all(b"test").is_ok() {
-                file.sync_all().ok();
-
-                // Try to create a reflink using reflink_copy()
-                let test_target = env_root.join(".epkg_reflink_test_target");
-                let result = reflink_copy(&test_file, &test_target).is_ok();
-
-                // Clean up test files
-                let _ = fs::remove_file(&test_file);
-                let _ = fs::remove_file(&test_target);
-
-                return result;
-            } else {
-                let _ = fs::remove_file(&test_file);
-            }
-        }
-    }
-    false
-}
-
-#[cfg(not(target_os = "linux"))]
-fn check_reflink_support(_store_root: &Path, _env_root: &Path) -> bool {
-    false
-}
-
-/// Create a reflink (copy-on-write) copy of a file
-#[cfg(target_os = "linux")]
-fn reflink_copy(source: &Path, target: &Path) -> Result<()> {
-    use std::os::unix::io::AsRawFd;
-
-    // Open source file for reading
-    let src_file = fs::File::open(source)
-        .with_context(|| format!("Failed to open source file {}", source.display()))?;
-
-    // Create target file
-    let dst_file = fs::File::create(target)
-        .with_context(|| format!("Failed to create target file {}", target.display()))?;
-
-    // FICLONE ioctl request value
-    // libc::Ioctl is a type alias that's c_int on musl and c_ulong on GNU
-    const FICLONE: libc::Ioctl = 0x4004_9409;
-    unsafe {
-        let result = libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd());
-        if result != 0 {
-            return Err(eyre!("ioctl FICLONE failed: {}", std::io::Error::last_os_error()));
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn reflink_copy(_source: &Path, _target: &Path) -> Result<()> {
-    Err(eyre!("Reflink not supported on this platform"))
-}
-
 /// Compute link type and reflink support for installation plan
 /// Sets plan.link, plan.can_reflink, plan.can_hardlink, and plan.can_symlink directly
 /// Uses stored filesystem info from plan to avoid duplicate statvfs calls
@@ -283,7 +209,7 @@ pub fn compute_link_type_and_reflink(
     if link_type == LinkType::Hardlink {
         if same_fs {
             // Same filesystem, keep hardlink and check for reflink support
-            can_reflink = check_reflink_support(&plan.env_root, same_fs);
+            can_reflink = lfs::check_reflink_support(&plan.env_root, same_fs);
             if can_reflink {
                 log::debug!("Reflink support detected on filesystem");
             }
@@ -332,21 +258,14 @@ pub fn replace_existing_symlink1(target_path: &Path, fs_file: &Path) -> Result<b
             log::debug!("symlink1 {} exists but points to {:?}, updating to point to {:?}",
                        symlink1_path.display(), current_target, fs_file);
             // Remove existing symlink and create new one
-            fs::remove_file(&symlink1_path)
-                .with_context(|| format!("Failed to remove existing symlink {}", symlink1_path.display()))?;
+            lfs::remove_file(&symlink1_path)?;
 
             // Create parent directory if it doesn't exist
             if let Some(parent) = symlink1_path.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+                lfs::create_dir_all(parent)?;
             }
 
-            symlink(fs_file, &symlink1_path)
-                .with_context(|| format!(
-                    "Failed to create symlink from {} to {}",
-                    symlink1_path.display(),
-                    fs_file.display()
-                ))?;
+            lfs::symlink(fs_file, &symlink1_path)?;
             Ok(true)
         }
         Err(_) => {
@@ -369,17 +288,11 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
 
     // Remove existing symlink2 if it exists
     if symlink2_path.exists() {
-        fs::remove_file(&symlink2_path)
-            .with_context(|| format!("Failed to remove existing symlink {}", symlink2_path.display()))?;
+        lfs::remove_file(&symlink2_path)?;
     }
 
     // Create symlink2 -> fs_file
-    symlink(fs_file, &symlink2_path)
-        .with_context(|| format!(
-            "Failed to create symlink from {} to {}",
-            symlink2_path.display(),
-            fs_file.display()
-        ))?;
+    lfs::symlink(fs_file, &symlink2_path)?;
 
     log::debug!("Created symlink2: {} -> {}", symlink2_path.display(), fs_file.display());
     Ok(())
@@ -400,11 +313,9 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
             // Check if target path exists and is not a directory
             if target_path.exists() && !target_path.is_dir() {
                 // Remove the non-directory file first
-                fs::remove_file(&target_path)
-                    .with_context(|| format!("Failed to remove non-directory file {} for mirror_dir", target_path.display()))?;
+                lfs::remove_file(&target_path)?;
             }
-            fs::create_dir_all(&target_path)
-                .with_context(|| format!("Failed to create directory {}", target_path.display()))?;
+            lfs::create_dir_all(&target_path)?;
             continue;
         }
 
@@ -450,10 +361,7 @@ pub fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: boo
                 log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
                            source.display(), target.display(), hardlink_err);
             }
-            fs::copy(source, target)
-                .map(|_| ())
-                .with_context(|| format!("Failed to copy {} to {} (hardlink also failed: {})",
-                                        source.display(), target.display(), hardlink_err))?;
+            lfs::copy(source, target)?;
 
             // Preserve permissions if requested
             if preserve_permissions {
@@ -545,13 +453,11 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
                 ));
                 log::info!("Creating .rpmnew file for config {}: {}", target_path.display(), rpmnew_path.display());
                 if can_reflink {
-                    if reflink_copy(fs_file, &rpmnew_path).is_err() {
-                        fs::copy(fs_file, &rpmnew_path)
-                            .with_context(|| format!("Failed to copy config to .rpmnew: {}", rpmnew_path.display()))?;
+                    if lfs::reflink_copy(fs_file, &rpmnew_path).is_err() {
+                        lfs::copy(fs_file, &rpmnew_path)?;
                     }
                 } else {
-                    fs::copy(fs_file, &rpmnew_path)
-                        .with_context(|| format!("Failed to copy config to .rpmnew: {}", rpmnew_path.display()))?;
+                    lfs::copy(fs_file, &rpmnew_path)?;
                 }
                 return Ok(());
             }
@@ -564,8 +470,7 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
                         .unwrap_or("")
                 ));
                 log::info!("Backing up config {} to {}", target_path.display(), backup_path.display());
-                fs::copy(target_path, &backup_path)
-                    .with_context(|| format!("Failed to backup config: {}", backup_path.display()))?;
+                lfs::copy(target_path, &backup_path)?;
                 // Continue to create new file below
             }
             _ => {
@@ -575,23 +480,20 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
     }
 
     // Remove any existing file/dirs (if not already handled by config logic)
-    if fs::symlink_metadata(target_path).is_ok() && !is_config_file {
+    if lfs::symlink_metadata(target_path).is_ok() && !is_config_file {
         // On upgrade, it's normal to overwrite old files from previous version
         log::trace!("File already exists, overwriting {} with {}", target_path.display(), fs_file.display());
         // Check if target path is a directory and handle accordingly
         if target_path.is_dir() {
-            fs::remove_dir_all(target_path)
-                .with_context(|| format!("Failed to remove directory {} for mirror_dir", target_path.display()))?;
+            lfs::remove_dir_all(target_path)?;
         } else {
-            fs::remove_file(target_path)
-                .with_context(|| format!("Failed to remove file {} for mirror_dir", target_path.display()))?;
+            lfs::remove_file(target_path)?;
         }
     } else if is_config_file && target_path.exists() {
         // For config files, remove old file before creating new one (unless we're creating .rpmnew)
         if !matches!(get_config_file_action(target_path, fs_file, is_noreplace),
                      FileAction::AltName) {
-            fs::remove_file(target_path)
-                .with_context(|| format!("Failed to remove old config file {} for mirror_dir", target_path.display()))?;
+            lfs::remove_file(target_path)?;
         }
     }
 
@@ -599,15 +501,13 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
     if is_config_file {
         if can_reflink {
             // Try to use reflink (copy-on-write) for /etc/ files
-            if reflink_copy(fs_file, target_path).is_ok() {
-                log::trace!("Created reflink from {} to {}", fs_file.display(), target_path.display());
+            if lfs::reflink_copy(fs_file, target_path).is_ok() {
                 return Ok(());
             }
             // Fall back to regular copy if reflink fails
             log::debug!("Reflink failed for {} -> {}, falling back to copy", fs_file.display(), target_path.display());
         }
-        fs::copy(fs_file, target_path)
-            .with_context(|| format!("Failed to copy {} to {}", fs_file.display(), target_path.display()))?;
+        lfs::copy(fs_file, target_path)?;
         return Ok(());
     }
 
@@ -615,7 +515,7 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
     match link_type {
         LinkType::Hardlink => {
             // Try hardlink first, fall back to symlink on failure
-            match fs::hard_link(fs_file, target_path) {
+            match lfs::hard_link(fs_file, target_path) {
                 Ok(()) => {
                     log::trace!("Created hardlink from {} to {}", fs_file.display(), target_path.display());
                 }
@@ -633,14 +533,12 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
         }
         LinkType::Move => {
             // Move file from store to env (will be removed from store later)
-            fs::rename(fs_file, target_path)
-                .with_context(|| format!("Failed to move {} to {}", fs_file.display(), target_path.display()))?;
+            lfs::rename(fs_file, target_path)?;
         }
         LinkType::Runpath => {
             // Move file from store to env (will be removed from store later)
             // Same as Move - requires same filesystem (checked in compute_link_type_and_reflink)
-            fs::rename(fs_file, target_path)
-                .with_context(|| format!("Failed to move {} to {}", fs_file.display(), target_path.display()))?;
+            lfs::rename(fs_file, target_path)?;
         }
     }
     Ok(())
@@ -655,10 +553,7 @@ pub fn symlink_or_copy(fs_file: &Path, target_path: &Path, fhs_file: &Path) -> R
         return Ok(());
     }
 
-    symlink(fs_file, target_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
-
-    Ok(())
+    lfs::symlink(fs_file, target_path)
 }
 
 /// Decide whether a regular file should be materialized via hardlink-or-copy
@@ -771,8 +666,7 @@ fn shortcut_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
                 .join(link_target)
         };
 
-        symlink(&new_link_target, target_path)
-            .with_context(|| format!("Failed to create symlink from {} to {}", fs_file.display(), target_path.display()))?;
+        lfs::symlink(&new_link_target, target_path)?;
     }
     Ok(())
 }

@@ -21,6 +21,7 @@ use nix::sys::signal::Signal;
 use users::{get_current_uid, get_effective_uid};
 use crate::models;
 use crate::userdb;
+use crate::lfs;
 use crate::mtree::{self, MtreeFileInfo};
 
 #[derive(Debug, PartialEq)]
@@ -659,26 +660,7 @@ pub fn safe_mkdir_p(path: &Path) -> Result<()> {
     }
 
     // Create the directory with all parent directories
-    fs::create_dir_all(path)
-        .map_err(|e| {
-            let context = match e.kind() {
-                io::ErrorKind::PermissionDenied => {
-                    format!("Permission denied - check if you have write access to {}",
-                           path.parent().unwrap_or_else(|| Path::new("")).display())
-                }
-                io::ErrorKind::NotFound => {
-                    format!("Parent directory not found - check if {} exists",
-                           path.parent().unwrap_or_else(|| Path::new("")).display())
-                }
-                io::ErrorKind::AlreadyExists => {
-                    "Directory already exists".to_string()
-                }
-                _ => format!("Unknown error: {}", e)
-            };
-            eyre::eyre!("Failed to create directory '{}': {}\nContext: {}", path.display(), e, context)
-        })?;
-
-    Ok(())
+    lfs::create_dir_all(path)
 }
 
 /// Remove any existing file, symlink, or directory at the given path
@@ -699,14 +681,12 @@ pub fn remove_any_existing_file(path: &Path, rm_dir: bool) -> Result<()> {
         Ok(metadata) => {
             if metadata.is_dir() {
                 if rm_dir {
-                    fs::remove_dir_all(path)
-                        .map_err(|e| eyre::eyre!("Failed to remove directory '{}': {}", path.display(), e))?;
+                    lfs::remove_dir_all(path)?;
                 } else {
                     return Err(eyre::eyre!("Cannot remove directory '{}' with remove_any_existing_file()", path.display()));
                 }
             } else {
-                fs::remove_file(path)
-                    .map_err(|e| eyre::eyre!("Failed to remove existing file at path '{}': {}", path.display(), e))?;
+                lfs::remove_file(path)?;
             }
         }
         Err(e) => {
@@ -742,8 +722,7 @@ pub fn preserve_file_permissions<P: AsRef<Path>>(source: P, target: P) -> Result
     let source = source.as_ref();
     let target = target.as_ref();
     if let Ok(metadata) = fs::metadata(source) {
-        fs::set_permissions(target, metadata.permissions())
-            .wrap_err_with(|| format!("Failed to set permissions for {}", target.display()))?;
+        lfs::set_permissions(target, metadata.permissions())?;
     }
     Ok(())
 }

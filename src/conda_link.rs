@@ -23,6 +23,7 @@ use crate::shebang::{is_valid_shebang_length, convert_shebang_to_env};
 use crate::plan::InstallationPlan;
 use crate::link::{hard_link_or_copy, symlink_or_copy, link_package_generic};
 use crate::utils;
+use crate::lfs;
 use log;
 
 /// Default Python version (major, minor) used when version cannot be determined
@@ -451,8 +452,7 @@ fn copy_replace_textual_placeholder(
     let source_bytes = fs::read(source_path)
         .wrap_err_with(|| format!("Failed to read source file: {}", source_path.display()))?;
 
-    let mut target_file = fs::File::create(target_path)
-        .wrap_err_with(|| format!("Failed to create target file: {}", target_path.display()))?;
+    let mut target_file = lfs::file_create(target_path)?;
 
     let old_prefix = prefix_placeholder.as_bytes();
     let new_prefix = target_prefix.as_bytes();
@@ -509,8 +509,7 @@ fn copy_replace_cstring_placeholder(
     let source_bytes = fs::read(source_path)
         .wrap_err_with(|| format!("Failed to read binary file: {}", source_path.display()))?;
 
-    let mut target_file = fs::File::create(target_path)
-        .wrap_err_with(|| format!("Failed to create target file: {}", target_path.display()))?;
+    let mut target_file = lfs::file_create(target_path)?;
 
     let old_prefix = prefix_placeholder.as_bytes();
     let new_prefix = target_prefix.as_bytes();
@@ -623,8 +622,7 @@ fn create_unix_python_entry_point(
 
     // Create parent directory
     if let Some(parent) = script_path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("Failed to create directory: {}", parent.display()))?;
+        lfs::create_dir_all(parent)?;
     }
 
     // Generate shebang
@@ -656,8 +654,7 @@ fn create_unix_python_entry_point(
         entry_point.function
     );
 
-    fs::write(&script_path, script_content)
-        .wrap_err_with(|| format!("Failed to write entry point script: {}", script_path.display()))?;
+    lfs::write(&script_path, script_content)?;
 
     // Make executable
     utils::set_executable_permissions(&script_path, 0o775)?;
@@ -732,8 +729,7 @@ fn link_file_without_prefix_replacement(
         symlink_or_copy(source_path, target_path, fhs_file)?;
     } else {
         // Default to file copy
-        fs::copy(source_path, target_path)
-            .wrap_err_with(|| format!("Failed to copy {} to {}", source_path.display(), target_path.display()))?;
+        lfs::copy(source_path, target_path)?;
     }
     Ok(())
 }
@@ -756,8 +752,7 @@ fn link_conda_files(
 
         // Create parent directory
         if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)
-                .wrap_err_with(|| format!("Failed to create directory: {}", parent.display()))?;
+            lfs::create_dir_all(parent)?;
         }
 
         // Handle prefix placeholder replacement
