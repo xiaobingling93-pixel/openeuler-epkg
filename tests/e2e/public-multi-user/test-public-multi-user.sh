@@ -34,18 +34,27 @@ run_as_user() {
     "$BUSYBOX" su -s /bin/sh "$user" -c "$*"
 }
 
+add_user() {
+    local user="$1"
+    if id "$user" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v adduser >/dev/null 2>&1; then
+        adduser -D -s /bin/sh "$user" && return 0
+    fi
+    if command -v useradd >/dev/null 2>&1; then
+        useradd -m -s /bin/sh "$user" && return 0
+    fi
+    error "Failed to create user $user"
+}
+
 # Create test users
 USER_A="epkgtest_a"
 USER_B="epkgtest_b"
 
 log "Creating test users"
-if ! id "$USER_A" >/dev/null 2>&1; then
-    adduser -D -s /bin/sh "$USER_A" || error "Failed to create user A"
-fi
-
-if ! id "$USER_B" >/dev/null 2>&1; then
-    adduser -D -s /bin/sh "$USER_B" || error "Failed to create user B"
-fi
+add_user "$USER_A"
+add_user "$USER_B"
 
 # Mount tmpfs for user environments
 log "Mounting tmpfs for user environments"
