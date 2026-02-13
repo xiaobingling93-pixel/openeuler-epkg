@@ -122,9 +122,11 @@ fn apply_channel_config_filtering(
     // Get the union of all distro_dirs from all channel configs
     let mut all_distro_dirs = HashSet::new();
     for config in channel_configs() {
+        log::trace!("Channel config: distro={}, distro_dirs={:?}", config.distro, config.distro_dirs);
         all_distro_dirs.extend(config.distro_dirs.iter().cloned());
     }
     let distro_dirs: Vec<String> = all_distro_dirs.into_iter().collect();
+    log::debug!("Filtering mirrors for distro='{}', distro_dirs={:?}, total mirrors={}", distro, distro_dirs, all_mirrors.len());
 
     let original_count = all_mirrors.len();
     let filtered_mirrors: HashMap<String, Mirror> = all_mirrors
@@ -153,12 +155,15 @@ fn load_mirrors_for_distro() -> Result<HashMap<String, Mirror>> {
 
     // Load primary mirrors.json
     let mut all_mirrors_raw: HashMap<String, Mirror> = crate::io::read_json_file(&mirrors_file_path)?;
+    log::debug!("Loaded {} raw mirrors from {}", all_mirrors_raw.len(), mirrors_file_path.display());
 
     // Load and merge manual-mirrors.json if it exists
     load_and_merge_manual_mirrors(&mut all_mirrors_raw, &manual_mirrors_file_path)?;
+    log::debug!("After merging manual mirrors: {} total raw mirrors", all_mirrors_raw.len());
 
     // Convert URL keys to site keys and merge top_os into distro_dirs
     let all_mirrors = convert_mirror_data_structure(all_mirrors_raw);
+    log::debug!("After converting to site keys: {} mirrors", all_mirrors.len());
 
     // Apply filtering by channel_config().distro AND channel_config().distro_dirs
     let mut filtered_mirrors = apply_channel_config_filtering(all_mirrors)?;
@@ -184,6 +189,8 @@ fn is_mirror_suitable_for_channel_config(mirror: &Mirror, target_distro: &str, t
 
     // Mirror must support either the distro OR the distro_dirs
     if !has_distro && !has_dirs {
+        log::trace!("Mirror {} rejected: top_os={:?}, distro_dirs={:?}, target_distro={}, target_distro_dirs={:?}",
+                   mirror.url, mirror.top_os, mirror.distro_dirs, target_distro, target_distro_dirs);
         return false;
     }
 
@@ -205,6 +212,8 @@ fn is_mirror_suitable_for_channel_config(mirror: &Mirror, target_distro: &str, t
         }
     }
 
+    log::trace!("Mirror {} accepted: top_os={:?}, distro_dirs={:?}, target_distro={}, target_distro_dirs={:?}",
+               mirror.url, mirror.top_os, mirror.distro_dirs, target_distro, target_distro_dirs);
     true
 }
 
@@ -212,7 +221,12 @@ fn is_mirror_suitable_for_channel_config(mirror: &Mirror, target_distro: &str, t
 pub(crate) fn initialize_mirrors() -> Result<Mirrors> {
     let mirrors = match load_mirrors_for_distro() {
         Ok(m) if !m.is_empty() => apply_country_code_filtering(m),
-        Ok(_) | Err(_) => {
+        Ok(_empty_map) => {
+            log::debug!("load_mirrors_for_distro returned empty map for distro '{}'", channel_config().distro);
+            bail!("Failed to load mirrors for distro '{}'", channel_config().distro);
+        }
+        Err(e) => {
+            log::debug!("load_mirrors_for_distro failed with error: {}", e);
             bail!("Failed to load mirrors for distro '{}'", channel_config().distro);
         }
     };
