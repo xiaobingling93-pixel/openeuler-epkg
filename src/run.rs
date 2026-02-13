@@ -674,6 +674,56 @@ fn mount_core_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
  *
  * Note: Uses MS_BIND instead of MS_MOVE for reliability across different filesystem setups
  */
+/// Try to create an opt_real directory for public environments, attempting multiple locations.
+/// Returns the path to the created directory.
+fn create_opt_real_path_for_public_env(euid: Uid, uid: Uid, env_name: &str) -> Result<PathBuf> {
+    let uid_raw = uid.as_raw();
+    let euid_raw = euid.as_raw();
+
+    // Location 1: /run/user/{euid}/epkg-opt_real/{uid}-{env_name}
+    let run_user_path = PathBuf::from(format!("/run/user/{}/epkg-opt_real/{}-{}", euid_raw, uid_raw, env_name));
+    match utils::safe_mkdir_p(&run_user_path) {
+        Ok(_) => {
+            trace!("Using opt_real directory: {}", run_user_path.display());
+            return Ok(run_user_path);
+        }
+        Err(e) => {
+            trace!("Failed to create /run/user/ opt_real directory: {}", e);
+
+            // Location 2: $HOME/.epkg/opt-real/{uid}-{env_name}
+            match dirs::get_home() {
+                Ok(home) => {
+                    let home_opt_real = PathBuf::from(&home)
+                        .join(".epkg")
+                        .join("opt-real")
+                        .join(format!("{}-{}", uid_raw, env_name));
+                    match utils::safe_mkdir_p(&home_opt_real) {
+                        Ok(_) => {
+                            trace!("Using fallback opt_real directory: {}", home_opt_real.display());
+                            return Ok(home_opt_real);
+                        }
+                        Err(e2) => {
+                            return Err(eyre::eyre!(
+                                "Failed to create opt_real directory in both /run/user/ and $HOME/.epkg/:\n\
+                                 /run/user/ attempt: {}\n\
+                                 $HOME/.epkg/ attempt: {}",
+                                e, e2
+                            ));
+                        }
+                    }
+                }
+                Err(e2) => {
+                    return Err(eyre::eyre!(
+                        "Failed to create /run/user/ opt_real directory: {}\n\
+                         Also failed to get home directory for fallback: {}",
+                        e, e2
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Handle /opt/epkg mount isolation to preserve access to system /opt/epkg.
 /// This ensures that when we mount the guest's /opt, we don't lose access to the host's /opt/epkg.
 fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> Result<()> {
@@ -686,19 +736,20 @@ fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> Result<()> 
          * mount loop, leading to ELOOP (Too many levels of symbolic links) errors when resolving paths.
          *
          * To avoid this, if the current env_root is a public environment (i.e., starts with /opt/epkg),
-         * we use a temporary directory outside /opt/epkg (in /run/user/{outside_euid}/epkg-opt_real/{outside_uid}-{env_name})
-         * for the backup. This ensures the backup is outside the tree being bind-mounted, breaking the loop.
+         * we use a temporary directory outside /opt/epkg for the backup. This ensures the backup is outside
+         * the tree being bind-mounted, breaking the loop. We try locations in order:
+         * 1. /run/user/{outside_euid}/epkg-opt_real/{outside_uid}-{env_name} (auto-cleaned on logout)
+         * 2. $HOME/.epkg/opt-real/{outside_uid}-{env_name} (fallback for containers without /run/user/)
          * For private environments, we can safely use env_root.join("opt_real") as before.
          */
         let env_name = config().common.env.clone();
-        let uid_raw = uid.as_raw();
-        let euid_raw = euid.as_raw();
-        PathBuf::from(format!("/run/user/{}/epkg-opt_real/{}-{}", euid_raw, uid_raw, env_name))
+        create_opt_real_path_for_public_env(euid, uid, &env_name)?
     } else {
         env_root.join("opt_real")
     };
 
-    // Safely create the opt_real directory, handling any existing files
+    // Ensure the opt_real directory exists (for private environments,
+    // or as a safety check for public environments where it was already created)
     utils::safe_mkdir_p(&opt_real_path)
         .map_err(|e| eyre::eyre!("Failed to create opt_real directory '{}': {}", opt_real_path.display(), e))?;
 
