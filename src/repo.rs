@@ -667,22 +667,23 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
     // Use a bounded channel so any future senders are naturally throttled
     // by the receiver. Capacity is tied to the number of items to avoid
     // unbounded growth if sends are added later.
-    let (tx, rx) = mpsc::sync_channel(revises.len().max(1));
+    let (tx, rx) = mpsc::sync_channel::<Result<(), eyre::Report>>(revises.len().max(1));
     let mut handles = Vec::new();
+    let mut errors = Vec::new();
 
     // Process each item in a separate thread
     for revise in revises {
-        let _tx = tx.clone();
+        let tx = tx.clone();
         let repo_dir = dirs::get_repo_dir(&revise.repo_revise);
         let handle = std::thread::spawn(move || {
             match download_and_process_item(&revise, &repo_dir) {
                 Ok(_) => {
-                    log::debug!("Successfully processed: {}", revise.location);
-                    true
+                    log::debug!("Successfully processed: {}", revise.download_path.display());
+                    let _ = tx.send(Ok(()));
                 },
                 Err(e) => {
-                    log::error!("Failed to process {}: {:#}", revise.location, e);
-                    false
+                    log::error!("Failed to process {}, retry fix with 'epkg -e {} update'", revise.location, config().common.env);
+                    let _ = tx.send(Err(e));
                 }
             }
         });
@@ -691,21 +692,27 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
     // Wait for all threads to complete
     drop(tx);
-    let mut all_succeed = true;
-    while let Ok(succeed) = rx.recv() {
-        all_succeed = all_succeed && succeed;
+    while let Ok(result) = rx.recv() {
+        if let Err(e) = result {
+            errors.push(e);
+        }
     }
 
     // Wait for all handles to complete
     for handle in handles {
         if let Err(e) = handle.join() {
             log::error!("Thread panicked: {:?}", e);
-            all_succeed = false;
+            errors.push(eyre::eyre!("Thread panicked: {:?}", e));
         }
     }
 
-    if !all_succeed {
-        return Err(eyre::eyre!("Failed to process some repository items"));
+    if !errors.is_empty() {
+        if errors.len() == 1 {
+            return Err(errors.into_iter().next().unwrap());
+        } else {
+            let error_msg = format!("Failed to process {} repository items: {}", errors.len(), errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "));
+            return Err(eyre::eyre!(error_msg));
+        }
     }
 
     Ok(())
@@ -744,7 +751,7 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     // Process data blocks as they arrive
     process_data(data_rx, repo_dir, revise)
         .with_context(|| format!("Failed to process data for item: {} (format: {:?}, size: {}, hash: {})",
-            revise.location, revise.repo_revise.format, revise.size, revise.hash))?;
+            revise.download_path.display(), revise.repo_revise.format, revise.size, revise.hash))?;
     Ok(())
 }
 
@@ -826,8 +833,8 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 
         // Check if the packages metafile exists
         if !packages_metafile.exists() {
-            log::warn!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display());
-            return Err(eyre::eyre!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display()));
+            log::warn!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet, or processing failed. Check earlier error logs.", packages_metafile.display());
+            return Err(eyre::eyre!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet, or processing failed. Check earlier error logs.", packages_metafile.display()));
         }
 
         // Load packages info
@@ -898,23 +905,23 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
     if revise.is_packages {
         match revise.repo_revise.format {
-            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location))?,
-            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location))?,
-            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location))?,
+            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.download_path.display()))?,
+            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.download_path.display()))?,
+            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.download_path.display()))?,
             PackageFormat::Pacman => {
                 // Check if this is an AUR repository
                 if revise.location.contains("packages-meta-ext-v1.json") || revise.repo_revise.repo_name == "aur" {
-                    crate::aur::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process AUR packages content for {}", revise.location))?
+                    crate::aur::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process AUR packages content for {}", revise.download_path.display()))?
                 } else {
-                    crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location))?
+                    crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.download_path.display()))?
                 }
             },
-            PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.location))?,
+            PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.download_path.display()))?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", revise.repo_revise.format)),
         };
     } else {
         process_filelists_content(data_rx, repo_dir, revise)
-            .with_context(|| format!("Failed to process filelists content for {}", revise.location))?;
+            .with_context(|| format!("Failed to process filelists content for {}", revise.download_path.display()))?;
     }
     Ok(())
 }
