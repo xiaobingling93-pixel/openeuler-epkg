@@ -12,18 +12,18 @@ log "Starting public multi-user test"
 
 # For root: create public environment and install ripgrep and busybox-static
 log "Root: creating public environment and installing ripgrep and busybox-static"
-epkg env create --public alpine -c alpine || error "Failed to create public env for root"
-epkg -e alpine --assume-yes install ripgrep busybox-static || error "Failed to install ripgrep and busybox-static for root"
+epkg env create --public pub_alpine -c alpine || error "Failed to create public env for root"
+epkg -e pub_alpine --assume-yes install ripgrep busybox-static || error "Failed to install ripgrep and busybox-static for root"
 
-# Find busybox path in alpine environment
-if [ -x "/opt/epkg/envs/root/alpine/usr/bin/busybox.static" ]; then
-    BUSYBOX="/opt/epkg/envs/root/alpine/usr/bin/busybox.static"
-elif [ -x "/opt/epkg/envs/root/alpine/bin/busybox.static" ]; then
-    BUSYBOX="/opt/epkg/envs/root/alpine/bin/busybox.static"
+# Find busybox path in pub_alpine environment
+if [ -x "/opt/epkg/envs/root/pub_alpine/usr/bin/busybox.static" ]; then
+    BUSYBOX="/opt/epkg/envs/root/pub_alpine/usr/bin/busybox.static"
+elif [ -x "/opt/epkg/envs/root/pub_alpine/bin/busybox.static" ]; then
+    BUSYBOX="/opt/epkg/envs/root/pub_alpine/bin/busybox.static"
 elif [ -n "$(command -v busybox)" ]; then
     BUSYBOX="$(command -v busybox)"
 else
-    error "Could not find busybox in alpine environment"
+    error "Could not find busybox in pub_alpine environment"
 fi
 log "Using busybox at: $BUSYBOX"
 
@@ -76,15 +76,15 @@ run_as_user "$USER_B" "epkg self install --store auto" || error "Failed to insta
 
 # For user A: create public environment and install jq
 # log "User A: creating public environment and installing jq"
-# run_as_user "$USER_A" "epkg env create --public puba -c archlinux" || error "Failed to create public env for user A"
+# run_as_user "$USER_A" "epkg env create --public puba -c alpine" || error "Failed to create public env for user A"
 # ls -C /opt/epkg/envs/$USER_A/puba || error "No public env dir created"
 # run_as_user "$USER_A" "epkg -e puba --assume-yes install jq" || error "Failed to install jq for user A"
 # /opt/epkg/envs/ dir in env is empty if separate mounted
-# epkg -e alpine run busybox.static ls /opt/epkg/envs/$USER_A/puba || error "Public env dir not visible in env"
+# epkg -e pub_alpine run busybox.static ls /opt/epkg/envs/$USER_A/puba || error "Public env dir not visible in env"
 
 # For user B: create private environment and install htop
 log "User B: creating private environment and installing htop"
-run_as_user "$USER_B" "epkg env create privb -c archlinux" || error "Failed to create private env for user B"
+run_as_user "$USER_B" "epkg env create privb -c alpine" || error "Failed to create private env for user B"
 # ls -C /opt/epkg/envs/$USER_B/privb || error "No private env dir created"
 run_as_user "$USER_B" "epkg -e privb --assume-yes install htop" || error "Failed to install htop for user B"
 # /opt/epkg/envs/ dir in env is empty if separate mounted
@@ -96,7 +96,7 @@ ENV_LIST_A=$(run_as_user "$USER_A" "epkg env list")
 # if ! echo "$ENV_LIST_A" | grep -q "puba"; then
 #     error "User A cannot see their own public env"
 # fi
-if ! echo "$ENV_LIST_A" | grep -q "alpine"; then
+if ! echo "$ENV_LIST_A" | grep -q "pub_alpine"; then
     error "User A cannot see root's public env"
 fi
 
@@ -108,13 +108,13 @@ fi
 # if ! echo "$ENV_LIST_B" | grep -q "puba"; then
 #     error "User B cannot see user A's public env"
 # fi
-if ! echo "$ENV_LIST_B" | grep -q "alpine"; then
+if ! echo "$ENV_LIST_B" | grep -q "pub_alpine"; then
     error "User B cannot see root's public env"
 fi
 
 log "Verifying env list for root"
 ENV_LIST_ROOT=$(epkg env list 2>/dev/null)
-if ! echo "$ENV_LIST_ROOT" | grep -q "alpine"; then
+if ! echo "$ENV_LIST_ROOT" | grep -q "pub_alpine"; then
     error "Root cannot see their own public env"
 fi
 # if ! echo "$ENV_LIST_ROOT" | grep -q "puba"; then
@@ -140,7 +140,7 @@ fi
 
 # Test owner/env_name format for root's public env
 log "User A: testing owner/env_name format to access root's public env"
-if ! run_as_user "$USER_A" "epkg -e root/alpine run rg --version"; then
+if ! run_as_user "$USER_A" "epkg -e root/pub_alpine run rg --version"; then
     error "User A cannot access root's public env using owner/env_name format"
 fi
 
@@ -175,7 +175,7 @@ fi
 # fi
 
 log "User A: testing info command on root's public env"
-if ! run_as_user "$USER_A" "epkg -e root/alpine info ripgrep" | grep -q "ripgrep$"; then
+if ! run_as_user "$USER_A" "epkg -e root/pub_alpine info ripgrep" | grep -q "ripgrep$"; then
     error "User A cannot get info about ripgrep from root's public env"
 fi
 
@@ -192,7 +192,7 @@ fi
 # fi
 
 log "User A: testing list command on root's public env"
-LIST_OUTPUT_A=$(run_as_user "$USER_A" "epkg -e root/alpine list --installed")
+LIST_OUTPUT_A=$(run_as_user "$USER_A" "epkg -e root/pub_alpine list --installed")
 if ! echo "$LIST_OUTPUT_A" | grep -q "ripgrep"; then
     error "User A cannot list installed packages from root's public env"
 fi
@@ -213,10 +213,10 @@ fi
 # fi
 
 log "User A: testing search command on root's public env"
-if ! run_as_user "$USER_A" "epkg -e root/alpine search ripgrep" | grep '^ripgrep'; then
+if ! run_as_user "$USER_A" "epkg -e root/pub_alpine search ripgrep" | grep '^ripgrep'; then
     error "User A cannot search for ripgrep in root's public env"
 fi
-if ! run_as_user "$USER_A" "epkg -e root/alpine search busybox" | grep '^busybox'; then
+if ! run_as_user "$USER_A" "epkg -e root/pub_alpine search busybox" | grep '^busybox'; then
     error "User A cannot search for busybox in root's public env"
 fi
 
@@ -230,5 +230,5 @@ log "Public multi-user test completed successfully"
 # Cleanup
 run_as_user "$USER_A" "epkg env remove puba"
 run_as_user "$USER_B" "epkg env remove privb"
-epkg env remove alpine
+epkg env remove pub_alpine
 
