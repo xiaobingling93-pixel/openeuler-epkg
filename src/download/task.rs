@@ -384,6 +384,15 @@ impl DownloadTask {
 
         let meta_path = self.meta_json_path();
 
+        // If metadata file is a symlink, delete it so we can write our own metadata
+        if let Ok(metadata) = std::fs::symlink_metadata(&meta_path) {
+            if metadata.file_type().is_symlink() {
+                log::debug!("Metadata file {} is a symlink, removing it", meta_path.display());
+                std::fs::remove_file(&meta_path)
+                    .with_context(|| format!("Failed to remove symlink {}", meta_path.display()))?;
+            }
+        }
+
         let serving_metadata = if let Ok(guard) = self.serving_metadata.lock() {
             guard.clone()
         } else {

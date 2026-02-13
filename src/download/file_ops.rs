@@ -16,6 +16,8 @@
 
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::os::unix::fs::symlink;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -26,6 +28,8 @@ use super::mirror::{validate_mirror_metadata, fetch_server_metadata};
 use super::utils::{map_io_error, send_chunk_to_channel};
 use super::validation::parse_http_date;
 use crate::utils;
+use crate::config;
+use crate::dirs;
 
 /// Get the size of an existing partial file, or 0 if it doesn't exist
 pub(crate) fn get_existing_file_size(part_path: &Path) -> Result<u64> {
@@ -397,11 +401,84 @@ fn check_chunk_completion(task: &DownloadTask, existing_bytes: u64) -> Result<bo
 
 /// Log download completion statistics
 
+/// Try to symlink from global shared cache if we're in private mode and local file doesn't exist.
+fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
+    // Only check global cache when not using shared store
+    if config().init.shared_store {
+        return false;
+    }
+
+    let local_path = &task.final_path;
+    if local_path.exists() {
+        return false;
+    }
+
+    // Compute global shared cache root: /opt/epkg/cache/downloads
+    let global_cache_root = dirs().opt_epkg.join("cache/downloads");
+    let local_cache_root = dirs().epkg_downloads_cache.clone();
+
+    // Get relative path from local cache root
+    let relative_path = match local_path.strip_prefix(&local_cache_root) {
+        Ok(rel) => rel,
+        Err(_) => {
+            log::debug!("Local path {} is not under cache root {}", local_path.display(), local_cache_root.display());
+            return false;
+        }
+    };
+
+    // Build global path
+    let global_path = global_cache_root.join(relative_path);
+    if !global_path.exists() {
+        return false;
+    }
+
+    // Create parent directory for symlink if needed
+    if let Some(parent) = local_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            log::warn!("Failed to create parent directory for symlink {}: {}", local_path.display(), e);
+            return false;
+        }
+    }
+
+    // Create symlink from local path to global path
+    match symlink(&global_path, local_path) {
+        Ok(_) => log::debug!("Symlinked {} -> {}", local_path.display(), global_path.display()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            // File already exists (maybe created by another process)
+            log::debug!("File already exists at {}, skipping symlink", local_path.display());
+            return false;
+        }
+        Err(e) => {
+            log::warn!("Failed to symlink {} -> {}: {}", local_path.display(), global_path.display(), e);
+            return false;
+        }
+    }
+
+    // Also symlink .etag.json file if it exists
+    let global_meta_path = utils::append_suffix(&global_path, "etag.json");
+    let local_meta_path = utils::append_suffix(local_path, "etag.json");
+    if global_meta_path.exists() && !local_meta_path.exists() {
+        match symlink(&global_meta_path, &local_meta_path) {
+            Ok(_) => log::debug!("Symlinked metadata {} -> {}", local_meta_path.display(), global_meta_path.display()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                log::debug!("Metadata file already exists at {}, skipping symlink", local_meta_path.display());
+            }
+            Err(e) => {
+                log::warn!("Failed to symlink metadata {} -> {}: {}", local_meta_path.display(), global_meta_path.display(), e);
+            }
+        }
+    }
+
+    true
+}
+
 /// Clean cache decision logic replacing complex nested conditionals
 pub(crate) fn should_redownload(
     task: &DownloadTask,
     server_metadata: &ServerMetadata
 ) -> Result<CacheDecision> {
+    // Try to symlink from global shared cache if local file doesn't exist
+    try_symlink_from_global_cache(task);
 
     let local_path = &task.final_path;
     if !local_path.exists() {
@@ -687,6 +764,9 @@ pub(crate) fn validate_existing_file(task: &DownloadTask) -> Result<ValidationRe
     let final_path = &task.final_path;
     let file_type = &task.file_type;
     let expected_size = task.file_size.load(Ordering::Relaxed);
+
+    // Try to symlink from global shared cache if local file doesn't exist
+    try_symlink_from_global_cache(task);
 
     // Early return if file doesn't exist
     if !final_path.exists(){
