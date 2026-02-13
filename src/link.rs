@@ -173,6 +173,7 @@ pub fn unlink_package_diff(
     new_package_info: &InstalledPackageInfo,
     store_root: &Path,
     env_root: &Path,
+    new_files_union: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Result<()> {
     let (_old_key, old_info) = match (old_pkgkey, old_package_info) {
         (Some(key), Some(info)) => (key, info),
@@ -180,7 +181,6 @@ pub fn unlink_package_diff(
     };
     // Get file lists for both packages
     let old_files = crate::package_cache::map_pkgline2filelist(store_root, &old_info.pkgline)?;
-    let new_files = crate::package_cache::map_pkgline2filelist(store_root, &new_package_info.pkgline)?;
 
     // Convert to sets of relative paths for comparison (already relative paths as strings)
     let old_rel_paths: std::collections::HashSet<PathBuf> = old_files
@@ -188,19 +188,16 @@ pub fn unlink_package_diff(
         .map(|s| PathBuf::from(s))
         .collect();
 
-    let new_rel_paths: std::collections::HashSet<PathBuf> = new_files
-        .iter()
-        .map(|s| PathBuf::from(s))
-        .collect();
 
-    // Find files that are in old package but not in new package
+    // Find files that are in old package but not in any new package in batch
+    log::debug!("Batch union contains {} files", new_files_union.len());
     let files_to_remove: Vec<PathBuf> = old_rel_paths
-        .difference(&new_rel_paths)
+        .difference(new_files_union)
         .cloned()
         .collect();
 
     log::debug!(
-        "Found {} files to remove during upgrade: old_pkg={}, new_pkg={}",
+        "Found {} files to remove during upgrade (batch union): old_pkg={}, new_pkg={}",
         files_to_remove.len(),
         old_info.pkgline,
         new_package_info.pkgline
@@ -390,6 +387,7 @@ fn mirror_dir(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate::mtree::Mt
         let fs_file = store_fs_dir.join(&fs_file_info.path);
         let fhs_file = &fs_file_info.path;
         let target_path = env_root.join(fhs_file);
+        log::trace!("mirror_dir: processing fhs_file={}, is_link={}, is_dir={}", fhs_file, fs_file_info.is_link(), fs_file_info.is_dir());
 
         // No modify top-level directories/symlinks created by create_environment_directories()
         if matches!(fhs_file.as_str(), "sbin" | "bin" | "lib" | "lib64" | "lib32" | "usr/sbin" | "usr/lib64") {
@@ -508,10 +506,11 @@ pub fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: boo
 /// - _fhs_file: Relative path from store_fs_dir (unused, kept for consistency)
 fn mirror_symlink_file(fs_file: &Path, target_path: &Path) -> Result<()> {
     utils::remove_any_existing_file(target_path, true)?;
+    log::trace!("mirror_symlink_file: fs_file={}, target_path={}", fs_file.display(), target_path.display());
 
     // Handle regular symlink (not pointing to directory)
-    shortcut_symlink(fs_file, target_path)
-        .with_context(|| format!("Failed to shortcut_symlink from {} to {}", fs_file.display(), target_path.display()))?;
+    copy_symlink(fs_file, target_path)
+        .with_context(|| format!("Failed to copy symlink from {} to {}", fs_file.display(), target_path.display()))?;
     Ok(())
 }
 
@@ -558,6 +557,7 @@ fn cleanup_existing_target(
 }
 
 fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link_type: LinkType, can_reflink: bool) -> Result<()> {
+    log::trace!("mirror_regular_file: fs_file={}, target_path={}, link_type={:?}", fs_file.display(), target_path.display(), link_type);
     // Clean up existing target (remove old file/dir if needed)
     cleanup_existing_target(fs_file, target_path, fhs_file)?;
 
@@ -695,48 +695,13 @@ fn needs_hard_link_or_copy(fhs_file: &Path) -> Option<bool> {
     None
 }
 
-// Like symlink() but try to remove one level of indirection
-fn shortcut_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
-    if let Ok(link_target) = fs::read_link(fs_file) {
-        let new_link_target = if link_target.is_absolute() || !link_target.exists() {
-            // This prevents
-            //      /usr/bin/python3 -> /home/wfg/.epkg/store/lsl4sc64f2ccp62cxfquizdaj5k4fpcu__python3-minimal__3.13.3-1__amd64/fs/usr/bin/python3.13
-            // in case
-            //      /home/wfg/.epkg/store/lsl4sc64f2ccp62cxfquizdaj5k4fpcu__python3-minimal__3.13.3-1__amd64/fs/usr/bin/python3 -> python3.13
-            //
-            // Prevents
-            //      /home/wfg/.epkg/envs/main/bin/sh -> /home/wfg/.epkg/store/g53cxe55pxbwqgq2k2nk7owjnv7zmlsj__busybox-binsh__1.37.0-r18__noarch/fs//bin/busybox
-            // in case /bin/busybox happen to exist in host os but not in env:
-            //      /home/wfg/.epkg/store/g53cxe55pxbwqgq2k2nk7owjnv7zmlsj__busybox-binsh__1.37.0-r18__noarch/fs//bin/sh -> /bin/busybox
-            link_target
-        } else if link_target.starts_with("../") {
-            // For parent-relative paths like ../bin/pidof, normalize against fs_file
-            normalize_join(fs_file.parent().ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", fs_file.display()))?,
-                           &link_target)
-        } else {
-            // For sibling-relative paths like python3.11, join with source file's parent
-            fs_file.parent()
-                .ok_or_else(|| eyre::eyre!("Failed to get parent directory for {}", fs_file.display()))?
-                .join(link_target)
-        };
-
-        lfs::symlink(&new_link_target, target_path)?;
-    }
+// Copy symlink as-is without shortcutting
+fn copy_symlink(fs_file: &Path, target_path: &Path) -> Result<()> {
+    let link_target = fs::read_link(fs_file)
+        .with_context(|| format!("Failed to read symlink target for {}", fs_file.display()))?;
+    log::trace!("copy_symlink: fs_file={}, link_target={:?}", fs_file.display(), link_target);
+    lfs::symlink(&link_target, target_path)
+        .with_context(|| format!("Failed to create symlink {} -> {}", target_path.display(), link_target.display()))?;
     Ok(())
 }
 
-fn normalize_join(base: &Path, subpath: &Path) -> PathBuf {
-    let mut components: Vec<_> = base.components().collect();
-
-    for component in subpath.components() {
-        match component {
-            std::path::Component::ParentDir if !components.is_empty() => {
-                components.pop();
-            },
-            std::path::Component::CurDir => {},
-            _ => components.push(component),
-        }
-    }
-
-    components.iter().collect()
-}

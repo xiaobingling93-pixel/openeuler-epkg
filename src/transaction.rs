@@ -48,6 +48,7 @@
 //! - `process_fresh_installs()` - Replaced by `process_package_operation()` with integrated triggers
 
 use std::path::Path;
+use std::path::PathBuf;
 use std::fs;
 use std::time::SystemTime;
 use color_eyre::Result;
@@ -112,7 +113,8 @@ fn run_action(
 
         PackageAction::LinkFiles => {
             // Files are already linked during download/unpack phase, but we may need to handle diff linking for upgrades
-            crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, &store_root, &env_root)?;
+            let new_files_union = &plan.batch.new_files;
+            crate::link::unlink_package_diff(old_pkgkey, old_pkg_info, pkg_info, &store_root, &env_root, new_files_union)?;
             // Note: Actual linking happens earlier in the download/unpack phase
 
             PACKAGE_CACHE.installed_packages.write().unwrap().insert(pkgkey.to_string(), Arc::clone(pkg_info));
@@ -255,24 +257,24 @@ fn build_batch_maps(plan: &mut InstallationPlan) {
     }
 }
 
-/// Process each package operation in order (rpmtsProcess style)
-fn process_package_operations(
-    plan: &mut InstallationPlan,
-) -> Result<()> {
-    // Clone operations to avoid borrow checker issues
-    let operations: Vec<_> = plan.ordered_operations.clone();
-    for op in &operations {
-        // Skip operations that don't have completed packages yet (for installs/upgrades)
-        if let Some(new_pkgkey) = &op.new_pkgkey {
-            if !plan.batch.new_pkgkeys.contains(new_pkgkey) {
-                // Package not yet completed (e.g., AUR packages being built)
-                continue;
+/// Build union of all files from new packages in batch for diff calculation during upgrades
+fn build_batch_file_union(plan: &mut InstallationPlan) -> Result<()> {
+    plan.batch.new_files.clear();
+    for pkgkey in &plan.batch.new_pkgkeys {
+        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+            match crate::package_cache::map_pkgline2filelist(&plan.store_root, &package_info.pkgline) {
+                Ok(files) => {
+                    for file in files {
+                        plan.batch.new_files.insert(PathBuf::from(file));
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to get file list for {} (pkgline {}): {}", pkgkey, package_info.pkgline, e);
+                }
             }
         }
-
-        // Level 1: Process package pair operation
-        process_package_operation(plan, op)?;
     }
+    log::debug!("Batch file union contains {} files from {} packages", plan.batch.new_files.len(), plan.batch.new_pkgkeys.len());
     Ok(())
 }
 
@@ -284,6 +286,8 @@ pub fn run_transaction_batch(
 ) -> Result<()> {
     // Build maps for hooks from ordered_operations
     build_batch_maps(plan);
+    // Build union of all files from new packages in batch for diff calculation during upgrades
+    build_batch_file_union(plan)?;
 
     // Execute transaction scriptlets at transaction boundaries (RPM behavior)
     begin_transaction(&plan)?;
@@ -313,6 +317,27 @@ pub fn run_transaction_batch(
     // Follow-up batches will see is_first=false
     plan.batch.is_first = false;
 
+    Ok(())
+}
+
+/// Process each package operation in order (rpmtsProcess style)
+fn process_package_operations(
+    plan: &mut InstallationPlan,
+) -> Result<()> {
+    // Clone operations to avoid borrow checker issues
+    let operations: Vec<_> = plan.ordered_operations.clone();
+    for op in &operations {
+        // Skip operations that don't have completed packages yet (for installs/upgrades)
+        if let Some(new_pkgkey) = &op.new_pkgkey {
+            if !plan.batch.new_pkgkeys.contains(new_pkgkey) {
+                // Package not yet completed (e.g., AUR packages being built)
+                continue;
+            }
+        }
+
+        // Level 1: Process package pair operation
+        process_package_operation(plan, op)?;
+    }
     Ok(())
 }
 
