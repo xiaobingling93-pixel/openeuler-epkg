@@ -387,7 +387,7 @@ pub(crate) fn setup_namespace_and_mounts(env_root: &Path, run_options: &RunOptio
     create_namespaces(euid, uid, gid, &run_options.user)?;
 
     // Set up bind mounts for the environment
-    mount_env_dirs(uid, env_root)?;
+    mount_env_dirs(euid, uid, env_root)?;
 
     // Mount additional directories if specified
     for mount_dir in &run_options.mount_dirs {
@@ -676,7 +676,7 @@ fn mount_core_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
  */
 /// Handle /opt/epkg mount isolation to preserve access to system /opt/epkg.
 /// This ensures that when we mount the guest's /opt, we don't lose access to the host's /opt/epkg.
-fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
+fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> Result<()> {
     let opt_real_path = if env_root.starts_with("/opt/epkg") {
         /*
          * Use a path outside /opt/epkg to avoid circular dependency
@@ -686,16 +686,14 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
          * mount loop, leading to ELOOP (Too many levels of symbolic links) errors when resolving paths.
          *
          * To avoid this, if the current env_root is a public environment (i.e., starts with /opt/epkg),
-         * we use a temporary directory outside /opt/epkg (in /run/user/{euid}/epkg-opt_real/{uid}-{env_name})
+         * we use a temporary directory outside /opt/epkg (in /run/user/{outside_euid}/epkg-opt_real/{outside_uid}-{env_name})
          * for the backup. This ensures the backup is outside the tree being bind-mounted, breaking the loop.
          * For private environments, we can safely use env_root.join("opt_real") as before.
          */
         let env_name = config().common.env.clone();
-        use nix::unistd::getuid;
-        use nix::unistd::geteuid;
-        let uid = getuid().as_raw();
-        let euid = geteuid().as_raw();
-        PathBuf::from(format!("/run/user/{}/epkg-opt_real/{}-{}", euid, uid, env_name))
+        let uid_raw = uid.as_raw();
+        let euid_raw = euid.as_raw();
+        PathBuf::from(format!("/run/user/{}/epkg-opt_real/{}-{}", euid_raw, uid_raw, env_name))
     } else {
         env_root.join("opt_real")
     };
@@ -743,7 +741,7 @@ fn mount_opt_epkg_isolation(env_root: &Path) -> Result<()> {
 }
 
 /// Mount environment directories
-fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
+fn mount_env_dirs(euid: Uid, uid: Uid, env_root: &Path) -> Result<()> {
     // Handle traditional layout host compatibility (must be done BEFORE mounting /usr)
     mount_traditional_host_compatibility(env_root)?;
 
@@ -751,7 +749,7 @@ fn mount_env_dirs(uid: Uid, env_root: &Path) -> Result<()> {
     mount_core_env_dirs(uid, env_root)?;
 
     // Handle /opt/epkg mount isolation
-    mount_opt_epkg_isolation(env_root)?;
+    mount_opt_epkg_isolation(euid, uid, env_root)?;
 
     Ok(())
 }
