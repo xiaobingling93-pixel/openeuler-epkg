@@ -48,12 +48,12 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use log;
+use crate::lfs;
 
 
 /// Adjust Exec line to use ebin wrapper
@@ -162,8 +162,7 @@ fn create_desktop_files(
     };
     let dst_dir = home_path.join(dst_subdir);
 
-    fs::create_dir_all(&dst_dir)
-        .with_context(|| format!("Failed to create directory {}", dst_dir.display()))?;
+    lfs::create_dir_all(&dst_dir)?;
 
     // Filter filelist for files in the source directory that end with .desktop
     let desktop_files: Vec<&String> = filelist
@@ -188,8 +187,7 @@ fn create_desktop_files(
         let adjusted_content = adjust_desktop_file(&src_path, env_root)?;
 
         // Write adjusted content to destination
-        fs::write(&dst_path, adjusted_content)
-            .with_context(|| format!("Failed to write desktop file {}", dst_path.display()))?;
+        lfs::write(&dst_path, adjusted_content)?;
 
         processed_files.push(dst_path.clone());
 
@@ -223,8 +221,7 @@ fn symlink_desktop_files(
     };
     let dst_dir = home_path.join(dst_subdir);
 
-    fs::create_dir_all(&dst_dir)
-        .with_context(|| format!("Failed to create directory {}", dst_dir.display()))?;
+    lfs::create_dir_all(&dst_dir)?;
 
     // Filter filelist for files/directories in the source base directory
     let matching_items: Vec<&String> = filelist
@@ -248,7 +245,7 @@ fn symlink_desktop_files(
         // Handle existing destination
         if dst_path.exists() {
             if dst_path.is_symlink() {
-                fs::remove_file(&dst_path)?;
+                lfs::remove_file(&dst_path)?;
             } else {
                 continue;
             }
@@ -262,8 +259,7 @@ fn symlink_desktop_files(
             continue;
         }
 
-        symlink(&target_path, &dst_path)
-            .with_context(|| format!("Failed to create symlink {} -> {}", dst_path.display(), target_path.display()))?;
+        lfs::symlink(&target_path, &dst_path)?;
 
         linked_items.push(dst_path.clone());
 
@@ -467,7 +463,7 @@ fn remove_symlinked_file(
         // Check if the symlink target starts with env_root
         if target_path.starts_with(env_root) {
             // Safe to remove - this symlink points to our environment or store
-            if let Err(e) = fs::remove_file(link_path) {
+            if let Err(e) = lfs::remove_file(link_path) {
                 log::warn!("Failed to remove desktop integration file {}: {}", link_path.display(), e);
             } else {
                 log::debug!("Removed desktop integration file: {}", link_path.display());
@@ -501,7 +497,7 @@ fn remove_desktop_file(
 ) -> Result<()> {
     match is_env_desktop_file(link_path, env_root) {
         Ok(true) => {
-            if let Err(e) = fs::remove_file(link_path) {
+            if let Err(e) = lfs::remove_file(link_path) {
                 log::warn!("Failed to remove desktop integration file {}: {}", link_path.display(), e);
             } else {
                 log::debug!("Removed desktop integration file: {}", link_path.display());

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use crate::lfs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -442,7 +443,7 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
     let release_dir = release_path.parent()
         .ok_or_else(|| eyre::eyre!("Failed to get parent directory of release path: {}", release_path.display()))?;
 
-    fs::create_dir_all(release_dir).with_context(|| format!("Failed to create parent directory for: {}", release_path.display()))?;
+    lfs::create_dir_all(release_dir)?;
     refresh_release_file(&release_path, &repo)
         .with_context(|| format!("Failed to refresh release file for repository: {}", repo.repo_name))?;
 
@@ -879,8 +880,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
 
     // Ensure parent directory exists
     if let Some(parent) = index_path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("Failed to create parent directory for: {}", index_path.display()))?;
+        lfs::create_dir_all(parent)?;
     }
 
     // Serialize to JSON with proper error handling
@@ -888,8 +888,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
         .wrap_err_with(|| format!("Failed to serialize repo index for repository: {}", repo.repo_name))?;
 
     // Write to file with proper error handling
-    fs::write(&index_path, json_content)
-        .wrap_err_with(|| format!("Failed to write repo index to: {}", index_path.display()))?;
+    lfs::write(&index_path, json_content)?;
 
     log::debug!("Successfully wrote repo index to {}", index_path.display());
 
@@ -993,17 +992,11 @@ fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
 
     if output_path.exists() {
         log::debug!("Removing existing filelists at {}", output_path.display());
-        fs::remove_file(&output_path)
-            .with_context(|| format!("Failed to remove existing filelists at {}", output_path.display()))?;
+        lfs::remove_file(&output_path)?;
     } else {
         if let Some(parent_dir) = output_path.parent() {
             if !parent_dir.as_os_str().is_empty() {
-                fs::create_dir_all(parent_dir).with_context(|| {
-                    format!(
-                        "Failed to create parent directory for: {}",
-                        output_path.display()
-                    )
-                })?;
+                lfs::create_dir_all(parent_dir)?;
             }
         }
     }
@@ -1019,16 +1012,13 @@ fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> 
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
 
     // Check if output_path exists and is a valid file/symlink
-    if fs::symlink_metadata(output_path).is_ok() {
+    if lfs::symlink_metadata(output_path).is_ok() {
         log::debug!("Removing existing filelists at {}", output_path.display());
-        fs::remove_file(&output_path)
-            .with_context(|| format!("Failed to remove existing filelists at {}", output_path.display()))?;
+        lfs::remove_file(&output_path)?;
     }
 
     #[cfg(unix)]
-    std::os::unix::fs::symlink(revise.download_path.clone(), output_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            revise.download_path.display(), output_path.display()))?;
+    lfs::symlink(&revise.download_path, output_path)?;
 
     #[cfg(windows)]
     std::os::windows::fs::symlink_file(revise.download_path.clone(), output_path)
@@ -1071,8 +1061,7 @@ fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FilelistsFil
     log::debug!("Writing filelists metadata to {}", json_path);
     let json_content = serde_json::to_string_pretty(file_info)
         .with_context(|| format!("Failed to serialize file info to JSON for {}", output_path.display()))?;
-    fs::write(&json_path, json_content)
-        .with_context(|| format!("Failed to write JSON metadata to {}", json_path))?;
+    lfs::write(&json_path, json_content)?;
 
     Ok(())
 }

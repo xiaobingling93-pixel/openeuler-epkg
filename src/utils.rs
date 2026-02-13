@@ -13,7 +13,6 @@ use flate2::read::GzDecoder;
 use liblzma;
 use zstd;
 use std::os::unix::fs::PermissionsExt; // For checking execute permissions
-use std::os::unix::fs::symlink;
 use nix::unistd;
 use nix::sys::signal::kill;
 use nix::sys::signal::Signal;
@@ -154,7 +153,7 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 
     // Check Symbolic link first
-    if fs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
+    if lfs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
         return Ok((FileType::Symlink, String::new()));
     }
 
@@ -321,9 +320,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
 
         // Create parent directories if needed
         if path.is_dir() {
-            if let Err(e) = fs::create_dir_all(&full_path) {
-                return Err(eyre::eyre!("Error creating directory {}: {}", full_path.display(), e));
-            }
+            lfs::create_dir_all(&full_path)?;
             continue;
         }
 
@@ -340,8 +337,7 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
             },
             Err(e) => {
                 if e.kind() == ErrorKind::AlreadyExists {
-                    fs::remove_file(&full_path)
-                        .with_context(|| format!("Error removing existing file {}", full_path.display()))?;
+                    lfs::remove_file(&full_path)?;
                     entry.unpack(&full_path)
                         .with_context(|| format!("Error extracting {} after removal", full_path.display()))?;
                 } else {
@@ -497,13 +493,12 @@ pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
 #[allow(dead_code)]
 pub fn decompress_file(input_path: &Path, output_path: &Path, extension: &str) -> Result<()> {
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
+        lfs::create_dir_all(parent)?;
     }
 
     let input_file = fs::File::open(input_path)
         .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
-    let mut output = fs::File::create(output_path)
-        .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+    let mut output = lfs::file_create(output_path)?;
 
     match extension {
         "gz" => {
@@ -546,8 +541,7 @@ pub fn mark_file_bad<P: AsRef<Path>>(file_path: P) -> Result<PathBuf> {
 
     // Remove existing .part file
     if part_path.exists() {
-        std::fs::remove_file(&part_path)
-            .with_context(|| format!("Failed to remove existing bad file: {}", part_path.display()))?;
+        lfs::remove_file(&part_path)?;
     }
 
     // If the original file no longer exists, treat this as a no-op.
@@ -568,13 +562,11 @@ pub fn mark_file_bad<P: AsRef<Path>>(file_path: P) -> Result<PathBuf> {
 
     // Remove existing .bad file
     if bad_path.exists() {
-        std::fs::remove_file(&bad_path)
-            .with_context(|| format!("Failed to remove existing bad file: {}", bad_path.display()))?;
+        lfs::remove_file(&bad_path)?;
     }
 
     // Rename the file
-    std::fs::rename(file_path, &bad_path)
-        .with_context(|| format!("Failed to rename {} to {}", file_path.display(), bad_path.display()))?;
+    lfs::rename(file_path, &bad_path)?;
 
     eprintln!("Renamed corrupted file {} to {}", file_path.display(), bad_path.display());
     eprintln!("Please retry, the file should be auto redownloaded.");
@@ -619,15 +611,12 @@ pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path:
 
     // Remove existing symlink or file if it exists
     if symlink_path.exists() {
-        fs::remove_file(symlink_path)
-            .with_context(|| format!("Failed to remove existing file/symlink at {}", symlink_path.display()))?;
+        lfs::remove_file(symlink_path)?;
     }
 
     // Create the symlink
     log::debug!("Creating symlink: {} -> {}", symlink_path.display(), file_path.display());
-    symlink(file_path, symlink_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            file_path.display(), symlink_path.display()))?;
+    lfs::symlink(file_path, symlink_path)?;
 
     Ok(())
 }
@@ -752,7 +741,7 @@ fn ensure_owner_permissions(target_path: &Path, required_mask: u32, file_type: &
         if current_mode & required_mask != required_mask {
             let new_mode = current_mode | required_mask;
             perms.set_mode(new_mode);
-            if let Err(e) = fs::set_permissions(target_path, perms) {
+            if let Err(e) = lfs::set_permissions(target_path, perms) {
                 log::warn!("Failed to set {} permissions for {}: {}", file_type, target_path.display(), e);
             }
         }
@@ -773,7 +762,7 @@ fn ensure_owner_permissions(_target_path: &Path, _required_mask: u32, _file_type
 /// Fix up environment links and remove system directories
 pub fn fixup_env_links(env_root: &Path) -> Result<()> {
     // Prevent running and stalling on `systemctl --system daemon-reload`
-    let _ = std::fs::remove_dir(env_root.join("run/systemd/system"));
+    let _ = lfs::remove_dir(env_root.join("run/systemd/system"));
 
     // Replace symlinks with their target file content
     replace_symlinks_with_content(env_root)?;
@@ -821,21 +810,16 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
                 })?;
 
             // Remove the symlink
-            std::fs::remove_file(&full_symlink_path)?;
+            lfs::remove_file(&full_symlink_path)?;
 
             // Try to hardlink the target file to the symlink location, fall back to copy
-            if let Err(hardlink_err) = std::fs::hard_link(&target_path, &full_symlink_path) {
+            if let Err(hardlink_err) = lfs::hard_link(&target_path, &full_symlink_path) {
                 log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
                            target_path.display(), full_symlink_path.display(), hardlink_err);
 
                 // If hardlink fails, copy the file
                 log::debug!("Copying file from {} to {}", target_path.display(), full_symlink_path.display());
-                std::fs::copy(&target_path, &full_symlink_path)
-                    .map_err(|copy_err| {
-                        log::error!("Failed to copy file from {} to {}: {}",
-                                   target_path.display(), full_symlink_path.display(), copy_err);
-                        copy_err
-                    })?;
+                lfs::copy(&target_path, &full_symlink_path)?;
             } else {
                 log::debug!("Successfully created hardlink from {} to {}",
                            target_path.display(), full_symlink_path.display());
@@ -884,11 +868,10 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
 
             if target_check_path.exists() {
                 if let Some(parent) = link_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    lfs::create_dir_all(parent)?;
                 }
                 // Use the original target string for the symlink (relative or absolute as specified)
-                symlink(target, &link_path)
-                    .with_context(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
+                lfs::symlink(target, &link_path)?;
                 break;
             }
         }
@@ -917,7 +900,7 @@ fn create_makepkg_download_conf(env_root: &Path) -> Result<()> {
           'scp::/usr/bin/scp -C %u %o')
 "#;
 
-    fs::write(&conf_path, content)?;
+    lfs::write(&conf_path, content)?;
     Ok(())
 }
 
@@ -943,7 +926,7 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
                         Ok(path) => {
                             if path.exists() {
                                 log::debug!("Removing file matching pattern '{}': {}", pattern, path.display());
-                                if let Err(e) = std::fs::remove_file(&path) {
+                                if let Err(e) = lfs::remove_file(&path) {
                                     log::warn!("Failed to remove file {}: {}", path.display(), e);
                                 }
                             }
@@ -973,8 +956,7 @@ pub fn set_executable_permissions<P: AsRef<Path>>(path: P, mode: u32) -> Result<
     let mut perms = fs::metadata(path)
         .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))?.permissions();
     perms.set_mode(mode);
-    fs::set_permissions(path, perms)
-        .wrap_err_with(|| format!("Failed to set executable permissions for {}", path.display()))?;
+    lfs::set_permissions(path, perms)?;
     Ok(())
 }
 
@@ -992,8 +974,7 @@ pub fn set_permissions_from_mode<P: AsRef<Path>>(path: P, mode: u32) -> Result<(
     use std::os::unix::fs::PermissionsExt;
     let path = path.as_ref();
     let perms = fs::Permissions::from_mode(mode);
-    fs::set_permissions(path, perms)
-        .wrap_err_with(|| format!("Failed to set permissions for {}", path.display()))?;
+    lfs::set_permissions(path, perms)?;
     Ok(())
 }
 
@@ -1012,8 +993,7 @@ pub fn copy_scriptlet_file<P: AsRef<Path>>(source: P, target: P) -> Result<()> {
     // Copy the script content
     let content = fs::read(source)
         .wrap_err_with(|| format!("Failed to read scriptlet file: {}", source.display()))?;
-    fs::write(target, &content)
-        .wrap_err_with(|| format!("Failed to write scriptlet file: {}", target.display()))?;
+    lfs::write(target, &content)?;
 
     // Make it executable on Unix systems
     set_executable_permissions(target, 0o755)?;
@@ -1027,8 +1007,7 @@ pub fn write_scriptlet_content<P: AsRef<Path>>(target: P, content: &[u8]) -> Res
     let target = target.as_ref();
 
     // Write the script content
-    fs::write(target, content)
-        .wrap_err_with(|| format!("Failed to write scriptlet content to {}", target.display()))?;
+    lfs::write(target, content)?;
 
     // Make it executable on Unix systems
     set_executable_permissions(target, 0o755)?;
@@ -1292,8 +1271,7 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
             cp_options.compute_derived();
             crate::applets::cp::copy_directory_recursive(src, dst, &cp_options)
                 .wrap_err_with(|| format!("Failed to copy directory from {} to {}", src.display(), dst.display()))?;
-            fs::remove_dir_all(src)
-                .wrap_err_with(|| format!("Failed to remove source directory after copy: {}", src.display()))?;
+            lfs::remove_dir_all(src)?;
             log::debug!("Successfully copied and removed directory {} -> {}", src.display(), dst.display());
             Ok(())
         }

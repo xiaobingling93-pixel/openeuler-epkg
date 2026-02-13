@@ -14,6 +14,7 @@ use rkyv::Archived;
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::package;
+use crate::lfs;
 
 // Global status to track if provide2pkgnames data has been loaded
 static PROVIDE2PKGNAMES_LOADED: AtomicBool = AtomicBool::new(false);
@@ -244,16 +245,14 @@ pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<Str
     // AlignedVec implements AsRef<[u8]>, convert to Vec for fs::write
     let bytes: Vec<u8> = aligned_vec.as_ref().to_vec();
 
-    fs::write(path, bytes)
-        .with_context(|| format!("Failed to write provide2pkgnames to {}", path.display()))?;
+    lfs::write(path, bytes)?;
 
     Ok(())
 }
 
 // Function to serialize pkgname2ranges to a file
 pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>) -> Result<()> {
-    let mut file = fs::File::create(path)
-        .with_context(|| format!("Failed to create index file: {}", path.display()))?;
+    let mut file = lfs::file_create(path)?;
 
     // Sort package names before writing
     let mut sorted_packages: Vec<_> = pkgname2ranges.iter().collect();

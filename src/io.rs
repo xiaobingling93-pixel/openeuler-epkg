@@ -12,6 +12,7 @@ use crate::dirs::*;
 use crate::models::{self, *};
 use crate::models::PACKAGE_CACHE;
 use crate::history::get_current_generation_id;
+use crate::lfs;
 
 pub const CHANNEL_SEPARATOR: char = '-';
 
@@ -499,13 +500,11 @@ pub fn serialize_env_config(env_config: EnvConfig) -> Result<()> {
 
     // Ensure the parent directory exists before writing the file
     if let Some(parent_dir) = config_path.parent() {
-        fs::create_dir_all(parent_dir)
-            .with_context(|| format!("Failed to create directory for environment config: {}", parent_dir.display()))?;
+        lfs::create_dir_all(parent_dir)?;
     }
 
     // Write the YAML to the file
-    fs::write(&config_path, yaml)
-        .with_context(|| format!("Failed to write environment config to file: {}", config_path.display()))?;
+    lfs::write(&config_path, yaml)?;
 
     Ok(())
 }
@@ -566,7 +565,7 @@ pub fn save_installed_packages(new_generation: &PathBuf) -> Result<()> {
     let json = serde_json::to_string_pretty(&entries)?;
 
     // Write the JSON to the file
-    fs::write(&file_path, json)?;
+    lfs::write(&file_path, json)?;
 
     if config().common.verbose {
         println!("Installed packages saved to: {}", file_path.display());
@@ -611,7 +610,7 @@ pub fn save_world(new_generation: &PathBuf) -> Result<()> {
     let json = serde_json::to_string_pretty(&sorted_world)?;
 
     // Write the JSON to the file
-    fs::write(&file_path, json)?;
+    lfs::write(&file_path, json)?;
 
     if config().common.verbose {
         println!("World saved to: {}", file_path.display());
