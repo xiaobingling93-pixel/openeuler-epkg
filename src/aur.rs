@@ -11,7 +11,7 @@ use crate::dirs;
 use crate::plan::InstallationPlan;
 use crate::models::*;
 use crate::packages_stream;
-use crate::repo::{RepoReleaseItem, RepoRevise};
+use crate::repo::{RepoReleaseItem, RepoRevise, should_refresh_release_file, ReleaseStatus};
 use crate::download::get_package_file_path;
 use crate::transaction::run_transaction_batch;
 
@@ -112,7 +112,8 @@ pub fn parse_aur_metadata(repo: &RepoRevise, _release_path: &PathBuf) -> Result<
     let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
 
-    let need_download = !download_path.exists();
+    let release_status = should_refresh_release_file(&download_path, repo)?;
+    let need_download = matches!(release_status, ReleaseStatus::NeedDownload | ReleaseStatus::NeedUpdate);
     let need_convert = !output_path.exists() || {
         let repoindex_path = repo_dir.join("RepoIndex.json");
         !repoindex_path.exists()

@@ -230,7 +230,8 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
     let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
 
-    let need_download = !download_path.exists();
+    let release_status = should_refresh_release_file(&download_path, repo)?;
+    let need_download = matches!(release_status, ReleaseStatus::NeedDownload | ReleaseStatus::NeedUpdate);
     let need_convert = !output_path.exists() || {
         let repoindex_path = repo_dir.join("RepoIndex.json");
         !repoindex_path.exists()
