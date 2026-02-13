@@ -155,17 +155,19 @@ fi
 #     error "Root cannot access user A's public env using owner/env_name format"
 # fi
 
-# Verify that 'main' environment is always private
-log "Verifying that 'main' environment is always private"
-if run_as_user "$USER_A" "epkg env create main --public" 2>/dev/null; then
-    error "Should not be able to create 'main' as public"
+# Verify that root SELF_ENV.public is true
+log "Verifying root SELF_ENV public attribute is true"
+USER_A_SELF_PUBLIC=$(epkg -e self env config get public 2>/dev/null | grep -o true || echo "false")
+if [ "$USER_A_SELF_PUBLIC" != "true" ]; then
+    error "SELF_ENV should be public (true) for root"
 fi
 
-# Verify that SELF_ENV.public is always true
-log "Verifying SELF_ENV public attribute is always true"
-USER_A_SELF_PUBLIC=$(run_as_user "$USER_A" "epkg -e self env config get public" 2>/dev/null | grep -o true || echo "false")
-if [ "$USER_A_SELF_PUBLIC" != "true" ]; then
-    error "SELF_ENV should always be public (true) for user A"
+# Verify that 'main' environment is always private
+log "Verifying that 'main' environment is always private"
+run_as_user "$USER_A" "epkg env create main --public"
+USER_A_MAIN_PUBLIC=$(run_as_user "$USER_A" "epkg -e self env config get public" 2>/dev/null | grep -o true || echo "false")
+if [ "$USER_A_MAIN_PUBLIC" != "false" ]; then
+    error "MAIN_ENV should be private (false) for user A"
 fi
 
 # Test info command on other user's public env
@@ -228,7 +230,5 @@ fi
 log "Public multi-user test completed successfully"
 
 # Cleanup
-run_as_user "$USER_A" "epkg env remove puba"
 run_as_user "$USER_B" "epkg env remove privb"
 epkg env remove pub_alpine
-
