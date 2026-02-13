@@ -867,7 +867,6 @@ fn unpack_link_built_aur_packages(
     InstalledPackagesMap,
     HashMap<String, String>,
 )> {
-    use crate::package;
 
     // This round's completed AUR packages (actual_pkgkey -> info)
     let mut this_round_aur_packages = std::collections::HashMap::new();
@@ -875,69 +874,214 @@ fn unpack_link_built_aur_packages(
     let mut this_round_pkgkey_mapping: HashMap<String, String> = HashMap::new();
 
     for (built_pkg_path, original_key) in mapped_packages {
-        // Unpack and link the mapped package *after* we know its original planned key.
-        let built_pkg_path_str = built_pkg_path.to_str().ok_or_else(|| {
-            eyre!(
-                "Invalid UTF-8 in built package path: {}",
+        process_built_aur_package(
+            plan,
+            built_pkg_path,
+            original_key,
+            &mut this_round_aur_packages,
+            &mut this_round_pkgkey_mapping,
+        )?;
+    }
+
+    Ok((this_round_aur_packages, this_round_pkgkey_mapping))
+}
+
+/// Unpack a built AUR package, link it, and extract metadata.
+fn unpack_and_link_package(
+    plan: &mut crate::plan::InstallationPlan,
+    built_pkg_path: &Path,
+) -> Result<(String, String, crate::package::PackageLine)> {
+    let built_pkg_path_str = built_pkg_path.to_str().ok_or_else(|| {
+        eyre!(
+            "Invalid UTF-8 in built package path: {}",
+            built_pkg_path.display()
+        )
+    })?;
+
+    // Unpack the package - pass None to avoid repo field merging
+    // (AUR binary packages have their own architecture, which may differ from repo's 'any')
+    let final_dir = crate::store::unpack_mv_package(
+        built_pkg_path_str,
+        None,  // pkgkey=None prevents repo field merging
+        Some(&plan.store_pkglines_by_pkgname),
+    )
+        .with_context(|| {
+            format!(
+                "Failed to unpack built package: {}",
                 built_pkg_path.display()
             )
         })?;
 
-        // Unpack the package
-        let (actual_pkgkey, pkgline) = crate::store::unpack_package(
-            built_pkg_path_str,
-            &original_key,
-            &plan.store_pkglines_by_pkgname,
-        )
-            .with_context(|| {
-                format!(
-                    "Failed to unpack built package: {}",
-                    built_pkg_path.display()
-                )
-            })?;
+    // Get the pkgline from the directory name
+    let pkgline = final_dir.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| eyre!("Invalid UTF-8 in package directory name: {}", final_dir.display()))?
+        .to_string();
 
-        // Link the package
-        let store_fs_dir = plan.store_root.join(&pkgline).join("fs");
-        crate::link::link_package(plan, &store_fs_dir)
-            .with_context(|| {
-                format!(
-                    "Failed to link built package: {}",
-                    built_pkg_path.display()
-                )
-            })?;
+    // Parse the pkgline to get actual package key
+    let parsed = crate::package::parse_pkgline(&pkgline)
+        .map_err(|e| eyre!("Failed to parse package line: {}", e))?;
+    let actual_pkgkey = crate::package::format_pkgkey(&parsed.pkgname, &parsed.version, &parsed.arch);
 
-        // Infer name, version, and arch from the package filename for validation
-        let (act_name, act_version, act_arch) = infer_name_version_from_arch_pkgfile(built_pkg_path)
-            .with_context(|| format!("Failed to infer package metadata from filename: {}", built_pkg_path.display()))?;
+    // Link the package
+    let store_fs_dir = plan.store_root.join(&pkgline).join("fs");
+    crate::link::link_package(plan, &store_fs_dir)
+        .with_context(|| {
+            format!(
+                "Failed to link built package: {}",
+                built_pkg_path.display()
+            )
+        })?;
 
-        // Construct expected pkgkey from inferred name, version, and arch
-        let expected_pkgkey = package::format_pkgkey(&act_name, &act_version, &act_arch);
+    Ok((actual_pkgkey, pkgline, parsed))
+}
 
-        // Validate that the inferred pkgkey matches the actual pkgkey from the unpacked package
-        if expected_pkgkey != actual_pkgkey {
-            return Err(eyre!(
-                "Package key mismatch for '{}': inferred '{}' but unpacked package has '{}'",
-                built_pkg_path.display(),
-                expected_pkgkey,
-                actual_pkgkey
-            ));
-        }
+/// Validate package metadata matches filename inference.
+fn validate_package_metadata(
+    built_pkg_path: &Path,
+    actual_pkgkey: &str,
+) -> Result<(String, String, String)> {
+    // Infer name, version, and arch from the package filename for validation
+    let (act_name, act_version, act_arch) = infer_name_version_from_arch_pkgfile(built_pkg_path)
+        .with_context(|| format!("Failed to infer package metadata from filename: {}", built_pkg_path.display()))?;
 
-        // Record mapping from original (plan) pkgkey to actual installed pkgkey
-        if original_key != &actual_pkgkey {
-            this_round_pkgkey_mapping.insert(original_key.clone(), actual_pkgkey.clone());
-        }
+    // Parse actual pkgkey to get its components
+    let (actual_name, actual_version, actual_arch) = crate::package::parse_pkgkey(actual_pkgkey)
+        .map_err(|e| eyre!("Failed to parse actual pkgkey '{}': {}", actual_pkgkey, e))?;
 
-        // Update plan.new_pkgs with the updated pkgline so it's available for later operations
-        if let Some(plan_pkg_info) = plan.new_pkgs.get_mut(original_key) {
-            Arc::make_mut(plan_pkg_info).pkgline = pkgline.clone();
+    // Validate that inferred name and version match actual name and version
+    if act_name != actual_name || act_version != actual_version {
+        return Err(eyre!(
+            "Package key mismatch for '{}': inferred '{}-{}' but unpacked package has '{}-{}'",
+            built_pkg_path.display(),
+            act_name, act_version,
+            actual_name, actual_version
+        ));
+    }
 
-            // From this point on, the round operates purely on actual_pkgkey
-            this_round_aur_packages.insert(actual_pkgkey.clone(), Arc::clone(plan_pkg_info));
+    // If arch differs, log a warning but continue (AUR packages may have arch mismatch)
+    if act_arch != actual_arch {
+        log::warn!(
+            "Architecture mismatch for '{}': filename indicates '{}' but package metadata says '{}'",
+            built_pkg_path.display(),
+            act_arch,
+            actual_arch
+        );
+    }
+
+    Ok((act_name, act_version, act_arch))
+}
+
+/// Update source package info for a built AUR package.
+fn update_source_package_info(
+    plan: &mut crate::plan::InstallationPlan,
+    original_key: &str,
+    actual_pkgkey: &str,
+    pkgline: &str,
+    parsed: &crate::package::PackageLine,
+    act_name: &str,
+    source_name: &str,
+    this_round_aur_packages: &mut InstalledPackagesMap,
+) -> Result<()> {
+    // Get source package info
+    if let Some(source_info) = plan.new_pkgs.get_mut(original_key) {
+        let source_info_mut = Arc::make_mut(source_info);
+
+        if act_name == source_name {
+            // This binary package has the same name as source package - replace it
+            // Update source package's pkgline and arch to match binary package
+            source_info_mut.pkgline = pkgline.to_string();
+            source_info_mut.arch = parsed.arch.clone();
+            // Map original_key to actual_pkgkey (already done above)
+            // Add binary package to this round's AUR packages (as the replacement)
+            this_round_aur_packages.insert(actual_pkgkey.to_string(), Arc::clone(source_info));
+        } else {
+            // This is a split package with different name - add as new package
+            // Add split package to source package's depends
+            source_info_mut.depends.insert(actual_pkgkey.to_string());
+
+            // Create split package info based on source package
+            let mut split_info = (**source_info).clone();
+            split_info.pkgline = pkgline.to_string();
+            split_info.arch = parsed.arch.clone();
+            // Clear depends for split package (runtime deps are from package metadata)
+            split_info.depends.clear();
+            // Add source package to split package's rdepends
+            split_info.rdepends.insert(original_key.to_string());
+
+            // Insert split package into plan.new_pkgs
+            plan.new_pkgs.insert(actual_pkgkey.to_string(), Arc::new(split_info));
+
+            // Add split package to this round's AUR packages
+            this_round_aur_packages.insert(actual_pkgkey.to_string(), plan.new_pkgs[actual_pkgkey].clone());
         }
     }
 
-    Ok((this_round_aur_packages, this_round_pkgkey_mapping))
+    Ok(())
+}
+
+/// Update package relationships in the plan after successful unpack/link.
+fn update_package_relationships(
+    plan: &mut crate::plan::InstallationPlan,
+    original_key: &str,
+    actual_pkgkey: &str,
+    pkgline: &str,
+    parsed: &crate::package::PackageLine,
+    act_name: &str,
+    this_round_aur_packages: &mut InstalledPackagesMap,
+    this_round_pkgkey_mapping: &mut HashMap<String, String>,
+) -> Result<()> {
+    // Record mapping from original (plan) pkgkey to actual installed pkgkey
+    if original_key != actual_pkgkey {
+        this_round_pkgkey_mapping.insert(original_key.to_string(), actual_pkgkey.to_string());
+    }
+
+    // Parse source package key to get its name
+    let (source_name, _source_version, _source_arch) = crate::package::parse_pkgkey(original_key)
+        .map_err(|e| eyre!("Failed to parse source pkgkey '{}': {}", original_key, e))?;
+
+    // Update source package info
+    update_source_package_info(
+        plan,
+        original_key,
+        actual_pkgkey,
+        pkgline,
+        parsed,
+        act_name,
+        &source_name,
+        this_round_aur_packages,
+    )?;
+
+    Ok(())
+}
+
+/// Process a single built AUR package: unpack, link, validate, and update plan.
+fn process_built_aur_package(
+    plan: &mut crate::plan::InstallationPlan,
+    built_pkg_path: &PathBuf,
+    original_key: &String,
+    this_round_aur_packages: &mut InstalledPackagesMap,
+    this_round_pkgkey_mapping: &mut HashMap<String, String>,
+) -> Result<()> {
+    // Unpack, link, and extract metadata
+    let (actual_pkgkey, pkgline, parsed) = unpack_and_link_package(plan, built_pkg_path.as_path())?;
+
+    // Validate package metadata matches filename inference
+    let (act_name, _act_version, _act_arch) = validate_package_metadata(built_pkg_path.as_path(), &actual_pkgkey)?;
+
+    // Update package relationships in the plan
+    update_package_relationships(
+        plan,
+        original_key.as_str(),
+        &actual_pkgkey,
+        &pkgline,
+        &parsed,
+        &act_name,
+        this_round_aur_packages,
+        this_round_pkgkey_mapping,
+    )?;
+
+    Ok(())
 }
 
 /// Map built AUR artifacts back to planned entries.
