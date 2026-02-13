@@ -243,12 +243,11 @@ fn symlink_desktop_files(
         }
 
         // Handle existing destination
-        if dst_path.exists() {
-            if dst_path.is_symlink() {
-                lfs::remove_file(&dst_path)?;
-            } else {
-                continue;
-            }
+        if dst_path.is_symlink() {
+            lfs::remove_file(&dst_path)?;
+        } else if dst_path.exists() {
+            // Regular file or directory - skip
+            continue;
         }
 
         // Create symlink to the path under env_root (where the file has been moved)

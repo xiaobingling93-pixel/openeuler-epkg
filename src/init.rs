@@ -252,6 +252,9 @@ fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
             lfs::create_dir_all(&usr_src)?;
         }
 
+        if epkg_src.is_symlink() {
+            lfs::remove_file(&epkg_src)?;
+        }
         if !epkg_src.exists() {
             let repo_root = find_repo_root()?;
             lfs::symlink(&repo_root, &epkg_src)?;

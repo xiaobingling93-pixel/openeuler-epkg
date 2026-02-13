@@ -373,7 +373,7 @@ pub fn create_symlink2(target_path: &Path, fs_file: &Path) -> Result<()> {
     let symlink2_path = target_dirname.join(format!(".{}", target_filename));
 
     // Remove existing symlink2 if it exists
-    if symlink2_path.exists() {
+    if lfs::symlink_metadata(&symlink2_path).is_ok() {
         lfs::remove_file(&symlink2_path)?;
     }
 

@@ -610,7 +610,7 @@ pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path:
     let symlink_path = symlink_path.as_ref();
 
     // Remove existing symlink or file if it exists
-    if symlink_path.exists() {
+    if lfs::symlink_metadata(symlink_path).is_ok() {
         lfs::remove_file(symlink_path)?;
     }
 
