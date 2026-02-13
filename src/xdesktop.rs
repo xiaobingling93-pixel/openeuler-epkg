@@ -322,7 +322,8 @@ fn run_desktop_update_command(
                         log::debug!("Updated {} (retried with /)", command_name.to_lowercase());
                     }
                     Err(retry_e) => {
-                        log::warn!("{} failed even after retry: {}", command, retry_e);
+                        // This can happen in container
+                        log::info!("{} failed even after retry: {}", command, retry_e);
                     }
                 }
             } else {
