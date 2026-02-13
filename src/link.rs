@@ -130,6 +130,7 @@ fn mirror_config_file(
 
 // link files from env_root to store_fs_dir
 pub fn link_package(plan: &InstallationPlan, store_fs_dir: &PathBuf) -> Result<()> {
+    log::debug!("link_package: link={:?} env_root={} store_fs_dir={}", plan.link, plan.env_root.display(), store_fs_dir.display());
     // Check if this is a conda package and use conda-specific linking
     if plan.package_format == PackageFormat::Conda {
         return crate::conda_link::link_conda_package(plan, store_fs_dir);
