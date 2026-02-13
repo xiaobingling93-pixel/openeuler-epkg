@@ -24,6 +24,7 @@ use crate::install::execute_installation_plan;
 use crate::history::record_history;
 use crate::path::update_path;
 use crate::io;
+use crate::lfs;
 use log::warn;
 
 // epkg stores persistent PATH registration metadata inside each environment's
@@ -98,9 +99,8 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
     let mut my_envs = Vec::new();
     let mut other_envs = Vec::new();
     let current_user = get_username()?;
-    let shared_store = config().init.shared_store;
 
-    // Walk environments based on shared_store setting
+    // Walk environments (private and public)
     walk_environments(|env_path, owner| {
         let name = env_path.file_name()
             .and_then(|n| n.to_str())
@@ -109,15 +109,16 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
 
         if name != SELF_ENV && !name.starts_with('.') {
             // An environment is considered "public" when:
-            // - shared_store is enabled (environments live under /opt/epkg/envs)
-            // - the environment directory does NOT have private-only (700) permissions
+            // - It lives under /opt/epkg/envs (owner is Some)
+            // - The environment directory does NOT have private-only (700) permissions
             //
             // Private environments are explicitly created with mode 0o700
             // in create_environment_dirs().
-            let is_public = if !shared_store {
-                // In non-shared-store mode all envs are private; avoid extra fs ops.
+            let is_public = if owner.is_none() {
+                // Environments from private store (owner=None) are always private
                 false
             } else {
+                // Environments from shared store (owner=Some) may be public or private
                 let mode = fs::metadata(env_path)?
                     .permissions()
                     .mode() & 0o777;
@@ -132,7 +133,7 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
                 Some(o) => o == current_user.as_str(),
             };
 
-            // For environments owned by another user in shared_store mode,
+            // For environments owned by another user (owner is Some),
             // prefix with "$owner/" to match the directory layout.
             let env_display_name = if is_mine {
                 name.clone()
@@ -198,7 +199,7 @@ pub fn list_environments() -> Result<()> {
 
 fn setup_resolv_conf(env_root: &Path) -> Result<()> {
     // Create /etc directory if it doesn't exist
-    fs::create_dir_all(env_root.join("etc"))?;
+    lfs::create_dir_all(env_root.join("etc"))?;
 
     let resolv_conf_path = env_root.join("etc/resolv.conf");
     let host_resolv_conf = Path::new("/etc/resolv.conf");
@@ -210,14 +211,12 @@ fn setup_resolv_conf(env_root: &Path) -> Result<()> {
 
     // Check if /etc/resolv.conf exists on host before trying to copy
     if host_resolv_conf.exists() {
-        fs::copy(host_resolv_conf, &resolv_conf_path)
-            .with_context(|| format!("Failed to copy /etc/resolv.conf to {}", resolv_conf_path.display()))?;
+        lfs::copy(host_resolv_conf, &resolv_conf_path)?;
     } else {
         // If /etc/resolv.conf doesn't exist on host, create a default one
         warn!("/etc/resolv.conf does not exist on host. Creating default resolv.conf");
         let default_resolv_conf = "nameserver 8.8.8.8\nnameserver 223.6.6.6\nnameserver 8.8.4.4\nnameserver 1.1.1.1\n";
-        fs::write(&resolv_conf_path, default_resolv_conf)
-            .with_context(|| format!("Failed to create default resolv.conf at {}", resolv_conf_path.display()))?;
+        lfs::write(&resolv_conf_path, default_resolv_conf)?;
     }
 
     Ok(())
@@ -228,18 +227,18 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     let gen_1_dir = generations_root.join("1");
 
     // Create basic directories
-    fs::create_dir_all(&gen_1_dir)?;
-    fs::create_dir_all(env_root.join("root"))?;
-    fs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
+    lfs::create_dir_all(&gen_1_dir)?;
+    lfs::create_dir_all(env_root.join("root"))?;
+    lfs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
                                                     // won't go to PATH
-    fs::create_dir_all(env_root.join("usr/ebin"))?;
+    lfs::create_dir_all(env_root.join("usr/ebin"))?;
     // usr/sbin creation is delayed to create_environment_dirs() (may be symlink on Fedora)
-    fs::create_dir_all(env_root.join("usr/bin"))?;
-    fs::create_dir_all(env_root.join("usr/lib"))?;
-    fs::create_dir_all(env_root.join("usr/local/bin"))?;
-    fs::create_dir_all(env_root.join("var"))?;
-    fs::create_dir_all(env_root.join("opt/epkg"))?;
-    fs::create_dir_all(env_root.join("etc/epkg"))?;
+    lfs::create_dir_all(env_root.join("usr/bin"))?;
+    lfs::create_dir_all(env_root.join("usr/lib"))?;
+    lfs::create_dir_all(env_root.join("usr/local/bin"))?;
+    lfs::create_dir_all(env_root.join("var"))?;
+    lfs::create_dir_all(env_root.join("opt/epkg"))?;
+    lfs::create_dir_all(env_root.join("etc/epkg"))?;
 
     // Create symlinks in generation 1
     force_symlink("usr/sbin", env_root.join("sbin"))?;
@@ -261,14 +260,14 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
             // For Pacman format:
             // /usr/lib64 -> lib
             // /lib64 -> usr/lib
-            fs::create_dir_all(env_root.join("usr"))?;
+            lfs::create_dir_all(env_root.join("usr"))?;
             force_symlink("lib", env_root.join("usr/lib64"))?;
             force_symlink("usr/lib", env_root.join("lib64"))?;
         },
         _ => {
             // Default behavior for other formats
-            fs::create_dir_all(env_root.join("usr/lib64"))?;
-            fs::create_dir_all(env_root.join("usr/lib32"))?;
+            lfs::create_dir_all(env_root.join("usr/lib64"))?;
+            lfs::create_dir_all(env_root.join("usr/lib32"))?;
             force_symlink("usr/lib64", env_root.join("lib64"))?;
             force_symlink("usr/lib32", env_root.join("lib32"))?;
         }
@@ -278,7 +277,7 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     if channel_config.distro == "fedora" {
         force_symlink("bin", env_root.join("usr/sbin"))?;
     } else {
-        fs::create_dir_all(env_root.join("usr/sbin"))?;
+        lfs::create_dir_all(env_root.join("usr/sbin"))?;
     }
 
     // Debian-specific setup
@@ -351,7 +350,7 @@ fn create_default_world_json(env_root: &Path, pkg_format: &PackageFormat) -> Res
     // Write world.json
     let world_path = env_root.join("generations/1/world.json");
     let world_json = serde_json::to_string_pretty(&world)?;
-    fs::write(&world_path, world_json)?;
+    lfs::write(&world_path, world_json)?;
 
     Ok(())
 }
@@ -375,7 +374,7 @@ fn import_packages_and_create_metadata(env_root: &Path) -> Result<()> {
         execute_installation_plan(plan)?;
     } else {
         // Create metadata files
-        fs::write(installed_packages_path, "{\n}")?;
+        lfs::write(installed_packages_path, "{\n}")?;
 
         // Record the environment creation in command history
         record_history(&gen_1_dir, None)?;
@@ -428,7 +427,7 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
         }
         // Ensure parent directory of env_base exists
         if let Some(parent) = env_base.parent() {
-            fs::create_dir_all(parent)?;
+            lfs::create_dir_all(parent)?;
         }
         force_symlink(&env_root, &env_base)
             .with_context(|| format!("Failed to create symlink from {} to {}", env_base.display(), env_root.display()))?;
@@ -475,13 +474,11 @@ fn import_environment_from_file(env_root: &Path, import_file: &str) -> Result<En
         // Create parent directories if needed
         let file_path = env_root.join(&export_file.path);
         if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory for {}", file_path.display()))?;
+            lfs::create_dir_all(parent)?;
         }
 
         // Write the file
-        fs::write(&file_path, &export_file.data)
-            .with_context(|| format!("Failed to write file {}", file_path.display()))?;
+        lfs::write(&file_path, &export_file.data)?;
     }
 
     Ok(env_export.env)
@@ -499,8 +496,8 @@ fn copy_main_channel_config(sources_path: &Path, env_root: &Path, distro_name: &
 
     // Save main channel config
     let dest_channel_path = env_root.join("etc/epkg/channel.yaml");
-    fs::create_dir_all(dest_channel_path.parent().unwrap())?;
-    fs::write(&dest_channel_path, &channel_content)?;
+    lfs::create_dir_all(dest_channel_path.parent().unwrap())?;
+    lfs::write(&dest_channel_path, &channel_content)?;
 
     Ok(())
 }
@@ -512,9 +509,9 @@ fn copy_repo_configs(sources_path: &Path, env_root: &Path, distro_name: &str) ->
 
         // Copy repo config file
         let repos_dir = env_root.join("etc/epkg/repos.d");
-        fs::create_dir_all(&repos_dir)?;
+        lfs::create_dir_all(&repos_dir)?;
         let dest_repo_path = repos_dir.join(format!("{}.yaml", repo));
-        fs::copy(&src_repo_yaml_path, &dest_repo_path)?;
+        lfs::copy(&src_repo_yaml_path, &dest_repo_path)?;
     }
 
     Ok(())
@@ -688,7 +685,7 @@ pub fn activate_environment(name: &str) -> Result<()> {
 
     // Action 2: Create deactivate shell script
     let deactivate_script = format!("{}-{}.sh", session_path, name);
-    fs::write(&deactivate_script, script)?;
+    lfs::write(&deactivate_script, script)?;
 
     Ok(())
 }
@@ -723,7 +720,7 @@ pub fn deactivate_environment() -> Result<()> {
         .with_context(|| format!("Failed to read deactivate script: {}", deactivate_script))?;
     println!("{}", script);
 
-    if let Err(e) = fs::remove_file(&deactivate_script) {
+    if let Err(e) = lfs::remove_file(&deactivate_script) {
         eprintln!("Warning: Could not remove deactivate script: {}", e);
     }
 
@@ -833,7 +830,7 @@ pub fn export_environment(output: Option<String>) -> Result<()> {
 
     // Write to file or stdout
     if let Some(output_path) = output {
-        fs::write(&output_path, yaml_output)?;
+        lfs::write(&output_path, yaml_output)?;
         println!("Environment configuration exported to {}", output_path);
     } else {
         println!("{}", yaml_output);

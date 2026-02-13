@@ -95,27 +95,28 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 /// Supports both 'env_name' and 'owner/env_name' formats
 /// Note: EnvConfig.public only controls visibility/permissions, not location
 fn get_env_base_path(env_name: &str) -> PathBuf {
+    // Visit other's /opt/epkg/envs/$owner/$name (public envs)
+    if let Some(slash_pos) = env_name.find('/') {
+        if !matches!(config().subcommand,
+              EpkgCommand::Run
+            | EpkgCommand::Info
+            | EpkgCommand::List
+            | EpkgCommand::Search
+        ) {
+            use std::process::exit;
+            eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
+            exit(1);
+        }
+
+        let owner = &env_name[..slash_pos];
+        let name = &env_name[slash_pos + 1..];
+        return public_envs_path().join(owner).join(name);
+    }
+
+    // No slash: own environment
     if config().init.shared_store {
         if env_name == SELF_ENV {
             return public_envs_path().join("root").join(SELF_ENV);
-        }
-
-        // Visit other's /opt/epkg/envs/$owner/$name
-        if let Some(slash_pos) = env_name.find('/') {
-            if !matches!(config().subcommand,
-                  EpkgCommand::Run
-                | EpkgCommand::Info
-                | EpkgCommand::List
-                | EpkgCommand::Search
-            ) {
-                use std::process::exit;
-                eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
-                exit(1);
-            }
-
-            let owner = &env_name[..slash_pos];
-            let name = &env_name[slash_pos + 1..];
-            return dirs().opt_epkg.join("envs").join(owner).join(name);
         }
     }
 
@@ -398,8 +399,28 @@ where
     Ok(())
 }
 
+/// Walk all public environments under /opt/epkg/envs/*/*
+/// Calls the callback for each environment found with (env_path, Some(owner)).
+fn walk_public_envs<F>(callback: &mut F) -> Result<()>
+where
+    F: FnMut(&Path, Option<&str>) -> Result<()>,
+{
+    let allusers_envs_base = public_envs_path();
+    if let Ok(entries) = fs::read_dir(&allusers_envs_base) {
+        for entry in entries.flatten() {
+            let owner_path = entry.path();
+            if owner_path.is_dir() {
+                let owner = owner_path.file_name()
+                    .and_then(|n| n.to_str());
+                walk_bottom_dir(&owner_path, owner, callback)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Walk environments based on shared_store setting:
-/// - If !shared_store: walk $HOME/.epkg/envs/*
+/// - If !shared_store: walk $HOME/.epkg/envs/* (private) and also /opt/epkg/envs/*/* (public)
 /// - If  shared_store: walk /opt/epkg/envs/*/*
 ///
 /// Calls the callback for each environment found with (env_path, owner_opt).
@@ -410,21 +431,14 @@ where
 {
     if config().init.shared_store {
         // Walk /opt/epkg/envs/*/*
-        let allusers_envs_base = public_envs_path();
-        if let Ok(entries) = fs::read_dir(&allusers_envs_base) {
-            for entry in entries.flatten() {
-                let owner_path = entry.path();
-                if owner_path.is_dir() {
-                    let owner = owner_path.file_name()
-                        .and_then(|n| n.to_str());
-                    walk_bottom_dir(&owner_path, owner, &mut callback)?;
-                }
-            }
-        }
+        walk_public_envs(&mut callback)?;
     } else {
-        // Walk $HOME/.epkg/envs/*
+        // Walk $HOME/.epkg/envs/* (private envs)
         let personal_envs_root = &dirs().user_envs;
         walk_bottom_dir(personal_envs_root, None, &mut callback)?;
+
+        // Also walk public envs so users can see others' public environments
+        walk_public_envs(&mut callback)?;
     }
 
     Ok(())
