@@ -185,7 +185,8 @@ pub fn classify_file_type(final_path: &Path, file_size: Option<u64>) -> FileType
        path_str.contains("/APKINDEX")               || // Alpine, APKINDEX.tar.gz[.sig]
        path_str.contains("/repodata.json")          || // Conda, repodata.json.(zst|bz2)
        path_str.contains("/current_repodata.json")  || // Conda, current_repodata.json.gz
-       path_str.contains("/elf-loader") {              // epkg elf-loader[.sig]
+       path_str.contains("/elf-loader")             || // epkg elf-loader[.sig]
+       path_str.ends_with("/packages-meta-ext-v1.json.gz") { // AUR metadata
         return FileType::Mutable;
     }
 
