@@ -157,7 +157,7 @@ impl std::io::Read for ReceiverHasher {
 
                         // Skip hash validation if the expected hash is empty
                         if expected.is_empty() {
-                            log::warn!("Skipping hash verification as expected hash is empty. Calculated hash: {}", self.sha256sum);
+                            log::info!("Skipping hash verification as expected hash is empty. Calculated hash: {}", self.sha256sum);
                             self.hash_validated = true;
                         } else {
                             self.hash_validated = self.sha256sum == *expected;
