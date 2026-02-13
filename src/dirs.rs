@@ -153,7 +153,20 @@ pub fn find_env_root(env_name: &str) -> Option<PathBuf> {
 /// - $HOME/.epkg/envs/self/usr/src/epkg
 /// - /opt/epkg/envs/root/self/usr/src/epkg
 pub fn get_epkg_src_path() -> PathBuf {
-    get_env_base_path(SELF_ENV).join("usr/src/epkg")
+    let user_path = get_env_base_path(SELF_ENV).join("usr/src/epkg");
+    if user_path.exists() {
+        log::debug!("Using user's epkg source path: {:?}", user_path);
+        return user_path;
+    }
+
+    let root_path = public_envs_path().join("root/self/usr/src/epkg");
+    if root_path.exists() {
+        log::debug!("Using root's epkg source path: {:?}", root_path);
+        return root_path;
+    }
+
+    log::debug!("Neither user nor root epkg source path exists, returning user path anyway: {:?}", user_path);
+    user_path
 }
 
 /// Retrieves the home directory path, trying multiple methods.
