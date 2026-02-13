@@ -636,8 +636,13 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
     let mut store_pkglines_by_pkgname: HashMap<String, Vec<String>> = HashMap::new();
 
     if !store_dir.exists() {
+        log::debug!("collect_store_pkglines: store directory does not exist: {:?}", store_dir);
         return Ok((store_pkglines_by_pkgkey, store_pkglines_by_pkgname));
     }
+
+    log::debug!("collect_store_pkglines: scanning store directory: {:?}", store_dir);
+    let mut total_pkglines = 0;
+    let mut skipped_missing_fs = 0;
 
     // Collect all pkglines from the store and organize by both pkgkey and pkgname in a single pass
     if let Ok(entries) = fs::read_dir(&store_dir) {
@@ -648,16 +653,20 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
                 if !fs_dir.exists() {
                     // on LinkType::Move, files were moved into env
                     log::debug!("Skipping package {} - 'fs' directory does not exist", package_path.display());
+                    skipped_missing_fs += 1;
                     continue;
                 }
 
                 if let Some(pkgline) = package_path.file_name().and_then(|name| name.to_str()) {
+                    total_pkglines += 1;
                     // Parse the pkgline to extract both pkgkey and pkgname
                     if let Ok(pkgkey) = pkgline2pkgkey(pkgline) {
                         store_pkglines_by_pkgkey
                             .entry(pkgkey)
                             .or_insert_with(Vec::new)
                             .push(pkgline.to_string());
+                    } else {
+                        log::debug!("collect_store_pkglines: failed to parse pkgkey from pkgline: {}", pkgline);
                     }
 
                     if let Ok(parsed) = parse_pkgline(pkgline) {
@@ -665,12 +674,17 @@ fn collect_store_pkglines() -> Result<(std::collections::HashMap<String, Vec<Str
                             .entry(parsed.pkgname)
                             .or_insert_with(Vec::new)
                             .push(pkgline.to_string());
+                    } else {
+                        log::debug!("collect_store_pkglines: failed to parse pkgline: {}", pkgline);
                     }
                 }
             }
         }
     }
 
+    log::debug!("collect_store_pkglines: found {} pkglines ({} skipped due to missing fs), organized into {} pkgkey entries, {} pkgname entries",
+        total_pkglines, skipped_missing_fs,
+        store_pkglines_by_pkgkey.len(), store_pkglines_by_pkgname.len());
     Ok((store_pkglines_by_pkgkey, store_pkglines_by_pkgname))
 }
 
@@ -680,13 +694,16 @@ fn match_package_with_store(
     repodata_package: &Package,
     store_pkglines: &[String],
 ) -> Result<Option<String>> {
+    log::trace!("match_package_with_store: checking {} store pkglines against repodata package", store_pkglines.len());
     // Try each candidate pkgline from the store
-    for store_pkgline in store_pkglines {
+    for (i, store_pkgline) in store_pkglines.iter().enumerate() {
+        log::trace!("match_package_with_store: checking candidate {}/{}: {}", i+1, store_pkglines.len(), store_pkgline);
         // Load Package from store
         match crate::package_cache::map_pkgline2package(store_pkgline) {
             Ok(store_package) => {
                 // Compare Package fields
                 if packages_match(repodata_package, &store_package) {
+                    log::trace!("match_package_with_store: found match at candidate {}: {}", i+1, store_pkgline);
                     return Ok(Some(store_pkgline.clone()));
                 }
             }
@@ -697,6 +714,7 @@ fn match_package_with_store(
         }
     }
 
+    log::trace!("match_package_with_store: no match found after checking {} candidates", store_pkglines.len());
     Ok(None)
 }
 
@@ -883,17 +901,16 @@ fn add_repo_fields(
 }
 
 
-/// Match AUR packages using relaxed criteria: pkgname, version, homepage, summary, buildRequires
+/// Match AUR packages using relaxed criteria: homepage, summary, buildRequires
+/// Note: pkgname and version are checked by the caller before this function is called
 fn packages_match_aur(repodata_pkg: &Package, store_pkg: &Package) -> bool {
-    // For AUR packages, use relaxed matching: pkgname, version, homepage, summary, buildRequires
-    if repodata_pkg.pkgname != store_pkg.pkgname
-        || repodata_pkg.version != store_pkg.version {
-        return false;
-    }
+    // For AUR packages, use relaxed matching: homepage, summary, buildRequires
+    // Note: pkgname and version are already checked by the caller
 
     // Compare homepage if available
     if !repodata_pkg.homepage.is_empty() && !store_pkg.homepage.is_empty() {
         if repodata_pkg.homepage != store_pkg.homepage {
+            log::trace!("packages_match_aur: homepage mismatch: repo={} store={}", repodata_pkg.homepage, store_pkg.homepage);
             return false;
         }
     }
@@ -901,6 +918,7 @@ fn packages_match_aur(repodata_pkg: &Package, store_pkg: &Package) -> bool {
     // Compare summary if available
     if !repodata_pkg.summary.is_empty() && !store_pkg.summary.is_empty() {
         if repodata_pkg.summary != store_pkg.summary {
+            log::trace!("packages_match_aur: summary mismatch: repo={} store={}", repodata_pkg.summary, store_pkg.summary);
             return false;
         }
     }
@@ -908,11 +926,13 @@ fn packages_match_aur(repodata_pkg: &Package, store_pkg: &Package) -> bool {
     // Compare buildRequires if available
     if !repodata_pkg.build_requires.is_empty() && !store_pkg.build_requires.is_empty() {
         if repodata_pkg.build_requires != store_pkg.build_requires {
+            log::trace!("packages_match_aur: build_requires mismatch");
             return false;
         }
     }
 
     // If we got here, all required fields match
+    log::trace!("packages_match_aur: packages match");
     true
 }
 
@@ -920,20 +940,28 @@ fn packages_match_aur(repodata_pkg: &Package, store_pkg: &Package) -> bool {
 /// Compares multiple fields: pkgname, version, arch, source, sha256sum, sha1sum, buildTime
 /// For AUR packages, uses relaxed matching: pkgname, version, homepage, summary, buildRequires
 fn packages_match(repodata_pkg: &Package, store_pkg: &Package) -> bool {
-    let common_matches = packages_match_aur(repodata_pkg, store_pkg);
-    if common_matches == false {
+    // First check basic fields that all packages must match
+    if repodata_pkg.pkgname != store_pkg.pkgname {
+        log::trace!("packages_match: pkgname mismatch: repo={} store={}", repodata_pkg.pkgname, store_pkg.pkgname);
+        return false;
+    }
+    if repodata_pkg.version != store_pkg.version {
+        log::trace!("packages_match: version mismatch: repo={} store={}", repodata_pkg.version, store_pkg.version);
         return false;
     }
 
     let is_aur = repodata_pkg.repodata_name == "aur" || store_pkg.repodata_name == "aur";
-    if is_aur && common_matches == true {
-        return true;
+
+    // For AUR packages, use relaxed matching
+    if is_aur {
+        return packages_match_aur(repodata_pkg, store_pkg);
     }
 
     // For non-AUR packages, use the original strict matching logic
     // Only compare size if both are non-zero (some packages don't store size in package.txt)
     if repodata_pkg.size != 0 && store_pkg.size != 0 {
         if repodata_pkg.size != store_pkg.size {
+            log::trace!("packages_match: size mismatch: repo={} store={}", repodata_pkg.size, store_pkg.size);
             return false;
         }
     }
@@ -941,17 +969,20 @@ fn packages_match(repodata_pkg: &Package, store_pkg: &Package) -> bool {
     // Only compare installed_size if both are non-zero
     if repodata_pkg.installed_size != 0 && store_pkg.installed_size != 0 {
         if repodata_pkg.installed_size != store_pkg.installed_size {
+            log::trace!("packages_match: installed_size mismatch: repo={} store={}", repodata_pkg.installed_size, store_pkg.installed_size);
             return false;
         }
     }
 
     if repodata_pkg.arch != store_pkg.arch {
+        log::trace!("packages_match: arch mismatch: repo={} store={}", repodata_pkg.arch, store_pkg.arch);
         return false;
     }
 
     // Compare source if available (helps identify packages from different sources)
     if let (Some(repodata_source), Some(store_source)) = (&repodata_pkg.source, &store_pkg.source) {
         if repodata_source != store_source {
+            log::trace!("packages_match: source mismatch: repo={} store={}", repodata_source, store_source);
             return false;
         }
     }
@@ -960,20 +991,39 @@ fn packages_match(repodata_pkg: &Package, store_pkg: &Package) -> bool {
     // If only one side has a checksum, we still allow the match if basic fields match
     // (e.g., Arch packages don't store sha256sum in package.txt, only in repodata)
     if let (Some(repodata_sha256), Some(store_sha256)) = (&repodata_pkg.sha256sum, &store_pkg.sha256sum) {
-        return repodata_sha256 == store_sha256;
+        if repodata_sha256 == store_sha256 {
+            log::trace!("packages_match: sha256sum match");
+            return true;
+        } else {
+            log::trace!("packages_match: sha256sum mismatch");
+            return false;
+        }
     }
 
     if let (Some(repodata_sha1), Some(store_sha1)) = (&repodata_pkg.sha1sum, &store_pkg.sha1sum) {
-        return repodata_sha1 == store_sha1;
+        if repodata_sha1 == store_sha1 {
+            log::trace!("packages_match: sha1sum match");
+            return true;
+        } else {
+            log::trace!("packages_match: sha1sum mismatch");
+            return false;
+        }
     }
 
     // Compare buildTime if both are available (strong match indicator similar to checksums)
     if let (Some(repodata_build_time), Some(store_build_time)) =
         (&repodata_pkg.build_time, &store_pkg.build_time)
     {
-        return repodata_build_time == store_build_time;
+        if repodata_build_time == store_build_time {
+            log::trace!("packages_match: build_time match");
+            return true;
+        } else {
+            log::trace!("packages_match: build_time mismatch");
+            return false;
+        }
     }
 
+    log::trace!("packages_match: no strong match indicators available, returning false");
     false
 }
 
@@ -986,8 +1036,14 @@ fn collect_candidate_pkglines(
 ) -> Vec<String> {
     // Get candidate pkglines from store for this pkgkey
     let mut candidate_pkglines = match store_pkglines_by_pkgkey.get(pkgkey) {
-        Some(pkglines) => pkglines.clone(),
-        None => Vec::new(),
+        Some(pkglines) => {
+            log::trace!("collect_candidate_pkglines: found {} pkglines for pkgkey {}", pkglines.len(), pkgkey);
+            pkglines.clone()
+        }
+        None => {
+            log::trace!("collect_candidate_pkglines: no pkglines found for pkgkey {}", pkgkey);
+            Vec::new()
+        }
     };
 
     // For AUR packages, also try with arch replaced by std::env::consts::ARCH
@@ -1014,6 +1070,7 @@ fn collect_candidate_pkglines(
         }
     }
 
+    log::trace!("collect_candidate_pkglines: total {} candidates for pkgkey {}", candidate_pkglines.len(), pkgkey);
     candidate_pkglines
 }
 
@@ -1029,10 +1086,12 @@ fn try_match_and_fill_pkgline(
         let store_dir = crate::models::dirs().epkg_store.clone();
         let fs_dir = store_dir.join(&package_info.pkgline).join("fs");
         if fs_dir.exists() {
+            log::trace!("try_match_and_fill_pkgline: pkgkey {} already has pkgline {} with existing fs dir, skipping", pkgkey, package_info.pkgline);
             return Ok(false);
         } else {
             // Clear pkgline if fs directory doesn't exist, necessary to trigger package
             // download/unpack when called from from import_packages_and_create_metadata()
+            log::trace!("try_match_and_fill_pkgline: pkgkey {} has pkgline {} but fs dir missing, clearing pkgline", pkgkey, package_info.pkgline);
             package_info.pkgline.clear();
         }
     }
@@ -1048,19 +1107,25 @@ fn try_match_and_fill_pkgline(
 
     // Collect candidate pkglines from store
     let candidate_pkglines = collect_candidate_pkglines(pkgkey, &repodata_package, store_pkglines_by_pkgkey);
+    log::trace!("try_match_and_fill_pkgline: pkgkey {} has {} candidate pkglines", pkgkey, candidate_pkglines.len());
 
     // If no candidates found, return false
     if candidate_pkglines.is_empty() {
+        log::trace!("try_match_and_fill_pkgline: no candidate pkglines for pkgkey {}", pkgkey);
         return Ok(false);
     }
 
     // Match with store packages
     match match_package_with_store(&repodata_package, &candidate_pkglines) {
         Ok(Some(matching_pkgline)) => {
+            log::trace!("try_match_and_fill_pkgline: matched pkgkey {} to store pkgline {}", pkgkey, matching_pkgline);
             package_info.pkgline = matching_pkgline;
             Ok(true)
         }
-        Ok(None) => Ok(false),
+        Ok(None) => {
+            log::trace!("try_match_and_fill_pkgline: no store package matches pkgkey {} (checked {} candidates)", pkgkey, candidate_pkglines.len());
+            Ok(false)
+        }
         Err(e) => {
             log::debug!("Error matching package {}: {}", pkgkey, e);
             Ok(false)
@@ -1075,21 +1140,35 @@ pub fn fill_pkglines_in_plan(
 ) -> Result<usize> {
     // Collect store pkglines organized by both pkgkey (for matching) and pkgname (for reuse in unpack_mv_package)
     let (store_pkglines_by_pkgkey, store_pkglines_by_pkgname) = collect_store_pkglines()?;
+    let total_by_pkgkey = store_pkglines_by_pkgkey.values().map(|v| v.len()).sum::<usize>();
+    let total_by_pkgname = store_pkglines_by_pkgname.values().map(|v| v.len()).sum::<usize>();
     plan.store_pkglines_by_pkgname = store_pkglines_by_pkgname;
 
+    log::debug!("fill_pkglines_in_plan: collected {} store pkglines by pkgkey, {} by pkgname",
+        total_by_pkgkey, total_by_pkgname);
+
     let mut matched_count = 0;
+    let mut processed_count = 0;
 
     // Process new packages (fresh installs and upgrades)
     for op in &mut plan.ordered_operations {
         if let Some(pkgkey) = &op.new_pkgkey {
+            processed_count += 1;
             // Update the package info in plan.new_pkgs
             if let Some(package_info) = plan.new_pkgs.get_mut(pkgkey) {
+                log::trace!("fill_pkglines_in_plan: processing pkgkey {}", pkgkey);
                 if try_match_and_fill_pkgline(pkgkey, Arc::make_mut(package_info), &store_pkglines_by_pkgkey)? {
                     matched_count += 1;
+                    log::trace!("fill_pkglines_in_plan: matched pkgkey {} -> pkgline {}", pkgkey, package_info.pkgline);
+                } else {
+                    log::trace!("fill_pkglines_in_plan: no match found for pkgkey {}", pkgkey);
                 }
+            } else {
+                log::trace!("fill_pkglines_in_plan: pkgkey {} not found in plan.new_pkgs", pkgkey);
             }
         }
     }
 
+    log::trace!("fill_pkglines_in_plan: processed {} packages, matched {}", processed_count, matched_count);
     Ok(matched_count)
 }
