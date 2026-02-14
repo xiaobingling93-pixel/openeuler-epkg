@@ -1210,6 +1210,15 @@ fn postinstall_built_aur_round(
         "Failed to normalize dependency fields for AUR packages in current round"
     })?;
 
+    // Also normalize dependencies for all new packages in the plan
+    fixup_installed_packages_values(
+        this_round_pkgkey_mapping,
+        &mut plan.new_pkgs,
+    )
+    .with_context(|| {
+        "Failed to normalize dependency fields for all new packages using AUR mappings"
+    })?;
+
     // Add AUR packages to plan.batch.new_pkgkeys before processing transaction
     plan.batch.new_pkgkeys.clear();
     for k in this_round_aur_packages.keys() {
