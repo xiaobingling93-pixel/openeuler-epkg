@@ -613,7 +613,10 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&P
 
     let path = &parts[1];
     let full_path = apply_root(path, root);
-    let target = parts.get(5).map(|s| s.as_str()).unwrap_or("-");
+    // Determine target field: if age is present (parts.len() >= 7), target is at index 6
+    // else target is at index 5 (age omitted)
+    let target_idx = if parts.len() >= 7 { 6 } else { 5 };
+    let target = parts.get(target_idx).map(|s| s.as_str()).unwrap_or("-");
 
     if target == "-" {
         return Err(eyre!("Invalid symlink line: missing target"));
