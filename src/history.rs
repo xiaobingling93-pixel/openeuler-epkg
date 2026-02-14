@@ -199,7 +199,7 @@ pub fn rollback_history(rollback_id: i32) -> Result<()> {
     }
 
     // Load target generation's installed-packages.json
-    let target_packages = read_installed_packages(&config().common.env, target_id)?;
+    let target_packages = read_installed_packages(&config().common.env_name, target_id)?;
 
     // Compute delta_removes: packages in installed but not in target
     crate::io::load_installed_packages()?;

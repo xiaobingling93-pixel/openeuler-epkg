@@ -308,7 +308,7 @@ fn validate_response_content_type(
                 eprintln!("Git is recommended for downloading AUR packages.");
                 eprintln!("\nPlease retry after installing git in either:");
                 eprintln!("  - Host OS: Install git using your system package manager (e.g., 'apt-get install git')");
-                eprintln!("  - Environment: Run 'epkg -e {} install git' to install git in current environment", config().common.env);
+                eprintln!("  - Environment: Run 'epkg -e {} install git' to install git in current environment", config().common.env_name);
                 let error_msg = format!(
                     "AUR download failed: received HTML page (bot protection) instead of file. \
                     AUR downloads via HTTP are unreliable. Please install git (in host OS or environment) and retry."

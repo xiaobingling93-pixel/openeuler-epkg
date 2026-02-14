@@ -200,7 +200,7 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
 /// Execute an InstallationPlan by performing the actual installation/removal operations.
 /// This function can be reused by both install and remove operations.
 /// If config().common.dry_run is true, will return the plan without executing it.
-/// The target environment is determined by config().common.env.
+/// The target environment is determined by config().common.env_name.
 pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<InstallationPlan> {
     // Calculate download requirements and store in plan before prompting
     crate::risks::calculate_plan_sizes(&mut plan)?;
@@ -211,7 +211,7 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
         return Ok(plan);
     }
 
-    if models::config().common.env.is_empty() {
+    if models::config().common.env_name.is_empty() {
         return Err(eyre::eyre!("Environment name not specified for installation plan"));
     }
 

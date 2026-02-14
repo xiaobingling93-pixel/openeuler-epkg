@@ -11,6 +11,26 @@ use crate::userdb;
 use color_eyre::eyre::{self};
 use color_eyre::Result;
 
+/// Search for a `.eenv` directory starting from `start_path` and moving upward.
+/// Searches start_path/.eenv, then parent directories up to root or 100 levels.
+/// Returns the first existing `.eenv` directory path, or None if not found.
+pub fn find_nearest_dot_eenv(start_path: &Path) -> Option<PathBuf> {
+    let mut current = start_path.to_path_buf();
+    let mut depth = 0;
+    while depth < 10 {
+        let dot_eenv = current.join(".eenv");
+        if dot_eenv.exists() && dot_eenv.is_dir() {
+            return Some(dot_eenv);
+        }
+        // Move to parent directory
+        if !current.pop() {
+            break;
+        }
+        depth += 1;
+    }
+    None
+}
+
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
         let opt_epkg = PathBuf::from("/opt/epkg");
@@ -74,7 +94,7 @@ pub fn get_env_root(env_name: String) -> Result<PathBuf> {
 }
 
 pub fn get_default_env_root() -> Result<PathBuf> {
-    get_env_root(config().common.env.clone())
+    get_env_root(config().common.env_name.clone())
 }
 
 pub fn get_generations_root(env_name: &str) -> Result<PathBuf> {
@@ -83,7 +103,7 @@ pub fn get_generations_root(env_name: &str) -> Result<PathBuf> {
 }
 
 pub fn get_default_generations_root() -> Result<PathBuf> {
-    get_generations_root(&config().common.env)
+    get_generations_root(&config().common.env_name)
 }
 
 /// Get the base path for an environment
@@ -107,7 +127,6 @@ fn get_env_base_path(env_name: &str) -> PathBuf {
             eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
             exit(1);
         }
-
         let owner = &env_name[..slash_pos];
         let name = &env_name[slash_pos + 1..];
         return public_envs_path().join(owner).join(name);

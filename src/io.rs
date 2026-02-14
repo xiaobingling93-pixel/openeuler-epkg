@@ -75,7 +75,7 @@ fn installed_packages_to_array(installed: &InstalledPackagesMap) -> Vec<Installe
 /// Deserialize environment configuration from disk
 #[allow(dead_code)] // quiet warning in cargo test calls
 pub fn deserialize_env_config() -> Result<EnvConfig> {
-    let env_name = config().common.env.clone();
+    let env_name = config().common.env_name.clone();
     deserialize_env_config_for(env_name)
 }
 
@@ -539,7 +539,7 @@ pub fn load_installed_packages() -> Result<()> {
         return Ok(());
     }
     let generation_id = get_current_generation_id()?;
-    let packages = read_installed_packages(&config().common.env, generation_id)?;
+    let packages = read_installed_packages(&config().common.env_name, generation_id)?;
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
     for (k, v) in packages {
         installed.insert(k, v);
@@ -589,7 +589,7 @@ pub fn read_world(env: &str, generation_id: u32) -> Result<HashMap<String, Strin
 
 pub fn load_world() -> Result<()> {
     let generation_id = get_current_generation_id()?;
-    let world = read_world(&config().common.env, generation_id)?;
+    let world = read_world(&config().common.env_name, generation_id)?;
     let mut cache_world = PACKAGE_CACHE.world.write().unwrap();
     cache_world.clear();
     for (k, v) in world {

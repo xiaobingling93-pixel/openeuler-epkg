@@ -463,8 +463,8 @@ fn initialize_environment_config(env_name: &str, env_root: &Path, env_base: &Pat
 
 /// Setup and validate environment paths, create symlinks if needed
 fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
-    let env_root = if let Some(path) = &config().env.env_path {
-        PathBuf::from(path)
+    let env_root = if !config().common.env_root.is_empty() {
+        PathBuf::from(&config().common.env_root)
     } else {
         env_base.clone()
     };
@@ -474,8 +474,8 @@ fn setup_environment_paths(env_base: &PathBuf) -> Result<PathBuf> {
         return Err(eyre::eyre!("Environment already exists at path: '{}'", env_root.display()));
     }
 
-    // If env_path is specified, we need to create a symlink from env_base to env_root
-    if config().env.env_path.is_some() {
+    // If env_root is specified, we need to create a symlink from env_base to env_root
+    if !config().common.env_root.is_empty() {
         // Check if env_base already exists as a directory (not a symlink)
         if env_base.exists() && !env_base.is_symlink() {
             return Err(eyre::eyre!("Environment base path '{}' already exists as a directory. Cannot create symlink.", env_base.display()));
@@ -496,6 +496,11 @@ pub fn create_environment(env_name: &str) -> Result<()> {
     let env_root = setup_environment_paths(&env_base)?;
 
     println!("Creating environment '{}' in {}", env_name, env_root.display());
+
+    // Warn if auto-generated name (starts with "__")
+    if env_name.starts_with("__") {
+        println!("# Note: environment name '{}' was auto-generated from path '{}'", env_name, env_root.display());
+    }
 
     // Create basic directories early (before we need channel configs)
     create_environment_dirs_early(&env_root)?;
@@ -1154,5 +1159,58 @@ fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
             configs.push(config);
         }
     }
+}
+
+/// Find which registered environment contains a given command
+/// Returns the environment name if found, None otherwise
+/// Searches environments in order of registration priority (higher priority first)
+pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<String>> {
+    use std::fs;
+
+    // Get registered environment configs with priorities
+    let mut configs = registered_env_configs();
+
+    // Sort by registration priority (higher priority first)
+    // For equal priority, sort by name for deterministic results
+    configs.sort_by(|a, b| {
+        b.register_priority.cmp(&a.register_priority)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    // Common binary directories to check in each environment
+    let bin_dirs = ["usr/bin", "bin", "usr/local/bin", "usr/sbin", "sbin"];
+
+    for config in configs {
+        match get_env_root(config.name.clone()) {
+            Ok(env_root) => {
+                for bin_dir in &bin_dirs {
+                    let cmd_path = env_root.join(bin_dir).join(cmd_name);
+                    if cmd_path.exists() {
+                        // Check if executable (Unix only)
+                        #[cfg(unix)]
+                        {
+                            if let Ok(metadata) = fs::metadata(&cmd_path) {
+                                let permissions = metadata.permissions();
+                                if permissions.mode() & 0o111 != 0 {
+                                    return Ok(Some(config.name.clone()));
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // On non-Unix, just check existence
+                            return Ok(Some(config.name.clone()));
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Environment might have been removed; skip
+                continue;
+            }
+        }
+    }
+
+    Ok(None)
 }
 

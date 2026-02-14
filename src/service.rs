@@ -616,13 +616,13 @@ pub fn command_service(sub_matches: &ArgMatches) -> Result<()> {
         Some(("start", sub_matches)) => {
             if let Some(service_name) = sub_matches.get_one::<String>("SERVICE_NAME") {
                 let config = crate::config();
-                start_service(service_name, &config.common.env)?;
+                start_service(service_name, &config.common.env_name)?;
             }
         }
         Some(("stop", sub_matches)) => {
             if let Some(service_name) = sub_matches.get_one::<String>("SERVICE_NAME") {
                 let config = crate::config();
-                stop_service(service_name, &config.common.env)?;
+                stop_service(service_name, &config.common.env_name)?;
             }
         }
         Some(("status", sub_matches)) => {
@@ -634,24 +634,24 @@ pub fn command_service(sub_matches: &ArgMatches) -> Result<()> {
                 print_services_status(&all_statuses);
             } else if let Some(service_name) = sub_matches.get_one::<String>("SERVICE_NAME") {
                 // Show specific service status
-                let status = get_service_status(service_name, &config.common.env)?;
+                let status = get_service_status(service_name, &config.common.env_name)?;
                 print_service_status(&status);
             } else {
                 // Show all services for current environment
-                let statuses = get_services_status_for_env(&config.common.env)?;
+                let statuses = get_services_status_for_env(&config.common.env_name)?;
                 print_services_status(&statuses);
             }
         }
         Some(("reload", sub_matches)) => {
             if let Some(service_name) = sub_matches.get_one::<String>("SERVICE_NAME") {
                 let config = crate::config();
-                reload_service(service_name, &config.common.env)?;
+                reload_service(service_name, &config.common.env_name)?;
             }
         }
         Some(("restart", sub_matches)) => {
             if let Some(service_name) = sub_matches.get_one::<String>("SERVICE_NAME") {
                 let config = crate::config();
-                restart_service(service_name, &config.common.env)?;
+                restart_service(service_name, &config.common.env_name)?;
             }
         }
         _ => {

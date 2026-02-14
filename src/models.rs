@@ -12,6 +12,7 @@ use crate::parse_cmdline_from;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use crate::search::SearchOptions;
+use crate::run::RunOptions;
 use color_eyre::Result;
 use color_eyre::eyre;
 #[cfg(not(test))]
@@ -725,24 +726,31 @@ impl From<&str> for EpkgCommand {
 pub struct EPKGConfig {
     #[serde(default = "default_common_options")]
     pub common: CommonOptions,
+
+    #[serde(default = "default_init_options")]
+    pub init: InitOptions,
     #[serde(default)]
     pub install: InstallOptions,
+
     #[serde(default)]
     pub upgrade: UpgradeOptions,
     #[serde(default)]
     pub update: UpdateOptions,
+
     #[serde(default)]
     pub list: ListOptions,
+    #[serde(skip)]
+    pub search: SearchOptions,
+
     #[serde(default)]
     pub env: EnvOptions,
     #[serde(default)]
     pub history: HistoryOptions,
-    #[serde(default = "default_init_options")]
-    pub init: InitOptions,
-    #[serde(default)]
+
+    #[serde(skip)]
     pub service: ServiceOptions,
     #[serde(skip)]
-    pub search: SearchOptions,
+    pub run: RunOptions,
 
     #[serde(skip)]
     pub config_file: String,
@@ -767,7 +775,12 @@ fn default_init_options() -> InitOptions {
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct CommonOptions {
     #[serde(skip)]
-    pub env: String,
+    pub env_name: String,
+    #[serde(skip)]
+    pub env_root: String,
+    #[serde(skip)]
+    pub env_explicit: bool,
+
     #[serde(skip)]
     pub download_only: bool,
     #[serde(skip)]
@@ -915,8 +928,6 @@ pub struct EnvOptions {
     #[serde(default)]
     pub repos: Vec<String>,
 
-    #[serde(skip)]
-    pub env_path: Option<String>,
     #[serde(skip)]
     pub import_file: Option<String>,
 }

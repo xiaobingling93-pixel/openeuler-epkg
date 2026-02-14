@@ -758,7 +758,7 @@ fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> Result<()> 
          * 2. $HOME/.epkg/opt-real/{outside_uid}-{env_name} (fallback for containers without /run/user/)
          * For private environments, we can safely use env_root.join("opt_real") as before.
          */
-        let env_name = config().common.env.clone();
+        let env_name = config().common.env_name.clone();
         create_opt_real_path_for_public_env(euid, uid, &env_name)?
     } else {
         env_root.join("opt_real")
@@ -1145,8 +1145,8 @@ fn exec_command(cmd_path: &Path, args: &[String], env_vars: Option<&std::collect
 }
 
 /// Execute command with environment PATH lookup and namespace isolation
-pub fn command_run(sub_matches: &clap::ArgMatches) -> Result<()> {
-    let mut run_options = parse_run_options(sub_matches)?;
+pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
+    let mut run_options = config().run.clone();
 
     debug!("Running command: {} with args: {:?}", run_options.command, run_options.args);
     debug!("Mount dirs: {:?}, User: {:?}", run_options.mount_dirs, run_options.user);
@@ -1186,39 +1186,3 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
     }
 }
 
-/// Parse command line options for run command
-fn parse_run_options(sub_matches: &clap::ArgMatches) -> Result<RunOptions> {
-    let mount_dirs = if let Some(mount_str) = sub_matches.get_one::<String>("mount") {
-        mount_str.split(',').map(|s| s.trim().to_string()).collect()
-    } else {
-        Vec::new()
-    };
-
-    let user = sub_matches.get_one::<String>("user").cloned();
-
-    let command = sub_matches.get_one::<String>("command")
-        .ok_or_else(|| eyre::eyre!("Command is required"))?
-        .clone();
-
-    let args: Vec<String> = if let Some(args_iter) = sub_matches.get_many::<String>("args") {
-        args_iter.cloned().collect()
-    } else {
-        Vec::new()
-    };
-
-    let timeout = if let Some(timeout_str) = sub_matches.get_one::<String>("timeout") {
-        timeout_str.parse::<u64>()
-            .map_err(|e| eyre::eyre!("Invalid timeout value '{}': {}", timeout_str, e))?
-    } else {
-        0 // Default: no timeout
-    };
-
-    Ok(RunOptions {
-        mount_dirs,
-        user,
-        command,
-        args,
-        timeout,
-        ..Default::default()
-    })
-}

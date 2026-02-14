@@ -682,7 +682,7 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
                     let _ = tx.send(Ok(()));
                 },
                 Err(e) => {
-                    log::error!("Failed to process {}, retry fix with 'epkg -e {} update'", revise.location, config().common.env);
+                    log::error!("Failed to process {}, retry fix with 'epkg -e {} update'", revise.location, config().common.env_name);
                     let _ = tx.send(Err(e));
                 }
             }
