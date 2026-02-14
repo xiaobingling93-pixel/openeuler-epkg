@@ -332,22 +332,20 @@ fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> R
             return Ok(());
         } else if target.exists() {
             // Check if target is a symlink pointing to current executable
-            if let Ok(target_metadata) = lfs::symlink_metadata(target) {
-                if target_metadata.file_type().is_symlink() {
-                    if let Ok(target_link) = fs::read_link(target) {
-                        if target_link == source {
-                            log::info!("Target epkg binary is a symlink to current executable, skipping copy");
-                            return Ok(());
-                        } else {
-                            log::info!("Target epkg binary is a symlink to different location, proceeding with copy");
-                        }
+            if lfs::is_symlink(target) {
+                if let Ok(target_link) = fs::read_link(target) {
+                    if target_link == source {
+                        log::info!("Target epkg binary is a symlink to current executable, skipping copy");
+                        return Ok(());
                     } else {
-                        log::warn!("Failed to read target symlink, proceeding with copy");
+                        log::info!("Target epkg binary is a symlink to different location, proceeding with copy");
                     }
                 } else {
-                    // Target exists and is not a symlink, proceed with copy
-                    log::info!("Target epkg binary exists, proceeding with copy");
+                    log::warn!("Failed to read target symlink, proceeding with copy");
                 }
+            } else {
+                // Target exists and is not a symlink, proceed with copy
+                log::info!("Target epkg binary exists, proceeding with copy");
             }
         } else {
             // Target doesn't exist, proceed with copy
@@ -565,14 +563,12 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
             let epkg_src_symlink = self_env_root.join("usr/src/epkg");
             if epkg_src_symlink.exists() {
                 // Check if it's a symlink
-                if let Ok(metadata) = lfs::symlink_metadata(&epkg_src_symlink) {
-                    if metadata.file_type().is_symlink() {
-                        // Follow the symlink to get the actual repo root
-                        // Use canonicalize on the symlink itself to handle both absolute and relative paths
-                        if let Ok(canonical_path) = fs::canonicalize(&epkg_src_symlink) {
-                            if is_valid_local_repo(&canonical_path) {
-                                return Ok(canonical_path);
-                            }
+                if lfs::is_symlink(&epkg_src_symlink) {
+                    // Follow the symlink to get the actual repo root
+                    // Use canonicalize on the symlink itself to handle both absolute and relative paths
+                    if let Ok(canonical_path) = fs::canonicalize(&epkg_src_symlink) {
+                        if is_valid_local_repo(&canonical_path) {
+                            return Ok(canonical_path);
                         }
                     }
                 }
@@ -889,36 +885,34 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     let usr_lib64_target = Path::new("usr/lib64");
 
     // Check if /lib64 already exists as a symlink
-    if let Ok(metadata) = lfs::symlink_metadata(lib64_path) {
-        if metadata.file_type().is_symlink() {
-            if let Ok(target) = fs::read_link(lib64_path) {
-                // Check if it points to usr/lib64 (correct)
-                if target == usr_lib64_target {
-                    // Already correct, nothing to do
-                    return Ok(());
-                }
-
-                // Check if it points to usr/lib (needs fixing on usr-merge systems like Arch)
-                let usr_lib_target = Path::new("usr/lib");
-                if target == usr_lib_target {
-                    if utils::is_running_as_root() {
-                        // Remove the old symlink so we can create the correct one
-                        lfs::remove_file(lib64_path)?;
-                        // Fall through to create the correct symlink
-                    } else {
-                        // Not root, can't fix it
-                        eprintln!("WARNING: /lib64 -> usr/lib symlink exists but cannot be fixed to usr/lib64 (not running as root). RPM/Debian guest OS may not work.");
-                        return Err(eyre::eyre!("/lib64 -> usr/lib exists but cannot be fixed: not running as root"));
-                    }
-                } else {
-                    // Points to something else, don't touch it
-                    return Err(eyre::eyre!("/lib64 exists as symlink pointing to {:?}, not fixing", target));
-                }
+    if lfs::is_symlink(lib64_path) {
+        if let Ok(target) = fs::read_link(lib64_path) {
+            // Check if it points to usr/lib64 (correct)
+            if target == usr_lib64_target {
+                // Already correct, nothing to do
+                return Ok(());
             }
-        } else {
-            // /lib64 exists but is not a symlink (directory or file)
-            return Err(eyre::eyre!("/lib64 exists but is not a symlink, cannot fix"));
+
+            // Check if it points to usr/lib (needs fixing on usr-merge systems like Arch)
+            let usr_lib_target = Path::new("usr/lib");
+            if target == usr_lib_target {
+                if utils::is_running_as_root() {
+                    // Remove the old symlink so we can create the correct one
+                    lfs::remove_file(lib64_path)?;
+                    // Fall through to create the correct symlink
+                } else {
+                    // Not root, can't fix it
+                    eprintln!("WARNING: /lib64 -> usr/lib symlink exists but cannot be fixed to usr/lib64 (not running as root). RPM/Debian guest OS may not work.");
+                    return Err(eyre::eyre!("/lib64 -> usr/lib exists but cannot be fixed: not running as root"));
+                }
+            } else {
+                // Points to something else, don't touch it
+                return Err(eyre::eyre!("/lib64 exists as symlink pointing to {:?}, not fixing", target));
+            }
         }
+    } else if lib64_path.exists() {
+        // /lib64 exists but is not a symlink (directory or file)
+        return Err(eyre::eyre!("/lib64 exists but is not a symlink, cannot fix"));
     }
 
     // /lib64 doesn't exist (or was just removed), need to create it

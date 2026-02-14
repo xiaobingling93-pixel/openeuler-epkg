@@ -221,3 +221,10 @@ pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<fs::Metadata> {
         .wrap_err_with(|| format!("Failed to get metadata for {}", path.display()))
 }
 
+/// Determine if a file is a symlink
+pub fn is_symlink(path: &Path) -> bool {
+    match symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
