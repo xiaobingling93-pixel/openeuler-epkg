@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::fs;
+use crate::lfs;
 use std::io::{self, Read};
 use std::path::Path;
 use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
@@ -195,23 +196,23 @@ fn deduplicate_files_by_hardlink(
                     temp_path
                 };
 
-                if let Err(e) = fs::rename(&current_file_path, &temp_file_path) {
+                if let Err(e) = lfs::rename(&current_file_path, &temp_file_path) {
                     log::debug!("Failed to rename file {} for hardlink: {}", current_file_path.display(), e);
                     continue;
                 }
 
                 // Try to create hardlink
-                if let Err(e) = fs::hard_link(&existing_file_path, &current_file_path) {
+                if let Err(e) = lfs::hard_link(&existing_file_path, &current_file_path) {
                     log::debug!("Failed to create hardlink from {} to {}: {}",
                                existing_file_path.display(), current_file_path.display(), e);
                     // If hardlink fails, rename back
-                    if let Err(rename_err) = fs::rename(&temp_file_path, &current_file_path) {
+                    if let Err(rename_err) = lfs::rename(&temp_file_path, &current_file_path) {
                         log::warn!("Failed to restore file {} after hardlink failure: {}",
                                   current_file_path.display(), rename_err);
                     }
                 } else {
                     // Hardlink succeeded, remove the temporary file
-                    if let Err(e) = fs::remove_file(&temp_file_path) {
+                    if let Err(e) = lfs::remove_file(&temp_file_path) {
                         log::debug!("Failed to remove temporary file {}: {}", temp_file_path.display(), e);
                     }
                     dedup_count += 1;
@@ -239,8 +240,7 @@ pub fn unpack_mv_package(
     // Create temporary directory for unpacking
     let temp_name = Uuid::new_v4().to_string();
     let store_tmp_dir = crate::dirs::unpack_basedir().join(&temp_name);
-    fs::create_dir_all(&store_tmp_dir)
-        .wrap_err_with(|| format!("Failed to create temporary directory: {}", store_tmp_dir.display()))?;
+    lfs::create_dir_all(&store_tmp_dir)?;
 
     // Unpack the package
     general_unpack_package(Path::new(package_file), &store_tmp_dir, pkgkey)
@@ -281,8 +281,7 @@ pub fn unpack_mv_package(
     if ca_hash.is_empty() {
         let mut updated_content = package_content;
         updated_content.push_str(&format!("caHash: {}\n", ca_hash_real));
-        fs::write(&package_txt_path, updated_content)
-            .wrap_err_with(|| format!("Failed to update package.txt file: {}", package_txt_path.display()))?;
+        lfs::write(&package_txt_path, updated_content)?;
     } else if ca_hash != ca_hash_real {
         return Err(eyre::eyre!("caHash in package.txt does not match calculated hash"));
     }
@@ -310,13 +309,11 @@ pub fn unpack_mv_package(
     // Move to final location
     if final_dir.exists() {
         log::info!("Target store directory already exists: {}", final_dir.display());
-        fs::remove_dir_all(&final_dir)
-            .wrap_err_with(|| format!("Failed to remove old store directory: {}", final_dir.display()))?;
+        lfs::remove_dir_all(&final_dir)?;
     } else {
         let parent_dir = final_dir.parent()
             .ok_or_else(|| eyre::eyre!("Failed to get parent directory for: {}", final_dir.display()))?;
-        fs::create_dir_all(parent_dir)
-            .wrap_err_with(|| format!("Failed to create directory: {}", parent_dir.display()))?;
+        lfs::create_dir_all(parent_dir)?;
     }
 
     log::info!("Unpacking pkgkey {:?} file to store: {} -> {}", pkgkey, package_file, final_dir.display());
@@ -403,8 +400,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             continue;
         }
 
-        let metadata = fs::symlink_metadata(path)
-            .wrap_err_with(|| format!("Failed to get metadata for: {}", path.display()))?;
+        let metadata = lfs::symlink_metadata(path)?;
         let file_type = metadata.file_type();
 
         // Build attributes string
@@ -492,8 +488,7 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         output.push_str(&format!("{} {}\n", escaped_path, attrs_str));
     }
 
-    fs::write(&filelist_path, output)
-        .wrap_err_with(|| format!("Failed to write filelist.txt: {}", filelist_path.display()))?;
+    lfs::write(&filelist_path, output)?;
     Ok(())
 }
 
@@ -588,8 +583,7 @@ pub fn save_package_txt<P: AsRef<Path>>(mut package_fields: HashMap<String, Stri
     // Format the package fields
     let output = format_package_fields(&package_fields);
 
-    fs::write(&package_txt_path, output)
-        .wrap_err_with(|| format!("Failed to write package.txt file: {}", package_txt_path.display()))?;
+    lfs::write(&package_txt_path, output)?;
 
     Ok(())
 }
