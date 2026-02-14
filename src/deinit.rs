@@ -266,6 +266,9 @@ pub fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<String> {
 }
 
 /// Recursively removes a directory, fixing permission issues if needed.
+///
+/// Uses eprintln! for informational messages to avoid interfering with shell eval
+/// when called from commands like `epkg env remove`.
 pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
 
@@ -279,7 +282,7 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let parent_dirs = find_readonly_dirs(path)?;
     if parent_dirs.is_empty() {
         if let Err(ref e) = initial_result {
-            println!(
+            eprintln!(
                 "Initial attempt to remove directory '{}' failed: {}",
                 path.display(),
                 e
@@ -288,21 +291,21 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
         return initial_result.map_err(|e| eyre::eyre!("{}", e));
     }
 
-    println!("Some directories are read-only and cannot be removed automatically.");
-    println!("Making {} directories writable...", parent_dirs.len());
+    eprintln!("Some directories are read-only and cannot be removed automatically.");
+    eprintln!("Making {} directories writable...", parent_dirs.len());
 
     // Make parent directories writable
     for dir in &parent_dirs {
-        println!("  - {}", &dir.display());
+        eprintln!("  - {}", &dir.display());
         utils::fixup_file_permissions(&dir);
     }
 
-    println!("Retrying directory removal after permission fix...");
+    eprintln!("Retrying directory removal after permission fix...");
 
     // Retry deletion
     match fs::remove_dir_all(path) {
         Ok(_) => {
-            println!("Directory successfully removed after permission fix");
+            eprintln!("Directory successfully removed after permission fix");
             Ok(())
         }
         Err(e) => {
