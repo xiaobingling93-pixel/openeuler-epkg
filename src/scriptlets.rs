@@ -4,10 +4,11 @@ use crate::plan::InstallationPlan;
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::rpm_triggers::setup_rpm_env_vars;
 use crate::package;
-use crate::run::{RunOptions, setup_namespace_and_mounts};
+use crate::run::{RunOptions, setup_namespace_and_mounts, with_sigpipe_handler};
 use nix::unistd::{fork, ForkResult};
 use nix::sys::wait::{waitpid, WaitStatus};
 use crate::shebang::strip_shebang;
+use libc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
@@ -480,13 +481,15 @@ where
 {
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child }) => {
-            match waitpid(child, None) {
-                Ok(WaitStatus::Exited(_, 0)) => Ok(()),
-                Ok(WaitStatus::Exited(_, code)) => Err(eyre!("child exited with code {}", code)),
-                Ok(WaitStatus::Signaled(_, signal, _)) => Err(eyre!("child killed by signal {:?}", signal)),
-                Ok(_) => Err(eyre!("child ended with unexpected status")),
-                Err(e) => Err(eyre!("failed to wait for child: {}", e)),
-            }
+            with_sigpipe_handler(libc::SIG_IGN, || {
+                match waitpid(child, None) {
+                    Ok(WaitStatus::Exited(_, 0)) => Ok(()),
+                    Ok(WaitStatus::Exited(_, code)) => Err(eyre!("child exited with code {}", code)),
+                    Ok(WaitStatus::Signaled(_, signal, _)) => Err(eyre!("child killed by signal {:?}", signal)),
+                    Ok(_) => Err(eyre!("child ended with unexpected status")),
+                    Err(e) => Err(eyre!("failed to wait for child: {}", e)),
+                }
+            })
         }
         Ok(ForkResult::Child) => {
             match f() {

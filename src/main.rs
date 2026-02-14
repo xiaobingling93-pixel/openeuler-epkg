@@ -127,17 +127,18 @@ fn main() -> Result<()> {
     let invoked_as_applet = crate::applets::is_invoked_as_applet();
     crate::models::init_config(invoked_as_applet)?;
 
+    // Gracefully exit instead of panic on half piping
+    // - epkg list --all | head
+    // - epkg busybox cat long-file | head
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     // If invoked as an applet (via symlink/hardlink), handle it and return early
     if invoked_as_applet {
         match crate::applets::handle_applet_invocation()? {
             Some(_) => return Ok(()), // Handled as applet, exit
             None => {} // Should not happen after is_invoked_as_applet()
-        }
-    } else {
-        // Ignore SIGPIPE to prevent termination when writing to broken pipes
-        // This avoids both Rust panics and sudden termination on `epkg info bash | head`
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
     }
 

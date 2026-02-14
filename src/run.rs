@@ -39,6 +39,19 @@ pub struct RunOptions {
     pub redirect_stdio: bool, // Redirect stdin/stdout/stderr to /dev/null for daemon processes
 }
 
+/// Temporarily set SIGPIPE handler
+pub(crate) fn with_sigpipe_handler<F, R>(handler: usize, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    unsafe {
+        let old_handler = libc::signal(libc::SIGPIPE, handler);
+        let result = f();
+        libc::signal(libc::SIGPIPE, old_handler);
+        result
+    }
+}
+
 #[allow(dead_code)]
 pub fn privdrop_on_suid() {
     if is_suid() {
@@ -270,23 +283,26 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
         Ok(ForkResult::Parent { child }) => {
             if let (Some(bytes), Some((read_fd, write_fd))) = (stdin_bytes, stdin_pipe.take()) {
                 let _ = close(read_fd);
-                let mut written = 0;
-                while written < bytes.len() {
-                    match write(&write_fd, &bytes[written..]) {
-                        Ok(0) => break, // Should not happen, but avoid infinite loop
-                        Ok(n) => written += n,
-                        Err(e) => {
-                            // EPIPE means child closed stdin (doesn't need input)
-                            // This is OK for hooks with NeedsTargets but scripts that ignore stdin
-                            if e == Errno::EPIPE {
-                                break;
+                with_sigpipe_handler(libc::SIG_IGN, move || {
+                    let mut written = 0;
+                    while written < bytes.len() {
+                        match write(&write_fd, &bytes[written..]) {
+                            Ok(0) => break, // Should not happen, but avoid infinite loop
+                            Ok(n) => written += n,
+                            Err(e) => {
+                                // EPIPE means child closed stdin (doesn't need input)
+                                // This is OK for hooks with NeedsTargets but scripts that ignore stdin
+                                if e == Errno::EPIPE {
+                                    break;
+                                }
+                                let _ = close(write_fd);
+                                return Err(eyre::eyre!("Failed to write to child stdin: {}", e));
                             }
-                            let _ = close(write_fd);
-                            return Err(eyre::eyre!("Failed to write to child stdin: {}", e));
                         }
                     }
-                }
-                let _ = close(write_fd);
+                    let _ = close(write_fd);
+                    Ok(())
+                })?;
             }
 
             if run_options.background {
