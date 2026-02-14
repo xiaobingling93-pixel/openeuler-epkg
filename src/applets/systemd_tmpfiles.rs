@@ -43,6 +43,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use color_eyre::eyre::WrapErr;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::chown;
@@ -356,13 +357,14 @@ fn process_config_file(config_file: &str, do_create: bool, do_clean: bool, do_re
 
     log::info!("systemd_tmpfiles: handling file {}", config_file);
 
-    for line in content.lines() {
+    for (line_num, line) in content.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
 
-        process_line(line, do_create, do_clean, do_remove, boot, root)?;
+        process_line(line, do_create, do_clean, do_remove, boot, root)
+            .wrap_err_with(|| format!("in file {}, line {}", config_file, line_num + 1))?;
     }
 
     Ok(())

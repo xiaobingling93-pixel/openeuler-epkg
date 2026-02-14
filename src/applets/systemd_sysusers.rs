@@ -35,6 +35,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use color_eyre::eyre::WrapErr;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -114,14 +115,15 @@ fn process_config_file(config_file: &str, root: Option<&Path>) -> Result<()> {
 
     log::info!("systemd_sysusers: handling file {}", full_path.display());
 
-    for line in content.lines() {
+    for (line_num, line) in content.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
 
         log::debug!("systemd_sysusers: processing line: {}", line);
-        process_line(line, root)?;
+        process_line(line, root)
+            .wrap_err_with(|| format!("in file {}, line {}", full_path.display(), line_num + 1))?;
     }
 
     Ok(())
