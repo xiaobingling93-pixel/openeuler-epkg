@@ -299,6 +299,29 @@ pub fn calculate_op_flags(
     flags
 }
 
+/// Update operation flags based on current package info (call after fill_pkglines_in_plan)
+pub fn update_operation_flags(plan: &mut InstallationPlan) {
+    // Compute new flags for each operation
+    let computed_flags: Vec<u8> = plan.ordered_operations
+        .iter()
+        .map(|op| calculate_op_flags(
+            plan,
+            op.new_pkgkey.as_deref(),
+            op.old_pkgkey.as_deref(),
+        ))
+        .collect();
+
+    // Apply new flags
+    for (op, new_flags) in plan.ordered_operations.iter_mut().zip(computed_flags) {
+        let old_flags = op.flags;
+        if old_flags != new_flags {
+            log::trace!("update_operation_flags: pkgkey {:?} flags changed: {:08b} -> {:08b}",
+                op.new_pkgkey, old_flags, new_flags);
+        }
+        op.flags = new_flags;
+    }
+}
+
 /// Create a PackageOperation with calculated flags
 pub fn create_package_operation(
     plan: &InstallationPlan,
@@ -501,6 +524,9 @@ pub fn prepare_installation_plan(
     // Fill pkglines for packages that already exist in the store
     crate::store::fill_pkglines_in_plan(&mut plan)
         .with_context(|| "Failed to find existing packages in store")?;
+
+    // Update operation flags now that pkglines are known
+    update_operation_flags(&mut plan);
 
     Ok(plan)
 }
