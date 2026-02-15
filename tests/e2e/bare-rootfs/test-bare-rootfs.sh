@@ -64,9 +64,9 @@ exec_epkg busybox ls /etc
 log "Installing epkg in container"
 exec_epkg self install -c alpine
 
-# Setup bare rootfs environment using epkg's environment feature with --path /
-log "Creating sys environment with --path /"
-exec_epkg env create sys -c alpine --path /
+# Setup bare rootfs environment using epkg's environment feature with --root /
+log "Creating sys environment with --root /"
+exec_epkg env create sys -c alpine --root /
 
 log "Installing jq"
 exec_epkg busybox cat /etc/resolv.conf
