@@ -265,6 +265,12 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     let cmd_path = if Path::new(&run_options.command).is_absolute() {
         // Already an absolute path, use it directly
         PathBuf::from(&run_options.command)
+    } else if run_options.command.contains('/') {
+        // Contains slash, treat as relative path (don't search PATH)
+        PathBuf::from(&run_options.command)
+    } else if Path::new(&run_options.command).exists() {
+        // Exists in current dir, likely not a system command
+        PathBuf::from(&run_options.command)
     } else {
         // Command name, do PATH lookup
         find_command_in_env_path(&run_options.command, env_root)?
