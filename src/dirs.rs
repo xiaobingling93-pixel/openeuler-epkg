@@ -99,9 +99,16 @@ pub fn unpack_basedir() -> PathBuf {
 }
 
 pub fn get_env_root(env_name: String) -> Result<PathBuf> {
-    let env_config = crate::models::env_config();
-    if env_config.name == env_name {
-        Ok(PathBuf::from(&env_config.env_root))
+    let current_env = config().common.env_name.clone();
+    // Only use the cached env config if we're asking for the current environment
+    if !current_env.is_empty() && current_env == env_name {
+        let current_env_root = config().common.env_root.clone();
+        if !current_env_root.is_empty() {
+            Ok(current_env_root.into())
+        } else {
+            let env_config = env_config();
+            Ok(PathBuf::from(&env_config.env_root))
+        }
     } else {
         let env_config = crate::io::deserialize_env_config_for(env_name)?;
         Ok(PathBuf::from(&env_config.env_root))
@@ -130,6 +137,9 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 /// Supports both 'env_name' and 'owner/env_name' formats
 /// Note: EnvConfig.public only controls visibility/permissions, not location
 fn get_env_base_path(env_name: &str) -> PathBuf {
+    if env_name.is_empty() {
+        panic!("env_name is empty in get_env_base_path");
+    }
     // Visit other's /opt/epkg/envs/$owner/$name (public envs)
     if let Some(slash_pos) = env_name.find('/') {
         if !matches!(config().subcommand,

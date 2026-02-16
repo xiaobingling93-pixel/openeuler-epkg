@@ -80,6 +80,9 @@ pub fn deserialize_env_config() -> Result<EnvConfig> {
 }
 
 pub fn deserialize_env_config_for(env_name: String) -> Result<EnvConfig> {
+    if env_name.is_empty() {
+        return Err(eyre::eyre!("Environment name is empty; cannot load environment config. This may indicate a bug in initialization order."));
+    }
     let config_path = crate::dirs::get_env_config_path(&env_name);
 
     // In tests, we often don't have a real on-disk environment; fall back to a

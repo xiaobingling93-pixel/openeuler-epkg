@@ -1066,12 +1066,18 @@ pub fn init_config(invoked_as_applet: bool) -> Result<()> {
     } else {
         parse_cmdline()
     };
-    let cfg = parse_options_common(&matches).wrap_err("Failed to parse common options for CONFIG")?;
-    let cfg = parse_options_subcommand(&matches, cfg).wrap_err("Failed to parse subcommand options for CONFIG")?;
-    *CONFIG.write().expect("CONFIG lock") = Some(cfg);
+    let common_cfg = parse_options_common(&matches).wrap_err("Failed to parse common options for CONFIG")?;
+    // Set CLAP_MATCHES first so clap_matches() works during parse_options_subcommand
     CLAP_MATCHES
         .set(matches)
         .map_err(|_| eyre::eyre!("init_config() must be called only once"))?;
+    let matches_ref = CLAP_MATCHES.get().unwrap();
+    // Set CONFIG with common options so config() works during parse_options_subcommand
+    let common_cfg_clone = common_cfg.clone();
+    *CONFIG.write().expect("CONFIG lock") = Some(common_cfg);
+    let final_cfg = parse_options_subcommand(matches_ref, common_cfg_clone)
+        .wrap_err("Failed to parse subcommand options for CONFIG")?;
+    *CONFIG.write().expect("CONFIG lock") = Some(final_cfg);
     Ok(())
 }
 
