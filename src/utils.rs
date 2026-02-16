@@ -21,7 +21,6 @@ use users::{get_current_uid, get_effective_uid};
 use crate::models;
 use crate::userdb;
 use crate::lfs;
-use crate::dirs;
 use crate::mtree::{self, MtreeFileInfo};
 
 #[derive(Debug, PartialEq)]
@@ -651,40 +650,54 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
 
     // If it's a symlink, read the target and check if the target exists within the environment
     if let Ok(link_target) = std::fs::read_link(symlink_path) {
-        if link_target.is_absolute() {
-            if link_target.starts_with(&dirs().epkg_store) && link_target.exists() {
-                return Some(link_target);
-            }
 
-            // Absolute symlink: check if env_root + target exists
+        if link_target.is_absolute() {
+            // For system paths, map them into the environment root
             // This avoids checking host system paths that might coincidentally exist
             // Example: ~/.epkg/envs/alpine/usr/bin/sh -> /usr/bin/bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
-            let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
-            if target_in_env.exists() {
-                return Some(target_in_env);
+            let is_system_path = link_target.starts_with("/usr") ||
+                                 link_target.starts_with("/bin") ||
+                                 link_target.starts_with("/sbin") ||
+                                 link_target.starts_with("/lib") ||
+                                 link_target.starts_with("/lib64") ||
+                                 link_target.starts_with("/lib32") ||
+                                 link_target.starts_with("/libx32");
+            let is_mounted_path = link_target.starts_with("/etc");
+            if is_system_path || is_mounted_path {
+                let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+                if target_in_env.exists() {
+                    return Some(target_in_env);
+                }
+            }
+
+            // Allow symlinks pointing within the same environment root
+            // if link_target.starts_with(env_root) && link_target.exists() {
+            //     return Some(link_target);
+            // }
+
+            // Allow symlinks pointing into the epkg store
+            // if link_target.starts_with(&dirs().epkg_store) && link_target.exists() {
+            //     return Some(link_target);
+            // }
+
+            // Special case: symlink pointing to the current executable (epkg binary)
+            // if let Ok(current_exe) = std::env::current_exe() {
+            //     if link_target == current_exe && link_target.exists() {
+            //         return Some(link_target);
+            //     }
+            // }
+
+            // For other absolute paths, assume env fs is the same with host, so detect in host
+            if link_target.exists() {
+                return Some(link_target);
             }
         } else {
             // Relative symlink: resolve relative to the symlink's directory
             // Example: ~/.epkg/envs/alpine/usr/bin/sh -> bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
             let symlink_dir = symlink_path.parent()?;
-            let mut resolved = symlink_dir.to_path_buf();
-            // Walk components to handle ".." safely
-            for component in link_target.components() {
-                match component {
-                    std::path::Component::ParentDir => {
-                        resolved.pop();
-                    }
-                    std::path::Component::Normal(name) => {
-                        resolved.push(name);
-                    }
-                    _ => {
-                        // CurDir or RootDir: ignore
-                    }
-                }
-            }
-            // Ensure resolved path stays within environment root
-            if resolved.starts_with(env_root) && resolved.exists() {
-                return Some(resolved);
+            let resolved_path = symlink_dir.join(&link_target);
+            if resolved_path.exists() {
+                return Some(resolved_path);
             }
         }
     }
