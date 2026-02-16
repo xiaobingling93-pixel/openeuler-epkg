@@ -1285,6 +1285,13 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
                 config.common.env_name = env_name_from_path(&config.common.env_root);
                 config.common.env_explicit = true;
             }
+
+            if !config.common.env_explicit {
+                eprintln!("error: environment name required");
+                eprintln!("usage: epkg env {} [ENV_NAME | --root DIR] [OPTIONS]", subcommand_name);
+                eprintln!("For more information, try 'epkg env {} --help'", subcommand_name);
+                exit(2);
+            }
         }
 
         // Subcommand-specific logic
