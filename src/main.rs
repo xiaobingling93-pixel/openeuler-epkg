@@ -692,16 +692,12 @@ EXAMPLES:
 }
 
 fn add_busybox_subcommand(cmd: Command) -> Command {
-    cmd.subcommand({
-            let mut busybox_cmd = Command::new("busybox")
+    cmd.subcommand(
+            Command::new("busybox")
                 .about("Run built-in command implementations")
                 .arg_required_else_help(true)
-                .allow_external_subcommands(true);
-            for subcmd in crate::applets::busybox_subcommands() {
-                busybox_cmd = busybox_cmd.subcommand(subcmd);
-            }
-            busybox_cmd
-        })
+                .allow_external_subcommands(true)
+        )
 }
 
 fn add_service_subcommand(cmd: Command) -> Command {

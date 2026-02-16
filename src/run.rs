@@ -1166,21 +1166,102 @@ pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
 }
 
 /// Execute built-in command (busybox-style)
+///
+/// This function handles applet execution when invoked via `epkg busybox <applet>`.
+/// It supports two modes of operation:
+///
+/// 1. **External subcommand mode** (current implementation):
+///    - The `busybox` command uses `allow_external_subcommands(true)` to avoid
+///      option name conflicts between epkg's global options and applet-specific options.
+///    - Applet arguments arrive as raw `OsString` values (key `""` in matches).
+///    - We manually re-parse these arguments using each applet's command parser.
+///
+/// 2. **Registered subcommand mode** (alternative approach):
+///    - Applet subcommands are registered directly under `busybox`.
+///    - Arguments are already parsed by clap before reaching this function.
+///    - This mode causes option name conflicts when applet options overlap with
+///      epkg's global options (e.g., `ls -q` vs global `-q --quiet`).
+///
+/// The current implementation uses external subcommand mode to isolate option
+/// namespaces and prevent conflicts. When `get_raw("")` returns arguments,
+/// we parse them using the applet's command parser via `try_get_matches_from()`.
+/// Otherwise, we assume arguments are already parsed (registered subcommand mode).
+///
+/// # Arguments
+/// * `sub_matches` - Parsed command-line arguments for the `busybox` subcommand
+///
+/// # Returns
+/// * `Result<()>` - Success or error from applet execution
 pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
+    debug!("command_busybox sub_matches: {:?}", sub_matches);
+    /* Parse the subcommand structure:
+     * - Some((cmd_name, cmd_matches)): A subcommand was specified
+     * - None: No subcommand specified (error case)
+     */
     match sub_matches.subcommand() {
         Some((cmd_name, cmd_matches)) => {
+            debug!("cmd_name: {}, cmd_matches: {:?}", cmd_name, cmd_matches);
             let known = crate::applets::busybox_subcommands()
                 .iter()
                 .any(|c| c.get_name() == cmd_name);
             if known {
                 debug!("Running built-in command: {}", cmd_name);
-                crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+                // Find the applet command
+                let applet_cmd = crate::applets::busybox_subcommands()
+                    .into_iter()
+                    .find(|c| c.get_name() == cmd_name)
+                    .expect("Applet command should exist");
+
+                // Check if we have external subcommand arguments (when using allow_external_subcommands)
+                // or if the matches are already parsed by the applet's command parser
+                if let Some(raw_args) = cmd_matches.get_raw("") {
+                    /* External subcommand mode:
+                     * - Arguments arrive as raw OsString values (key "" in matches)
+                     * - We need to re-parse them using the applet's command parser
+                     * - This avoids option name conflicts with global epkg options
+                     */
+                    // External subcommand: parse arguments manually
+                    let args_vec: Vec<std::ffi::OsString> = raw_args.map(|s| s.to_os_string()).collect();
+                    debug!("Parsing external args for {}: {:?}", cmd_name, args_vec);
+
+                    // Build argument list: program name (dummy) + arguments
+                    let mut all_args = vec![std::ffi::OsString::from("epkg")];
+                    all_args.extend(args_vec);
+
+                    // Parse arguments using the applet's command parser
+                    match applet_cmd.try_get_matches_from(all_args) {
+                        Ok(parsed_matches) => {
+                            crate::applets::exec_builtin_command(cmd_name, &parsed_matches)
+                        }
+                        Err(e) => {
+                            // If parsing fails, print error and exit with appropriate code
+                            eprintln!("{}", e);
+                            std::process::exit(2);
+                        }
+                    }
+                } else {
+                    /* Registered subcommand mode:
+                     * - Applet subcommand is registered directly under busybox
+                     * - Arguments are already parsed by clap
+                     * - This mode would cause option name conflicts if used
+                     */
+                    // Matches are already parsed by applet command parser (when subcommands are registered)
+                    crate::applets::exec_builtin_command(cmd_name, cmd_matches)
+                }
             } else {
+                /* Unknown applet:
+                 * - Command name doesn't match any registered applet
+                 * - Print error and exit with busybox-style exit code (127)
+                 */
                 eprintln!("{}: applet not found", cmd_name);
                 std::process::exit(127);
             }
         }
         None => {
+            /* No subcommand specified:
+             * - User ran `epkg busybox` without an applet name
+             * - Return error (clap should have prevented this with arg_required_else_help)
+             */
             Err(eyre::eyre!("No command specified"))
         }
     }
