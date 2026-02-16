@@ -351,11 +351,33 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
 
 /// Check if a file is executable
 pub fn is_executable(path: &Path) -> Result<bool> {
+    trace!("is_executable checking: {}", path.display());
     let metadata = fs::metadata(path)
-        .map_err(|e| eyre::eyre!("Failed to get metadata for {}: {}", path.display(), e))?;
+        .map_err(|e| {
+            trace!("is_executable metadata error for {}: {}", path.display(), e);
+            eyre::eyre!("Failed to get metadata for {}: {}", path.display(), e)
+        })?;
 
     let permissions = metadata.permissions();
-    Ok(permissions.mode() & 0o111 != 0)
+    let executable = permissions.mode() & 0o111 != 0;
+    trace!("is_executable result for {}: {}", path.display(), executable);
+    Ok(executable)
+}
+
+/// Check if a file is executable, handling symlinks that may point to targets within environment root
+fn is_executable_within_env(path: &Path, env_root: &Path) -> Result<bool> {
+    trace!("is_executable_within_env checking: {}", path.display());
+
+    match utils::resolve_symlink_in_env(path, env_root) {
+        Some(resolved) => {
+            trace!("Resolved {} -> {}", path.display(), resolved.display());
+            is_executable(&resolved)
+        }
+        None => {
+            trace!("Path {} cannot be resolved within environment root", path.display());
+            Ok(false)
+        }
+    }
 }
 
 /// Find command in environment PATH
@@ -377,7 +399,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
         let rel_path = path_dir.strip_prefix("/").unwrap_or(path_dir);
         let cmd_path = env_root.join(rel_path).join(cmd_name);
 
-        if cmd_path.exists() && is_executable(&cmd_path)? {
+        if is_executable_within_env(&cmd_path, env_root)? {
             // Check if this command is under the env_root prefix
             if cmd_path.starts_with(env_root) {
                 return Ok(cmd_path);

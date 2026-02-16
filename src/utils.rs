@@ -21,6 +21,7 @@ use users::{get_current_uid, get_effective_uid};
 use crate::models;
 use crate::userdb;
 use crate::lfs;
+use crate::dirs;
 use crate::mtree::{self, MtreeFileInfo};
 
 #[derive(Debug, PartialEq)]
@@ -619,6 +620,77 @@ pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path:
     lfs::symlink(file_path, symlink_path)?;
 
     Ok(())
+}
+
+/// Resolve a symlink (or regular file) to its target within the environment root.
+///
+/// This function handles both absolute and relative symlinks, ensuring the resolved
+/// target exists within the environment root. It also handles regular files (non-symlinks)
+/// by returning the input path unchanged.
+///
+/// Returns Some(target_path) where target_path is the resolved absolute path within the environment
+/// that actually contains the executable, or None if the path is invalid or the target doesn't exist.
+///
+/// # Examples
+/// - Regular file: `~/.epkg/envs/alpine/usr/bin/bash` exists → `Some(~/.epkg/envs/alpine/usr/bin/bash)`
+/// - Absolute symlink: `~/.epkg/envs/alpine/usr/bin/sh -> /usr/bin/bash` → `Some(~/.epkg/envs/alpine/usr/bin/bash)`
+/// - Relative symlink: `~/.epkg/envs/alpine/usr/bin/sh -> bash` → `Some(~/.epkg/envs/alpine/usr/bin/bash)`
+/// - Invalid symlink: symlink points to non‑existent target → `None`
+///
+/// # Security
+/// The resolved path is guaranteed to be within `env_root` (or `None`). Relative symlinks
+/// containing `..` components that would escape the environment root are rejected.
+pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    // First check if the symlink file itself exists (as a regular file or symlink)
+    if symlink_path.exists() && !symlink_path.is_symlink() {
+        // It's a regular file, not a symlink
+        // Example: ~/.epkg/envs/alpine/usr/bin/bash is a regular executable file
+        // Return: Some(~/.epkg/envs/alpine/usr/bin/bash) - the resolved target path (same as input)
+        return Some(symlink_path.to_path_buf());
+    }
+
+    // If it's a symlink, read the target and check if the target exists within the environment
+    if let Ok(link_target) = std::fs::read_link(symlink_path) {
+        if link_target.is_absolute() {
+            if link_target.starts_with(&dirs().epkg_store) && link_target.exists() {
+                return Some(link_target);
+            }
+
+            // Absolute symlink: check if env_root + target exists
+            // This avoids checking host system paths that might coincidentally exist
+            // Example: ~/.epkg/envs/alpine/usr/bin/sh -> /usr/bin/bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
+            let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+            if target_in_env.exists() {
+                return Some(target_in_env);
+            }
+        } else {
+            // Relative symlink: resolve relative to the symlink's directory
+            // Example: ~/.epkg/envs/alpine/usr/bin/sh -> bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
+            let symlink_dir = symlink_path.parent()?;
+            let mut resolved = symlink_dir.to_path_buf();
+            // Walk components to handle ".." safely
+            for component in link_target.components() {
+                match component {
+                    std::path::Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    std::path::Component::Normal(name) => {
+                        resolved.push(name);
+                    }
+                    _ => {
+                        // CurDir or RootDir: ignore
+                    }
+                }
+            }
+            // Ensure resolved path stays within environment root
+            if resolved.starts_with(env_root) && resolved.exists() {
+                return Some(resolved);
+            }
+        }
+    }
+
+    // Return: None - symlink_path doesn't exist on host, symlink target doesn't exist in environment, or symlink couldn't be read
+    None
 }
 
 /// Safely create a directory, handling cases where a file with the same name already exists

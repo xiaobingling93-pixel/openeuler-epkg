@@ -8,6 +8,7 @@ use crate::run::{RunOptions, setup_namespace_and_mounts, with_sigpipe_handler};
 use nix::unistd::{fork, ForkResult};
 use nix::sys::wait::{waitpid, WaitStatus};
 use crate::shebang::strip_shebang;
+use crate::utils;
 use libc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -410,52 +411,6 @@ pub fn setup_conda_env_vars(
 /// Special marker for embedded Lua interpreter
 const EMBEDDED_LUA: &str = "<embedded-lua>";
 
-/// Resolve a symlink path to its target within the environment context
-/// This properly handles symlinks that point to absolute paths by checking if the target exists
-/// within the environment root, not on the host system.
-///
-/// Returns Some(target_path) where target_path is the resolved absolute path within the environment
-/// that actually contains the executable, or None if the path is invalid or the target doesn't exist.
-///
-/// Examples:
-/// - Regular file:     ~/.epkg/envs/alpine/usr/bin/bash exists         -> Some(~/.epkg/envs/alpine/usr/bin/bash)
-/// - Absolute symlink: ~/.epkg/envs/alpine/usr/bin/sh -> /usr/bin/bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
-/// - Relative symlink: ~/.epkg/envs/alpine/usr/bin/sh -> bash          -> Some(~/.epkg/envs/alpine/usr/bin/bash)
-/// - Invalid symlink: symlink points to non-existent target -> None
-pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::path::Path) -> Option<std::path::PathBuf> {
-    // First check if the symlink file itself exists (as a regular file or symlink)
-    if symlink_path.exists() && !symlink_path.is_symlink() {
-        // It's a regular file, not a symlink
-        // Example: ~/.epkg/envs/alpine/usr/bin/bash is a regular executable file
-        // Return: Some(~/.epkg/envs/alpine/usr/bin/bash) - the resolved target path (same as input)
-        return Some(symlink_path.to_path_buf());
-    }
-
-    // If it's a symlink, read the target and check if the target exists within the environment
-    if let Ok(link_target) = std::fs::read_link(symlink_path) {
-        if link_target.is_absolute() {
-            // Absolute symlink: check if env_root + target exists
-            // This avoids checking host system paths that might coincidentally exist
-            // Example: ~/.epkg/envs/alpine/usr/bin/sh -> /usr/bin/bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
-            let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
-            if target_in_env.exists() {
-                return Some(target_in_env);
-            }
-        } else {
-            // Relative symlink: resolve relative to the symlink's directory
-            // Example: ~/.epkg/envs/alpine/usr/bin/sh -> bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
-            let symlink_dir = symlink_path.parent()?;
-            let resolved_path = symlink_dir.join(&link_target);
-            if resolved_path.exists() {
-                return Some(resolved_path);
-            }
-        }
-    }
-
-    // Return: None - symlink_path doesn't exist on host, symlink target doesn't exist in environment, or symlink couldn't be read
-    None
-}
-
 /// Get interpreters to try for a given script file extension
 /// For .lua files, try embedded Lua first, then external lua interpreter
 pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
@@ -682,7 +637,7 @@ pub fn run_scriptlet(
                 // System paths (/usr/bin/*) are not available since we're in a chroot environment.
                 // We validate symlinks properly to handle cases where environment symlinks point to valid targets.
                 let interpreter_path = env_root.join("usr/bin").join(interpreter);
-                if resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
+                if utils::resolve_symlink_in_env(&interpreter_path, env_root).is_none() {
                     log::debug!(
                         "Interpreter {} not found in environment, trying next interpreter",
                         interpreter
