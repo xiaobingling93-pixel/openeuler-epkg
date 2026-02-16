@@ -814,7 +814,7 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
 
             // Try to hardlink the target file to the symlink location, fall back to copy
             if let Err(hardlink_err) = lfs::hard_link(&target_path, &full_symlink_path) {
-                log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
+                log::debug!("Hardlink not work for {} -> {}: {}, falling back to copy",
                            target_path.display(), full_symlink_path.display(), hardlink_err);
 
                 // If hardlink fails, copy the file
@@ -1263,7 +1263,7 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
         }
         Err(e) if e.raw_os_error() == Some(18) => {
             // EXDEV: Invalid cross-device link - fall back to copy + remove
-            log::debug!("Cross-device rename failed, using copy+remove fallback: {} -> {}",
+            log::debug!("Cross-device rename not work, using copy+remove fallback: {} -> {}",
                        src.display(), dst.display());
             let mut cp_options = crate::applets::cp::CpOptions::default();
             cp_options.archive = true; // cp -a

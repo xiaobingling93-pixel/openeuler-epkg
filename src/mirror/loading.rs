@@ -226,8 +226,7 @@ pub(crate) fn initialize_mirrors() -> Result<Mirrors> {
             bail!("Failed to load mirrors for distro '{}'", channel_config().distro);
         }
         Err(e) => {
-            log::debug!("load_mirrors_for_distro failed with error: {}", e);
-            bail!("Failed to load mirrors for distro '{}'", channel_config().distro);
+            bail!("Failed to load mirrors for distro '{}': {}", channel_config().distro, e);
         }
     };
 

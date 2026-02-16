@@ -465,11 +465,11 @@ pub fn hard_link_or_copy(source: &Path, target: &Path, preserve_permissions: boo
         Err(hardlink_err) => {
             // Check if it's a cross-device error (EXDEV = 18)
             if hardlink_err.raw_os_error() == Some(18) {
-                log::debug!("Cross-device hardlink failed for {} -> {}, falling back to copy",
+                log::debug!("Cross-device hardlink not work for {} -> {}, falling back to copy",
                            source.display(), target.display());
             } else {
                 // Other error, try copy as fallback
-                log::debug!("Hardlink failed for {} -> {}: {}, falling back to copy",
+                log::info!("Hardlink failed for {} -> {}: {}, falling back to copy",
                            source.display(), target.display(), hardlink_err);
             }
             lfs::copy(source, target)?;
@@ -571,7 +571,7 @@ fn mirror_regular_file(fs_file: &Path, target_path: &Path, fhs_file: &Path, link
                 }
                 Err(e) => {
                     // Fall back to symlink if hardlink fails
-                    log::debug!("Hardlink failed for {} -> {}: {}, falling back to symlink",
+                    log::debug!("Hardlink not work for {} -> {}: {}, falling back to symlink",
                                fs_file.display(), target_path.display(), e);
                     symlink_or_copy(fs_file, target_path, fhs_file)?;
                 }

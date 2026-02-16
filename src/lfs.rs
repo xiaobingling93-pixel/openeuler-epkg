@@ -201,7 +201,7 @@ pub fn reflink_or_copy<P: AsRef<Path>, Q: AsRef<Path>>(source: P, target: Q, can
             Ok(metadata.len())
         }
         Err(e) => {
-            log::debug!("reflink failed for {} -> {}: {}, falling back to copy",
+            log::debug!("reflink not work for {} -> {}: {}, falling back to copy",
                        source.display(), target.display(), e);
             copy(source, target)
         }

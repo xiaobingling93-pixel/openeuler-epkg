@@ -323,7 +323,7 @@ fn run_desktop_update_command(
                     }
                     Err(retry_e) => {
                         // This can happen in container
-                        log::info!("{} failed even after retry: {}", command, retry_e);
+                        log::info!("{} not work even after retry: {}", command, retry_e);
                     }
                 }
             } else {
