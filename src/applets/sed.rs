@@ -230,7 +230,7 @@ struct AddressedCommand {
 }
 
 fn parse_substitution(s: &str) -> Result<(char, String, String, String, &str)> {
-    let delimiter = s.chars().next().ok_or_else(|| eyre!("sed: missing delimiter"))?;
+    let delimiter = s.chars().next().ok_or_else(|| eyre!("sed: missing delimiter in substitution command"))?;
     let mut i = 1; // position after delimiter
     let mut bracket_depth = 0;
     let mut escaped = false;
@@ -252,7 +252,16 @@ fn parse_substitution(s: &str) -> Result<(char, String, String, String, &str)> {
         i += 1;
     }
     if i >= chars.len() {
-        return Err(eyre!("sed: invalid substitution syntax"));
+        let mut err_msg = String::from("sed: invalid substitution syntax");
+        if bracket_depth > 0 {
+            err_msg.push_str(": unclosed bracket in regex pattern");
+        } else if escaped {
+            err_msg.push_str(": trailing backslash in pattern");
+        } else if i == 1 {
+            err_msg.push_str(": missing pattern and closing delimiter");
+        }
+        err_msg.push_str(&format!(" in 's{}'", s));
+        return Err(eyre!(err_msg));
     }
     let pattern = s[1..i].to_string();
     // Move past delimiter; replacement is literal (no character-class bracket matching)
@@ -749,7 +758,7 @@ fn parse_command(script: &str, extended_regex: bool) -> Result<(AddressedCommand
                 let label_end = after.find(';').unwrap_or(after.len());
                 let label_str = after[..label_end].trim();
                 if label_str.is_empty() {
-                    return Err(eyre!("sed: missing label"));
+                    return Err(eyre!("sed: missing label for ':' command"));
                 }
                 let skip = cmd.len() - after.len() + label_end + if after.find(';').is_some() { 1 } else { 0 };
                 Ok(Some((SedCommand::Label(label_str.to_string()), if skip <= cmd.len() { rest_after(cmd, skip) } else { "" })))
@@ -828,7 +837,12 @@ fn parse_command(script: &str, extended_regex: bool) -> Result<(AddressedCommand
             let group_commands = parse_script_to_commands(inner, extended_regex)?;
             (SedCommand::Group(group_commands), rest_after)
         } else {
-            return Err(eyre!("sed: unmatched '{{'"));
+            let snippet: String = cmd.chars().take(30).collect();
+            if cmd.len() > 30 {
+                return Err(eyre!("sed: unmatched '{{' in '{}...'", snippet));
+            } else {
+                return Err(eyre!("sed: unmatched '{{' in '{}'", cmd));
+            }
         }
     } else {
         // Handle complex commands with arguments: b, t, T, :, w, c, i, a
@@ -1356,7 +1370,7 @@ fn parse_script_to_commands_from_lines(lines: &[String], extended_regex: bool) -
                 group_content.push('\n');
                 i += 1;
                 if i >= lines.len() {
-                    return Err(eyre!("sed: unmatched '{{'"));
+                    return Err(eyre!("sed: unmatched '{{' before end of script"));
                 }
                 current_line_content = lines[i].as_str().trim();
             }
