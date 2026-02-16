@@ -15,19 +15,34 @@ use color_eyre::Result;
 /// Searches start_path/.eenv, then parent directories up to root or 100 levels.
 /// Returns the first existing `.eenv` directory path, or None if not found.
 pub fn find_nearest_dot_eenv(start_path: &Path) -> Option<PathBuf> {
-    let mut current = start_path.to_path_buf();
+    // Convert relative start path to absolute if possible
+    let mut current = if start_path.is_absolute() {
+        start_path.to_path_buf()
+    } else {
+        // Try to get absolute path by joining with current directory
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(start_path),
+            Err(_) => start_path.to_path_buf(), // fallback to relative
+        }
+    };
+    log::debug!("find_nearest_dot_eenv: start_path='{}', current='{}'",
+                start_path.display(), current.display());
     let mut depth = 0;
     while depth < 10 {
         let dot_eenv = current.join(".eenv");
+        log::debug!("find_nearest_dot_eenv: checking {} (depth={})", dot_eenv.display(), depth);
         if dot_eenv.exists() && dot_eenv.is_dir() {
+            log::debug!("find_nearest_dot_eenv: found .eenv at {}", dot_eenv.display());
             return Some(dot_eenv);
         }
         // Move to parent directory
         if !current.pop() {
+            log::debug!("find_nearest_dot_eenv: cannot move up further, stopping");
             break;
         }
         depth += 1;
     }
+    log::debug!("find_nearest_dot_eenv: no .eenv found");
     None
 }
 

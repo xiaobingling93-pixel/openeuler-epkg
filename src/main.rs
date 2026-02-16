@@ -1162,12 +1162,24 @@ fn determine_command_path_info(command: &str) -> (bool, PathBuf) {
         // Command contains slash: treat as path
         let cmd_path = Path::new(command);
         let parent = cmd_path.parent().unwrap_or(&cwd);
-        (true, parent.to_path_buf())
+        let search_dir = if parent.is_absolute() {
+            parent.to_path_buf()
+        } else {
+            // Join relative parent with current working directory to get absolute path
+            cwd.join(parent)
+        };
+        log::debug!("determine_command_path_info: command='{}', parent='{}', search_dir='{}'",
+               command, parent.display(), search_dir.display());
+        (true, search_dir)
     } else if Path::new(command).exists() {
         // Command exists as a file in current directory: treat as path
+        log::debug!("determine_command_path_info: command='{}' exists in cwd, search_dir='{}'",
+               command, cwd.display());
         (true, cwd.clone())
     } else {
         // Command not a path and not a file: we're clueless
+        log::debug!("determine_command_path_info: command='{}' not a path, search_dir='{}'",
+               command, cwd.display());
         (false, cwd.clone())
     }
 }
