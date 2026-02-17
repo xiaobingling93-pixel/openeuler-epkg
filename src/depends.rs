@@ -1197,6 +1197,14 @@ fn create_installed_package_info_map(
             }
         }
 
+        // Skip virtual packages (repodata_name == "virtual")
+        if let Ok(package) = crate::package_cache::load_package_info(pkgkey) {
+            if package.repodata_name == "virtual" {
+                log::debug!("Skipping virtual package: {}", pkgkey);
+                continue;
+            }
+        }
+
         // Get depth from pre-calculated map (default to 0 if not found)
         let depth = pkgkey_to_depth.get(pkgkey).copied().unwrap_or(0);
 
