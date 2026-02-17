@@ -163,16 +163,10 @@ impl ParseState {
     fn parse_special(&mut self, line: &str, tokens: &[&str]) -> Result<Option<MtreeFileInfo>> {
         match tokens[0] {
             "/set" => {
-                for part in &tokens[1..] {
-                    let (key, value) = part.split_once('=')
-                        .ok_or_else(|| eyre!("Invalid key=value pair in /set: {} (missing '='?)", part))?;
-                    if key.is_empty() {
-                        return Err(eyre!("Invalid key=value pair in /set: {} (empty key)", part));
-                    }
-                    // Empty values are ignored (same as parse_keywords)
-                    if !value.is_empty() {
-                        self.defaults.insert(key.to_string(), value.to_string());
-                    }
+                let attrs = parse_key_value_tokens(&tokens[1..])
+                    .wrap_err_with(|| "Invalid key=value pair in /set")?;
+                for (key, value) in attrs {
+                    self.defaults.insert(key, value);
                 }
                 Ok(None)
             }
@@ -210,24 +204,75 @@ fn split_path_and_keywords<'a>(tokens: &'a [&'a str]) -> (Vec<&'a str>, usize) {
     (path_tokens, tokens.len())
 }
 
-/// Parse key=value tokens into hashmap
-/// Note: Values containing spaces must be escaped as \040 (space) or they will be
-/// split into separate tokens by split_whitespace(). This is particularly important
-/// for link targets containing spaces.
+/// Parse key=value tokens into hashmap, handling spaces in values.
+/// Values containing spaces will be split into multiple tokens by split_whitespace().
+/// This function reassembles them: tokens without '=' are treated as continuations
+/// of the previous value (with a space separator).
 /// Empty values are ignored (not inserted into the map).
-fn parse_keywords(tokens: &[&str]) -> Result<HashMap<String, String>> {
+/// Certain keys (type, mode, size, time, uid, gid, sha256digest, sha256) must not contain spaces.
+fn parse_key_value_tokens(tokens: &[&str]) -> Result<HashMap<String, String>> {
+    const NO_SPACE_KEYS: &[&str] = &[
+        "type", "mode", "size", "time", "uid", "gid", "sha256digest", "sha256"
+    ];
+
     let mut map = HashMap::new();
-    for token in tokens {
-        let (key, value) = token.split_once('=')
-            .ok_or_else(|| eyre!("Invalid key=value pair '{}' (missing '='?)", token))?;
-        if key.is_empty() {
-            return Err(eyre!("Invalid key=value pair '{}' (empty key)", token));
+    let mut current_key: Option<String> = None;
+    let mut current_value = String::new();
+
+    // Helper to store current key-value pair with validation
+    let mut store_current = |key: &str, value: &str| -> Result<()> {
+        if NO_SPACE_KEYS.contains(&key) && value.contains(' ') {
+            return Err(eyre!(
+                "Invalid value for '{}': contains space (escape spaces as \\040)",
+                key
+            ));
         }
         if !value.is_empty() {
             map.insert(key.to_string(), value.to_string());
         }
+        Ok(())
+    };
+
+    for token in tokens {
+        if let Some((key, value)) = token.split_once('=') {
+            // Store previous pair if any
+            if let Some(k) = current_key.take() {
+                store_current(&k, &current_value)?;
+                current_value.clear();
+            }
+            if key.is_empty() {
+                return Err(eyre!("Invalid key=value pair '{}' (empty key)", token));
+            }
+            current_key = Some(key.to_string());
+            current_value = value.to_string();
+        } else {
+            // Continuation of previous value
+            if current_key.is_none() {
+                return Err(eyre!("Invalid token '{}' (expected key=value)", token));
+            }
+            if !current_value.is_empty() {
+                current_value.push(' ');
+            }
+            current_value.push_str(token);
+        }
     }
+
+    // Store last pair
+    if let Some(k) = current_key.take() {
+        store_current(&k, &current_value)?;
+    }
+
     Ok(map)
+}
+
+/// Parse key=value tokens into hashmap.
+/// Values containing spaces are split into multiple tokens by split_whitespace();
+/// this function reassembles them (tokens without '=' are appended to the previous
+/// value with a space). Certain keys (type, mode, size, time, uid, gid, sha256digest, sha256)
+/// must not contain spaces in their values.
+/// Empty values are ignored (not inserted into the map).
+fn parse_keywords(tokens: &[&str]) -> Result<HashMap<String, String>> {
+    parse_key_value_tokens(tokens)
 }
 
 /// Strip leading "./" from a token if present
@@ -267,12 +312,10 @@ impl MtreeFileInfo {
             .or_else(|| attrs.get("sha256"))
             .cloned();
         let sha256 = sha256digest.clone();
-        // Link targets are unescaped here. Note: link targets containing unescaped spaces
-        // cannot be parsed correctly because spaces separate tokens in mtree format.
+        // Link targets are unescaped here. Link targets containing spaces are supported:
+        // spaces split tokens but parse_key_value_tokens() reassembles them.
         // Our escape_mtree_path() doesn't escape spaces (following the specification),
-        // so link targets with spaces written by this implementation will be unparseable.
-        // Link targets with spaces are effectively not supported unless spaces are
-        // escaped as \040 (which violates the specification but works in practice).
+        // but the parser can handle them.
         let link_target = attrs.get("link").map(|s| unescape_mtree_path(s));
         let uname = attrs.get("uname").cloned();
         let gname = attrs.get("gname").cloned();
@@ -368,11 +411,11 @@ pub fn escape_mtree_path(path: &str) -> String {
         // Space (0x20) is printable and SHOULD NOT be escaped per spec.
         // Note: Some implementations escape spaces (as \040) to avoid delimiter
         // ambiguity in mtree format, but this violates the specification.
-        // WARNING: Not escaping spaces means link targets containing spaces will
-        // produce unparseable mtree output, as spaces separate tokens in the format.
-        // Link targets with spaces are effectively not supported in this implementation.
-        // Alternative: escape spaces as \040 to support link targets with spaces,
-        // but this violates the mtree specification.
+        // The parser now handles spaces in values (including link targets) by
+        // reassembling tokens: tokens without '=' are treated as continuations
+        // of previous value with a space separator.
+        // Values for certain keys (type, mode, size, time, uid, gid, sha256digest, sha256)
+        // must not contain spaces and will be rejected with an error.
         else if byte < 0x20 || byte > 0x7E {
             result.push_str(&format!("\\{:03o}", byte));
         }
@@ -386,6 +429,7 @@ pub fn escape_mtree_path(path: &str) -> String {
 /// Unescape a path from mtree format according to mtree(5) specification.
 /// Decodes backslash followed by three octal digits to the corresponding character.
 /// Handles mixed escaped/unescaped input for backward compatibility.
+/// Spaces are not escaped in mtree format and remain unchanged.
 pub fn unescape_mtree_path(escaped_path: &str) -> String {
     let bytes = escaped_path.as_bytes();
     let mut result = String::with_capacity(escaped_path.len());
@@ -494,13 +538,13 @@ mod tests {
         // Should contain line number and line content
         assert!(err_str.contains("at line 1:"), "error missing line number: {}", err_str);
         assert!(err_str.contains("usr/bin/bash type=file 5"), "error missing line content: {}", err_str);
-        // Check error chain for invalid key=value pair
+        // Check error chain for space validation error
         let chain_msgs: Vec<String> = err.chain().map(|e| e.to_string()).collect();
-        let has_key_value_error = chain_msgs.iter().any(|msg| msg.contains("Invalid key=value pair"));
-        assert!(has_key_value_error, "error chain missing key=value error: {:?}", chain_msgs);
-        // Should mention token '5'
-        let has_token = chain_msgs.iter().any(|msg| msg.contains("'5'"));
-        assert!(has_token, "error chain missing token '5': {:?}", chain_msgs);
+        let has_space_error = chain_msgs.iter().any(|msg| msg.contains("contains space"));
+        assert!(has_space_error, "error chain missing space validation: {:?}", chain_msgs);
+        // Should mention 'type' key
+        let has_type_key = chain_msgs.iter().any(|msg| msg.contains("type"));
+        assert!(has_type_key, "error chain missing 'type' key: {:?}", chain_msgs);
     }
 
     #[test]
@@ -569,29 +613,32 @@ usr/bin/bash type=file
     }
 
     #[test]
-    #[ignore]
     fn test_real_filelist_error() {
-        use std::fs;
-        let path = "/home/wfg/.epkg/store/h3t6kjf22f54arr4xoeagznwhfs7t4ar__alsa-ucm-conf__1.2.14-1__all/info/filelist.txt";
-        let content = fs::read_to_string(path).unwrap();
-        // Test each line individually
-        for (line_no, raw_line) in content.lines().enumerate() {
-            let line = raw_line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
+        // Test the specific problematic line from alsa-ucm-conf package
+        // that contains spaces in filename and link target
+        let problematic_lines = [
+            "usr/share/alsa/ucm2/conf.d/simple-card/Librem 5 Devkit.conf type=link link=../../NXP/iMX8/Librem_5_Devkit/Librem 5 Devkit.conf",
+            // Additional test cases for spaces in values
+            "path with spaces.txt type=file",
+            "normal_path type=file link=target with spaces.txt",
+        ];
+
+        for (i, line) in problematic_lines.iter().enumerate() {
             match parse_simplified_mtree(line) {
-                Ok(_) => {},
-                Err(err) => {
-                    println!("Line {} failed: {}", line_no + 1, raw_line);
-                    println!("Error: {}", err);
-                    for (i, cause) in err.chain().enumerate() {
-                        println!("  Cause {}: {}", i, cause);
+                Ok(info) => {
+                    // For the first line, verify link target parsing
+                    if i == 0 {
+                        assert_eq!(info.len(), 1);
+                        let entry = &info[0];
+                        assert_eq!(entry.path, "usr/share/alsa/ucm2/conf.d/simple-card/Librem 5 Devkit.conf");
+                        assert!(entry.is_link());
+                        assert_eq!(entry.link_target.as_deref(), Some("../../NXP/iMX8/Librem_5_Devkit/Librem 5 Devkit.conf"));
                     }
-                    return;
+                },
+                Err(err) => {
+                    panic!("Line {} failed: {}\nError: {}", i, line, err);
                 }
             }
         }
-        println!("No errors found - all lines parsed successfully");
     }
 }
