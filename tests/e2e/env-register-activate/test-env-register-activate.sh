@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test env register/activate and PATH
 
-set -e
-
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 

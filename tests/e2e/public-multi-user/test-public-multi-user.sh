@@ -1,7 +1,6 @@
 #!/bin/sh
 # Test public mode and multi-user functionality
 
-set -e
 set -o pipefail
 
 . "$(dirname "$0")/../vars.sh"

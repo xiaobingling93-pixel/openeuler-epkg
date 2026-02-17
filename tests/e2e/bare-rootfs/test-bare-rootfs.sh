@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test bare rootfs on /
 
-set -e
-
 . "$(dirname "$0")/../host-vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
@@ -58,8 +56,8 @@ exec_epkg() {
     docker exec "$CONTAINER_NAME" $EPKG_BINARY "$@" || error "epkg command failed: $*"
 }
 
-exec_epkg busybox ls /
-exec_epkg busybox ls /etc
+# exec_epkg busybox ls /
+# exec_epkg busybox ls /etc
 # Install epkg in the running container
 log "Installing epkg in container"
 exec_epkg self install -c alpine

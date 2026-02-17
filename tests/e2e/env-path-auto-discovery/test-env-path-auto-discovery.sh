@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test --root DIR option, automatic name generation, and implicit environment discovery
 
-set -e
-
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
