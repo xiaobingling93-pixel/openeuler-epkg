@@ -50,7 +50,7 @@ use super::manager::{DOWNLOAD_MANAGER, submit_download_task};
 
 // Import chunk functions
 use super::chunk::{create_chunk_tasks, download_chunk_task, wait_for_chunks_and_merge};
-use super::file_ops::cleanup_chunk_files;
+use super::file_ops::{cleanup_chunk_files, cleanup_main_part_file};
 
 
 /// Download multiple URLs in parallel and wait for all downloads to complete.
@@ -368,7 +368,7 @@ fn download_file_with_retries(
                     return Err(eyre!("Max retries ({}) exceeded for {}: {}", max_retries, resolved_url, e));
                 }
 
-                // Reset stale chunk tasks before the next retry to avoid inconsistent state
+                // Reset stale chunk tasks and remove bad part file(s) so the next retry starts fresh
                 {
                     if let Ok(mut guard) = task.chunk_tasks.lock() {
                         if !guard.is_empty() {
@@ -385,6 +385,7 @@ fn download_file_with_retries(
                     if let Err(e2) = task.set_chunk_status(ChunkStatus::NoChunk) {
                         log::warn!("Failed to reset chunk_status to NoChunk: {}", e2);
                     }
+                    cleanup_main_part_file(task)?;
                     cleanup_chunk_files(task)?;
                 }
 
@@ -459,8 +460,20 @@ pub fn enqueue_package_downloads(
             None
         };
 
-        // Submit download task with size information (handles both local and remote files)
-        let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), DownloadFlags::empty())
+        // Alpine APKINDEX C field is control-segment hash, not whole-file; skip sha1 for APK file validation
+        let sha1sum = if package.format == crate::models::PackageFormat::Apk {
+            None
+        } else {
+            package.sha1sum.clone()
+        };
+        let task = DownloadTask::with_size(
+            url.clone(),
+            size,
+            package.repodata_name.clone(),
+            DownloadFlags::empty(),
+            package.sha256sum.clone(),
+            sha1sum,
+        )
             .with_context(|| format!("Failed to create download task for package {} (URL: {})", pkgkey, url))?;
         submit_download_task(task)
             .with_context(|| format!("Failed to submit download task for {}", url))?;

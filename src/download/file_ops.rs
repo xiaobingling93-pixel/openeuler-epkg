@@ -31,6 +31,36 @@ use crate::utils;
 use crate::config;
 use crate::dirs;
 
+/// Validate file at path against task's expected sha256sum/sha1sum if set.
+/// Comparison is case-insensitive. Returns Ok(()) when no checksums set or all match.
+fn validate_file_checksums(task: &DownloadTask, path: &Path) -> Result<()> {
+    let path_str = path.to_str().ok_or_else(|| eyre!("Invalid UTF-8 in path: {}", path.display()))?;
+    if let Some(ref expected) = task.sha256sum {
+        let actual = utils::compute_file_sha256(path_str)?;
+        if actual.to_lowercase() != expected.to_lowercase() {
+            return Err(eyre!(
+                "SHA256 mismatch for {}: expected {}, got {}",
+                path.display(),
+                expected,
+                actual
+            ));
+        }
+    }
+    if let Some(ref base64_or_hex) = task.sha1sum {
+        let actual = utils::compute_file_sha1(path_str)?;
+        let expected_hex = utils::normalize_sha1(base64_or_hex)?;
+        if actual.to_lowercase() != expected_hex.to_lowercase() {
+            return Err(eyre!(
+                "SHA1 mismatch for {}: expected {}, got {}",
+                path.display(),
+                expected_hex,
+                actual
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Get the size of an existing partial file, or 0 if it doesn't exist
 pub(crate) fn get_existing_file_size(part_path: &Path) -> Result<u64> {
     if part_path.exists() {
@@ -307,6 +337,9 @@ pub(crate) fn finalize_file(task: &DownloadTask) -> Result<()> {
         }
     }
 
+    // Validate optional checksums before finalizing
+    validate_file_checksums(task, &task.chunk_path)?;
+
     // Check if the final path already exists and remove it if it does
     if task.final_path.exists() {
         log::debug!("Final path already exists, removing: {}", task.final_path.display());
@@ -409,7 +442,19 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     }
 
     let local_path = &task.final_path;
-    if local_path.exists() {
+    let has_checksums = task.sha256sum.is_some() || task.sha1sum.is_some();
+
+    // If local file exists but checksum does not match, remove it so we can symlink or redownload
+    if local_path.exists() && has_checksums {
+        if validate_file_checksums(task, local_path).is_err() {
+            log::debug!("Local file {} checksum mismatch, removing", local_path.display());
+            if let Err(e) = fs::remove_file(local_path) {
+                log::warn!("Failed to remove local file {}: {}", local_path.display(), e);
+            }
+        } else {
+            return false; // Local exists and matches
+        }
+    } else if local_path.exists() {
         return false;
     }
 
@@ -430,6 +475,14 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     let global_path = global_cache_root.join(relative_path);
     if !global_path.exists() {
         return false;
+    }
+
+    // If we have expected checksums, validate global file; skip symlink on mismatch
+    if has_checksums {
+        if let Err(e) = validate_file_checksums(task, &global_path) {
+            log::debug!("Global cache file {} checksum mismatch, skipping symlink: {}", global_path.display(), e);
+            return false;
+        }
     }
 
     // Create parent directory for symlink if needed
@@ -531,28 +584,70 @@ pub(crate) fn should_redownload(
     }
 }
 
+/// Shared outcome for immutable/append-only size comparison.
+fn immutable_size_outcome(file_type: &FileType, local_size: u64, expected_size: u64) -> ImmutableSizeOutcome {
+    match file_type {
+        FileType::Immutable => {
+            if local_size == expected_size {
+                ImmutableSizeOutcome::Match
+            } else if local_size < expected_size {
+                ImmutableSizeOutcome::TooSmall
+            } else {
+                ImmutableSizeOutcome::TooBig
+            }
+        }
+        FileType::AppendOnly => {
+            if local_size >= expected_size {
+                ImmutableSizeOutcome::Match
+            } else {
+                ImmutableSizeOutcome::TooSmall
+            }
+        }
+        _ => unreachable!("immutable_size_outcome only handles Immutable and AppendOnly"),
+    }
+}
+
+#[derive(Debug)]
+enum ImmutableSizeOutcome {
+    Match,
+    TooSmall,
+    TooBig,
+}
+
 fn check_immutable_file(
     task: &DownloadTask,
     local_size: u64,
     remote_size_opt: Option<u64>
 ) -> Result<CacheDecision> {
-    if let Some(remote_size_val) = remote_size_opt {
-        if local_size == remote_size_val {
-            return Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() });
+    let remote_size_val = match remote_size_opt {
+        Some(v) => v,
+        None => {
+            return Ok(CacheDecision::RedownloadDueTo {
+                reason: "Remote size unknown, cannot validate immutable file".to_string(),
+            });
         }
-        if local_size < remote_size_val {
+    };
+    let outcome = immutable_size_outcome(&task.file_type, local_size, remote_size_val);
+    match outcome {
+        ImmutableSizeOutcome::Match => {
+            Ok(CacheDecision::UseCache { reason: "Immutable file size matches".to_string() })
+        }
+        ImmutableSizeOutcome::TooSmall => {
             if task.file_type == FileType::AppendOnly {
-                return Ok(CacheDecision::AppendDownload { reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size_val) });
+                Ok(CacheDecision::AppendDownload {
+                    reason: format!("Append immutable file: local_size {} < remote_size {}", local_size, remote_size_val),
+                })
             } else {
-                return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} < remote_size {}", local_size, remote_size_val) });
+                Ok(CacheDecision::RedownloadDueTo {
+                    reason: format!("Corrupt immutable file: local_size {} < remote_size {}", local_size, remote_size_val),
+                })
             }
         }
-
-        // local_size > remote_size is a corruption case
-        return Ok(CacheDecision::RedownloadDueTo { reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size_val) });
-    } else {
-        // Remote size unknown - can't validate, so redownload
-        return Ok(CacheDecision::RedownloadDueTo { reason: "Remote size unknown, cannot validate immutable file".to_string() });
+        ImmutableSizeOutcome::TooBig => {
+            Ok(CacheDecision::RedownloadDueTo {
+                reason: format!("Corrupt immutable file: local_size {} > remote_size {}", local_size, remote_size_val),
+            })
+        }
     }
 }
 
@@ -800,7 +895,7 @@ pub(crate) fn validate_existing_file(task: &DownloadTask) -> Result<ValidationRe
     }
 }
 
-/// Handle size-based validation for immutable and append-only files
+/// Handle size-based validation for immutable and append-only files (uses shared immutable_size_outcome).
 fn validate_immutable_file(
     task: &DownloadTask,
     local_size: u64,
@@ -808,41 +903,48 @@ fn validate_immutable_file(
     file_type: &FileType,
 ) -> Result<ValidationResult> {
     let final_path = &task.final_path;
+    let outcome = immutable_size_outcome(file_type, local_size, expected_size);
 
-    match file_type {
-        FileType::Immutable => {
-            if local_size == expected_size {
-                log::info!("Immutable file {} already exists with correct size {}, treating as already downloaded",
-                          final_path.display(), local_size);
-
-                return Ok(ValidationResult::SkipDownload("File exists with correct size".to_string()));
-            } else if local_size > expected_size {
-                log::warn!("Immutable file {} has larger size than expected ({} > {}), file may be corrupt",
-                          final_path.display(), local_size, expected_size);
-                return Ok(ValidationResult::CorruptionDetected);
-            } else {
-                // local_size < expected_size - can resume from partial
-                log::info!("Immutable file {} exists but incomplete ({} < {}), will resume download",
-                          final_path.display(), local_size, expected_size);
-                return Ok(ValidationResult::ResumeFromPartial);
+    match outcome {
+        ImmutableSizeOutcome::Match => {
+            match file_type {
+                FileType::Immutable => {
+                    log::info!(
+                        "Immutable file {} already exists with correct size {}, treating as already downloaded",
+                        final_path.display(),
+                        local_size
+                    );
+                }
+                FileType::AppendOnly => {
+                    log::info!(
+                        "Append-only file {} already exists with sufficient size ({} >= {}), treating as complete",
+                        final_path.display(),
+                        local_size,
+                        expected_size
+                    );
+                }
+                _ => unreachable!(),
             }
+            Ok(ValidationResult::SkipDownload("File exists with correct size".to_string()))
         }
-
-        FileType::AppendOnly => {
-            if local_size >= expected_size {
-                log::info!("Append-only file {} already exists with sufficient size ({} >= {}), treating as complete",
-                          final_path.display(), local_size, expected_size);
-
-                return Ok(ValidationResult::SkipDownload("File exists with sufficient size".to_string()));
-            } else {
-                // local_size < expected_size - can resume from partial
-                log::info!("Append-only file {} exists but incomplete ({} < {}), will resume download",
-                          final_path.display(), local_size, expected_size);
-                return Ok(ValidationResult::ResumeFromPartial);
-            }
+        ImmutableSizeOutcome::TooSmall => {
+            log::info!(
+                "Immutable file {} exists but incomplete ({} < {}), will resume download",
+                final_path.display(),
+                local_size,
+                expected_size
+            );
+            Ok(ValidationResult::ResumeFromPartial)
         }
-
-        _ => unreachable!("This function only handles Immutable and AppendOnly file types")
+        ImmutableSizeOutcome::TooBig => {
+            log::warn!(
+                "Immutable file {} has larger size than expected ({} > {}), file may be corrupt",
+                final_path.display(),
+                local_size,
+                expected_size
+            );
+            Ok(ValidationResult::CorruptionDetected)
+        }
     }
 }
 
@@ -936,8 +1038,8 @@ fn cleanup_pget_status_file(task: &DownloadTask) -> Result<()> {
     Ok(())
 }
 
-/// Clean up the main part file and pget-status file
-fn cleanup_main_part_file(task: &DownloadTask) -> Result<()> {
+/// Remove the main .part file (e.g. for retry after validation failure).
+pub(crate) fn cleanup_main_part_file(task: &DownloadTask) -> Result<()> {
     // Remove .part file
     if task.chunk_path.exists() {
         fs::remove_file(&task.chunk_path)?;

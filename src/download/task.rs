@@ -52,10 +52,18 @@ pub(crate) fn update_download_status(task: &DownloadTask, new_status: DownloadSt
 
 impl DownloadTask {
     pub fn new(url: String) -> Result<Self> {
-        Self::with_size(url, None, "".to_string(), DownloadFlags::empty())
+        Self::with_size(url, None, "".to_string(), DownloadFlags::empty(), None, None)
     }
 
-    pub fn with_size(url: String, file_size: Option<u64>, repodata_name: String, mut flags: DownloadFlags) -> Result<Self> {
+    pub fn with_size(
+        url: String,
+        file_size: Option<u64>,
+        repodata_name: String,
+        flags: DownloadFlags,
+        sha256sum: Option<String>,
+        sha1sum: Option<String>,
+    ) -> Result<Self> {
+        let mut flags = flags;
         // Use detect_url_proto_path to determine if this is a local file
         let (protocol, final_path) = mirror::Mirrors::detect_url_proto_path(&url, &repodata_name)?;
 
@@ -66,10 +74,18 @@ impl DownloadTask {
             flags = flags | DownloadFlags::LOCAL;
         }
 
-        Ok(Self::with_path(url, final_path, file_size, repodata_name, flags))
+        Ok(Self::with_path(url, final_path, file_size, repodata_name, flags, sha256sum, sha1sum))
     }
 
-    fn with_path(url: String, final_path: PathBuf, file_size: Option<u64>, repodata_name: String, flags: DownloadFlags) -> Self {
+    fn with_path(
+        url: String,
+        final_path: PathBuf,
+        file_size: Option<u64>,
+        repodata_name: String,
+        flags: DownloadFlags,
+        sha256sum: Option<String>,
+        sha1sum: Option<String>,
+    ) -> Self {
         let max_retries = config().common.nr_retry;
         // Initialize chunk_path to the standard .part file for master tasks
         let chunk_path = utils::append_suffix(&final_path, "part");
@@ -108,6 +124,8 @@ impl DownloadTask {
             range_request:     Mutex::new(RangeRequest::None),
             mirror_inuse:      Arc::new(Mutex::new(None)),
             repodata_name:     repodata_name,
+            sha256sum,
+            sha1sum,
         }
     }
 
@@ -235,6 +253,8 @@ impl DownloadTask {
             duration_ms:          AtomicU64::new(0),
             range_request:        Mutex::new(RangeRequest::None),
             repodata_name:        self.repodata_name.clone(),
+            sha256sum:            self.sha256sum.clone(),
+            sha1sum:              self.sha1sum.clone(),
         })
     }
 

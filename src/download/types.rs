@@ -118,6 +118,10 @@ pub struct DownloadTask {
     pub repodata_name:        String,                                     // Repository name for mirror selection
     pub flags:                DownloadFlags,                              // Download task flags (ADB, LOCAL, etc.)
 
+    // Optional expected checksums for validation after download or when using cache
+    pub sha256sum:            Option<String>,
+    pub sha1sum:              Option<String>,
+
     // Chunking semantics rules:
     // 1. chunk_offset - decided on initial allocation, won't change over time; 0 for master task
     // 2. chunk_size - decided on initial allocation, won't change over time but may be lowered on ondemand chunking; equals file_size for master task without chunking

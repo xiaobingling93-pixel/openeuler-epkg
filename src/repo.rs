@@ -117,7 +117,9 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
         url.to_string(),
         None,
         repodata_name.to_string(),
-        DownloadFlags::empty()  // Not an ADB file
+        DownloadFlags::empty(),  // Not an ADB file
+        None,
+        None,
     )
     .with_context(|| format!("Failed to create download task for URL: {}", url))?;
     submit_download_task(task)
@@ -734,11 +736,15 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     } else {
         DownloadFlags::empty()
     };
+    let sha256sum = if revise.hash_type == "SHA256" { Some(revise.hash.clone()) } else { None };
+    let sha1sum = if revise.hash_type == "SHA1" { Some(revise.hash.clone()) } else { None };
     let task = DownloadTask::with_size(
         revise.url.clone(),
         if revise.size > 0 { Some(revise.size as u64) } else { None },
         revise.repo_revise.repodata_name.clone(),
-        flags
+        flags,
+        sha256sum,
+        sha1sum,
     )
     .with_context(|| format!("Failed to create download task for URL: {}", revise.url))?
     .with_data_channel(data_tx);

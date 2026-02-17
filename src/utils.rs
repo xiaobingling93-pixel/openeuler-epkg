@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
-use sha2::{Sha256, Digest};
+use base64::Engine;
+use sha1::Sha1;
+use sha2::digest::Digest;
+use sha2::Sha256;
 use tar::Archive;
 use flate2::read::GzDecoder;
 use liblzma;
@@ -198,10 +201,14 @@ pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     Ok((FileType::Others, String::new()))
 }
 
-pub fn compute_file_sha256(file_path: &str) -> Result<String> {
+/// Compute hash of file with any Digest implementation (shared implementation).
+fn compute_file_hash<D>(file_path: &str) -> Result<String>
+where
+    D: Digest,
+{
     let file = fs::File::open(file_path)?;
     let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
+    let mut hasher = D::new();
     let mut buffer = [0; 4096];
 
     loop {
@@ -212,7 +219,37 @@ pub fn compute_file_sha256(file_path: &str) -> Result<String> {
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize().as_ref()))
+}
+
+pub fn compute_file_sha256(file_path: &str) -> Result<String> {
+    compute_file_hash::<Sha256>(file_path)
+}
+
+pub fn compute_file_sha1(file_path: &str) -> Result<String> {
+    compute_file_hash::<Sha1>(file_path)
+}
+
+/// Normalize SHA1 to hex for comparison. Accepts hex (40 chars) or
+/// base64. Alpine APK: use first 28 chars (multiple of 4), decode to 21 bytes, take first 20.
+pub fn normalize_sha1(base64_or_hex: &str) -> Result<String> {
+    let s = base64_or_hex.trim().trim_end_matches('=');
+    if s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(s.to_lowercase());
+    }
+    // Truncate to 28 chars (multiple of 4) so decoder accepts; 28 chars -> 21 bytes, we use first 20.
+    const SHA1_B64_LEN: usize = 28;
+    let b64 = if s.len() >= SHA1_B64_LEN {
+        &s[..SHA1_B64_LEN]
+    } else {
+        s
+    };
+    let decoded = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes())?;
+    if decoded.len() >= 20 {
+        Ok(hex::encode(&decoded[..20]))
+    } else {
+        Err(eyre::eyre!("SHA1 expected value: base64 decoded length {} (expected >= 20) for {}", decoded.len(), base64_or_hex))
+    }
 }
 
 /// rust version of `sha256sum -c $checksum_file`
@@ -1381,9 +1418,27 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            Err(eyre::eyre!("Failed to rename directory from {} to {}: {}", 
+            Err(eyre::eyre!("Failed to rename directory from {} to {}: {}",
                            src.display(), dst.display(), e))
                 .wrap_err_with(|| format!("Failed to rename directory from {} to {}", src.display(), dst.display()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// coreutils-9.8-r1.apk: package.txt sha1 (Alpine APKINDEX C field, base64) and actual file sha1sum.
+    /// Alpine C field is the control-segment hash; decoding it gives 43519c99...
+    /// The file from the mirror has sha1sum e0ee1f77... (whole-file hash). Do not use C for file validation.
+    #[test]
+    fn normalize_sha1_apk_coreutils() {
+        let package_txt_base64 = "Q1GcmRHJUquDM+0k+j5f32+S9NSFw=";
+        let _file_sha1sum = "e0ee1f77c60e8d4a2076372273a513a9f8564f52"; // sha1sum coreutils-9.8-r1.apk
+
+        let hex = normalize_sha1(package_txt_base64).expect("normalize_sha1");
+        assert_eq!(hex.len(), 40, "SHA1 hex must be 40 chars");
+        assert_eq!(hex, "43519c9911c952ab8333ed24fa3e5fdf6f92f4d4");
     }
 }
