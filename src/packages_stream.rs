@@ -157,7 +157,7 @@ impl std::io::Read for ReceiverHasher {
 
                         // Skip hash validation if the expected hash is empty
                         if expected.is_empty() {
-                            log::warn!("Skipping hash verification as expected hash is empty. Calculated hash: {}", self.sha256sum);
+                            log::info!("Skipping hash verification as expected hash is empty. Calculated hash: {}", self.sha256sum);
                             self.hash_validated = true;
                         } else {
                             self.hash_validated = self.sha256sum == *expected;
@@ -450,11 +450,27 @@ impl PackagesStreamline {
             Err(e) => {
                 // Check if this is a corrupt xz stream error that we can handle
                 let error_string = e.to_string();
-                if error_string.contains("corrupt xz stream") && self.output_offset > 0 && self.partial_line.is_empty() {
-                    // Ubuntu Packages.xz will trigger this corrupt xz stream on EOF, in which case
-                    // we already have complete packages.txt output, in this case the error can be ignored
-                    log::debug!("Detected false corrupt xz stream and we likely have complete output, stopping processing");
-                    return Ok(false);
+
+                if error_string.contains("corrupt xz stream") {
+                    if self.output_offset > 0 && self.partial_line.is_empty() {
+                        // Ubuntu Packages.xz will trigger this corrupt xz stream on EOF, in which case
+                        // we already have complete packages.txt output, in this case the error can be ignored
+                        log::debug!("Detected false corrupt xz stream and we likely have complete output, stopping processing");
+                        return Ok(false);
+                    }
+
+                    if self.output_offset == 0 && self.partial_line.is_empty() {
+                        // Some repositories (e.g. certain *-security / *-updates components) may publish
+                        // a tiny or corrupt Packages.xz for architectures they do not actually serve.
+                        // In that case we effectively have an empty packages set for this shard.
+                        // Treat this as a soft failure so that repository processing can continue
+                        // and an empty metadata file is still generated.
+                        log::warn!(
+                            "Corrupt xz stream with no output for {} - treating as empty packages list",
+                            self.output_path.display()
+                        );
+                        return Ok(false);
+                    }
                 }
 
                 log::error!("Decompression error for {}: {}", self.output_path.display(), error_string);

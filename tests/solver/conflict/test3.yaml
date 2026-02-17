@@ -7,4 +7,4 @@ install:
 - foo
 plan:
   fresh_installs:
-    baz__1__x86_64:
+  - baz__1__x86_64

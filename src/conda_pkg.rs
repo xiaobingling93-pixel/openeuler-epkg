@@ -12,6 +12,7 @@ use bzip2::read::BzDecoder;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zip::ZipArchive;
 use regex;
+use crate::utils;
 
 /// Separator used to combine version and build_string in pkgkey for virtual packages
 /// Format: version-build_string (e.g., "1-skylake_avx512")
@@ -51,36 +52,41 @@ lazy_static! {
         m.insert("sha256",          "sha256");
 
         // Conda-specific fields
-        m.insert("noarch",          "noarch");
-        m.insert("preferred_env",   "preferredEnv");
+        m.insert("noarch",                      "noarch");
+        m.insert("preferred_env",               "preferredEnv");
+        //       "python_site_packages_path": "lib/python3.13t/site-packages",
+        m.insert("python_site_packages_path",   "pythonSitePackagesPath");
 
         m
     };
 
     /// Scriptlet mapping for Conda packages
     /// Based on conda-package-streaming link/unlink script handling
-    pub static ref SCRIPT_MAPPING: HashMap<&'static str, Vec<&'static str>> = {
+    pub static ref SCRIPT_MAPPING: HashMap<&'static str, &'static str> = {
         let mut m = HashMap::new();
 
         // Conda link scripts (executed when package is installed/linked)
-        m.insert("pre-link.sh",     vec!["pre_install.sh", "pre_upgrade.sh"]);
-        m.insert("post-link.sh",    vec!["post_install.sh", "post_upgrade.sh"]);
+        // Note: Conda uses the same pre-link/post-link scripts for both installs and upgrades
+        // During upgrades, PreInstall/PostInstall actions are used (not PreUpgrade/PostUpgrade)
+        m.insert("pre-link.sh",     "pre_install.sh");
+        m.insert("post-link.sh",    "post_install.sh");
 
         // Conda unlink scripts (executed when package is removed/unlinked)
-        m.insert("pre-unlink.sh",   vec!["pre_uninstall.sh"]);
-        m.insert("post-unlink.sh",  vec!["post_uninstall.sh"]);
+        m.insert("pre-unlink.sh",   "pre_remove.sh");
+        m.insert("post-unlink.sh",  "post_remove.sh");
 
         // Conda environment activation/deactivation scripts
-        m.insert("activate.sh",     vec!["activate.sh"]);
-        m.insert("deactivate.sh",   vec!["deactivate.sh"]);
+        m.insert("activate.sh",     "activate.sh");
+        m.insert("deactivate.sh",   "deactivate.sh");
 
         // Windows equivalents
-        m.insert("pre-link.bat",    vec!["pre_install.bat", "pre_upgrade.bat"]);
-        m.insert("post-link.bat",   vec!["post_install.bat", "post_upgrade.bat"]);
-        m.insert("pre-unlink.bat",  vec!["pre_uninstall.bat"]);
-        m.insert("post-unlink.bat", vec!["post_uninstall.bat"]);
-        m.insert("activate.bat",    vec!["activate.bat"]);
-        m.insert("deactivate.bat",  vec!["deactivate.bat"]);
+        // Note: Conda uses the same pre-link/post-link scripts for both installs and upgrades
+        m.insert("pre-link.bat",    "pre_install.bat");
+        m.insert("post-link.bat",   "post_install.bat");
+        m.insert("pre-unlink.bat",  "pre_remove.bat");
+        m.insert("post-unlink.bat", "post_remove.bat");
+        m.insert("activate.bat",    "activate.bat");
+        m.insert("deactivate.bat",  "deactivate.bat");
 
         m
     };
@@ -93,7 +99,7 @@ lazy_static! {
 /// 2. Modern .conda format (ZIP archive with separate info-*.tar.zst and pkg-*.tar.zst)
 ///
 /// Based on conda-package-streaming implementation
-pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let conda_file = conda_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -121,21 +127,17 @@ pub fn unpack_package<P: AsRef<Path>>(conda_file: P, store_tmp_dir: P) -> Result
     }
 
     // Generate filelist.txt following project pattern
-    log::debug!("Creating filelist.txt");
     crate::store::create_filelist_txt(store_tmp_dir)
         .wrap_err_with(|| format!("Failed to create filelist.txt for {}", store_tmp_dir.display()))?;
 
     // Create package.txt from metadata
-    log::debug!("Creating package.txt");
-    create_package_txt(store_tmp_dir)
+    create_package_txt(store_tmp_dir, pkgkey)
         .wrap_err_with(|| format!("Failed to create package.txt for {}", store_tmp_dir.display()))?;
 
     // Create scriptlets (if any)
-    log::debug!("Creating scriptlets");
     create_scriptlets(store_tmp_dir)
         .wrap_err_with(|| format!("Failed to create scriptlets for {}", store_tmp_dir.display()))?;
 
-    log::debug!("Conda package unpacking completed successfully");
     Ok(())
 }
 
@@ -234,10 +236,9 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Following conda-package-streaming.extract.extract_stream pattern
     // Strip "info/" prefix from paths since the info component tar contains paths like "info/index.json"
     if let Some(info_name) = info_component {
-        log::debug!("Extracting info component: {}", info_name);
         let info_reader = archive.by_name(&info_name)?;
         extract_zstd_tar_stream(info_reader, &store_tmp_dir.join("info/conda"), Some("info/"))
-            .wrap_err("Failed to extract info component")?;
+            .wrap_err_with(|| format!("Failed to extract info component: {} for {}", info_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No info component found in .conda package"));
     }
@@ -245,10 +246,9 @@ fn unpack_conda_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) -> R
     // Extract pkg component to fs/
     // Following conda-package-streaming component extraction logic
     if let Some(pkg_name) = pkg_component {
-        log::debug!("Extracting pkg component: {}", pkg_name);
         let pkg_reader = archive.by_name(&pkg_name)?;
         extract_zstd_tar_stream(pkg_reader, &store_tmp_dir.join("fs"), None)
-            .wrap_err("Failed to extract pkg component")?;
+            .wrap_err_with(|| format!("Failed to extract pkg component: {} for {}", pkg_name, conda_file.display()))?;
     } else {
         return Err(eyre::eyre!("No pkg component found in .conda package"));
     }
@@ -297,7 +297,7 @@ fn unpack_tar_bz2_format<P: AsRef<Path>>(conda_file: P, store_tmp_dir: &Path) ->
 
         // Extract the file
         entry.unpack(&target_path)?;
-        crate::utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions(&target_path);
     }
 
     // Verify required metadata exists
@@ -342,7 +342,7 @@ fn extract_zstd_tar_stream<R: Read>(reader: R, target_dir: &Path, strip_prefix: 
 
         // Extract the file
         entry.unpack(&target_path)?;
-        crate::utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions(&target_path);
     }
 
     Ok(())
@@ -350,23 +350,15 @@ fn extract_zstd_tar_stream<R: Read>(reader: R, target_dir: &Path, strip_prefix: 
 
 /// Creates package.txt from Conda metadata files (index.json, etc.)
 /// Based on conda-package-streaming metadata extraction approach
-fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
+fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let store_tmp_dir = store_tmp_dir.as_ref();
     let conda_info_dir = store_tmp_dir.join("info/conda");
 
     // Try to read index.json (primary metadata file)
     let index_json_path = conda_info_dir.join("index.json");
-    if !index_json_path.exists() {
-        return Err(eyre::eyre!("index.json not found in Conda package: {}", index_json_path.display()));
-    }
+    let index_data: serde_json::Value = crate::io::read_json_file(&index_json_path)?;
 
-    let index_content = fs::read_to_string(&index_json_path)
-        .wrap_err_with(|| format!("Failed to read index.json: {}", index_json_path.display()))?;
-
-    let index_data: serde_json::Value = serde_json::from_str(&index_content)
-        .wrap_err("Failed to parse index.json")?;
-
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     // Extract fields from index.json and map them
     // Following conda-package-streaming metadata extraction pattern
@@ -392,7 +384,7 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             };
 
             if !string_value.is_empty() {
-                package_fields.push((mapped_key, string_value));
+                package_fields.insert(mapped_key, string_value);
             }
         }
     }
@@ -411,9 +403,20 @@ fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         // Could extract additional recipe information here
     }
 
+    // Conda's version in index.json is upstream version, need append buildString to match
+    // the version used in repo package and encoded in online conda package file name.
+    if let Some(build_string) = package_fields.get("buildString").cloned() {
+        if let Some(version) = package_fields.get_mut("version") {
+            version.push_str(VERSION_BUILD_SEPARATOR);
+            version.push_str(&build_string);
+        }
+    }
+
+    package_fields.insert("format".to_string(), "conda".to_string());
+
     // Save the package.txt file using the common store function
     // Following project pattern for package.txt generation
-    crate::store::save_package_txt(package_fields, store_tmp_dir)
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)
         .wrap_err("Failed to save package.txt")?;
 
     Ok(())
@@ -426,33 +429,7 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let conda_info_dir = store_tmp_dir.join("info/conda");
     let install_dir = store_tmp_dir.join("info/install");
 
-    // Process each mapped script following project pattern
-    for (conda_script, common_scripts) in SCRIPT_MAPPING.iter() {
-        let conda_script_path = conda_info_dir.join(conda_script);
-        if conda_script_path.exists() {
-            log::debug!("Found Conda script: {}", conda_script);
-            for common_script in common_scripts {
-                let target_path = install_dir.join(common_script);
-
-                // Copy the script content
-                let content = fs::read(&conda_script_path)
-                    .wrap_err_with(|| format!("Failed to read Conda script: {}", conda_script_path.display()))?;
-                fs::write(&target_path, &content)
-                    .wrap_err_with(|| format!("Failed to write script: {}", target_path.display()))?;
-
-                // Make it executable on Unix systems (following project pattern)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&target_path)?.permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)?;
-                }
-
-                log::debug!("Created script: {} -> {}", conda_script, common_script);
-            }
-        }
-    }
+    crate::utils::copy_scriptlets_by_mapping(&SCRIPT_MAPPING, &conda_info_dir, &install_dir, true)?;
 
     Ok(())
 }
@@ -588,10 +565,7 @@ pub fn create_virtual_package(
     version: &str,
     build_string: Option<&str>,
 ) -> crate::models::Package {
-    use crate::models::Package;
-    use crate::package;
-
-    let arch = std::env::consts::ARCH.to_string();
+    use crate::models::PackageFormat;
 
     // For __archspec, encode build_string in pkgkey if provided
     // pkgkey format: pkgname__version__arch
@@ -602,48 +576,13 @@ pub fn create_virtual_package(
     } else {
         version.to_string()
     };
-    let pkgkey = package::format_pkgkey(pkgname, &version_for_pkgkey, &arch);
 
-    Package {
-        pkgname: pkgname.to_string(),
-        version: version.to_string(),
-        arch: arch.clone(),
-        size: 0,
-        installed_size: 0,
-        build_time: None,
-        source: None,
-        location: String::new(),
-        ca_hash: None,
-        sha256sum: None,
-        sha1sum: None,
-        depends: Vec::new(),
-        requires_pre: Vec::new(),
-        requires: Vec::new(),
-        provides: Vec::new(),
-        recommends: Vec::new(),
-        suggests: Vec::new(),
-        conflicts: Vec::new(),
-        obsoletes: Vec::new(),
-        enhances: Vec::new(),
-        supplements: Vec::new(),
-        files: Vec::new(),
-        summary: format!("Virtual package: {}", pkgname),
-        description: if let Some(build) = build_string {
-            Some(format!("System virtual package for {} (build: {})", pkgname, build))
-        } else {
-            Some(format!("System virtual package for {}", pkgname))
-        },
-        homepage: String::new(),
-        section: None,
-        priority: None,
-        maintainer: String::new(),
-        tag: None,
-        origin_url: None,
-        multi_arch: None,
-        pkgkey,
-        repodata_name: "virtual".to_string(),
-        package_baseurl: String::new(),
-    }
+    crate::package_cache::create_virtual_package(
+        pkgname,
+        version,
+        Some(&version_for_pkgkey),
+        PackageFormat::Conda,
+    )
 }
 
 /// Detect CPU microarchitecture for __archspec

@@ -6,6 +6,6 @@ install:
 - pc:polkit-gobject-1
 plan:
   fresh_installs:
-    polkit__999124__x86_64:
-    polkit-dev__999124__x86_64:
-    postmarketos-base-systemd__1__x86_64:
+  - polkit__999124__x86_64
+  - polkit-dev__999124__x86_64
+  - postmarketos-base-systemd__1__x86_64

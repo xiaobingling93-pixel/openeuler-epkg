@@ -1,0 +1,23 @@
+format: apk
+distro: alpine
+distro_dirs:
+- alpinelinux.org
+- alpinelinux
+- alpine
+versions: # Stable releases
+- "3.23"
+- "3.22"
+- "3.21"
+- "3.20"
+- "3.19"
+- "3.18"
+- "3.17"
+- "3.16"
+- "3.15"
+repos:
+  main:
+  community:
+index_url: $mirror/v$version/$repo/$arch/APKINDEX.tar.gz
+
+# Example URLs:
+# https://dl-cdn.alpinelinux.org/v3.9/main/x86_64/APKINDEX.tar.gz

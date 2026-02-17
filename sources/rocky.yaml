@@ -1,0 +1,23 @@
+format: rpm
+distro: rocky
+distro_dirs:
+- rocky-linux
+- rocky
+- Rocky
+versions: # RHEL-compatible versions
+- "10.1"
+- "10"
+- "9.7"
+- "9"
+- "8.9"
+- "8.8"
+- "8"
+repos:
+  BaseOS:
+  # extras:
+  # AppStream:
+index_url: $mirror/$version/$repo/$arch/os/repodata/repomd.xml
+
+# Example URLs:
+# http://mirrors.163.com/rocky/10/BaseOS/x86_64/os/repodata/repomd.xml
+# https://mirror.rackspace.com/rocky/9.5/BaseOS/aarch64/os/repodata/

@@ -58,7 +58,7 @@ Usage:
   epkg --help            - Show detailed help
 ```
 
-**初始化epkg**
+**安装epkg**
 
 ```bash
 # 因为修改了bashrc，执行bash是为了刷新PATH
@@ -325,9 +325,9 @@ Downloading epkg source code from https://gitee.com/openeuler/epkg/repository/ar
 Downloading elf-loader from https://repo.oepkgs.net/openeuler/epkg/rootfs/
 [00:00:00] [==========] 425 B/s      (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64.sha256
 [00:00:02] [==========] 0 B/s        (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/master.tar.gz
-[00:00:00] [==========] 258.65 KiB/s (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64                                                                                                         Extracting epkg source code to: /home/duan/.epkg/envs/base/usr/src
-Creating symlink: /home/duan/.epkg/envs/base/main/usr/ebin/epkg -> /home/duan/.epkg/envs/base/usr/bin/epkg
-Creating environment 'base' in /home/duan/.epkg/envs/base
+[00:00:00] [==========] 258.65 KiB/s (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64                                                                                                         Extracting epkg source code to: /home/duan/.epkg/envs/self/usr/src
+Creating symlink: /home/duan/.epkg/envs/self/main/usr/ebin/epkg -> /home/duan/.epkg/envs/self/usr/bin/epkg
+Creating environment 'base' in /home/duan/.epkg/envs/self
 Creating environment 'main' in /home/duan/.epkg/envs/main
 # Registering environment 'main' with priority 10
 export PATH="/home/duan/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -394,8 +394,8 @@ Installation successful - Total packages: 65, ebin packages: 1
 
 | **命令**                 | **描述**                               |
 | ------------------------ | -------------------------------------- |
-| epkg init                | 初始化epkg包管理器（安装脚本自动执行） |
-| epkg deinit              | 卸载epkg包管理器                       |
+| epkg self install        | 安装epkg包管理器（安装脚本自动执行）   |
+| epkg self remove         | 卸载epkg包管理器                       |
 | epkg repo list           | 列出所有repo源                         |
 | epkg hash                | 计算指定目录的hash                     |
 | epkg build               | 基于源码构建软件包（开发中）           |
@@ -407,19 +407,19 @@ Installation successful - Total packages: 65, ebin packages: 1
 
 
 
-### epkg init：初始化epkg包管理器
+### epkg self install：安装epkg包管理器
 
 此脚本在执行`epkg-installer.sh`脚本时会被默认执行，重复执行会提示`已初始化`
 
 ```bash
-[root@51bc2f1c8444 /]#  epkg init
+[root@51bc2f1c8444 /]#  epkg self install
 epkg was already initialized for current user
 ```
 
-### epkg deinit：卸载epkg包管理器
+### epkg self remove：卸载epkg包管理器
 
 ```bash
-[root@51bc2f1c8444 yk65hht5o4hvpmrdwk5m3543owekwa5n__htop__3.4.1-4__arm64]# epkg deinit
+[root@51bc2f1c8444 yk65hht5o4hvpmrdwk5m3543owekwa5n__htop__3.4.1-4__arm64]# epkg self remove
 
 === Epkg Deinitialization Plan (personal) ===
 
@@ -549,8 +549,7 @@ The EPKG package manager
 USAGE: epkg [OPTIONS] <COMMAND>
 
 COMMANDS:
-  deinit   Deinitialize epkg installation
-  init     Initialize personal epkg dir layout
+  self     Manage epkg installation
   env      Environment management
   list     List packages
   info     Show package information
@@ -775,15 +774,15 @@ id  | timestamp                  | action     | new_packages | del_packages | co
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
 1   | 2025-07-14 21:44:02 +0800  | create     | 0            | 0            | ./epkg-aarch64 init --store=auto
 2   | 2025-07-15 09:06:22 +0800  | install    | 65           | 0            | epkg install tree
-3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/base/usr/bin/epkg install htop
+3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/self/usr/bin/epkg install htop
 
 # 查看指定环境历史
 [root@51bc2f1c8444 ~]# epkg history -e t1
 --------------------------------------------------  t1 env history  --------------------------------------------------
 id  | timestamp                  | action     | new_packages | del_packages | command line
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
-1   | 2025-07-15 09:12:37 +0800  | create     | 0            | 0            | /opt/epkg/envs/root/base/usr/bin/epkg env create t1
-2   | 2025-07-15 09:30:04 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/base/usr/bin/epkg install htop
+1   | 2025-07-15 09:12:37 +0800  | create     | 0            | 0            | /opt/epkg/envs/root/self/usr/bin/epkg env create t1
+2   | 2025-07-15 09:30:04 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/self/usr/bin/epkg install htop
 ```
 
 ### epkg restore：回退环境
@@ -799,10 +798,10 @@ Rollback success!
 --------------------------------------------------  main env history  --------------------------------------------------
 id  | timestamp                  | action     | new_packages | del_packages | command line
 ----+----------------------------+------------+--------------+--------------+-----------------------------------------
-1   | 2025-07-14 21:44:02 +0800  | create     | 0            | 0            | ./epkg-aarch64 init --store=auto
+1   | 2025-07-14 21:44:02 +0800  | create     | 0            | 0            | ./epkg-aarch64 self install --store=auto
 2   | 2025-07-15 09:06:22 +0800  | install    | 65           | 0            | epkg install tree
-3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/base/usr/bin/epkg install htop
-4   | 2025-07-15 09:34:23 +0800  | rollback   | 0            | 2            | /opt/epkg/envs/root/base/usr/bin/epkg restore 2
+3   | 2025-07-15 09:10:51 +0800  | install    | 66           | 0            | /opt/epkg/envs/root/self/usr/bin/epkg install htop
+4   | 2025-07-15 09:34:23 +0800  | rollback   | 0            | 2            | /opt/epkg/envs/root/self/usr/bin/epkg restore 2
 ```
 
 

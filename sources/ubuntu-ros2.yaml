@@ -1,0 +1,17 @@
+format: deb
+distro: ubuntu
+distro_dirs:
+- packages.ros.org/ros2
+- ros2
+versions:
+- resolute  26.04
+- noble     24.04
+- jammy     22.04
+- focal     20.04
+repos:
+  ros2:
+index_url: $mirror/ubuntu/dists/$version/Release
+
+# Example URLs:
+# http://packages.ros.org/ros2/ubuntu/dists/noble/main/binary-amd64/Packages.xz
+# http://packages.ros.org/ros2/ubuntu/dists/jammy/main/binary-arm64/Packages.xz

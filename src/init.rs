@@ -1,22 +1,24 @@
-use std::fs;
 use std::env;
-use std::path::Path;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::symlink;
-use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
-use color_eyre::eyre;
-use crate::models::*;
-use crate::download::download_urls;
-use crate::utils;
-use crate::dirs::{find_env_root, get_env_root};
-use crate::models::dirs;
-use crate::mirror;
+use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre;
+use color_eyre::Result;
 use nix::unistd::{fork, ForkResult};
 use serde::{Deserialize, Serialize};
+
+use crate::deinit::remove_epkg_from_rc_file;
+use crate::dirs::{find_env_base, find_env_root, get_env_root};
+use crate::download::download_urls;
+use crate::mirror;
+use crate::models::*;
+use crate::models::dirs;
+use crate::utils;
+use crate::environment::{create_environment, register_environment_for};
+use crate::lfs;
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -55,481 +57,462 @@ fn pre_populate_country_cache() {
     }
 }
 
-impl PackageManager {
-
-    // After root run `epkg init --store=shared`, /usr/local/bin/epkg will be created and exposed
-    // to normal users. Then everyone can run "epkg install". To make it user friendly, here we'll
-    // auto trigger light_init() seemlessly at first invocation.
-    pub fn try_light_init(&mut self) -> Result<()> {
-        if matches!(config().subcommand,
-              EpkgCommand::Unpack
-            | EpkgCommand::Convert
-            | EpkgCommand::Hash
-            | EpkgCommand::Repo
-            | EpkgCommand::Init
-            | EpkgCommand::Deinit
-            | EpkgCommand::Run
-            | EpkgCommand::None
-        ) {
-            return Ok(());
-        }
-
-        if find_env_root(MAIN_ENV).is_some() {
-            return Ok(());
-        }
-
-        self.light_init()?;
-
-        Ok(())
+// After root run `epkg self install --store=shared`, /usr/local/bin/epkg will be created and
+// exposed to normal users. Then everyone can run "epkg install". To make it user friendly,
+// here we'll auto trigger light_init() seemlessly at first invocation.
+pub fn try_light_init() -> Result<()> {
+    if !config().init.shared_store {
+        return Ok(());
     }
 
-    fn light_init(&mut self) -> Result<()> {
-        // Create main environment
-        self.create_environment(MAIN_ENV)?;
-
-        // Load the environment config that was just created and register it
-        let env_config = crate::io::deserialize_env_config_for(MAIN_ENV.to_string())?;
-        self.register_environment_for(MAIN_ENV, env_config)?;
-
-        // Update shell configuration
-        self.update_shell_rc()?;
-
-        println!("Notice: for changes to take effect, close and re-open your current shell.");
-        Ok(())
+    if matches!(config().subcommand,
+          EpkgCommand::Unpack
+        | EpkgCommand::Convert
+        | EpkgCommand::Hash
+        | EpkgCommand::Repo
+        | EpkgCommand::List
+        | EpkgCommand::SelfInstall
+        | EpkgCommand::SelfUpgrade
+        | EpkgCommand::SelfRemove
+        | EpkgCommand::Upgrade
+        | EpkgCommand::Remove
+        | EpkgCommand::Run
+        | EpkgCommand::Busybox
+        | EpkgCommand::None
+    ) {
+        return Ok(());
     }
 
-    pub fn command_init(&mut self) -> Result<()> {
-        if config().init.upgrade {
-            self.upgrade_epkg()?;
-            return Ok(());
-        }
-
-        if find_env_root(BASE_ENV).is_none() {
-            self.install_epkg()?;
-        }
-
-        // Check if already initialized
-        if find_env_root(MAIN_ENV).is_some() {
-            eprintln!("epkg was already initialized for current user");
-            return Ok(());
-        }
-
-        self.light_init()?;
-        Ok(())
+    if find_env_base(MAIN_ENV).is_none() {
+        light_init()?;
     }
 
-    pub fn upgrade_epkg(&mut self) -> Result<()> {
-        // Check if base environment exists
-        if find_env_root(BASE_ENV).is_none() {
-            eprintln!("epkg is not installed. Please run 'epkg init' first.");
-            return Ok(());
-        }
+    Ok(())
+}
 
-        // Check for available updates and get initialization plan
-        match check_for_updates() {
-            Ok(init_plan) => {
-                // Check if upgrade is needed
-                if init_plan.new.epkg_version != init_plan.current.epkg_version ||
-                    init_plan.new.elf_loader_version != init_plan.current.elf_loader_version {
-                    println!("Upgrading epkg installation...");
-                    self.download_setup_files(&init_plan)?;
-                } else {
-                    println!("epkg is already up to date.");
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to check for updates: {}", e);
-                return Ok(());
+pub fn light_init() -> Result<()> {
+    // Create main environment
+    create_environment(MAIN_ENV)?;
+
+    // Load the environment config that was just created and register it
+    let env_config = crate::io::deserialize_env_config_for(MAIN_ENV.to_string())?;
+    register_environment_for(MAIN_ENV, env_config)?;
+
+    // Update shell configuration
+    update_shell_rc()?;
+
+    println!("Notice: for changes to take effect, close and re-open your current shell.");
+    Ok(())
+}
+
+pub fn upgrade_epkg() -> Result<()> {
+    // Check if self environment exists
+    if find_env_base(SELF_ENV).is_none() {
+        eprintln!("epkg is not installed. Please run 'epkg self install' first.");
+        return Ok(());
+    }
+
+    // Check for available updates and get initialization plan
+    match check_for_updates() {
+        Ok(init_plan) => {
+            // Check if upgrade is needed
+            if init_plan.new.epkg_version != init_plan.current.epkg_version ||
+                init_plan.new.elf_loader_version != init_plan.current.elf_loader_version {
+                println!("Upgrading epkg installation...");
+                download_setup_files(&init_plan)?;
+            } else {
+                println!("epkg is already up to date.");
             }
         }
-
-        Ok(())
-    }
-
-    pub fn install_epkg(&mut self) -> Result<()> {
-        fixup_host_lib64_symlink()
-            .unwrap_or_else(|e| {
-                log::debug!("Could not fixup /lib64 symlink: {}", e);
-            });
-
-        // Set up installation paths
-        fs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))
-            .context("Failed to create epkg downloads directory")?;
-
-        print_banner();
-
-        // Pre-populate country cache in background thread to speed up later invocations
-        pre_populate_country_cache();
-
-        // For fresh install, create a basic init plan
-        let init_plan = check_for_updates()?;
-        self.download_setup_files(&init_plan)?;
-
-        self.create_environment(BASE_ENV)?;
-
-        Ok(())
-    }
-
-    fn download_required_files(&self, _env_root: &Path, init_plan: &InitPlan) -> Result<()> {
-        // Collect urls for downloading in parallel
-        let mut urls = Vec::new();
-
-        // Handle epkg source code (local repo or download)
-        if init_plan.need_download_epkg_src {
-            println!("Downloading epkg source code from {}", init_plan.epkg_src_url);
-            urls.push(init_plan.epkg_src_url.clone());
-        }
-
-        // Download epkg binary if upgrading
-        if init_plan.need_download_epkg_binary {
-            println!("Downloading epkg binary from {}", init_plan.epkg_binary_url);
-            urls.extend(vec![
-                init_plan.epkg_binary_url.clone(),
-                init_plan.epkg_binary_sha_url.clone()
-            ]);
-        }
-
-        // Check for local elf-loader
-        if let Some(ref local_loader) = init_plan.local_elf_loader_path {
-            // Ensure parent directory exists before copying
-            if let Some(parent) = init_plan.elf_loader_path.parent() {
-                fs::create_dir_all(parent)
-                    .context(format!("Failed to create parent directory for {}", init_plan.elf_loader_path.display()))?;
-            }
-            fs::copy(local_loader, &init_plan.elf_loader_path)
-                .context(format!("Failed to copy local elf-loader from {} to {}",
-                    local_loader.display(), init_plan.elf_loader_path.display()))?;
-            println!("Using local elf-loader from {}", local_loader.display());
-        } else if init_plan.need_download_elf_loader {
-            println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
-            urls.extend(vec![
-                init_plan.elf_loader_url.clone(),
-                init_plan.elf_loader_sha_url.clone()
-            ]);
-        }
-
-        if urls.is_empty() {
+        Err(e) => {
+            eprintln!("Warning: Failed to check for updates: {}", e);
             return Ok(());
         }
-
-        // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
-        // so download.rs would think "File unchanged" based on file size matching.
-        let sha256_files_to_delete = vec![&init_plan.elf_loader_sha_path, &init_plan.epkg_binary_sha_path];
-        for sha256_path in sha256_files_to_delete {
-            if sha256_path.exists() {
-                log::debug!("Deleting existing .sha256 file: {}", sha256_path.display());
-                if let Err(e) = fs::remove_file(sha256_path) {
-                    log::warn!("Failed to delete existing .sha256 file {}: {}", sha256_path.display(), e);
-                }
-            }
-        }
-
-        // Download to the new epkg subdirectory within downloads cache
-        // Use the base directory - download_urls will construct nested paths internally
-        let epkg_download_dir = dirs().epkg_downloads_cache.join("epkg");
-        download_urls(urls, &epkg_download_dir, 6, false)
-            .context("Failed to download required files")?;
-
-        // Verify checksums
-        if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
-            utils::verify_sha256sum(&init_plan.elf_loader_sha_path)
-                .context("Failed to verify elf-loader checksum")?;
-        }
-
-        if init_plan.need_download_epkg_binary {
-            utils::verify_sha256sum(&init_plan.epkg_binary_sha_path)
-                .context("Failed to verify epkg binary checksum")?;
-        }
-
-        if init_plan.need_download_epkg_src && !init_plan.epkg_src_path.exists() {
-            return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", init_plan.epkg_src_url));
-        }
-
-        Ok(())
     }
 
-    fn download_setup_files(&mut self, init_plan: &InitPlan) -> Result<()> {
-        let base_env_root = self.new_env_base(BASE_ENV);
+    Ok(())
+}
 
-        self.download_required_files(&base_env_root, init_plan)
-            .context("Failed to download required files for base environment")?;
+pub fn install_epkg() -> Result<()> {
+    fixup_host_lib64_symlink()
+        .unwrap_or_else(|e| {
+            log::debug!("Could not fixup /lib64 symlink: {}", e);
+        });
 
-        self.setup_epkg_src(&base_env_root, init_plan)?;
-        self.setup_common_binaries(&base_env_root, init_plan)?;
+    // Set up installation paths
+    lfs::create_dir_all(&dirs().epkg_downloads_cache.join("epkg"))?;
 
-        Ok(())
+    print_banner();
+
+    // Pre-populate country cache in background thread to speed up later invocations
+    pre_populate_country_cache();
+
+    // For fresh install, create a basic init plan
+    let init_plan = check_for_updates()?;
+    download_setup_files(&init_plan)?;
+
+    create_environment(SELF_ENV)?;
+
+    Ok(())
+}
+
+fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
+    // Collect urls for downloading in parallel
+    let mut urls = Vec::new();
+
+    // Handle epkg source code (local repo or download)
+    if init_plan.need_download_epkg_src {
+        println!("Downloading epkg source code from {}", init_plan.epkg_src_url);
+        urls.push(init_plan.epkg_src_url.clone());
     }
 
-    fn setup_epkg_src(&self, env_root: &Path, init_plan: &InitPlan) -> Result<()> {
-        let usr_src = env_root.join("usr/src");
-        let epkg_src = usr_src.join("epkg");
+    // Download epkg binary if upgrading
+    if init_plan.need_download_epkg_binary {
+        println!("Downloading epkg binary from {}", init_plan.epkg_binary_url);
+        urls.extend(vec![
+            init_plan.epkg_binary_url.clone(),
+            init_plan.epkg_binary_sha_url.clone()
+        ]);
+    }
 
-        // Check if we're using a local repository
-        if init_plan.using_local_repo {
-            // Create symlink directly to git working directory
-            if !usr_src.exists() {
-                fs::create_dir_all(&usr_src)
-                    .context("Failed to create usr/src directory in environment")?;
-            }
+    // Check for local elf-loader
+    if let Some(ref local_loader) = init_plan.local_elf_loader_path {
+        // Ensure parent directory exists before copying
+        if let Some(parent) = init_plan.elf_loader_path.parent() {
+            lfs::create_dir_all(parent)?;
+        }
+        lfs::copy(local_loader, &init_plan.elf_loader_path)?;
+        println!("Using local elf-loader from {}", local_loader.display());
+    } else if init_plan.need_download_elf_loader {
+        println!("Downloading elf-loader from {}", init_plan.elf_loader_url);
+        urls.extend(vec![
+            init_plan.elf_loader_url.clone(),
+            init_plan.elf_loader_sha_url.clone()
+        ]);
+    }
 
-            if !epkg_src.exists() {
-                let repo_root = find_repo_root()?;
-                symlink(repo_root.to_str().unwrap(), &epkg_src)
-                    .context("Failed to create symlink to local repository")?;
-            }
+    if urls.is_empty() {
+        return Ok(());
+    }
 
-            println!("Using local git repository for epkg source code");
+    // Delete .sha256 files first: gitee.com HTTP headers have no file timestamp,
+    // so download.rs would think "File unchanged" based on file size matching.
+    let sha256_files_to_delete = vec![&init_plan.elf_loader_sha_path, &init_plan.epkg_binary_sha_path];
+    for sha256_path in sha256_files_to_delete {
+        if sha256_path.exists() {
+            lfs::remove_file(sha256_path)?;
+        }
+    }
+
+    // Download to the new epkg subdirectory within downloads cache
+    // Use the base directory - download_urls will construct nested paths internally
+    let download_results = download_urls(urls);
+    for result in download_results {
+        result.with_context(|| "Failed to download package manager files")?;
+    }
+
+    // Verify checksums
+    if init_plan.local_elf_loader_path.is_none() && init_plan.need_download_elf_loader {
+        utils::verify_sha256sum(&init_plan.elf_loader_sha_path)
+            .context("Failed to verify elf-loader checksum")?;
+    }
+
+    if init_plan.need_download_epkg_binary {
+        utils::verify_sha256sum(&init_plan.epkg_binary_sha_path)
+            .context("Failed to verify epkg binary checksum")?;
+    }
+
+    if init_plan.need_download_epkg_src && !init_plan.epkg_src_path.exists() {
+        return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", init_plan.epkg_src_url));
+    }
+
+    Ok(())
+}
+
+fn download_setup_files(init_plan: &InitPlan) -> Result<()> {
+    let self_env_root = dirs().user_envs.join(SELF_ENV);
+
+    download_package_manager_files(init_plan)
+        .context("Failed to download required files for self environment")?;
+
+    setup_epkg_src(&self_env_root, init_plan)?;
+    setup_common_binaries(&self_env_root, init_plan)?;
+
+    Ok(())
+}
+
+fn setup_epkg_src(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
+    let usr_src = env_root.join("usr/src");
+    let epkg_src = usr_src.join("epkg");
+
+    // Check if we're using a local repository
+    if init_plan.using_local_repo {
+        // Create symlink directly to git working directory
+        if !usr_src.exists() {
+            lfs::create_dir_all(&usr_src)?;
+        }
+
+        if epkg_src.is_symlink() {
+            lfs::remove_file(&epkg_src)?;
+        }
+        if !epkg_src.exists() {
+            let repo_root = find_repo_root()?;
+            lfs::symlink(&repo_root, &epkg_src)?;
+        }
+
+        println!("Using local git repository for epkg source code");
+        return Ok(());
+    }
+
+    // Extract epkg source code tar for remote repository
+    let epkg_extracted_dir = format!("epkg-{}", init_plan.new.epkg_version);
+    let epkg_extracted_path = usr_src.join(&epkg_extracted_dir);
+
+    println!("Extracting epkg source code to: {}", usr_src.display());
+
+    if epkg_extracted_path.exists() {
+        lfs::remove_dir_all(&epkg_extracted_path)?;
+    } else {
+        lfs::create_dir_all(&usr_src)?;
+    }
+
+    // Extract tar.gz file with error handling
+    utils::extract_tar_gz(&init_plan.epkg_src_path, &usr_src)
+        .context("Failed to extract epkg source code tar file")?;
+
+    // Create a symlink from epkg to epkg-master (or epkg-$version)
+    if let Err(e) = utils::force_symlink(&epkg_extracted_dir, &epkg_src) {
+        eprintln!("[WARN] Failed to create symlink {} -> {}: {}",
+                 epkg_src.display(), epkg_extracted_dir, e);
+    }
+
+    Ok(())
+}
+
+fn setup_common_binaries(env_root: &Path, init_plan: &InitPlan) -> Result<()> {
+    let usr_bin = env_root.join("usr/bin");
+
+    lfs::create_dir_all(&usr_bin)?;
+
+    let target_epkg = usr_bin.join("epkg");
+
+    // Determine epkg binary source based on whether we're upgrading or installing
+    let epkg_source = if config().subcommand == EpkgCommand::SelfUpgrade {
+        // Use downloaded epkg binary for upgrades
+        if !init_plan.epkg_binary_path.exists() {
+            return Err(eyre::eyre!("Downloaded epkg binary not found at {}", init_plan.epkg_binary_path.display()));
+        }
+        init_plan.epkg_binary_path.clone()
+    } else {
+        // Use current executable for normal installs
+        std::env::current_exe()
+            .context("Failed to get current executable path")?
+    };
+
+    // Copy epkg binary using atomic operation
+    copy_epkg_binary_atomically(&epkg_source, &target_epkg, true)?;
+
+    // Copy elf-loader binary using atomic operation
+    let elf_loader_target = usr_bin.join("elf-loader");
+    copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
+
+    // Create symlink to epkg binary in the first valid PATH component
+    create_epkg_symlink(&target_epkg)
+        .context("Failed to create epkg symlink in PATH")?;
+
+    Ok(())
+}
+
+/// Safely copy a binary using atomic operations to avoid conflicts with running processes
+fn copy_epkg_binary_atomically(source: &Path, target: &Path, is_epkg: bool) -> Result<()> {
+    // Check if we're trying to copy the epkg binary to itself or to a location that would conflict
+    if is_epkg {
+        if source == target {
+            log::info!("Target epkg binary is the same as current executable, skipping copy");
             return Ok(());
-        }
-
-        // Extract epkg source code tar for remote repository
-        let epkg_extracted_dir = format!("epkg-{}", init_plan.new.epkg_version);
-        let epkg_extracted_path = usr_src.join(&epkg_extracted_dir);
-
-        println!("Extracting epkg source code to: {}", usr_src.display());
-
-        if epkg_extracted_path.exists() {
-            fs::remove_dir_all(&epkg_extracted_path)?;
-        } else {
-            fs::create_dir_all(&usr_src)
-                .context(format!("Failed to create opt directory at {}", usr_src.display()))?;
-        }
-
-        // Extract tar.gz file with error handling
-        utils::extract_tar_gz(&init_plan.epkg_src_path, &usr_src)
-            .context("Failed to extract epkg source code tar file")?;
-
-        // Create a symlink from epkg to epkg-master (or epkg-$version)
-        if let Err(e) = utils::force_symlink(&epkg_extracted_dir, &epkg_src) {
-            eprintln!("[WARN] Failed to create symlink {} -> {}: {}",
-                     epkg_src.display(), epkg_extracted_dir, e);
-        }
-
-        Ok(())
-    }
-
-    fn setup_common_binaries(&self, env_root: &Path, init_plan: &InitPlan) -> Result<()> {
-        let usr_bin = env_root.join("usr/bin");
-
-        fs::create_dir_all(&usr_bin)
-            .context(format!("Failed to create usr/bin directory at {}", usr_bin.display()))?;
-
-        let target_epkg = usr_bin.join("epkg");
-
-        // Determine epkg binary source based on whether we're upgrading or installing
-        let epkg_source = if config().init.upgrade {
-            // Use downloaded epkg binary for upgrades
-            if !init_plan.epkg_binary_path.exists() {
-                return Err(eyre::eyre!("Downloaded epkg binary not found at {}", init_plan.epkg_binary_path.display()));
-            }
-            init_plan.epkg_binary_path.clone()
-        } else {
-            // Use current executable for normal installs
-            std::env::current_exe()
-                .context("Failed to get current executable path")?
-        };
-
-        // Copy epkg binary using atomic operation
-        self.copy_epkg_binary_atomically(&epkg_source, &target_epkg, true)?;
-
-        // Copy elf-loader binary using atomic operation
-        let elf_loader_target = usr_bin.join("elf-loader");
-        self.copy_epkg_binary_atomically(&init_plan.elf_loader_path, &elf_loader_target, false)?;
-
-        // Create symlink to epkg binary in the first valid PATH component
-        self.create_epkg_symlink(&target_epkg)
-            .context("Failed to create epkg symlink in PATH")?;
-
-        Ok(())
-    }
-
-    /// Safely copy a binary using atomic operations to avoid conflicts with running processes
-    fn copy_epkg_binary_atomically(&self, source: &Path, target: &Path, is_epkg: bool) -> Result<()> {
-        // Check if we're trying to copy the epkg binary to itself or to a location that would conflict
-        if is_epkg {
-            if source == target {
-                log::info!("Target epkg binary is the same as current executable, skipping copy");
-                return Ok(());
-            } else if target.exists() {
-                // Check if target is a symlink pointing to current executable
-                if let Ok(target_metadata) = fs::symlink_metadata(target) {
-                    if target_metadata.file_type().is_symlink() {
-                        if let Ok(target_link) = fs::read_link(target) {
-                            if target_link == source {
-                                log::info!("Target epkg binary is a symlink to current executable, skipping copy");
-                                return Ok(());
-                            } else {
-                                log::info!("Target epkg binary is a symlink to different location, proceeding with copy");
-                            }
-                        } else {
-                            log::warn!("Failed to read target symlink, proceeding with copy");
-                        }
+        } else if target.exists() {
+            // Check if target is a symlink pointing to current executable
+            if lfs::is_symlink(target) {
+                if let Ok(target_link) = fs::read_link(target) {
+                    if target_link == source {
+                        log::info!("Target epkg binary is a symlink to current executable, skipping copy");
+                        return Ok(());
                     } else {
-                        // Target exists and is not a symlink, proceed with copy
-                        log::info!("Target epkg binary exists, proceeding with copy");
+                        log::info!("Target epkg binary is a symlink to different location, proceeding with copy");
                     }
                 } else {
-                    log::warn!("Failed to get target metadata, proceeding with copy");
+                    log::warn!("Failed to read target symlink, proceeding with copy");
                 }
             } else {
-                // Target doesn't exist, proceed with copy
-                log::info!("Target epkg binary doesn't exist, proceeding with copy");
+                // Target exists and is not a symlink, proceed with copy
+                log::info!("Target epkg binary exists, proceeding with copy");
             }
-        }
-
-        // Create a temporary file in the same directory as the target
-        let temp_target = target.with_extension("tmp");
-
-        // Clean up any existing temporary file
-        if temp_target.exists() {
-            if let Err(e) = fs::remove_file(&temp_target) {
-                log::warn!("Failed to remove existing temporary file {}: {}", temp_target.display(), e);
-            }
-        }
-
-        // Copy to temporary file first
-        fs::copy(source, &temp_target)
-            .context(format!("Failed to copy binary to temporary file: {} -> {}",
-                source.display(), temp_target.display()))?;
-
-        // Set permissions on temporary file before rename
-        let mode = if is_epkg && config().init.shared_store {
-            0o4755 // setuid + rwxr-xr-x for epkg in shared store mode
         } else {
-            0o755 // rwxr-xr-x for standard permissions
-        };
-        fs::set_permissions(&temp_target, fs::Permissions::from_mode(mode))
-            .context(format!("Failed to set permissions on temporary binary"))?;
+            // Target doesn't exist, proceed with copy
+            log::info!("Target epkg binary doesn't exist, proceeding with copy");
+        }
+    }
 
-        // Atomically rename temporary file to target
-        match fs::rename(&temp_target, target) {
-            Ok(_) => {
-                log::debug!("Successfully copied binary using atomic operation: {} -> {}",
-                    source.display(), target.display());
-                Ok(())
-            }
-            Err(e) => {
-                // Clean up temporary file on failure
-                if let Err(cleanup_err) = fs::remove_file(&temp_target) {
-                    log::warn!("Failed to clean up temporary file {} after rename failure: {}",
-                        temp_target.display(), cleanup_err);
-                }
-                Err(eyre::eyre!("Failed to atomically rename binary: {} -> {}: {}",
-                    temp_target.display(), target.display(), e))
+    // Create a temporary file in the same directory as the target
+    let temp_target = target.with_extension("tmp");
+
+    // Clean up any existing temporary file
+    if temp_target.exists() {
+        if let Err(e) = lfs::remove_file(&temp_target) {
+            log::warn!("Failed to remove existing temporary file {}: {}", temp_target.display(), e);
+        }
+    }
+
+    // Copy to temporary file first
+    lfs::copy(source, &temp_target)?;
+
+    // Set permissions on temporary file before rename
+    let mode = if is_epkg && config().init.shared_store {
+        // disable for now
+        // 0o4755 // setuid + rwxr-xr-x for epkg in shared store mode
+        0o755 // rwxr-xr-x for standard permissions
+    } else {
+        0o755 // rwxr-xr-x for standard permissions
+    };
+    utils::set_permissions_from_mode(&temp_target, mode)
+        .context(format!("Failed to set permissions on temporary binary"))?;
+
+    // Atomically rename temporary file to target
+    match lfs::rename(&temp_target, target) {
+        Ok(_) => {
+            Ok(())
+        }
+        Err(_) => {
+            // Clean up temporary file on failure
+            lfs::remove_file(&temp_target)
+        }
+    }
+}
+
+/// Create a symlink to the epkg binary for user convenience and system-wide access.
+///
+/// This function ensures that the 'epkg' binary is easily accessible from the command line.
+/// The behavior depends on the installation mode:
+///
+/// - **Upgrade mode** (`epkg self upgrade`): Returns immediately without creating any symlinks (upgrades preserve existing symlinks).
+///
+/// - **Shared store mode** (`--store=shared`):
+///   - Creates a symlink in `/usr/local/bin/epkg` pointing to the epkg binary.
+///   - Creates the `/usr/local/bin` directory if it does not exist.
+///   - This makes 'epkg' available system-wide for all users.
+///
+/// - **User store mode** (default):
+///   - Creates a symlink in `$HOME/bin/epkg` if `$HOME/bin` exists and is present in PATH.
+///   - This allows immediate access to 'epkg' in the current shell session without requiring a shell restart.
+///   - Does not create `$HOME/bin` if it does not exist.
+fn create_epkg_symlink(epkg_binary_path: &Path) -> Result<()> {
+    if config().subcommand == EpkgCommand::SelfUpgrade {
+        return Ok(());
+    }
+
+    // Symlink to /usr/local/bin
+    if config().init.shared_store {
+        let usr_local_bin = PathBuf::from("/usr/local/bin");
+        lfs::create_dir_all(&usr_local_bin)?;
+        println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
+        if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
+            log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
+        }
+        return Ok(());
+    }
+
+    // Symlink to $HOME/bin if in PATH
+    let home = crate::dirs::get_home().wrap_err("Failed to get HOME directory")?;
+    let home_bin = PathBuf::from(&home).join("bin");
+    let path_var = env::var("PATH")
+        .unwrap_or_else(|_| "".to_string());
+
+    if path_var.contains(&*home_bin.to_string_lossy()) {
+        if home_bin.exists() {
+            println!("Creating symlink: {}/epkg -> {}", home_bin.display(), epkg_binary_path.display());
+            if let Err(e) = utils::force_symlink(epkg_binary_path, &home_bin.join("epkg")) {
+                log::warn!("Failed to create epkg symlink in {}: {}", home_bin.display(), e);
             }
         }
     }
 
-    /// Create symlinks to the epkg binary for user convenience and system-wide access.
-    ///
-    /// This function ensures that the 'epkg' binary is easily accessible from the command line by creating symlinks in multiple locations:
-    ///
-    /// 1. Always creates a symlink in the main environment's 'usr/ebin' directory:
-    ///    - This directory is prepended to the user's PATH by default, ensuring 'epkg' is available in new shells.
-    ///    - This provides a reliable entry point for the binary.
-    ///
-    /// 2. Best-effort symlink in $HOME/bin (if present in PATH):
-    ///    - If the user's PATH contains $HOME/bin, a symlink is created there.
-    ///    - This allows immediate access to 'epkg' in the current shell session without requiring a shell restart.
-    ///    - Only attempts to create $HOME/bin if it does not already exist.
-    ///
-    /// 3. Best-effort symlink in /usr/local/bin (if running as root):
-    ///    - If the process is running as root and /usr/local/bin exists, a symlink is created there.
-    ///    - This makes 'epkg' available system-wide for all users.
-    ///    - Does not attempt to create /usr/local/bin if it does not exist.
-    fn create_epkg_symlink(&self, epkg_binary_path: &Path) -> Result<()> {
-        if config().init.upgrade {
-            return Ok(());
-        }
+    Ok(())
+}
 
-        // Try to create symlink in $HOME/bin if it's in PATH
-        let home = crate::dirs::get_home().wrap_err("Failed to get HOME directory")?;
-        let home_bin = PathBuf::from(&home).join("bin");
-        let path_var = env::var("PATH")
-            .unwrap_or_else(|_| "".to_string());
+fn update_shell_rc() -> Result<()> {
+    let self_env_root = get_env_root(SELF_ENV.to_string())?;
+    let shell_rc_files = shell_rc_files_for_current_mode()?;
 
-        if path_var.contains(&*home_bin.to_string_lossy()) {
-            if home_bin.exists() {
-                println!("Creating symlink: {}/epkg -> {}", home_bin.display(), epkg_binary_path.display());
-                if let Err(e) = utils::force_symlink(epkg_binary_path, &home_bin.join("epkg")) {
-                    log::warn!("Failed to create epkg symlink in {}: {}", home_bin.display(), e);
-                }
-            }
-        }
-
-        // Try to create symlink in /usr/local/bin if running as root
-        if utils::is_running_as_root() {
-            let usr_local_bin = PathBuf::from("/usr/local/bin");
-            fs::create_dir_all(&usr_local_bin)
-                .context(format!("Failed to create /usr/local/bin directory at {}", usr_local_bin.display()))?;
-            println!("Creating symlink: {}/epkg -> {}", usr_local_bin.display(), epkg_binary_path.display());
-            if let Err(e) = utils::force_symlink(epkg_binary_path, &usr_local_bin.join("epkg")) {
-                log::warn!("Failed to create epkg symlink in {}: {}", usr_local_bin.display(), e);
-            }
-        }
-
-        Ok(())
+    if shell_rc_files.is_empty() {
+        return Ok(());
     }
 
-    fn update_shell_rc(&mut self) -> Result<()> {
-        let shell_rc_infos = crate::dirs::get_shell_rc()?;
+    let rc_content = build_epkg_rc_block(&self_env_root);
 
-        if shell_rc_infos.is_empty() {
-            // No specific shell found via SHELL var, and no common rc files detected.
-            // A warning would have been printed by get_shell_rc in this case.
-            return Ok(());
-        }
+    for rc_file_path in shell_rc_files {
+        append_epkg_block_to_rc_file(&rc_file_path, &rc_content)?;
+    }
 
-        let base_env_root = get_env_root(BASE_ENV.to_string())?;
+    Ok(())
+}
 
-        for shell_rc_info in shell_rc_infos {
-            let rc_content = format!(r#"
+/// Determine which shell rc files should be updated based on the current installation mode.
+fn shell_rc_files_for_current_mode() -> Result<Vec<String>> {
+    if config().init.shared_store {
+        crate::dirs::get_global_shell_rc()
+    } else {
+        let home_path_str =
+            crate::dirs::get_home().wrap_err("Failed to get home directory.")?;
+        let home_dir = PathBuf::from(home_path_str);
+        crate::dirs::get_user_shell_rc(&home_dir)
+    }
+}
+
+/// Build the epkg rc block that will be appended to rc files.
+fn build_epkg_rc_block(self_env_root: &Path) -> String {
+    format!(
+        r#"
 # epkg begin
-epkg_rc='{base_path}/usr/src/epkg/lib/{script_name}'
+epkg_rc='{base_path}/usr/src/epkg/lib/epkg-rc.sh'
 test -r "$epkg_rc" && . "$epkg_rc"
 # epkg end
 "#,
-                base_path = base_env_root.display(),
-                script_name = shell_rc_info.source_script_name
-            );
+        base_path = self_env_root.display(),
+    )
+}
 
-            // Read existing content
-            let existing_content = match fs::read_to_string(&shell_rc_info.rc_file_path) {
-                Ok(content) => content,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // If the rc file doesn't exist, it will be created by OpenOptions
-                    String::new()
-                }
-                Err(e) => {
-                    return Err(eyre::eyre!("Failed to read shell rc file {}: {}", shell_rc_info.rc_file_path, e));
-                }
-            };
+/// Append the epkg rc block to a given rc file, ensuring any previous epkg block is removed
+/// and newline formatting remains tidy.
+fn append_epkg_block_to_rc_file(rc_file_path: &str, rc_content: &str) -> Result<()> {
+    // Remove any existing epkg configuration and get the cleaned content
+    let existing_content = remove_epkg_from_rc_file(rc_file_path)?;
 
-            // Only append if epkg begin line doesn't exist
-            if !existing_content.contains("# epkg begin") {
-                println!("Updating shell RC file: {}", shell_rc_info.rc_file_path);
+    // Append the new configuration
+    println!("Adding epkg to shell RC file: {}", rc_file_path);
 
-                let mut file = OpenOptions::new()
-                    .append(true)
-                    .create(true) // Create if it doesn't exist
-                    .open(&shell_rc_info.rc_file_path)
-                    .with_context(|| format!("Failed to open or create shell rc file: {}", shell_rc_info.rc_file_path))?;
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true) // Create if it doesn't exist
+        .open(rc_file_path)
+        .with_context(|| {
+            format!("Failed to open or create shell rc file: {}", rc_file_path)
+        })?;
 
-                // If the file was empty or didn't end with a newline, add one before our content for neatness.
-                if !existing_content.is_empty() && !existing_content.ends_with('\n') {
-                    file.write_all(b"\n")
-                        .with_context(|| format!("Failed to write newline to shell rc file: {}", shell_rc_info.rc_file_path))?;
-                }
-
-                file.write_all(rc_content.as_bytes())
-                    .with_context(|| format!("Failed to write to shell rc file: {}", shell_rc_info.rc_file_path))?;
-            } else {
-                println!("epkg configuration already present in {}. Skipping.", shell_rc_info.rc_file_path);
-            }
-        }
-
-        Ok(())
+    // If the file was empty or didn't end with a newline, add one before our content for neatness.
+    if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+        file.write_all(b"\n").with_context(|| {
+            format!(
+                "Failed to write newline to shell rc file: {}",
+                rc_file_path
+            )
+        })?;
     }
+
+    file.write_all(rc_content.as_bytes()).with_context(|| {
+        format!("Failed to write to shell rc file: {}", rc_file_path)
+    })?;
+
+    Ok(())
 }
 
 fn find_repo_root() -> Result<std::path::PathBuf> {
@@ -563,31 +546,29 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
         return Ok(repo_root);
     }
 
-    // Fallback: Check if base environment has a symlink to the repo
+    // Fallback: Check if self environment has a symlink to the repo
     // This handles the case where root installed epkg and created a symlink at
-    // /opt/epkg/envs/root/base/usr/src/epkg -> /c/epkg, but normal users
+    // /opt/epkg/envs/root/self/usr/src/epkg -> /c/epkg, but normal users
     // running the installed epkg don't have the repo in their executable path.
-    // We need to check both the current user's base env and root's base env.
-    let possible_base_envs = vec![
-        find_env_root(BASE_ENV),
-        // Also check root's base environment directly
-        Some(dirs().opt_epkg.join("envs").join("root").join(BASE_ENV))
+    // We need to check both the current user's self env and root's self env.
+    let possible_self_envs = vec![
+        find_env_root(SELF_ENV),
+        // Also check root's self environment directly
+        Some(dirs().opt_epkg.join("envs").join("root").join(SELF_ENV))
             .filter(|p| p.exists()),
     ];
 
-    for base_env_root_opt in possible_base_envs {
-        if let Some(base_env_root) = base_env_root_opt {
-            let epkg_src_symlink = base_env_root.join("usr/src/epkg");
+    for self_env_root_opt in possible_self_envs {
+        if let Some(self_env_root) = self_env_root_opt {
+            let epkg_src_symlink = self_env_root.join("usr/src/epkg");
             if epkg_src_symlink.exists() {
                 // Check if it's a symlink
-                if let Ok(metadata) = fs::symlink_metadata(&epkg_src_symlink) {
-                    if metadata.file_type().is_symlink() {
-                        // Follow the symlink to get the actual repo root
-                        // Use canonicalize on the symlink itself to handle both absolute and relative paths
-                        if let Ok(canonical_path) = fs::canonicalize(&epkg_src_symlink) {
-                            if is_valid_local_repo(&canonical_path) {
-                                return Ok(canonical_path);
-                            }
+                if lfs::is_symlink(&epkg_src_symlink) {
+                    // Follow the symlink to get the actual repo root
+                    // Use canonicalize on the symlink itself to handle both absolute and relative paths
+                    if let Ok(canonical_path) = fs::canonicalize(&epkg_src_symlink) {
+                        if is_valid_local_repo(&canonical_path) {
+                            return Ok(canonical_path);
                         }
                     }
                 }
@@ -785,7 +766,7 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     let epkg_version = get_epkg_version().unwrap_or_else(|_| env!("EPKG_VERSION_TAG").to_string());
 
     // Try to find elf-loader in common locations
-    let env_root = find_env_root(BASE_ENV);
+    let env_root = find_env_root(SELF_ENV);
     let possible_elf_loader_paths = [
         env_root.as_ref().map(|root| root.join("usr/bin/elf-loader")).unwrap_or_else(|| PathBuf::new()),
         dirs().epkg_downloads_cache.join(format!("epkg/elf-loader-{}", &config().common.arch)),
@@ -810,10 +791,12 @@ fn check_for_updates() -> Result<InitPlan> {
     let current_version = get_current_epkg_version_info()?;
 
     // Determine if this is an upgrade or fresh install
-    let is_upgrade = config().init.upgrade;
+    let is_upgrade = config().subcommand == EpkgCommand::SelfUpgrade;
     let arch = &config().common.arch;
     let dirs = dirs();
-    let epkg_download_dir = dirs.epkg_downloads_cache.join("epkg");
+    // Use the base downloads cache directory (without "epkg" subdirectory)
+    // The download_urls() function uses epkg_downloads_cache directly, so we need to match that
+    let epkg_download_dir = &dirs.epkg_downloads_cache;
 
     // Check for local repo and local elf-loader BEFORE making API calls
     let repo_root = find_repo_root()?;
@@ -852,11 +835,11 @@ fn check_for_updates() -> Result<InitPlan> {
 
     // Set up file paths using the same resolution logic as the download system
     // This ensures paths match where files are actually downloaded
-    let epkg_binary_path      = mirror::Mirrors::resolve_mirror_path(&epkg_binary_url,       &epkg_download_dir, "epkg");
-    let epkg_binary_sha_path  = mirror::Mirrors::resolve_mirror_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg");
-    let epkg_src_path         = mirror::Mirrors::resolve_mirror_path(&epkg_src_url,          &epkg_download_dir, "epkg");
-    let elf_loader_path       = mirror::Mirrors::resolve_mirror_path(&elf_loader_url,        &epkg_download_dir, "epkg");
-    let elf_loader_sha_path   = mirror::Mirrors::resolve_mirror_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg");
+    let epkg_binary_path      = mirror::Mirrors::remote_url_to_path(&epkg_binary_url,       &epkg_download_dir, "epkg")?;
+    let epkg_binary_sha_path  = mirror::Mirrors::remote_url_to_path(&epkg_binary_sha_url,   &epkg_download_dir, "epkg")?;
+    let epkg_src_path         = mirror::Mirrors::remote_url_to_path(&epkg_src_url,          &epkg_download_dir, "epkg")?;
+    let elf_loader_path       = mirror::Mirrors::remote_url_to_path(&elf_loader_url,        &epkg_download_dir, "epkg")?;
+    let elf_loader_sha_path   = mirror::Mirrors::remote_url_to_path(&elf_loader_sha_url,    &epkg_download_dir, "epkg")?;
 
     // Determine what needs to be downloaded
     let need_download_epkg_binary = is_upgrade;
@@ -902,37 +885,34 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     let usr_lib64_target = Path::new("usr/lib64");
 
     // Check if /lib64 already exists as a symlink
-    if let Ok(metadata) = fs::symlink_metadata(lib64_path) {
-        if metadata.file_type().is_symlink() {
-            if let Ok(target) = fs::read_link(lib64_path) {
-                // Check if it points to usr/lib64 (correct)
-                if target == usr_lib64_target {
-                    // Already correct, nothing to do
-                    return Ok(());
-                }
-
-                // Check if it points to usr/lib (needs fixing on usr-merge systems like Arch)
-                let usr_lib_target = Path::new("usr/lib");
-                if target == usr_lib_target {
-                    if utils::is_running_as_root() {
-                        // Remove the old symlink so we can create the correct one
-                        fs::remove_file(lib64_path)
-                            .wrap_err_with(|| format!("Failed to remove existing /lib64 symlink"))?;
-                        // Fall through to create the correct symlink
-                    } else {
-                        // Not root, can't fix it
-                        eprintln!("WARNING: /lib64 -> usr/lib symlink exists but cannot be fixed to usr/lib64 (not running as root). RPM/Debian guest OS may not work.");
-                        return Err(eyre::eyre!("/lib64 -> usr/lib exists but cannot be fixed: not running as root"));
-                    }
-                } else {
-                    // Points to something else, don't touch it
-                    return Err(eyre::eyre!("/lib64 exists as symlink pointing to {:?}, not fixing", target));
-                }
+    if lfs::is_symlink(lib64_path) {
+        if let Ok(target) = fs::read_link(lib64_path) {
+            // Check if it points to usr/lib64 (correct)
+            if target == usr_lib64_target {
+                // Already correct, nothing to do
+                return Ok(());
             }
-        } else {
-            // /lib64 exists but is not a symlink (directory or file)
-            return Err(eyre::eyre!("/lib64 exists but is not a symlink, cannot fix"));
+
+            // Check if it points to usr/lib (needs fixing on usr-merge systems like Arch)
+            let usr_lib_target = Path::new("usr/lib");
+            if target == usr_lib_target {
+                if utils::is_running_as_root() {
+                    // Remove the old symlink so we can create the correct one
+                    lfs::remove_file(lib64_path)?;
+                    // Fall through to create the correct symlink
+                } else {
+                    // Not root, can't fix it
+                    eprintln!("WARNING: /lib64 -> usr/lib symlink exists but cannot be fixed to usr/lib64 (not running as root). RPM/Debian guest OS may not work.");
+                    return Err(eyre::eyre!("/lib64 -> usr/lib exists but cannot be fixed: not running as root"));
+                }
+            } else {
+                // Points to something else, don't touch it
+                return Err(eyre::eyre!("/lib64 exists as symlink pointing to {:?}, not fixing", target));
+            }
         }
+    } else if lib64_path.exists() {
+        // /lib64 exists but is not a symlink (directory or file)
+        return Err(eyre::eyre!("/lib64 exists but is not a symlink, cannot fix"));
     }
 
     // /lib64 doesn't exist (or was just removed), need to create it
@@ -942,8 +922,7 @@ fn fixup_host_lib64_symlink() -> Result<()> {
     }
 
     // Create the symlink using relative path
-    symlink(usr_lib64_target, lib64_path)
-        .wrap_err_with(|| format!("Failed to create /lib64 -> usr/lib64 symlink"))?;
+    lfs::symlink(usr_lib64_target, lib64_path)?;
 
     Ok(())
 }

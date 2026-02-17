@@ -6,5 +6,5 @@ install:
 - b
 plan:
   fresh_installs:
-    b__1__x86_64:
-    a__1__x86_64:
+  - b__1__x86_64
+  - a__1__x86_64

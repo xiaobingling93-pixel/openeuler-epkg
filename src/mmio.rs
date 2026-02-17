@@ -1,18 +1,52 @@
 use std::fs;
 use std::fs::File;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::Mmap;
 use color_eyre::eyre::{Result, WrapErr};
 use color_eyre::eyre;
+// Use Archived type alias from rkyv
+// When HashMap<String, Vec<String>> is archived, it becomes Archived<HashMap<String, Vec<String>>>
+// which internally uses ArchivedHashMap<ArchivedString, ArchivedVec<ArchivedString>>
+use rkyv::Archived;
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::package;
+use crate::lfs;
 
 // Global status to track if provide2pkgnames data has been loaded
 static PROVIDE2PKGNAMES_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Memory-mapped wrapper for Archived<HashMap<String, Vec<String>>>
+#[derive(Debug)]
+pub struct Provide2PkgNamesMapper {
+    #[allow(dead_code)]
+    file: File,
+    mmap: Mmap,
+}
+
+impl Provide2PkgNamesMapper {
+    pub fn new(file_path: &PathBuf) -> std::io::Result<Self> {
+        let file = File::open(file_path)?;
+        // Memory map the file (unsafe because we must ensure the file isn't modified externally)
+        let mmap = unsafe { Mmap::map(&file)? };
+        Ok(Self { file, mmap })
+    }
+
+    /// Get the Archived<HashMap> from the memory-mapped data
+    /// The archived type is Archived<HashMap<String, String>>
+    /// which internally uses ArchivedHashMap<ArchivedString, ArchivedString>
+    pub fn get(&self) -> Result<&Archived<HashMap<String, String>>> {
+        // Use rkyv's access_unchecked for zero-copy access
+        // The memory-mapped file is read-only, so this is safe
+        // access_unchecked is re-exported at rkyv root level
+        Ok(unsafe {
+            rkyv::access_unchecked::<Archived<HashMap<String, String>>>(&self.mmap)
+        })
+    }
+}
 
 #[derive(Debug)]
 pub struct FileMapper {
@@ -70,21 +104,11 @@ impl FileMapper {
 //     Ok(())
 // }
 
-/// Deserializes essential package names from a file
-pub fn deserialize_repoindex(file_path: &PathBuf) -> Result<RepoIndex> {
-    let contents = fs::read_to_string(&file_path)
-        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-
-    let repoindex: RepoIndex = serde_json::from_str(&contents)
-        .with_context(|| format!("Failed to parse JSON from file: {}", file_path.display()))?;
-
-    Ok(repoindex)
-}
 
 /// Get standard package-related paths based on a base packages path
 pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let packages_path = repo_dir.join(packages_filename);
-    let provide2pkgnames_path = repo_dir.join(packages_filename.replace("packages", "provide2pkgnames")).with_extension("yaml");
+    let provide2pkgnames_path = repo_dir.join(packages_filename.replace("packages", "provide2pkgnames")).with_extension("rkyv");
     let essential_pkgnames_path = repo_dir.join(packages_filename.replace("packages", "essential_pkgnames"));
     let pkgname2ranges_path = packages_path.with_extension("idx");
 
@@ -92,7 +116,7 @@ pub fn get_package_paths(repo_dir: &PathBuf, packages_filename: &str) -> (PathBu
 }
 
 pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> Result<()> {
-    let repo_dir = crate::dirs::get_repo_dir(&repo)?;
+    let repo_dir = crate::dirs::get_repo_dir(&repo);
 
     let load_mappings = crate::models::config().subcommand != EpkgCommand::Search;
 
@@ -145,14 +169,14 @@ pub fn ensure_provide2pkgnames_loaded() -> Result<()> {
                 get_package_paths(&repo_dir, &filename);
 
             // Load provide2pkgnames data from file
-            match deserialize_provide2pkgnames(&provide2pkgnames_path) {
-                Ok(provide2pkgnames) => {
-                    shard.provide2pkgnames = provide2pkgnames;
+            match Provide2PkgNamesMapper::new(&provide2pkgnames_path) {
+                Ok(mapper) => {
+                    shard.provide2pkgnames = Some(mapper);
                 },
                 Err(e) => {
                     log::warn!("Failed to load provide2pkgnames from {}: {}", provide2pkgnames_path.display(), e);
-                    // Set empty HashMap if loading fails
-                    shard.provide2pkgnames = std::collections::HashMap::new();
+                    // Set None if loading fails
+                    shard.provide2pkgnames = None;
                 }
             }
         }
@@ -193,74 +217,42 @@ pub fn deserialize_essential_pkgnames(file_path: &PathBuf) -> Result<HashSet<Str
     Ok(hashset)
 }
 
-/// Serializes package provides mapping to a file
+/// Serializes package provides mapping to a file using rkyv
 pub fn serialize_provide2pkgnames(path: &PathBuf, provide2pkgnames: &HashMap<String, Vec<String>>) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-
-    let mut sorted_names: Vec<_> = provide2pkgnames.iter().collect();
-    sorted_names.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (key, values) in sorted_names {
-        // Filter out trivial entries where key equals value
-        // Also filter out values that equal the key
-        // Deduplicate values using HashSet
-        let filtered_values: HashSet<String> = values.iter()
+    // Filter out trivial entries where key equals value
+    // Convert Vec<String> to space-separated String for more compact storage
+    let mut filtered_map: HashMap<String, String> = HashMap::new();
+    for (key, values) in provide2pkgnames {
+        let mut filtered_values: Vec<String> = values.iter()
             .filter(|value| *value != key)
             .cloned()
             .collect();
+        filtered_values.sort();
+        filtered_values.dedup();
 
-        // Only write the line if there are non-trivial values
+        // Only include if there are non-trivial values
+        // Join with spaces for compact storage (package names don't contain spaces)
         if !filtered_values.is_empty() {
-            // Convert to sorted Vec for consistent output
-            let mut sorted_values: Vec<String> = filtered_values.into_iter().collect();
-            sorted_values.sort();
-            let line = format!("{}: {}", key, sorted_values.join(" "));
-            writeln!(writer, "{}", line)?;
+            filtered_map.insert(key.clone(), filtered_values.join(" "));
         }
     }
+
+    // Serialize using rkyv
+    // HashMap will be archived as Archived<HashMap<...>>
+    use rancor::Error;
+    let aligned_vec = rkyv::to_bytes::<Error>(&filtered_map)
+        .map_err(|e| eyre::eyre!("Failed to serialize provide2pkgnames: {:?}", e))?;
+    // AlignedVec implements AsRef<[u8]>, convert to Vec for fs::write
+    let bytes: Vec<u8> = aligned_vec.as_ref().to_vec();
+
+    lfs::write(path, bytes)?;
 
     Ok(())
 }
 
-/// Estimate the number of lines in a file based on its size and an average bytes-per-line value
-fn estimate_lines_from_file_size(file_path: &std::path::Path, bytes_per_line: u64, fallback: usize) -> usize {
-    let file_size = std::fs::metadata(file_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    if file_size > 0 {
-        (file_size / bytes_per_line) as usize
-    } else {
-        fallback
-    }
-}
-
-/// Deserializes package provides mapping from a file
-pub fn deserialize_provide2pkgnames(file_path: &PathBuf) -> Result<HashMap<String, Vec<String>>> {
-    log::debug!("deserialize_provide2pkgnames for {}", file_path.display());
-
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-
-    // Estimate number of entries based on file size and average bytes per line (46 bytes/line)
-    let estimated_lines = estimate_lines_from_file_size(file_path, 46, 64);
-    let mut map: HashMap<String, Vec<String>> = HashMap::with_capacity(estimated_lines);
-
-    for (line_num, line_result) in reader.lines().enumerate() {
-        let line = line_result.context(format!("Failed to read line {} from {}", line_num + 1, file_path.display()))?;
-        if let Some((key, values)) = line.split_once(": ") {
-            let values: Vec<String> = values.split(" ").map(|s| s.to_string()).collect();
-            map.insert(key.to_string(), values);
-        }
-    }
-
-    Ok(map)
-}
-
 // Function to serialize pkgname2ranges to a file
 pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String, Vec<PackageRange>>) -> Result<()> {
-    let mut file = fs::File::create(path)
-        .with_context(|| format!("Failed to create index file: {}", path.display()))?;
+    let mut file = lfs::file_create(path)?;
 
     // Sort package names before writing
     let mut sorted_packages: Vec<_> = pkgname2ranges.iter().collect();
@@ -279,7 +271,7 @@ pub fn serialize_pkgname2ranges(path: &PathBuf, pkgname2ranges: &BTreeMap<String
 
 // Function to deserialize pkgname2ranges from a file
 pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec<PackageRange>>> {
-    log::debug!("deserialize_pkgname2ranges for {}", path.display());
+    log::trace!("deserialize_pkgname2ranges for {}", path.display());
 
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read index file: {}", path.display()))?;
@@ -313,49 +305,7 @@ pub fn deserialize_pkgname2ranges(path: &PathBuf) -> Result<BTreeMap<String, Vec
 }
 
 pub fn deserialize_package(paragraph: &str) -> Result<Package> {
-    let mut package = Package {
-        pkgname: String::new(),
-        version: String::new(),
-        arch: String::new(),
-        size: 0,
-        installed_size: 0,
-        build_time: None,
-        source: None,
-        location: String::new(),
-
-        // caHash is only available in installed epkg_store/fs/package.txt,
-        // when the struct is loaded by map_pkgline2package()
-        ca_hash: None,
-
-        // Apk only has sha1sum; other formats only have sha256sum
-        sha256sum: None,
-        sha1sum: None,
-
-        depends: Vec::new(),
-        requires_pre: Vec::new(),
-        requires: Vec::new(),
-        provides: Vec::new(),
-        recommends: Vec::new(),
-        suggests: Vec::new(),
-        conflicts: Vec::new(),
-        obsoletes: Vec::new(),
-        enhances: Vec::new(),
-        supplements: Vec::new(),
-        files: Vec::new(),
-        summary: String::new(),
-        description: None,
-        homepage: String::new(),
-        section: None,
-        priority: None,
-        maintainer: String::new(),
-        tag: None,
-        origin_url: None,
-        multi_arch: None,
-        pkgkey: String::new(),
-        repodata_name: String::new(),
-        package_baseurl: String::new(),
-    };
-
+    let mut package = Package::default();
     // Track the current key and value for multi-line handling
     let mut current_key = String::new();
     let mut current_value = String::new();
@@ -364,7 +314,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
         if let Some((key, value)) = line.split_once(": ") {
             // If we have a previous key/value pair, process it before starting a new one
             if !current_key.is_empty() {
-                process_key_value(&mut package, &current_key, &current_value);
+                process_key_value(&mut package, &current_key, &current_value)?;
                 current_key.clear();
                 current_value.clear();
             }
@@ -381,7 +331,7 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
 
     // Process the last key/value pair if any
     if !current_key.is_empty() {
-        process_key_value(&mut package, &current_key, &current_value);
+        process_key_value(&mut package, &current_key, &current_value)?;
     }
     if package.location.is_empty() { // APKINDEX misses location field
         package.location = format!("{}-{}.apk", package.pkgname, package.version);
@@ -392,7 +342,15 @@ pub fn deserialize_package(paragraph: &str) -> Result<Package> {
 }
 
 // Helper function to process a key/value pair
-fn process_key_value(package: &mut Package, key: &str, value: &str) {
+fn process_key_value(package: &mut Package, key: &str, value: &str) -> Result<()> {
+    match key {
+        "format" => {
+            package.format = PackageFormat::from_str(value)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
     match key {
         "pkgname"           => package.pkgname      = value.to_string(),
         "version"           => package.version      = value.to_string(),
@@ -413,6 +371,8 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
         "multiArch"         => package.multi_arch   = Some(value.to_string()),
         "requiresPre"       => package.requires_pre = value.split(", ").map(|s| s.to_string()).collect(),
         "requires"          => package.requires     = value.split(", ").map(|s| s.to_string()).collect(),
+        "buildRequires"     => package.build_requires = value.split(", ").map(|s| s.to_string()).collect(),
+        "checkRequires"     => package.check_requires = value.split(", ").map(|s| s.to_string()).collect(),
         "provides"          => package.provides     = value.split(", ").map(|s| s.to_string()).collect(),
         "recommends"        => package.recommends   = value.split(", ").map(|s| s.to_string()).collect(),
         "suggests"          => package.suggests     = value.split(", ").map(|s| s.to_string()).collect(),
@@ -423,10 +383,13 @@ fn process_key_value(package: &mut Package, key: &str, value: &str) {
         "files"             => package.files        = value.split(", ").map(|s| s.to_string()).collect(),
         "source"            => package.source       = Some(value.to_string()),
         "originUrl"         => package.origin_url   = Some(value.to_string()),
+        "repo"              => package.repodata_name = value.to_string(),
         _                   => {
             // Unknown field, ignore or log
         }
     }
+
+    Ok(())
 }
 
 pub fn ensure_pkgname2ranges_loaded(shard: &mut RepoShard) -> Result<()> {
@@ -442,6 +405,7 @@ fn lookup_in_packages(
     pkgname: &str,
     repodata_name: &str,
     package_baseurl: &str,
+    format: PackageFormat,
     shard: &mut RepoShard,
 ) -> Result<Vec<Package>> {
     ensure_pkgname2ranges_loaded(shard)?;
@@ -453,10 +417,16 @@ fn lookup_in_packages(
             for range in ranges {
                 if let Some(data) = mmap.checked_range(&range) {
                     if let Ok(paragraph) = std::str::from_utf8(data) {
-                        if let Ok(mut package) = deserialize_package(paragraph) {
-                            package.repodata_name = repodata_name.to_string();
-                            package.package_baseurl = package_baseurl.to_string();
-                            packages.push(package);
+                        match deserialize_package(paragraph) {
+                            Ok(mut package) => {
+                                package.repodata_name = repodata_name.to_string();
+                                package.package_baseurl = package_baseurl.to_string();
+                                package.format = format;
+                                packages.push(package);
+                            }
+                            Err(e) => {
+                                log::debug!("Failed to deserialize repodata '{}' for package '{}': {}", shard.packages.filename, pkgname, e);
+                            }
                         }
                     }
                 }
@@ -474,6 +444,7 @@ pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
             if let Ok(mut shard_packages) = lookup_in_packages(pkgname,
                         &repo_index.repodata_name,
                         &repo_index.package_baseurl,
+                        repo_index.format,
                         shard) {
                 packages.append(&mut shard_packages);
             }
@@ -516,8 +487,24 @@ pub fn map_provide2pkgnames(capability: &str) -> Result<Vec<String>> {
     for repo_index in repodata_indice.values() {
         for shard in repo_index.repo_shards.values() {
             // capability is cap_with_arch (atomic, never split)
-            if let Some(shard_pkgnames) = shard.provide2pkgnames.get(capability) {
-                pkgnames.extend(shard_pkgnames.clone());
+            if let Some(ref mapper) = shard.provide2pkgnames {
+                match mapper.get() {
+                    Ok(archived_map) => {
+                        if let Some(shard_pkgnames) = archived_map.get(capability) {
+                            // ArchivedString contains space-separated package names
+                            // Split and convert to Vec<String> (package names don't contain spaces)
+                            let pkgnames_vec: Vec<String> = shard_pkgnames
+                                .as_str()
+                                .split(' ')
+                                .map(|s| s.to_string())
+                                .collect();
+                            pkgnames.extend(pkgnames_vec);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to access provide2pkgnames: {}", e);
+                    }
+                }
             }
         }
     }
@@ -570,10 +557,12 @@ pub fn map_pkgline2package(pkgline: &str) -> Result<Package> {
         .wrap_err_with(|| format!("Failed to read package info: {}", store_path.display()))?;
 
     // Reuse the existing deserialize_package function
-    let mut package = deserialize_package(&content)?;
+    let mut package = deserialize_package(&content)
+        .wrap_err_with(|| format!("Failed to deserialize package from store: {}", store_path.display()))?;
 
     // Set a default repodata_name for locally installed packages
     package.repodata_name = "local".to_string();
+    package.pkgline = Some(pkgline.to_string());
 
     Ok(package)
 }

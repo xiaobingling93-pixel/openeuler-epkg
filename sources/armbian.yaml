@@ -1,0 +1,26 @@
+format: deb
+distro: armbian
+distro_dirs:
+- apt.armbian.com
+- armbian.tnahosting.net
+- armbian
+- armbian-apt
+versions:
+- trixie    13
+- bookworm  12
+- bullseye  11
+- sid       unstable
+- questing  25.10
+- resolute  26.04
+- plucky    25.04
+- noble     24.04
+- jammy     22.04
+repos:
+  main:
+  utils:
+  armbian-tools:
+index_url: $mirror/dists/$version/Release
+
+# Example URLs:
+# https://apt.armbian.com/dists/noble/main/binary-arm64/Packages.xz
+# https://apt.armbian.com/dists/jammy/utils/binary-armhf/Packages.xz

@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::fs;
 use color_eyre::Result;
 use serde_json::{Value, json};
-use crate::models::{PackageManager, Package};
+use crate::models::Package;
+use crate::models::dirs;
+use crate::models::PACKAGE_CACHE;
 
 pub fn show_package_info(
-    package_manager: &mut PackageManager,
     all_args: &[String],
     show_files: bool,
     show_scripts: bool,
@@ -22,7 +23,6 @@ pub fn show_package_info(
     // Process each package specification
     for package_spec in package_specs {
         process_package_spec(
-            package_manager,
             &package_spec,
             &filters,
             show_store_path,
@@ -99,7 +99,6 @@ fn parse_args_and_filters(all_args: &[String]) -> (Vec<String>, HashMap<String, 
 }
 
 fn process_package_spec(
-    package_manager: &mut PackageManager,
     package_spec: &str,
     filters: &HashMap<String, String>,
     show_store_path: bool,
@@ -127,7 +126,7 @@ fn process_package_spec(
         }
     } else {
         // Get packages from repository by pkgname
-        packages = package_manager.map_pkgname2packages(package_spec)?;
+        packages = crate::package_cache::map_pkgname2packages(package_spec)?;
 
         // If no packages found, retry with capability/provide mapping
         if packages.is_empty() {
@@ -136,11 +135,18 @@ fn process_package_spec(
 
             // For each provider package name, get its packages
             for provider_pkgname in provider_pkgnames {
-                let mut provider_packages = package_manager.map_pkgname2packages(&provider_pkgname)?;
+                let mut provider_packages = crate::package_cache::map_pkgname2packages(&provider_pkgname)?;
                 packages.append(&mut provider_packages);
             }
         }
     }
+
+    // Deduplicate packages by pkgkey (same package may appear from multiple repos/providers)
+    let mut dedup_map = HashMap::new();
+    for pkg in packages {
+        dedup_map.insert(pkg.pkgkey.clone(), pkg);
+    }
+    packages = dedup_map.into_values().collect();
 
     // Apply key=val filtering if provided
     if !filters.is_empty() {
@@ -155,7 +161,6 @@ fn process_package_spec(
     // Process each matching package
     for package in packages {
         process_single_package(
-            package_manager,
             &package,
             show_store_path,
             show_scripts,
@@ -186,42 +191,41 @@ fn apply_filters(package: &Package, filters: &HashMap<String, String>) -> bool {
 }
 
 fn process_single_package(
-    package_manager: &PackageManager,
     package: &Package,
     show_store_path: bool,
     show_scripts: bool,
     show_files: bool,
 ) -> Result<()> {
-    let is_installed = package_manager.installed_packages.contains_key(&package.pkgkey);
+    let is_installed = PACKAGE_CACHE.installed_packages.read().unwrap().contains_key(&package.pkgkey);
 
     if show_store_path {
-        show_store_path_info(package_manager, package, is_installed)?;
+        show_store_path_info(package, is_installed)?;
         return Ok(());
     }
 
     if show_scripts {
-        show_scripts_info(package_manager, package, is_installed)?;
+        show_scripts_info(package, is_installed)?;
         return Ok(());
     }
 
     if show_files {
-        show_files_info(package_manager, package, is_installed)?;
+        show_files_info(package, is_installed)?;
         return Ok(());
     }
 
     // Default: show comprehensive package info
-    show_comprehensive_info(package_manager, package, is_installed)?;
+    show_comprehensive_info(package, is_installed)?;
     Ok(())
 }
 
 fn show_store_path_info(
-    package_manager: &PackageManager,
     package: &Package,
     is_installed: bool,
 ) -> Result<()> {
     if is_installed {
-        if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-            let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        if let Some(installed_info) = installed.get(&package.pkgkey) {
+            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
             println!("{}", store_path.display());
         }
     } else {
@@ -231,7 +235,6 @@ fn show_store_path_info(
 }
 
 fn show_scripts_info(
-    package_manager: &PackageManager,
     package: &Package,
     is_installed: bool,
 ) -> Result<()> {
@@ -240,8 +243,9 @@ fn show_scripts_info(
         return Ok(());
     }
 
-    if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-        let scripts_path = crate::models::dirs().epkg_store
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    if let Some(installed_info) = installed.get(&package.pkgkey) {
+        let scripts_path = dirs().epkg_store
             .join(&installed_info.pkgline)
             .join("info/install");
 
@@ -275,7 +279,6 @@ fn show_scripts_info(
 }
 
 fn show_files_info(
-    package_manager: &PackageManager,
     package: &Package,
     is_installed: bool,
 ) -> Result<()> {
@@ -284,8 +287,9 @@ fn show_files_info(
         return Ok(());
     }
 
-    if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-        let filelist_path = crate::models::dirs().epkg_store
+    let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+    if let Some(installed_info) = installed.get(&package.pkgkey) {
+        let filelist_path = dirs().epkg_store
             .join(&installed_info.pkgline)
             .join("info/filelist.txt");
 
@@ -302,8 +306,8 @@ fn show_files_info(
 }
 
 /// Convert a Package struct to a vector of (field_name, field_value) pairs
-fn package_to_fields(package: &Package) -> Vec<(String, String)> {
-    let mut package_fields = Vec::new();
+fn package_to_fields(package: &Package) -> std::collections::HashMap<String, String> {
+    let mut package_fields = std::collections::HashMap::new();
 
     // Convert package to JSON Value to iterate over its fields
     let package_json = json!(package);
@@ -346,36 +350,32 @@ fn package_to_fields(package: &Package) -> Vec<(String, String)> {
                 continue;
             }
 
-            package_fields.push((key.clone(), formatted_value));
+            package_fields.insert(key.clone(), formatted_value);
         }
     }
-
-    // Add fields that might not be serialized properly
-    package_fields.push(("pkgkey".to_string(), package.pkgkey.clone()));
-    package_fields.push(("repodataName".to_string(), package.repodata_name.clone()));
 
     package_fields
 }
 
 /// Add installation status and related fields to the package fields
 fn add_installation_info(
-    package_fields: &mut Vec<(String, String)>,
-    package_manager: &PackageManager,
+    package_fields: &mut std::collections::HashMap<String, String>,
     package: &Package,
     is_installed: bool,
 ) {
     if is_installed {
-        package_fields.push(("status".to_string(), "Installed".to_string()));
+        package_fields.insert("status".to_string(), "Installed".to_string());
 
-        if let Some(installed_info) = package_manager.installed_packages.get(&package.pkgkey) {
-            let store_path = crate::models::dirs().epkg_store.join(&installed_info.pkgline);
-            package_fields.push(("storePath".to_string(), store_path.display().to_string()));
+        let installed = PACKAGE_CACHE.installed_packages.read().unwrap();
+        if let Some(installed_info) = installed.get(&package.pkgkey) {
+            let store_path = dirs().epkg_store.join(&installed_info.pkgline);
+            package_fields.insert("storePath".to_string(), store_path.display().to_string());
 
             // Add specific fields from installed_info
-            package_fields.push(("dependDepth".to_string(), installed_info.depend_depth.to_string()));
-            package_fields.push(("installTime".to_string(), installed_info.install_time.to_string()));
+            package_fields.insert("dependDepth".to_string(), installed_info.depend_depth.to_string());
+            package_fields.insert("installTime".to_string(), installed_info.install_time.to_string());
             if installed_info.ebin_exposure {
-                package_fields.push(("ebin".to_string(), "true".to_string()));
+                package_fields.insert("ebin".to_string(), "true".to_string());
             }
 
             // Try to load additional package info from store
@@ -385,19 +385,18 @@ fn add_installation_info(
             //     if let Ok(local_package) = crate::mmio::map_pkgline2package(&installed_info.pkgline) {
             //         // Ensure critical fields are always included
             //         if let Some(ca_hash) = &local_package.ca_hash {
-            //             package_fields.push(("caHash".to_string(), ca_hash.clone()));
+            //             package_fields.insert("caHash".to_string(), ca_hash.clone());
             //         }
             //     }
             // }
         }
     } else {
-        package_fields.push(("status".to_string(), "Available".to_string()));
+        package_fields.insert("status".to_string(), "Available".to_string());
     }
 }
 
 /// Show comprehensive information about a package
 fn show_comprehensive_info(
-    package_manager: &PackageManager,
     package: &Package,
     is_installed: bool,
 ) -> Result<()> {
@@ -405,7 +404,7 @@ fn show_comprehensive_info(
     let mut package_fields = package_to_fields(package);
 
     // Add installation status information
-    add_installation_info(&mut package_fields, package_manager, package, is_installed);
+    add_installation_info(&mut package_fields, package, is_installed);
 
     // Format and print the package fields using the shared function
     let formatted_output = crate::store::format_package_fields(&package_fields);

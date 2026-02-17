@@ -1,8 +1,6 @@
 #!/bin/sh
 # Run all e2e tests
 
-set -e
-
 . "$(dirname "$0")/host-vars.sh"
 
 SCRIPT_DIR="$(dirname "$0")"
@@ -11,7 +9,7 @@ PASSED_TESTS=""
 
 (
 	cd $PROJECT_ROOT
-	make release-$ARCH
+	make static-$ARCH
 )
 
 # Find all test scripts

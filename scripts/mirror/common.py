@@ -5,6 +5,7 @@ import glob
 
 # Global configurations loaded from YAML files
 DISTRO_CONFIGS = {}
+VALID_DIRS = None
 
 # Debug output function
 def debug_print(message, category=None):
@@ -16,14 +17,14 @@ def debug_print(message, category=None):
             print(f"DEBUG: {message}")
 
 def load_distro_configs(base_dir):
-    """Loads distro-specific configurations from YAML files in the 'channel' directory."""
+    """Loads distro-specific configurations from YAML files in the 'sources' directory."""
     global DISTRO_CONFIGS
-    # channel_dir is where files like 'alpine.yaml', 'debian.yaml' are stored.
-    # BASE_DIR is 'scripts/mirror/', so channel_dir is '../../channel/'.
-    channel_dir = os.path.join(base_dir, '../..', 'channel')
-    yaml_files = glob.glob(os.path.join(channel_dir, '*.yaml'))
+    # sources_dir is where files like 'alpine.yaml', 'debian.yaml' are stored.
+    # BASE_DIR is 'scripts/mirror/', so sources_dir is '../../sources/'.
+    sources_dir = os.path.join(base_dir, '../..', 'sources')
+    yaml_files = glob.glob(os.path.join(sources_dir, '*.yaml'))
 
-    debug_print(f"Searching for distro configs in: {os.path.abspath(channel_dir)}")
+    debug_print(f"Searching for distro configs in: {os.path.abspath(sources_dir)}")
 
     for yaml_file in yaml_files:
         filename = os.path.basename(yaml_file)
@@ -56,4 +57,24 @@ def load_distro_configs(base_dir):
 
 def get_distro_configs():
     """Get the loaded DISTRO_CONFIGS dictionary."""
-    return DISTRO_CONFIGS 
+    return DISTRO_CONFIGS
+
+def get_valid_dirs(base_dir):
+    """Get the set of valid directory names, loading configs if needed."""
+    global VALID_DIRS
+    if VALID_DIRS is not None:
+        return VALID_DIRS
+
+    # Ensure distro configs are loaded
+    if not DISTRO_CONFIGS:
+        load_distro_configs(base_dir)
+
+    # Compute valid directories
+    VALID_DIRS = set()
+    for distro_name, distro_dirs in DISTRO_CONFIGS.items():
+        # Strip leading/trailing slashes and add to valid dirs
+        normalized_dirs = [d.strip('/') for d in distro_dirs]
+        VALID_DIRS.update(normalized_dirs)
+
+    debug_print(f"Computed VALID_DIRS: {VALID_DIRS}", "config")
+    return VALID_DIRS

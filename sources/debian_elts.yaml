@@ -1,0 +1,28 @@
+format: deb
+distro: debian
+distro_dirs:
+- debian-elts
+- extended-lts
+versions: # Extended LTS versions
+- buster    10
+- stretch   9
+- jessie    8
+- wheezy    7
+
+repos:
+  elts:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - contrib
+# - non-free
+
+index_url: $mirror/dists/$version/Release
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/debian-elts/dists/buster/Release
+# https://deb.freexian.com/extended-lts/dists/stretch/main/binary-amd64/Packages.xz
+# https://deb.freexian.com/extended-lts/dists/jessie/contrib/binary-amd64/Packages.xz

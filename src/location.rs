@@ -119,8 +119,7 @@ fn get_cache_file_path(lan_hash: &str) -> Result<std::path::PathBuf> {
 /// Load country code from cache if valid
 fn load_country_code_cache(lan_hash: &str) -> Option<String> {
     let cache_file = get_cache_file_path(lan_hash).ok()?;
-    let contents = fs::read_to_string(&cache_file).ok()?;
-    let cache: CountryCodeCache = serde_json::from_str(&contents).ok()?;
+    let cache: CountryCodeCache = crate::io::read_json_file(&cache_file).ok()?;
 
     // Check if cache is for the same LAN and not expired
     if cache.lan_hash == lan_hash && !cache.is_expired() {
@@ -247,7 +246,7 @@ static TIMEZONE_COUNTRY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(|
 });
 
 fn load_timezone_country_mapping() -> Result<HashMap<String, String>> {
-    let file_path = crate::dirs::get_epkg_src_path()?.join("channel/cc-timezone.txt");
+    let file_path = crate::dirs::get_epkg_src_path().join("sources/cc-timezone.txt");
     let contents = fs::read_to_string(&file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 

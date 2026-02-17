@@ -7,10 +7,10 @@ install:
 - a
 plan:
   fresh_installs:
-    a__2__x86_64:
-    b__1__x86_64:
-    c__1__x86_64:
+  - a__2__x86_64
+  - b__1__x86_64
+  - c__1__x86_64
   upgrades_new:
-    d__1.5__x86_64:
+  - d__1.5__x86_64
   upgrades_old:
-    d__1.0__x86_64:
+  - d__1.0__x86_64

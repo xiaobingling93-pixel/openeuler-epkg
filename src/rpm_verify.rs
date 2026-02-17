@@ -23,7 +23,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::utils;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) enum ComparisonMismatchDetail {
+pub enum ComparisonMismatchDetail {
     MissingInOfficial(PathBuf),
     MissingInEpkg(PathBuf),
     TypeMismatch { path: PathBuf, official_type: String, epkg_type: String },
@@ -42,9 +42,9 @@ pub(crate) enum ComparisonMismatchDetail {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) struct ComparisonResult {
-    pub(crate) are_identical: bool,
-    pub(crate) mismatches: Vec<ComparisonMismatchDetail>,
+pub struct ComparisonResult {
+    pub are_identical: bool,
+    pub mismatches: Vec<ComparisonMismatchDetail>,
 }
 
 fn are_files_equal(path1: &Path, path2: &Path) -> Result<bool> {
@@ -153,7 +153,7 @@ fn get_file_type_from_metadata(metadata: &StdMetadata) -> String {
     }
 }
 
-pub(crate) fn compare_directories(official_dir: &Path, epkg_dir: &Path) -> Result<ComparisonResult> {
+pub fn compare_directories(official_dir: &Path, epkg_dir: &Path) -> Result<ComparisonResult> {
     fn get_metadata_or_log(p: &Path, _path_for_log: &PathBuf) -> Option<StdMetadata> {
         match fs::symlink_metadata(p) {
             Ok(meta) => Some(meta),
@@ -401,7 +401,7 @@ fn handle_directory_mismatch(
     }
 }
 
-pub(crate) fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir: &Path) -> Result<()> {
+pub fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir: &Path) -> Result<()> {
     log::debug!("Starting RPM extraction verification for: {}", rpm_file_path.display());
 
     // if !utils::is_running_as_root() {

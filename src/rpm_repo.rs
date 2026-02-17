@@ -18,28 +18,34 @@ use std::error::Error;
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
+        macro_rules! map_eq { ($key:expr) => { m.insert($key, $key) }; }
 
         m.insert("name",           "pkgname");
-        m.insert("version",        "version");
-        m.insert("arch",           "arch");
-        m.insert("summary",        "summary");
-        m.insert("description",    "description");
+        map_eq!("version");
+        map_eq!("arch");
+        map_eq!("summary");
+        map_eq!("description");
         m.insert("url",            "homepage");
-        m.insert("license",        "license");
-        m.insert("vendor",         "vendor");
+        map_eq!("license");
+        map_eq!("vendor");
         m.insert("group",          "section");
         m.insert("buildhost",      "buildHost");
         m.insert("sourcerpm",      "source");
         m.insert("packager",       "maintainer");
-        m.insert("size",           "size");
+        map_eq!("size");
         m.insert("installed-size", "installedSize");
-        m.insert("location",       "location");
+        map_eq!("location");
         m.insert("checksum",       "sha256");
         m.insert("time",           "buildTime");
-        m.insert("requires",       "requires");
-        m.insert("recommends",     "recommends");
-        m.insert("provides",       "provides");
-        m.insert("files",          "files");
+        map_eq!("requires");
+        map_eq!("recommends");
+        map_eq!("provides");
+        map_eq!("conflicts");
+        map_eq!("obsoletes");
+        map_eq!("enhances");
+        map_eq!("suggests");
+        map_eq!("supplements");
+        map_eq!("files");
 
         m
     };
@@ -170,8 +176,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                             let need_download = !download_path.exists();
 
                             let is_packages = current_data_type == "primary";
-                            let repo_dir = dirs::get_repo_dir(&repo)
-                                .map_err(|e| eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
+                            let repo_dir = dirs::get_repo_dir(&repo);
                             let output_path = if is_packages {
                                 repo_dir.join(format!("packages.txt"))
                             } else {
@@ -202,6 +207,7 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
                                 size: current_size,
                                 location: current_location.clone(),
                                 is_packages,
+                                is_adb: false,
                                 output_path,
                                 download_path,
                             });

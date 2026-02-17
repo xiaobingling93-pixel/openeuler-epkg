@@ -1,0 +1,31 @@
+format: deb
+distro: linuxmint
+distro_dirs:
+- packages.linuxmint.com
+- www.linuxmint.com
+- linuxmint.com
+- linuxmint
+- LinuxMint
+- mint
+versions: # https://www.linuxmint.com/download_all.php
+- zena      22.3
+- zara      22.2
+- xia       22.1
+- virginia  21.3
+- una       21.2
+- vanessa   21.1
+- vera      21
+- wilma     22
+repos:
+  main:
+  universe:
+  multiverse:
+  # upstream:
+  # import:
+  # backport:
+index_url: $mirror/dists/$version/Release
+
+# Example URLs:
+# http://packages.linuxmint.com/dists/xia/Release
+# http://packages.linuxmint.com/dists/virginia/main/binary-amd64/Packages.xz
+# http://packages.linuxmint.com/dists/una/upstream/binary-amd64/Packages.xz

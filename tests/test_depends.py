@@ -89,8 +89,8 @@ Typical Stress Test + Debug Workflow:
        # Feed the debug log to AI for analysis
 
     3. In rare cases, you may need to grep and check repodata:
-       grep <pkg_no_candidate> ~/.cache/epkg/channel/<os>:*/*/*/provide2pkgnames.yaml
-       grep <pkg_no_candidate> ~/.cache/epkg/channel/<os>:*/*/*/packages.txt
+       grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>-*/*/*/provide2pkgnames.yaml
+       grep <pkg_no_candidate> ~/.cache/epkg/channels/<os>-*/*/*/packages.txt
 """)
 
 
@@ -234,32 +234,31 @@ def parse_dependency_error(stdout: str, stderr: str) -> Optional[tuple[str, str]
             # in the following lines
             for j in range(i + 1, min(i + 5, len(lines))):
                 next_line = lines[j]
-                # Match pattern: "  package-name package-name cannot..." or "  package-name package-name cannot be installed"
-                match = re.search(r'^\s+(\S+)\s+\1\s+cannot', next_line)
+                # Match pattern: "  package-name package-name cannot be installed"
+                match = re.search(r'\s+(\S+)\s+(\S+)\s+cannot', next_line)
                 if match:
-                    pkg_to_install = match.group(1)
-                    break
-                # Also try to match just the first package name if it appears twice (more flexible)
-                match = re.search(r'^\s+(\S+)\s+(\S+)', next_line)
-                if match and match.group(1) == match.group(2):
                     pkg_to_install = match.group(1)
                     break
             break
 
-    # Find last line with "for which no candidates were found"
+    # Find last line that indicates the final unsatisfied / conflicting dependency.
     for line in reversed(lines):
-        if "for which no candidates were found" in line:
-            # Extract package name before "for which no candidates were found"
-            # Format: "└─ pybind11-abi pybind11-abi(=4), for which no candidates were found."
-            # Or: "└─ numpy-base numpy-base(=1.26.4=py39hb5e798b_0), for which no candidates were found."
-            match = re.search(r'└─\s+(\S+)', line)
+        if (
+            "for which no candidates were found" in line
+            or "which cannot be installed because there are no viable options" in line
+            or "which conflicts with any installable versions previously reported" in line
+        ):
+            # Extract package name from the final problematic line.
+            # Examples:
+            #   "└─ pybind11-abi pybind11-abi(=4), for which no candidates were found."
+            #   "└─ numpy-base numpy-base(=1.26.4=py39hb5e798b_0), for which no candidates were found."
+            #   "└─ eject eject(>2.1.0), which conflicts with any installable versions previously reported"
+            match = re.search(
+                r'\s+(\S+)\s+(\S+),\s+',
+                line,
+            )
             if match:
                 pkg_no_candidate = match.group(1)
-            else:
-                # Fallback: try to find any package name before the phrase
-                match = re.search(r'(\S+)\s+\S+\([^)]*\),\s+for which no candidates were found', line)
-                if match:
-                    pkg_no_candidate = match.group(1)
             break
 
     if pkg_to_install and pkg_no_candidate:

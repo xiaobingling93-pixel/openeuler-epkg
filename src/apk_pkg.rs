@@ -9,7 +9,6 @@ use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::utils;
 
-
 lazy_static! {
     pub static ref PACKAGE_KEY_MAPPING: std::collections::HashMap<&'static str, &'static str> = {
         let mut m = std::collections::HashMap::new();
@@ -294,7 +293,7 @@ fn unpack_apk<P: AsRef<Path>>(apk_file: P, store_tmp_dir: &Path) -> Result<()> {
             }
             continue;
         }
-        crate::utils::fixup_file_permissions(&target_path);
+        utils::fixup_file_permissions(&target_path);
     }
 
     // Restore original working directory
@@ -311,36 +310,18 @@ pub fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let install_dir = store_tmp_dir.join("info/install");
 
     // Mapping from APK scriptlet names to common names
-    let scriptlet_mapping: HashMap<&str, Vec<&str>> = [
-        (".pre-install", vec!["pre_install.sh", "pre_upgrade.sh"]),
-        (".post-install", vec!["post_install.sh", "post_upgrade.sh"]),
-        (".pre-deinstall", vec!["pre_uninstall.sh"]),
-        (".post-deinstall", vec!["post_uninstall.sh"]),
-        (".pre-upgrade", vec!["pre_upgrade.sh"]),
-        (".post-upgrade", vec!["post_upgrade.sh"]),
+    // APK scriptlet types: pre-install, post-install, pre-upgrade, post-upgrade, pre-deinstall, post-deinstall
+    // Common names match ScriptletType::get_script_names() which uses pre_remove/post_remove for removals
+    let scriptlet_mapping: HashMap<&str, &str> = [
+        (".pre-install", "pre_install.sh"),
+        (".post-install", "post_install.sh"),
+        (".pre-deinstall", "pre_remove.sh"),
+        (".post-deinstall", "post_remove.sh"),
+        (".pre-upgrade", "pre_upgrade.sh"),
+        (".post-upgrade", "post_upgrade.sh"),
     ].into_iter().collect();
 
-    for (apk_script, common_scripts) in &scriptlet_mapping {
-        let apk_script_path = apk_dir.join(apk_script);
-        if apk_script_path.exists() {
-            for common_script in common_scripts {
-                let target_path = install_dir.join(common_script);
-
-                // Copy the script content
-                let content = fs::read(&apk_script_path)?;
-                fs::write(&target_path, &content)?;
-
-                // Make it executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&target_path)?.permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&target_path, perms)?;
-                }
-            }
-        }
-    }
+    crate::utils::copy_scriptlets_by_mapping(&scriptlet_mapping, &apk_dir, &install_dir, false)?;
 
     Ok(())
 }
@@ -429,7 +410,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
     fixup_inconsistent_arch(&mut raw_fields, pkgkey);
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: HashMap<String, String> = HashMap::new();
     let mut conflicts_values = Vec::new();
 
     for (original_field, values) in raw_fields {
@@ -463,7 +444,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
                 } else {
                     requires.into_iter().next().unwrap_or_default()
                 };
-                package_fields.push(("requires".to_string(), requires_value));
+                package_fields.insert("requires".to_string(), requires_value);
             }
 
             // Collect conflicts to add later
@@ -476,7 +457,7 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
                 values.into_iter().next().unwrap_or_default()
             };
 
-            package_fields.push((mapped_field, combined_value));
+            package_fields.insert(mapped_field, combined_value);
         }
     }
 
@@ -487,11 +468,101 @@ pub fn create_package_txt<P: AsRef<Path>>(store_tmp_dir: P, pkgkey: Option<&str>
         } else {
             conflicts_values.into_iter().next().unwrap_or_default()
         };
-        package_fields.push(("conflicts".to_string(), conflicts_value));
+        package_fields.insert("conflicts".to_string(), conflicts_value);
+    }
+
+    package_fields.insert("format".to_string(), "apk".to_string());
+
+    if let Some(triggers_str) = package_fields.get("triggers") {
+        write_apk_hook_file(store_tmp_dir, triggers_str)?;
     }
 
     // Use the general store function to save the package.txt file
-    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
+
+    Ok(())
+}
+
+/// APK (Alpine Linux) triggers support
+///
+/// APK triggers monitor directories and execute trigger scripts when files in those directories
+/// are modified during package installation, upgrade, or removal.
+///
+/// Triggers are converted to Arch-style .hook files during package unpacking, allowing them
+/// to be handled by the unified hooks infrastructure.
+///
+/// References:
+/// - https://wiki.alpinelinux.org/wiki/APKBUILD_Reference
+/// - /c/package-managers/apk-tools/doc/apk-package.5.scd
+/// - /c/package-managers/apk-tools/src/commit.c run_triggers()
+/// - /c/package-managers/apk-tools/src/package.c apk_ipkg_run_script()
+/// - grep -h triggers ~/.epkg/store/*/info/apk/.PKGINFO
+/// - head ~/.epkg/store/*/info/apk/.trigger
+
+/// Write APK trigger hooks as Arch-style .hook files
+/// Similar to extract_rpm_triggers() and write_deb_trigger_hooks()
+///
+/// Creates .hook files in info/install/ that will be picked up by the hooks infrastructure.
+/// Each trigger pattern becomes a Path-type hook that executes the .trigger script.
+fn write_apk_hook_file<P: AsRef<Path>>(
+    store_tmp_dir: P,
+    triggers_str: &str,
+) -> Result<()> {
+    use std::fmt::Write;
+
+    let trigger_patterns: Vec<String> = triggers_str
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    if trigger_patterns.is_empty() {
+        return Ok(());
+    }
+
+    // Check if .trigger script exists in info/apk/.trigger
+    let store_tmp_dir = store_tmp_dir.as_ref();
+    let trigger_script_path = store_tmp_dir.join("info/apk/.trigger");
+    if !trigger_script_path.exists() {
+        log::warn!("Package has triggers but no .trigger script, skipping trigger hook generation");
+        return Ok(());
+    }
+
+    // Create a hook file with one [Trigger] section per trigger pattern
+    // APK triggers run after package operations (PostTransaction)
+    let mut buf = String::new();
+
+    // Create one [Trigger] section per trigger pattern
+    // so that match_path_trigger() bottom part can find the exact matched positive_targets[]
+    for pattern in &trigger_patterns {
+        // Handle "+" prefix (only pass when modified during transaction)
+        // For now, we treat all patterns the same way
+        let target = pattern.strip_prefix("+").unwrap_or(pattern);
+
+        // [Trigger] section
+        buf.push_str("[Trigger]\n");
+        buf.push_str("Operation = Install\n");
+        buf.push_str("Operation = Upgrade\n");
+        buf.push_str("Operation = Remove\n");
+        writeln!(buf, "Type = Path")?;
+        writeln!(buf, "Target = {}", target)?;
+        buf.push_str("\n");
+    }
+
+    // [Action] section
+    buf.push_str("[Action]\n");
+    writeln!(buf, "When = PostTransaction")?;
+    writeln!(buf, "Description = APK trigger")?;
+    // Exec points to the trigger script
+    // The hook engine will pass matched directories as arguments
+    // Use %PKGINFO_DIR placeholder that will be replaced at runtime with the actual package info directory
+    writeln!(buf, "Exec = %PKGINFO_DIR/apk/.trigger")?;
+    writeln!(buf, "NeedsTargets")?; // Pass matched paths as arguments
+
+    let install_dir = store_tmp_dir.join("info/install");
+    let hook_path = install_dir.join("apk-trigger.hook");
+    fs::create_dir_all(&install_dir)?;
+    fs::write(&hook_path, buf)
+        .with_context(|| format!("Failed to write APK hook file {}", hook_path.display()))?;
 
     Ok(())
 }

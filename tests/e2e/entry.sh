@@ -10,15 +10,20 @@ fi
 
 export IN_DOCKER=1
 
-# Initialize tmpfs mounts
-mount -t tmpfs tmpfs /root/.epkg/envs 2>/dev/null || true
-mount -t tmpfs tmpfs /opt/epkg/envs 2>/dev/null || true
+# Set up timezone symlink if TZ is set and zoneinfo exists
+if [ -n "$TZ" ] && [ -f "/usr/share/zoneinfo/$TZ" ]; then
+    ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
+    echo "Set /etc/localtime to /usr/share/zoneinfo/$TZ"
+elif [ -n "$TZ" ] && [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
+    echo "Warning: TZ=$TZ but zoneinfo file not found, timezone may not work correctly"
+fi
 
-# Create directories
-mkdir -p /root/.epkg/envs /opt/epkg/envs /root/.cache/epkg /opt/epkg/cache /opt/epkg/store
+rm -fr /opt/epkg/envs
 
 # Initialize epkg
-"$EPKG_BINARY" init
+"$EPKG_BINARY" --version
+"$EPKG_BINARY" self install
+ls -l /opt/epkg/envs/root/self/usr/bin/epkg
 
 # Source vars and lib
 . "$E2E_DIR/vars.sh"

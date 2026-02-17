@@ -15,7 +15,7 @@ opt-level = "z"  # Optimize for size.
 [dependencies]
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 quick-xml = { version = "0.37", default-features = false }
-clap = { version = "4.5", features = ["std", "usage", "help"], default-features = false }
+clap = { version = "4.5", features = ["std", "usage", "help", "error-context"], default-features = false }
 ureq = { version = "3.1", features = ["rustls"], default-features = true }
 serde = { version = "1.0", features = ["derive"], default-features = false }
 serde_json = { version = "1.0", features = ["std"], default-features = false }
@@ -27,12 +27,14 @@ flate2 = { version = "1.1", features = ["zlib-rs"], default-features = false }
 liblzma = { version = "0.3", features = ["parallel"], default-features = false }
 bzip2 = { version = "0.4", default-features = false }
 zip = { version = "0.6", default-features = false }
+sha1 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 base32 = { version = "0.5.1", default-features = false }
+base64 = { version = "0.22", default-features = false }
 glob = { version = "0.3", default-features = false }
 dirs = { version = "6.0", default-features = false }
 indicatif = { version = "0.17", default-features = false }
-nix = { version = "0.30", features = ["process", "user", "fs", "signal", "sched", "mount"], default-features = false }
+nix = { version = "0.30", features = ["process", "user", "fs", "signal", "sched", "mount", "dir"], default-features = false }
 rand = { version = "0.8", features = ["std", "std_rng", "getrandom"], default-features = false }
 users = { version = "0.11", default-features = false }
 crossbeam-channel = { version = "0.5", features = ["std"], default-features = false }
@@ -43,20 +45,25 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros", "p
 regex = { version = "1.12.2", features = ["std", "unicode-perl"], default-features = false }
 memchr = { version = "2.7", default-features = false }
 aho-corasick = { version = "1.1", default-features = false }
-uuid = { version = "1.18", features = ["v4"], default-features = false }
+uuid = { version = "1.20", features = ["v4"], default-features = false }
 log = { version = "0.4", default-features = false }
 env_logger = { version = "0.11.8", default-features = false }
 color-eyre = { version = "0.6" }
 libc = "0.2"
+shlex = "1.3"
 # color-eyre = { version = "0.6", features = ["capture-spantrace"], default-features = false }
 filetime = "0.2"
 ctrlc = "3.5"      # For handling Ctrl-C cleanly
 memmap2 = "0.9"
 num_cpus = "1.17"
 sys-info = "0.9"
-tempfile = "3.23"
+tempfile = "3.24"
 versions = "6.3"
+rkyv = { version = "0.8", features = ["std", "alloc", "bytecheck"] }
+rancor = "0.1"
+md-5 = "0.10"
 resolvo = { version = "0.10.1", path = "resolvo" }
+mlua = { version = "0.11", features = ["lua54", "send"] }
 
 # Optional but recommended for better progress bars
 [dependencies.console]
@@ -81,4 +88,4 @@ opt-level = 3
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 
 [dev-dependencies]
-tempfile = "3.23"
+tempfile = "3.24"

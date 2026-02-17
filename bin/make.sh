@@ -1,0 +1,586 @@
+#!/bin/bash
+set -e
+
+# Variables
+LUA_VERSION=5.4.7
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_DIR=dist
+RUST_TARGET_X86_64=x86_64-unknown-linux-musl
+RUST_TARGET_AARCH64=aarch64-unknown-linux-musl
+RUST_TARGET_RISCV64=riscv64gc-unknown-linux-musl
+RUST_TARGET_LOONGARCH64=loongarch64-unknown-linux-musl
+BINARY_NAME=epkg
+
+# Development environment paths
+DEV_ENV_BIN_DIR="$HOME/.epkg/envs/self/usr/bin"
+DEV_ENV_SRC_DIR="$HOME/.epkg/envs/self/usr/src/epkg"
+
+# Detect OS and version
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+        OS_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+    else
+        OS_ID="unknown"
+        OS_VERSION="unknown"
+    fi
+}
+
+has_cmd()
+{
+    command -v "$1" >/dev/null
+}
+
+# Detect package manager
+detect_package_manager() {
+    # Detect available package manager
+    if   has_cmd apt;       then PKG_MANAGER="apt"
+    elif has_cmd dnf;       then PKG_MANAGER="dnf"
+    elif has_cmd yum;       then PKG_MANAGER="yum"
+    elif has_cmd zypper;    then PKG_MANAGER="zypper"
+    elif has_cmd pacman;    then PKG_MANAGER="pacman"
+    elif has_cmd apk;       then PKG_MANAGER="apk"
+    else
+        PKG_MANAGER="unknown"
+        echo "Warning: Could not detect package manager"
+        exit 1
+    fi
+    echo "Detected package manager: $PKG_MANAGER"
+}
+
+# Clone or update a git repository
+clone_or_update_repo() {
+    local repo_url="$1"
+    local dir_name="$2"
+    if [[ -z "$dir_name" ]]; then
+        # Extract directory name from repo URL (remove .git suffix if present)
+        dir_name="${repo_url##*/}"
+        dir_name="${dir_name%.git}"
+    fi
+
+    if [[ -d "$dir_name" ]]; then
+        if [[ -n "$(ls -A "$dir_name" 2>/dev/null)" ]]; then
+            echo "Directory $dir_name already exists and is not empty, attempting to update..."
+            if [[ -d "$dir_name/.git" ]]; then
+                (cd "$dir_name" && git pull)
+            else
+                echo "Warning: $dir_name exists but is not a git repository, skipping update"
+            fi
+        else
+            echo "Directory $dir_name exists but is empty, removing..."
+            rmdir "$dir_name"
+            echo "Cloning $repo_url..."
+            git clone "$repo_url" "$dir_name"
+        fi
+    else
+        echo "Cloning $repo_url..."
+        git clone "$repo_url" "$dir_name"
+    fi
+}
+
+# Ensure we operate from project root
+cd "$PROJECT_ROOT"
+
+# Helper function for quick develop-debug loop
+install_to_dev_env() {
+    local binary_path="$1"
+
+    [[ -d "$DEV_ENV_BIN_DIR" ]] || return 0
+
+    if [[ ! -L "$DEV_ENV_SRC_DIR" ]] || [[ "$(readlink "$DEV_ENV_SRC_DIR")" != "$(pwd)" ]]; then
+        local src_rc="$PROJECT_ROOT/lib/epkg-rc.sh"
+        local dst_rc="$DEV_ENV_SRC_DIR/lib/epkg-rc.sh"
+        if [[ "$(readlink -f "$src_rc")" != "$(readlink -f "$dst_rc")" ]]; then
+            cp -v --update "$src_rc" "$dst_rc"
+        fi
+    fi
+
+    local cp_output cp_status
+    cp_output=$(cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME" 2>&1) && echo "$cp_output" || {
+        cp_status=$?
+        if echo "$cp_output" | grep -q "Text file busy"; then
+            rm -v "$DEV_ENV_BIN_DIR/$BINARY_NAME" &&
+            cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
+        else
+            echo "$cp_output" >&2
+            return $cp_status
+        fi
+    }
+}
+
+# Build Lua library for a specific architecture
+# Usage: build_lua_lib [<arch>] [musl|glibc]
+build_lua_lib() {
+    local arch=$(get_arch "$1")
+    local lib_type="${2:-musl}"  # Default to musl for backward compatibility
+    local compiler=""
+
+    # Deduce compiler based on architecture and library type
+    case "$lib_type" in
+        musl)
+            case "$arch" in
+                x86_64)
+                    compiler="musl-gcc"
+                    ;;
+                aarch64|riscv64|loongarch64)
+                    compiler="$arch-linux-gnu-gcc"
+                    ;;
+                *)
+                    echo "Unknown architecture: $arch"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        glibc)
+            # For glibc builds, use system gcc (cross-compilers not needed for same arch)
+            compiler="gcc"
+            ;;
+        *)
+            echo "Unknown library type: $lib_type (must be 'musl' or 'glibc')"
+            exit 1
+            ;;
+    esac
+
+    echo "Building Lua library for $arch ($lib_type) using $compiler..."
+
+    local lua_download_dir="$PROJECT_ROOT/target/lua-download"
+    local lua_build_dir="$PROJECT_ROOT/target/lua-build-$arch-$lib_type"
+    local lua_lib_dir="$PROJECT_ROOT/target/lua-$lib_type-$arch"
+
+    # Download tarball once to shared location
+    mkdir -p "$lua_download_dir"
+    local tarball="$lua_download_dir/lua-$LUA_VERSION.tar.gz"
+    [ -f "$tarball" ] || wget -q "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz" -O "$tarball"
+
+    # Extract to architecture-specific build directory
+    mkdir -p "$lua_build_dir"
+    cd "$lua_build_dir"
+    [ -d "lua-$LUA_VERSION" ] || tar xzf "$tarball"
+
+    # Build
+    cd "lua-$LUA_VERSION"
+    rm -f src/liblua.a
+    make clean
+    # Add -fPIC for position independent code (required for PIE executables)
+    make CC="$compiler" CFLAGS="-O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE" linux
+
+    # Add musl compatibility shims for missing *64 functions
+    echo "Adding musl compatibility shims..."
+    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/target/musl_compat.c" || echo "Failed to compile musl_compat.c"
+    ar rcs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
+
+    # Deploy
+    mkdir -p "$lua_lib_dir"
+    cp src/liblua.a "$lua_lib_dir/"
+    cp src/lua.h src/lualib.h src/lauxlib.h src/lua.hpp src/luaconf.h "$lua_lib_dir/"
+}
+
+# Helper functions for dependency installation
+
+# Get package manager configuration
+get_package_manager_config() {
+    local mode="$1"
+    packages=""
+    update_cmd=""
+    install_cmd=""
+
+    case "$PKG_MANAGER" in
+        apt)
+            update_cmd="apt-get update"
+            install_cmd="apt-get install -y"
+            packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
+            if [[ "$mode" == "crossdev" ]]; then
+                packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
+            fi
+            ;;
+        dnf|yum)
+            update_cmd="$PKG_MANAGER update -y"
+            install_cmd="$PKG_MANAGER install -y"
+            # For dnf/yum, install cargo instead of rustup (rustup can be installed via curl if needed)
+            packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel wget"
+            # Crossdev packages may not be available on all distros
+            # no support "$mode" == "crossdev"
+            ;;
+        zypper)
+            update_cmd="zypper refresh"
+            install_cmd="zypper install -y"
+            packages="rustup gcc openssl-devel musl-gcc lua-devel"
+            # Crossdev packages may not be available
+            ;;
+        pacman)
+            update_cmd="pacman -Sy"
+            install_cmd="pacman -S --noconfirm"
+            packages="rustup base-devel openssl musl lua"
+            # Crossdev packages: aarch64-linux-gnu-gcc, riscv64-linux-gnu-gcc, loongarch64-linux-gnu-gcc (from AUR)
+            ;;
+        apk)
+            update_cmd="apk update"
+            install_cmd="apk add"
+            packages="rustup build-base openssl-dev musl-dev lua-dev"
+            # Crossdev packages: cross-compile tools may be in community repos
+            ;;
+        *)
+            echo "Unsupported package manager: $PKG_MANAGER"
+            exit 1
+            ;;
+    esac
+}
+
+# Install packages using detected package manager
+install_packages() {
+    # Run update command
+    if [[ -n "$update_cmd" ]]; then
+        echo "Updating package lists..."
+        sudo $update_cmd || echo "Warning: Package update failed, continuing..."
+    fi
+
+    # Install packages
+    if [[ -n "$packages" ]]; then
+        echo "Installing packages: $packages"
+        sudo $install_cmd $packages || {
+            echo "Error: Package installation failed"
+            exit 1
+        }
+    fi
+}
+
+# Install Rust toolchain (common across distros)
+install_rust_toolchain() {
+    local mode="$1"
+    local current_arch="$2"
+
+    echo "Installing Rust toolchain..."
+
+    # For all other distros, try to use rustup if available
+    if has_cmd rustup; then
+        echo "Using rustup installation"
+        rustup default stable
+        if [[ "$mode" == "dev" ]]; then
+            local rust_target=$(get_rust_target "$current_arch")
+            rustup target add "$rust_target"
+        else
+            rustup target add "$RUST_TARGET_X86_64"
+            rustup target add "$RUST_TARGET_AARCH64"
+            rustup target add "$RUST_TARGET_RISCV64"
+            rustup target add "$RUST_TARGET_LOONGARCH64"
+        fi
+    else
+        echo "rustup not found, using system cargo if available"
+        if ! has_cmd cargo; then
+            echo "Warning: Neither rustup nor cargo found. Rust toolchain may be missing."
+        fi
+    fi
+}
+# Clone required repositories
+install_repos() {
+    clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
+    clone_or_update_repo "https://gitee.com/openeuler/elf-loader"
+    cd elf-loader/src && make $mode-depends
+}
+
+# Unified dependency installer
+install_depends() {
+    local mode="${1:-dev}"
+    detect_os
+    detect_package_manager
+    echo "Detected OS: $OS_ID $OS_VERSION"
+    echo "Detected package manager: $PKG_MANAGER"
+
+    local current_arch=$(detect_arch)
+    echo "Detected architecture: $current_arch"
+
+    echo "Installing dependencies ($mode mode)..."
+
+    # Get package manager configuration
+    get_package_manager_config "$mode"
+
+    # Install packages
+    install_packages
+
+    # Install Rust toolchain
+    install_rust_toolchain "$mode" "$current_arch"
+
+    # Clone repositories
+    install_repos
+
+    echo "Installation complete!"
+}
+# Install development dependencies (current arch only)
+dev_depends() {
+    install_depends dev
+}
+
+# Install cross-development dependencies (all arch cross-compilers)
+crossdev_depends() {
+    install_depends crossdev
+}
+
+# Clean build artifacts
+clean() {
+    echo "Cleaning build artifacts..."
+    cargo clean
+}
+
+# Clean everything including distribution files
+clean_all() {
+    clean
+    echo "Cleaning distribution files..."
+    rm -rf "$OUTPUT_DIR"
+}
+
+# Get Rust target for architecture
+get_rust_target() {
+    local arch="$1"
+    case "$arch" in
+        x86_64)
+            echo "$RUST_TARGET_X86_64"
+            ;;
+        aarch64)
+            echo "$RUST_TARGET_AARCH64"
+            ;;
+        riscv64)
+            echo "$RUST_TARGET_RISCV64"
+            ;;
+        loongarch64)
+            echo "$RUST_TARGET_LOONGARCH64"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Export linker variable for architecture
+export_linker_var() {
+    local arch="$1"
+    case "$arch" in
+        x86_64)
+            # No linker var needed for x86_64
+            ;;
+        aarch64)
+            export "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
+            ;;
+        riscv64)
+            export "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
+            ;;
+        loongarch64)
+            export "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Get Rust flags for architecture
+get_rustflags() {
+    local arch="$1"
+    local common_opts=
+    local common_cross_opts="$common_opts -C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc"
+    case "$arch" in
+        x86_64)
+            # Disable PIE to avoid relocation issues with Lua static library
+            echo "$common_opts"
+            ;;
+        aarch64)
+            echo "$common_cross_opts"
+            ;;
+        riscv64|loongarch64)
+            echo "$common_cross_opts -C link-arg=-lm"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Build static binary for a specific architecture
+# Usage: build_static [<arch>]
+build_static() {
+    local arch=$(get_arch "$1")
+    local rust_target=$(get_rust_target "$arch")
+    local rustflags=$(get_rustflags "$arch")
+
+    echo "Building $arch binary..."
+
+    # Export environment variables directly
+    export LUA_LIB_NAME=lua
+    export LUA_LIB="$PROJECT_ROOT/target/lua-musl-$arch"
+    export LUA_LINK=static
+    export LUA_NO_PKG_CONFIG=1
+
+    # Export linker variable for this architecture
+    export_linker_var "$arch"
+
+    # Set C compiler for mlua-sys build
+    case "$arch" in
+        x86_64)
+            export CC="musl-gcc"
+            ;;
+        aarch64|riscv64|loongarch64)
+            export CC="$arch-linux-gnu-gcc"
+            ;;
+        *)
+            echo "Unknown architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+    export CFLAGS="-D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE"
+    # Set target-specific CFLAGS for cc crate (hyphens to underscores)
+    local target_var="${rust_target//-/_}"
+    export "CFLAGS_${target_var}"="$CFLAGS"
+    export "CC_${target_var}"="$CC"
+
+    if [[ -n "$rustflags" ]]; then
+        export RUSTFLAGS="$rustflags"
+    fi
+
+    # Build the binary
+    cargo build --release --target "$rust_target"
+
+    # Deploy
+    mkdir -p "$OUTPUT_DIR"
+    cp "target/$rust_target/release/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
+    echo "Generating checksum for $arch binary..."
+    cd "$OUTPUT_DIR"
+    sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
+    echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
+
+    # Install to dev environment if this is the native architecture
+    if [[ "$arch" == "$(detect_arch)" ]]; then
+        install_to_dev_env "$PROJECT_ROOT/target/$rust_target/release/$BINARY_NAME"
+    fi
+}
+
+# Build development binary
+build() {
+    echo "Building debug binary..."
+
+    # Set up static Lua linking for glibc
+    local arch=$(detect_arch)
+    local lua_lib_dir="$PROJECT_ROOT/target/lua-glibc-$arch"
+
+    # Build Lua library if it doesn't exist
+    if [[ ! -f "$lua_lib_dir/liblua.a" ]]; then
+        echo "Lua static library not found at $lua_lib_dir/liblua.a"
+        echo "Building Lua library for $arch (glibc)..."
+        build_lua_lib "$arch" "glibc"
+    fi
+
+    # Export environment variables for static Lua linking
+    export LUA_LIB_NAME=lua
+    export LUA_LIB="$lua_lib_dir"
+    export LUA_LINK=static
+    export LUA_NO_PKG_CONFIG=1
+
+    cargo build
+
+    echo "Development build completed. Binary is in $PROJECT_ROOT/target/debug/$BINARY_NAME"
+
+    install_to_dev_env "$PROJECT_ROOT/target/debug/$BINARY_NAME"
+}
+
+# Build release binary
+build_release() {
+    echo "Building release binary..."
+    cargo build --release
+
+    echo "Release build completed. Binary is in $PROJECT_ROOT/target/release/$BINARY_NAME"
+
+    install_to_dev_env "$PROJECT_ROOT/target/release/$BINARY_NAME"
+}
+
+# Run tests (module-level unit tests)
+run_tests() {
+    RUSTFLAGS="-A dead_code -A unused_imports -A unused_variables" cargo test
+}
+
+# Detect current system architecture
+detect_arch() {
+    local machine=$(uname -m)
+    case "$machine" in
+        x86_64|amd64)
+            echo "x86_64"
+            ;;
+        aarch64|arm64)
+            echo "aarch64"
+            ;;
+        riscv64)
+            echo "riscv64"
+            ;;
+        loongarch64)
+            echo "loongarch64"
+            ;;
+        *)
+            echo "Unsupported architecture: $machine" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Set/get architecture - either from argument or auto-detect
+get_arch() {
+    local provided_arch="$1"
+
+    if [[ -z "$provided_arch" ]]; then
+        # Auto-detect current architecture
+        local arch=$(detect_arch)
+        echo "Auto-detected architecture: $arch" >&2
+        echo "$arch"
+    else
+        echo "$provided_arch"
+    fi
+}
+
+cmd="${1:-build}"
+# Main dispatcher
+case $cmd in
+    build)
+        build
+        ;;
+    lua|build_lua_lib)
+        build_lua_lib "$2"
+        ;;
+    release|build_release)
+        build_release
+        ;;
+    static|build_static)
+        build_static "$2"
+        ;;
+    dev-depends)
+        dev_depends
+        ;;
+    crossdev-depends)
+        crossdev_depends
+        ;;
+    test)
+        run_tests
+        ;;
+    clean)
+        clean
+        ;;
+    clean_all)
+        clean_all
+        ;;
+    *)
+        echo "Usage: $0 [command] [options...]"
+        echo ""
+        echo "Commands:"
+        echo "  build                                Build development binary (default)"
+        echo "  lua [<arch>]                         Build Lua library for architecture (auto-detects if not specified)"
+        echo "  release                              Build release binary"
+        echo "  static [<arch>]                      Build static binary (auto-detects arch if not specified)"
+        echo "  dev-depends                          Install development dependencies (current arch only)"
+        echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
+        echo "  test                                 Run module-level unit tests"
+        echo "  clean                                Clean build artifacts"
+        echo "  clean_all                            Clean all artifacts and distribution files"
+        echo ""
+        echo "Supported architectures: x86_64, aarch64, riscv64, loongarch64"
+        exit 1
+        ;;
+esac

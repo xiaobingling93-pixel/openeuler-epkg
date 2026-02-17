@@ -5,5 +5,5 @@ install:
 - app
 plan:
   fresh_installs:
-    libfoo__1__x86_64:
-    app__2__x86_64:
+  - libfoo__1__x86_64
+  - app__2__x86_64

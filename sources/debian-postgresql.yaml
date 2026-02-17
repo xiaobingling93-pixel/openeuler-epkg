@@ -1,0 +1,26 @@
+format: deb
+distro: debian
+distro_dirs:
+- postgresql
+versions:
+- trixie    13
+- bookworm  12
+- bullseye  11
+- buster    10
+
+repos:
+  postgresql:
+
+# DEB specific 'components' field:
+# - if empty: enable all components in the Release file
+# - else: select only the listed ones
+components:
+# - main
+# - 18
+# - 17
+# - 16
+
+index_url: https://mirrors.tuna.tsinghua.edu.cn///postgresql/repos/apt/dists/$version-pgdg/Release
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt/dists/bookworm-pgdg/Release

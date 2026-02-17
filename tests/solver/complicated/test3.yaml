@@ -5,5 +5,5 @@ install:
 - c
 plan:
   fresh_installs:
-    d__2.0__x86_64:
-    c__1__x86_64:
+  - d__2.0__x86_64
+  - c__1__x86_64

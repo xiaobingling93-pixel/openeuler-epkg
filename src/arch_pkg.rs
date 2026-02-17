@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use zstd::stream::read::Decoder as ZstdDecoder;
+use crate::utils;
 
 /// PKGINFO field definitions based on Arch Linux specification
 pub struct PkgInfoField {
@@ -153,7 +154,7 @@ lazy_static! {
 }
 
 /// Unpacks an Arch Linux package to the specified directory
-pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<()> {
+pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
     let pkg_file = pkg_file.as_ref();
     let store_tmp_dir = store_tmp_dir.as_ref();
 
@@ -200,7 +201,7 @@ pub fn unpack_package<P: AsRef<Path>>(pkg_file: P, store_tmp_dir: P) -> Result<(
 
     // Create package.txt with metadata from .PKGINFO
     log::debug!("Creating package.txt");
-    create_package_txt(store_tmp_dir)
+    create_package_txt(store_tmp_dir, pkgkey)
         .wrap_err("Failed to create package.txt")?;
 
     log::debug!("Arch Linux package unpacking completed successfully");
@@ -217,6 +218,8 @@ fn extract_package_contents<R: Read>(
 
     let mut found_pkginfo = false;
     let mut entries_processed = 0;
+    // Collect hard links to create after all files are extracted
+    let mut hard_links: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
 
     for entry_result in entries {
         let mut entry = entry_result
@@ -224,7 +227,7 @@ fn extract_package_contents<R: Read>(
 
         let path = entry.path()?.to_string_lossy().to_string();
         entries_processed += 1;
-        log::debug!("Processing tar entry #{}: {}", entries_processed, path);
+        log::trace!("Processing tar entry #{}: {}", entries_processed, path);
 
         // Create the target path - for dot files use info/arch/, for others use fs/
         let target_path = if path.starts_with(".") {
@@ -238,6 +241,28 @@ fn extract_package_contents<R: Read>(
             // Regular file, preserve the full path in fs/
             store_tmp_dir.join("fs").join(&path)
         };
+
+        // Check if this is a hard link entry
+        let header = entry.header();
+        let is_hard_link = matches!(header.entry_type(), tar::EntryType::Link);
+
+        if is_hard_link {
+            // For hard links, get the link target and collect it for later processing
+            if let Ok(Some(link_path)) = entry.link_name() {
+                // Check if path starts with "." by converting to string
+                let link_path_str = link_path.to_string_lossy();
+                // Resolve the link target path within our extraction directory
+                let source_path = if link_path_str.starts_with(".") {
+                    store_tmp_dir.join("info/arch").join(link_path.as_ref())
+                } else {
+                    store_tmp_dir.join("fs").join(link_path.as_ref())
+                };
+
+                // Store the hard link for later processing
+                hard_links.push((source_path, target_path));
+                continue;
+            }
+        }
 
         // Ensure parent directory exists
         if let Some(parent) = target_path.parent() {
@@ -255,6 +280,30 @@ fn extract_package_contents<R: Read>(
 
         // Fix up permissions after extraction to ensure files are readable/writable
         crate::utils::fixup_file_permissions(&target_path);
+    }
+
+    // Now create all hard links after all files have been extracted
+    for (source_path, target_path) in hard_links {
+        // Ensure parent directory exists for the hard link target
+        if let Some(parent) = target_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                log::warn!("Failed to create directory {} for hard link: {}", parent.display(), e);
+                continue;
+            }
+        }
+
+        // Create the hard link if the source file exists
+        if source_path.exists() {
+            if let Err(e) = fs::hard_link(&source_path, &target_path) {
+                log::warn!("Failed to create hard link from {} to {}: {}",
+                    source_path.display(), target_path.display(), e);
+            } else {
+                log::trace!("Created hard link: {} -> {}", target_path.display(), source_path.display());
+            }
+        } else {
+            log::warn!("Cannot create hard link {}: source file {} does not exist",
+                target_path.display(), source_path.display());
+        }
     }
 
     if !found_pkginfo {
@@ -292,12 +341,13 @@ fn extract_install_scriptlets(install_content: &[u8], store_tmp_dir: &Path) -> R
             // Map the scriptlet name to the standard name
             if let Some(standard_name) = SCRIPT_MAPPING.get(scriptlet_name) {
                 // Create a wrapper script that sources the .INSTALL file and calls the function
+                // Pass script arguments ($1, $2, etc.) to the function using "$@"
                 let wrapper_content = format!(
                     "#!/bin/sh
 # Wrapper script for {scriptlet_name} function
 THIS_SCRIPT_DIR=$(dirname \"$0\")
 source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
-{scriptlet_name}
+{scriptlet_name} \"$@\"
 "
                 );
 
@@ -306,13 +356,7 @@ source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
                     .wrap_err_with(|| format!("Failed to write scriptlet wrapper to {}", script_path.display()))?;
 
                 // Make the script executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&script_path)?.permissions();
-                    perms.set_mode(0o755); // rwxr-xr-x
-                    fs::set_permissions(&script_path, perms)?;
-                }
+                utils::set_executable_permissions(&script_path, 0o755)?;
 
                 log::debug!("Created scriptlet wrapper: {}", standard_name);
             }
@@ -323,7 +367,7 @@ source \"$THIS_SCRIPT_DIR/../arch/.INSTALL\"
 }
 
 /// Create package.txt from .PKGINFO file in info/arch/
-fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
+fn create_package_txt(store_tmp_dir: &Path, pkgkey: Option<&str>) -> Result<()> {
     log::debug!("Creating package.txt from .PKGINFO");
 
     // Read the .PKGINFO file
@@ -361,7 +405,7 @@ fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
     }
 
     // Map field names using PACKAGE_KEY_MAPPING and prepare final fields
-    let mut package_fields: Vec<(String, String)> = Vec::new();
+    let mut package_fields: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for (original_field, values) in raw_fields {
         let mapped_field = PACKAGE_KEY_MAPPING
@@ -369,14 +413,15 @@ fn create_package_txt(store_tmp_dir: &Path) -> Result<()> {
             .unwrap_or(&original_field.as_str())
             .to_string();
 
-        // For repeatable fields, add each value separately
-        for value in values {
-            package_fields.push((mapped_field.clone(), value));
-        }
+        // For repeatable fields, join values with comma
+        let value = values.join(", ");
+        package_fields.insert(mapped_field, value);
     }
 
+    package_fields.insert("format".to_string(), "pacman".to_string());
+
     // Use the general store function to save the package.txt file
-    crate::store::save_package_txt(package_fields, store_tmp_dir)?;
+    crate::store::save_package_txt(package_fields, store_tmp_dir, pkgkey)?;
 
     log::debug!("Successfully created package.txt");
     Ok(())

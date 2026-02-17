@@ -1,0 +1,29 @@
+format: rpm
+distro: opensuse
+distro_dirs:
+- ftp.opensuse.com/pub/opensuse
+- ftp.opensuse.org/opensuse
+- ftp.opensuse.org
+- opensuse.org
+- opensuse-full/opensuse
+- openSUSE
+- OpenSuSE
+- opensuse/opensuse
+- opensuse
+version:  # default to versions[0]
+versions: # Leap versions
+- "16.1"
+- "15.6"
+- "15.5"
+- "15.4"
+- "15.3"
+repos:
+  oss:
+  non-oss:
+index_url: $mirror/distribution/leap/$version/repo/$repo/$arch/repodata/repomd.xml
+amend_index_urls:
+  # updates: $mirror/update/leap/$version/$repo/repodata/repomd.xml
+
+# Example URLs:
+# https://mirrors.tuna.tsinghua.edu.cn/opensuse/distribution/leap/16.0/repo/oss/aarch64/repodata/
+# https://mirrors.tuna.tsinghua.edu.cn/opensuse/update/leap/15.6/oss/repodata/

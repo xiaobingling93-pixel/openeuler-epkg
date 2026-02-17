@@ -1,25 +1,29 @@
-use crate::models::*;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
+use crate::io::load_world;
+use crate::world::{create_delta_world_from_specs, apply_delta_world};
+use crate::depends::resolve_and_install_packages;
+use crate::install::process_url_package_specs;
 use color_eyre::Result;
 
-impl PackageManager {
-    pub fn upgrade_packages(&mut self, package_specs: Vec<String>) -> Result<InstallationPlan> {
-        self.load_world()?;
+pub fn upgrade_packages(package_specs: Vec<String>) -> Result<InstallationPlan> {
+    load_world()?;
 
-        // Step 1: Create or load delta_world based on package_specs
-        let (delta_world, user_request_world) = if !package_specs.is_empty() {
-            let user_request_world = Self::create_delta_world_from_specs(&package_specs);
-            self.apply_delta_world(&user_request_world);
-            (user_request_world.clone(), Some(user_request_world))
-        } else {
-            (self.world.clone(), None)
-        };
+    // Step 1: Create or load delta_world based on package_specs
+    let (mut delta_world, user_request_world) = if !package_specs.is_empty() {
+        // handle local files/URLs, return all package specs ready for installation
+        let processed_specs = process_url_package_specs(package_specs)?;
 
-        // Step 2: Resolve dependencies and perform installation
-        self.resolve_and_install_packages(
-            &delta_world,
-            user_request_world.as_ref(),
-        )
-    }
+        let user_request_world = create_delta_world_from_specs(&processed_specs);
+        apply_delta_world(&user_request_world);
+        (user_request_world.clone(), Some(user_request_world))
+    } else {
+        (PACKAGE_CACHE.world.read().unwrap().clone(), None)
+    };
 
+    // Step 2: Resolve dependencies and perform installation
+    resolve_and_install_packages(
+        &mut delta_world,
+        user_request_world.as_ref(),
+    )
 }

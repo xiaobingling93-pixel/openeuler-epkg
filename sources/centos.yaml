@@ -1,0 +1,21 @@
+# CentOS Configuration
+format: rpm
+distro: centos
+distro_dirs:
+- centos-stream-all
+- centos_stream_all
+- CentOS-Stream-All
+- centos-stream
+- centosstream
+- CentOS-stream
+- centOS-Stream
+
+versions:
+  - "10-stream"
+  - "9-stream"
+repos:
+  BaseOS:
+  AppStream:
+
+# Example: https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/repodata/repomd.xml
+index_url: $mirror/$version/$repo/$arch/os/repodata/repomd.xml

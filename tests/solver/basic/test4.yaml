@@ -6,4 +6,4 @@ remove:
 - a
 plan:
   old_removes:
-    a__1__x86_64:
+  - a__1__x86_64

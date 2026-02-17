@@ -54,7 +54,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
             revise.size.try_into().unwrap()
         )
     } else {
-        log::warn!("No size available for {}, using hash-only validation", revise.location);
+        log::info!("No size available for {}, using hash-only validation", revise.location);
         packages_stream::ReceiverHasher::new(data_rx, revise.hash.clone())
     };
 

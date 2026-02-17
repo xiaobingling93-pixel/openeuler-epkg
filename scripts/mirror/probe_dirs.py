@@ -12,7 +12,7 @@ from common import debug_print
 # Define paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LS_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
-NEW_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'new-mirrors.json')
+OFFICIAL_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'official-mirrors.json')
 PROBE_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'probe-mirrors.json')
 NOREACH_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'noreach-mirrors.txt')
 NOCONTENT_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'nocontent-mirrors.txt')
@@ -26,18 +26,18 @@ POSSIBLE_DISTRO_DIRS = [
     "debian-multimedia", "mxlinux", "CentOS", "openeuler", "arch",
     "mint", "endeavouros", "ubuntu-archive", "archlinuxarm",
     "fedora-secondary", "rocky-linux", "archlinuxcn", "armbian",
-    "deb-multimedia", "raspberrypi", "openSUSE", "anaconda",
-    "artixlinux", "alpinelinux"
+    "deb-multimedia", "raspberrypi", "openSUSE", "anaconda", "conda",
+    "artixlinux", "alpinelinux", "cachyos", "msys2",
 ]
 
-def load_new_mirrors_data():
-    """Load new-mirrors.json data."""
-    if os.path.exists(NEW_MIRRORS_INPUT_PATH):
+def load_official_mirrors_data():
+    """Load official-mirrors.json data."""
+    if os.path.exists(OFFICIAL_MIRRORS_INPUT_PATH):
         try:
-            with open(NEW_MIRRORS_INPUT_PATH, 'r') as f:
+            with open(OFFICIAL_MIRRORS_INPUT_PATH, 'r') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Error loading new-mirrors.json: {e}")
+            print(f"Error loading official-mirrors.json: {e}")
             return {}
     return {}
 
@@ -194,21 +194,21 @@ def main():
     """Main function to probe mirrors without 'ls' field."""
     print("Loading ls-mirrors.json...")
     ls_data = load_ls_mirrors_data()
-    new_data = load_new_mirrors_data()
+    official_mirrors = load_official_mirrors_data()
 
     if not ls_data:
         print("Error: Could not load ls-mirrors.json")
         sys.exit(1)
 
-    if not new_data:
-        print("Error: Could not load new-mirrors.json")
+    if not official_mirrors:
+        print("Error: Could not load official-mirrors.json")
         sys.exit(1)
 
     # Find mirrors without 'ls' field
     mirrors_to_probe = []
     for mirror_url, mirror_info in ls_data.items():
         if not mirror_info.get('ls'):
-            new_info = new_data.get(mirror_url, {})
+            new_info = official_mirrors.get(mirror_url, {})
             if new_info and (not new_info.get('top_level') and not new_info.get('cache_dirs')):
                 mirrors_to_probe.append(mirror_url)
                 #  if len(mirrors_to_probe) > 3: # for quick debug run

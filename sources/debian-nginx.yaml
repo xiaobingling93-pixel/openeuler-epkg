@@ -1,0 +1,15 @@
+format: deb
+distro: debian
+distro_dirs:
+- nginx
+versions:
+- trixie    13
+- bookworm  12 12.10 Debian12.10
+- bullseye  11 11.11 Debian11.11
+- buster    10 10.13 Debian10.13
+repos:
+  nginx:
+index_url: $mirror/debian/dists/$version/Release
+
+# Example URLs:
+# https://mirrors.ustc.edu.cn/nginx/debian/dists/trixie/Release

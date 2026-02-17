@@ -8,8 +8,8 @@ config:
   full_upgrade: true
 plan:
   upgrades_new:
-    b__2__x86_64:
-    a__2__x86_64:
+  - b__2__x86_64
+  - a__2__x86_64
   upgrades_old:
-    a__1__x86_64:
-    b__1__x86_64:
+  - a__1__x86_64
+  - b__1__x86_64

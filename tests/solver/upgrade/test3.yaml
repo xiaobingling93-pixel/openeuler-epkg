@@ -7,12 +7,12 @@ upgrade:
 - app
 plan:
   fresh_installs:
-    libnew__1__x86_64:
+  - libnew__1__x86_64
   upgrades_new:
-    b__2__x86_64:
-    app__2__x86_64:
+  - b__2__x86_64
+  - app__2__x86_64
   upgrades_old:
-    b__1__x86_64:
-    app__1__x86_64:
+  - b__1__x86_64
+  - app__1__x86_64
   old_removes:
-    libold__1__x86_64:
+  - libold__1__x86_64

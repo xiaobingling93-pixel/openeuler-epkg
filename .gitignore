@@ -2,6 +2,7 @@
 /elf-loader/
 /rpm-rs/
 /resolvo/
+/busybox/
 /target/
 /dist/
 /src/tags
@@ -17,3 +18,6 @@
 files
 perf.data*
 tests/e2e/reproduce/
+
+# Auto-generated files
+/src/applets/_modules_gen.rs

@@ -146,6 +146,4 @@ error() {
     exit 1
 }
 
-if [ "$INTERACTIVE" = 2 ]; then
-    set -x
-fi
+[ -n "$INTERACTIVE" ] && set -x

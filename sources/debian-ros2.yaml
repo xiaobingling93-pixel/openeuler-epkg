@@ -1,0 +1,17 @@
+format: deb
+distro: debian
+distro_dirs:
+- packages.ros.org/ros2
+- ros2
+versions:
+- trixie    13
+- bookworm  12
+- bullseye  11
+- buster    10
+repos:
+  ros2:
+index_url: $mirror/ubuntu/dists/$version/Release
+
+# Example URLs:
+# http://packages.ros.org/ros2/ubuntu/dists/noble/main/binary-amd64/Packages.xz
+# http://packages.ros.org/ros2/ubuntu/dists/jammy/main/binary-arm64/Packages.xz

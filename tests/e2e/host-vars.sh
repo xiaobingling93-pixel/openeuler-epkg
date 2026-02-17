@@ -14,20 +14,17 @@ case "$ARCH" in
 	*) exit 1 ;;
 esac
 
-# Docker volume mounts (host paths)
-TMPFS_ENVS_ROOT="/tmp/epkg-envs-root"
+# If EPKG_BINARY doesn't exist, build it automatically
+if [ ! -x "$EPKG_BINARY" ]; then
+	make -C $PROJECT_ROOT static-$ARCH
+fi
 
 # Mount entire /opt/epkg/ as a single mount point to avoid cross-device link errors
 # This ensures cache/unpack and store are on the same filesystem
-PERSISTENT_OPT_EPKG="/srv/os-repo/epkg-opt"
-[ -w $PERSISTENT_OPT_EPKG ] || {
-PERSISTENT_OPT_EPKG="/tmp/epkg-opt"
-LIGHT_TEST=1
-}
-
-PERSISTENT_CACHE="$PERSISTENT_OPT_EPKG/cache"
-PERSISTENT_STORE="$PERSISTENT_OPT_EPKG/store"
+PERSISTENT_OPT_EPKG="/opt/epkg"
+[ -z "$LIGHT_TEST" ] && LIGHT_TEST=1
 
 # Docker configuration
-DOCKER_IMAGE=alpine
+DOCKER_IMAGE=alpine  # Cannot run conda, which relies on host __glibc
+DOCKER_IMAGE=debian
 BUSYBOX_DOCKER=busybox

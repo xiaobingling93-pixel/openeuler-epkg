@@ -178,36 +178,17 @@ impl CondaPackage {
             version: version_with_build,
             arch: arch.to_string(),
             size: self.size.unwrap_or(0) as u32,
-            installed_size: 0, // Conda doesn't typically provide this
+            installed_size: 0,
             build_time,
-            source: None,
             location: filename.to_string(),
-            ca_hash: None,
             sha256sum: self.sha256.clone(),
-            sha1sum: None,
-            depends: Vec::new(), // Will be populated separately if needed
-            requires_pre: Vec::new(),
-            requires: self.depends.clone(), // Store dependencies as-is, let parse_requires handle them
-            provides: vec![self.name.clone()], // Package provides itself
-            recommends: Vec::new(),
-            suggests: Vec::new(),
-            conflicts: Vec::new(),
-            obsoletes: Vec::new(),
-            enhances: Vec::new(),
-            supplements: Vec::new(),
-            files: Vec::new(),
+            requires: self.depends.clone(),
+            provides: vec![self.name.clone()],
             summary: self.summary.clone().unwrap_or_default(),
             description: self.description.clone(),
             homepage: self.url.clone().unwrap_or_default(),
-            section: None,
-            priority: None,
-            maintainer: String::new(),
-            tag: None,
-            origin_url: None,
-            multi_arch: None,
-            pkgkey: String::new(), // Will be set later
-            repodata_name: String::new(), // Will be set later
-            package_baseurl: String::new(), // Will be set later
+            format: PackageFormat::Conda,
+            ..Default::default()
         }
     }
 }
@@ -229,8 +210,7 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
     };
 
     // Use the standard get_repo_dir() - it now works correctly because repo.arch is "all" for noarch
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .map_err(|e| eyre::eyre!("Failed to get repository directory for {}: {}", repo.repo_name, e))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     let output_path = repo_dir.join(format!("packages-{}.txt", effective_arch));
 
@@ -250,7 +230,8 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
     let download_path = crate::mirror::Mirrors::url_to_cache_path(&url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", url))?;
 
-    let need_download = !download_path.exists();
+    let release_status = should_refresh_release_file(&download_path, repo)?;
+    let need_download = matches!(release_status, ReleaseStatus::NeedDownload | ReleaseStatus::NeedUpdate);
     let need_convert = !output_path.exists() || {
         let repoindex_path = repo_dir.join("RepoIndex.json");
         !repoindex_path.exists()
@@ -264,12 +245,11 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
         url,
         package_baseurl: package_baseurl.to_string(),
         hash_type: "SHA256".to_string(),
-        hash: String::new(),
-        size: 0,
         location,
         is_packages: true,
         output_path,
         download_path,
+        ..Default::default()
     });
 
     Ok(release_items)

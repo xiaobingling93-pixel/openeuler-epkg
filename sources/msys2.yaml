@@ -1,0 +1,13 @@
+format: pacman
+distro: msys2
+distro_dirs:
+- msys2
+- MSYS2
+versions:
+- "latest"
+repos:
+  msys:
+index_url: $mirror/$repo/$arch/$repo.files.tar.zst
+
+# Example URLs:
+# https://mirrors.ustc.edu.cn/msys2/msys/x86_64/msys.files.tar.zst

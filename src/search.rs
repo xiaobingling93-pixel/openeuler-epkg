@@ -13,8 +13,42 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 use memmap2::Mmap;
 use color_eyre::eyre::{Result, Context};
 use log::warn;
+use regex::bytes::RegexBuilder;
 
 use crate::models::*;
+
+// Helper functions for case-insensitive pattern matching
+fn find_all_matches(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Vec<usize> {
+    if ignore_case {
+        let lower_haystack = haystack.to_ascii_lowercase();
+        memchr::memmem::Finder::new(pattern).find_iter(&lower_haystack).collect()
+    } else {
+        memchr::memmem::Finder::new(pattern).find_iter(haystack).collect()
+    }
+}
+
+fn find_first_match(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Option<usize> {
+    if ignore_case {
+        let lower_haystack = haystack.to_ascii_lowercase();
+        memchr::memmem::Finder::new(pattern).find(&lower_haystack)
+    } else {
+        memchr::memmem::Finder::new(pattern).find(haystack)
+    }
+}
+
+#[allow(dead_code)]
+fn find_last_match(haystack: &[u8], pattern: &[u8], ignore_case: bool) -> Option<usize> {
+    if ignore_case {
+        let lower_haystack = haystack.to_ascii_lowercase();
+        memchr::memmem::rfind(&lower_haystack, pattern)
+    } else {
+        memchr::memmem::rfind(haystack, pattern)
+    }
+}
+
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
 
 // Search options for RPM filelists
 #[derive(Debug, Default, Clone)]
@@ -23,20 +57,78 @@ pub struct SearchOptions {
     pub files: bool,
     pub paths: bool,
     pub regexp: bool,
-    pub pattern: String,
-    pub u8_pattern: Vec<u8>,
-    pub regex_pattern: Option<Arc<regex::bytes::Regex>>,
+    pub glob: bool,
+    pub origin_pattern: String,
+    pub u8_literal: Vec<u8>,
+    pub regex_pattern: Option<regex::bytes::Regex>,
+    pub glob_pattern: Option<glob::Pattern>,
+    pub collected_results: Option<Arc<Mutex<Vec<(String, String)>>>>,
 }
 
 // Constants for package metadata patterns
 static PKGNAME_PATTERN: &[u8] = b"pkgname: ";
 static SUMMARY_PATTERN: &[u8] = b"summary: ";
 
+fn setup_patterns(options: &mut SearchOptions) -> Result<()> {
+    let mut literal_pattern = options.origin_pattern.clone();
+
+    // Process the filelists based on the options
+    if options.regexp {
+        // Create a regex from the pattern
+        let mut regex_builder = RegexBuilder::new(&options.origin_pattern);
+        let regex = regex_builder.case_insensitive(options.ignore_case).build()?;
+
+        // Set the regex pattern in options
+        options.regex_pattern = Some(regex);
+    }
+
+    // Auto-detect glob pattern if not using regexp
+    if !options.regexp && is_glob_pattern(&options.origin_pattern) {
+        options.glob = true;
+        options.glob_pattern = Some(glob::Pattern::new(&options.origin_pattern).unwrap());
+    }
+
+    if options.regexp || options.glob {
+        // Try to extract a literal prefix for optimization
+        // If we can't extract a prefix, we'll just use the original pattern
+        // This is less efficient but will still work correctly
+        if let Some(literal) = crate::search::extract_literal_string(&options.origin_pattern) {
+            literal_pattern = literal;
+        } else {
+            log::warn!("Failed to extract literal, cannot handle complex regexp now");
+        }
+    }
+
+    if options.ignore_case {
+        literal_pattern = literal_pattern.to_lowercase();
+    }
+
+    // Create the pattern for searching and store it in options
+    options.u8_literal = literal_pattern.as_bytes().to_vec();
+
+    // For Deb/Pacman filelists (relative paths), strip leading '/' from pattern if present
+    // This allows users to copy-paste absolute paths like /usr/bin/ls and have them work
+    // with relative filelist entries like usr/bin/ls
+    if (channel_config().format == crate::models::PackageFormat::Deb ||
+        channel_config().format == crate::models::PackageFormat::Pacman) &&
+        !options.u8_literal.is_empty() &&
+        options.u8_literal[0] == b'/' {
+        options.u8_literal.remove(0);
+    }
+
+    log::debug!("setup_patterns: {:?}", options);
+    Ok(())
+}
+
 pub fn search_repo_cache(options: &mut SearchOptions) -> Result<()> {
+    crate::repo::sync_channel_metadata()?;
+
     let repodata_indice = repodata_indice();
     let mut any_filelists = false;
     let mut consumer_handles = Vec::new();
     let mut producer_handles = Vec::new();
+
+    setup_patterns(options)?;
 
     for repo_index in repodata_indice.values() {
         let repo_dir = PathBuf::from(&repo_index.repo_dir_path);
@@ -468,17 +560,14 @@ fn process_simple_filelists(
     options: &SearchOptions,
     _buffer_pool: Arc<SharedBufferPool> // We don't currently use this but include for symmetry and future use
 ) -> Result<()> {
-    // Create a memmem finder for fast substring searching
-    let finder = memchr::memmem::Finder::new(&options.u8_pattern);
-
     // Process chunks as they arrive
     while let Ok(arc_chunk) = rx.recv() {
         // Lock the buffer to access its contents
         let mut chunk_guard = arc_chunk.lock().unwrap();
         let chunk_data = chunk_guard.as_slice();
 
-        // Find all matches in the chunk
-        for match_pos in finder.find_iter(chunk_data) {
+        // Find all matches in the chunk (case-insensitive if needed)
+        for match_pos in find_all_matches(chunk_data, &options.u8_literal, options.ignore_case) {
             // For each match, find the line boundaries using find_line_boundaries
             let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
 
@@ -580,9 +669,14 @@ fn process_simple_line(
     Ok(())
 }
 
-fn print_path(pkgname: &[u8], path: &[u8], _options: &SearchOptions) {
+fn print_path(pkgname: &[u8], path: &[u8], options: &SearchOptions) {
     if let (Ok(pkg_str), Ok(path_str)) = (std::str::from_utf8(pkgname), std::str::from_utf8(path)) {
-        println!("{} {}", pkg_str, path_str);
+        if let Some(ref results) = options.collected_results {
+            let mut results = results.lock().unwrap();
+            results.push((pkg_str.to_string(), path_str.to_string()));
+        } else {
+            println!("{} {}", pkg_str, path_str);
+        }
     }
 }
 
@@ -591,7 +685,7 @@ fn check_match_path(path: &[u8], options: &SearchOptions) -> bool {
     if options.files {
         // For --files, check if the filename matches
         if let Some(mut fname_pos) = memchr::memrchr(b'/', path) {
-            if !options.u8_pattern.is_empty() && options.u8_pattern[0] != b'/' {
+            if !options.u8_literal.is_empty() && options.u8_literal[0] != b'/' {
                 fname_pos += 1;
             } else {
                 // pattern="/bash" => filename starts with "bash"
@@ -601,32 +695,31 @@ fn check_match_path(path: &[u8], options: &SearchOptions) -> bool {
         } else {
             match_pattern(path, options)
         }
-    } else if options.paths {
+    } else {
         // For --paths, check if the path matches
         match_pattern(path, options)
-    } else {
-        // Default case, check if the path contains the pattern
-        memchr::memmem::Finder::new(&options.u8_pattern).find(path).is_some()
     }
 }
 
 // Helper function to match pattern against content based on options
 fn match_pattern(content: &[u8], options: &SearchOptions) -> bool {
-    if options.regexp {
-        // Use regex for matching if available
-        if let Some(regex) = &options.regex_pattern {
-            return regex.is_match(content);
-        }
+    // Use regex for matching if available
+    if let Some(regex) = &options.regex_pattern {
+        return regex.is_match(content);
+    }
+
+    if let Some(pattern) = &options.glob_pattern {
+        let content_str = String::from_utf8_lossy(content);
+        let content_str = if options.ignore_case {
+            content_str.to_lowercase()
+        } else {
+            content_str.into_owned()
+        };
+        return pattern.matches(&content_str);
     }
 
     // Fall back to simple substring search
-    if !options.ignore_case {
-        memchr::memmem::Finder::new(&options.u8_pattern).find(content).is_some()
-    } else {
-        // Case-insensitive search
-        let content_lower = content.to_ascii_lowercase();
-        memchr::memmem::Finder::new(&options.u8_pattern).find(&content_lower).is_some()
-    }
+    find_first_match(content, &options.u8_literal, options.ignore_case).is_some()
 }
 
 // Process RPM filelists using memmem pattern matching with chunked data
@@ -637,7 +730,6 @@ fn process_rpm_filelists(
 ) -> Result<()> {
     let mut current_pkgname = Vec::<u8>::new();
 
-    let finder = memchr::memmem::Finder::new(&options.u8_pattern);
 
     // Use the buffer pool's consumer buffer instead of directly receiving from channel
     while let Ok(arc_chunk) = rx.recv() {
@@ -647,7 +739,7 @@ fn process_rpm_filelists(
         // Process the chunk directly - we use a scoped block to ensure the lock is released quickly
         {
             let chunk_data = chunk_guard.as_slice();
-            process_rpm_filelists_with_memmem(&mut current_pkgname, chunk_data, &finder, options)?;
+            process_rpm_filelists_with_memmem(&mut current_pkgname, chunk_data, options)?;
         }
 
         chunk_guard.clear();
@@ -669,8 +761,8 @@ fn process_rpm_filelists(
   <file>/usr/share/CUnit/CUnit-List.dtd</file>
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
-fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], finder: &memchr::memmem::Finder, options: &SearchOptions) -> Result<()> {
-    for match_pos in finder.find_iter(chunk_data) {
+fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], options: &SearchOptions) -> Result<()> {
+    for match_pos in find_all_matches(chunk_data, &options.u8_literal, options.ignore_case) {
         // For each match, find the line boundaries using find_line_boundaries
         let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
 
@@ -900,6 +992,7 @@ fn is_line_start(data: &[u8], pos: usize, _pattern: &[u8]) -> bool {
 
 // Find and extract a pattern value from a line
 fn find_and_extract_pattern(data: &[u8], search_end: usize, pattern: &[u8], search_backwards: bool) -> Option<(Vec<u8>, usize)> {
+    // Metadata patterns (pkgname:, summary:) are fixed _lowercase_ strings in package files
     let pos = if search_backwards {
         memchr::memmem::rfind(&data[..search_end], pattern)
     } else {
@@ -956,7 +1049,6 @@ pub fn search_packages(packages_path: &Path, options: &SearchOptions) -> Result<
     let file = File::open(packages_path)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
-    let user_pattern = options.pattern.as_bytes();
     let mut stdout = BufWriter::new(std::io::stdout());
 
     // Keep track of the last seen package name and summary
@@ -969,8 +1061,8 @@ pub fn search_packages(packages_path: &Path, options: &SearchOptions) -> Result<
     // Process the entire mmap
     while pos < mmap.len() {
         // First search for our pattern
-        if let Some(pattern_pos) = memchr::memmem::find(&mmap[pos..], user_pattern) {
-            let pattern_pos = pos + pattern_pos;
+        if let Some(relative_pos) = find_first_match(&mmap[pos..], &options.u8_literal, options.ignore_case) {
+            let pattern_pos = pos + relative_pos;
 
             // Find the line containing this pattern
             let (line_start, line_end) = find_line_boundaries(&mmap, pattern_pos, pattern_pos + 1);

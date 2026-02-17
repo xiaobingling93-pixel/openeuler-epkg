@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
 use crate::models::*;
-use crate::install::InstallationPlan;
+use crate::plan::InstallationPlan;
+use crate::models::PACKAGE_CACHE;
 #[cfg(test)]
 use env_logger;
 
@@ -15,6 +16,9 @@ use env_logger;
 struct TestCaseMetadata {
     /// Package format for this test
     format: String,
+    /// Distribution name (optional, e.g., "openeuler", "debian")
+    #[serde(default)]
+    distro: String,
     /// Description of what this test validates
     description: String,
     /// Whether this test should be skipped
@@ -35,9 +39,9 @@ struct TestCaseMetadata {
     /// Packages to remove
     #[serde(default)]
     remove: Vec<String>,
-    /// Expected InstallationPlan
+    /// Expected GenerationCommand (simplified plan with just package lists)
     #[serde(default)]
-    plan: InstallationPlan,
+    plan: GenerationCommand,
     /// Whether resolution should fail
     #[serde(default)]
     expect_fail: bool,
@@ -68,7 +72,7 @@ struct TestCase {
     /// Available packages in repository (merged from all repo files)
     packages: Vec<Package>,
     /// Installed packages
-    installed: HashMap<String, InstalledPackageInfo>,
+    installed: InstalledPackagesMap,
 }
 
 impl TestCase {
@@ -98,11 +102,12 @@ impl TestCase {
         }
 
         // Load installed packages (optional)
-        let installed: HashMap<String, InstalledPackageInfo> = if let Some(installed_file) = &metadata.installed {
+        let installed: InstalledPackagesMap = if let Some(installed_file) = &metadata.installed {
             let installed_path = test_dir.join(installed_file);
             if installed_path.exists() {
                 let content = fs::read_to_string(&installed_path)?;
-                serde_yaml::from_str(&content)?
+                let raw: HashMap<String, InstalledPackageInfo> = serde_yaml::from_str(&content)?;
+                raw.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
             } else {
                 return Err(eyre!("Installed file not found: {}", installed_path.display()));
             }
@@ -121,16 +126,7 @@ impl TestCase {
     /// Parse format string to PackageFormat enum
     #[allow(dead_code)] // Used in test module
     fn parse_format(&self) -> Result<PackageFormat> {
-        match self.metadata.format.as_str() {
-            "rpm" => Ok(PackageFormat::Rpm),
-            "deb" => Ok(PackageFormat::Deb),
-            "apk" => Ok(PackageFormat::Apk),
-            "epkg" => Ok(PackageFormat::Epkg),
-            "conda" => Ok(PackageFormat::Conda),
-            "python" => Ok(PackageFormat::Python),
-            "pacman" => Ok(PackageFormat::Pacman),
-            _ => Err(eyre!("Unknown format: {}", self.metadata.format)),
-        }
+        PackageFormat::from_str(self.metadata.format.as_str())
     }
 
     /// Create and populate PackageManager with test data
@@ -138,21 +134,14 @@ impl TestCase {
     /// This creates a fresh PackageManager instance with empty caches for each test,
     /// ensuring that packages from previous tests don't leak into the current test.
     #[allow(dead_code)] // Used in test module
-    fn setup_package_manager(&self) -> PackageManager {
-        // Create a fresh PackageManager with empty caches
-        // This ensures each test starts with a clean state
-        let mut pm = PackageManager {
-            world: HashMap::new(),
-            pkgkey2package: HashMap::new(),
-            pkgline2package: HashMap::new(),
-            pkgname2packages: HashMap::new(),
-            provide2pkgnames: HashMap::new(),
-            installed_packages: self.installed.clone(),
-            has_worker_process: false,
-            ipc_socket: String::new(),
-            ipc_stream: None,
-            child_pid: None,
-        };
+    fn setup_package_manager(&self) {
+        // Clear all caches first to ensure clean state
+        PACKAGE_CACHE.clear();
+
+        // Populate installed packages into cache
+        for (k, v) in &self.installed {
+            PACKAGE_CACHE.installed_packages.write().unwrap().insert(k.clone(), v.clone());
+        }
 
         // Populate packages into pkgkey2package and update indexes
         // build_provider_list in depends.rs now checks provide2pkgnames index for test data
@@ -163,26 +152,24 @@ impl TestCase {
             if pkg.pkgkey.is_empty() {
                 pkg.pkgkey = format!("{}__{}__{}", pkg.pkgname, pkg.version, pkg.arch);
             }
-            pm.add_package_to_cache(Arc::new(pkg), format);
+            crate::package_cache::add_package_to_cache(Arc::new(pkg), format);
         }
-
-        pm
     }
 
     /// Create initial packages map from install request (for fallback compatibility)
     #[allow(dead_code)] // Used in test module
-    fn create_initial_packages(&self, pm: &mut PackageManager) -> HashMap<String, InstalledPackageInfo> {
-        let mut initial_packages: HashMap<String, InstalledPackageInfo> = HashMap::new();
+    fn create_initial_packages(&self) -> InstalledPackagesMap {
+        let mut initial_packages: InstalledPackagesMap = HashMap::new();
 
         // For each requested package, try to find it and add to initial packages
         for req in &self.metadata.install {
             // Try to resolve the package name to find matching packages
-            if let Ok(packages) = pm.map_pkgname2packages(req) {
+            if let Ok(packages) = crate::package_cache::map_pkgname2packages(req) {
                 if let Some(pkg) = packages.first() {
                     let pkgkey = pkg.pkgkey.clone();
                     initial_packages.insert(
                         pkgkey.clone(),
-                        InstalledPackageInfo {
+                        std::sync::Arc::new(InstalledPackageInfo {
                             pkgline: format!("fake_hash__{}", pkgkey),
                             arch: pkg.arch.clone(),
                             depend_depth: 0,
@@ -191,10 +178,16 @@ impl TestCase {
                                 .unwrap()
                                 .as_secs(),
                             ebin_exposure: true,
-                            rdepends: Vec::new(),
-                            depends: Vec::new(),
+                            rdepends: BTreeSet::new(),
+                            depends: BTreeSet::new(),
+                            bdepends: BTreeSet::new(),
+                            rbdepends: BTreeSet::new(),
                             ebin_links: Vec::new(),
-                        },
+                            xdesktop_links: Vec::new(),
+                            pending_triggers: Vec::new(),
+                            triggers_awaited: false,
+                            config_failed: false,
+                        }),
                     );
                 }
             }
@@ -204,47 +197,56 @@ impl TestCase {
         initial_packages
     }
 
-    /// Validate InstallationPlan against expected outcome
+    /// Validate InstallationPlan against expected GenerationCommand
     #[allow(dead_code)] // Used in test module
     fn validate_plan(&self, plan_result: Result<InstallationPlan>) -> Result<()> {
         match plan_result {
             Ok(plan) => {
-                println!("  Fresh installs: {:?}", plan.fresh_installs.keys().collect::<Vec<_>>());
-                println!("  Upgrades: {:?}", plan.upgrades_new.keys().collect::<Vec<_>>());
-                println!("  Removals: {:?}", plan.old_removes.keys().collect::<Vec<_>>());
+                // Use the helper function to convert plan to GenerationCommand
+                let actual_command = crate::plan::plan_to_generation_command(&plan);
+                let expected_command = &self.metadata.plan;
+
+                println!("  Fresh installs: {:?}", actual_command.fresh_installs);
+                println!("  Upgrades: {:?}", actual_command.upgrades_new);
+                println!("  Removals: {:?}", actual_command.old_removes);
+                if !actual_command.new_exposes.is_empty() {
+                    println!("  New exposes: {:?}", actual_command.new_exposes);
+                }
+                if !actual_command.del_exposes.is_empty() {
+                    println!("  Del exposes: {:?}", actual_command.del_exposes);
+                }
 
                 // Check if expected plan has any content
-                let expected_plan = &self.metadata.plan;
-                let has_expected_plan = !expected_plan.fresh_installs.is_empty()
-                    || !expected_plan.upgrades_new.is_empty()
-                    || !expected_plan.old_removes.is_empty();
+                let has_expected_plan = !expected_command.fresh_installs.is_empty()
+                    || !expected_command.upgrades_new.is_empty()
+                    || !expected_command.old_removes.is_empty()
+                    || !expected_command.new_exposes.is_empty()
+                    || !expected_command.del_exposes.is_empty();
 
                 if has_expected_plan {
-                    // Compare with expected plan
+                    // Compare Vec fields by converting to HashSet for order-independent comparison
                     let mut errors = Vec::new();
 
-                    // Compare fresh_installs
-                    let actual_fresh: std::collections::HashSet<String> = plan.fresh_installs.keys().cloned().collect();
-                    let expected_fresh: std::collections::HashSet<String> = expected_plan.fresh_installs.keys().cloned().collect();
-                    if actual_fresh != expected_fresh {
-                        errors.push(format!("Fresh installs mismatch: expected {:?}, got {:?}",
-                            expected_fresh, actual_fresh));
-                    }
+                    // Helper to compare Vec fields as sets
+                    let compare_vec_fields = |actual: &[String], expected: &[String], field_name: &str| -> Option<String> {
+                        let actual_set: std::collections::HashSet<String> = actual.iter().cloned().collect();
+                        let expected_set: std::collections::HashSet<String> = expected.iter().cloned().collect();
+                        if actual_set != expected_set {
+                            Some(format!("{} mismatch: expected {:?}, got {:?}", field_name, expected, actual))
+                        } else {
+                            None
+                        }
+                    };
 
-                    // Compare upgrades_new
-                    let actual_upgrades: std::collections::HashSet<String> = plan.upgrades_new.keys().cloned().collect();
-                    let expected_upgrades: std::collections::HashSet<String> = expected_plan.upgrades_new.keys().cloned().collect();
-                    if actual_upgrades != expected_upgrades {
-                        errors.push(format!("Upgrades mismatch: expected {:?}, got {:?}",
-                            expected_upgrades, actual_upgrades));
+                    // Compare all GenerationCommand fields
+                    if let Some(error) = compare_vec_fields(&actual_command.fresh_installs, &expected_command.fresh_installs, "Fresh installs") {
+                        errors.push(error);
                     }
-
-                    // Compare old_removes
-                    let actual_removes: std::collections::HashSet<String> = plan.old_removes.keys().cloned().collect();
-                    let expected_removes: std::collections::HashSet<String> = expected_plan.old_removes.keys().cloned().collect();
-                    if actual_removes != expected_removes {
-                        errors.push(format!("Removals mismatch: expected {:?}, got {:?}",
-                            expected_removes, actual_removes));
+                    if let Some(error) = compare_vec_fields(&actual_command.upgrades_new, &expected_command.upgrades_new, "Upgrades") {
+                        errors.push(error);
+                    }
+                    if let Some(error) = compare_vec_fields(&actual_command.old_removes, &expected_command.old_removes, "Removals") {
+                        errors.push(error);
                     }
 
                     if !errors.is_empty() {
@@ -306,6 +308,10 @@ impl TestCase {
             let format = self.parse_format()?;
             let mut channel_config = crate::models::channel_config_mut();
             channel_config.format = format;
+            // Set distro if specified in test metadata
+            if !self.metadata.distro.is_empty() {
+                channel_config.distro = self.metadata.distro.clone();
+            }
         }
         Ok(())
     }
@@ -331,10 +337,10 @@ impl TestCase {
         // Apply config overrides if present (including format)
         self.apply_config_overrides()?;
 
-        let mut pm = self.setup_package_manager();
+        self.setup_package_manager();
 
         // Determine which operation to perform and get the plan
-        // dry_run is already set to true in test mode via CLAP_MATCHES
+        // dry_run is already set to true in test mode via clap_matches()
         let plan_result = if !self.metadata.install.is_empty() {
             println!("  Install: {:?}", self.metadata.install);
             // Set config.subcommand for install
@@ -343,10 +349,10 @@ impl TestCase {
                 let mut global_config = crate::models::config_mut();
                 global_config.subcommand = crate::models::EpkgCommand::Install;
             }
-            pm.install_packages(self.metadata.install.clone())
+            crate::install::install_packages(self.metadata.install.clone())
         } else if !self.metadata.remove.is_empty() {
             println!("  Remove: {:?}", self.metadata.remove);
-            pm.remove_packages(self.metadata.remove.clone())
+            crate::remove::remove_packages(self.metadata.remove.clone())
         } else {
             println!("  Upgrade: {:?}", self.metadata.upgrade);
             // Set config.subcommand for upgrade
@@ -355,7 +361,7 @@ impl TestCase {
                 let mut global_config = crate::models::config_mut();
                 global_config.subcommand = crate::models::EpkgCommand::Upgrade;
             }
-            pm.upgrade_packages(self.metadata.upgrade.clone())
+            crate::upgrade::upgrade_packages(self.metadata.upgrade.clone())
         };
 
         // Validate plan

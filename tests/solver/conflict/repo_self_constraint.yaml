@@ -5,12 +5,12 @@
   - texlive-plain-generic = 2024.20250309-2
   - texlive-plain-generic(x86_64) = 2024.20250309-2
   conflicts:
-  - tex4ht (<< 20160814)
+  - tex4ht < 20160814
   - tex4ht-common
   requires:
-  - tex-common (>= 6.13)
-  - texlive-base (>= 2024.20240401)
-  - texlive-binaries (>= 2024.20240313)
+  - tex-common >= 6.13
+  - texlive-base >= 2024.20240401
+  - texlive-binaries >= 2024.20240313
 - pkgname: tex-common
   version: 6.13
   provides:

@@ -2,7 +2,7 @@
 # Container-side e2e test variables (for scripts running inside docker)
 
 # Common test variables
-ALL_OS="debian ubuntu fedora alpine archlinux"
+ALL_OS="openeuler fedora  debian ubuntu  alpine archlinux conda"
 
 # E2E_DIR is set by docker.sh to the same path as on host
 # This allows the same directory layout inside and outside docker for easier debugging

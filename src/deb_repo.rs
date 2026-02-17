@@ -63,6 +63,8 @@ lazy_static! {
         m.insert("Original-Vcs-Browser",        "originalVcsBrowser");
         m.insert("Auto-Built-Package",          "autoBuiltPackage");
         m.insert("Ubuntu-Oem-Kernel-Flavour",   "ubuntuOemKernelFlavour");
+        m.insert("Prefer-Variant",              "preferVariant");
+        m.insert("Commands",                    "commands");
 
         m.insert("Ruby-Versions",               "rubyVersions");
         m.insert("Lua-Versions",                "luaVersions");
@@ -72,6 +74,7 @@ lazy_static! {
         m.insert("Static-Built-Using",          "staticBuiltUsing");
         m.insert("Javascript-Built-Using",      "javascriptBuiltUsing");
         m.insert("X-Cargo-Built-Using",         "xCargoBuiltUsing");
+        m.insert("X-Rocm-Gpu-Architecture",     "xRocmGpuArchitecture");
         m.insert("Built-Using-Newlib-Source",   "builtUsingNewlibSource");
         m.insert("Go-Import-Path",              "goImportPath");
         m.insert("Ghc-Package",                 "ghcPackage");
@@ -189,23 +192,62 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
 
                 // Only process entries that match the Debian repo metadata files of interest
                 if is_packages || is_contents {
-                    // repo_name: e.g. "main" from "main/binary-amd64/Packages.xz"
-                    // or use the repository's name for repositories like CUDA that don't use subdirectories
-                    let mut repo_name = if location.contains('/') {
+                    // Case 1: the common situation
+                    // e.g. http://deb.debian.org/debian/dists/trixie/InRelease
+                    //
+                    // Origin: mongodb
+                    // Architectures: amd64 arm64
+                    // Components: main
+                    // MD5Sum:
+                    //  963904bcd0ba3fac6446e1a036478bab           399738 main/binary-amd64/Packages
+                    //  4a0c6bc7e925cea11e96df40e3b49258            44458 main/binary-amd64/Packages.gz
+                    //  de176d56dcab6fb85563f1d075d23bb1            91824 main/binary-arm64/Packages
+                    //  8037ce831b3957701298c27c5882ef4a            20944 main/binary-arm64/Packages.gz
+                    //  => component_name = "main"
+
+                    // Case 2: OBS or CUDA repositories don't use components or subdirs in location,
+                    // e.g. https://developer.download.nvidia.cn/compute/cuda/repos/ubuntu2404/x86_64/Release
+                    //
+                    // Archive: Debian_12
+                    // Origin: obs://build.opensuse.org/devel:languages:crystal/Debian_12
+                    // Label: devel:languages:crystal
+                    // Architectures: i386 amd64
+                    // Description: Crystal (Debian_12)
+                    // MD5Sum:
+                    //  1246e515893d375c5da48a8cae4f6175 7134 Packages.gz
+                    //  45f461e8c85b7e33be9bf7953d5e2473 6150 Sources.gz
+                    //  => component_name = ""
+                    // For root-level entries (no '/', e.g. Ubuntu's "Contents-amd64.gz") leave
+                    // component_name empty so the workaround below can attribute them to "main"
+                    // and repodata_name won't become weird things like 'Contents-amd64.gz-security'.
+                    let mut component_name: String = if location.contains('/') {
                         location.split('/').next().unwrap_or("").to_string()
                     } else {
-                        // For repositories like CUDA that don't use subdirectories,
-                        // use the repository's name
-                        repo.repo_name.clone()
+                        String::new()
                     };
 
-                    if repo_name == location && repo.repo_name == "main" {
-                        repo_name = repo.repo_name.clone();
-                        // Ubuntu has a single Contents file outside of a specific repo
-                        // As a workaround, attribute it to the "main" repo
-                    } else if location.contains('/') && repo_name != repo.repo_name && components.contains(&repo.repo_name) {
-                        // Do filtering only when repo.repo_name is standard repo names like "main", "contrib"
-                        continue;
+                    // Ubuntu has a single Contents file outside of any specific components
+                    // As a workaround, attribute it to the "main" repo
+                    //
+                    // Origin: Ubuntu
+                    // Architectures: amd64 arm64 armhf i386 ppc64el riscv64 s390x
+                    // Components: main restricted universe multiverse
+                    // Description: Ubuntu Noble 24.04
+                    // MD5Sum:
+                    //  2fc7d01e0a1c7b351738abcd571eec59         51301092 Contents-amd64.gz
+                    //  d9a7b09989b1804788068aa3fc437fbe          1401160 main/binary-amd64/Packages.xz
+                    //  e76d3250b16471773a8760583f955010           269224 multiverse/binary-amd64/Packages.xz
+                    if is_contents && !location.contains('/') && !components.is_empty() {
+                        component_name = components.first().cloned().unwrap_or_else(|| "main".to_string());
+                        // log::debug!("Adapt Ubuntu {} to component {}", location, component_name);
+                    }
+
+                    // Filter components based on repo.components - if components list is not empty,
+                    // only include components that are in the list
+                    if !repo.components.is_empty() {
+                        if !repo.components.contains(&component_name) {
+                            continue;
+                        }
                     }
 
                     // arch: e.g. "amd64" from "main/binary-amd64/Packages.xz" or "main/Contents-amd64.gz"
@@ -229,14 +271,27 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         continue;
                     }
 
-                    // Create a new RepoRevise object with the correct repodata_name for this component
+                    // Augment repodata_name from 'repo-suffix' to 'repo-component-suffix' format
+                    let joined_names = vec![repo.repo_name.as_str(), component_name.as_str()].join("-");
+                    let with_component_name = joined_names.trim_end_matches('-');
+                    let repodata_name = repo.repodata_name
+                        // Official => Official-main
+                        // Official-updates => Official-main-updates
+                        // Official-security => Official-main-security
+                        .replace(&repo.repo_name, &with_component_name)
+                        // => main
+                        // => main-updates
+                        // => main-security
+                        .replace("Official-", "");  // matches the "Official" in sources/debian.yaml
+
+                    // Create a new RepoRevise object with augmented repodata_name with component
                     let component_repo = crate::repo::RepoRevise {
-                        repo_name: repo_name.clone(),
-                        repodata_name: repo.repodata_name.replace(&repo.repo_name, &repo_name),
+                        repodata_name: repodata_name,
+                        components: vec![component_name.clone()],
                         ..repo.clone()
                     };
 
-                    let repo_dir = dirs::get_repo_dir(&component_repo).unwrap();
+                    let repo_dir = dirs::get_repo_dir(&component_repo);
                     let output_path = if is_packages {
                         repo_dir.join(format!("packages-{}.txt", arch))
                     } else {
@@ -333,9 +388,11 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                         size,
                         location,
                         is_packages,
+                        is_adb: false,
                         output_path,
                         download_path: download_path.to_path_buf(),
                     });
+                    // log::debug!("Release line: {}\n {:?}", line, release_items.last());
                 }
             }
         }
@@ -420,6 +477,7 @@ pub fn process_packages_content(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, 
 
     log::debug!("Finalizing processing for {}", revise.location);
     derived_files.on_essential("mawk".to_string());
+    derived_files.on_essential("dpkg".to_string());
     derived_files.on_finish(revise)
         .map_err(|e| eyre::eyre!("Failed to finalize processing for {}: {}", revise.location, e))
 }

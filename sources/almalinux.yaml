@@ -1,0 +1,19 @@
+format: rpm
+distro: almalinux
+distro_dirs:
+- almalinux
+- AlmaLinux
+versions: # RHEL-compatible versions
+- "10.1"
+- "9.7"
+- "9"
+- "8.9"
+- "8.8"
+- "8"
+repos:
+  BaseOS:
+  extras:
+index_url: $mirror/$version/$repo/$arch/os/repodata/repomd.xml
+
+# Example URLs:
+# https://raw.repo.almalinux.org/almalinux/9.5/BaseOS/x86_64/os/repodata/

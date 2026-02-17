@@ -1,0 +1,6 @@
+{
+"https://download.opensuse.org":{"cc":"DE","top":"opensuse"},
+"http://merlin.fit.vutbr.cz/mirrors":{"cc":"CZ","ls":["debian","centos","ubuntu","epel"]},
+"http://mirror.eu.oneandone.net/linux/distributions":{"cc":"DE","ls":["archlinux","centos-stream","centos-vault","debian/debian","fedora","opensuse","ubuntu/ubuntu","almalinux","alpine"]},
+"http://mirror.us.oneandone.net/linux/distributions":{"cc":"US","ls":["archlinux","centos-stream","centos-vault","debian/debian","fedora","opensuse","ubuntu/ubuntu","almalinux","alpine"]},
+}

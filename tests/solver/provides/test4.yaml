@@ -6,5 +6,5 @@ install:
 - mailreadplus
 plan:
   fresh_installs:
-    mailreadplus__1__x86_64:
-    mymailreader__1__x86_64:
+  - mailreadplus__1__x86_64
+  - mymailreader__1__x86_64

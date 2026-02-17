@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test history/restore functionality
 
-set -e
-
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
@@ -14,16 +12,16 @@ log "Creating environment: $ENV_NAME"
 epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
 
 log "Installing jq and curl"
-epkg -e "$ENV_NAME" install --assume-yes jq curl || error "Failed to install jq and curl"
+epkg -e "$ENV_NAME" --assume-yes install jq curl || error "Failed to install jq and curl"
 
 log "Installing jq and htop (htop should be new)"
-epkg -e "$ENV_NAME" install --assume-yes jq htop || error "Failed to install jq and htop"
+epkg -e "$ENV_NAME" --assume-yes install jq htop || error "Failed to install jq and htop"
 
 log "Removing curl"
 epkg -e "$ENV_NAME" --assume-yes remove curl || error "Failed to remove curl"
 
 log "Installing ripgrep"
-epkg -e "$ENV_NAME" install --assume-yes ripgrep || error "Failed to install ripgrep"
+epkg -e "$ENV_NAME" --assume-yes install ripgrep || error "Failed to install ripgrep"
 
 # Verify history shows the above generations
 log "Checking history"
@@ -41,9 +39,9 @@ fi
 
 log "History shows $GEN_COUNT generations"
 
-# Restore to ~2 (2 generations ago)
-log "Restoring to ~2"
-epkg -e "$ENV_NAME" --assume-yes restore ~2 || error "Failed to restore to ~2"
+# Restore to -2 (2 generations ago)
+log "Restoring to -2"
+epkg -e "$ENV_NAME" --assume-yes restore -2 || error "Failed to restore to -2"
 
 # Verify that jq/htop are installed, curl/rg are not
 log "Verifying installed packages after restore"

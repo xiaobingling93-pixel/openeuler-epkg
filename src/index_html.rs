@@ -58,8 +58,7 @@ use crate::packages_stream;
 
 // index_url: https://some/dir/  (must end with /)
 pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, release_path: &PathBuf) -> Result<bool> {
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     // Download index.html
     let index_html_url = format!("{}index.html", repo.index_url);
@@ -93,17 +92,15 @@ pub fn sync_from_directory_index(format: PackageFormat, repo: &RepoRevise, relea
     let revise = RepoReleaseItem {
         repo_revise: repo.clone(),
         need_download: false,
-        need_convert: status == ReleaseStatus::NeedConvert || !output_path.exists(),
+        need_convert: !output_path.exists(),
         arch: repo.arch.clone(),
         url: repo.index_url.clone(),
         package_baseurl: repo.index_url.clone(),
-        hash_type: "".to_string(),
-        hash: "".to_string(),
-        size: 0,
         location: "index.html".to_string(),
         is_packages: true,
         download_path: index_html_path.clone(),
         output_path: output_path.clone(),
+        ..Default::default()
     };
 
     let mut derived_files = packages_stream::PackagesStreamline::new(&revise, &repo_dir, process_line)
@@ -136,14 +133,7 @@ fn parse_html_and_write_packages(
     let file_regex = Regex::new(r#"(?m)^([^\s]+\.(?:rpm|deb|pkg\.tar\.xz|apk))\s+(\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{1,2})\s+([0-9.]+\s*[kKmMgG]?[bB]?)"#)
         .map_err(|e| eyre::eyre!("Failed to compile regex: {}", e))?;
 
-    let suffix = match format {
-        PackageFormat::Rpm => "rpm",
-        PackageFormat::Deb => "deb",
-        PackageFormat::Apk => "apk",
-        PackageFormat::Pacman => "pkg.tar.xz",
-        PackageFormat::Conda => "conda",
-        _ => return Err(eyre::eyre!("Unsupported package format: {:?}", format)),
-    };
+    let suffix = format.to_suffix()?;
 
     for captures in file_regex.captures_iter(html_content) {
         let filename = captures.get(1).unwrap().as_str();

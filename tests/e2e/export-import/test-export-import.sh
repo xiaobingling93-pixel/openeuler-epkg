@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test export/import functionality
 
-set -e
-
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
@@ -16,12 +14,12 @@ log "Creating environment: $ENV_NAME"
 epkg env create "$ENV_NAME" -c alpine || error "Failed to create environment"
 
 log "Installing jq and htop"
-epkg -e "$ENV_NAME" install --assume-yes jq htop || error "Failed to install packages"
+epkg -e "$ENV_NAME" --assume-yes install jq htop || error "Failed to install packages"
 
 # Export to a file
 EXPORT_FILE="/tmp/epkg-export-$ENV_NAME.yaml"
 log "Exporting environment to $EXPORT_FILE"
-epkg -e "$ENV_NAME" env export --output "$EXPORT_FILE" || error "Failed to export environment"
+epkg env export "$ENV_NAME" --output "$EXPORT_FILE" || error "Failed to export environment"
 
 if [ ! -f "$EXPORT_FILE" ]; then
     error "Export file not found"

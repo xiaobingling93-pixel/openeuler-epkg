@@ -1,0 +1,12 @@
+format: deb
+distro: debian
+distro_dirs:
+- termux
+versions:
+- stable
+repos:
+  termux-main:
+index_url: $mirror/$repo/dists/$version/Release
+
+# Example URLs:
+# https://mirrors.ustc.edu.cn/termux/termux-main/dists/stable/Release

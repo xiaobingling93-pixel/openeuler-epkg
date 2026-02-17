@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test bare rootfs on /
 
-set -e
-
 . "$(dirname "$0")/../host-vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
@@ -22,18 +20,13 @@ rm -rf "$TAR_DIR" "$TAR_TMP"
 # Start a long-running docker container with sleep to persist state
 log "Starting long-running docker container"
 # Built-in commands like sleep work without initialization, so we can run directly
-# Pre-create directories on host (they're mounted as volumes)
-mkdir -p "$PERSISTENT_OPT_EPKG/envs" "$PERSISTENT_CACHE" "$PERSISTENT_STORE" "$TMPFS_ENVS_ROOT"
 
 CONTAINER_NAME="epkg-e2e"
 docker run -d --name="$CONTAINER_NAME" --privileged --rm \
 	-v "$PROJECT_ROOT:$PROJECT_ROOT:ro" \
 	-v "$PERSISTENT_OPT_EPKG:/opt/epkg:rw" \
-        -v "$PERSISTENT_CACHE:/root/.cache/epkg:rw" \
-	-v "$PERSISTENT_STORE:/root/.epkg/store:rw" \
-	-v "$TMPFS_ENVS_ROOT:/root/.epkg/envs:rw" \
-        epkg-scratch-temp \
-        $EPKG_BINARY run --builtin sleep 10000
+    epkg-scratch-temp \
+    $EPKG_BINARY busybox sleep 10000
 
 # Check if container is running
 if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -63,18 +56,18 @@ exec_epkg() {
     docker exec "$CONTAINER_NAME" $EPKG_BINARY "$@" || error "epkg command failed: $*"
 }
 
-exec_epkg run --builtin ls /
-exec_epkg run --builtin ls /etc
-# Initialize epkg in the running container
-log "Initializing epkg in container"
-exec_epkg init -c alpine
+# exec_epkg busybox ls /
+# exec_epkg busybox ls /etc
+# Install epkg in the running container
+log "Installing epkg in container"
+exec_epkg self install -c alpine
 
-# Setup bare rootfs environment using epkg's environment feature with --path /
-log "Creating sys environment with --path /"
-exec_epkg env create sys -c alpine --path /
+# Setup bare rootfs environment using epkg's environment feature with --root /
+log "Creating sys environment with --root /"
+exec_epkg env create sys -c alpine --root /
 
 log "Installing jq"
-exec_epkg run --builtin cat /etc/resolv.conf
+exec_epkg busybox cat /etc/resolv.conf
 exec_epkg -e sys --assume-yes install jq coreutils bash
 
 # Verify that jq

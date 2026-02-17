@@ -1,21 +1,52 @@
-use std::collections::{HashMap, HashSet, BTreeMap};
-use std::os::unix::net::UnixStream;
+use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock, RwLock};
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::Arc;
+#[cfg(not(test))]
+use crate::parse_cmdline;
+#[cfg(not(test))]
+use crate::parse_cmdline_from;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
-use std::sync::Arc;
 use crate::search::SearchOptions;
+use crate::run::RunOptions;
+use color_eyre::Result;
+use color_eyre::eyre;
+#[cfg(not(test))]
+use color_eyre::eyre::WrapErr;
 
 
 pub const SUPPORT_ARCH_LIST: &[&str] = &["aarch64", "x86_64", "riscv64", "loongarch64"];
 pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"debian";
-pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg init will download this commit from gitee
+pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg self install will download this commit from gitee
 
-pub const BASE_ENV: &str = &"base"; // holds epkg, elf-loader, package-manager source files
+pub const SELF_ENV: &str = &"self"; // holds epkg, elf-loader, package-manager source files
 pub const MAIN_ENV: &str = &"main"; // the default env for most operations, must be private
+
+// Link type for mirroring files from store to environment
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub enum LinkType {
+    #[serde(rename = "hardlink")]
+    Hardlink,
+    #[serde(rename = "symlink")]
+    Symlink,
+    #[serde(rename = "reflink")]
+    Reflink,
+    #[serde(rename = "move")]
+    Move,
+    #[serde(rename = "runpath")]
+    Runpath,
+}
+
+impl Default for LinkType {
+    fn default() -> Self {
+        LinkType::Hardlink
+    }
+}
 
 // Package format types
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -54,7 +85,7 @@ pub struct PackageRange {
     pub len: usize,
 }
 
-// $HOME/.cache/epkg/channel/debian:trixie/main/x86_64/packages-all.txt
+// $HOME/.cache/epkg/channels/debian-trixie/main/x86_64/packages-all.txt
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Package {
     pub pkgname: String,
@@ -100,6 +131,12 @@ pub struct Package {
     #[serde(default)]
     pub requires: Vec<String>,
     #[serde(default)]
+    #[serde(rename = "buildRequires")]
+    pub build_requires: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "checkRequires")]
+    pub check_requires: Vec<String>,
+    #[serde(default)]
     pub provides: Vec<String>,
     #[serde(default)]
     pub recommends: Vec<String>,
@@ -130,6 +167,17 @@ pub struct Package {
     #[serde(default)]
     pub maintainer: String,
     #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "buildHost")]
+    pub build_host: Option<String>,
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub relocations: Option<String>,
+    #[serde(default)]
     pub tag: Option<String>,
     #[serde(default)]
     #[serde(rename = "originUrl")]
@@ -138,11 +186,20 @@ pub struct Package {
     #[serde(rename = "multiArch")]
     pub multi_arch: Option<String>,
 
-    #[serde(skip)]
-    pub pkgkey: String, // != pkgline
-    #[serde(skip)]
-    #[serde(rename = "repodataName")]
+    #[serde(default)]
+    pub format: PackageFormat,
+
+    #[serde(default)] // necessary for solver_tests::tests
+    #[serde(rename = "repo")]
     pub repodata_name: String,
+
+    #[serde(default)] // necessary for solver_tests::tests
+    pub pkgkey: String, // != pkgline
+
+    /// Store directory name for installed/in-store packages (pkgline format).
+    #[serde(default)]
+    pub pkgline: Option<String>,
+
     #[serde(skip)]
     #[serde(rename = "packageBaseurl")]
     pub package_baseurl: String,
@@ -221,34 +278,75 @@ pub struct InstalledPackageInfo {
     // (1) package is user-requested (depend_depth == 0), OR
     // (2) package is a dependency whose 'source' package matches the 'source' of any user-requested package.
     // Otherwise, false. Set by `record_appbin_source`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub ebin_exposure: bool,
 
-    #[serde(default)] // Default to empty Vec if missing during deserialization
-    pub rdepends: Vec<String>, // Stores pkgkeys of packages that depend on this one
-    #[serde(default)] // Default to empty Vec if missing during deserialization
-    pub depends: Vec<String>, // Stores pkgkeys of packages this package depends on
-    #[serde(default)] // for backward compatibility with older installed-packages.json
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub rdepends: BTreeSet<String>, // Stores pkgkeys of packages that depend on this one
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub depends: BTreeSet<String>, // Stores pkgkeys of packages this package depends on
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub bdepends: BTreeSet<String>, // Stores pkgkeys of build dependencies (Pacman only)
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub rbdepends: BTreeSet<String>, // Stores pkgkeys of packages that have this as a build dependency (Pacman only)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] // for backward compatibility with older installed-packages.json
     pub ebin_links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub xdesktop_links: Vec<String>,
+
+    // Debian trigger state management
+    // Pending triggers that need to be processed
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_triggers: Vec<String>,
+    // Whether this package is awaiting trigger processing by other packages
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub triggers_awaited: bool,
+    // Whether trigger processing failed (config-failed state)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub config_failed: bool,
+}
+
+impl Default for InstalledPackageInfo {
+    fn default() -> Self {
+        InstalledPackageInfo {
+            pkgline: String::new(),
+            arch: default_arch(),
+            depend_depth: 0,
+            install_time: 0,
+            ebin_exposure: false,
+            rdepends: BTreeSet::new(),
+            depends: BTreeSet::new(),
+            bdepends: BTreeSet::new(),
+            rbdepends: BTreeSet::new(),
+            ebin_links: Vec::new(),
+            xdesktop_links: Vec::new(),
+            pending_triggers: Vec::new(),
+            triggers_awaited: false,
+            config_failed: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct GenerationCommand {
+    #[serde(default)]
     pub timestamp: String,
+    #[serde(default)]
     pub action: String,
+    #[serde(default)]
     pub command_line: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fresh_installs: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upgrades_new: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upgrades_old: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub old_removes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub new_exposes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub del_exposes: Vec<String>,
 }
 
@@ -260,32 +358,38 @@ pub struct EnvConfig {
     pub env_base: String,
     pub env_root: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub public: bool,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub register_to_path: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub register_priority: i32,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env_vars: HashMap<String, String>,
+
+    #[serde(default)]
+    pub link: LinkType,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct ExportFile {
+    pub path: String, // path in env, no leading '/'
+    pub data: String, // file contents
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct EnvExport {
-    #[serde(flatten)]
+    #[serde(default)]
     pub env: EnvConfig,
 
     #[serde(default)]
-    pub packages: HashMap<String, InstalledPackageInfo>,        // key is pkgkey (!= pkgline)
-
-    #[serde(default)]
-    pub world: HashMap<String, String>,
+    pub files: Vec<ExportFile>,
 }
 
 // # ChannelConfig is loaded from ${env_root}/etc/epkg/channel.yaml
-// # On `epkg init`, may copy from $EPKG_SRC/channel/${channel}.yaml
+// # On `epkg self install`, may copy from $EPKG_SRC/sources/${channel}.yaml
 // distro: "openeuler"
 // version: "24.03-lts"
 // index_url: "https://repo.oepkgs.net/openeuler/epkg/channel/openEuler-$VERSION/$repo/$arch/repodata/repomd.xml"
@@ -305,51 +409,121 @@ impl Default for PackageFormat {
     }
 }
 
+impl PackageFormat {
+    /// Convert PackageFormat to its string representation
+    pub fn to_str(self) -> &'static str {
+        match self {
+            PackageFormat::Epkg => "epkg",
+            PackageFormat::Deb => "deb",
+            PackageFormat::Rpm => "rpm",
+            PackageFormat::Apk => "apk",
+            PackageFormat::Pacman => "pacman",
+            PackageFormat::Conda => "conda",
+            PackageFormat::Python => "python",
+        }
+    }
+
+    /// Parse a string into PackageFormat, returning an error for unknown formats
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "epkg"      => Ok(PackageFormat::Epkg),
+            "deb"       => Ok(PackageFormat::Deb),
+            "rpm"       => Ok(PackageFormat::Rpm),
+            "apk"       => Ok(PackageFormat::Apk),
+            "pacman"    => Ok(PackageFormat::Pacman),
+            "conda"     => Ok(PackageFormat::Conda),
+            "python"    => Ok(PackageFormat::Python),
+            _ => Err(eyre::eyre!("Unknown format: {}", s)),
+        }
+    }
+
+    /// Convert PackageFormat to its file suffix/extension
+    #[allow(unreachable_patterns)]
+    pub fn to_suffix(self) -> Result<&'static str> {
+        match self {
+            PackageFormat::Rpm => Ok("rpm"),
+            PackageFormat::Deb => Ok("deb"),
+            PackageFormat::Apk => Ok("apk"),
+            PackageFormat::Pacman => Ok("pkg.tar.zst"),
+            PackageFormat::Conda => Ok("conda"),
+            PackageFormat::Epkg => Ok("epkg"),
+            PackageFormat::Python => Ok("whl"),
+            _ => unreachable!("All PackageFormat variants are covered"),
+        }
+    }
+
+    /// Parse a file suffix/extension into PackageFormat
+    /// Handles both full filenames (e.g., "package.deb", "package.pkg.tar.xz") and extensions (e.g., "deb", "pkg.tar.xz")
+    pub fn from_suffix(suffix: &str) -> Result<Self> {
+        // Normalize: remove leading dot if present
+        let suffix = suffix.strip_prefix('.').unwrap_or(suffix);
+
+        // Check multi-part suffixes first (longer matches first)
+        if suffix.ends_with("pkg.tar.zst") || suffix.ends_with("pkg.tar.xz") {
+            return Ok(PackageFormat::Pacman);
+        }
+        if suffix.ends_with("tar.bz2") {
+            return Ok(PackageFormat::Conda);
+        }
+        if suffix.ends_with("tar.gz") {
+            return Ok(PackageFormat::Python);
+        }
+
+        // For single-part extensions, check the last part after the last dot
+        // This handles both "package.deb" -> "deb" and just "deb" -> "deb"
+        let ext = if let Some(dot_pos) = suffix.rfind('.') {
+            &suffix[dot_pos + 1..]
+        } else {
+            suffix
+        };
+
+        match ext {
+            "deb"   => Ok(PackageFormat::Deb),
+            "rpm"   => Ok(PackageFormat::Rpm),
+            "epkg"  => Ok(PackageFormat::Epkg),
+            "apk"   => Ok(PackageFormat::Apk),
+            "conda" => Ok(PackageFormat::Conda),
+            "whl"   => Ok(PackageFormat::Python),
+            _ => Err(eyre::eyre!("Unknown package format suffix: {}", suffix)),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 #[derive(Clone)]
 pub struct ChannelConfig {
-    #[serde(default)]
     pub format: PackageFormat,
-    #[serde(default)]
     pub distro: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub distro_dirs: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub arch: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub channel: String,
     #[serde(default)]
     pub repos: HashMap<String, RepoConfig>, // point to online repo, key: repo_name
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>, // DEB specific: filter components from Release file
+
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub app_version: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub app_versions: Vec<String>,
 
     pub index_url: String,
-    #[serde(default)]
-    pub index_url_noarch: Option<String>, // conda https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r/noarch/
-    #[serde(default)]
-    pub index_url_updates: Option<String>,
-    #[serde(default)]
-    pub index_url_security: Option<String>,
-    #[serde(default)]
-    pub index_url_nonfree: Option<String>,
-    #[serde(default)]
-    pub index_url_nonfree_updates: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub amend_index_urls: HashMap<String, String>,
 
-    #[serde(default)]
-    pub file_name: Option<String>, // filename for repos.d configs
-    #[serde(skip_serializing, skip_deserializing)]
-    #[serde(default)]
-    pub file_data: String, // original file data to preserve during save
+    #[serde(skip)]
+    pub file_path: String, // full path for configs
 }
 
 pub fn default_as_true() -> bool { true }
@@ -361,19 +535,15 @@ pub struct RepoConfig {
     #[serde(default = "default_as_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub index_url: Option<String>,
+    pub index_url: String,
     #[serde(default)]
-    pub index_url_noarch: Option<String>,
-    #[serde(default)]
-    pub index_url_updates: Option<String>,
-    #[serde(default)]
-    pub index_url_security: Option<String>,
-    #[serde(default)]
-    pub index_url_nonfree: Option<String>,
-    #[serde(default)]
-    pub index_url_nonfree_updates: Option<String>,
+    pub amend_index_urls: HashMap<String, String>,
     #[serde(default)]
     pub package_baseurl: String, // auto computed from url and ChannelInfo.baseurl
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_baseurls: Vec<String>, // Alternative URIs (mirrors/fallbacks)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>, // DEB specific: filter components from Release file
 }
 
 static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
@@ -485,7 +655,7 @@ pub struct RepoShard {
     pub filelists: Option<FilelistsFileInfo>,
 
     #[serde(skip)]
-    pub provide2pkgnames: HashMap<String, Vec<String>>,
+    pub provide2pkgnames: Option<crate::mmio::Provide2PkgNamesMapper>,
     #[serde(skip)]
     pub essential_pkgnames: HashSet<String>,
     #[serde(skip)]
@@ -500,8 +670,6 @@ pub struct RepoShard {
 pub enum EpkgCommand {
     #[default]
     None,
-    Deinit,
-    Init,
     Env,
     List,
     Info,
@@ -517,15 +685,18 @@ pub enum EpkgCommand {
     Unpack,
     Convert,
     Run,
+    Busybox,
     Search,
     Gc,
+    Service,
+    SelfInstall,
+    SelfUpgrade,
+    SelfRemove,
 }
 
 impl From<&str> for EpkgCommand {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "deinit" => EpkgCommand::Deinit,
-            "init" => EpkgCommand::Init,
             "env" => EpkgCommand::Env,
             "list" => EpkgCommand::List,
             "info" => EpkgCommand::Info,
@@ -541,8 +712,11 @@ impl From<&str> for EpkgCommand {
             "unpack" => EpkgCommand::Unpack,
             "convert" => EpkgCommand::Convert,
             "run" => EpkgCommand::Run,
+            "busybox" => EpkgCommand::Busybox,
             "search" => EpkgCommand::Search,
             "gc" => EpkgCommand::Gc,
+            "service" => EpkgCommand::Service,
+            "self" => EpkgCommand::None, // Handled separately for nested subcommands
             _ => EpkgCommand::None, // Default for empty or unrecognized strings
         }
     }
@@ -552,20 +726,31 @@ impl From<&str> for EpkgCommand {
 pub struct EPKGConfig {
     #[serde(default = "default_common_options")]
     pub common: CommonOptions,
+
+    #[serde(default = "default_init_options")]
+    pub init: InitOptions,
     #[serde(default)]
     pub install: InstallOptions,
+
     #[serde(default)]
     pub upgrade: UpgradeOptions,
     #[serde(default)]
+    pub update: UpdateOptions,
+
+    #[serde(default)]
     pub list: ListOptions,
+    #[serde(skip)]
+    pub search: SearchOptions,
+
     #[serde(default)]
     pub env: EnvOptions,
     #[serde(default)]
     pub history: HistoryOptions,
-    #[serde(default = "default_init_options")]
-    pub init: InitOptions,
+
     #[serde(skip)]
-    pub search: SearchOptions,
+    pub service: ServiceOptions,
+    #[serde(skip)]
+    pub run: RunOptions,
 
     #[serde(skip)]
     pub config_file: String,
@@ -590,7 +775,12 @@ fn default_init_options() -> InitOptions {
 #[derive(Default, Debug, Clone, Deserialize)]
 pub struct CommonOptions {
     #[serde(skip)]
-    pub env: String,
+    pub env_name: String,
+    #[serde(skip)]
+    pub env_root: String,
+    #[serde(skip)]
+    pub env_explicit: bool,
+
     #[serde(skip)]
     pub download_only: bool,
     #[serde(skip)]
@@ -612,16 +802,20 @@ pub struct CommonOptions {
     // N: expire after N seconds
     // 0: never expire (the default)
     // -1: always expire
-    #[serde(default)]
+    #[serde(default = "default_metadata_expire")]
     pub metadata_expire: i32,
 
     #[serde(default)]
     pub proxy: String,
 
+    // Default: 6 retries for download tasks
+    #[serde(default = "default_nr_retry")]
+    pub nr_retry: usize,
+
     // Default: 6 parallel download threads
     // If user sets <= 0, it gets adjusted to at least 1 in the implementation
-    #[serde(default = "default_nr_parallel")]
-    pub nr_parallel: usize,
+    #[serde(default = "default_nr_parallel_download")]
+    pub nr_parallel_download: usize,
 
     // Default: auto-enabled if nr_cpu >= 4 && memory >= 1G, else auto-disabled
     // If user specifies nr_parallel <= 1, this gets auto-disabled
@@ -633,6 +827,18 @@ pub struct CommonOptions {
 // Default function for arch
 pub fn default_arch() -> String {
     std::env::consts::ARCH.to_string()
+}
+
+fn default_metadata_expire() -> i32 {
+    7 * 24 * 3600  // seconds
+}
+
+fn default_nr_retry() -> usize {
+    6
+}
+
+fn default_nr_parallel_download() -> usize {
+    6
 }
 
 // Default function for parallel_processing
@@ -657,8 +863,13 @@ fn default_parallel_processing() -> bool {
     has_enough_cpus && has_enough_memory
 }
 
-fn default_nr_parallel() -> usize {
-    6
+// Helper function for skip_serializing_if to skip false boolean values
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero(value: &i32) -> bool {
+    *value == 0
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
@@ -670,7 +881,7 @@ pub struct InstallOptions {
     #[serde(default)]
     pub no_install_essentials: bool,
     #[serde(skip)]
-    pub assume_installed: Vec<String>,
+    pub no_install: String, // Original cmdline string for --no-install (e.g., "pkg1,pkg2,-pkg3")
     #[serde(default)]
     pub prefer_low_version: bool,
 }
@@ -681,6 +892,13 @@ pub struct UpgradeOptions {
     /// When true and command is Upgrade, get_candidates() won't favor any packages
     #[serde(skip)]
     pub full_upgrade: bool,
+}
+
+#[derive(Default, Debug, Clone, Deserialize)]
+pub struct UpdateOptions {
+    /// Whether to download filelists (needed for file/path search)
+    #[serde(skip)]
+    pub need_files: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize)]
@@ -706,10 +924,10 @@ pub struct EnvOptions {
     #[serde(default)]
     pub stack: bool,
     #[serde(default)]
+    pub link: Option<LinkType>,
+    #[serde(default)]
     pub repos: Vec<String>,
 
-    #[serde(skip)]
-    pub env_path: Option<String>,
     #[serde(skip)]
     pub import_file: Option<String>,
 }
@@ -726,12 +944,16 @@ pub struct InitOptions {
     pub shared_store: bool,
     #[serde(default = "default_commit")]
     pub commit: String,
-    #[serde(skip)]
-    pub upgrade: bool,
 }
 
 pub fn default_commit() -> String {
     DEFAULT_COMMIT.to_string()
+}
+
+#[derive(Default, Debug, Clone, Deserialize)]
+pub struct ServiceOptions {
+    #[serde(default)]
+    pub all: bool, // Used for 'epkg status --all'
 }
 
 #[derive(Debug)]
@@ -741,138 +963,201 @@ pub struct EPKGDirs {
     pub home_epkg: PathBuf,
 
     // Subdirectories
-    pub private_envs: PathBuf,
-    pub public_envs: PathBuf,
 
-    // Subdirectories depend on EPKGOptions
+    // Per-User dirs
+    // - If  shared_store:  /opt/epkg/envs/$USER
+    // - If !shared_store:  $HOME/.epkg/envs
+    pub user_envs: PathBuf,
+    // - If  shared_store:  /opt/epkg/cache/aur_builds/$USER
+    // - If !shared_store:  $HOME/.cache/epkg/aur_builds
+    pub user_aur_builds: PathBuf,
+
     pub epkg_store: PathBuf,
     pub epkg_cache: PathBuf,
     pub epkg_downloads_cache: PathBuf,
-    pub epkg_channel_cache: PathBuf,
+    pub epkg_channels_cache: PathBuf,
 }
 
-#[derive(Default)]
-pub struct PackageManager {
-    // cache need to installing packages info
-    pub pkgkey2package: HashMap<String, Arc<Package>>,
-    pub pkgline2package: HashMap<String, Arc<Package>>, // cache for locally installed packages
+/// Type alias for installed packages map
+pub type InstalledPackagesMap = HashMap<String, Arc<InstalledPackageInfo>>;
 
-    // Performance indexes for fast lookups (maintained when packages are added to pkgkey2package)
-    // Index: pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
-    pub(crate) pkgname2packages: HashMap<String, Vec<Arc<Package>>>,
-    // Index: provide_name -> HashSet<pkgname> for O(1) provider lookup
-    pub(crate) provide2pkgnames: HashMap<String, HashSet<String>>,
+/// Type alias for package cache map (pkgkey/pkgline -> Arc<Package>)
+pub type PackageMap = RwLock<HashMap<String, Arc<Package>>>;
 
-    // loaded from env installed-packages.json
-    // `self.installed_packages` (loaded from installed-packages.json) is the
-    // authoritative data source. If a pkgkey is not found here, the package
-    // is treated as not installed.
-    pub installed_packages: HashMap<String, InstalledPackageInfo>, // key is pkgkey (!= pkgline)
+/// Type alias for package name to packages map (pkgname -> Vec<Arc<Package>>)
+pub type PackageNameMap = RwLock<HashMap<String, Vec<Arc<Package>>>>;
 
-    // loaded from env world.json
-    // `self.world` maintains top-level package constraints (name -> version_constraint)
-    // where version_constraint is normally empty string, or e.g., "=version1", ">=version2"
-    pub world: HashMap<String, String>, // key is pkgname, value is version constraint string
-
-    pub has_worker_process: bool,
-    pub ipc_socket: String,
-    pub ipc_stream: Option<UnixStream>,
-    pub child_pid: Option<nix::unistd::Pid>,
+/// Package cache structure using RwLock<HashMap> for concurrent access
+/// RwLock is better for iteration operations compared to DashMap or flurry/papaya HashMap
+/// === 测试大小: 50000 个元素 ===
+/// 基础 HashMap:    插入:  7.993181ms  读取(命中): 4.876557ms  迭代 + 求和(1249975000): 105.795µs
+/// RwLock<HashMap>: 插入:  9.224321ms  读取(命中): 5.867523ms  迭代 + 求和(1249975000): 107.649µs
+/// papaya:          插入:  9.193559ms  读取(命中): 4.676922ms  迭代 + 求和(1249975000): 256.431µs
+/// DashMap:         插入:  7.084404ms  读取(命中): 5.762309ms  迭代 + 求和(1249975000): 1.313438ms
+/// flurry:          插入: 24.144055ms  读取(命中): 7.081608ms  迭代 + 求和(1249975000): 3.891455ms
+pub struct PackageCache {
+    /// Maps pkgkey -> Arc<Package>
+    pub pkgkey2package: PackageMap,
+    /// Maps pkgline -> Arc<Package> (cache for locally installed packages)
+    pub pkgline2package: PackageMap,
+    /// Maps pkgname -> Vec<Arc<Package>> for O(1) lookup by package name
+    pub pkgname2packages: PackageNameMap,
+    /// Maps provide_name -> HashSet<pkgname> for O(1) provider lookup
+    pub provide2pkgnames: RwLock<HashMap<String, HashSet<String>>>,
+    /// Maps pkgkey -> InstalledPackageInfo (loaded from env installed-packages.json)
+    /// key is pkgkey (!= pkgline)
+    pub installed_packages: RwLock<InstalledPackagesMap>,
+    /// Maps pkgline -> Arc<InstalledPackageInfo> (mirror of installed_packages for O(1) pkgline lookup)
+    pub pkgline2installed: RwLock<InstalledPackagesMap>,
+    /// Maps pkgname -> version constraint string (loaded from env world.json)
+    /// Special key "no-install" stores space-separated list of package names to exclude
+    pub world: RwLock<HashMap<String, String>>,
+    /// Maps pkgline -> Vec<String> (cached filelists from store, non-dir files only)
+    pub pkgline2filelist: RwLock<HashMap<String, Vec<String>>>,
 }
 
-pub static CLAP_MATCHES: LazyLock<clap::ArgMatches> = LazyLock::new(|| {
-    // During tests, create a minimal ArgMatches to avoid command-line parsing errors
-    // This allows tests to run without requiring valid epkg command-line arguments
+/// Global package cache instance
+pub static PACKAGE_CACHE: LazyLock<PackageCache> = LazyLock::new(|| PackageCache::new());
+
+static CLAP_MATCHES: OnceLock<clap::ArgMatches> = OnceLock::new();
+
+/// Returns the parsed command-line matches. Requires `init_config()` to have been called first (non-test).
+pub fn clap_matches() -> &'static clap::ArgMatches {
     #[cfg(test)]
     {
-        use clap::{Command, Arg, ArgAction};
-        Command::new("epkg")
-            .arg(Arg::new("arch").long("arch").default_value(std::env::consts::ARCH))
-            .arg(Arg::new("env").short('e').long("env"))
-            .arg(Arg::new("config").short('C').long("config"))
-            .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
-            .arg(Arg::new("download-only").long("download-only").action(ArgAction::SetTrue))
-            .arg(Arg::new("quiet").short('q').long("quiet").action(ArgAction::SetTrue))
-            .arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))
-            .arg(Arg::new("assume-yes").short('y').long("assume-yes").action(ArgAction::SetTrue))
-            .arg(Arg::new("assume-no").long("assume-no").action(ArgAction::SetTrue))
-            .arg(Arg::new("ignore-missing").short('m').long("ignore-missing").action(ArgAction::SetTrue))
-            .arg(Arg::new("metadata-expire").long("metadata-expire"))
-            .arg(Arg::new("proxy").long("proxy"))
-            .arg(Arg::new("nr-parallel").long("nr-parallel"))
-            .arg(Arg::new("parallel-processing").long("parallel-processing"))
-            // Add a dummy subcommand so parsing doesn't fail
-            .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
-            .arg_required_else_help(false) // Don't require subcommand during tests
-            .get_matches_from(vec!["epkg", "--dry-run", "info"]) // Use a valid subcommand with dry-run enabled
+        CLAP_MATCHES.get_or_init(|| {
+            use clap::{Arg, ArgAction, Command};
+            Command::new("epkg")
+                .arg(Arg::new("arch").long("arch").default_value(std::env::consts::ARCH))
+                .arg(Arg::new("env").short('e').long("env"))
+                .arg(Arg::new("config").short('C').long("config"))
+                .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
+                .arg(Arg::new("download-only").long("download-only").action(ArgAction::SetTrue))
+                .arg(Arg::new("quiet").short('q').long("quiet").action(ArgAction::SetTrue))
+                .arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))
+                .arg(Arg::new("assume-yes").short('y').long("assume-yes").action(ArgAction::SetTrue))
+                .arg(Arg::new("assume-no").long("assume-no").action(ArgAction::SetTrue))
+                .arg(Arg::new("ignore-missing").short('m').long("ignore-missing").action(ArgAction::SetTrue))
+                .arg(Arg::new("metadata-expire").long("metadata-expire"))
+                .arg(Arg::new("proxy").long("proxy"))
+                .arg(Arg::new("retry").long("retry").value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("parallel-download").long("parallel-download").value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("parallel-processing").long("parallel-processing").value_parser(clap::value_parser!(bool)))
+                .subcommand(Command::new("info").arg(Arg::new("PACKAGE_SPEC").num_args(0..)))
+                .arg_required_else_help(false)
+                .get_matches_from(vec!["epkg", "--dry-run", "info"])
+        })
     }
     #[cfg(not(test))]
     {
-        use crate::parse_cmdline;
-        parse_cmdline()
-    }
-});
-
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
-
-#[cfg(test)]
-static CONFIG_MUTEX: LazyLock<Mutex<EPKGConfig>> = LazyLock::new(|| {
-    let matches = &CLAP_MATCHES;
-    let config = parse_options_common(&matches)
-        .expect("Failed to parse common options for CONFIG");
-    let config = parse_options_subcommand(&matches, config)
-        .expect("Failed to parse subcommand options for CONFIG");
-    Mutex::new(config)
-});
-
-#[cfg(test)]
-static CONFIG_PTR: OnceLock<usize> = OnceLock::new();
-
-#[cfg(not(test))]
-static CONFIG: LazyLock<EPKGConfig> = LazyLock::new(|| {
-    let matches = &CLAP_MATCHES;
-    let config = parse_options_common(&matches)
-        .expect("Failed to parse common options for CONFIG");
-    parse_options_subcommand(&matches, config)
-        .expect("Failed to parse subcommand options for CONFIG")
-});
-
-static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
-    EPKGDirs::builder()
-        .with_options(config().clone())
-        .build()
-        .expect("Failed to initialize EPKGDirs")
-});
-
-#[cfg(test)]
-pub fn config() -> &'static EPKGConfig {
-    // SAFETY: In test mode, we use a Mutex for interior mutability.
-    // We initialize a raw pointer (as usize) once and reuse it. This is safe because:
-    // 1. CONFIG_MUTEX is a static LazyLock, so it lives for the entire program
-    // 2. The Mutex ensures thread safety for mutations
-    // 3. We're only reading, and the pointer points to data in the static Mutex
-    unsafe {
-        let ptr_usize = *CONFIG_PTR.get_or_init(|| {
-            let mutex = LazyLock::force(&CONFIG_MUTEX);
-            let guard = mutex.lock().unwrap();
-            &*guard as *const EPKGConfig as usize
-        });
-        &*(ptr_usize as *const EPKGConfig)
+        CLAP_MATCHES.get().expect("init_config() must be called at startup")
     }
 }
 
+/// Initialize global CONFIG and CLAP_MATCHES. Call once at startup for either applet or epkg main invocation.
 #[cfg(not(test))]
-pub fn config() -> &'static EPKGConfig {
-    &CONFIG
+pub fn init_config(invoked_as_applet: bool) -> Result<()> {
+    let matches = if invoked_as_applet {
+        parse_cmdline_from(vec![
+            "epkg".to_string(),
+            "busybox".to_string(),
+            "true".to_string(),
+        ])
+    } else {
+        parse_cmdline()
+    };
+    let common_cfg = parse_options_common(&matches).wrap_err("Failed to parse common options for CONFIG")?;
+    // Set CLAP_MATCHES first so clap_matches() works during parse_options_subcommand
+    CLAP_MATCHES
+        .set(matches)
+        .map_err(|_| eyre::eyre!("init_config() must be called only once"))?;
+    let matches_ref = CLAP_MATCHES.get().unwrap();
+    // Set CONFIG with common options so config() works during parse_options_subcommand
+    let common_cfg_clone = common_cfg.clone();
+    *CONFIG.write().expect("CONFIG lock") = Some(common_cfg);
+    let final_cfg = parse_options_subcommand(matches_ref, common_cfg_clone)
+        .wrap_err("Failed to parse subcommand options for CONFIG")?;
+    *CONFIG.write().expect("CONFIG lock") = Some(final_cfg);
+    Ok(())
+}
+
+// RwLock (not OnceLock): written once in init_config(), read by config(). We keep RwLock because
+// config_mut() is used in solver_tests to reset and override the global config per test; OnceLock
+// cannot be mutated after init, so tests would need a different design.
+static CONFIG: RwLock<Option<EPKGConfig>> = RwLock::new(None);
+
+/// Guard that derefs to `EPKGConfig` (read-only).
+pub struct ConfigGuard(std::sync::RwLockReadGuard<'static, Option<EPKGConfig>>);
+
+impl std::fmt::Debug for ConfigGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.as_ref().unwrap().fmt(f)
+    }
+}
+
+impl std::ops::Deref for ConfigGuard {
+    type Target = EPKGConfig;
+    fn deref(&self) -> &EPKGConfig {
+        self.0.as_ref().unwrap()
+    }
+}
+
+static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
+    let _guard = config();
+    EPKGDirs::build_dirs(&*_guard).expect("Failed to initialize EPKGDirs")
+});
+
+pub fn config() -> ConfigGuard {
+    {
+        let guard = CONFIG.read().expect("CONFIG lock");
+        if guard.is_some() {
+            return ConfigGuard(guard);
+        }
+    }
+    {
+        let mut w = CONFIG.write().expect("CONFIG lock");
+        if w.is_none() {
+            let matches = clap_matches();
+            let cfg = parse_options_common(matches).expect("Failed to parse common options for CONFIG");
+            *w = Some(
+                parse_options_subcommand(matches, cfg).expect("Failed to parse subcommand options for CONFIG"),
+            );
+        }
+    }
+    ConfigGuard(CONFIG.read().expect("CONFIG lock"))
+}
+
+#[cfg(test)]
+/// Guard for mutable config access in tests.
+pub struct ConfigMutGuard(std::sync::RwLockWriteGuard<'static, Option<EPKGConfig>>);
+
+#[cfg(test)]
+impl std::ops::Deref for ConfigMutGuard {
+    type Target = EPKGConfig;
+    fn deref(&self) -> &EPKGConfig {
+        self.0.as_ref().unwrap()
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for ConfigMutGuard {
+    fn deref_mut(&mut self) -> &mut EPKGConfig {
+        self.0.as_mut().unwrap()
+    }
 }
 
 #[cfg(test)]
 /// Get mutable access to the global config for test customization.
-/// This function locks the Mutex, so it should be used carefully in tests.
-pub fn config_mut() -> std::sync::MutexGuard<'static, EPKGConfig> {
-    // In test mode, we use Mutex for interior mutability
-    CONFIG_MUTEX.lock().unwrap()
+pub fn config_mut() -> ConfigMutGuard {
+    let mut guard = CONFIG.write().unwrap();
+    if guard.is_none() {
+        let matches = clap_matches();
+        let cfg = parse_options_common(matches).expect("Failed to parse common options for CONFIG");
+        *guard = Some(
+            parse_options_subcommand(matches, cfg).expect("Failed to parse subcommand options for CONFIG"),
+        );
+    }
+    ConfigMutGuard(guard)
 }
 
 pub fn dirs() -> &'static EPKGDirs {

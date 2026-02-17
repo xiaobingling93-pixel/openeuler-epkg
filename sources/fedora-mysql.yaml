@@ -1,0 +1,19 @@
+format: rpm
+distro: fedora
+distro_dirs:
+- mysql-repo
+- mysql
+- MySQL
+versions:
+- "43"
+- "42"
+- "41"
+app_versions:
+- "8.4-community"
+- "8.0-community"
+repos:
+  mysql:
+index_url: $mirror/yum/$app_version/fc/$version/$arch/repodata/repomd.xml
+
+# Example URLs:
+# https://mirrors.ustc.edu.cn/mysql-repo/yum/mysql-8.4-community/fc/43/x86_64/repodata/repomd.xml

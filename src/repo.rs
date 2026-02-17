@@ -1,27 +1,28 @@
 use std::collections::HashMap;
 use std::fs;
+use crate::lfs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, Duration};
 use sha2::{Sha256, Sha512, Digest};
-use filetime;
 use color_eyre::Result;
-use color_eyre::eyre::WrapErr;
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
 use crate::models::*;
 use crate::dirs;
 
 use crate::download::DownloadTask;
-use crate::download::{submit_download_task, has_download_task};
+use crate::download::{submit_download_task, has_download_task, DownloadStatus};
 use crate::download::DOWNLOAD_MANAGER;
+use crate::io::read_json_file;
 use crate::mmio;
+use crate::utils::append_suffix;
+use crate::posix::posix_utime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseStatus {
     NeedDownload,
-    NeedConvert,
     NeedUpdate,
     FineExist,
     FineRecent,
@@ -29,6 +30,7 @@ pub enum ReleaseStatus {
 
 #[derive(Clone)]
 #[derive(Debug)]
+#[derive(Default)]
 pub struct RepoRevise {
     #[allow(dead_code)]
     pub format: PackageFormat,
@@ -37,10 +39,11 @@ pub struct RepoRevise {
     pub repo_name: String,
     pub repodata_name: String,
     pub index_url: String,
+    pub components: Vec<String>, // DEB specific: filter components from Release file
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct RepoReleaseItem {
     pub repo_revise: RepoRevise,        // Repository information
     pub need_download: bool,
@@ -53,6 +56,7 @@ pub struct RepoReleaseItem {
     pub size: usize,
     pub location: String,
     pub is_packages: bool,
+    pub is_adb: bool,                   // Whether this is an ADB (Alpine/Arch Database) file
     pub download_path: PathBuf,
     pub output_path: PathBuf,
 }
@@ -70,7 +74,7 @@ impl HashType {
         }
     }
 
-    pub fn finalize(self) -> Vec<u8> {
+    fn finalize(self) -> Vec<u8> {
         match self {
             HashType::Sha256(hasher) => hasher.finalize().to_vec(),
             HashType::Sha512(hasher) => hasher.finalize().to_vec(),
@@ -85,122 +89,86 @@ impl HashType {
     }
 }
 
-impl PackageManager {
+pub fn sync_channel_metadata() -> Result<()> {
+    let channel_configs = crate::models::channel_configs();
+    let mut all_repos = Vec::new();
 
-    pub fn sync_channel_metadata(&mut self) -> Result<()> {
-        let channel_configs = crate::models::channel_configs();
-        let mut all_repos = Vec::new();
+    // Collect all repos first
+    for channel_config in channel_configs {
+        let repos = get_revise_repos(channel_config.clone())
+            .with_context(|| "Failed to get repository revision information")?;
 
-        // Collect all repos first
-        for channel_config in channel_configs {
-            let repos = get_revise_repos(channel_config.clone())
-                .with_context(|| "Failed to get repository revision information")?;
+        crate::mirror::extend_repodata_name2distro_dirs(&channel_config, &repos)
+            .with_context(|| "Failed to set up repodata_name2distro_dirs hashmap")?;
 
-            crate::mirror::extend_repodata_name2distro_dirs(&channel_config, &repos)
-                .with_context(|| "Failed to set up repodata_name2distro_dirs hashmap")?;
-
-            all_repos.extend(repos);
-        }
-
-        revise_repos(all_repos)
-            .with_context(|| "Failed to process repository revisions")?;
-
-        Ok(())
+        all_repos.extend(repos);
     }
 
+    revise_repos(all_repos)
+        .with_context(|| "Failed to process repository revisions")?;
+
+    Ok(())
 }
 
 /// Download a single file using DownloadTask with repodata_name
 pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Result<()> {
+    use crate::download::DownloadFlags;
     let task = DownloadTask::with_size(
         url.to_string(),
-        dirs().epkg_downloads_cache.clone(),
-        6,
         None,
-        repodata_name.to_string()
-    );
+        repodata_name.to_string(),
+        DownloadFlags::empty(),  // Not an ADB file
+        None,
+        None,
+    )
+    .with_context(|| format!("Failed to create download task for URL: {}", url))?;
     submit_download_task(task)
         .with_context(|| format!("Failed to submit download task for {}", url))?;
     DOWNLOAD_MANAGER.start_processing();
     // Wait for the download to complete
-    DOWNLOAD_MANAGER.wait_for_task(url.to_string())
+    let (status, _) = DOWNLOAD_MANAGER.wait_for_task(url.to_string())
         .with_context(|| format!("Failed to wait for download from {}", url))?;
+    if let DownloadStatus::Failed(err_msg) = status {
+        return Err(eyre::eyre!("Download failed for {}: {}", url, err_msg));
+    }
     Ok(())
 }
 
-pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
+fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
     let mut all_repos: Vec<RepoRevise> = Vec::new();
 
+    // config.repos should never be empty for valid configurations
     for (repo_name, repo_config) in &config.repos {
         // Skip disabled repos
         if !repo_config.enabled {
             continue;
         }
-        // Use repo-specific index_url if present, else fallback to config.index_url
-        let index_url = repo_config.index_url.as_ref().unwrap_or(&config.index_url);
+
         all_repos.push(RepoRevise {
             format: config.format.clone(),
             arch: config.arch.clone(),
             channel: config.channel.clone(),
             repo_name: repo_name.clone(),
             repodata_name: repo_name.clone(),
-            index_url: index_url.clone(),
+            // Channel defaults have already been merged by merge_channel_defaults_into_repos()
+            index_url: repo_config.index_url.clone(),
+            components: repo_config.components.clone(),
         });
 
-        if let Some(noarch_url) = &repo_config.index_url_noarch {
-            // For noarch repositories, set arch to "all" to be consistent with other distros
-            // This ensures get_repo_dir() works correctly without special handling
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: "all".to_string(),  // Use "all" for noarch, not the system arch
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-noarch", repo_name),
-                index_url: noarch_url.clone(),
-            });
-        }
+        for (suffix, url) in &repo_config.amend_index_urls {
+            let (repodata_suffix, arch) = match suffix.as_str() {
+                "noarch" => ("noarch",   "all"), // Use "all" for noarch, not the system arch
+                _ => (suffix.as_str(), config.arch.as_str()),
+            };
 
-        if let Some(updates_url) = &repo_config.index_url_updates {
             all_repos.push(RepoRevise {
                 format: config.format.clone(),
-                arch: config.arch.clone(),
+                arch: arch.to_string(),
                 channel: config.channel.clone(),
                 repo_name: repo_name.clone(),
-                repodata_name: format!("{}-updates", repo_name),
-                index_url: updates_url.clone(),
-            });
-        }
-
-        if let Some(security_url) = &repo_config.index_url_security {
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: config.arch.clone(),
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-security", repo_name),
-                index_url: security_url.clone(),
-            });
-        }
-
-        if let Some(nonfree_url) = &repo_config.index_url_nonfree {
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: config.arch.clone(),
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-nonfree", repo_name),
-                index_url: nonfree_url.clone(),
-            });
-        }
-
-        if let Some(nonfree_updates_url) = &repo_config.index_url_nonfree_updates {
-            all_repos.push(RepoRevise {
-                format: config.format.clone(),
-                arch: config.arch.clone(),
-                channel: config.channel.clone(),
-                repo_name: repo_name.clone(),
-                repodata_name: format!("{}-nonfree-updates", repo_name),
-                index_url: nonfree_updates_url.clone(),
+                repodata_name: format!("{}-{}", repo_name, repodata_suffix),
+                index_url: url.clone(),
+                components: repo_config.components.clone(),
             });
         }
     }
@@ -213,14 +181,85 @@ pub fn get_revise_repos(config: ChannelConfig) -> Result<Vec<RepoRevise>> {
 fn revise_repos(all_repos: Vec<RepoRevise>) -> Result<()> {
     log::debug!("Starting with {} repositories", all_repos.len());
 
-    // Collect all release items from all repositories in parallel
-    let mut all_release_items = Vec::new();
+    // Collect all release items from all repositories
+    let all_release_items = if all_repos.len() > 1 && config().common.parallel_processing {
+        let items = collect_all_repo_metadata_parallel(all_repos)?;
+        items
+    } else {
+        let mut items = Vec::new();
+        for repo in all_repos {
+            let release_items = collect_repo_metadata(&repo)?;
+            items.extend(release_items);
+        }
+        items
+    };
+
+    process_all_release_items(all_release_items)
+}
+
+fn collect_all_repo_metadata_parallel(all_repos: Vec<RepoRevise>) -> Result<Vec<RepoReleaseItem>> {
+    let (tx, rx) = mpsc::channel();
+    let mut handles = Vec::new();
 
     for repo in all_repos {
-        let release_items = collect_repo_metadata(&repo)?;
-        all_release_items.extend(release_items);
+        let tx = tx.clone();
+        let repo_clone = repo.clone();
+
+        let handle = std::thread::spawn(move || {
+            let result = collect_repo_metadata(&repo_clone);
+            if let Err(ref e) = result {
+                log::error!("Failed to collect metadata for repo {}: {:#}", repo_clone.repo_name, e);
+            }
+
+            if let Err(e) = tx.send(result) {
+                log::error!("Failed to send metadata collection result for repo {}: {}", repo_clone.repo_name, e);
+            }
+        });
+
+        handles.push(handle);
     }
 
+    // Drop the original sender so the receiver loop will exit once all
+    // worker threads have finished sending their results.
+    drop(tx);
+
+    let mut all_succeed = true;
+    let mut all_release_items = Vec::new();
+
+    while let Ok(result) = rx.recv() {
+        match result {
+            Ok(mut items) => {
+                all_release_items.append(&mut items);
+            }
+            Err(e) => {
+                all_succeed = false;
+                log::error!("Error while collecting repository metadata in parallel: {:#}", e);
+            }
+        }
+    }
+
+    // Ensure all worker threads have completed successfully
+    for handle in handles {
+        if let Err(e) = handle.join() {
+            log::error!("Metadata collection thread panicked: {:?}", e);
+            all_succeed = false;
+        }
+    }
+
+    if !all_succeed {
+        return Err(eyre::eyre!("Failed to collect repository metadata for one or more repositories"));
+    }
+
+    Ok(all_release_items)
+}
+
+/// Determine if filelists are needed based on the current command and options
+pub fn need_filelists() -> bool {
+    (config().subcommand == EpkgCommand::Update && config().update.need_files) ||
+    (config().subcommand == EpkgCommand::Search && (config().search.files || config().search.paths))
+}
+
+fn process_all_release_items(all_release_items: Vec<RepoReleaseItem>) -> Result<()> {
     log::debug!("Collected {} total release items", all_release_items.len());
 
     // Deduplicate release items based on URL to prevent downloading the same file multiple times
@@ -229,8 +268,7 @@ fn revise_repos(all_repos: Vec<RepoRevise>) -> Result<()> {
     log::debug!("Unique revises: {:#?}", deduplicated_items);
 
     // Filter out items that don't need revision
-    let need_filelists = config().subcommand == EpkgCommand::Update ||
-                         config().subcommand == EpkgCommand::Search && (config().search.files || config().search.paths);
+    let need_filelists = need_filelists();
 
     let revises: Vec<_> = deduplicated_items.iter()
         .filter(|revise| revise.need_download || revise.need_convert)
@@ -281,8 +319,7 @@ fn create_repository_indexes(revises: Vec<RepoReleaseItem>, deduplicated_items: 
         if let Some(first_item) = release_items.first() {
             let repo = &first_item.repo_revise;
             // Use the standard get_repo_dir() - repo.arch is already set correctly (e.g., "all" for noarch)
-            let repo_dir = dirs::get_repo_dir(repo)
-                .with_context(|| format!("Failed to get repository directory for: {}", repodata_name))?;
+            let repo_dir = dirs::get_repo_dir(repo);
             let no_revises = !revises_map.contains_key(&repodata_name);
             create_load_repoindex(repo, no_revises, &repo_dir, release_items.clone())
                 .with_context(|| format!("Failed to create and load repository index for: {}", repodata_name))?;
@@ -321,78 +358,76 @@ fn deduplicate_release_items_by_url(release_items: Vec<RepoReleaseItem>) -> Vec<
     filtered_items
 }
 
-fn is_file_recent(path: &PathBuf, max_age: Duration) -> Result<bool> {
+fn has_recent_download(path: &PathBuf, max_age: Duration) -> Result<bool> {
+    if is_file_recent(path, &max_age)? {
+        return Ok(true);
+    }
+    let etag_path = append_suffix(path, "etag.json");
+    log::debug!("has_recent_download: checking etag file, path={}, etag_path={}, max_age={}s", path.display(), etag_path.display(), max_age.as_secs());
+    if is_file_recent(&etag_path, &max_age)? {
+        Ok(true)
+    } else {
+        let _ = posix_utime(etag_path, None, None);
+        Ok(false)
+    }
+}
+
+fn is_file_recent(path: &PathBuf, max_age: &Duration) -> Result<bool> {
+    if !path.exists() {
+        log::debug!("is_file_recent: file does not exist, returning false, path={}, max_age={}s", path.display(), max_age.as_secs());
+        return Ok(false);
+    }
     let metadata = fs::metadata(path)
         .with_context(|| format!("Failed to get metadata for file: {}", path.display()))?;
     let modified = metadata.modified()
         .with_context(|| format!("Failed to get modification time for file: {}", path.display()))?;
     let now = SystemTime::now();
-    if let Ok(duration) = now.duration_since(modified) {
-        Ok(duration < max_age)
+    if let Ok(age) = now.duration_since(modified) {
+        let is_recent = age < *max_age;
+        log::debug!("is_file_recent: file age={}s, max_age={}s, is_recent={}, path={}", age.as_secs(), max_age.as_secs(), is_recent, path.display());
+        Ok(is_recent)
     } else {
+        log::debug!("is_file_recent: modified time is in the future, returning false, path={}, max_age={}s", path.display(), max_age.as_secs());
         Ok(false)
     }
 }
 
-fn touch_file_mtime(path: &PathBuf) -> Result<()> {
-    let now = SystemTime::now();
-    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now))
-        .with_context(|| format!("Failed to update modification time for file: {}", path.display()))?;
-    Ok(())
-}
-
-fn check_repo_index_age(index_path: &PathBuf, duration: std::time::Duration) -> Result<bool> {
-    let is_recent = is_file_recent(&index_path, duration)
-        .with_context(|| format!("Failed to check if file is recent: {}", index_path.display()))?;
-    if !is_recent {
-        touch_file_mtime(&index_path)
-            .with_context(|| format!("Failed to update modification time for index file: {}", index_path.display()))?;
-    }
-    Ok(is_recent)
-}
-
 pub fn should_refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<ReleaseStatus> {
-    let expire_secs = config().common.metadata_expire;
-
     // Check if this URL is already being processed by the download manager
     if has_download_task(&repo.index_url) {
-        log::debug!("URL {} is already being processed, skipping duplicate download", repo.index_url);
+        log::debug!("should_refresh_release_file: URL {} already being processed, returning FineRecent", repo.index_url);
         return Ok(ReleaseStatus::FineRecent);
     }
 
     if !path.exists() {
+        log::debug!("should_refresh_release_file: path does not exist: {}, returning NeedDownload", path.display());
         return Ok(ReleaseStatus::NeedDownload);
     }
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
-    let index_path = repo_dir.join("RepoIndex.json");
-    if !index_path.exists() {
-        return Ok(ReleaseStatus::NeedConvert);
-    }
+    if config().subcommand != EpkgCommand::Update {
+        let expire_secs = config().common.metadata_expire;
 
-    // if never auto update
-    if expire_secs == 0 && config().subcommand != EpkgCommand::Update {
-        return Ok(ReleaseStatus::FineExist);
-    }
+        if expire_secs == 0 {
+            log::debug!("should_refresh_release_file: never auto update, returning FineExist");
+            return Ok(ReleaseStatus::FineExist);
+        }
 
-    // if not always update
-    if !(expire_secs < 0 || config().subcommand == EpkgCommand::Update) {
-        let duration = std::time::Duration::from_secs(expire_secs.try_into()
-            .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
-        // Check if release file is recent
-        if is_file_recent(path, duration)? {
-            // If release file is recent, check repo index age
-            if check_repo_index_age(&index_path, duration)? {
+        if expire_secs > 0 {
+            let duration = std::time::Duration::from_secs(expire_secs.try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert metadata_expire to u64: {}", e))?);
+            // Check if release file download cache is recent
+            if has_recent_download(&path, duration)? {
+                log::debug!("should_refresh_release_file: all files are recent, returning FineRecent");
                 return Ok(ReleaseStatus::FineRecent);
             }
         }
     }
 
+    log::debug!("should_refresh_release_file: returning NeedUpdate");
     Ok(ReleaseStatus::NeedUpdate)
 }
 
-pub fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
+fn refresh_release_file(path: &PathBuf, repo: &RepoRevise) -> Result<()> {
     let status = should_refresh_release_file(path, repo)
         .with_context(|| format!("Failed to check if release file needs refreshing: {}", path.display()))?;
 
@@ -411,7 +446,7 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
     let release_dir = release_path.parent()
         .ok_or_else(|| eyre::eyre!("Failed to get parent directory of release path: {}", release_path.display()))?;
 
-    fs::create_dir_all(release_dir).with_context(|| format!("Failed to create parent directory for: {}", release_path.display()))?;
+    lfs::create_dir_all(release_dir)?;
     refresh_release_file(&release_path, &repo)
         .with_context(|| format!("Failed to refresh release file for repository: {}", repo.repo_name))?;
 
@@ -429,19 +464,35 @@ fn sync_from_release_metadata(repo: &RepoRevise, release_path: &PathBuf) -> Resu
 }
 
 // index_url: $mirror/v$version/$repo/$arch/APKINDEX.tar.gz
-fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Result<Vec<RepoReleaseItem>> {
+fn sync_from_package_database(repo: &RepoRevise, packages_path: &mut PathBuf) -> Result<Vec<RepoReleaseItem>> {
+
+    // For Pacman format, conditionally modify index_url based on need_filelists
+    let mut index_url = repo.index_url.clone();
+    if repo.format == PackageFormat::Pacman {
+        let need_filelists = need_filelists();
+        if need_filelists {
+            // Change .db.tar to .files.tar
+            index_url = index_url.replace(".db.tar", ".files.tar");
+            let path_str = packages_path.to_string_lossy().to_string();
+            *packages_path = PathBuf::from(path_str.replace(".db.tar", ".files.tar"));
+        } else {
+            // Change .files.tar to .db.tar
+            index_url = index_url.replace(".files.tar", ".db.tar");
+            let path_str = packages_path.to_string_lossy().to_string();
+            *packages_path = PathBuf::from(path_str.replace(".files.tar", ".db.tar"));
+        }
+    }
 
     let should_update = should_refresh_release_file(packages_path, repo)?;
     let mut release_items = Vec::new();
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
 
     // Extract package base URL by removing last filename part
-    let package_baseurl = if let Some(parent_url) = repo.index_url.rsplitn(2, '/').nth(1) {
+    let package_baseurl = if let Some(parent_url) = index_url.rsplitn(2, '/').nth(1) {
         parent_url.to_string()
     } else {
-        repo.index_url.clone()
+        index_url.clone()
     };
 
     // Get the filename from the packages_path
@@ -451,9 +502,26 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
         .to_string();
 
     let need_download = should_update == ReleaseStatus::NeedDownload ||
-                       should_update == ReleaseStatus::NeedUpdate ||
-                       should_update == ReleaseStatus::FineRecent;
-    let need_convert = should_update == ReleaseStatus::NeedConvert;
+                        should_update == ReleaseStatus::NeedUpdate;
+
+    let need_convert = if !need_download {
+        // Check if output file exists and is non-empty
+        // .files.tar.gz archives contain both desc and files, but processing may fail
+        // or be interrupted, leaving packages.txt empty. Force conversion in such cases.
+        let output_path = repo_dir.join("packages.txt");
+        let output_exists = output_path.exists();
+        let output_size = if output_exists {
+            std::fs::metadata(&output_path).ok().map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        let need_convert = !output_exists || output_size == 0;
+        log::debug!("need_convert check: output_path={}, exists={}, size={}, need_convert={}",
+                   output_path.display(), output_exists, output_size, need_convert);
+        need_convert
+    } else {
+        false
+    };
 
     release_items.push(RepoReleaseItem {
         repo_revise: RepoRevise {
@@ -463,15 +531,14 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
         need_download: need_download,
         need_convert: need_convert,
         arch: repo.arch.clone(),
-        url: repo.index_url.clone(),
+        url: index_url,
         package_baseurl: package_baseurl,
-        hash_type: "".to_string(),
-        hash: "".to_string(),
-        size: 0,
         location: location,
         is_packages: true,
+        is_adb: true,  // Mark as ADB file (Alpine/Arch Database)
         output_path: repo_dir.join("packages.txt"),
         download_path: packages_path.clone(),
+        ..Default::default()
     });
 
     Ok(release_items)
@@ -510,7 +577,7 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
  * Detection: URLs NOT ending with "/" or known metadata files
  * Examples:
  *   - Alpine: https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/APKINDEX.tar.gz
- *   - Custom: https://repo.example.com/packages/database.tar.xz
+ *   - Archlinux: https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.files.tar.gz
  *
  * Architecture:
  *   APKINDEX.tar.gz (direct package database)
@@ -549,14 +616,13 @@ fn sync_from_package_database(repo: &RepoRevise, packages_path: &PathBuf) -> Res
  */
 
 /// Collect repository metadata and return release items without processing them
-pub fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
+fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> {
     log::debug!("Starting for repo: {} with index_url: {}", repo.repo_name, repo.index_url);
 
-    let repo_dir = dirs::get_repo_dir(&repo)
-        .with_context(|| format!("Failed to get repository directory for: {}", repo.repo_name))?;
+    let repo_dir = dirs::get_repo_dir(&repo);
     log::debug!("Got repo_dir: {:?}", repo_dir);
 
-    let release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url, &repo.repodata_name)
+    let mut release_path = crate::mirror::Mirrors::url_to_cache_path(&repo.index_url, &repo.repodata_name)
         .with_context(|| format!("Failed to convert URL to cache path: {}", repo.index_url))?;
     log::debug!("Got release_path: {:?}", release_path);
 
@@ -570,8 +636,12 @@ pub fn collect_repo_metadata(repo: &RepoRevise) -> Result<Vec<RepoReleaseItem>> 
     } else if repo.format == PackageFormat::Conda && (repo.index_url.ends_with("repodata.json") || repo.index_url.ends_with("repodata.json.gz") || repo.index_url.ends_with("repodata.json.bz2")) {
         crate::conda_repo::parse_repodata_json(repo, &release_path.parent().unwrap().to_path_buf())
             .with_context(|| format!("Failed to parse conda repodata.json for repository: {}", repo.repo_name))?
+    } else if repo.format == PackageFormat::Pacman && (repo.index_url.contains("packages-meta-ext-v1.json") || repo.repo_name == "aur") {
+        // AUR repository - use AUR-specific processing
+        crate::aur::parse_aur_metadata(repo, &release_path)
+            .with_context(|| format!("Failed to parse AUR metadata for repository: {}", repo.repo_name))?
     } else {
-        sync_from_package_database(repo, &release_path)
+        sync_from_package_database(repo, &mut release_path)
             .with_context(|| format!("Failed to check packages file for repository: {}", repo.repo_name))?
     };
     log::debug!("Got {} release_items", release_items.len());
@@ -585,8 +655,7 @@ fn process_revises_sequential(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
     // Process each item sequentially
     for revise in &revises {
-        let repo_dir = dirs::get_repo_dir(&revise.repo_revise)
-            .with_context(|| format!("Failed to get repository directory for item: {}", revise.location))?;
+        let repo_dir = dirs::get_repo_dir(&revise.repo_revise);
         download_and_process_item(revise, &repo_dir)
             .with_context(|| format!("Failed to download and process item: {}", revise.location))?;
     }
@@ -598,26 +667,26 @@ fn process_revises_sequential(revises: Vec<RepoReleaseItem>) -> Result<()> {
 fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
     log::debug!("Starting with {} items", revises.len());
 
-    let (tx, rx) = mpsc::channel();
+    // Use a bounded channel so any future senders are naturally throttled
+    // by the receiver. Capacity is tied to the number of items to avoid
+    // unbounded growth if sends are added later.
+    let (tx, rx) = mpsc::sync_channel::<Result<(), eyre::Report>>(revises.len().max(1));
     let mut handles = Vec::new();
+    let mut errors = Vec::new();
 
     // Process each item in a separate thread
     for revise in revises {
-        let _tx = tx.clone();
-        let repo_dir = dirs::get_repo_dir(&revise.repo_revise)
-            .unwrap_or_else(|e| {
-                log::error!("Failed to get repository directory for item {}: {}", revise.location, e);
-                PathBuf::from("/tmp") // Last resort fallback
-            });
+        let tx = tx.clone();
+        let repo_dir = dirs::get_repo_dir(&revise.repo_revise);
         let handle = std::thread::spawn(move || {
             match download_and_process_item(&revise, &repo_dir) {
                 Ok(_) => {
-                    log::debug!("Successfully processed: {}", revise.location);
-                    true
+                    log::debug!("Successfully processed: {}", revise.download_path.display());
+                    let _ = tx.send(Ok(()));
                 },
                 Err(e) => {
-                    log::error!("Failed to process {}: {:#}", revise.location, e);
-                    false
+                    log::error!("Failed to process {}, retry fix with 'epkg -e {} update'", revise.location, config().common.env_name);
+                    let _ = tx.send(Err(e));
                 }
             }
         });
@@ -626,21 +695,27 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
     // Wait for all threads to complete
     drop(tx);
-    let mut all_succeed = true;
-    while let Ok(succeed) = rx.recv() {
-        all_succeed = all_succeed && succeed;
+    while let Ok(result) = rx.recv() {
+        if let Err(e) = result {
+            errors.push(e);
+        }
     }
 
     // Wait for all handles to complete
     for handle in handles {
         if let Err(e) = handle.join() {
             log::error!("Thread panicked: {:?}", e);
-            all_succeed = false;
+            errors.push(eyre::eyre!("Thread panicked: {:?}", e));
         }
     }
 
-    if !all_succeed {
-        return Err(eyre::eyre!("Failed to process some repository items"));
+    if !errors.is_empty() {
+        if errors.len() == 1 {
+            return Err(errors.into_iter().next().unwrap());
+        } else {
+            let error_msg = format!("Failed to process {} repository items: {}", errors.len(), errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "));
+            return Err(eyre::eyre!(error_msg));
+        }
     }
 
     Ok(())
@@ -648,16 +723,31 @@ fn process_revises_parallel(revises: Vec<RepoReleaseItem>) -> Result<()> {
 
 /// Download and process a single Debian release item
 fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Result<()> {
-    let (data_tx, data_rx) = channel();
+    // Use a bounded channel so the download side is naturally throttled
+    // by the processing side. Each message is a ~64KB chunk, so a small
+    // buffer keeps at most a few chunks in memory per item.
+    const DATA_CHANNEL_BUFFER: usize = 16;
+    let (data_tx, data_rx) = mpsc::sync_channel(DATA_CHANNEL_BUFFER);
 
     // Create and submit download task
+    use crate::download::DownloadFlags;
+    let flags = if revise.is_adb {
+        DownloadFlags::ADB
+    } else {
+        DownloadFlags::empty()
+    };
+    let sha256sum = if revise.hash_type == "SHA256" { Some(revise.hash.clone()) } else { None };
+    let sha1sum = if revise.hash_type == "SHA1" { Some(revise.hash.clone()) } else { None };
     let task = DownloadTask::with_size(
         revise.url.clone(),
-        dirs().epkg_downloads_cache.clone(),
-        6,
         if revise.size > 0 { Some(revise.size as u64) } else { None },
-        revise.repo_revise.repodata_name.clone()
-    ).with_data_channel(data_tx);
+        revise.repo_revise.repodata_name.clone(),
+        flags,
+        sha256sum,
+        sha1sum,
+    )
+    .with_context(|| format!("Failed to create download task for URL: {}", revise.url))?
+    .with_data_channel(data_tx);
 
     // Submit download task
     submit_download_task(task)
@@ -670,7 +760,7 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     // Process data blocks as they arrive
     process_data(data_rx, repo_dir, revise)
         .with_context(|| format!("Failed to process data for item: {} (format: {:?}, size: {}, hash: {})",
-            revise.location, revise.repo_revise.format, revise.size, revise.hash))?;
+            revise.download_path.display(), revise.repo_revise.format, revise.size, revise.hash))?;
     Ok(())
 }
 
@@ -682,7 +772,7 @@ pub fn create_load_repoindex(
 ) -> Result<()> {
     let mut repo_index: RepoIndex =
         if no_revises {
-            mmio::deserialize_repoindex(&repo_dir.join("RepoIndex.json"))
+            read_json_file(&repo_dir.join("RepoIndex.json"))
                 .with_context(|| format!("Failed to deserialize RepoIndex.json for repository: {}", repo.repo_name))?
         } else {
             collect_save_repoindex(&repo, repo_dir, &release_items)
@@ -701,42 +791,42 @@ pub fn create_load_repoindex(
 
 /// Collect packages metafiles and save repo index
 fn collect_save_repoindex(repo: &RepoRevise, _repo_dir: &PathBuf, release_items: &[RepoReleaseItem]) -> Result<RepoIndex> {
-    log::debug!("[collect_save_repoindex] Starting for repository: {} with {} release items", repo.repo_name, release_items.len());
+    log::debug!("Starting for repository: {} with {} release items", repo.repo_name, release_items.len());
 
     let mut packages_metafiles = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
 
     for (i, info) in release_items.iter().enumerate() {
         if info.is_packages {
-            log::debug!("[collect_save_repoindex] Processing packages item {}: {}", i, info.location);
+            log::debug!("Processing packages item {}: {}", i, info.location);
             let json_path = info.output_path.with_extension("json").to_str()
-                .ok_or_else(|| eyre::eyre!("[collect_save_repoindex] Invalid packages metafile path for item {}: {}", i, info.location))?
+                .ok_or_else(|| eyre::eyre!("Invalid packages metafile path for item {}: {}", i, info.location))?
                 .replace("packages", ".packages");
             let metafile_path = PathBuf::from(json_path);
-            log::debug!("[collect_save_repoindex] Generated metafile path: {}", metafile_path.display());
+            log::debug!("Generated metafile path: {}", metafile_path.display());
 
             // Only add if we haven't seen this path before
             if seen_paths.insert(metafile_path.clone()) {
                 packages_metafiles.push(metafile_path);
             } else {
-                log::debug!("[collect_save_repoindex] Skipping duplicate metafile path: {}", metafile_path.display());
+                log::debug!("Skipping duplicate metafile path: {}", metafile_path.display());
             }
         }
     }
 
-    log::debug!("[collect_save_repoindex] Found {} unique packages metafiles for repository: {}", packages_metafiles.len(), repo.repo_name);
+    log::debug!("Found {} unique packages metafiles for repository: {}", packages_metafiles.len(), repo.repo_name);
     save_repo_index_json(&repo, packages_metafiles)
 }
 
 // When to call: RepoIndex.json not exist, or at least one packages metafile changed
 // What to pass: ALL packages metafiles, including the revised AND not changed ones
-pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> Result<RepoIndex> {
+fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> Result<RepoIndex> {
     log::debug!("save_repo_index_json for {:#?}", packages_metafiles);
 
     // Check if we have any packages metafiles
     if packages_metafiles.is_empty() {
-        log::warn!("[save_repo_index_json] No packages metafiles provided for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
-        return Err(eyre::eyre!("[save_repo_index_json] No packages metafiles provided for repository: {}. Packages need to be downloaded and processed before creating repo index. Expected metafiles would be generated from packages items in release_items. Current packages_metafiles: {:#?}. This typically means no release_items with is_packages=true were found, or the packages processing step failed to generate the expected .packages.json files.", repo.repo_name, packages_metafiles));
+        log::warn!("No packages metafiles provided for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
+        return Err(eyre::eyre!("No packages metafiles provided for repository: {}. Packages need to be downloaded and processed before creating repo index. Expected metafiles would be generated from packages items in release_items. Current packages_metafiles: {:#?}. This typically means no release_items with is_packages=true were found, or the packages processing step failed to generate the expected .packages.json files.", repo.repo_name, packages_metafiles));
     }
 
     // Get the repo directory from the first metafile
@@ -748,34 +838,28 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
 
     // Process each packages metafile
     for (i, packages_metafile) in packages_metafiles.iter().enumerate() {
-        log::debug!("[collect_save_repoindex] Processing packages_metafile: {}", packages_metafile.display());
+        log::debug!("Processing packages_metafile: {}", packages_metafile.display());
 
         // Check if the packages metafile exists
         if !packages_metafile.exists() {
-            log::warn!("[collect_save_repoindex] Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display());
-            return Err(eyre::eyre!("[collect_save_repoindex] Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet.", packages_metafile.display()));
+            log::warn!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet, or processing failed. Check earlier error logs.", packages_metafile.display());
+            return Err(eyre::eyre!("Packages metafile does not exist: {}. This may indicate that packages haven't been processed yet, or processing failed. Check earlier error logs.", packages_metafile.display()));
         }
 
         // Load packages info
-        let packages_info_str = fs::read_to_string(&packages_metafile)
-            .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read packages metafile: {}", packages_metafile.display()))?;
-        let packages_info: PackagesFileInfo = serde_json::from_str(&packages_info_str)
-            .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse packages info from: {}", packages_metafile.display()))?;
+        let packages_info: PackagesFileInfo = read_json_file(&packages_metafile)?;
 
         // Try to load corresponding filelists if it exists
         let mut filelists_info = None;
         let filelists_metafile = packages_metafile.to_str()
-            .ok_or_else(|| eyre::eyre!("[collect_save_repoindex] Invalid packages metafile path: {}", packages_metafile.display()))?
+            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path: {}", packages_metafile.display()))?
             .replace(".packages", ".filelists");
         if Path::new(&filelists_metafile).exists() {
-            log::debug!("[collect_save_repoindex] Found filelists metafile: {}", filelists_metafile);
-            let filelists_content = fs::read_to_string(&filelists_metafile)
-                .wrap_err_with(|| format!("[collect_save_repoindex] Failed to read filelists: {}", filelists_metafile))?;
-            let filelists: FilelistsFileInfo = serde_json::from_str(&filelists_content)
-                .wrap_err_with(|| format!("[collect_save_repoindex] Failed to parse filelists info from: {}", filelists_metafile))?;
+            log::debug!("Found filelists metafile: {}", filelists_metafile);
+            let filelists: FilelistsFileInfo = read_json_file(Path::new(&filelists_metafile))?;
             filelists_info = Some(filelists);
         } else {
-            log::debug!("[collect_save_repoindex] Filelists metafile does not exist: {}", filelists_metafile);
+            log::debug!("Filelists metafile does not exist: {}", filelists_metafile);
         }
 
         // Use file stem as key, fallback to shard_i
@@ -787,7 +871,7 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
             packages: packages_info,
             filelists: filelists_info,
             essential_pkgnames: std::collections::HashSet::new(),
-            provide2pkgnames:   std::collections::HashMap::new(),
+            provide2pkgnames:   None,
             pkgname2ranges:     std::collections::BTreeMap::new(),
             packages_mmap:      None,
             pkgname2ranges_path: None,
@@ -796,8 +880,8 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
 
     // Check if we found any valid packages metafiles
     if repo_shards.is_empty() {
-        log::warn!("[collect_save_repoindex] No valid packages metafiles found for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
-        return Err(eyre::eyre!("[collect_save_repoindex] No valid packages metafiles found for repository: {}. Packages need to be downloaded and processed before creating repo index.", repo.repo_name));
+        log::warn!("No valid packages metafiles found for repository: {}. This indicates that packages need to be processed first.", repo.repo_name);
+        return Err(eyre::eyre!("No valid packages metafiles found for repository: {}. Packages need to be downloaded and processed before creating repo index.", repo.repo_name));
     }
 
     // Save the index for the repo
@@ -812,36 +896,41 @@ pub fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>)
 
     // Ensure parent directory exists
     if let Some(parent) = index_path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("[save_repo_index_json] Failed to create parent directory for: {}", index_path.display()))?;
+        lfs::create_dir_all(parent)?;
     }
 
     // Serialize to JSON with proper error handling
     let json_content = serde_json::to_string_pretty(&repo_index)
-        .wrap_err_with(|| format!("[save_repo_index_json] Failed to serialize repo index for repository: {}", repo.repo_name))?;
+        .wrap_err_with(|| format!("Failed to serialize repo index for repository: {}", repo.repo_name))?;
 
     // Write to file with proper error handling
-    fs::write(&index_path, json_content)
-        .wrap_err_with(|| format!("[save_repo_index_json] Failed to write repo index to: {}", index_path.display()))?;
+    lfs::write(&index_path, json_content)?;
 
-    log::debug!("[save_repo_index_json] Successfully wrote repo index to {}", index_path.display());
+    log::debug!("Successfully wrote repo index to {}", index_path.display());
 
     Ok(repo_index)
 }
 
-pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
+fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<()> {
     if revise.is_packages {
         match revise.repo_revise.format {
-            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.location))?,
-            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.location))?,
-            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.location))?,
-            PackageFormat::Pacman => crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.location))?,
-            PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.location))?,
+            PackageFormat::Deb => crate::deb_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Debian packages content for {}", revise.download_path.display()))?,
+            PackageFormat::Rpm => crate::rpm_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process RPM packages content for {}", revise.download_path.display()))?,
+            PackageFormat::Apk => crate::apk_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process APK packages content for {}", revise.download_path.display()))?,
+            PackageFormat::Pacman => {
+                // Check if this is an AUR repository
+                if revise.location.contains("packages-meta-ext-v1.json") || revise.repo_revise.repo_name == "aur" {
+                    crate::aur::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process AUR packages content for {}", revise.download_path.display()))?
+                } else {
+                    crate::arch_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Pacman packages content for {}", revise.download_path.display()))?
+                }
+            },
+            PackageFormat::Conda => crate::conda_repo::process_packages_content(data_rx, repo_dir, revise).with_context(|| format!("Failed to process Conda packages content for {}", revise.download_path.display()))?,
             _ => return Err(eyre::eyre!("Unsupported package format: {:?}", revise.repo_revise.format)),
         };
     } else {
         process_filelists_content(data_rx, repo_dir, revise)
-            .with_context(|| format!("Failed to process filelists content for {}", revise.location))?;
+            .with_context(|| format!("Failed to process filelists content for {}", revise.download_path.display()))?;
     }
     Ok(())
 }
@@ -865,7 +954,7 @@ pub fn process_data(data_rx: Receiver<Vec<u8>>, repo_dir: &PathBuf, revise: &Rep
  * respective `filelists` formats.
  */
 /// Process filelists content by verifying hash, creating symlinks, and generating metadata
-pub fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FilelistsFileInfo> {
+fn process_filelists_content(data_rx: Receiver<Vec<u8>>, _repo_dir: &PathBuf, revise: &RepoReleaseItem) -> Result<FilelistsFileInfo> {
     log::debug!("Processing filelists content for arch: {:?}", revise);
 
     // Step 1: Verify the hash of the received data
@@ -919,17 +1008,11 @@ fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
 
     if output_path.exists() {
         log::debug!("Removing existing filelists at {}", output_path.display());
-        fs::remove_file(&output_path)
-            .with_context(|| format!("Failed to remove existing filelists at {}", output_path.display()))?;
+        lfs::remove_file(&output_path)?;
     } else {
         if let Some(parent_dir) = output_path.parent() {
             if !parent_dir.as_os_str().is_empty() {
-                fs::create_dir_all(parent_dir).with_context(|| {
-                    format!(
-                        "Failed to create parent directory for: {}",
-                        output_path.display()
-                    )
-                })?;
+                lfs::create_dir_all(parent_dir)?;
             }
         }
     }
@@ -940,21 +1023,18 @@ fn prepare_filelists_output_path(revise: &RepoReleaseItem) -> Result<PathBuf> {
 /// Create symbolic link from download path to output path
 fn create_filelists_symlink(revise: &RepoReleaseItem, output_path: &PathBuf) -> Result<()> {
     // Create symbolic link
-    // /home/wfg/.cache/epkg/channel/debian:trixie/contrib/x86_64/filelists-all.gz =>
+    // /home/wfg/.cache/epkg/channels/debian-trixie/contrib/x86_64/filelists-all.gz =>
     // /home/wfg/.cache/epkg/downloads/debian/dists/trixie/contrib/by-hash/SHA256/9cc88157988a1ccc1240aa749a311bd6c445ecc890d16c431816a409303f3f51
     log::debug!("Creating symlink from {} to {}", revise.download_path.display(), output_path.display());
 
     // Check if output_path exists and is a valid file/symlink
-    if fs::symlink_metadata(output_path).is_ok() {
+    if lfs::symlink_metadata(output_path).is_ok() {
         log::debug!("Removing existing filelists at {}", output_path.display());
-        fs::remove_file(&output_path)
-            .with_context(|| format!("Failed to remove existing filelists at {}", output_path.display()))?;
+        lfs::remove_file(&output_path)?;
     }
 
     #[cfg(unix)]
-    std::os::unix::fs::symlink(revise.download_path.clone(), output_path)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            revise.download_path.display(), output_path.display()))?;
+    lfs::symlink(&revise.download_path, output_path)?;
 
     #[cfg(windows)]
     std::os::windows::fs::symlink_file(revise.download_path.clone(), output_path)
@@ -997,17 +1077,16 @@ fn write_filelists_metadata_json(output_path: &PathBuf, file_info: &FilelistsFil
     log::debug!("Writing filelists metadata to {}", json_path);
     let json_content = serde_json::to_string_pretty(file_info)
         .with_context(|| format!("Failed to serialize file info to JSON for {}", output_path.display()))?;
-    fs::write(&json_path, json_content)
-        .with_context(|| format!("Failed to write JSON metadata to {}", json_path))?;
+    lfs::write(&json_path, json_content)?;
 
     Ok(())
 }
 
 
 pub fn list_repos() -> Result<()> {
-    let base_env_root = dirs::find_env_root(BASE_ENV)
-                .ok_or_else(|| eyre::eyre!("Base environment not found"))?;
-    let manager_channel_dir = base_env_root.join("usr/src/epkg/channel");
+    let self_env_root = dirs::find_env_root(SELF_ENV)
+                .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
+    let manager_channel_dir = self_env_root.join("usr/src/epkg/sources");
     if !manager_channel_dir.exists() {
         return Ok(());
     }

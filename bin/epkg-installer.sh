@@ -182,12 +182,12 @@ download_files() {
 }
 
 initialize_epkg() {
-    # Build the init command with options
-    local init_cmd="$EPKG_PATH init --store=$STORE_MODE"
+    # Build the install command with options
+    local install_cmd="$EPKG_PATH self install --store=$STORE_MODE"
 
     # Add channel option if specified
     if [ -n "$CHANNEL" ]; then
-        init_cmd="$init_cmd --channel=$CHANNEL"
+        install_cmd="$install_cmd --channel=$CHANNEL"
     fi
 
     # Set store mode based on user (for display purposes)
@@ -200,12 +200,12 @@ initialize_epkg() {
 
     # Show what we're doing
     if [ -n "$CHANNEL" ]; then
-        print_info "Initializing epkg with channel: $CHANNEL"
+        print_info "Installing epkg with channel: $CHANNEL"
     fi
     print_info "Store mode: $STORE_MODE"
 
-    # Initialize epkg
-    $init_cmd || exit
+    # Install epkg
+    $install_cmd || exit
 }
 
 print_completion() {
@@ -227,8 +227,8 @@ check_duplicate_install()
 {
     test -d $HOME/.epkg/envs/main && {
         echo "epkg was already initialized for current user"
-        echo "TO upgrade epkg: epkg init --upgrade"
-        echo "TO uninstall epkg: epkg deinit"
+        echo "TO upgrade epkg: epkg self upgrade"
+        echo "TO uninstall epkg: epkg self remove"
         exit 1
     }
 }

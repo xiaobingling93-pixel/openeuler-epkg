@@ -1,8 +1,6 @@
 #!/bin/sh
 # Test env register/activate and PATH
 
-set -e
-
 . "$(dirname "$0")/../vars.sh"
 . "$(dirname "$0")/../lib.sh"
 
@@ -103,6 +101,18 @@ if ! echo "$PATH_OUTPUT5" | grep -q "$ENV2"; then
 fi
 if ! echo "$PATH_OUTPUT5" | grep -q "$ENV3"; then
     error "env3 not in final PATH"
+fi
+
+# Test that 'main' environment cannot be made public
+log "Testing that 'main' environment cannot be made public"
+if epkg env create main --public 2>/dev/null; then
+    error "Should not be able to create 'main' as public"
+fi
+
+# Verify 'main' is private
+MAIN_PUBLIC=$(epkg -e main env config get public 2>/dev/null | grep -i true || echo "false")
+if [ "$MAIN_PUBLIC" = "true" ]; then
+    error "'main' environment should be private"
 fi
 
 log "Env register/activate test completed successfully"

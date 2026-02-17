@@ -1,0 +1,28 @@
+format: deb
+distro: debian
+distro_dirs:
+- kubernetes
+versions:
+- trixie    13
+- bookworm  12 12.10 Debian12.10
+- bullseye  11 11.11 Debian11.11
+- buster    10 10.13 Debian10.13
+app_versions:
+- "v1.35"
+- "v1.34"
+- "v1.33"
+- "v1.32"
+- "v1.31"
+- "v1.30"
+- "v1.29"
+- "v1.28"
+- "v1.27"
+- "v1.26"
+- "v1.25"
+- "v1.24"
+repos:
+  kubernetes:
+index_url: $mirror/core:/stable:/$app_version/deb/Release
+
+# Example URLs:
+# https://mirrors.ustc.edu.cn/kubernetes/core:/stable:/v1.35/deb/Release
