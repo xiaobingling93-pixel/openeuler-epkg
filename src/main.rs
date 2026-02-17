@@ -1149,14 +1149,23 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
             // Command not a path, no .eenv found: search registered environments
             search_registered_envs(&command, config);
         }
-        // If command is a path but no .eenv found, keep MAIN_ENV (already set)
+
+        if !config.common.env_name.is_empty() {
+            return Ok(());
+        }
+    }
+
+    // Try to find .eenv in current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(dot_eenv) = find_nearest_dot_eenv(&cwd) {
+            set_env_name_by_path(&dot_eenv, config)?;
+            return Ok(());
+        }
     }
 
     // If environment still not determined, proceed with standard fallbacks
-    if config.common.env_name.is_empty() {
-        config.common.env_name = MAIN_ENV.to_string();
-        config.common.env_explicit = false;
-    }
+    config.common.env_name = MAIN_ENV.to_string();
+    config.common.env_explicit = false;
 
     Ok(())
 }
@@ -1194,15 +1203,14 @@ fn set_env_name_by_path(dot_eenv: &Path, options: &mut EPKGConfig) -> Result<()>
     let resolved_name = resolve_env_root(dot_eenv.to_string_lossy().as_ref())?;
     options.common.env_name = resolved_name;
     options.common.env_root = dot_eenv.to_string_lossy().to_string();
-    options.common.env_explicit = true;
     Ok(())
 }
 
 fn search_registered_envs(command: &str, options: &mut EPKGConfig) {
-    if let Ok(Some(env_name)) = find_command_in_registered_envs(command) {
+    if let Ok(Some((env_name, env_root))) = find_command_in_registered_envs(command) {
         // Command found in a registered environment
         options.common.env_name = env_name;
-        options.common.env_explicit = true;
+        options.common.env_root = env_root.to_string_lossy().to_string();
     }
 }
 

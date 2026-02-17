@@ -1162,9 +1162,9 @@ fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
 }
 
 /// Find which registered environment contains a given command
-/// Returns the environment name if found, None otherwise
+/// Returns the environment name and root path if found, None otherwise
 /// Searches environments in order of registration priority (higher priority first)
-pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<String>> {
+pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String, PathBuf)>> {
     use std::fs;
 
     // Get registered environment configs with priorities
@@ -1192,14 +1192,15 @@ pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<String>>
                             if let Ok(metadata) = fs::metadata(&cmd_path) {
                                 let permissions = metadata.permissions();
                                 if permissions.mode() & 0o111 != 0 {
-                                    return Ok(Some(config.name.clone()));
+                                    log::debug!("found command '{}' at path '{}'", cmd_name, cmd_path.display());
+                                    return Ok(Some((config.name.clone(), env_root)));
                                 }
                             }
                         }
                         #[cfg(not(unix))]
                         {
                             // On non-Unix, just check existence
-                            return Ok(Some(config.name.clone()));
+                            return Ok(Some((config.name.clone(), env_root)));
                         }
                     }
                 }
