@@ -100,7 +100,14 @@ pub fn download_urls(
 
     for url in &urls {
         let url_for_context = url.clone();
-        let task = DownloadTask::new(url.clone());
+        let task = match DownloadTask::new(url.clone()) {
+            Ok(task) => task,
+            Err(e) => {
+                submit_errors.push(Some(e.wrap_err(format!("Failed to create download task for URL: {}", url))));
+                task_urls.push(None);
+                continue;
+            }
+        };
 
         // Submit the task - if URL already exists, it will just replace/reuse
         if let Err(e) = submit_download_task(task)
@@ -453,7 +460,8 @@ pub fn enqueue_package_downloads(
         };
 
         // Submit download task with size information (handles both local and remote files)
-        let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), DownloadFlags::empty());
+        let task = DownloadTask::with_size(url.clone(), size, package.repodata_name.clone(), DownloadFlags::empty())
+            .with_context(|| format!("Failed to create download task for package {} (URL: {})", pkgkey, url))?;
         submit_download_task(task)
             .with_context(|| format!("Failed to submit download task for {}", url))?;
         url_to_pkgkeys.entry(url).or_default().push(pkgkey.clone());

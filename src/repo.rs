@@ -118,7 +118,8 @@ pub fn download_file_with_repodata_name(url: &str, repodata_name: &str) -> Resul
         None,
         repodata_name.to_string(),
         DownloadFlags::empty()  // Not an ADB file
-    );
+    )
+    .with_context(|| format!("Failed to create download task for URL: {}", url))?;
     submit_download_task(task)
         .with_context(|| format!("Failed to submit download task for {}", url))?;
     DOWNLOAD_MANAGER.start_processing();
@@ -738,7 +739,9 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
         if revise.size > 0 { Some(revise.size as u64) } else { None },
         revise.repo_revise.repodata_name.clone(),
         flags
-    ).with_data_channel(data_tx);
+    )
+    .with_context(|| format!("Failed to create download task for URL: {}", revise.url))?
+    .with_data_channel(data_tx);
 
     // Submit download task
     submit_download_task(task)

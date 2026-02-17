@@ -51,16 +51,13 @@ pub(crate) fn update_download_status(task: &DownloadTask, new_status: DownloadSt
 }
 
 impl DownloadTask {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String) -> Result<Self> {
         Self::with_size(url, None, "".to_string(), DownloadFlags::empty())
     }
 
-    pub fn with_size(url: String, file_size: Option<u64>, repodata_name: String, mut flags: DownloadFlags) -> Self {
+    pub fn with_size(url: String, file_size: Option<u64>, repodata_name: String, mut flags: DownloadFlags) -> Result<Self> {
         // Use detect_url_proto_path to determine if this is a local file
-        let (protocol, final_path) = mirror::Mirrors::detect_url_proto_path(&url, &repodata_name)
-            .unwrap_or_else(|e| {
-                panic!("Failed to detect URL protocol and resolve path for '{}': {}", url, e);
-            });
+        let (protocol, final_path) = mirror::Mirrors::detect_url_proto_path(&url, &repodata_name)?;
 
         // Set LOCAL flag if the protocol is Local
         // Note: in with_size() we already set task.final_path pointing to the original local file url
@@ -69,7 +66,7 @@ impl DownloadTask {
             flags = flags | DownloadFlags::LOCAL;
         }
 
-        Self::with_path(url, final_path, file_size, repodata_name, flags)
+        Ok(Self::with_path(url, final_path, file_size, repodata_name, flags))
     }
 
     fn with_path(url: String, final_path: PathBuf, file_size: Option<u64>, repodata_name: String, flags: DownloadFlags) -> Self {
