@@ -621,6 +621,26 @@ pub fn force_symlink<P: AsRef<Path>, Q: AsRef<Path>>(file_path: P, symlink_path:
     Ok(())
 }
 
+/// Convert a path (relative or absolute) to an absolute path string.
+/// If the path is already absolute, returns it unchanged.
+/// If the path is relative, joins it with the current working directory.
+/// Returns the original string if unable to get current working directory.
+pub fn to_absolute_path(dir: &str) -> String {
+    if dir.is_empty() {
+        return dir.to_string();
+    }
+
+    let path = std::path::Path::new(dir);
+    if path.is_absolute() {
+        dir.to_string()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path).to_string_lossy().to_string(),
+            Err(_) => dir.to_string(), // fallback
+        }
+    }
+}
+
 /// Resolve a symlink (or regular file) to its target within the environment root.
 ///
 /// This function handles both absolute and relative symlinks, ensuring the resolved

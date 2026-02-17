@@ -986,9 +986,12 @@ fn validate_env_name(env_name: &str) -> Result<()> {
 /// Generate an environment name from a dir by replacing '/' with '__'.
 /// Auto-generated names start with '__' to distinguish them from user-provided names.
 fn env_name_from_path(dir: &str) -> String {
-    let trimmed = dir.trim_matches('/');
+    // Convert to absolute path for consistent naming
+    let abs_dir = crate::utils::to_absolute_path(dir);
+
+    let trimmed = abs_dir.trim_matches('/');
     if trimmed.is_empty() {
-        return "root".to_string();
+        return "sysroot".to_string();
     }
     let with_underscores = trimmed.replace('/', "__");
     // Ensure name starts with '__' to mark as auto-generated
@@ -1059,7 +1062,9 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
     }
 
     if let Some(dir) = matches.get_one::<String>("root") {
-        config.common.env_root = dir.to_string();
+        // Convert relative path to absolute for consistent handling
+        let abs_dir = crate::utils::to_absolute_path(dir);
+        config.common.env_root = abs_dir;
         config.common.env_explicit = true;
         return true;
     }
