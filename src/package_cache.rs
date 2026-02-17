@@ -240,7 +240,7 @@ pub fn map_pkgline2filelist(
 
     // Not in cache, get from store using get_package_files (which filters out dirs)
     let file_list = crate::utils::get_package_files(store_root, pkgline)
-        .with_context(|| format!("Failed to get filelist for pkgline {}", pkgline))?;
+        .with_context(|| format!("Failed to get filelist for {}/{}/info/filelist.txt", store_root.display(), pkgline))?;
 
     // Cache it for future use
     PACKAGE_CACHE.pkgline2filelist.write().unwrap()

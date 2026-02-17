@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use color_eyre::eyre::WrapErr;
 
 /// File type in mtree format
 #[derive(Debug, Clone, PartialEq)]
@@ -164,7 +165,10 @@ impl ParseState {
             "/set" => {
                 for part in &tokens[1..] {
                     let (key, value) = part.split_once('=')
-                        .ok_or_else(|| eyre!("Invalid key=value pair in /set: {}", part))?;
+                        .ok_or_else(|| eyre!("Invalid key=value pair in /set: {} (missing '='?)", part))?;
+                    if key.is_empty() {
+                        return Err(eyre!("Invalid key=value pair in /set: {} (empty key)", part));
+                    }
                     // Empty values are ignored (same as parse_keywords)
                     if !value.is_empty() {
                         self.defaults.insert(key.to_string(), value.to_string());
@@ -215,7 +219,10 @@ fn parse_keywords(tokens: &[&str]) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
     for token in tokens {
         let (key, value) = token.split_once('=')
-            .ok_or_else(|| eyre!("Invalid key=value pair: {}", token))?;
+            .ok_or_else(|| eyre!("Invalid key=value pair '{}' (missing '='?)", token))?;
+        if key.is_empty() {
+            return Err(eyre!("Invalid key=value pair '{}' (empty key)", token));
+        }
         if !value.is_empty() {
             map.insert(key.to_string(), value.to_string());
         }
@@ -322,8 +329,8 @@ pub fn parse_mtree(content: &str) -> Result<Vec<MtreeFileInfo>> {
 pub fn parse_simplified_mtree(content: &str) -> Result<Vec<MtreeFileInfo>> {
     let mut results = Vec::new();
 
-    for line in content.lines() {
-        let line = line.trim();
+    for (line_no, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -335,9 +342,11 @@ pub fn parse_simplified_mtree(content: &str) -> Result<Vec<MtreeFileInfo>> {
         }
 
         let unescaped_path = normalize_path_tokens(&path_tokens);
-        let line_attrs = parse_keywords(&tokens[kv_start..])?;
+        let line_attrs = parse_keywords(&tokens[kv_start..])
+            .wrap_err_with(|| format!("at line {}: {}", line_no + 1, raw_line))?;
 
-        let info = MtreeFileInfo::from_attrs(unescaped_path, line_attrs)?;
+        let info = MtreeFileInfo::from_attrs(unescaped_path, line_attrs)
+            .wrap_err_with(|| format!("at line {}: {}", line_no + 1, raw_line))?;
         results.push(info);
     }
 
@@ -473,6 +482,28 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_simplified_error() {
+        // Malformed line with extra token after key=value pairs
+        let content = "usr/bin/bash type=file 5";
+        let err = parse_simplified_mtree(content).unwrap_err();
+        let err_str = err.to_string();
+        println!("Error: {}", err_str);
+        for (i, cause) in err.chain().enumerate() {
+            println!("  Cause {}: {}", i, cause);
+        }
+        // Should contain line number and line content
+        assert!(err_str.contains("at line 1:"), "error missing line number: {}", err_str);
+        assert!(err_str.contains("usr/bin/bash type=file 5"), "error missing line content: {}", err_str);
+        // Check error chain for invalid key=value pair
+        let chain_msgs: Vec<String> = err.chain().map(|e| e.to_string()).collect();
+        let has_key_value_error = chain_msgs.iter().any(|msg| msg.contains("Invalid key=value pair"));
+        assert!(has_key_value_error, "error chain missing key=value error: {:?}", chain_msgs);
+        // Should mention token '5'
+        let has_token = chain_msgs.iter().any(|msg| msg.contains("'5'"));
+        assert!(has_token, "error chain missing token '5': {:?}", chain_msgs);
+    }
+
+    #[test]
     fn test_parse_full_mtree() {
         let content = r#"#mtree
 /set type=file uid=0 gid=0 mode=644
@@ -535,5 +566,32 @@ usr/bin/bash type=file
         assert_eq!(results[1].path, "dir1/file1");
         // after dotdot, current directory is back to ".", so dir2 is relative
         assert_eq!(results[2].path, "dir2");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_real_filelist_error() {
+        use std::fs;
+        let path = "/home/wfg/.epkg/store/h3t6kjf22f54arr4xoeagznwhfs7t4ar__alsa-ucm-conf__1.2.14-1__all/info/filelist.txt";
+        let content = fs::read_to_string(path).unwrap();
+        // Test each line individually
+        for (line_no, raw_line) in content.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match parse_simplified_mtree(line) {
+                Ok(_) => {},
+                Err(err) => {
+                    println!("Line {} failed: {}", line_no + 1, raw_line);
+                    println!("Error: {}", err);
+                    for (i, cause) in err.chain().enumerate() {
+                        println!("  Cause {}: {}", i, cause);
+                    }
+                    return;
+                }
+            }
+        }
+        println!("No errors found - all lines parsed successfully");
     }
 }
