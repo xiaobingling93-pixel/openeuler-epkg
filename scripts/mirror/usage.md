@@ -29,11 +29,12 @@ This document describes the mirror management system used in epkg, including its
 
 ### Prerequisites
 ```shell
-# Setup Python environment in scripts/mirror/
+# Setup epkg environment in scripts/mirror/
 cd scripts/mirror/
-python3 -m venv .venv
-./.venv/bin/pip3 install -r requirements.txt
-sudo apt-get install geoip-database chromium-driver lftp
+epkg env create --root ".eenv" -c debian
+# below epkg commands will auto find-use the env at CWD/.eenv
+epkg install python3-pip geoip-database chromium-driver lftp
+epkg run pip install -r requirements.txt
 ```
 
 ### Step-by-Step Workflow
@@ -45,7 +46,7 @@ cd scripts/mirror/
 # Discovers mirrors from official distribution sources
 # Input: mirrors-*.html, mirrors-*.txt (downloaded from distribution websites)
 # Output: scripts/mirror/official-mirrors.json
-./.venv/bin/python3 fetch_official_mirrors.py
+epkg run fetch_official_mirrors.py
 ```
 
 #### 2. List Directory Contents
@@ -55,10 +56,10 @@ cd scripts/mirror/
 # Fetches directory listings from discovered mirrors
 # Input: scripts/mirror/official-mirrors.json + previous scripts/mirror/ls-mirrors.json + sources/*.yaml
 # Output: updated scripts/mirror/ls-mirrors.json
-./.venv/bin/python3 ls_mirrors.py
+epkg run ls_mirrors.py
 
 # Force update existing entries
-./.venv/bin/python3 ls_mirrors.py --update
+epkg run ls_mirrors.py --update
 ```
 
 #### 3. Probe Unknown Mirrors
@@ -68,7 +69,7 @@ cd scripts/mirror/
 # Probes mirrors without directory listings
 # Input: scripts/mirror/ls-mirrors.json + sources/*.yaml
 # Output: scripts/mirror/probe-mirrors.json + scripts/mirror/noreach-mirrors.txt + scripts/mirror/nocontent-mirrors.txt
-./.venv/bin/python3 probe_dirs.py
+epkg run probe_dirs.py
 ```
 
 #### 4. Update Manual Configuration
@@ -90,7 +91,7 @@ cd scripts/mirror/
 # Merges all data sources into final configuration
 # Input: All JSON files + sources/manual-mirrors.json + error files
 # Output: sources/mirrors.json
-./.venv/bin/python3 merge_mirrors.py
+epkg run merge_mirrors.py
 ```
 
 ## Debugging and Maintenance
@@ -100,7 +101,7 @@ cd scripts/mirror/
 cd scripts/mirror/
 
 # Parse a single HTML file for testing
-./.venv/bin/python3 ls_mirrors.py --parse index/example.com.html
+epkg run ls_mirrors.py --parse index/example.com.html
 
 # Check certificate issues
 grep -l certificate index/*.lftp
