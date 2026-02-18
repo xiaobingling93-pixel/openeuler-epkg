@@ -8,7 +8,7 @@
 - gc support: all env can be auto found/tracked/managed
 - rollback: record generations and switch to them
 - GRUB boot to history generations of / env
-- register: prepend/append `$env_root/usr/ebin` to $PATH in order of priority, 效果类似于`uv tool`
+- register: prepend/append `$env_root/usr/ebin` to $PATH in order of path-order (lower number = earlier), 效果类似于`uv tool`
 - activate: a) --stack: append $env to `$EPKG_ACTIVE_ENV` + prepend `$env_root/usr/ebin` to $PATH;
             b) non-stack: deactivate `$EPKG_ACTIVE_ENV` first
 - choot: `chroot $env_root; PATH=$env_root/usr/sbin:$env_root/usr/bin`
@@ -51,7 +51,7 @@ params:
 ## `epkg env create <ENV_NAME> [--public] [--path ENV_ROOT] [--channel CHANNEL] [--config CONFIG_FILE]`
 ## `epkg env remove <ENV_NAME>`
 
-## `epkg env register <ENV_NAME> [--priority PRIORITY]`
+## `epkg env register <ENV_NAME> [--path-order N]`
 ## `epkg env unregister <ENV_NAME>`
 
 ## `epkg env activate <ENV_NAME> [--stack]`
@@ -282,7 +282,7 @@ env_base: /home/wfg/.epkg/envs/aaa
 env_root: content of $(readlink $env_base)
 public: false
 register_to_path: true
-register_priority: 10
+register_path_order: 100
 channel: openeuler:24.03-lts
 repos:
   everything:
@@ -303,7 +303,7 @@ pub struct EnvConfig {
     pub public: bool,
 
     pub register_to_path: bool,
-    pub register_priority: i32,
+    pub register_path_order: i32,
 
     pub env_vars: HashMap<String, String>,
 }

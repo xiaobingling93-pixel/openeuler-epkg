@@ -253,7 +253,7 @@ t2               private                 registered
 export PATH="/root/.epkg/envs/t1/usr/ebin:/root/.epkg/envs/main/usr/ebin:/root/.epkg/envs/t2/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
-从上面PATH可以看出，包含了`t1`和`t2`两个环境的目录，如果安装不同软件，可以直接查找执行。如果为同一软件，可以通过`epkg run -e \<env>`的方式来执行。
+从上面PATH可以看出，包含了`t1`和`t2`两个环境的目录，如果安装不同软件，可以直接查找执行。如果为同一软件，可以通过`epkg run -e ENV`的方式来执行。
 
 ```bash
 [root@51bc2f1c8444 /]# epkg run -e t1 gcc -- --version
@@ -624,11 +624,11 @@ epkg 支持多环境隔离管理，方便进行不同架构/依赖的管理。
 | **命令**                  | **描述**                  |
 | ------------------------- | ------------------------- |
 | epkg env list             | 列出所有环境              |
-| epkg env create \<env>     | 创建新环境                |
-| epkg env remove \<env>     | 删除指定环境              |
-| epkg env register \<env>   | 注册指定环境              |
-| epkg env unregister \<env> | 注销指定环境              |
-| epkg env activate \<env>   | 激活指定环境              |
+| epkg env create ENV       | 创建新环境                |
+| epkg env remove ENV       | 删除指定环境              |
+| epkg env register ENV     | 注册指定环境              |
+| epkg env unregister ENV   | 注销指定环境              |
+| epkg env activate ENV     | 激活指定环境              |
 | epkg env deactivate       | 退出当前激活环境          |
 | epkg env path             | 查看当前env下的PATH       |
 | epkg env config           | 查看或配置当前环境        |
