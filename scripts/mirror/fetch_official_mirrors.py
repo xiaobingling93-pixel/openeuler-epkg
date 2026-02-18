@@ -30,10 +30,13 @@ UBUNTU_CACHE_HTML           = "mirrors-ubuntu.html"
 
 # Define paths for local mirror files
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FEDORA_MIRRORS_PATH             = os.path.join(BASE_DIR, FEDORA_CACHE_HTML)
-UBUNTU_MIRRORS_PATH             = os.path.join(BASE_DIR, UBUNTU_CACHE_HTML)
-OPENEULER_MIRRORS_PATH          = os.path.join(BASE_DIR, 'mirrors-openeuler.html')
-OFFICIAL_MIRRORS_OUTPUT_PATH    = os.path.join(BASE_DIR, 'official-mirrors.json')
+INPUT_DIR = os.path.join(BASE_DIR, 'input')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+
+FEDORA_MIRRORS_PATH             = os.path.join(INPUT_DIR, FEDORA_CACHE_HTML)
+UBUNTU_MIRRORS_PATH             = os.path.join(INPUT_DIR, UBUNTU_CACHE_HTML)
+OPENEULER_MIRRORS_PATH          = os.path.join(INPUT_DIR, 'mirrors-openeuler.html')
+OFFICIAL_MIRRORS_OUTPUT_PATH    = os.path.join(OUTPUT_DIR, 'official-mirrors.json')
 
 # Import common utilities
 from common import load_distro_configs, get_distro_configs, debug_print, get_valid_dirs

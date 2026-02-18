@@ -14,11 +14,13 @@ from common import debug_print, load_distro_configs, get_valid_dirs
 
 # Define paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OFFICIAL_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'official-mirrors.json')
-LS_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
-PROBE_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'probe-mirrors.json')
-NOREACH_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'noreach-mirrors.txt')
-NOCONTENT_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'nocontent-mirrors.txt')
+INPUT_DIR = os.path.join(BASE_DIR, 'input')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+OFFICIAL_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'official-mirrors.json')
+LS_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'ls-mirrors.json')
+PROBE_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'probe-mirrors.json')
+NOREACH_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'noreach-mirrors.txt')
+NOCONTENT_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'nocontent-mirrors.txt')
 FINAL_JSON_OUTPUT_PATH = os.path.join(BASE_DIR, '../..', 'sources', 'mirrors.json')
 
 # Define protocol bit masks

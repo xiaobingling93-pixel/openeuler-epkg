@@ -18,11 +18,25 @@ This document describes the mirror management system used in epkg, including its
 │
 └── scripts/mirror/                  # Processing scripts directory
     ├── *.py                         # Python processing scripts
-    ├── *.txt                        # Text-based data files
-    ├── *.json                       # JSON data files
-    ├── mirrors-*.html               # Downloaded HTML mirror lists
-    ├── mirrors-*.txt                # Downloaded text mirror lists
-    └── index/                       # HTML cache directory
+    ├── Makefile                     # Automation Makefile
+    ├── html-cache/                  # HTML and JS-rendered cache
+    ├── lftp-cache/                  # LFTP directory listing cache
+    ├── input/                       # Downloaded mirror lists
+    │   ├── mirrors-alpine.txt       # Alpine Linux official mirror list
+    │   ├── mirrors-archlinux.txt    # Arch Linux official mirror list
+    │   ├── mirrors-debian.html      # Debian official mirror list
+    │   ├── mirrors-fedora.html      # Fedora official mirror list
+    │   ├── mirrors-openeuler.html   # openEuler official mirror list
+    │   ├── mirrors-opensuse.html    # openSUSE official mirror list
+    │   └── mirrors-ubuntu.html      # Ubuntu official mirror list
+    ├── output/                      # Generated files directory
+    │   ├── official-mirrors.json    # Newly discovered mirrors
+    │   ├── ls-mirrors.json          # Directory listings from mirrors
+    │   ├── probe-mirrors.json       # Probed directory information
+    │   ├── noreach-mirrors.txt      # Network unreachable mirrors
+    │   ├── nocontent-mirrors.txt    # Mirrors with no content
+    │   └── failed-mirrors.log       # Log of failed mirror fetches
+    └── *.txt                        # Other text files (blacklist, etc.)
 ```
 
 ## Usage Instructions
@@ -37,6 +51,11 @@ epkg install python3-pip geoip-database chromium-driver lftp
 epkg run pip install -r requirements.txt
 ```
 
+Alternatively, you can use the Makefile target:
+```shell
+make init
+```
+
 ### Step-by-Step Workflow
 
 #### 1. Fetch New Mirrors
@@ -44,8 +63,8 @@ epkg run pip install -r requirements.txt
 cd scripts/mirror/
 
 # Discovers mirrors from official distribution sources
-# Input: mirrors-*.html, mirrors-*.txt (downloaded from distribution websites)
-# Output: scripts/mirror/official-mirrors.json
+# Input: input/mirrors-*.html, input/mirrors-*.txt (downloaded from distribution websites)
+# Output: output/official-mirrors.json
 epkg run fetch_official_mirrors.py
 ```
 
@@ -54,12 +73,10 @@ epkg run fetch_official_mirrors.py
 cd scripts/mirror/
 
 # Fetches directory listings from discovered mirrors
-# Input: scripts/mirror/official-mirrors.json + previous scripts/mirror/ls-mirrors.json + sources/*.yaml
-# Output: updated scripts/mirror/ls-mirrors.json
+# Input: output/official-mirrors.json + previous output/ls-mirrors.json + sources/*.yaml
+# Output: updated output/ls-mirrors.json
 epkg run ls_mirrors.py
 
-# Force update existing entries
-epkg run ls_mirrors.py --update
 ```
 
 #### 3. Probe Unknown Mirrors
@@ -67,8 +84,8 @@ epkg run ls_mirrors.py --update
 cd scripts/mirror/
 
 # Probes mirrors without directory listings
-# Input: scripts/mirror/ls-mirrors.json + sources/*.yaml
-# Output: scripts/mirror/probe-mirrors.json + scripts/mirror/noreach-mirrors.txt + scripts/mirror/nocontent-mirrors.txt
+# Input: output/ls-mirrors.json + sources/*.yaml
+# Output: output/probe-mirrors.json + output/noreach-mirrors.txt + output/nocontent-mirrors.txt
 epkg run probe_dirs.py
 ```
 
@@ -94,6 +111,42 @@ cd scripts/mirror/
 epkg run merge_mirrors.py
 ```
 
+## Makefile Automation
+
+A Makefile is provided to automate the pipeline execution. It defines targets for each stage and handles dependencies between them.
+
+### Available Targets
+```shell
+cd scripts/mirror/
+make help               # Show available targets and usage
+make all                # Run complete pipeline (stages 1-4)
+make stage1             # Fetch new mirrors from official sources
+make stage2             # List directory contents from discovered mirrors
+make stage3             # Probe unknown mirrors for directory structure
+make stage4             # Merge all data into final configuration
+make init               # Create directories and setup epkg environment
+make clean-cache        # Clean HTML and LFTP cache files
+make clean              # Clean all generated files (except input/cache files)
+```
+
+### Usage Examples
+```shell
+# Run complete pipeline
+make all
+
+# Run only specific stages
+make stage1
+make stage2
+
+# Setup environment and directories
+make init
+
+# Clean generated files
+make clean
+```
+
+The Makefile uses `epkg run` for all Python script execution and automatically detects the epkg environment in `./.eenv`.
+
 ## Debugging and Maintenance
 
 ### Common Debug Commands
@@ -101,23 +154,23 @@ epkg run merge_mirrors.py
 cd scripts/mirror/
 
 # Parse a single HTML file for testing
-epkg run ls_mirrors.py --parse index/example.com.html
+epkg run ls_mirrors.py --parse html-cache/example.com.html
 
 # Check certificate issues
-grep -l certificate index/*.lftp
+grep -l certificate lftp-cache/*.lftp
 
 # Remove problematic cache files
-rm $(grep -l certificate index/*.lftp)
+rm $(grep -l certificate lftp-cache/*.lftp)
 
 # Study directory patterns
-rg "=ubuntu" index/*.html
+rg "=ubuntu" html-cache/*.html
 ```
 
 ### File Inspection Commands
 ```shell
 # Check processing files
-ls scripts/mirror/*.json
-ls scripts/mirror/*.txt
+ls scripts/mirror/output/*.json
+ls scripts/mirror/output/*.txt
 
 # Check final output
 ls sources/*.json
@@ -126,10 +179,10 @@ ls sources/*.json
 ls sources/*.yaml
 
 # Check downloaded mirror lists
-ls scripts/mirror/mirrors-*
+ls scripts/mirror/input/mirrors-*
 
 # Monitor cache usage
-du -sh scripts/mirror/index/
+du -sh html-cache/ lftp-cache/
 ```
 
 ### Cache Management
@@ -137,10 +190,10 @@ du -sh scripts/mirror/index/
 cd scripts/mirror/
 
 # Clean HTML cache
-rm index/*.html
+rm html-cache/*.html
 
 # Clean LFTP cache
-rm index/*.lftp
+rm lftp-cache/*.lftp
 ```
 
 ## Error Handling
@@ -154,8 +207,8 @@ rm index/*.lftp
 ### File-Specific Error Handling
 | Error Type | Affected Files | Location | Resolution |
 |------------|----------------|----------|------------|
-| Network failures | `noreach-mirrors.txt` | `scripts/mirror/` | Review and retry |
-| Content issues | `nocontent-mirrors.txt` | `scripts/mirror/` | Manual investigation |
+| Network failures | `noreach-mirrors.txt` | `scripts/mirror/output/` | Review and retry |
+| Content issues | `nocontent-mirrors.txt` | `scripts/mirror/output/` | Manual investigation |
 
 ### Mitigation Strategies
 - Multiple parsing strategies for HTML content
@@ -204,15 +257,15 @@ These configuration files drive the directory filtering logic across all scripts
 ```mermaid
 graph TB
     A[External Mirror Sources] --> B[scripts/mirror/fetch_official_mirrors.py]
-    B --> C[scripts/mirror/official-mirrors.json]
+    B --> C[scripts/mirror/output/official-mirrors.json]
 
     C --> D[scripts/mirror/ls_mirrors.py]
-    D --> E[scripts/mirror/ls-mirrors.json]
+    D --> E[scripts/mirror/output/ls-mirrors.json]
 
     E --> F[scripts/mirror/probe_dirs.py]
-    F --> G[scripts/mirror/probe-mirrors.json]
-    F --> H[scripts/mirror/noreach-mirrors.txt]
-    F --> I[scripts/mirror/nocontent-mirrors.txt]
+    F --> G[scripts/mirror/output/probe-mirrors.json]
+    F --> H[scripts/mirror/output/noreach-mirrors.txt]
+    F --> I[scripts/mirror/output/nocontent-mirrors.txt]
 
     J[sources/manual-mirrors.json] --> K[scripts/mirror/merge_mirrors.py]
     C --> K
@@ -255,13 +308,13 @@ graph TB
 ### Input Files (External Sources)
 | File | Path | Purpose | Format | Source |
 |------|------|---------|--------|--------|
-| `mirrors-alpine.txt` | `scripts/mirror/` | Alpine Linux official mirror list | Plain text | Downloaded |
-| `mirrors-archlinux.txt` | `scripts/mirror/` | Arch Linux official mirror list | Plain text | Downloaded |
-| `mirrors-debian.html` | `scripts/mirror/` | Debian official mirror list | HTML | Downloaded |
-| `mirrors-fedora.html` | `scripts/mirror/` | Fedora official mirror list | HTML | Downloaded |
-| `mirrors-openeuler.html` | `scripts/mirror/` | openEuler official mirror list | HTML | Downloaded |
-| `mirrors-opensuse.html` | `scripts/mirror/` | openSUSE official mirror list | HTML | Downloaded |
-| `mirrors-ubuntu.html` | `scripts/mirror/` | Ubuntu official mirror list | HTML | Downloaded |
+| `mirrors-alpine.txt` | `scripts/mirror/input/` | Alpine Linux official mirror list | Plain text | Downloaded |
+| `mirrors-archlinux.txt` | `scripts/mirror/input/` | Arch Linux official mirror list | Plain text | Downloaded |
+| `mirrors-debian.html` | `scripts/mirror/input/` | Debian official mirror list | HTML | Downloaded |
+| `mirrors-fedora.html` | `scripts/mirror/input/` | Fedora official mirror list | HTML | Downloaded |
+| `mirrors-openeuler.html` | `scripts/mirror/input/` | openEuler official mirror list | HTML | Downloaded |
+| `mirrors-opensuse.html` | `scripts/mirror/input/` | openSUSE official mirror list | HTML | Downloaded |
+| `mirrors-ubuntu.html` | `scripts/mirror/input/` | Ubuntu official mirror list | HTML | Downloaded |
 
 ### Configuration Files
 | File | Path | Purpose | Format | Usage |
@@ -281,15 +334,15 @@ graph TB
 ### Intermediate Processing Files
 | File | Path | Purpose | Generated By | Used By |
 |------|------|---------|--------------|---------|
-| `official-mirrors.json` | `scripts/mirror/` | Newly discovered mirrors | `fetch_official_mirrors.py` | `ls_mirrors.py`, `merge_mirrors.py` |
-| `ls-mirrors.json` | `scripts/mirror/` | Directory listings from mirrors | `ls_mirrors.py` | `probe_dirs.py`, `merge_mirrors.py` |
-| `probe-mirrors.json` | `scripts/mirror/` | Probed directory information | `probe_dirs.py` | `merge_mirrors.py` |
+| `official-mirrors.json` | `scripts/mirror/output/` | Newly discovered mirrors | `fetch_official_mirrors.py` | `ls_mirrors.py`, `merge_mirrors.py` |
+| `ls-mirrors.json` | `scripts/mirror/output/` | Directory listings from mirrors | `ls_mirrors.py` | `probe_dirs.py`, `merge_mirrors.py` |
+| `probe-mirrors.json` | `scripts/mirror/output/` | Probed directory information | `probe_dirs.py` | `merge_mirrors.py` |
 
 ### Blacklist and Error Files
 | File | Path | Purpose | Generated By | Used By |
 |------|------|---------|--------------|---------|
-| `noreach-mirrors.txt` | `scripts/mirror/` | Network unreachable mirrors | `probe_dirs.py` | `merge_mirrors.py` |
-| `nocontent-mirrors.txt` | `scripts/mirror/` | Mirrors with no content | `probe_dirs.py` | `merge_mirrors.py` |
+| `noreach-mirrors.txt` | `scripts/mirror/output/` | Network unreachable mirrors | `probe_dirs.py` | `merge_mirrors.py` |
+| `nocontent-mirrors.txt` | `scripts/mirror/output/` | Mirrors with no content | `probe_dirs.py` | `merge_mirrors.py` |
 
 ### Final Output Files
 | File | Path | Purpose | Format | Used By |
@@ -300,7 +353,8 @@ graph TB
 ### Cache Directories
 | Directory | Path | Purpose | Contents |
 |-----------|------|---------|----------|
-| `index/` | `scripts/mirror/index/` | HTML cache | `*.html`, `*.lftp` files |
+| `html-cache/` | `scripts/mirror/html-cache/` | HTML and JS-rendered cache | `*.html` files |
+| `lftp-cache/` | `scripts/mirror/lftp-cache/` | LFTP directory listing cache | `*.lftp` files |
 
 ## Data Processing Pipeline
 
@@ -310,7 +364,7 @@ graph LR
     A[Distribution Websites] --> B[scripts/mirror/fetch_official_mirrors.py]
     B --> C[Parse HTML/Text]
     C --> D[Extract URLs]
-    D --> F[scripts/mirror/official-mirrors.json]
+    D --> F[scripts/mirror/output/official-mirrors.json]
 
     G[mirrors-alpine.txt] <--> B
     H[mirrors-archlinux.txt] <--> B
@@ -333,26 +387,26 @@ graph LR
 
 **File Operations:**
 - **Input**:
-  - `scripts/mirror/mirrors-alpine.txt`
-  - `scripts/mirror/mirrors-archlinux.txt`
-  - `scripts/mirror/mirrors-debian.html`
-  - `scripts/mirror/mirrors-fedora.html`
-  - `scripts/mirror/mirrors-openeuler.html`
-  - `scripts/mirror/mirrors-opensuse.html`
-  - `scripts/mirror/mirrors-ubuntu.html`
-- **Output**: `scripts/mirror/official-mirrors.json`
-- **Cache**: `scripts/mirror/index/*.html`
+  - `scripts/mirror/input/mirrors-alpine.txt`
+  - `scripts/mirror/input/mirrors-archlinux.txt`
+  - `scripts/mirror/input/mirrors-debian.html`
+  - `scripts/mirror/input/mirrors-fedora.html`
+  - `scripts/mirror/input/mirrors-openeuler.html`
+  - `scripts/mirror/input/mirrors-opensuse.html`
+  - `scripts/mirror/input/mirrors-ubuntu.html`
+- **Output**: `scripts/mirror/output/official-mirrors.json`
+- **Cache**: `scripts/mirror/html-cache/*.html`
 
 ### Stage 2: Directory Listing
 ```mermaid
 graph LR
-    A[scripts/mirror/official-mirrors.json] --> B[scripts/mirror/ls_mirrors.py]
+    A[scripts/mirror/output/official-mirrors.json] --> B[scripts/mirror/ls_mirrors.py]
     B --> C[HTTP Requests]
     C --> D[Parse HTML Directory Listings]
     D --> E[Filter by DISTRO_CONFIGS]
     E --> F[JavaScript Rendering]
     F --> G[LFTP Fallback]
-    G --> H[scripts/mirror/ls-mirrors.json]
+    G --> H[scripts/mirror/output/ls-mirrors.json]
 
     I[sources/*.yaml] --> E
 
@@ -364,22 +418,22 @@ graph LR
 
 **File Operations:**
 - **Input**:
-  - `scripts/mirror/official-mirrors.json`
-  - Previous `scripts/mirror/ls-mirrors.json`
+  - `scripts/mirror/output/official-mirrors.json`
+  - Previous `scripts/mirror/output/ls-mirrors.json`
   - `sources/*.yaml` (distribution configs)
-- **Output**: Updated `scripts/mirror/ls-mirrors.json`
-- **Cache**: `scripts/mirror/index/*.html`, `scripts/mirror/index/*.lftp`
+- **Output**: Updated `scripts/mirror/output/ls-mirrors.json`
+- **Cache**: `scripts/mirror/html-cache/*.html`, `scripts/mirror/lftp-cache/*.lftp`
 
 ### Stage 3: Mirror Probing
 ```mermaid
 graph LR
-    A[scripts/mirror/ls-mirrors.json] --> B[scripts/mirror/probe_dirs.py]
+    A[scripts/mirror/output/ls-mirrors.json] --> B[scripts/mirror/probe_dirs.py]
     B --> C[LFTP Probing]
     C --> D[Directory Discovery]
     D --> E[Blacklist Generation]
-    E --> F[scripts/mirror/probe-mirrors.json]
-    E --> H[scripts/mirror/noreach-mirrors.txt]
-    E --> I[scripts/mirror/nocontent-mirrors.txt]
+    E --> F[scripts/mirror/output/probe-mirrors.json]
+    E --> H[scripts/mirror/output/noreach-mirrors.txt]
+    E --> I[scripts/mirror/output/nocontent-mirrors.txt]
 
     J[sources/*.yaml] --> D
 
@@ -393,21 +447,21 @@ graph LR
 
 **File Operations:**
 - **Input**:
-  - `scripts/mirror/ls-mirrors.json`
+  - `scripts/mirror/output/ls-mirrors.json`
   - `sources/*.yaml` (distribution configs)
 - **Output**:
-  - `scripts/mirror/probe-mirrors.json`
-  - `scripts/mirror/noreach-mirrors.txt`
-  - `scripts/mirror/nocontent-mirrors.txt`
-- **Cache**: `scripts/mirror/index/*.lftp`
+  - `scripts/mirror/output/probe-mirrors.json`
+  - `scripts/mirror/output/noreach-mirrors.txt`
+  - `scripts/mirror/output/nocontent-mirrors.txt`
+- **Cache**: `scripts/mirror/lftp-cache/*.lftp`
 
 ### Stage 4: Data Merging
 ```mermaid
 graph LR
-    A[scripts/mirror/official-mirrors.json] --> F[scripts/mirror/merge_mirrors.py]
-    B[scripts/mirror/ls-mirrors.json] --> F
-    C[scripts/mirror/probe-mirrors.json] --> F
-    E[scripts/mirror/no*-mirrors.txt] --> F
+    A[scripts/mirror/output/official-mirrors.json] --> F[scripts/mirror/merge_mirrors.py]
+    B[scripts/mirror/output/ls-mirrors.json] --> F
+    C[scripts/mirror/output/probe-mirrors.json] --> F
+    E[scripts/mirror/output/no*-mirrors.txt] --> F
 
     F --> G[Data Deduplication]
     G --> H[Country Code Resolution]
@@ -424,11 +478,11 @@ graph LR
 
 **File Operations:**
 - **Input**:
-  - `scripts/mirror/official-mirrors.json`
-  - `scripts/mirror/ls-mirrors.json`
-  - `scripts/mirror/probe-mirrors.json`
-  - `scripts/mirror/noreach-mirrors.txt`
-  - `scripts/mirror/nocontent-mirrors.txt`
+  - `scripts/mirror/output/official-mirrors.json`
+  - `scripts/mirror/output/ls-mirrors.json`
+  - `scripts/mirror/output/probe-mirrors.json`
+  - `scripts/mirror/output/noreach-mirrors.txt`
+  - `scripts/mirror/output/nocontent-mirrors.txt`
 - **Output**:
   - `sources/mirrors.json`
 
@@ -447,13 +501,13 @@ graph LR
 ### Input File Locations
 ```shell
 # Downloaded mirror lists (complete list)
-scripts/mirror/mirrors-alpine.txt         # Alpine Linux mirrors
-scripts/mirror/mirrors-archlinux.txt      # Arch Linux mirrors
-scripts/mirror/mirrors-debian.html        # Debian mirrors
-scripts/mirror/mirrors-fedora.html        # Fedora mirrors
-scripts/mirror/mirrors-openeuler.html     # openEuler mirrors
-scripts/mirror/mirrors-opensuse.html      # openSUSE mirrors
-scripts/mirror/mirrors-ubuntu.html        # Ubuntu mirrors
+scripts/mirror/input/mirrors-alpine.txt         # Alpine Linux mirrors
+scripts/mirror/input/mirrors-archlinux.txt      # Arch Linux mirrors
+scripts/mirror/input/mirrors-debian.html        # Debian mirrors
+scripts/mirror/input/mirrors-fedora.html        # Fedora mirrors
+scripts/mirror/input/mirrors-openeuler.html     # openEuler mirrors
+scripts/mirror/input/mirrors-opensuse.html      # openSUSE mirrors
+scripts/mirror/input/mirrors-ubuntu.html        # Ubuntu mirrors
 
 # Distribution configuration files
 sources/ubuntu.yaml                       # Ubuntu directory mappings
@@ -467,13 +521,13 @@ sources/*.yaml                            # Other distribution configs
 ### Processing File Locations
 ```shell
 # Core processing files
-scripts/mirror/official-mirrors.json     # Stage 1 output
-scripts/mirror/ls-mirrors.json           # Stage 2 output
-scripts/mirror/probe-mirrors.json        # Stage 3 output
+scripts/mirror/output/official-mirrors.json     # Stage 1 output
+scripts/mirror/output/ls-mirrors.json           # Stage 2 output
+scripts/mirror/output/probe-mirrors.json        # Stage 3 output
 
 # Error tracking files
-scripts/mirror/noreach-mirrors.txt       # Network failures
-scripts/mirror/nocontent-mirrors.txt     # Content failures
+scripts/mirror/output/noreach-mirrors.txt       # Network failures
+scripts/mirror/output/nocontent-mirrors.txt     # Content failures
 ```
 
 ### Final Output Locations
@@ -485,7 +539,8 @@ sources/mirrors.json                     # Final mirror database
 ### Cache and Log Locations
 ```shell
 # Cache directories
-scripts/mirror/index/                    # HTML/js/lftp cache files
+scripts/mirror/html-cache/                      # HTML and JS-rendered cache files
+scripts/mirror/lftp-cache/                      # LFTP directory listing cache files
 ```
 
 ## Mirror Data Schema

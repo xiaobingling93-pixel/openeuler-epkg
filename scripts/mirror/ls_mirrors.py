@@ -40,15 +40,16 @@ COUNTRY_CODE_CACHE = {}
 # File-level overview:
 #
 # Inputs:
-# - OFFICIAL_MIRRORS_PATH (`official-mirrors.json`): primary mirror source; main iteration is over this file.
+# - OFFICIAL_MIRRORS_PATH (`output/official-mirrors.json`): primary mirror source; main iteration is over this file.
 # - FINAL_MIRRORS_PATH (`sources/mirrors.json`): legacy mirror data, used only as a cache for
 #   country code (`cc`/`country_code`/`country`) lookup when OFFICIAL_MIRRORS_PATH and GeoIP do not have it.
 #   It is never used as the iteration key for processing mirrors.
 #
 # Outputs:
-# - LS_MIRRORS_OUTPUT_PATH (`ls-mirrors.json`): per-mirror scan results (`ls`, `cc`).
-# - FAILED_MIRRORS_LOG_PATH (`failed-mirrors.log`): log of mirrors that could not be fetched.
-# - INDEX_HTML_CACHE_DIR (`index/`): cached HTML / lftp / JS-rendered directory listings.
+# - LS_MIRRORS_OUTPUT_PATH (`output/ls-mirrors.json`): per-mirror scan results (`ls`, `cc`).
+# - FAILED_MIRRORS_LOG_PATH (`output/failed-mirrors.log`): log of mirrors that could not be fetched.
+# - HTML_CACHE_DIR (`html-cache/`): cached HTML / JS-rendered directory listings.
+# - LFTP_CACHE_DIR (`lftp-cache/`): cached LFTP directory listings.
 #
 # Data flow / policies:
 # - Load distro configs and directory allow-list once.
@@ -99,11 +100,14 @@ Based on processing thousands of mirror URLs, the most common failure categories
 
 # Define paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LS_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
-OFFICIAL_MIRRORS_PATH = os.path.join(BASE_DIR, 'official-mirrors.json')
+INPUT_DIR = os.path.join(BASE_DIR, 'input')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+LS_MIRRORS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'ls-mirrors.json')
+OFFICIAL_MIRRORS_PATH = os.path.join(OUTPUT_DIR, 'official-mirrors.json')
 FINAL_MIRRORS_PATH = os.path.join(BASE_DIR, '../../sources/mirrors.json')
-INDEX_HTML_CACHE_DIR = os.path.join(BASE_DIR, 'index')
-FAILED_MIRRORS_LOG_PATH = os.path.join(BASE_DIR, 'failed-mirrors.log')
+HTML_CACHE_DIR = os.path.join(BASE_DIR, 'html-cache')
+LFTP_CACHE_DIR = os.path.join(BASE_DIR, 'lftp-cache')
+FAILED_MIRRORS_LOG_PATH = os.path.join(OUTPUT_DIR, 'failed-mirrors.log')
 
 def should_update_cache(cache_file_path, max_age_days=30):
     """Check if cache file should be updated based on age.
@@ -449,9 +453,10 @@ def log_failed_mirror(url, error_msg):
 def fetch_directory_listing(mirror_url, timeout=5):
     """Fetch directory listing from a mirror URL, with caching."""
     # Ensure cache directory exists
-    os.makedirs(INDEX_HTML_CACHE_DIR, exist_ok=True)
+    os.makedirs(HTML_CACHE_DIR, exist_ok=True)
+    os.makedirs(LFTP_CACHE_DIR, exist_ok=True)
 
-    cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url))
+    cache_file = os.path.join(HTML_CACHE_DIR, get_cache_filename(mirror_url))
 
     def fetch_html():
         """Fetch HTML content from mirror_url, return (content, error_msg)."""
@@ -681,7 +686,7 @@ def fetch_and_parse_with_js(mirror_url):
         return None
 
     # Create cache filename for JS-rendered content
-    js_cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url) + '.js.html')
+    js_cache_file = os.path.join(HTML_CACHE_DIR, get_cache_filename(mirror_url) + '.js.html')
     # Ensure cache directory exists
     os.makedirs(os.path.dirname(js_cache_file), exist_ok=True)
 
@@ -768,7 +773,7 @@ async def render_with_pyppeteer(url):
 def fetch_directory_listing_with_lftp(mirror_url, timeout=30):
     """Fetch directory listing using lftp as fallback method."""
     # Create cache filename for lftp output
-    lftp_cache_file = os.path.join(INDEX_HTML_CACHE_DIR, get_cache_filename(mirror_url).replace('.html', '.lftp'))
+    lftp_cache_file = os.path.join(LFTP_CACHE_DIR, get_cache_filename(mirror_url).replace('.html', '.lftp'))
     # Ensure cache directory exists
     os.makedirs(os.path.dirname(lftp_cache_file), exist_ok=True)
 
@@ -1352,7 +1357,7 @@ def debug_parse_single_file(html_file):
 
 def main():
     parser = argparse.ArgumentParser(description='Process mirror directory listings')
-    parser.add_argument('--parse', help='Debug mode: parse a single HTML file (e.g., index/example.com.html)')
+    parser.add_argument('--parse', help='Debug mode: parse a single HTML file (e.g., html-cache/example.com.html)')
 
     args = parser.parse_args()
 

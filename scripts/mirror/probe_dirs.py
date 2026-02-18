@@ -11,11 +11,13 @@ from common import debug_print
 
 # Define paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LS_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'ls-mirrors.json')
-OFFICIAL_MIRRORS_INPUT_PATH = os.path.join(BASE_DIR, 'official-mirrors.json')
-PROBE_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'probe-mirrors.json')
-NOREACH_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'noreach-mirrors.txt')
-NOCONTENT_MIRRORS_OUTPUT_PATH = os.path.join(BASE_DIR, 'nocontent-mirrors.txt')
+INPUT_DIR = os.path.join(BASE_DIR, 'input')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+LS_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'ls-mirrors.json')
+OFFICIAL_MIRRORS_INPUT_PATH = os.path.join(OUTPUT_DIR, 'official-mirrors.json')
+PROBE_MIRRORS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'probe-mirrors.json')
+NOREACH_MIRRORS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'noreach-mirrors.txt')
+NOCONTENT_MIRRORS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'nocontent-mirrors.txt')
 
 # List of possible distribution directories to probe, ordered by frequency
 POSSIBLE_DISTRO_DIRS = [
