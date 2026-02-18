@@ -19,15 +19,15 @@ epkg env create "$ENV3" -c alpine || error "Failed to create env3"
 # Register environments with different priorities
 log "Registering environments"
 epkg env register "$ENV1" || error "Failed to register env1"
-epkg env register "$ENV2" --priority 10 || error "Failed to register env2"
-epkg env register "$ENV3" --priority 5 || error "Failed to register env3"
+epkg env register "$ENV2" --path-order 10 || error "Failed to register env2"
+epkg env register "$ENV3" --path-order  5 || error "Failed to register env3"
 
 # Check env path
 log "Checking env path after registration"
 PATH_OUTPUT1=$(epkg env path)
 log "PATH output: $PATH_OUTPUT1"
 
-# Verify env paths are in order (env2 priority 10, env3 priority 5, env1 default)
+# Verify all env paths are present
 if ! echo "$PATH_OUTPUT1" | grep -q "$ENV2"; then
     error "env2 not in PATH"
 fi
@@ -37,6 +37,14 @@ fi
 if ! echo "$PATH_OUTPUT1" | grep -q "$ENV1"; then
     error "env1 not in PATH"
 fi
+
+# Verify registered envs ordering (env3 path-order 5, env2 path-order 10, env1 default 100)
+PATH_STR1=${PATH_OUTPUT1#export PATH=\"}
+PATH_STR1=${PATH_STR1%\"}
+case "$PATH_STR1" in
+    *"$ENV3"*"$ENV2"*"$ENV1"*) ;;
+    *) error "registered env order incorrect after registration (expected ENV3 before ENV2 before ENV1)";;
+esac
 
 # Activate an environment
 log "Activating env3"
@@ -83,9 +91,9 @@ if ! echo "$PATH_OUTPUT4" | grep -q "$ENV3"; then
     error "env3 not in PATH after de-activation"
 fi
 
-# Re-register env2 with different priority
-log "Re-registering env2 with priority 1"
-epkg env register "$ENV2" --priority 1 || error "Failed to re-register env2"
+# Re-register env2 with different path-order
+log "Re-registering env2 with path-order 1"
+epkg env register "$ENV2" --path-order 1 || error "Failed to re-register env2"
 
 # Check final env path
 log "Checking final env path"
@@ -102,6 +110,14 @@ fi
 if ! echo "$PATH_OUTPUT5" | grep -q "$ENV3"; then
     error "env3 not in final PATH"
 fi
+
+# Verify registered envs ordering after re-register (env2 path-order 1, env3 path-order 5, env1 default 100)
+PATH_STR5=${PATH_OUTPUT5#export PATH=\"}
+PATH_STR5=${PATH_STR5%\"}
+case "$PATH_STR5" in
+    *"$ENV2"*"$ENV3"*"$ENV1"*) ;;
+    *) error "registered env order incorrect after re-register (expected ENV2 before ENV3 before ENV1)";;
+esac
 
 # Test that 'main' environment cannot be made public
 log "Testing that 'main' environment cannot be made public"

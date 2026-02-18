@@ -541,7 +541,10 @@ fn add_env_subcommand(cmd: Command) -> Command {
                 Command::new("register")
                     .about("Register an environment")
                     .arg(arg!([ENV_NAME] "Environment name or owner/name"))
-                    .arg(arg!(--priority <PRIORITY> "Set the priority for the environment").value_parser(clap::value_parser!(i32)))
+                    .arg(
+                        arg!(--"path-order" <PATH_ORDER> "Set the PATH order for the environment (lower number = earlier in PATH)")
+                            .value_parser(clap::value_parser!(i32)),
+                    )
             )
             .subcommand(
                 Command::new("unregister")
@@ -1390,7 +1393,7 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
             "remove" => {
             }
             "register" => {
-                config.env.priority = sub_matches.get_one::<i32>("priority").cloned();
+                config.env.path_order = sub_matches.get_one::<i32>("path-order").cloned();
             }
             "unregister" => {
             }

@@ -364,7 +364,7 @@ pub struct EnvConfig {
     #[serde(default, skip_serializing_if = "is_false")]
     pub register_to_path: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub register_priority: i32,
+    pub register_path_order: i32,
 
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env_vars: HashMap<String, String>,
@@ -916,7 +916,7 @@ pub struct EnvOptions {
     #[serde(default)]
     pub channel: Option<String>,
     #[serde(default)]
-    pub priority: Option<i32>,
+    pub path_order: Option<i32>,
     #[serde(default)]
     pub public: bool,
     #[serde(default)]

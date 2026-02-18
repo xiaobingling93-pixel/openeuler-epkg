@@ -29,12 +29,12 @@ use log::warn;
 
 // epkg stores persistent PATH registration metadata inside each environment's
 // `etc/epkg/env.yaml`. The `register_to_path` flag combined with
-// `register_priority` drives how PATH is constructed:
+// `register_path_order` drives how PATH is constructed:
 //
 // PATH layout:
-//   registered prepend entries (priority >= 0)
+//   registered prepend entries (path-order >= 0)
 //   + original PATH
-//   + registered append entries (priority < 0)
+//   + registered append entries (path-order < 0)
 //
 // Register/Unregister:
 //   * `epkg env register` / `epkg env unregister` toggle env.yaml values
@@ -45,13 +45,14 @@ use log::warn;
 //   * Compatible with pure/stack modes
 //
 // Environment Registration Rules:
-// - `epkg env register <name> [--priority N]`
-// - If `--priority` is omitted the first free multiple of 10 (>= 10) is chosen
+// - `epkg env register <name> [--path-order N]`
+// - If `--path-order` is omitted the first free multiple of 10 (>= 100) is chosen
+//   (100, 110, 120, ...) so earlier registrations get earlier PATH positions by default.
 // - `N >= 0` participates in the prepend side, `N < 0` in the append side
 //
 // Example registrations:
 //   epkg env register openeuler2409
-//   epkg env register debian12 --priority 18
+//   epkg env register debian12 --path-order 18
 //
 // Example activations:
 //   epkg env activate project-dev                  # Activate project environment
@@ -74,14 +75,14 @@ fn push_env_var(script: &mut String, key: &str, new_value: Option<String>, origi
     }
 }
 
-fn next_prepend_priority() -> Result<i32> {
+fn next_prepend_path_order() -> Result<i32> {
     let registered = registered_env_configs();
     let used: HashSet<i32> = registered.into_iter()
-        .filter(|cfg| cfg.register_priority >= 0)
-        .map(|cfg| cfg.register_priority)
+        .filter(|cfg| cfg.register_path_order >= 0)
+        .map(|cfg| cfg.register_path_order)
         .collect();
 
-    let mut priority = 10;
+    let mut priority = 100;
     while used.contains(&priority) {
         priority += 10;
     }
@@ -813,18 +814,18 @@ pub fn register_environment_for(name: &str, mut env_config: EnvConfig) -> Result
         return Ok(());
     }
 
-    // Get priority from options or auto-detect
-    let priority = if let Some(priority) = config().env.priority {
-        priority
+    // Get path order from options or auto-detect
+    let path_order = if let Some(order) = config().env.path_order {
+        order
     } else {
-        next_prepend_priority()?
+        next_prepend_path_order()?
     };
 
-    println!("# Registering environment '{}' with priority {}", name, priority);
+    println!("# Registering environment '{}' with PATH order {}", name, path_order);
 
     // Update and save environment config
     env_config.register_to_path = true;
-    env_config.register_priority = priority;
+    env_config.register_path_order = path_order;
     io::serialize_env_config(env_config)?;
 
     update_path()?;
@@ -846,7 +847,7 @@ pub fn unregister_environment(name: &str) -> Result<()> {
 
     // Update and save environment config
     env_config.register_to_path = false;
-    env_config.register_priority = 0;
+    env_config.register_path_order = 0;
     io::serialize_env_config(env_config)?;
 
     update_path()?;
@@ -924,7 +925,7 @@ fn override_env_config(env_config: &mut EnvConfig, name: &str, env_base: &Path, 
     }
 
     env_config.register_to_path = false;
-    env_config.register_priority = 0;
+    env_config.register_path_order = 0;
 
     // Set link type from CLI option if provided
     if let Some(link_type) = config().env.link {
@@ -1000,7 +1001,7 @@ pub fn set_environment_config(name: &str, value: &str) -> Result<()> {
         "env_root" => config.env_root = value.to_string(),
         "public" => config.public = value.parse()?,
         "register_to_path" => config.register_to_path = value.parse()?,
-        "register_priority" => config.register_priority = value.parse()?,
+        "register_path_order" => config.register_path_order = value.parse()?,
         _ => return Err(eyre::eyre!("Unknown configuration key: {}", parts[0]))
     }
 
@@ -1163,17 +1164,17 @@ fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
 
 /// Find which registered environment contains a given command
 /// Returns the environment name and root path if found, None otherwise
-/// Searches environments in order of registration priority (higher priority first)
+/// Searches environments in order of registration path-order (lower number first: earlier in PATH)
 pub fn find_command_in_registered_envs(cmd_name: &str) -> Result<Option<(String, PathBuf)>> {
     use std::fs;
 
-    // Get registered environment configs with priorities
+    // Get registered environment configs with PATH orders
     let mut configs = registered_env_configs();
 
-    // Sort by registration priority (higher priority first)
-    // For equal priority, sort by name for deterministic results
+    // Sort by registration order (lower number = earlier in PATH = checked first)
+    // For equal order, sort by name for deterministic results
     configs.sort_by(|a, b| {
-        b.register_priority.cmp(&a.register_priority)
+        a.register_path_order.cmp(&b.register_path_order)
             .then_with(|| a.name.cmp(&b.name))
     });
 

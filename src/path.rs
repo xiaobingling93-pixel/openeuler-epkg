@@ -6,6 +6,12 @@ use crate::models::*;
 use crate::dirs::get_env_root;
 use crate::environment::registered_env_configs;
 
+// Construct PATH from active and registered environments.
+// Order (from left/earliest to right/latest in PATH):
+// 1) Active envs (most recently activated first)
+// 2) Registered envs with path-order >= 0 (ascending path-order)
+// 3) Original/system PATH entries (with existing epkg bits removed)
+// 4) Registered envs with path-order < 0 (ascending abs(path-order))
 pub fn update_path() -> Result<()> {
     let mut path_components = Vec::new();
     let mut pure = false;
@@ -94,9 +100,9 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
         }
 
         let path_str = ebin_path.display().to_string();
-        let entry = (config.register_priority, config.name.clone(), path_str);
+        let entry = (config.register_path_order, config.name.clone(), path_str);
 
-        if config.register_priority >= 0 {
+        if config.register_path_order >= 0 {
             prepend.push(entry);
         } else {
             append.push(entry);
