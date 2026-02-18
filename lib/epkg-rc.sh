@@ -20,17 +20,62 @@ epkg() {
         unset EPKG_ACTIVE_ENV
     fi
 
-    local cmd="$1"
+    local cmd=""
+    local sub_cmd=""
+    local i=1
+    local skip_next=0
+    local has_help=0
+    while [ $i -le $# ]; do
+        eval "arg=\${$i}"   # works for both zsh and bash
+        if [ $skip_next -eq 1 ]; then
+            skip_next=0
+            i=$((i + 1))
+            continue
+        fi
+        case "$arg" in
+            --)
+                # End of options, treat remaining as non-options
+                break
+                ;;
+            --*=*)
+                # Option with value in same argument, skip
+                ;;
+            -h|--help|-V|--version|-q|--quiet|-v|--verbose|-y|--assume-yes|--dry-run|--download-only|--assume-no|-m|--ignore-missing)
+                # Flag options that don't take a value
+                has_help=1
+                ;;
+            -e|--env|-r|--root|--config|--arch|--metadata-expire|--proxy|--retry|--parallel-download|--parallel-processing)
+                # Options that take a value, skip next argument
+                skip_next=1
+                ;;
+            -*)
+                # Unknown option, assume it might take a value
+                skip_next=1
+                ;;
+            *)
+                # Non-option argument
+                if [ -z "$cmd" ]; then
+                    cmd="$arg"
+                elif [ -z "$sub_cmd" ]; then
+                    sub_cmd="$arg"
+                    # Continue parsing to detect help flags later
+                fi
+                ;;
+        esac
+        i=$((i + 1))
+    done
+
     case "$cmd" in
         env)
-            local sub_cmd="$2"
             case "$sub_cmd" in
                 path|register|unregister|activate|deactivate|remove)
                     local output
                     output=$("$epkg_rust" "$@") || return
                     echo "$output"
-                    eval "$output" || return
-                    __rehash_path
+                    if [ $has_help -eq 0 ]; then
+                        eval "$output" || return
+                        __rehash_path
+                    fi
                     ;;
                 *)
                     "$epkg_rust" "$@"
