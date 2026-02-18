@@ -393,9 +393,53 @@ fn add_global_args_and_help(cmd: Command) -> Command {
         .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)).hide(true).global(true))
         .override_usage("epkg [OPTIONS] <COMMAND>")
         .help_template(
-            "{about}\n\n\
-USAGE: {usage}\n\n\
-COMMANDS:\n{subcommands}\n\n\
+            r#"{about}
+
+USAGE: {usage}
+
+COMMANDS:
+  Self Management:
+    self install [--store private|shared|auto]  Install/upgrade epkg itself
+    self upgrade|remove                         Upgrade or remove epkg installation
+
+  Package Operations:
+    install   Install packages
+    update    Update package metadata
+    upgrade   Upgrade packages
+    remove    Uninstall packages
+
+  Environment Management:
+    env create [-c|--channel DISTRO] [-P|--public] [-i|--import FILE]   <ENV_NAME|--root ENV_ROOT>
+    env <remove|register|unregister|activate|export>                    <ENV_NAME|--root ENV_ROOT>
+    env deactivate|path
+    env config <edit|get|set>
+
+  History & Rollback:
+    history              Show environment history
+    restore <GEN_ID|-N>  Restore environment to specific generation
+
+  Garbage Collection:
+    gc        Clean up unused cache and store files
+
+  Info & Query:
+    list      List packages: [--installed (default)|--available|--upgradable|--all] [PKGNAME_GLOB]
+    info      Show package information
+    search    Search for packages and files
+    repo list List repositories
+
+  Running Commands:
+    run       Run command in environment namespace
+    service   Service management: start/stop/restart/status/reload
+    busybox   Run built-in command implementations
+
+  Package Utilities:
+    hash      Compute binary package hash
+    unpack    Unpack package file(s) into store directory
+    convert   Convert rpm/deb/apk/... packages to epkg format
+
+  Build:
+    build     Build package from source
+
 OPTIONS:
       --config <FILE>               Configuration file to use
   -e, --env <ENV_NAME>              Select the environment by name or owner/name
@@ -414,7 +458,26 @@ OPTIONS:
       --parallel-download <NUMBER>  Number of parallel download threads
       --parallel-processing <BOOL>  Enable parallel processing for metadata updates (true/false) [possible values: true, false]
   -h, --help                        Print help
-  -V, --version                     Print version")
+  -V, --version                     Print version
+
+PATHS:
+  User private installation: (in data-flow order)
+    $HOME/.bashrc  # sources $HOME/.epkg/envs/self/usr/src/epkg/lib/epkg-rc.sh for epkg() builtin func
+    $HOME/.cache/downloads/
+    $HOME/.cache/channels/
+    $HOME/.epkg/store/
+    $HOME/.epkg/envs/$env_name/
+    $HOME/.epkg/envs/$env_name/etc/epkg/   # per-env epkg config files
+    $HOME/.epkg/envs/self/usr/bin/epkg     # epkg executable binary
+    $HOME/.epkg/envs/self/usr/src/epkg/    # epkg source code files
+
+  Root global installation:
+    $HOME/.bashrc
+    /opt/epkg/cache/downloads/
+    /opt/epkg/cache/channels/
+    /opt/epkg/store/
+    /opt/epkg/envs/root/$env_name/
+"#)
 }
 
 fn add_self_subcommand(cmd: Command) -> Command {
