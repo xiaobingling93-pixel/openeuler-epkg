@@ -1272,27 +1272,20 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                         Err(e) => {
                             // If parsing fails, print error and exit with appropriate code
                             match e.kind() {
-                                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                                     eprintln!("{}", e);
                                     std::process::exit(0);
                                 }
                                 _ => {
-                                    let error_msg = e.to_string();
-                                    if error_msg.starts_with("error:") {
-                                        let args_display: Vec<String> = args_vec.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-                                        let cmdline = if args_display.is_empty() {
-                                            format!("epkg busybox {}", cmd_name)
-                                        } else {
-                                            format!("epkg busybox {} {}", cmd_name, args_display.join(" "))
-                                        };
-                                        eprintln!("Failed to parse command line: {}", cmdline);
-                                        crate::utils::print_clap_error_detail(&e);
-                                        std::process::exit(2);
+                                    let args_display: Vec<String> = args_vec.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+                                    let cmdline = if args_display.is_empty() {
+                                        format!("epkg busybox {}", cmd_name)
                                     } else {
-                                        // Not an error - likely help output from arg_required_else_help
-                                        eprintln!("{}", error_msg);
-                                        std::process::exit(0);
-                                    }
+                                        format!("epkg busybox {} {}", cmd_name, args_display.join(" "))
+                                    };
+                                    eprintln!("Failed to parse command line: {}", cmdline);
+                                    crate::utils::print_clap_error_detail(&e);
+                                    std::process::exit(2);
                                 }
                             }
                         }

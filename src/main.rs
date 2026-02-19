@@ -845,21 +845,14 @@ fn build_epkg_command() -> Command {
 /// Handle clap error with custom formatting (extracts context to provide specific messages).
 fn handle_clap_error(e: clap::Error, args: &[String]) -> ! {
     match e.kind() {
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
             eprintln!("{}", e);
             std::process::exit(0);
         }
         _ => {
-            let error_msg = e.to_string();
-            if error_msg.starts_with("error:") {
-                eprintln!("Failed to parse command line: {}", args.join(" "));
-                crate::utils::print_clap_error_detail(&e);
-                std::process::exit(2);
-            } else {
-                // Not an error - likely help output from arg_required_else_help
-                eprintln!("{}", error_msg);
-                std::process::exit(0);
-            }
+            eprintln!("Failed to parse command line: {}", args.join(" "));
+            crate::utils::print_clap_error_detail(&e);
+            std::process::exit(2);
         }
     }
 }
