@@ -152,10 +152,10 @@ def get_available_packages(os: str) -> List[str]:
         packages = []
         for line in result.stdout.split('\n'):
             # Skip header lines (first 3 lines) and only process lines starting with A_
-            if line.startswith('A_'):
+            if line.startswith('A'):
                 parts = line.split()
-                if len(parts) >= 2:
-                    packages.append(parts[1])
+                if len(parts) >= 8:
+                    packages.append(parts[4])
 
         return sorted(set(packages))
     except Exception as e:
