@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -446,12 +447,20 @@ pub fn walk_bottom_dir<F>(parent_path: &Path, owner_opt: Option<&str>, callback:
 where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
 {
-    if let Ok(entries) = fs::read_dir(parent_path) {
-        for entry in entries.flatten() {
-            let env_path = entry.path();
-            if env_path.is_dir() {
-                callback(&env_path, owner_opt)?;
+    match fs::read_dir(parent_path) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let env_path = entry.path();
+                if env_path.is_dir() {
+                    callback(&env_path, owner_opt)?;
+                }
             }
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            log::debug!("walk_bottom_dir: skipping '{}' (permission denied)", parent_path.display());
+        }
+        Err(e) => {
+            log::debug!("walk_bottom_dir: skipping '{}' ({})", parent_path.display(), e);
         }
     }
     Ok(())
@@ -464,14 +473,22 @@ where
     F: FnMut(&Path, Option<&str>) -> Result<()>,
 {
     let allusers_envs_base = public_envs_path();
-    if let Ok(entries) = fs::read_dir(&allusers_envs_base) {
-        for entry in entries.flatten() {
-            let owner_path = entry.path();
-            if owner_path.is_dir() {
-                let owner = owner_path.file_name()
-                    .and_then(|n| n.to_str());
-                walk_bottom_dir(&owner_path, owner, callback)?;
+    match fs::read_dir(&allusers_envs_base) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let owner_path = entry.path();
+                if owner_path.is_dir() {
+                    let owner = owner_path.file_name()
+                        .and_then(|n| n.to_str());
+                    walk_bottom_dir(&owner_path, owner, callback)?;
+                }
             }
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            log::debug!("walk_public_envs: skipping '{}' (permission denied)", allusers_envs_base.display());
+        }
+        Err(e) => {
+            log::debug!("walk_public_envs: skipping '{}' ({})", allusers_envs_base.display(), e);
         }
     }
     Ok(())
