@@ -622,7 +622,8 @@ fn add_package_operation_subcommands(cmd: Command) -> Command {
             .arg(arg!(--"no-install-essentials" "Do not automatically install essential packages"))
             .arg(arg!(--"no-install" <PACKAGES> "Packages to exclude from installation (comma-separated list, use -pkgname to remove from list)").value_delimiter(','))
             .arg(arg!(--"prefer-low-version" "Prefer lower/older versions when multiple candidates are available"))
-            .arg(arg!([PACKAGE_SPEC] ... "Package specifications to install (can be package names, local .rpm/.deb files, or URLs to package files)"))
+            .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to install (can be package names, local .rpm/.deb files, or URLs to package files)"))
+            .arg_required_else_help(true)
     )
     .subcommand(
         Command::new("upgrade")
@@ -634,6 +635,7 @@ fn add_package_operation_subcommands(cmd: Command) -> Command {
         Command::new("remove")
             .about("Remove packages")
             .arg(arg!(<PACKAGE_SPEC> ... "Package specifications to remove"))
+            .arg_required_else_help(true)
     )
 }
 
@@ -647,6 +649,7 @@ fn add_history_and_utility_subcommands(cmd: Command) -> Command {
             Command::new("restore")
                 .about("Restore environment to a specific generation")
                 .arg(arg!(<GEN_ID> "Generation ID to restore to (negative number for relative rollback)").value_parser(clap::value_parser!(i32)).allow_negative_numbers(true))
+                .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("update")
@@ -662,11 +665,13 @@ fn add_history_and_utility_subcommands(cmd: Command) -> Command {
             Command::new("hash")
                 .about("Compute binary package hash")
                 .arg(arg!(<PACKAGE_STORE_DIR> ... "Package store dir to compute hash"))
+                .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("build")
                 .about("Build package from source")
                 .arg(arg!(<PACKAGE_YAML> "Package YAML file to build"))
+                .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("unpack")
@@ -700,6 +705,7 @@ r#"Examples:
                 .arg(arg!(-x --regexp "Pattern is regular expression, refer to https://docs.rs/regex/latest/regex/#syntax"))
                 .arg(arg!(-i --"ignore-case" "Case-insensitive search"))
                 .arg(arg!(<PATTERN> "Pattern to search for"))
+                .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("gc")
@@ -715,6 +721,7 @@ fn add_run_subcommand(cmd: Command) -> Command {
     cmd.subcommand(
             Command::new("run")
                 .about("Run command in environment namespace")
+                .arg_required_else_help(true)
                 .after_long_help(
 r#"ENVIRONMENT SELECTION (in order of precedence):
 1. Explicit selection via command line flags:
