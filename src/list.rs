@@ -121,7 +121,11 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
         let total_installed_size = ACCUM_TOTAL_INSTALLED_SIZE.load(Ordering::SeqCst);
         println!("\nTotal: {} packages, {}, {} installed", total_packages, format_size(total_size), format_size(total_installed_size));
     } else {
-        println!("No packages found matching pattern '{}' in scope {:?}.", pattern, scope);
+        if pattern.is_empty() {
+            println!("No packages found in scope {:?}.", scope);
+        } else {
+            println!("No packages found matching pattern '{}' in scope {:?}.", pattern, scope);
+        }
     }
 
     Ok(())
@@ -788,7 +792,9 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     let (col_widths, starts, right_aligned) = compute_table_config();
 
     // Print headers (only once)
-    print_headers_if_needed(&headers, &col_widths);
+    if has_items {
+        print_headers_if_needed(&headers, &col_widths);
+    }
 
     // Print rows directly without collecting
     let mut prev_pkgkey = "";
