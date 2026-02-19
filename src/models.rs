@@ -618,7 +618,7 @@ pub fn channel_config() -> &'static ChannelConfig {
 pub fn channel_config_mut() -> std::sync::MutexGuard<'static, ChannelConfig> {
     if CHANNEL_CONFIGS.is_empty() {
         // In test mode, we use Mutex for interior mutability
-        DEFAULT_CHANNEL_CONFIG.lock().unwrap()
+        DEFAULT_CHANNEL_CONFIG.lock().unwrap_or_else(|e| e.into_inner())
     } else {
         // This shouldn't happen in tests, but handle it gracefully
         panic!("channel_config_mut() called but CHANNEL_CONFIGS is not empty");
@@ -627,12 +627,12 @@ pub fn channel_config_mut() -> std::sync::MutexGuard<'static, ChannelConfig> {
 
 // use at package install time
 pub fn repodata_indice() -> std::sync::RwLockReadGuard<'static, HashMap<String, RepoIndex>> {
-    REPODATA_INDICE.read().expect("Failed to read repodata index")
+    REPODATA_INDICE.read().unwrap_or_else(|e| e.into_inner())
 }
 
 // use at repo update time
 pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, HashMap<String, RepoIndex>> {
-    REPODATA_INDICE.write().expect("Failed to write repodata index")
+    REPODATA_INDICE.write().unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -1048,6 +1048,7 @@ pub fn clap_matches() -> &'static clap::ArgMatches {
             Command::new("epkg")
                 .arg(Arg::new("arch").long("arch").default_value(std::env::consts::ARCH))
                 .arg(Arg::new("env").short('e').long("env"))
+                .arg(Arg::new("root").short('r').long("root").global(true))
                 .arg(Arg::new("config").short('C').long("config"))
                 .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue))
                 .arg(Arg::new("download-only").long("download-only").action(ArgAction::SetTrue))
@@ -1092,10 +1093,10 @@ pub fn init_config(invoked_as_applet: bool) -> Result<()> {
     let matches_ref = CLAP_MATCHES.get().unwrap();
     // Set CONFIG with common options so config() works during parse_options_subcommand
     let common_cfg_clone = common_cfg.clone();
-    *CONFIG.write().expect("CONFIG lock") = Some(common_cfg);
+    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Some(common_cfg);
     let final_cfg = parse_options_subcommand(matches_ref, common_cfg_clone)
         .wrap_err("Failed to parse subcommand options for CONFIG")?;
-    *CONFIG.write().expect("CONFIG lock") = Some(final_cfg);
+    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Some(final_cfg);
     Ok(())
 }
 
@@ -1127,13 +1128,13 @@ static DIRS: LazyLock<EPKGDirs> = LazyLock::new(|| {
 
 pub fn config() -> ConfigGuard {
     {
-        let guard = CONFIG.read().expect("CONFIG lock");
+        let guard = CONFIG.read().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return ConfigGuard(guard);
         }
     }
     {
-        let mut w = CONFIG.write().expect("CONFIG lock");
+        let mut w = CONFIG.write().unwrap_or_else(|e| e.into_inner());
         if w.is_none() {
             let matches = clap_matches();
             let cfg = parse_options_common(matches).expect("Failed to parse common options for CONFIG");
@@ -1142,7 +1143,7 @@ pub fn config() -> ConfigGuard {
             );
         }
     }
-    ConfigGuard(CONFIG.read().expect("CONFIG lock"))
+    ConfigGuard(CONFIG.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 #[cfg(test)]
@@ -1167,7 +1168,7 @@ impl std::ops::DerefMut for ConfigMutGuard {
 #[cfg(test)]
 /// Get mutable access to the global config for test customization.
 pub fn config_mut() -> ConfigMutGuard {
-    let mut guard = CONFIG.write().unwrap();
+    let mut guard = CONFIG.write().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         let matches = clap_matches();
         let cfg = parse_options_common(matches).expect("Failed to parse common options for CONFIG");
