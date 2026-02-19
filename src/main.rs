@@ -103,7 +103,6 @@ use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use clap::{arg, Command};
-use clap::error::ErrorKind;
 use ctrlc;
 use env_logger;
 use log;
@@ -842,20 +841,6 @@ fn build_epkg_command() -> Command {
     cmd
 }
 
-/// Handle clap error with custom formatting (extracts context to provide specific messages).
-fn handle_clap_error(e: clap::Error, args: &[String]) -> ! {
-    match e.kind() {
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-            eprintln!("{}", e);
-            std::process::exit(0);
-        }
-        _ => {
-            eprintln!("Failed to parse command line: {}", args.join(" "));
-            crate::utils::print_clap_error_detail(&e);
-            std::process::exit(2);
-        }
-    }
-}
 
 /// Parse command line from environment args (normal epkg invocation).
 pub fn parse_cmdline() -> clap::ArgMatches {
@@ -864,7 +849,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
         .collect();
     match build_epkg_command().try_get_matches_from(args.clone()) {
         Ok(matches) => matches,
-        Err(e) => handle_clap_error(e, &args),
+        Err(e) => crate::utils::handle_clap_error_with_cmdline(e, args.join(" ")),
     }
 }
 
@@ -872,7 +857,7 @@ pub fn parse_cmdline() -> clap::ArgMatches {
 pub fn parse_cmdline_from(args: Vec<String>) -> clap::ArgMatches {
     match build_epkg_command().try_get_matches_from(args.clone()) {
         Ok(matches) => matches,
-        Err(e) => handle_clap_error(e, &args),
+        Err(e) => crate::utils::handle_clap_error_with_cmdline(e, args.join(" ")),
     }
 }
 

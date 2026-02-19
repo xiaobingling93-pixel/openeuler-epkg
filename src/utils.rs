@@ -1478,6 +1478,22 @@ pub fn print_clap_error_detail(e: &clap::Error) {
     }
 }
 
+/// Handle clap error with custom formatting, printing the given command line prefix.
+/// This function never returns (exits the process).
+pub fn handle_clap_error_with_cmdline(e: clap::Error, cmdline: String) -> ! {
+    match e.kind() {
+        ClapErrorKind::DisplayHelp | ClapErrorKind::DisplayVersion | ClapErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+            eprintln!("{}", e);
+            std::process::exit(0);
+        }
+        _ => {
+            eprintln!("Failed to parse command line: {}", cmdline);
+            print_clap_error_detail(&e);
+            std::process::exit(2);
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
