@@ -688,6 +688,13 @@ fn add_search_and_gc_subcommands(cmd: Command) -> Command {
     cmd.subcommand(
             Command::new("search")
                 .about("Search for packages and files")
+                .after_help(
+r#"Examples:
+  epkg search --files '.desktop'       # match literal substring
+  epkg search --files '*.desktop'      # glob pattern, produces fewer results: file name must end with .desktop
+  epkg search --paths '**/*.desktop'   # glob pattern, produces same results
+  epkg search --paths '\.desktop$' -x  # regex pattern, produces same results
+"#)
                 .arg(arg!(-f --files "Search in file names"))
                 .arg(arg!(-p --paths "Search in full paths"))
                 .arg(arg!(-x --regexp "Pattern is regular expression, refer to https://docs.rs/regex/latest/regex/#syntax"))
@@ -708,9 +715,8 @@ fn add_run_subcommand(cmd: Command) -> Command {
     cmd.subcommand(
             Command::new("run")
                 .about("Run command in environment namespace")
-                .long_about(r#"Run a command in an isolated environment namespace.
-
-ENVIRONMENT SELECTION (in order of precedence):
+                .after_long_help(
+r#"ENVIRONMENT SELECTION (in order of precedence):
 1. Explicit selection via command line flags:
    • -e, --env <ENV_NAME>   Select environment by name (e.g., "myenv" or "owner/myenv")
    • -r, --root <DIR>       Select the environment by root dir
