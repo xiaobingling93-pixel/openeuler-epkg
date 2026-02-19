@@ -25,6 +25,7 @@ use crate::models;
 use crate::userdb;
 use crate::lfs;
 use crate::mtree::{self, MtreeFileInfo};
+use clap::error::{ErrorKind as ClapErrorKind, ContextKind, ContextValue};
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -1424,6 +1425,59 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
         }
     }
 }
+
+/// Print detailed clap error message without extra tip/usage/help lines.
+/// This function extracts context from the error to provide specific messages.
+pub fn print_clap_error_detail(e: &clap::Error) {
+    match e.kind() {
+        ClapErrorKind::UnknownArgument => {
+            if let Some(ContextValue::String(arg)) = e.get(ContextKind::InvalidArg) {
+                eprintln!("error: unexpected argument '{}' found", arg);
+            } else {
+                eprintln!("error: unexpected argument found");
+            }
+        }
+        ClapErrorKind::InvalidSubcommand => {
+            if let Some(ContextValue::String(sub)) = e.get(ContextKind::InvalidSubcommand) {
+                eprintln!("error: unrecognized subcommand '{}'", sub);
+            } else {
+                eprintln!("error: unrecognized subcommand");
+            }
+        }
+        ClapErrorKind::MissingRequiredArgument => {
+            if let Some(ContextValue::Strings(args_list)) = e.get(ContextKind::InvalidArg) {
+                eprintln!("error: the following required arguments were not provided:");
+                for arg in args_list {
+                    eprintln!("  {}", arg);
+                }
+            } else {
+                eprintln!("error: missing required argument");
+            }
+        }
+        ClapErrorKind::InvalidValue => {
+            if let Some(ContextValue::String(arg)) = e.get(ContextKind::InvalidArg) {
+                if let Some(ContextValue::String(value)) = e.get(ContextKind::InvalidValue) {
+                    eprintln!("error: invalid value '{}' for '{}'", value, arg);
+                } else {
+                    eprintln!("error: invalid value for '{}'", arg);
+                }
+            } else {
+                eprintln!("error: invalid value");
+            }
+        }
+        _ => {
+            // Fallback: use the first line of clap's error message
+            let error_msg = e.to_string();
+            if error_msg.starts_with("error:") {
+                let first_line = error_msg.lines().next().unwrap_or("");
+                eprintln!("{}", first_line);
+            } else {
+                eprintln!("{}", error_msg);
+            }
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

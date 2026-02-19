@@ -1262,7 +1262,7 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
 
                     // Build argument list: program name (dummy) + arguments
                     let mut all_args = vec![std::ffi::OsString::from("epkg")];
-                    all_args.extend(args_vec);
+                    all_args.extend(args_vec.clone());
 
                     // Parse arguments using the applet's command parser
                     match applet_cmd.try_get_matches_from(all_args) {
@@ -1271,12 +1271,28 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                         }
                         Err(e) => {
                             // If parsing fails, print error and exit with appropriate code
-                            eprintln!("{}", e);
-                            let exit_code = match e.kind() {
-                                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
-                                _ => 2,
-                            };
-                            std::process::exit(exit_code);
+                            match e.kind() {
+                                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                                    eprintln!("{}", e);
+                                    std::process::exit(0);
+                                }
+                                _ => {
+                                    let args_display: Vec<String> = args_vec.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+                                    let cmdline = if args_display.is_empty() {
+                                        format!("epkg busybox {}", cmd_name)
+                                    } else {
+                                        format!("epkg busybox {} {}", cmd_name, args_display.join(" "))
+                                    };
+                                    eprintln!("Failed to parse command line: {}", cmdline);
+                                    let error_msg = e.to_string();
+                                    if !error_msg.starts_with("error:") {
+                                        eprintln!("{}", error_msg);
+                                        std::process::exit(0);
+                                    }
+                                    crate::utils::print_clap_error_detail(&e);
+                                    std::process::exit(2);
+                                }
+                            }
                         }
                     }
                 } else {
