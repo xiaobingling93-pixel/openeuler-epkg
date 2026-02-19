@@ -30,6 +30,7 @@ pub fn command() -> Command {
         .about("Remove files or directories")
         .arg(Arg::new("recursive")
             .short('r')
+            .visible_short_alias('R')
             .long("recursive")
             .help("Remove directories and their contents recursively")
             .action(clap::ArgAction::SetTrue))

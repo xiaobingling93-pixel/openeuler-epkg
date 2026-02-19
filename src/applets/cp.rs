@@ -74,7 +74,7 @@ fn add_basic_options(cmd: Command) -> Command {
     cmd
         .arg(Arg::new("recursive")
             .short('r')
-            .short('R')
+            .visible_short_alias('R')
             .long("recursive")
             .help("Copy directories recursively")
             .action(ArgAction::SetTrue))
