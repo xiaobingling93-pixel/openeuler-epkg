@@ -489,7 +489,7 @@ fn add_self_subcommand(cmd: Command) -> Command {
                 Command::new("install")
                     .about("Install epkg")
                     .arg(arg!(--commit <COMMIT>).help(format!("Source commit of epkg to install [default: {}]", DEFAULT_COMMIT)))
-                    .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
+                    .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian-13"))
                     .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                     .arg(
                         arg!(--store <STORE> "Store mode: 'shared' (reused by all users), 'private' (current user only), or 'auto' (shared if installed by root)")
@@ -526,11 +526,11 @@ fn add_env_subcommand(cmd: Command) -> Command {
                 Command::new("create")
                     .about("Create a new environment")
                     .arg(arg!([ENV_NAME] "Environment name or owner/name"))
-                    .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian:12"))
+                    .arg(arg!(-c --channel <CHANNEL> "Set the channel for the environment, e.g. debian or debian-13"))
                     .arg(arg!(   --repo <REPO> "Add one or more repos separated by space, e.g. ceph postgresql").num_args(1..))
                     .arg(arg!(-P --public "Usable by all users in the machine"))
                     .arg(arg!(-i --import <FILE> "Import from config file"))
-                    .arg(arg!(--link <LINK> "Link type: hardlink, symlink, move, or runpath").value_parser(["hardlink", "symlink", "move", "runpath"]))
+                    .arg(arg!(--link <LINK> "Link type: hardlink, symlink, reflink, move, or runpath").value_parser(["hardlink", "symlink", "reflink", "move", "runpath"]))
             )
             .subcommand(
                 Command::new("remove")
