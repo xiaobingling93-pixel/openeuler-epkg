@@ -16,6 +16,7 @@ use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
 use log::{info, debug, warn, trace};
+use clap::error::ErrorKind;
 use crate::models::*;
 use crate::utils;
 use crate::utils::is_suid;
@@ -1264,7 +1265,11 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                         Err(e) => {
                             // If parsing fails, print error and exit with appropriate code
                             eprintln!("{}", e);
-                            std::process::exit(2);
+                            let exit_code = match e.kind() {
+                                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
+                                _ => 2,
+                            };
+                            std::process::exit(exit_code);
                         }
                     }
                 } else {
