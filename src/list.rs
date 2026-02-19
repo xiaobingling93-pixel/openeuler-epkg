@@ -7,10 +7,25 @@ use color_eyre::Result;
 use memchr::{memchr, memmem::Finder};
 use glob::Pattern;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // ======================================================================================
 // `epkg list` - Enhanced Package Listing Command
 // ======================================================================================
+
+// Static state for accumulating totals across multiple display_package_list() calls
+static HEADERS_PRINTED: AtomicBool = AtomicBool::new(false);
+static ACCUM_TOTAL_SIZE: AtomicU64 = AtomicU64::new(0);
+static ACCUM_TOTAL_INSTALLED_SIZE: AtomicU64 = AtomicU64::new(0);
+static ACCUM_PACKAGE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Reset accumulated totals and header state
+fn reset_display_state() {
+    HEADERS_PRINTED.store(false, Ordering::SeqCst);
+    ACCUM_TOTAL_SIZE.store(0, Ordering::SeqCst);
+    ACCUM_TOTAL_INSTALLED_SIZE.store(0, Ordering::SeqCst);
+    ACCUM_PACKAGE_COUNT.store(0, Ordering::SeqCst);
+}
 //
 // DESCRIPTION:
 //   The `epkg list` command provides comprehensive package listing functionality with
@@ -70,6 +85,8 @@ pub struct PackageListItem {
 
 /// Main entry point for the enhanced list command
 pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
+    // Reset display state before processing any packages
+    reset_display_state();
     // Load installed packages first
     load_installed_packages()?;
 
@@ -97,7 +114,13 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
         }
     }
 
-    if packages_found_overall == 0 {
+    // Print accumulated totals if any packages were found
+    if packages_found_overall > 0 {
+        let total_packages = ACCUM_PACKAGE_COUNT.load(Ordering::SeqCst);
+        let total_size = ACCUM_TOTAL_SIZE.load(Ordering::SeqCst);
+        let total_installed_size = ACCUM_TOTAL_INSTALLED_SIZE.load(Ordering::SeqCst);
+        println!("\nTotal: {} packages, {}, {} installed", total_packages, format_size(total_size), format_size(total_installed_size));
+    } else {
         println!("No packages found matching pattern '{}' in scope {:?}.", pattern, scope);
     }
 
@@ -463,10 +486,6 @@ fn handle_completed_package_bytes(
 fn sort_and_display_packages(package_items: &mut Vec<PackageListItem>, _list_title: &str) -> Result<()> {
     // _list_title is intentionally unused for now
 
-    if package_items.is_empty() {
-        return Ok(());
-    }
-
     package_items.sort_by(|a, b| a.pkgname.cmp(&b.pkgname));
     display_package_list(package_items)?;
     Ok(())
@@ -617,18 +636,8 @@ fn is_version_newer(new_version: &str, current_version: &str) -> bool {
 
 /// Display the package list in a formatted table
 fn display_package_list(items: &[PackageListItem]) -> Result<()> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static LEGEND_PRINTED_THIS_INVOCATION: AtomicBool = AtomicBool::new(false);
-
-    if items.is_empty() {
-        return Ok(());
-    }
-
-    // If LEGEND_PRINTED_THIS_INVOCATION was false, swap sets it to true and returns false.
-    // So, if it returns false, it means this is the first time, and we should print.
-    if LEGEND_PRINTED_THIS_INVOCATION.swap(true, Ordering::SeqCst) {
-        println!();
-    }
+    // If no items, still may need to accumulate totals (for empty batches in --all mode)
+    let has_items = !items.is_empty();
 
     // Manual table formatting for performance (replaces comfy_table)
     let headers = vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"];
@@ -674,45 +683,51 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     // Cell width function (ASCII assumption)
     let cell_width = |s: &str| s.len();
 
-    // Print status legend (similar to dpkg-query)
-    println!("Exposed/Installed/Available");
-    println!("| Upgradable");
-
-    // Print header row (no truncation, fixed widths as minimum)
-    for (i, header) in headers.iter().enumerate() {
-        if i == 1 || i == 2 {
-            // Depth and Size: right-aligned
-            print!("{:>width$}", header, width = col_widths[i]);
-        } else {
-            print!("{:<width$}", header, width = col_widths[i]);
-        }
-        if i < 7 {
-            print!("  "); // Two spaces between columns
-        }
+    // Print status legend (similar to dpkg-query) only when printing headers for the first time
+    if !HEADERS_PRINTED.load(Ordering::SeqCst) {
+        println!("Exposed/Installed/Available");
+        println!("| Upgradable");
     }
-    println!();
 
-    // Print header separator line (using '=')
-    for (i, &width) in col_widths.iter().enumerate() {
-        print!("{}", "=".repeat(width));
-        if i < 7 {
-            print!("=-");
+    // Print header row and separator only when printing headers for the first time
+    if !HEADERS_PRINTED.load(Ordering::SeqCst) {
+        // Print header row (no truncation, fixed widths as minimum)
+        for (i, header) in headers.iter().enumerate() {
+            if i == 1 || i == 2 {
+                // Depth and Size: right-aligned
+                print!("{:>width$}", header, width = col_widths[i]);
+            } else {
+                print!("{:<width$}", header, width = col_widths[i]);
+            }
+            if i < 7 {
+                print!("  "); // Two spaces between columns
+            }
         }
+        println!();
+
+        // Print header separator line (using '=')
+        for (i, &width) in col_widths.iter().enumerate() {
+            print!("{}", "=".repeat(width));
+            if i < 7 {
+                print!("=-");
+            }
+        }
+        println!();
+
+        HEADERS_PRINTED.store(true, Ordering::SeqCst);
     }
-    println!();
 
     // Print rows directly without collecting
-    let mut total_size: u64 = 0;
-    let mut total_installed_size: u64 = 0;
     let mut prev_pkgkey = "";
-    let mut package_count = 0;
+    let mut batch_package_count = 0;
 
-    for item in items {
+    if has_items {
+        for item in items {
         if item.pkgkey == prev_pkgkey {
             continue;
         }
         prev_pkgkey = &item.pkgkey;
-        package_count += 1;
+        batch_package_count += 1;
 
         // Format depth: show digit
         let depth_str = item.depth.to_string();
@@ -723,9 +738,9 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
         // Format description (summary)
         let description = item.summary.clone();
 
-        // Add to totals
-        total_size += item.size as u64;
-        total_installed_size += item.installed_size as u64;
+        // Add to accumulated totals
+        ACCUM_TOTAL_SIZE.fetch_add(item.size as u64, Ordering::SeqCst);
+        ACCUM_TOTAL_INSTALLED_SIZE.fetch_add(item.installed_size as u64, Ordering::SeqCst);
 
         // Print row directly
         let row_cells = [
@@ -796,9 +811,10 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
         }
         println!();
     }
+    }
 
-    // Print totals
-    println!("\nTotal: {} packages, {}, {} installed", package_count, format_size(total_size), format_size(total_installed_size));
+    // Add batch package count to accumulated total
+    ACCUM_PACKAGE_COUNT.fetch_add(batch_package_count, Ordering::SeqCst);
 
     Ok(())
 }
