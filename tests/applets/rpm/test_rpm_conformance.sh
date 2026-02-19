@@ -57,7 +57,6 @@ run_cmd() {
 # Removes signature warnings, timestamps, and normalizes whitespace
 normalize_output() {
     local input_file="$1"
-    local output_file="$2"
 
     # Use array for grep patterns to avoid backslashes
     local grep_patterns=(
@@ -99,8 +98,8 @@ compare_rpm_query() {
     run_cmd "$epkg_cli" /tmp/epkg_rpm.out-$seqno
 
     # Normalize outputs
-    normalize_output /tmp/host_rpm.out-$seqno /tmp/host_rpm.norm
-    normalize_output /tmp/epkg_rpm.out-$seqno /tmp/epkg_rpm.norm
+    normalize_output /tmp/host_rpm.out-$seqno > /tmp/host_rpm.norm
+    normalize_output /tmp/epkg_rpm.out-$seqno > /tmp/epkg_rpm.norm
 
     # Compare normalized outputs
     if diff -u /tmp/host_rpm.norm /tmp/epkg_rpm.norm > /tmp/rpm.diff; then
@@ -138,8 +137,8 @@ compare_error_condition() {
         return
     fi
     # Normalize outputs (strip colors, extra whitespace)
-    normalize_output /tmp/host_rpm.out /tmp/host_rpm.norm
-    normalize_output /tmp/epkg_rpm.out /tmp/epkg_rpm.norm
+    normalize_output /tmp/host_rpm.out > /tmp/host_rpm.norm
+    normalize_output /tmp/epkg_rpm.out > /tmp/epkg_rpm.norm
     if diff -u /tmp/host_rpm.norm /tmp/epkg_rpm.norm > /tmp/rpm.diff; then
         echo "  OK: Outputs match"
     else
