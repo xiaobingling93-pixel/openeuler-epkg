@@ -146,10 +146,11 @@ fn get_env_base_path(env_name: &str) -> PathBuf {
               EpkgCommand::Run
             | EpkgCommand::Info
             | EpkgCommand::List
+            | EpkgCommand::EnvList
             | EpkgCommand::Search
         ) {
             use std::process::exit;
-            eprintln!("Can only read-only visit others public env via `epkg run|info|search`");
+            eprintln!("Can only read-only visit others public env via `epkg run|info|search|list|env list`");
             exit(1);
         }
         let owner = &env_name[..slash_pos];

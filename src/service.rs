@@ -587,11 +587,11 @@ fn print_service_status(status: &ServiceStatus) {
     let status_str = if status.running { "running" } else { "stopped" };
     let pid_str = status.pid.map_or("N/A".to_string(), |p| p.to_string());
 
-    println!("{:<20} {:<10} {:<8} {}",
+    println!("{:<20} {:<8} {:<10} {}",
              status.name,
-             status.environment,
              status_str,
-             pid_str);
+             pid_str,
+             status.environment);
 }
 
 /// Print status of multiple services
@@ -601,9 +601,9 @@ fn print_services_status(statuses: &[ServiceStatus]) {
         return;
     }
 
-    println!("{:<20} {:<10} {:<8} {}",
-             "SERVICE", "ENV", "STATUS", "PID");
-    println!("{}", "-".repeat(50));
+    println!("{:<20} {:<8} {:<10} {}",
+             "SERVICE", "STATUS", "PID", "ENV");
+    println!("{}", "-".repeat(60));
 
     for status in statuses {
         print_service_status(status);

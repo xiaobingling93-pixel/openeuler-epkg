@@ -2,7 +2,7 @@ use std::fs;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -162,36 +162,53 @@ pub fn get_all_env_names() -> Result<Vec<(String, bool)>> {
 pub fn list_environments() -> Result<()> {
     // Get all environments except self
     let all_envs = get_all_env_names()?;
-    let registered_envs: Vec<String> = get_registered_env_names()?;
 
-    // Get active environments list once and convert to HashSet for O(1) lookups
+    // Get active environments list once and convert to Vec for order lookup
     let active_list: Vec<String> = env::var("EPKG_ACTIVE_ENV")
         .ok()
         .map(|active| active.split(':').map(String::from).collect())
         .unwrap_or_default();
 
-    // Print table header (no separate Owner column; owner is encoded in env name when needed)
-    println!("{:<20}  {:<10}  {:<20}", "Environment", "Type", "Status");
-    println!("{}", "-".repeat(55));
+    // Get registered environment configs to retrieve register_path_order
+    let registered_configs = registered_env_configs();
+    let registered_map: HashMap<String, i32> = registered_configs
+        .into_iter()
+        .map(|cfg| (cfg.name, cfg.register_path_order))
+        .collect();
+
+    // Print table header with new column order: Type, Status, Environment, Root
+    println!("{:<10}  {:<25}  {:<40}  {}", "Type", "Status", "Environment", "Root");
+    println!("{}", "-".repeat(120));
 
     // Print each environment with its status
     for (env, is_public) in all_envs {
-        let mut status = Vec::new();
+        let mut status_parts = Vec::new();
 
-        // Check if environment is in active list - O(1) lookup
-        if active_list.contains(&env) {
-            status.push("activated");
+        // Check if environment is in active list and get its order (1-indexed)
+        if let Some(pos) = active_list.iter().position(|e| e == &env) {
+            let order = pos + 1;
+            status_parts.push(format!("activated@{}", order));
         }
 
-        if registered_envs.contains(&env) {
-            status.push("registered");
+        // Check if environment is registered and get its order
+        if let Some(&order) = registered_map.get(&env) {
+            status_parts.push(format!("registered@{}", order));
         }
 
         let env_type = if is_public { "public" } else { "private" };
-        println!("{:<20}  {:<10}  {:<20}",
-            env,
+        let status = status_parts.join(",");
+
+        // Get environment root path
+        let env_root = match get_env_root(env.clone()) {
+            Ok(path) => path.display().to_string(),
+            Err(_) => "N/A".to_string(),
+        };
+
+        println!("{:<10}  {:<25}  {:<40}  {}",
             env_type,
-            status.join(",")
+            status,
+            env,
+            env_root
         );
     }
 
@@ -853,22 +870,6 @@ pub fn unregister_environment(name: &str) -> Result<()> {
     update_path()?;
     println!("# Environment '{}' has been unregistered.", name);
     Ok(())
-}
-
-/// Get list of registered environment names from env.yaml metadata
-///
-/// This function scans both private (~/.epkg/envs) and current user's
-/// public (/opt/epkg/envs/$USER) environment directories. Each
-/// `etc/epkg/env.yaml` is parsed for the `register_to_path` flag and the
-/// environment name is included when the flag is true.
-pub fn get_registered_env_names() -> Result<Vec<String>> {
-    let mut result: Vec<String> = registered_env_configs()
-        .into_iter()
-        .map(|cfg| cfg.name)
-        .collect();
-    result.sort();
-    result.dedup();
-    Ok(result)
 }
 
 pub fn export_environment(output: Option<String>) -> Result<()> {
