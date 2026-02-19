@@ -1013,135 +1013,65 @@ pub fn set_environment_config(name: &str, value: &str) -> Result<()> {
 }
 
 pub fn registered_env_configs() -> Vec<EnvConfig> {
+    use std::fs;
+
     let mut configs = Vec::new();
-    let shared_store = config().init.shared_store;
     let current_user = get_username().unwrap_or_default();
+    let shared_store = config().init.shared_store;
 
-    // Collect own environments
-    collect_registered_envs_from_dir(&dirs().user_envs, &mut configs);
-
-    // In shared_store mode: also collect other users' public registered envs
-    if shared_store {
-        let allusers_envs_base = dirs().opt_epkg.join("envs");
-        if let Ok(entries) = fs::read_dir(&allusers_envs_base) {
-            for entry in entries.flatten() {
-                let owner_path = entry.path();
-                if !owner_path.is_dir() {
-                    continue;
-                }
-
-                let owner = owner_path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default();
-
-                // Skip own environments (already collected)
-                if owner == current_user {
-                    continue;
-                }
-
-                // Walk this owner's environments and collect public registered ones
-                if let Ok(env_entries) = fs::read_dir(&owner_path) {
-                    for env_entry in env_entries.flatten() {
-                        let env_path = env_entry.path();
-                        if !env_path.is_dir() {
-                            continue;
-                        }
-
-                        let env_name = env_path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or_default();
-
-                        if env_name == SELF_ENV || env_name.starts_with('.') {
-                            continue;
-                        }
-
-                        // Check if environment is public (not 0o700)
-                        let is_public = match fs::metadata(&env_path) {
-                            Ok(metadata) => {
-                                let mode = metadata.permissions().mode() & 0o777;
-                                mode != 0o700
-                            }
-                            Err(_) => false,
-                        };
-
-                        if !is_public {
-                            continue;
-                        }
-
-                        // Check if registered
-                        let config_path = env_path.join("etc/epkg/env.yaml");
-                        if !config_path.exists() {
-                            continue;
-                        }
-
-                        if let Ok(contents) = fs::read_to_string(&config_path) {
-                            if let Ok(mut config) = serde_yaml::from_str::<EnvConfig>(&contents) {
-                                if config.register_to_path {
-                                    // Set name to owner/env_name format
-                                    if config.name.is_empty() {
-                                        config.name = format!("{}/{}", owner, env_name);
-                                    } else {
-                                        config.name = format!("{}/{}", owner, config.name);
-                                    }
-                                    configs.push(config);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    configs
-}
-
-fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
-    if !dir.exists() {
-        return;
-    }
-
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            warn!("Failed to read environments under {}: {}", dir.display(), err);
-            return;
-        }
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(err) => {
-                warn!("Failed to read entry in {}: {}", dir.display(), err);
-                continue;
-            }
+    // Walk all environments (private and public based on shared_store setting)
+    let _ = walk_environments(|env_path, owner| {
+        let env_name = match env_path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => return Ok(()),
         };
 
-        match entry.file_type() {
-            Ok(file_type) if file_type.is_dir() => {},
-            _ => continue,
-        }
-
-        let env_name = match entry.file_name().into_string() {
-            Ok(name) => name,
-            Err(_) => continue,
-        };
-
+        // Skip special environments
         if env_name == SELF_ENV || env_name.starts_with('.') {
-            continue;
+            return Ok(());
         }
 
-        let config_path = entry.path().join("etc/epkg/env.yaml");
+        // In private store mode, skip other users' environments
+        if !shared_store && owner.is_some() {
+            return Ok(());
+        }
+
+        // Check if environment is public (same logic as get_all_env_names)
+        let is_public = if owner.is_none() {
+            // Environments from private store (owner=None) are always private
+            false
+        } else {
+            // Environments from shared store (owner=Some) may be public or private
+            match fs::metadata(env_path) {
+                Ok(metadata) => {
+                    let mode = metadata.permissions().mode() & 0o777;
+                    let is_private = mode == 0o700;
+                    !is_private
+                }
+                Err(_) => false,
+            }
+        };
+
+        // For environments owned by other users, only include public ones
+        // Current user's environments are always included (both public and private)
+        if let Some(owner_name) = owner {
+            if owner_name != current_user && !is_public {
+                return Ok(());
+            }
+        }
+
+        // Check if environment has a config file
+        let config_path = env_path.join("etc/epkg/env.yaml");
         if !config_path.exists() {
-            continue;
+            return Ok(());
         }
 
+        // Read and parse config
         let contents = match fs::read_to_string(&config_path) {
-            Ok(contents) => contents,
+            Ok(c) => c,
             Err(err) => {
                 warn!("Failed to read {}: {}", config_path.display(), err);
-                continue;
+                return Ok(());
             }
         };
 
@@ -1149,19 +1079,32 @@ fn collect_registered_envs_from_dir(dir: &Path, configs: &mut Vec<EnvConfig>) {
             Ok(cfg) => cfg,
             Err(err) => {
                 warn!("Failed to parse {}: {}", config_path.display(), err);
-                continue;
+                return Ok(());
             }
         };
 
-        if config.name.is_empty() {
-            config.name = env_name.clone();
+        // Only include if registered to PATH
+        if !config.register_to_path {
+            return Ok(());
         }
 
-        if config.register_to_path {
-            configs.push(config);
+        // Set appropriate name
+        if config.name.is_empty() {
+            config.name = env_name.to_string();
         }
-    }
+
+        // If environment has an owner (shared store), prefix with owner/
+        if let Some(owner_name) = owner {
+            config.name = format!("{}/{}", owner_name, config.name);
+        }
+
+        configs.push(config);
+        Ok(())
+    });
+
+    configs
 }
+
 
 /// Find which registered environment contains a given command
 /// Returns the environment name and root path if found, None otherwise
