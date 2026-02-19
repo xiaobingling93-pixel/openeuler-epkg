@@ -83,20 +83,24 @@ pub fn run(options: LnOptions) -> Result<()> {
     let link_path = Path::new(&options.link_name);
 
     // Handle force option - remove existing destination
-    if options.force && link_path.exists() {
-        if link_path.is_dir() {
-            fs::remove_dir_all(link_path)
-                .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
-        } else {
-            fs::remove_file(link_path)
-                .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
+    if options.force {
+        if let Ok(metadata) = link_path.symlink_metadata() {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                // Remove symlink or regular file
+                fs::remove_file(link_path)
+                    .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
+            } else {
+                // Remove directory (not a symlink)
+                fs::remove_dir_all(link_path)
+                    .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
+            }
         }
     }
 
     // Handle no-dereference option - if link_name is a symlink to a directory, treat it as a file
     if options.no_dereference && link_path.is_symlink() {
         // For no-dereference, we need to remove the symlink first if it exists
-        if link_path.exists() {
+        if link_path.symlink_metadata().is_ok() {
             fs::remove_file(link_path)
                 .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
         }

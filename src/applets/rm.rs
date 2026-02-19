@@ -46,17 +46,23 @@ pub fn command() -> Command {
 }
 
 fn remove_path(path: &Path, recursive: bool, force: bool) -> Result<()> {
-    if !path.exists() {
+    // Check if the path exists as a filesystem entry (including dangling symlinks)
+    let symlink_meta = path.symlink_metadata();
+    if let Err(_e) = symlink_meta {
+        // Path does not exist at all
         if !force {
             return Err(eyre!("rm: cannot remove '{}': No such file or directory", path.display()));
         }
         return Ok(());
     }
+    let metadata = symlink_meta.unwrap();
 
-    let metadata = path.metadata()
-        .map_err(|e| eyre!("rm: cannot access '{}': {}", path.display(), e))?;
-
-    if metadata.is_dir() {
+    if metadata.file_type().is_symlink() {
+        // Symlinks are removed as files, regardless of target
+        fs::remove_file(path)
+            .map_err(|e| eyre!("rm: cannot remove '{}': {}", path.display(), e))?;
+    } else if metadata.file_type().is_dir() {
+        // Directory
         if recursive {
             fs::remove_dir_all(path)
                 .map_err(|e| eyre!("rm: cannot remove '{}': {}", path.display(), e))?;
@@ -64,6 +70,7 @@ fn remove_path(path: &Path, recursive: bool, force: bool) -> Result<()> {
             return Err(eyre!("rm: cannot remove '{}': Is a directory", path.display()));
         }
     } else {
+        // Regular file or other type
         fs::remove_file(path)
             .map_err(|e| eyre!("rm: cannot remove '{}': {}", path.display(), e))?;
     }
