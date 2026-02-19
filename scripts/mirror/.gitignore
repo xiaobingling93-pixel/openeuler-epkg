@@ -1,3 +1,8 @@
-.venv
-mirrors-*.*
-official-mirrors.json
+# Exclude .eenv environment directory from Cargo scanning
+.eenv/
+
+input/
+output/
+html-cache/
+lftp-cache/
+__pycache__/
