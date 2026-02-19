@@ -719,13 +719,14 @@ pub(crate) fn path_match_matches(state: &PathMatchState, normalized_path: &str) 
     }
 }
 
-/// Resolve pkgline (ca_hash__name__version__arch) to (Package, InstalledPackageInfo).
+/// Resolve pkgline (ca_hash__name__version__arch) to (Package, Option<InstalledPackageInfo>).
 /// Uses pkgline2installed for O(1) lookup when populated; falls back to pkgkey lookup.
 /// Returned Package has pkgline set (from store load).
+/// If package is not installed, installed_info is None.
 fn resolve_from_pkgline(pkgline: &str) -> Option<(Package, Option<Arc<InstalledPackageInfo>>)> {
-    let installed_info = PACKAGE_CACHE.pkgline2installed.read().unwrap().get(pkgline).cloned()?;
+    let installed_info = PACKAGE_CACHE.pkgline2installed.read().unwrap().get(pkgline).cloned();
     let package_arc = map_pkgline2package(pkgline).ok()?;
-    Some((package_arc.as_ref().clone(), Some(installed_info)))
+    Some((package_arc.as_ref().clone(), installed_info))
 }
 
 /// Resolve installed packages by PackageNVRA (name/version/arch spec).
