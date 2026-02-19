@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::collections::HashSet;
 
 use crossbeam_channel::Receiver;
 use flate2::read::GzDecoder;
@@ -566,10 +567,19 @@ fn process_simple_filelists(
         let mut chunk_guard = arc_chunk.lock().unwrap();
         let chunk_data = chunk_guard.as_slice();
 
+        // Track line starts we've already processed in this chunk
+        let mut processed_lines = HashSet::new();
+
         // Find all matches in the chunk (case-insensitive if needed)
         for match_pos in find_all_matches(chunk_data, &options.u8_literal, options.ignore_case) {
             // For each match, find the line boundaries using find_line_boundaries
             let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
+
+            // Skip if we've already processed this line
+            if processed_lines.contains(&line_start) {
+                continue;
+            }
+            processed_lines.insert(line_start);
 
             // Extract the full line containing the match
             let line = &chunk_data[line_start..line_end];
@@ -762,9 +772,18 @@ fn process_rpm_filelists(
   <file>/usr/share/CUnit/CUnit-List.xsl</file>
 */
 fn process_rpm_filelists_with_memmem(current_pkgname: &mut Vec<u8>, chunk_data: &[u8], options: &SearchOptions) -> Result<()> {
+    // Track line starts we've already processed in this chunk
+    let mut processed_lines = HashSet::new();
+
     for match_pos in find_all_matches(chunk_data, &options.u8_literal, options.ignore_case) {
         // For each match, find the line boundaries using find_line_boundaries
         let (line_start, line_end) = find_line_boundaries(chunk_data, match_pos, match_pos + 1);
+
+        // Skip if we've already processed this line
+        if processed_lines.contains(&line_start) {
+            continue;
+        }
+        processed_lines.insert(line_start);
 
         // Extract the full line containing the match
         let line = &chunk_data[line_start..line_end];
