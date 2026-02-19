@@ -1375,7 +1375,11 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
 
         // Subcommand-specific logic
         match subcommand_name {
+            "list" => {
+                config.subcommand = EpkgCommand::EnvList;
+            }
             "create" => {
+                config.subcommand = EpkgCommand::EnvCreate;
                 if let Some(channel) = sub_matches.get_one::<String>("channel") {
                     config.env.channel = Some(channel.to_string());
                 }
@@ -1391,13 +1395,17 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
                 }
             }
             "remove" => {
+                config.subcommand = EpkgCommand::EnvRemove;
             }
             "register" => {
+                config.subcommand = EpkgCommand::EnvRegister;
                 config.env.path_order = sub_matches.get_one::<i32>("path-order").cloned();
             }
             "unregister" => {
+                config.subcommand = EpkgCommand::EnvUnregister;
             }
             "activate" => {
+                config.subcommand = EpkgCommand::EnvActivate;
                 if sub_matches.contains_id("pure") {
                     config.env.pure = sub_matches.get_flag("pure");
                 }
@@ -1405,7 +1413,28 @@ fn parse_options_env(config: &mut EPKGConfig, matches: &clap::ArgMatches) -> Res
                     config.env.stack = sub_matches.get_flag("stack");
                 }
             }
+            "deactivate" => {
+                config.subcommand = EpkgCommand::EnvDeactivate;
+            }
             "export" => {
+                config.subcommand = EpkgCommand::EnvExport;
+            }
+            "path" => {
+                config.subcommand = EpkgCommand::EnvPath;
+            }
+            "config" => {
+                match sub_matches.subcommand() {
+                    Some(("edit", _)) => {
+                        config.subcommand = EpkgCommand::EnvConfigEdit;
+                    }
+                    Some(("get", _)) => {
+                        config.subcommand = EpkgCommand::EnvConfigGet;
+                    }
+                    Some(("set", _)) => {
+                        config.subcommand = EpkgCommand::EnvConfigSet;
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
