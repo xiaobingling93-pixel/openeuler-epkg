@@ -12,6 +12,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static HAVE_FORKED: AtomicBool = AtomicBool::new(false);
 
 /// Helper to match C++ pushresult behavior: returns number on success, (nil, error_string, errno) on failure
+/// Uses Value::Integer instead of Value::Number (RPM uses Number for legacy Lua compatibility).
+///
+/// Reasons to keep Value::Integer:
+/// 1. Modern Lua supports integers
+/// 2. All tests pass with normalization
+/// 3. Numeric equality is preserved (0 == 0.0)
+/// 4. Better accuracy for integer values
+///
+/// The only potential incompatibility would be with scripts that do exact string matching on output
+/// (unlikely in practice, as RPM scripts typically check numeric returns, not string representations).
 pub(crate) fn pushresult(lua: &Lua, result: i32, info: Option<&str>) -> LuaResult<MultiValue> {
     if result != -1 {
         let mut ret = MultiValue::new();
@@ -23,19 +33,30 @@ pub(crate) fn pushresult(lua: &Lua, result: i32, info: Option<&str>) -> LuaResul
 }
 
 /// Helper to match C++ pusherror behavior: returns (nil, error_string, errno)
-/// If info is provided, it replaces the strerror message (used for custom errors like exit codes)
+/// If info is provided, formats as "info: strerror(errno)" (matches C++ lposix.cc pusherror)
 pub(crate) fn pusherror(lua: &Lua, info: Option<&str>) -> LuaResult<MultiValue> {
     pusherror_with_code(lua, info, None)
 }
 
 /// Helper to match C++ pusherror behavior with explicit error code
 /// This is used by rpm.spawn() to return exit codes/signals as error numbers
+/// Uses Value::Integer for error codes (see pushresult() for Integer/Number trade-offs).
 pub(crate) fn pusherror_with_code(lua: &Lua, info: Option<&str>, code: Option<i32>) -> LuaResult<MultiValue> {
     let error_code = code.unwrap_or_else(|| unsafe { *libc::__errno_location() });
     let error_string = if let Some(i) = info {
-        // If info is provided, use it as-is (replaces strerror output)
-        // This is for custom error messages like "exit signal 9 (KILL)"
-        i.to_string()
+        if code.is_none() {
+            // When using errno (syscall error), match C++ pusherror behavior:
+            // format as "info: strerror(errno)"
+            let err_msg = unsafe {
+                let c_str = libc::strerror(error_code);
+                std::ffi::CStr::from_ptr(c_str).to_string_lossy().to_string()
+            };
+            format!("{}: {}", i, err_msg)
+        } else {
+            // When using custom error code (e.g., exit code/signal), info is a complete error message
+            // that replaces strerror output (which would be wrong for non-errno codes)
+            i.to_string()
+        }
     } else {
         // Otherwise use strerror message (for syscall errors)
         let err_msg = unsafe {
@@ -558,6 +579,7 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
 
     // posix.errno() - get last error number and message (returns 2 values: string, number)
     // C++ version returns (string, number) - matching Perrno() at line 172-177
+    // Uses Value::Integer instead of Value::Number (see pushresult() for Integer/Number trade-offs).
     posix_table.set("errno", lua.create_function(|lua, ()| -> LuaResult<mlua::MultiValue> {
         let errno = unsafe { *libc::__errno_location() };
         let err_msg = unsafe {
