@@ -66,6 +66,13 @@ pub enum ListScope {
     All,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ListType {
+    Installed,
+    Upgradable,
+    Available,
+}
+
 #[derive(Debug, Clone)]
 pub struct PackageListItem {
     pub pkgname: String,
@@ -94,17 +101,17 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
 
     match scope {
         ListScope::Installed => {
-            packages_found_overall += process_installed_packages(pattern, false, "Installed Packages")?;
+            packages_found_overall += process_installed_packages(pattern, ListType::Installed)?;
         },
         ListScope::Upgradable => {
-            packages_found_overall += process_installed_packages(pattern, true, "Upgradable Packages")?;
+            packages_found_overall += process_installed_packages(pattern, ListType::Upgradable)?;
         },
         ListScope::Available => {
             packages_found_overall += process_available_packages(pattern)?;
         },
         ListScope::All => {
             // Display installed packages first
-            let installed_count = process_installed_packages(pattern, false, "Installed Packages")?;
+            let installed_count = process_installed_packages(pattern, ListType::Installed)?;
             packages_found_overall += installed_count;
 
             PACKAGE_CACHE.pkgkey2package.write().unwrap().clear();
@@ -119,7 +126,7 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
         let total_packages = ACCUM_PACKAGE_COUNT.load(Ordering::SeqCst);
         let total_size = ACCUM_TOTAL_SIZE.load(Ordering::SeqCst);
         let total_installed_size = ACCUM_TOTAL_INSTALLED_SIZE.load(Ordering::SeqCst);
-        println!("\nTotal: {} packages, {}, {} installed", total_packages, format_size(total_size), format_size(total_installed_size));
+        println!("\nTotal: {} packages, {}, {} if installed", total_packages, format_size(total_size), format_size(total_installed_size));
     } else {
         if pattern.is_empty() {
             println!("No packages found in scope {:?}.", scope);
@@ -134,8 +141,9 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
 
 /// Stream through installed packages, applying filtering and upgrade checking, then sorts and displays them.
 /// Returns the number of packages found and processed.
-fn process_installed_packages(pattern: &str, upgradable_only: bool, list_title: &str) -> Result<usize> {
+fn process_installed_packages(pattern: &str, list_type: ListType) -> Result<usize> {
     let mut local_items = Vec::new();
+    let upgradable_only = matches!(list_type, ListType::Upgradable);
 
     // Pre-compile glob pattern if provided (empty or "*" means match all)
     let pattern_glob = if pattern.is_empty() || pattern == "*" {
@@ -189,22 +197,21 @@ fn process_installed_packages(pattern: &str, upgradable_only: bool, list_title: 
     }
 
     let count = local_items.len();
-    sort_and_display_packages(&mut local_items, list_title)?;
+    sort_and_display_packages(&mut local_items, list_type)?;
     Ok(count)
 }
 
 fn process_available_packages(pattern: &str) -> Result<usize> {
-    let list_title = "Available Packages (not installed)";
     if pattern.is_empty() || pattern == "*" {
-        return process_all_available_packages(&list_title);
+        return process_all_available_packages(ListType::Available);
     } else {
-        return process_few_available_packages(pattern, &list_title);
+        return process_few_available_packages(pattern, ListType::Available);
     };
 }
 
 /// Stream through available packages, applying filtering, excluding installed ones, then sorts and displays them.
 /// Returns the number of packages found and processed.
-fn process_few_available_packages(pattern: &str, list_title: &str) -> Result<usize> {
+fn process_few_available_packages(pattern: &str, list_type: ListType) -> Result<usize> {
     let mut local_items = Vec::new();
 
     // Collect matching package names with optimizations
@@ -232,7 +239,7 @@ fn process_few_available_packages(pattern: &str, list_title: &str) -> Result<usi
     }
 
     let count = local_items.len();
-    sort_and_display_packages(&mut local_items, list_title)?;
+    sort_and_display_packages(&mut local_items, list_type)?;
     Ok(count)
 }
 
@@ -315,7 +322,7 @@ fn collect_matching_pkgnames(pattern: &str) -> Result<Vec<String>> {
 }
 
 /// Process all available packages when pattern is empty or "*" - optimized direct scanning
-fn process_all_available_packages(list_title: &str) -> Result<usize> {
+fn process_all_available_packages(list_type: ListType) -> Result<usize> {
     let mut repodata_indice = crate::models::repodata_indice_mut();
     let mut count = 0;
     // Pre-size local_items using the sum of nr_packages from all shards
@@ -340,7 +347,7 @@ fn process_all_available_packages(list_title: &str) -> Result<usize> {
         }
     }
 
-    sort_and_display_packages(&mut local_items, list_title)?;
+    sort_and_display_packages(&mut local_items, list_type)?;
     Ok(count)
 }
 
@@ -486,11 +493,23 @@ fn handle_completed_package_bytes(
 
 /// Helper to sort and display a list of package items.
 /// Takes a mutable reference to `package_items` to sort them in place.
-/// `list_title` is used to print a header before displaying the list.
-fn sort_and_display_packages(package_items: &mut Vec<PackageListItem>, _list_title: &str) -> Result<()> {
-    // _list_title is intentionally unused for now
+/// `list_type` determines sorting strategy (Available vs Installed/Upgradable).
+fn sort_and_display_packages(package_items: &mut Vec<PackageListItem>, list_type: ListType) -> Result<()> {
+    // Sort by depth then name, except for Available lists which keep alphabetical sorting
 
-    package_items.sort_by(|a, b| a.pkgname.cmp(&b.pkgname));
+    match list_type {
+        ListType::Available => {
+            package_items.sort_by(|a, b| a.pkgname.cmp(&b.pkgname));
+        }
+        ListType::Installed | ListType::Upgradable => {
+            package_items.sort_by(|a, b| {
+                match a.depth.cmp(&b.depth) {
+                    std::cmp::Ordering::Equal => a.pkgname.cmp(&b.pkgname),
+                    other => other,
+                }
+            });
+        }
+    }
     display_package_list(package_items)?;
     Ok(())
 }
@@ -677,8 +696,8 @@ fn print_headers_if_needed(headers: &[&str], col_widths: &[usize]) {
 
 /// Compute table configuration: column widths, start positions, and alignment
 fn compute_table_config() -> ([usize; 8], [usize; 8], [bool; 8]) {
-    // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(8), repo(18)
-    let col_widths = [2, 5, 8, 36, 30, 8, 18, 60];
+    // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(11), repo(18)
+    let col_widths = [2, 5, 8, 36, 30, 11, 18, 60];
     // Compute start positions for each column (including inter-column spaces)
     let mut starts = [0; 8];
     let mut pos = 0;
