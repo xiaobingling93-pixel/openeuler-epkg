@@ -157,7 +157,7 @@ pub fn map_pkgname2packages(pkgname: &str) -> Result<Vec<Package>> {
             for package in &packages_list {
                 // cache for later references and update indexes
                 log::trace!("Caching package: {}", package.pkgkey);
-                let format = get_format_from_package(package);
+                let format = package.format;
                 add_package_to_cache(Arc::new(package.clone()), format);
             }
             return Ok(packages_list);
@@ -197,7 +197,7 @@ pub fn load_package_info(pkgkey: &str) -> Result<Arc<Package>> {
     log::debug!("Package '{}' not in cache, loading from repository", pkgkey);
     match crate::mmio::map_pkgkey2package(pkgkey) {
         Ok(package) => {
-            let format = get_format_from_package(&package);
+            let format = package.format;
             let arc_package = Arc::new(package);
             // Cache the package for future use and update indexes
             add_package_to_cache(Arc::clone(&arc_package), format);
@@ -209,17 +209,6 @@ pub fn load_package_info(pkgkey: &str) -> Result<Arc<Package>> {
     }
 }
 
-/// Get package format from repodata_name, or return default (Epkg)
-fn get_format_from_package(package: &Package) -> PackageFormat {
-    if !package.repodata_name.is_empty() {
-        let repodata_indice = crate::models::repodata_indice();
-        if let Some(repo_index) = repodata_indice.get(&package.repodata_name) {
-            return repo_index.format;
-        }
-    }
-    // Default to Epkg if we can't determine format
-    PackageFormat::Epkg
-}
 
 /// Get filelist for a package, either from cache or from store
 /// Fills the cache if it wasn't already there
