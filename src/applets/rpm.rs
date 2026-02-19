@@ -103,56 +103,6 @@ fn print_script_content(content: &str) {
     }
 }
 
-/// Process script files in a subdirectory with custom filtering and naming
-fn process_script_files<F, G>(
-    store_path: &Path,
-    subdir: &str,
-    filter_predicate: F,
-    name_extractor: G,
-    blank_line: bool,
-) -> Result<()>
-where
-    F: Fn(&str) -> bool,
-    G: Fn(&str) -> String,
-{
-    let scripts_dir = store_path.join(subdir);
-    if !scripts_dir.exists() {
-        return Ok(());
-    }
-
-    match std::fs::read_dir(&scripts_dir) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                if let Some(filename) = entry.file_name().to_str() {
-                    if !filter_predicate(filename) {
-                        continue;
-                    }
-
-                    let path = scripts_dir.join(filename);
-                    let content = match std::fs::read_to_string(&path) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("failed to read script file {}: {}", filename, e);
-                            continue;
-                        }
-                    };
-
-                    let scriptlet_name = name_extractor(filename);
-                    let interpreter = extract_interpreter(&content);
-
-                    println!("{} scriptlet (using {}):", scriptlet_name, interpreter);
-                    print_script_content(&content);
-                    if blank_line {
-                        println!();
-                    }
-                }
-            }
-        }
-        Err(e) => eprintln!("failed to read scripts directory: {}", e),
-    }
-
-    Ok(())
-}
 
 
 /// Generic function to select installed packages by predicate
@@ -212,15 +162,6 @@ fn display_package_info(package: &Package, installed_info: Option<&InstalledPack
     print_field("Release", &release);
     print_field("Architecture", &package.arch);
 
-    // Summary and Description
-    print_field("Summary", &package.summary);
-    if let Some(description) = package.description.as_ref() {
-        println!("{:12}:", "Description");
-        for line in description.lines() {
-            println!("  {}", line);
-        }
-    }
-
     // Install Date
     let install_date = if let Some(info) = installed_info {
         format_rpm_date(info.install_time)
@@ -232,26 +173,37 @@ fn display_package_info(package: &Package, installed_info: Option<&InstalledPack
     // Group
     print_field("Group", package.section.as_deref().unwrap_or("Unspecified"));
 
-    // URL
-    print_field("URL", &package.homepage);
-
     // Size (installed size)
     print_field("Size", &package.installed_size.to_string());
+
+    // Optional fields: License, Signature, Source RPM, Build Date, Build Host, Packager, Vendor, URL
+    print_optional_field!(&package.license, "License");
+    print_optional_field!(&package.signature, "Signature");
+    print_optional_field!(&package.source, "Source RPM");
 
     // Build Date (renamed from BuildTime)
     let build_date = package.build_time.map(|t| format_rpm_date(t.into())).unwrap_or_default();
     print_field("Build Date", &build_date);
 
-    // Source RPM (renamed from Source)
-    print_optional_field!(&package.source, "Source RPM");
+    print_optional_field!(&package.build_host, "Build Host");
 
     // Packager (renamed from Maintainer)
     print_field("Packager", &package.maintainer);
 
-    print_optional_field!(&package.license, "License");
     print_optional_field!(&package.vendor, "Vendor");
-    print_optional_field!(&package.build_host, "Build Host");
-    print_optional_field!(&package.signature, "Signature");
+
+    // URL
+    print_field("URL", &package.homepage);
+
+    // Summary and Description
+    print_field("Summary", &package.summary);
+    if let Some(description) = package.description.as_ref() {
+        println!("{:12}:", "Description");
+        for line in description.lines() {
+            println!("  {}", line);
+        }
+    }
+
     print_optional_field!(&package.relocations, "Relocations");
 
 }
@@ -930,6 +882,17 @@ fn verify_packages(store_path: &Path) -> Result<()> {
 }
 
 fn show_package_scripts(store_path: &Path) -> Result<()> {
+    // Order of scriptlets as defined by RPM convention
+    const SCRIPT_ORDER: [&str; 8] = [
+        "pre_install",
+        "post_install",
+        "pre_uninstall",
+        "post_uninstall",
+        "pre_trans",
+        "post_trans",
+        "pre_untrans",
+        "post_untrans",
+    ];
     // Mapping from stored filename prefix to RPM scriptlet name
     let scriptlet_mapping: HashMap<&str, &str> = [
         ("pre_install", "preinstall"),
@@ -942,19 +905,50 @@ fn show_package_scripts(store_path: &Path) -> Result<()> {
         ("post_untrans", "postuntrans"),
     ].into_iter().collect();
 
-    process_script_files(
-        store_path,
-        "info/install",
-        |filename| {
-            !filename.ends_with(".hook") &&
-            !filename.starts_with("rpm-")
-        },
-        |filename| {
-            let base_name = filename.split('.').next().unwrap_or(filename);
-            scriptlet_mapping.get(base_name).map(|&s| s.to_string()).unwrap_or_else(|| "unknown".to_string())
-        },
-        false,
-    )
+    let scripts_dir = store_path.join("info/install");
+    if !scripts_dir.exists() {
+        return Ok(());
+    }
+
+    // Collect and sort script files
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&scripts_dir)?.flatten() {
+        let filename = entry.file_name();
+        let filename_str = filename.to_string_lossy();
+
+        // Filter out .hook files and rpm-* files
+        if filename_str.ends_with(".hook") || filename_str.starts_with("rpm-") {
+            continue;
+        }
+
+        let base_name = filename_str.split('.').next().unwrap_or(&filename_str);
+        let order = SCRIPT_ORDER.iter().position(|&s| s == base_name).unwrap_or(usize::MAX);
+        entries.push((order, filename_str.to_string()));
+    }
+
+    // Sort by order, then by filename for equal order (unknown scripts)
+    entries.sort_by_key(|(order, filename)| (*order, filename.clone()));
+
+    // Process each script file in sorted order
+    for (_, filename) in entries {
+        let path = scripts_dir.join(&filename);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("failed to read script file {}: {}", filename, e);
+                continue;
+            }
+        };
+
+        let base_name = filename.split('.').next().unwrap_or(&filename);
+        let scriptlet_name = scriptlet_mapping.get(base_name).map(|&s| s.to_string()).unwrap_or_else(|| "unknown".to_string());
+        let interpreter = extract_interpreter(&content);
+
+        println!("{} scriptlet (using {}):", scriptlet_name, interpreter);
+        print_script_content(&content);
+    }
+
+    Ok(())
 }
 
 fn show_package_triggers(store_path: &Path) -> Result<()> {
@@ -1032,7 +1026,17 @@ fn print_trigger_items(items: &[(u32, String, String, Vec<String>)]) {
         if targets.is_empty() {
             println!("{} scriptlet (using {}):", scriptlet_name, interpreter);
         } else {
-            let target_str = targets.join(", ");
+            // Normalize targets: add leading '/' if missing
+            let normalized_targets: Vec<String> = targets.iter()
+                .map(|target| {
+                    if target.starts_with('/') {
+                        target.clone()
+                    } else {
+                        format!("/{}", target)
+                    }
+                })
+                .collect();
+            let target_str = normalized_targets.join(", ");
             println!("{} scriptlet (using {}) -- {}", scriptlet_name, interpreter, target_str);
         }
 
