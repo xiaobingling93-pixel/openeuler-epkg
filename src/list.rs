@@ -334,6 +334,8 @@ fn scan_packages_mmap(
     let mut version: &[u8] = &[];
     let mut arch: &[u8] = &[];
     let mut summary: &[u8] = &[];
+    let mut size: u32 = 0;
+    let mut installed_size: u32 = 0;
     let mut nr_found_fields = 0;
     let mut last_advised = 0;
     const MMAP_DROP_GRANULARITY: usize = 2 * 1024 * 1024; // 2MB
@@ -373,6 +375,14 @@ fn scan_packages_mmap(
             } else if line.starts_with(b"summary: ") {
                 summary = &line[b"summary: ".len()..];
                 nr_found_fields += 1;
+            } else if line.starts_with(b"size: ") {
+                if let Ok(parsed) = std::str::from_utf8(&line[b"size: ".len()..]).unwrap_or("0").trim().parse() {
+                    size = parsed;
+                }
+            } else if line.starts_with(b"installedSize: ") {
+                if let Ok(parsed) = std::str::from_utf8(&line[b"installedSize: ".len()..]).unwrap_or("0").trim().parse() {
+                    installed_size = parsed;
+                }
             }
             pos = line_end + 1;
             if nr_found_fields >= 4 {
@@ -381,6 +391,8 @@ fn scan_packages_mmap(
                     version,
                     arch,
                     summary,
+                    size,
+                    installed_size,
                     repodata_name,
                     local_items,
                 )?;
@@ -388,6 +400,8 @@ fn scan_packages_mmap(
                 version = &[];
                 arch = &[];
                 summary = &[];
+                size = 0;
+                installed_size = 0;
                 nr_found_fields = 0;
             }
         }
@@ -410,6 +424,8 @@ fn handle_completed_package_bytes(
     version: &[u8],
     arch: &[u8],
     summary: &[u8],
+    size: u32,
+    installed_size: u32,
     repodata_name: &str,
     local_items: &mut Vec<PackageListItem>,
 ) -> Result<usize> {
@@ -420,14 +436,20 @@ fn handle_completed_package_bytes(
         let summary_str = std::str::from_utf8(summary).unwrap_or("").trim();
         let pkgkey = crate::package::format_pkgkey(pkgname_str, version_str, arch_str);
         if !PACKAGE_CACHE.installed_packages.read().unwrap().contains_key(&pkgkey) {
-            let item = create_available_package_item_from_data_borrowed(
-                pkgname_str,
-                version_str,
-                arch_str,
-                summary_str,
-                repodata_name,
-                &pkgkey,
-            )?;
+            let status = determine_status_for_available(pkgname_str)?;
+            let item = PackageListItem {
+                pkgname: pkgname_str.to_owned(),
+                version: version_str.to_owned(),
+                arch: arch_str.to_owned(),
+                repodata_name: repodata_name.to_owned(),
+                summary: summary_str.to_owned(),
+                status,
+                depth: 0,
+                size,
+                installed_size,
+                pkgkey: pkgkey.to_owned(),
+                installed_info: None,
+            };
             local_items.push(item);
             return Ok(1);
         }
@@ -435,30 +457,6 @@ fn handle_completed_package_bytes(
     Ok(0)
 }
 
-/// Create a PackageListItem for an available package from borrowed data (no unnecessary allocations)
-fn create_available_package_item_from_data_borrowed(
-    pkgname: &str,
-    version: &str,
-    arch: &str,
-    summary: &str,
-    repodata_name: &str,
-    pkgkey: &str,
-) -> Result<PackageListItem> {
-    let status = determine_status_for_available(pkgname)?;
-    Ok(PackageListItem {
-        pkgname: pkgname.to_owned(),
-        version: version.to_owned(),
-        arch: arch.to_owned(),
-        repodata_name: repodata_name.to_owned(),
-        summary: summary.to_owned(),
-        status,
-        depth: 0,
-        size: 0,
-        installed_size: 0,
-        pkgkey: pkgkey.to_owned(),
-        installed_info: None,
-    })
-}
 
 /// Helper to sort and display a list of package items.
 /// Takes a mutable reference to `package_items` to sort them in place.
