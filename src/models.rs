@@ -653,6 +653,12 @@ pub struct RepoShard {
     pub packages: PackagesFileInfo,
     #[serde(default)]
     pub filelists: Option<FilelistsFileInfo>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub packages_metafile: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub filelists_metafile: Option<String>,
 
     #[serde(skip)]
     pub provide2pkgnames: Option<crate::mmio::Provide2PkgNamesMapper>,

@@ -867,9 +867,12 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
             .and_then(|s| s.to_str())
             .map(|s| s.trim_start_matches('.').to_owned())
             .unwrap_or_else(|| format!("shard_{}", i));
+        let filelists_metafile_opt = filelists_info.as_ref().map(|_| filelists_metafile.clone());
         repo_shards.insert(key, RepoShard {
             packages: packages_info,
             filelists: filelists_info,
+            packages_metafile: packages_metafile.to_string_lossy().to_string(),
+            filelists_metafile: filelists_metafile_opt,
             essential_pkgnames: std::collections::HashSet::new(),
             provide2pkgnames:   None,
             pkgname2ranges:     std::collections::BTreeMap::new(),
