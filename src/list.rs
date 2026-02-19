@@ -2,7 +2,9 @@ use crate::models::*;
 use crate::mmio;
 use crate::models::PACKAGE_CACHE;
 use crate::io::load_installed_packages;
+use crate::utils::format_size;
 use color_eyre::Result;
+use comfy_table::{CellAlignment, Table, ContentArrangement, presets::NOTHING, TableComponent};
 use memchr::{memchr, memmem::Finder};
 use glob::Pattern;
 use std::sync::Arc;
@@ -32,12 +34,13 @@ use std::sync::Arc;
 //   (empty) Lists all packages in the specified scope
 //
 // OUTPUT FORMAT:
-//   STATUS | PKGNAME | VERSION | ARCH | REPODATA_NAME | SUMMARY
+//   |/ | Depth | Size | Name | Version | Arch | Repo | Description
 //
-//   STATUS (3 characters):
+//   |/ (2 characters):
 //   - Position 1: E=Exposed/appbin, I=Installed, A=Available
-//   - Position 2: 0-9=install depth, _=not installed, E=Essential
-//   - Position 3: U=Upgradable, (space)=no upgrade available
+//   - Position 2: U=Upgradable, (space)=no upgrade available
+//   Depth: installation depth (0-9+)
+//   Size: package download size (human readable)
 //
 // ======================================================================================
 
@@ -57,6 +60,9 @@ pub struct PackageListItem {
     pub repodata_name: String,
     pub summary: String,
     pub status: String,
+    pub depth: u16,
+    pub size: u32,
+    pub installed_size: u32,
     #[allow(dead_code)]
     pub pkgkey: String,
     #[allow(dead_code)]
@@ -92,9 +98,7 @@ pub fn list_packages_with_scope(scope: ListScope, pattern: &str) -> Result<()> {
         }
     }
 
-    if packages_found_overall > 0 {
-        println!("\nTotal: {} packages", packages_found_overall);
-    } else {
+    if packages_found_overall == 0 {
         println!("No packages found matching pattern '{}' in scope {:?}.", pattern, scope);
     }
 
@@ -448,6 +452,9 @@ fn create_available_package_item_from_data_borrowed(
         repodata_name: repodata_name.to_owned(),
         summary: summary.to_owned(),
         status,
+        depth: 0,
+        size: 0,
+        installed_size: 0,
         pkgkey: pkgkey.to_owned(),
         installed_info: None,
     })
@@ -471,12 +478,14 @@ fn sort_and_display_packages(package_items: &mut Vec<PackageListItem>, _list_tit
 /// Create a PackageListItem for an installed package
 fn create_installed_package_item(pkgname: &str, pkgkey: &str, installed_info: &InstalledPackageInfo) -> Result<PackageListItem> {
     // Try to get package details from repository using pkgkey first
-    let (version, arch, summary, repodata_name) = match mmio::map_pkgkey2package(pkgkey) {
+    let (version, arch, summary, repodata_name, size, installed_size) = match mmio::map_pkgkey2package(pkgkey) {
         Ok(pkg) => (
             pkg.version.clone(),
             pkg.arch.clone(),
             pkg.summary.clone(),
             pkg.repodata_name.clone(),
+            pkg.size,
+            pkg.installed_size,
         ),
         Err(_) => {
             // Fallback: try to get package details from local store using pkgline
@@ -486,6 +495,8 @@ fn create_installed_package_item(pkgname: &str, pkgkey: &str, installed_info: &I
                     local_pkg.arch.clone(),
                     local_pkg.summary.clone(),
                     "local".to_string(), // If found via pkgline, assume it's 'local' or specific to installed context
+                    local_pkg.size,
+                    local_pkg.installed_size,
                 ),
                 Err(_) => {
                     // Last resort: basic info
@@ -494,13 +505,15 @@ fn create_installed_package_item(pkgname: &str, pkgkey: &str, installed_info: &I
                         config().common.arch.clone(),
                         "Package not found in repositories or local store".to_string(),
                         "orphaned".to_string(),
+                        0,
+                        0,
                     )
                 }
             }
         }
     };
 
-    let status = determine_status_for_installed(pkgname, installed_info)?;
+    let (status, depth) = determine_status_for_installed(pkgname, installed_info)?;
 
     Ok(PackageListItem {
         pkgname: pkgname.to_string(),
@@ -509,6 +522,9 @@ fn create_installed_package_item(pkgname: &str, pkgkey: &str, installed_info: &I
         repodata_name,
         summary,
         status,
+        depth,
+        size,
+        installed_size,
         pkgkey: installed_info.pkgline.clone(),
         installed_info: Some(installed_info.clone()),
     })
@@ -525,22 +541,18 @@ fn create_available_package_item(pkg: &Package) -> Result<PackageListItem> {
         repodata_name: pkg.repodata_name.clone(),
         summary: pkg.summary.clone(),
         status,
+        depth: 0,
+        size: pkg.size,
+        installed_size: pkg.installed_size,
         pkgkey: pkg.pkgkey.clone(),
         installed_info: None,
     })
 }
 
-/// Determine the status string for an installed package
-fn determine_status_for_installed(pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<String> {
+/// Determine the status string and depth for an installed package
+fn determine_status_for_installed(pkgname: &str, installed_info: &InstalledPackageInfo) -> Result<(String, u16)> {
     // Position 1: Installation/Exposure status
     let pos1 = if installed_info.ebin_exposure { 'E' } else { 'I' };
-
-    // Position 2: Depth/Essential status
-    let pos2 = if mmio::is_essential_pkgname(pkgname) {
-        'E'
-    } else {
-        char::from_digit(installed_info.depend_depth as u32, 10).unwrap_or('9')
-    };
 
     // Position 3: Upgradable status
     let pos3 = if is_package_upgradable(pkgname, installed_info).unwrap_or(false) {
@@ -549,7 +561,12 @@ fn determine_status_for_installed(pkgname: &str, installed_info: &InstalledPacka
         ' '
     };
 
-    Ok(format!("{}{}{}", pos1, pos2, pos3))
+    let status = format!("{}{}", pos1, pos3);
+
+    // Depth: always return depend_depth
+    let depth = installed_info.depend_depth;
+
+    Ok((status, depth))
 }
 
 /// Determine the status string for an available package
@@ -557,13 +574,10 @@ fn determine_status_for_available(_pkgname: &str) -> Result<String> {
     // Position 1: Available
     let pos1 = 'A';
 
-    // Position 2: Not installed
-    let pos2 = '_';
-
     // Position 3: No upgrade status for non-installed packages
     let pos3 = ' ';
 
-    Ok(format!("{}{}{}", pos1, pos2, pos3))
+    Ok(format!("{}{}", pos1, pos3))
 }
 
 /// Check if a package has available upgrades
@@ -617,42 +631,70 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     // So, if it returns false, it means this is the first time, and we should print.
     if !LEGEND_PRINTED_THIS_INVOCATION.swap(true, Ordering::SeqCst) {
         // Print status legend (similar to dpkg-query)
-        println!("Installation=Exposed/Installed/Available");
-        println!("| Depth=0-9/Essential/_(not-installed)");
-        println!("|/ Upgrade=Upgradable/ (no-upgrade-available)");
-        println!("||/ Name                           Version                        Arch         Repo               Description");
-        println!("+++-==============================-==============================-============-==================-========================================");
+        println!(" Exposed/Installed/Available");
+        println!(" | Upgradable");
     }
 
+    // Create a table with comfy_table
+    let mut table = Table::new();
+    table
+        .load_preset(NOTHING)
+        .set_style(TableComponent::HeaderLines, '=')
+        .set_style(TableComponent::MiddleHeaderIntersections, '-')
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"]);
+
+    // Set column alignments: Depth and Size right-aligned
+    let depth_column = table.column_mut(1).expect("table has Depth column");
+    depth_column.set_cell_alignment(CellAlignment::Right);
+    let size_column = table.column_mut(2).expect("table has Size column");
+    size_column.set_cell_alignment(CellAlignment::Right);
+
+    let mut total_size: u64 = 0;
+    let mut total_installed_size: u64 = 0;
     let mut prev_pkgkey = "";
+
     for item in items {
         if item.pkgkey == prev_pkgkey {
             continue;
         }
         prev_pkgkey = &item.pkgkey;
 
-        let summary = if item.summary.chars().count() > 60 {
+        // Format depth: show digit
+        let depth_str = item.depth.to_string();
+
+        // Format size: human readable
+        let size_str = format_size(item.size as u64);
+
+        // Format description (summary) with truncation
+        let description = if item.summary.chars().count() > 60 {
             let truncated: String = item.summary.chars().take(58).collect();
             format!("{}..", truncated)
         } else {
             item.summary.clone()
         };
 
-        println!("{:<3} {:<30} {:<30} {:<12} {:<18} {}",
-                 item.status,
-                 item.pkgname,
-                 item.version,
-                 item.arch,
-                 item.repodata_name,
-                 summary);
+        // Add to totals
+        total_size += item.size as u64;
+        total_installed_size += item.installed_size as u64;
+
+        table.add_row(vec![
+            &item.status,
+            &depth_str,
+            &size_str,
+            &item.pkgname,
+            &item.version,
+            &item.arch,
+            &item.repodata_name,
+            &description,
+        ]);
     }
 
-    // println!("\nTotal: {} packages", items.len());
+    println!("{}", table);
 
-    // println!("\nStatus Codes:");
-    // println!("  Position 1 - Installation: E=Exposed (in ebin/), I=Installed, A=Available");
-    // println!("  Position 2 - Depth: 0-9=installation depth, E=Essential package, _=not installed");
-    // println!("  Position 3 - Upgrade: U=upgrade available, (space)=no upgrade available");
+    // Print totals
+    println!("\nTotal: {} packages, {}, {} installed", items.len(), format_size(total_size), format_size(total_installed_size));
 
     Ok(())
 }
+
