@@ -850,14 +850,16 @@ fn handle_clap_error(e: clap::Error, args: &[String]) -> ! {
             std::process::exit(0);
         }
         _ => {
-            eprintln!("Failed to parse command line: {}", args.join(" "));
             let error_msg = e.to_string();
-            if !error_msg.starts_with("error:") {
+            if error_msg.starts_with("error:") {
+                eprintln!("Failed to parse command line: {}", args.join(" "));
+                crate::utils::print_clap_error_detail(&e);
+                std::process::exit(2);
+            } else {
+                // Not an error - likely help output from arg_required_else_help
                 eprintln!("{}", error_msg);
                 std::process::exit(0);
             }
-            crate::utils::print_clap_error_detail(&e);
-            std::process::exit(2);
         }
     }
 }

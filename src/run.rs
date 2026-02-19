@@ -1277,20 +1277,22 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                                     std::process::exit(0);
                                 }
                                 _ => {
-                                    let args_display: Vec<String> = args_vec.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-                                    let cmdline = if args_display.is_empty() {
-                                        format!("epkg busybox {}", cmd_name)
-                                    } else {
-                                        format!("epkg busybox {} {}", cmd_name, args_display.join(" "))
-                                    };
-                                    eprintln!("Failed to parse command line: {}", cmdline);
                                     let error_msg = e.to_string();
-                                    if !error_msg.starts_with("error:") {
+                                    if error_msg.starts_with("error:") {
+                                        let args_display: Vec<String> = args_vec.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+                                        let cmdline = if args_display.is_empty() {
+                                            format!("epkg busybox {}", cmd_name)
+                                        } else {
+                                            format!("epkg busybox {} {}", cmd_name, args_display.join(" "))
+                                        };
+                                        eprintln!("Failed to parse command line: {}", cmdline);
+                                        crate::utils::print_clap_error_detail(&e);
+                                        std::process::exit(2);
+                                    } else {
+                                        // Not an error - likely help output from arg_required_else_help
                                         eprintln!("{}", error_msg);
                                         std::process::exit(0);
                                     }
-                                    crate::utils::print_clap_error_detail(&e);
-                                    std::process::exit(2);
                                 }
                             }
                         }
