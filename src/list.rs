@@ -4,7 +4,6 @@ use crate::models::PACKAGE_CACHE;
 use crate::io::load_installed_packages;
 use crate::utils::format_size;
 use color_eyre::Result;
-use comfy_table::{CellAlignment, Table, ContentArrangement, presets::NOTHING, TableComponent};
 use memchr::{memchr, memmem::Finder};
 use glob::Pattern;
 use std::sync::Arc;
@@ -627,36 +626,54 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
 
     // If LEGEND_PRINTED_THIS_INVOCATION was false, swap sets it to true and returns false.
     // So, if it returns false, it means this is the first time, and we should print.
-    if !LEGEND_PRINTED_THIS_INVOCATION.swap(true, Ordering::SeqCst) {
-        // Print status legend (similar to dpkg-query)
-        println!(" Exposed/Installed/Available");
-        println!(" | Upgradable");
+    if LEGEND_PRINTED_THIS_INVOCATION.swap(true, Ordering::SeqCst) {
+        println!();
     }
 
-    // Create a table with comfy_table
-    let mut table = Table::new();
-    table
-        .load_preset(NOTHING)
-        .set_style(TableComponent::HeaderLines, '=')
-        .set_style(TableComponent::MiddleHeaderIntersections, '-')
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"]);
+    // Manual table formatting for performance (replaces comfy_table)
+    let headers = vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"];
+    // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(8), repo(18)
+    let col_widths = [2, 5, 8, 36, 30, 8, 18, 60];
 
-    // Set column alignments: Depth and Size right-aligned
-    let depth_column = table.column_mut(1).expect("table has Depth column");
-    depth_column.set_cell_alignment(CellAlignment::Right);
-    let size_column = table.column_mut(2).expect("table has Size column");
-    size_column.set_cell_alignment(CellAlignment::Right);
+    // Print status legend (similar to dpkg-query)
+    println!("Exposed/Installed/Available");
+    println!("| Upgradable");
 
+    // Print header row (no truncation, fixed widths as minimum)
+    for (i, header) in headers.iter().enumerate() {
+        if i == 1 || i == 2 {
+            // Depth and Size: right-aligned
+            print!("{:>width$}", header, width = col_widths[i]);
+        } else {
+            print!("{:<width$}", header, width = col_widths[i]);
+        }
+        if i < 7 {
+            print!("  "); // Two spaces between columns
+        }
+    }
+    println!();
+
+    // Print header separator line (using '=')
+    for (i, &width) in col_widths.iter().enumerate() {
+        print!("{}", "=".repeat(width));
+        if i < 7 {
+            print!("=-");
+        }
+    }
+    println!();
+
+    // Print rows directly without collecting
     let mut total_size: u64 = 0;
     let mut total_installed_size: u64 = 0;
     let mut prev_pkgkey = "";
+    let mut package_count = 0;
 
     for item in items {
         if item.pkgkey == prev_pkgkey {
             continue;
         }
         prev_pkgkey = &item.pkgkey;
+        package_count += 1;
 
         // Format depth: show digit
         let depth_str = item.depth.to_string();
@@ -664,19 +681,15 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
         // Format size: human readable
         let size_str = format_size(item.size as u64);
 
-        // Format description (summary) with truncation
-        let description = if item.summary.chars().count() > 60 {
-            let truncated: String = item.summary.chars().take(58).collect();
-            format!("{}..", truncated)
-        } else {
-            item.summary.clone()
-        };
+        // Format description (summary)
+        let description = item.summary.clone();
 
         // Add to totals
         total_size += item.size as u64;
         total_installed_size += item.installed_size as u64;
 
-        table.add_row(vec![
+        // Print row directly
+        let row_cells = [
             &item.status,
             &depth_str,
             &size_str,
@@ -685,13 +698,24 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
             &item.arch,
             &item.repodata_name,
             &description,
-        ]);
+        ];
+
+        for (i, cell) in row_cells.iter().enumerate() {
+            if i == 1 || i == 2 {
+                // Depth and Size: right-aligned
+                print!("{:>width$}", cell, width = col_widths[i]);
+            } else {
+                print!("{:<width$}", cell, width = col_widths[i]);
+            }
+            if i < 7 {
+                print!("  ");
+            }
+        }
+        println!();
     }
 
-    println!("{}", table);
-
     // Print totals
-    println!("\nTotal: {} packages, {}, {} installed", items.len(), format_size(total_size), format_size(total_installed_size));
+    println!("\nTotal: {} packages, {}, {} installed", package_count, format_size(total_size), format_size(total_installed_size));
 
     Ok(())
 }
