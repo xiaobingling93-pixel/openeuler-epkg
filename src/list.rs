@@ -634,55 +634,8 @@ fn is_version_newer(new_version: &str, current_version: &str) -> bool {
     crate::version_compare::is_version_newer(new_version, current_version)
 }
 
-/// Display the package list in a formatted table
-fn display_package_list(items: &[PackageListItem]) -> Result<()> {
-    // If no items, still may need to accumulate totals (for empty batches in --all mode)
-    let has_items = !items.is_empty();
-
-    // Manual table formatting for performance (replaces comfy_table)
-    let headers = vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"];
-    // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(8), repo(18)
-    let col_widths = [2, 5, 8, 36, 30, 8, 18, 60];
-    /*
-     * Dynamic padding compensation algorithm for long package names:
-     *
-     * REQUIREMENT:
-     * - Some package names exceed the Name column width (36 chars)
-     * - Must never truncate content
-     * - Must maintain at least 2 spaces between columns
-     * - Should preserve vertical alignment of later columns (Arch, Repo, Description)
-     *
-     * SOLUTION: Shift absorption with column spare capacity
-     *
-     * 1. When content exceeds column width, overflow becomes "shift"
-     * 2. Each column's spare capacity (col_width - content_width) can absorb shift
-     * 3. Shift propagates until absorbed by subsequent columns' spare capacity
-     *
-     * Example: 48-char package name in 36-char column
-     * - Name overflow = 12 → shift = 12
-     * - Version spare = 17 (30 - 13) → absorbs 12 shift → shift = 0
-     * - Arch aligns at nominal position → vertical alignment restored
-     *
-     * INVARIANTS:
-     * - Always 2 spaces between columns
-     * - Never truncates content
-     * - Right-alignment preserved for Depth/Size columns
-     */
-    // Compute start positions for each column (including inter-column spaces)
-    let mut starts = [0; 8];
-    let mut pos = 0;
-    for i in 0..8 {
-        starts[i] = pos;
-        pos += col_widths[i];
-        if i < 7 {
-            pos += 2; // inter-column spaces
-        }
-    }
-    // Which columns are right-aligned?
-    let right_aligned = [false, true, true, false, false, false, false, false];
-    // Cell width function (ASCII assumption)
-    let cell_width = |s: &str| s.len();
-
+/// Print table headers and separator only once
+fn print_headers_if_needed(headers: &[&str], col_widths: &[usize]) {
     // Print status legend (similar to dpkg-query) only when printing headers for the first time
     if !HEADERS_PRINTED.load(Ordering::SeqCst) {
         println!("Exposed/Installed/Available");
@@ -699,7 +652,7 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
             } else {
                 print!("{:<width$}", header, width = col_widths[i]);
             }
-            if i < 7 {
+            if i < headers.len() - 1 {
                 print!("  "); // Two spaces between columns
             }
         }
@@ -708,7 +661,7 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
         // Print header separator line (using '=')
         for (i, &width) in col_widths.iter().enumerate() {
             print!("{}", "=".repeat(width));
-            if i < 7 {
+            if i < col_widths.len() - 1 {
                 print!("=-");
             }
         }
@@ -716,6 +669,126 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
 
         HEADERS_PRINTED.store(true, Ordering::SeqCst);
     }
+}
+
+/// Compute table configuration: column widths, start positions, and alignment
+fn compute_table_config() -> ([usize; 8], [usize; 8], [bool; 8]) {
+    // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(8), repo(18)
+    let col_widths = [2, 5, 8, 36, 30, 8, 18, 60];
+    // Compute start positions for each column (including inter-column spaces)
+    let mut starts = [0; 8];
+    let mut pos = 0;
+    for i in 0..8 {
+        starts[i] = pos;
+        pos += col_widths[i];
+        if i < 7 {
+            pos += 2; // inter-column spaces
+        }
+    }
+    // Which columns are right-aligned?
+    let right_aligned = [false, true, true, false, false, false, false, false];
+    (col_widths, starts, right_aligned)
+}
+
+/// Print a single table row with shift absorption for dynamic padding
+///
+/// Dynamic padding compensation algorithm for long package names:
+///
+/// REQUIREMENT:
+/// - Some package names exceed the Name column width (36 chars)
+/// - Must never truncate content
+/// - Must maintain at least 2 spaces between columns
+/// - Should preserve vertical alignment of later columns (Arch, Repo, Description)
+///
+/// SOLUTION: Shift absorption with column spare capacity
+///
+/// 1. When content exceeds column width, overflow becomes "shift"
+/// 2. Each column's spare capacity (col_width - content_width) can absorb shift
+/// 3. Shift propagates until absorbed by subsequent columns' spare capacity
+///
+/// Example: 48-char package name in 36-char column
+/// - Name overflow = 12 → shift = 12
+/// - Version spare = 17 (30 - 13) → absorbs 12 shift → shift = 0
+/// - Arch aligns at nominal position → vertical alignment restored
+///
+/// INVARIANTS:
+/// - Always 2 spaces between columns
+/// - Never truncates content
+/// - Right-alignment preserved for Depth/Size columns
+fn print_row_with_shift_absorption(
+    row_cells: &[&str],
+    col_widths: &[usize; 8],
+    starts: &[usize; 8],
+    right_aligned: &[bool; 8],
+) {
+    let mut shift = 0; // overflow not yet absorbed
+    let mut pos = 0;
+    for i in 0..8 {
+        let col_width = col_widths[i];
+        let cell = row_cells[i];
+        let width = cell.len(); // ASCII assumption
+
+        // Try to absorb accumulated shift using this column's spare capacity
+        let spare = col_width.saturating_sub(width);
+        let absorbed = if spare > 0 { spare.min(shift) } else { 0 };
+        shift -= absorbed;
+
+        // Where content actually starts (shifted right by absorbed)
+        let content_start = starts[i] + absorbed;
+
+        // Move to content start if needed
+        if pos < content_start {
+            print!("{:>width$}", "", width = content_start - pos);
+            pos = content_start;
+        }
+
+        // Print the cell content
+        if right_aligned[i] {
+            // Right-aligned: pad left to fill column width
+            if width <= col_width {
+                let left_padding = col_width - width;
+                print!("{:>width$}", "", width = left_padding);
+                print!("{}", cell);
+                pos += col_width;
+            } else {
+                // Overflow: no padding
+                print!("{}", cell);
+                pos += width;
+            }
+        } else {
+            // Left-aligned: just print
+            print!("{}", cell);
+            pos += width;
+        }
+
+        // Compute overflow from this column (content beyond column width after absorption)
+        let effective_width = col_width - absorbed; // space left after absorption
+        let overflow = width.saturating_sub(effective_width);
+        if overflow > 0 {
+            shift += overflow;
+        }
+
+        // Spacing after column i (always at least 2 spaces)
+        if i < 7 {
+            let spaces_after = 2_usize;
+            print!("{: <width$}", "", width = spaces_after);
+            pos += spaces_after;
+        }
+    }
+    println!();
+}
+
+/// Display the package list in a formatted table
+fn display_package_list(items: &[PackageListItem]) -> Result<()> {
+    // If no items, still may need to accumulate totals (for empty batches in --all mode)
+    let has_items = !items.is_empty();
+
+    // Manual table formatting for performance (replaces comfy_table)
+    let headers = vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"];
+    let (col_widths, starts, right_aligned) = compute_table_config();
+
+    // Print headers (only once)
+    print_headers_if_needed(&headers, &col_widths);
 
     // Print rows directly without collecting
     let mut prev_pkgkey = "";
@@ -744,72 +817,18 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
 
         // Print row directly
         let row_cells = [
-            &item.status,
-            &depth_str,
-            &size_str,
-            &item.pkgname,
-            &item.version,
-            &item.arch,
-            &item.repodata_name,
-            &description,
+            item.status.as_str(),
+            depth_str.as_str(),
+            size_str.as_str(),
+            item.pkgname.as_str(),
+            item.version.as_str(),
+            item.arch.as_str(),
+            item.repodata_name.as_str(),
+            description.as_str(),
         ];
 
         // Print row with shift absorption using column spare capacity
-        let mut shift = 0; // overflow not yet absorbed
-        let mut pos = 0;
-        for i in 0..8 {
-            let col_width = col_widths[i];
-            let cell = row_cells[i];
-            let width = cell_width(cell);
-
-            // Try to absorb accumulated shift using this column's spare capacity
-            let spare = col_width.saturating_sub(width);
-            let absorbed = if spare > 0 { spare.min(shift) } else { 0 };
-            shift -= absorbed;
-
-            // Where content actually starts (shifted right by absorbed)
-            let content_start = starts[i] + absorbed;
-
-            // Move to content start if needed
-            if pos < content_start {
-                print!("{:>width$}", "", width = content_start - pos);
-                pos = content_start;
-            }
-
-            // Print the cell content
-            if right_aligned[i] {
-                // Right-aligned: pad left to fill column width
-                if width <= col_width {
-                    let left_padding = col_width - width;
-                    print!("{:>width$}", "", width = left_padding);
-                    print!("{}", cell);
-                    pos += col_width;
-                } else {
-                    // Overflow: no padding
-                    print!("{}", cell);
-                    pos += width;
-                }
-            } else {
-                // Left-aligned: just print
-                print!("{}", cell);
-                pos += width;
-            }
-
-            // Compute overflow from this column (content beyond column width after absorption)
-            let effective_width = col_width - absorbed; // space left after absorption
-            let overflow = width.saturating_sub(effective_width);
-            if overflow > 0 {
-                shift += overflow;
-            }
-
-            // Spacing after column i (always at least 2 spaces)
-            if i < 7 {
-                let spaces_after = 2_usize;
-                print!("{: <width$}", "", width = spaces_after);
-                pos += spaces_after;
-            }
-        }
-        println!();
+        print_row_with_shift_absorption(&row_cells, &col_widths, &starts, &right_aligned);
     }
     }
 
