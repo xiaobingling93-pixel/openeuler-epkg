@@ -634,6 +634,45 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     let headers = vec!["|/", "Depth", "Size", "Name", "Version", "Arch", "Repo", "Description"];
     // Fixed widths: status(2), depth(5), size(8), pkgname(36), version(30), arch(8), repo(18)
     let col_widths = [2, 5, 8, 36, 30, 8, 18, 60];
+    /*
+     * Dynamic padding compensation algorithm for long package names:
+     *
+     * REQUIREMENT:
+     * - Some package names exceed the Name column width (36 chars)
+     * - Must never truncate content
+     * - Must maintain at least 2 spaces between columns
+     * - Should preserve vertical alignment of later columns (Arch, Repo, Description)
+     *
+     * SOLUTION: Shift absorption with column spare capacity
+     *
+     * 1. When content exceeds column width, overflow becomes "shift"
+     * 2. Each column's spare capacity (col_width - content_width) can absorb shift
+     * 3. Shift propagates until absorbed by subsequent columns' spare capacity
+     *
+     * Example: 48-char package name in 36-char column
+     * - Name overflow = 12 → shift = 12
+     * - Version spare = 17 (30 - 13) → absorbs 12 shift → shift = 0
+     * - Arch aligns at nominal position → vertical alignment restored
+     *
+     * INVARIANTS:
+     * - Always 2 spaces between columns
+     * - Never truncates content
+     * - Right-alignment preserved for Depth/Size columns
+     */
+    // Compute start positions for each column (including inter-column spaces)
+    let mut starts = [0; 8];
+    let mut pos = 0;
+    for i in 0..8 {
+        starts[i] = pos;
+        pos += col_widths[i];
+        if i < 7 {
+            pos += 2; // inter-column spaces
+        }
+    }
+    // Which columns are right-aligned?
+    let right_aligned = [false, true, true, false, false, false, false, false];
+    // Cell width function (ASCII assumption)
+    let cell_width = |s: &str| s.len();
 
     // Print status legend (similar to dpkg-query)
     println!("Exposed/Installed/Available");
@@ -700,15 +739,59 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
             &description,
         ];
 
-        for (i, cell) in row_cells.iter().enumerate() {
-            if i == 1 || i == 2 {
-                // Depth and Size: right-aligned
-                print!("{:>width$}", cell, width = col_widths[i]);
-            } else {
-                print!("{:<width$}", cell, width = col_widths[i]);
+        // Print row with shift absorption using column spare capacity
+        let mut shift = 0; // overflow not yet absorbed
+        let mut pos = 0;
+        for i in 0..8 {
+            let col_width = col_widths[i];
+            let cell = row_cells[i];
+            let width = cell_width(cell);
+
+            // Try to absorb accumulated shift using this column's spare capacity
+            let spare = col_width.saturating_sub(width);
+            let absorbed = if spare > 0 { spare.min(shift) } else { 0 };
+            shift -= absorbed;
+
+            // Where content actually starts (shifted right by absorbed)
+            let content_start = starts[i] + absorbed;
+
+            // Move to content start if needed
+            if pos < content_start {
+                print!("{:>width$}", "", width = content_start - pos);
+                pos = content_start;
             }
+
+            // Print the cell content
+            if right_aligned[i] {
+                // Right-aligned: pad left to fill column width
+                if width <= col_width {
+                    let left_padding = col_width - width;
+                    print!("{:>width$}", "", width = left_padding);
+                    print!("{}", cell);
+                    pos += col_width;
+                } else {
+                    // Overflow: no padding
+                    print!("{}", cell);
+                    pos += width;
+                }
+            } else {
+                // Left-aligned: just print
+                print!("{}", cell);
+                pos += width;
+            }
+
+            // Compute overflow from this column (content beyond column width after absorption)
+            let effective_width = col_width - absorbed; // space left after absorption
+            let overflow = width.saturating_sub(effective_width);
+            if overflow > 0 {
+                shift += overflow;
+            }
+
+            // Spacing after column i (always at least 2 spaces)
             if i < 7 {
-                print!("  ");
+                let spaces_after = 2_usize;
+                print!("{: <width$}", "", width = spaces_after);
+                pos += spaces_after;
             }
         }
         println!();
@@ -718,5 +801,47 @@ fn display_package_list(items: &[PackageListItem]) -> Result<()> {
     println!("\nTotal: {} packages, {}, {} installed", package_count, format_size(total_size), format_size(total_installed_size));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dynamic_padding() {
+        // Create test items with varying pkgname lengths
+        let items = vec![
+            PackageListItem {
+                pkgname: "short".to_string(),
+                version: "1.0".to_string(),
+                arch: "x86_64".to_string(),
+                repodata_name: "main".to_string(),
+                summary: "Test package".to_string(),
+                status: "A ".to_string(),
+                depth: 0,
+                size: 1024,
+                installed_size: 2048,
+                pkgkey: "short-1.0-x86_64".to_string(),
+                installed_info: None,
+            },
+            PackageListItem {
+                pkgname: "a-very-long-package-name-that-exceeds-column-width".to_string(), // 48 chars
+                version: "20250814.1-r0".to_string(),
+                arch: "x86_64".to_string(),
+                repodata_name: "main".to_string(),
+                summary: "Long package".to_string(),
+                status: "A ".to_string(),
+                depth: 0,
+                size: 2048,
+                installed_size: 4096,
+                pkgkey: "long-20250814.1-r0-x86_64".to_string(),
+                installed_info: None,
+            },
+        ];
+
+        // Test that display_package_list doesn't panic
+        let result = display_package_list(&items);
+        assert!(result.is_ok());
+    }
 }
 
