@@ -25,7 +25,6 @@ use crate::history::record_history;
 use crate::path::update_path;
 use crate::io;
 use crate::lfs;
-use comfy_table::{Table, ContentArrangement, presets::NOTHING, TableComponent};
 use log::warn;
 
 // epkg stores persistent PATH registration metadata inside each environment's
@@ -177,16 +176,11 @@ pub fn list_environments() -> Result<()> {
         .map(|cfg| (cfg.name, cfg.register_path_order))
         .collect();
 
-    // Create a table with no borders and adaptive column width
-    let mut table = Table::new();
-    table
-        .load_preset(NOTHING)
-        .set_style(TableComponent::HeaderLines, '=')
-        .set_style(TableComponent::MiddleHeaderIntersections, '-')
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["Type", "Status", "Environment", "Root"]);
+    // Print table header with new column order: Type, Status, Environment, Root
+    println!("{:<10}  {:<25}  {:<40}  {}", "Type", "Status", "Environment", "Root");
+    println!("{}", "-".repeat(120));
 
-    // Add each environment as a row
+    // Print each environment with its status
     for (env, is_public) in all_envs {
         let mut status_parts = Vec::new();
 
@@ -210,10 +204,14 @@ pub fn list_environments() -> Result<()> {
             Err(_) => "N/A".to_string(),
         };
 
-        table.add_row(vec![env_type, &status, &env, &env_root]);
+        println!("{:<10}  {:<25}  {:<40}  {}",
+            env_type,
+            status,
+            env,
+            env_root
+        );
     }
 
-    println!("{}", table);
     Ok(())
 }
 
