@@ -25,10 +25,7 @@ case "$EPKG_BIN" in
 esac
 
 mkdir -p "$BINDIR"
-APPLETS_LIST=$("$EPKG_BIN" busybox --help 2>&1 | awk '
-    /^Commands:/ { p=1; next }
-    p && /^  [a-zA-Z0-9_-]+/ && $1 !~ /^(help|-)/ { print $1 }
-')
+APPLETS_LIST=$("$EPKG_BIN" busybox --list)
 
 # Wrapper: when run as "busybox" with no args, list applets in BusyBox format;
 # when run as other name (e.g. symlink "unknown") with no args, run epkg busybox <name> so epkg prints "applet not found";

@@ -1223,6 +1223,13 @@ pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
 /// * `Result<()>` - Success or error from applet execution
 pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
     debug!("command_busybox sub_matches: {:?}", sub_matches);
+
+    // Handle --list flag
+    if sub_matches.get_flag("list") {
+        println!("{}", crate::applets::sorted_applet_names().join("\n"));
+        return Ok(());
+    }
+
     /* Parse the subcommand structure:
      * - Some((cmd_name, cmd_matches)): A subcommand was specified
      * - None: No subcommand specified (error case)

@@ -106,6 +106,7 @@ use clap::{arg, Command};
 use ctrlc;
 use env_logger;
 use log;
+use console::Term;
 use list::ListScope;
 
 #[cfg(not(test))]
@@ -771,11 +772,23 @@ EXAMPLES:
 }
 
 fn add_busybox_subcommand(cmd: Command) -> Command {
+
+    // Determine terminal width for compact formatting
+    let term_width = Term::stdout().size().1;
+    let width = if term_width > 0 { term_width as usize } else { 80 };
+
+    // Format commands list for help output (compact, wrapped to terminal width)
+    let mut commands_list = String::new();
+    commands_list.push_str("Commands:\n");
+    commands_list.push_str(&crate::applets::format_applet_list_compact(width));
+
     cmd.subcommand(
             Command::new("busybox")
                 .about("Run built-in command implementations")
                 .arg_required_else_help(true)
                 .allow_external_subcommands(true)
+                .arg(arg!(--list "List all available applets"))
+                .after_help(commands_list)
         )
 }
 
