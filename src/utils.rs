@@ -975,22 +975,23 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
 /// Create common symlinks for shell and utilities if they don't exist
 fn create_common_symlinks(env_root: &Path) -> Result<()> {
     // List of symlinks to create: [(symlink, [possible_targets])]
-    let symlinks = [
-        ("bin/sh", ["bash", "dash"]),
-        ("usr/bin/awk", ["mawk", "gawk"]),
+    let symlinks: &[(&str, &[&str])] = &[
+        ("usr/bin/sh", &["bash", "dash", "yash", "busybox"]),
+        ("bin/sh",     &["bash", "dash", "yash", "busybox"]),
+        ("usr/bin/awk", &["mawk", "gawk"]),
 
         // These are optional and will fail due to no "dpkg -L" output
-        ("usr/local/bin/py3compile", ["/usr/bin/true", "/bin/true"]),
-        ("usr/local/bin/py3clean", ["/usr/bin/true", "/bin/true"]),
+        ("usr/local/bin/py3compile", &["/usr/bin/true", "/bin/true"]),
+        ("usr/local/bin/py3clean", &["/usr/bin/true", "/bin/true"]),
 
         // Pacman-style dbus reload hook expects this helper. Many minimal
         // Arch-like environments don't ship it, so we point it to a no-op
         // true(1) to avoid hard failures while still allowing the
         // transaction to complete.
-        ("usr/share/libalpm/scripts/systemd-hook", ["/usr/bin/true", "/bin/true"]),
+        ("usr/share/libalpm/scripts/systemd-hook", &["/usr/bin/true", "/bin/true"]),
     ];
 
-    for (link_name, possible_targets) in &symlinks {
+    for (link_name, possible_targets) in symlinks {
         let link_path = env_root.join(link_name);
 
         // Skip if symlink already exists
@@ -999,7 +1000,7 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
         }
 
         // Try each possible target until we find one that exists
-        for target in possible_targets.iter() {
+        for target in *possible_targets {
             // Check if target exists within env_root, not host rootfs
             let target_check_path = if target.starts_with('/') {
                 // Absolute path: check in env_root
