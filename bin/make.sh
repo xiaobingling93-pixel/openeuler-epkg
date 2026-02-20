@@ -166,7 +166,7 @@ build_lua_lib() {
 
     # Add musl compatibility shims for missing *64 functions
     echo "Adding musl compatibility shims..."
-    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/target/musl_compat.c" || echo "Failed to compile musl_compat.c"
+    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/lib/musl_compat.c" || echo "Failed to compile musl_compat.c"
     ar rcs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
 
     # Deploy
