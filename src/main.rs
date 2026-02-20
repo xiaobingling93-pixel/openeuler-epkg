@@ -373,7 +373,7 @@ fn add_global_args_and_help(cmd: Command) -> Command {
     cmd.author("Wu Fengguang <wfg@mail.ustc.edu.cn>")
         .author("Duan Pengjie <pengjieduan@gmail.com>")
         .author("Yingjiahui <ying_register@163.com>")
-        .about("The EPKG package manager")
+        .about("epkg")
         .version(env!("EPKG_VERSION_INFO"))
         .arg_required_else_help(true) // This will show help if no args are provided
         .arg(arg!(--config <FILE> "Configuration file to use").hide(true).global(true))
@@ -394,7 +394,7 @@ fn add_global_args_and_help(cmd: Command) -> Command {
         .arg(arg!(--"parallel-processing" <BOOL> "Enable parallel processing for metadata updates (true/false)").value_parser(clap::value_parser!(bool)).hide(true).global(true))
         .override_usage("epkg [OPTIONS] <COMMAND>")
         .help_template(
-            r#"{about}
+            r#"{about} {version}
 
 USAGE: {usage}
 
