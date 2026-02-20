@@ -7,7 +7,7 @@ ARCH=$(uname -m)
 EPKG_STATIC="epkg"
 EPKG_CACHE="$HOME/.cache/epkg/downloads/epkg"
 GITEE_API_BASE="https://gitee.com/api/v5/repos"
-GITEE_OWNER="openeuler"
+GITEE_OWNER="wu_fengguang"
 GITEE_REPO="epkg"
 
 # Default values

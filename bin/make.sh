@@ -275,7 +275,7 @@ install_rust_toolchain() {
 install_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
-    clone_or_update_repo "https://gitee.com/openeuler/elf-loader"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
     cd elf-loader/src && make $mode-depends
 }
 

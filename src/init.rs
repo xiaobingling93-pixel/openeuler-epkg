@@ -20,6 +20,11 @@ use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
 use crate::lfs;
 
+pub const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
+pub const GITEE_OWNER:      &str = &"wu_fengguang";
+pub const REPO_EPKG:        &str = &"epkg";
+pub const REPO_ELF_LOADER:  &str = &"elf-loader";
+
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
     println!(r#"   ____ |  _ \| |/ / ___|  "#);
@@ -587,6 +592,7 @@ fn is_valid_local_repo(repo_root: &std::path::Path) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GiteeRelease {
     tag_name: String,
+    prerelease: bool,
     name: String,
     created_at: String,
     assets: Vec<GiteeAsset>,
@@ -596,6 +602,25 @@ struct GiteeRelease {
 struct GiteeAsset {
     name: String,
     browser_download_url: String,
+}
+
+impl GiteeRelease {
+    fn find_asset_url(&self, name: &str) -> Result<String> {
+        self.assets.iter()
+            .find(|asset| asset.name == name)
+            .map(|asset| asset.browser_download_url.clone())
+            .ok_or_else(|| {
+                eyre::eyre!("Asset '{}' not found in release: {:#?}", name, self)
+            })
+    }
+
+    fn find_asset_urls_for_arch(&self, prefix: &str, arch: &str) -> Result<(String, String)> {
+        let binary_name = format!("{}-{}", prefix, arch);
+        let sha_name = format!("{}.sha256", binary_name);
+        let binary_url = self.find_asset_url(&binary_name)?;
+        let sha_url = self.find_asset_url(&sha_name)?;
+        Ok((binary_url, sha_url))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -631,7 +656,9 @@ struct InitPlan {
 
 /// Fetch the latest release information from Gitee API
 fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
-    let url = format!("https://gitee.com/api/v5/repos/{}/{}/releases/latest", owner, repo);
+    let url = format!("{}/repos/{}/{}/releases/latest", GITEE_API_BASE, owner, repo);
+
+    log::debug!("Request url: {}", url);
 
     // Create an agent with timeout configuration for better error handling
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -641,33 +668,7 @@ fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
         .into();
 
     // Make the HTTP request with detailed error context
-    let mut response = agent.get(&url)
-        .call()
-        .map_err(|e| {
-            match e {
-                ureq::Error::StatusCode(code) => {
-                    eyre::eyre!(
-                        "HTTP {} error when fetching release info from {}",
-                        code,
-                        url
-                    )
-                }
-                ureq::Error::Io(io_err) => {
-                    eyre::eyre!(
-                        "Network I/O error when fetching release info from {}: {}",
-                        url,
-                        io_err
-                    )
-                }
-                _ => {
-                    eyre::eyre!(
-                        "General error when fetching release info from {}: {}",
-                        url,
-                        e
-                    )
-                }
-            }
-        })?;
+    let mut response = agent.get(&url).call()?;
 
     let status = response.status();
     if status != 200 {
@@ -695,7 +696,7 @@ fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
     let release: GiteeRelease = serde_json::from_str(&body)
         .with_context(|| format!(
             "Failed to parse release information from response body: {}",
-            debug_body
+            body
         ))?;
 
     Ok(release)
@@ -804,34 +805,33 @@ fn check_for_updates() -> Result<InitPlan> {
     let local_elf_loader_path = repo_root.join("elf-loader/src/loader");
     let has_local_elf_loader = local_elf_loader_path.exists();
 
-    // If both local repo and local elf-loader are detected, skip API calls
-    let new_version = if using_local_repo && has_local_elf_loader {
-        // Use current version as new version when using local development binaries
-        current_version.clone()
+    let (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url) = if using_local_repo && has_local_elf_loader {
+        // Local development mode - use current versions and construct placeholder URLs
+        let new_version = current_version.clone();
+        let epkg_binary_url = format!("https://gitee.com/{}/{}/releases/download/{}/epkg-{}", GITEE_OWNER, REPO_EPKG, new_version.epkg_version, arch);
+        let elf_loader_url = format!("https://gitee.com/{}/{}/releases/download/{}/elf-loader-{}", GITEE_OWNER, REPO_ELF_LOADER, new_version.elf_loader_version, arch);
+        let epkg_binary_sha_url = format!("{}.sha256", epkg_binary_url);
+        let elf_loader_sha_url = format!("{}.sha256", elf_loader_url);
+        (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url)
     } else {
-        // Fetch latest epkg version
-        let epkg_release = fetch_latest_release("openeuler", "epkg")
-            .context("Failed to fetch epkg release info")?;
+        // Production mode - fetch releases and get URLs from assets
+        let epkg_release        = fetch_latest_release(GITEE_OWNER, REPO_EPKG)?;
+        let elf_loader_release  = fetch_latest_release(GITEE_OWNER, REPO_ELF_LOADER)?;
 
-        // Fetch latest elf-loader version
-        let elf_loader_release = fetch_latest_release("openeuler", "elf-loader")
-            .context("Failed to fetch elf-loader release info")?;
-
-        EpkgVersionInfo {
+        let new_version = EpkgVersionInfo {
             epkg_version: epkg_release.tag_name.clone(),
             elf_loader_version: elf_loader_release.tag_name.clone(),
-        }
+        };
+        let (epkg_binary_url, epkg_binary_sha_url) = epkg_release.find_asset_urls_for_arch("epkg", arch)?;
+        let (elf_loader_url, elf_loader_sha_url) = elf_loader_release.find_asset_urls_for_arch("elf-loader", arch)?;
+        (new_version, epkg_binary_url, epkg_binary_sha_url, elf_loader_url, elf_loader_sha_url)
     };
 
     // Always show version information
     println!("  epkg: {} → {}", current_version.epkg_version, new_version.epkg_version);
     println!("  elf-loader: {} → {}", current_version.elf_loader_version, new_version.elf_loader_version);
 
-    // Set up URLs first (needed for path resolution)
-    let (epkg_binary_url, elf_loader_url) = get_versioned_urls(&new_version.epkg_version, &new_version.elf_loader_version, arch);
-    let epkg_binary_sha_url = format!("{}.sha256", epkg_binary_url);
-    let epkg_src_url = format!("https://gitee.com/openeuler/epkg/repository/archive/{}.tar.gz", new_version.epkg_version);
-    let elf_loader_sha_url = format!("{}.sha256", elf_loader_url);
+    let epkg_src_url = format!("https://gitee.com/{}/{}/repository/archive/{}.tar.gz", GITEE_OWNER, REPO_EPKG, new_version.epkg_version);
 
     // Set up file paths using the same resolution logic as the download system
     // This ensures paths match where files are actually downloaded
@@ -867,13 +867,6 @@ fn check_for_updates() -> Result<InitPlan> {
     })
 }
 
-/// Generate versioned download URLs
-fn get_versioned_urls(epkg_version: &str, elf_loader_version: &str, arch: &str) -> (String, String) {
-    let epkg_url = format!("https://gitee.com/openeuler/epkg/releases/download/{}/epkg-{}", epkg_version, arch);
-    let elf_loader_url = format!("https://gitee.com/openeuler/elf-loader/releases/download/{}/elf-loader-{}", elf_loader_version, arch);
-
-    (epkg_url, elf_loader_url)
-}
 
 /// Fix up /lib64 symlink in the host OS.
 /// - If /lib64 already exists as a symlink to usr/lib64: fine and return
