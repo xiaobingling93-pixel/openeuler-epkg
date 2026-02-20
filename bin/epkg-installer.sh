@@ -172,13 +172,36 @@ download_files() {
         print_error "Checksum file appears to be an HTML error page. URL may be incorrect."
     fi
 
+    # Check if file contains JSON error response (common API error format)
+    if grep -q '{' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
+        echo "ERROR: Checksum file appears to be a JSON error response." >&2
+        echo "First line of the file:" >&2
+        head -n 1 "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null >&2
+        echo >&2
+        echo "URL may be incorrect or API error." >&2
+        exit 1
+    fi
+
+    # Validate SHA256 checksum file format
+    if ! grep -q -E '^[0-9a-f]{64}[ *]' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
+        echo "ERROR: Checksum file does not contain a valid SHA256 checksum line." >&2
+        echo "First 200 characters of the file:" >&2
+        head -c 200 "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null | cat >&2
+        echo >&2
+        print_error "Invalid checksum file format. Please check the download URL."
+    fi
+
     echo "Downloading $EPKG_STATIC-$ARCH ..."
     curl -L -# -o "$EPKG_STATIC-$ARCH" "$EPKG_BINARY_URL" --retry 5 --connect-timeout 15 --max-time 300 || print_error "Failed to download binary"
     chmod +x "./$EPKG_STATIC-$ARCH"
     EPKG_PATH=./$EPKG_STATIC-$ARCH
 
     command -v sha256sum >/dev/null || return
-    sha256sum -c "$EPKG_STATIC-$ARCH.sha256" || exit
+    if ! sha256sum -c "$EPKG_STATIC-$ARCH.sha256"; then
+        echo "ERROR: Checksum verification failed." >&2
+        echo "The downloaded binary may be corrupted or the checksum file is invalid." >&2
+        exit 1
+    fi
 }
 
 initialize_epkg() {
