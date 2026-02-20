@@ -1231,8 +1231,8 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
         // ENV_CONFIG will be loaded later via LazyLock when first accessed
         // It will use config.common.env_name which we're setting here
         config.common.env_name = env_config_data.name;
-        config.common.env_root = "/".to_string();
         config.common.env_explicit = true;
+        config.common.in_env_root = true;
         return Ok(());
     }
 

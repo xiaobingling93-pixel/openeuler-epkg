@@ -798,6 +798,8 @@ pub struct CommonOptions {
     pub env_root: String,
     #[serde(skip)]
     pub env_explicit: bool,
+    #[serde(skip)]
+    pub in_env_root: bool,
 
     #[serde(skip)]
     pub download_only: bool,
