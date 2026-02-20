@@ -1208,6 +1208,24 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
 /// - `epkg run python` → searches registered environments for 'python' command
 /// - `epkg run /usr/local/bin/myapp` → searches for `.eenv` in `/usr/local/bin`
 /// - `epkg run -e myenv python` → explicit environment, this function not invoked
+/// Try to detect environment from /etc/epkg/env.yaml (when running inside an environment)
+/// Returns Ok(true) if environment detected and config updated, Ok(false) if file doesn't exist.
+fn try_detect_environment_from_env_yaml(config: &mut EPKGConfig) -> Result<bool> {
+    let env_yaml_path = Path::new("/etc/epkg/env.yaml");
+    if !env_yaml_path.exists() {
+        return Ok(false);
+    }
+    let env_config_data = read_yaml_file::<EnvConfig>(env_yaml_path)?;
+    let env_name = env_config_data.name.clone();
+    config.common.env_name = env_name;
+    config.common.env_root = env_config_data.env_root.clone();
+    config.common.env_explicit = true;
+    config.common.in_env_root = true;
+    // Store the loaded config in ENV_CONFIG to avoid double loading later
+    let _ = set_env_config(env_config_data);
+    Ok(true)
+}
+
 fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if !config.common.env_name.is_empty() {
         return Ok(());
@@ -1224,15 +1242,7 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     } 
 
     // epkg may be run inside an env, try /etc/epkg/env.yaml
-    let env_yaml_path = Path::new("/etc/epkg/env.yaml");
-    if env_yaml_path.exists() {
-        let env_config_data = read_yaml_file::<EnvConfig>(env_yaml_path)?;
-
-        // ENV_CONFIG will be loaded later via LazyLock when first accessed
-        // It will use config.common.env_name which we're setting here
-        config.common.env_name = env_config_data.name;
-        config.common.env_explicit = true;
-        config.common.in_env_root = true;
+    if try_detect_environment_from_env_yaml(config)? {
         return Ok(());
     }
 

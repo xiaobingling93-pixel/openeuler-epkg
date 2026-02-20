@@ -550,18 +550,7 @@ static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> 
         LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
 // Global ENV_CONFIG and CHANNEL_CONFIGS using LazyLock
-static ENV_CONFIG: LazyLock<EnvConfig> = LazyLock::new(|| {
-    // During tests, config() might not be available, so provide a default
-    #[cfg(test)]
-    {
-        // Return a minimal default config for tests
-        return EnvConfig::default();
-    }
-    #[cfg(not(test))]
-    {
-        crate::io::deserialize_env_config().expect("Failed to deserialize env config")
-    }
-});
+static ENV_CONFIG: OnceLock<EnvConfig> = OnceLock::new();
 
 static CHANNEL_CONFIGS: LazyLock<Vec<ChannelConfig>> = LazyLock::new(|| {
     // During tests, config() might not be available, so provide a default
@@ -578,7 +567,22 @@ static CHANNEL_CONFIGS: LazyLock<Vec<ChannelConfig>> = LazyLock::new(|| {
 
 // Accessor functions for global configs
 pub fn env_config() -> &'static EnvConfig {
-    &ENV_CONFIG
+    ENV_CONFIG.get_or_init(|| {
+        // During tests, config() might not be available, so provide a default
+        #[cfg(test)]
+        {
+            // Return a minimal default config for tests
+            return EnvConfig::default();
+        }
+        #[cfg(not(test))]
+        {
+            crate::io::deserialize_env_config().expect("Failed to deserialize env config")
+        }
+    })
+}
+
+pub fn set_env_config(config: EnvConfig) -> Result<(), EnvConfig> {
+    ENV_CONFIG.set(config)
 }
 
 pub fn channel_configs() -> &'static Vec<ChannelConfig> {
