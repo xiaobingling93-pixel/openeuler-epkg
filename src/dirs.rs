@@ -172,6 +172,10 @@ fn get_env_base_path(env_name: &str) -> PathBuf {
 
 /// Get the path to an environment's configuration file
 pub fn get_env_config_path(env_name: &str) -> PathBuf {
+    // If we're running inside an environment root, the config is at /etc/epkg/env.yaml
+    if crate::config().common.in_env_root && env_name == crate::config().common.env_name {
+        return PathBuf::from("/etc/epkg/env.yaml");
+    }
     get_env_base_path(&env_name)
         .join("etc/epkg/env.yaml")
 }

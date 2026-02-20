@@ -388,6 +388,9 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Returns `true` if the process is running with effective root privileges.
+/// This checks the effective user ID (euid), which determines the process's
+/// current permissions. For the real user ID, see `get_current_uid()`.
 pub fn is_running_as_root() -> bool {
     unistd::geteuid().is_root()
 }
@@ -407,7 +410,7 @@ pub fn determine_shared_store() -> Result<bool> {
 
     let is_root = is_running_as_root();
 
-    // Rule 1: If !is_running_as_root, set to private
+    // Rule 1: If no root permission, set to private
     if !is_root {
         return Ok(false);
     }
