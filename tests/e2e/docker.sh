@@ -36,7 +36,10 @@ fi
 # Sync timezone to prevent timestamp-related download conflicts
 CONTAINER_NAME="epkg-e2e"
 docker rm -f $CONTAINER_NAME 2>/dev/null
-zoneinfo=$(readlink /etc/localtime)
+zoneinfo=$(readlink /etc/localtime 2>/dev/null || echo "")
+if [ -z "$zoneinfo" ]; then
+    zoneinfo="/etc/localtime"
+fi
 docker run --name $CONTAINER_NAME --privileged --rm $DOCKER_FLAGS \
     -v "$PROJECT_ROOT:$PROJECT_ROOT:ro" \
     -v "$zoneinfo:$zoneinfo:ro" \
