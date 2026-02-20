@@ -397,7 +397,7 @@ fn scan_packages_mmap(
             let line_end = memchr(b'\n', &data[pos..]).map(|i| pos + i).unwrap_or(data.len());
             let line = &data[pos..line_end];
             if line.is_empty() {
-                nr_found_fields = 4;    // print on end of paragraph; summary field is optional
+                nr_found_fields = 6;    // print on end of paragraph; summary field is optional
             }
             if line.starts_with(b"version: ") {
                 version = &line[b"version: ".len()..];
@@ -411,14 +411,16 @@ fn scan_packages_mmap(
             } else if line.starts_with(b"size: ") {
                 if let Ok(parsed) = std::str::from_utf8(&line[b"size: ".len()..]).unwrap_or("0").trim().parse() {
                     size = parsed;
+                    nr_found_fields += 1;
                 }
             } else if line.starts_with(b"installedSize: ") {
                 if let Ok(parsed) = std::str::from_utf8(&line[b"installedSize: ".len()..]).unwrap_or("0").trim().parse() {
                     installed_size = parsed;
+                    nr_found_fields += 1;
                 }
             }
             pos = line_end + 1;
-            if nr_found_fields >= 4 {
+            if nr_found_fields >= 6 {
                 count += handle_completed_package_bytes(
                     pkgname,
                     version,
