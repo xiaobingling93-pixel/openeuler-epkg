@@ -4,6 +4,9 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <sys/types.h>
 
 // fopen64 -> fopen
 FILE *fopen64(const char *pathname, const char *mode) {
@@ -22,12 +25,18 @@ FILE *tmpfile64(void) {
 
 // Additional *64 functions that might be needed
 // (not used by Lua but for completeness)
-int open64(const char *pathname, int flags, ...) {
-    // This is more complex; we'll not implement unless needed.
-    // Just return -1 with errno ENOSYS.
-    errno = ENOSYS;
-    return -1;
-}
+// open64 is not needed for glibc builds; removing to avoid ENOSYS issues.
+// If needed for musl builds, implement properly.
+// int open64(const char *pathname, int flags, ...) {
+//     mode_t mode = 0;
+//     if (flags & O_CREAT) {
+//         va_list ap;
+//         va_start(ap, flags);
+//         mode = va_arg(ap, mode_t);
+//         va_end(ap);
+//     }
+//     return open(pathname, flags, mode);
+// }
 
 // Note: We don't need to implement all *64 functions, only those referenced.
 // Lua references fopen64, freopen64, tmpfile64.
