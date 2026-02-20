@@ -668,7 +668,8 @@ fn fetch_latest_release(owner: &str, repo: &str) -> Result<GiteeRelease> {
         .into();
 
     // Make the HTTP request with detailed error context
-    let mut response = agent.get(&url).call()?;
+    let mut response = agent.get(&url).call()
+        .with_context(|| format!("Failed to fetch release from {}", url))?;
 
     let status = response.status();
     if status != 200 {
