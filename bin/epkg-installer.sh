@@ -107,7 +107,7 @@ fetch_show_latest_release() {
     local response
 
     response=$(curl -s --connect-timeout 15 --max-time 30 "$api_url") || {
-        print_error "Failed to fetch release info from Gitee API"
+        print_error "Failed to fetch release info from Gitee API: $api_url"
     }
 
     # Extract tag_name from JSON response
@@ -127,7 +127,7 @@ fetch_show_latest_release() {
     fi
 
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ] || [ "$tag_name" = "" ]; then
-        print_error "Failed to parse release tag from Gitee API response"
+        print_error "Failed to parse release tag from Gitee API response: $api_url"
     fi
 
     echo "$tag_name"
@@ -160,21 +160,23 @@ download_files() {
 
     echo
     echo "Downloading $EPKG_STATIC-$ARCH.sha256 ..."
-    curl -L -# -o "$EPKG_STATIC-$ARCH.sha256" "$EPKG_SHA_URL" --connect-timeout 15 --max-time 30 || print_error "Failed to download checksum file"
+    curl -L -# -o "$EPKG_STATIC-$ARCH.sha256" "$EPKG_SHA_URL" --connect-timeout 15 --max-time 30 || print_error "Failed to download checksum file from $EPKG_SHA_URL"
 
     # Validate checksum file
     if [ ! -s "$EPKG_STATIC-$ARCH.sha256" ]; then
-        print_error "Checksum file is empty or not found"
+        print_error "Checksum file '$EPKG_STATIC-$ARCH.sha256' is empty or not found"
     fi
 
     # Check if file contains HTML (error page) - look for common HTML tags
     if grep -q -i '<html\|<!DOCTYPE\|<body' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
-        print_error "Checksum file appears to be an HTML error page. URL may be incorrect."
+        print_error "Checksum file appears to be an HTML error page. URL '$EPKG_SHA_URL' may be incorrect."
     fi
 
     # Check if file contains JSON error response (common API error format)
     if grep -q '{' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
         echo "ERROR: Checksum file appears to be a JSON error response." >&2
+        echo "File: $EPKG_STATIC-$ARCH.sha256" >&2
+        echo "URL: $EPKG_SHA_URL" >&2
         echo "First line of the file:" >&2
         head -n 1 "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null >&2
         echo >&2
@@ -184,21 +186,22 @@ download_files() {
 
     # Validate SHA256 checksum file format
     if ! grep -q -E '^[0-9a-f]{64}[ *]' "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null; then
-        echo "ERROR: Checksum file does not contain a valid SHA256 checksum line." >&2
+        echo "ERROR: Checksum file '$EPKG_STATIC-$ARCH.sha256' does not contain a valid SHA256 checksum line." >&2
+        echo "URL: $EPKG_SHA_URL" >&2
         echo "First 200 characters of the file:" >&2
         head -c 200 "$EPKG_STATIC-$ARCH.sha256" 2>/dev/null | cat >&2
         echo >&2
-        print_error "Invalid checksum file format. Please check the download URL."
+        print_error "Invalid checksum file format. Please check the download URL: $EPKG_SHA_URL"
     fi
 
     echo "Downloading $EPKG_STATIC-$ARCH ..."
-    curl -L -# -o "$EPKG_STATIC-$ARCH" "$EPKG_BINARY_URL" --retry 5 --connect-timeout 15 --max-time 300 || print_error "Failed to download binary"
+    curl -L -# -o "$EPKG_STATIC-$ARCH" "$EPKG_BINARY_URL" --retry 5 --connect-timeout 15 --max-time 300 || print_error "Failed to download binary from $EPKG_BINARY_URL"
     chmod +x "./$EPKG_STATIC-$ARCH"
     EPKG_PATH=./$EPKG_STATIC-$ARCH
 
     command -v sha256sum >/dev/null || return
     if ! sha256sum -c "$EPKG_STATIC-$ARCH.sha256"; then
-        echo "ERROR: Checksum verification failed." >&2
+        echo "ERROR: Checksum verification failed for binary '$EPKG_STATIC-$ARCH' with checksum file '$EPKG_STATIC-$ARCH.sha256'." >&2
         echo "The downloaded binary may be corrupted or the checksum file is invalid." >&2
         exit 1
     fi
