@@ -285,9 +285,12 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
         _ => {
             // Default behavior for other formats
             lfs::create_dir_all(env_root.join("usr/lib64"))?;
-            lfs::create_dir_all(env_root.join("usr/lib32"))?;
             force_symlink("usr/lib64", env_root.join("lib64"))?;
-            force_symlink("usr/lib32", env_root.join("lib32"))?;
+
+            if Path::new("/usr/lib32").exists() {
+                lfs::create_dir_all(env_root.join("usr/lib32"))?;
+                force_symlink("usr/lib32", env_root.join("lib32"))?;
+            }
         }
     }
 
