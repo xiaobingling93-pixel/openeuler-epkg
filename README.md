@@ -86,10 +86,11 @@ Details: [Paths and layout](docs/en/reference/paths.md).
 
 ```bash
 git clone https://atomgit.com/openeuler/epkg
+cd epkg
 make dev-depends
 make
 target/debug/epkg self install
-# Then: start a new shell
+# Then: start a new shell and try out epkg
 ```
 
 Full dev setup and testing: [Developer quick start](docs/en/user-guide/developer-quick-start.md).

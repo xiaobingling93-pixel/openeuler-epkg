@@ -99,10 +99,11 @@ epkg -e myenv run bash
 
 ```bash
 git clone https://atomgit.com/openeuler/epkg
+cd epkg
 make dev-depends
 make
 target/debug/epkg self install
-# 然后：启动一个新的 shell
+# 然后：启动一个新的 shell, 尝试运行epkg
 ```
 
 完整的开发设置和测试：[开发者快速开始](docs/zh/user-guide/developer-quick-start.md)。
