@@ -2,8 +2,32 @@
 # Run install-remove-upgrade tests with predefined matrix
 # This script runs heavy-weight install/remove/upgrade tests that are
 # skipped from test-all.sh to avoid accumulating cache on developer machines
+# Supports debug mode with -d/-dd flags.
 
 . "$(dirname "$0")/host-vars.sh"
+
+# Parse command line flags
+DEBUG_FLAG=""
+while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do
+    case "$1" in
+        -h|--help)
+            echo "Usage: $0 [-d|--debug|-dd]"
+            echo "Run install-remove-upgrade tests with predefined matrix."
+            exit 0
+            ;;
+        -dd)
+            DEBUG_FLAG="-dd"
+            ;;
+        -d|--debug)
+            DEBUG_FLAG="-d"
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""
@@ -34,7 +58,7 @@ while IFS=: read os packages; do
     echo "========================================="
 
     # Run the install-remove-upgrade test with specific OS and packages
-    if "$SCRIPT_DIR/test-one.sh" "install-remove-upgrade/test-install-remove-upgrade.sh" "$os" $packages; then
+    if "$SCRIPT_DIR/test-one.sh" $DEBUG_FLAG "install-remove-upgrade/test-install-remove-upgrade.sh" "$os" $packages; then
         echo "PASSED: $os with packages: $packages"
         PASSED_TESTS="$PASSED_TESTS ${os}:$(echo $packages | tr ' ' ',')"
     else
@@ -51,7 +75,7 @@ echo "========================================="
 echo "Testing all OSes with limited package set"
 echo "========================================="
 
-if "$SCRIPT_DIR/test-one.sh" "install-remove-upgrade/test-install-remove-upgrade.sh" "all-os" curl wget vim; then
+if "$SCRIPT_DIR/test-one.sh" $DEBUG_FLAG "install-remove-upgrade/test-install-remove-upgrade.sh" "all-os" curl wget vim; then
     echo "PASSED: all-os with curl,wget,vim"
     PASSED_TESTS="$PASSED_TESTS all-os:curl,wget,vim"
 else

@@ -16,6 +16,7 @@ This directory contains end-to-end tests for the epkg package manager.
 1. **install-remove-upgrade/** - Tests for install, remove, upgrade, and run --help commands
    - Note: These tests are heavy-weight and skipped from `test-all.sh` to avoid accumulating cache on developer machines
    - Use `./test-iur.sh` for predefined matrix testing
+   - Supports `-d`/`-dd` debug flags like `test-one.sh`
 2. **export-import/** - Tests for environment export and import functionality
 3. **history-restore/** - Tests for history and restore functionality
 4. **public-multi-user/** - Tests for public mode and multi-user scenarios
@@ -41,6 +42,8 @@ This directory contains end-to-end tests for the epkg package manager.
 ```bash
 ./test-iur.sh
 ```
+
+Supports `-d`/`-dd` debug flags.
 
 ### Run a single test
 
