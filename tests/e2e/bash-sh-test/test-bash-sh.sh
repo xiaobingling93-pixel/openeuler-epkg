@@ -58,13 +58,14 @@ for os in $ALL_OS; do
     fi
 
     # Test that epkg list works via bash command
-    if ! epkg -e "$env_name" run bash -c 'cmd="$1"; "$cmd" list' -- "$epkg_cmd" >/dev/null 2>&1; then
+    if ! epkg -e "$env_name" run bash -c "$epkg_cmd list" >/dev/null; then
+        epkg -e "$env_name" run bash -c 'echo $PATH'
         error "epkg list via bash command failed in $env_name"
     fi
 
     # Compare output (skip headers, separator, and total line)
     list1=$(epkg -e "$env_name" list | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
-    list2=$(epkg -e "$env_name" run bash -c 'cmd="$1"; "$cmd" list' -- "$epkg_cmd" | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
+    list2=$(epkg -e "$env_name" run bash -c "$epkg_cmd list" | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
     if [ "$list1" != "$list2" ]; then
         log "ERROR: epkg list output differs between direct and bash command in $env_name"
         # Show diff for easier debugging
