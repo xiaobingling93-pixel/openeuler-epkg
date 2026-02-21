@@ -38,7 +38,7 @@ for test_dir in "$SCRIPT_DIR"/*/; do
         echo "Running test: $test_name"
         echo "========================================="
 
-        if "$SCRIPT_DIR/test.sh" "$test_script"; then
+        if "$SCRIPT_DIR/test-one.sh" "$test_script"; then
             echo "PASSED: $test_name"
             PASSED_TESTS="$PASSED_TESTS $test_name"
         else

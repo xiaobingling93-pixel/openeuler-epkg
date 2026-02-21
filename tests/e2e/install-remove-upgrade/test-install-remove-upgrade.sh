@@ -132,7 +132,7 @@ isolate_problematic_package() {
 
     log "Final minimal failing package set for $os: $current_pkgs"
     log "To reproduce this failure from the project root, run:"
-    log "  tests/e2e/test.sh install-remove-upgrade/test-install-remove-upgrade.sh $os $current_pkgs"
+    log "  tests/e2e/test-one.sh install-remove-upgrade/test-install-remove-upgrade.sh $os $current_pkgs"
     error "Test failed: minimal failing package set for $os is: $current_pkgs"
 }
 
@@ -304,7 +304,7 @@ main() {
     #   $2...: explicit package list to test (single batch, applied to each OS if $1 is "all-os")
     #
     # This allows reproducing a failing batch directly via:
-    #   tests/e2e/test.sh install-remove-upgrade/test-install-remove-upgrade.sh <os> <packages...>
+    #   tests/e2e/test-one.sh install-remove-upgrade/test-install-remove-upgrade.sh <os> <packages...>
     # Special case: first argument is "all-os" (test all OSes)
     if [ "$#" -ge 1 ] && [ "$1" = "all-os" ]; then
         shift

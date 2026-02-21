@@ -6,7 +6,7 @@ This directory contains end-to-end tests for the epkg package manager.
 
 - `vars.sh` - Common variables and configuration
 - `lib.sh` - Common shell functions used by tests
-- `test.sh` - Script to run a single test (use `-d` flag for debug mode)
+- `test-one.sh` - Script to run a single test (use `-d` flag for debug mode)
 - `test-all.sh` - Script to run all tests
 - `docker.sh` - Docker run command for e2e tests
 - `entry.sh` - Entry script executed inside docker container
@@ -45,13 +45,13 @@ This directory contains end-to-end tests for the epkg package manager.
 ### Run a single test
 
 ```bash
-./test.sh install-remove-upgrade/test-install-remove-upgrade.sh
+./test-one.sh install-remove-upgrade/test-install-remove-upgrade.sh
 ```
 
 ### Debug a test
 
 ```bash
-./test.sh -d install-remove-upgrade/test-install-remove-upgrade.sh
+./test-one.sh -d install-remove-upgrade/test-install-remove-upgrade.sh
 ```
 
 ## Docker Configuration
@@ -124,7 +124,7 @@ Tests installation on bare rootfs:
 
 If a test fails:
 
-1. Use `test.sh -d` to reproduce the issue interactively
+1. Use `test-one.sh -d` to reproduce the issue interactively
 2. Check the reproduce script saved in `reproduce/reproduce.sh`
 3. Review logs for specific error messages
 4. Check if problematic packages can be isolated
