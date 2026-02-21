@@ -707,6 +707,8 @@ r#"Examples:
   epkg search --files '*.desktop'      # glob pattern, produces fewer results: file name must end with .desktop
   epkg search --paths '**/*.desktop'   # glob pattern, produces same results
   epkg search --paths '\.desktop$' -x  # regex pattern, produces same results
+
+Note: Output order may vary between runs due to parallel optimization (results shown as found).
 "#)
                 .arg(arg!(-f --files "Search in file names"))
                 .arg(arg!(-p --paths "Search in full paths"))

@@ -147,6 +147,8 @@ epkg search [PATTERN]
 
 Searches package names and descriptions (and optionally file names). Output is a list of matching packages with short descriptions.
 
+Note: Unlike `epkg list`, search output order may vary between runs due to parallel optimization (results are shown as they are found).
+
 Example:
 
 ```bash
