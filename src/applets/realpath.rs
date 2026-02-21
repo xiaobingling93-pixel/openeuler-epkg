@@ -70,6 +70,8 @@ pub struct RealpathOptions {
     pub files: Vec<String>,
     pub canonicalize: bool,
     pub quiet: bool,
+    pub root: Option<String>,
+    pub admindir: Option<String>,
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<RealpathOptions> {
@@ -88,6 +90,8 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<RealpathOptions> {
         files,
         canonicalize,
         quiet,
+        root: None,
+        admindir: None,
     })
 }
 
