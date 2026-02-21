@@ -72,6 +72,10 @@ detect_package_manager() {
 clone_or_update_repo() {
     local repo_url="$1"
     local dir_name="$2"
+    if ! has_cmd git; then
+        echo "Error: git command not found. Please install git or run './make.sh dev-depends' to install dependencies." >&2
+        exit 1
+    fi
     if [[ -z "$dir_name" ]]; then
         # Extract directory name from repo URL (remove .git suffix if present)
         dir_name="${repo_url##*/}"
@@ -119,12 +123,50 @@ install_to_dev_env() {
 }
 
 # Build Lua library for a specific architecture
-# Usage: build_lua_lib [<arch>] [musl|glibc]
-build_lua_lib() {
-    local arch=$(get_arch "$1")
-    local lib_type="${2:-musl}"  # Default to musl for backward compatibility
-    local compiler=""
+# Helper function: download and extract Lua tarball
+download_and_extract_lua() {
+    local lua_download_dir="$1"
+    local lua_build_dir="$2"
+    # Check for wget
+    if ! has_cmd wget; then
+        echo "Error: wget command not found. Please install wget or run './make.sh dev-depends' to install dependencies." >&2
+        exit 1
+    fi
+    # Download tarball once to shared location
+    mkdir -p "$lua_download_dir"
+    local tarball="$lua_download_dir/lua-$LUA_VERSION.tar.gz"
+    [ -f "$tarball" ] || wget -q "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz" -O "$tarball"
+    # Extract to architecture-specific build directory
+    mkdir -p "$lua_build_dir"
+    cd "$lua_build_dir"
+    [ -d "lua-$LUA_VERSION" ] || tar xzf "$tarball"
+}
 
+# Helper function: build and deploy Lua library
+build_and_deploy_lua() {
+    local lua_build_dir="$1"
+    local lua_lib_dir="$2"
+
+    local compiler=""
+    set_lua_compiler
+
+    # Build
+    cd "$lua_build_dir/lua-$LUA_VERSION"
+    rm -f src/liblua.a
+    make clean
+    # Add -fPIC for position independent code (required for PIE executables)
+    make CC="$compiler" CFLAGS="-O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE" linux
+    # Add musl compatibility shims for missing *64 functions
+    echo "Adding musl compatibility shims..."
+    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/lib/musl_compat.c" || echo "Failed to compile musl_compat.c"
+    ar rcs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
+    # Deploy
+    mkdir -p "$lua_lib_dir"
+    cp src/liblua.a "$lua_lib_dir/"
+    cp src/lua.h src/lualib.h src/lauxlib.h src/lua.hpp src/luaconf.h "$lua_lib_dir/"
+}
+
+set_lua_compiler() {
     # Deduce compiler based on architecture and library type
     case "$lib_type" in
         musl)
@@ -152,37 +194,19 @@ build_lua_lib() {
     esac
 
     echo "Building Lua library for $arch ($lib_type) using $compiler..."
+}
+
+# Usage: build_lua_lib [<arch>] [musl|glibc]
+build_lua_lib() {
+    local arch=$(get_arch "$1")
+    local lib_type="${2:-musl}"  # Default to musl for backward compatibility
 
     local lua_download_dir="$PROJECT_ROOT/target/lua-download"
     local lua_build_dir="$PROJECT_ROOT/target/lua-build-$arch-$lib_type"
     local lua_lib_dir="$PROJECT_ROOT/target/lua-$lib_type-$arch"
 
-    # Download tarball once to shared location
-    mkdir -p "$lua_download_dir"
-    local tarball="$lua_download_dir/lua-$LUA_VERSION.tar.gz"
-    [ -f "$tarball" ] || wget -q "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz" -O "$tarball"
-
-    # Extract to architecture-specific build directory
-    mkdir -p "$lua_build_dir"
-    cd "$lua_build_dir"
-    [ -d "lua-$LUA_VERSION" ] || tar xzf "$tarball"
-
-    # Build
-    cd "lua-$LUA_VERSION"
-    rm -f src/liblua.a
-    make clean
-    # Add -fPIC for position independent code (required for PIE executables)
-    make CC="$compiler" CFLAGS="-O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE" linux
-
-    # Add musl compatibility shims for missing *64 functions
-    echo "Adding musl compatibility shims..."
-    $compiler -O2 -Wall -fPIC -D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE -c -o src/musl_compat.o "$PROJECT_ROOT/lib/musl_compat.c" || echo "Failed to compile musl_compat.c"
-    ar rcs src/liblua.a src/musl_compat.o || echo "Failed to add musl_compat.o to liblua.a"
-
-    # Deploy
-    mkdir -p "$lua_lib_dir"
-    cp src/liblua.a "$lua_lib_dir/"
-    cp src/lua.h src/lualib.h src/lauxlib.h src/lua.hpp src/luaconf.h "$lua_lib_dir/"
+    download_and_extract_lua "$lua_download_dir" "$lua_build_dir"
+    build_and_deploy_lua "$lua_build_dir" "$lua_lib_dir"
 }
 
 # Helper functions for dependency installation
@@ -190,6 +214,7 @@ build_lua_lib() {
 # Get package manager configuration
 get_package_manager_config() {
     local mode="$1"
+    local common_packages="git wget"
     packages=""
     update_cmd=""
     install_cmd=""
@@ -207,7 +232,7 @@ get_package_manager_config() {
             update_cmd="$PKG_MANAGER update -y"
             install_cmd="$PKG_MANAGER install -y"
             # For dnf/yum, install cargo instead of rustup (rustup can be installed via curl if needed)
-            packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel wget"
+            packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel"
             # Crossdev packages may not be available on all distros
             # no support "$mode" == "crossdev"
             ;;
@@ -234,6 +259,7 @@ get_package_manager_config() {
             exit 1
             ;;
     esac
+    packages="$packages $common_packages"
 }
 
 # Install packages using detected package manager
