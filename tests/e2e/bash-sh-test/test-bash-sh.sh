@@ -99,7 +99,7 @@ for os in $ALL_OS; do
 
     # Test epkg search --paths /bin/bash (rpm/deb systems only)
     case "$os" in
-        openeuler|fedora|debian|ubuntu)
+        openeuler|debian) # only test one for each format, since the filelist downloads for search are time consuming
             log "Testing epkg search --paths /bin/bash in $env_name"
             if ! epkg -e "$env_name" search --paths /bin/bash >/dev/null 2>&1; then
                 error "epkg search --paths /bin/bash failed in $env_name"
