@@ -100,6 +100,28 @@ pub fn format_applet_list_compact(width: usize) -> String {
     result
 }
 
+/// Extract UID, GID, and mode bits from a reference file
+///
+/// This is used by chgrp, chmod, and chown applets to implement
+/// the `--reference RFILE` flag. Returns an error if the file
+/// cannot be accessed or metadata cannot be retrieved.
+pub fn extract_reference_metadata(ref_path: &Path) -> Result<(u32, u32, u32)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(ref_path)
+            .map_err(|e| eyre!("cannot stat '{}': {}", ref_path.display(), e))?;
+        let uid = metadata.uid();
+        let gid = metadata.gid();
+        let mode = metadata.mode() & 0o7777;
+        Ok((uid, gid, mode))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(eyre!("--reference not supported on this platform"))
+    }
+}
+
 /// Get the applet name from the invocation (if any)
 /// Returns None if not invoked as an applet
 fn get_applet_name_from_invocation() -> Option<String> {

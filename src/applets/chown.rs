@@ -3,6 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use nix::unistd;
 use std::path::Path;
+use crate::applets::extract_reference_metadata;
 use walkdir::WalkDir;
 use crate::posix::resolve_user_group_ids;
 
@@ -30,19 +31,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<ChownOptions> {
             return Err(eyre!("chown: missing operand"));
         }
         let ref_path = std::path::Path::new(ref_file);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(ref_path)
-                .map_err(|e| eyre!("chown: cannot stat '{}': {}", ref_file, e))?;
-            let uid = metadata.uid();
-            let gid = metadata.gid();
-            (format!("{}:{}", uid, gid), args)
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(eyre!("chown: --reference not supported on this platform"));
-        }
+        let (uid, gid, _) = extract_reference_metadata(ref_path)
+            .map_err(|e| eyre!("chown: {}", e))?;
+        (format!("{}:{}", uid, gid), args)
     } else {
         let owner = args[0].clone();
         let files = args[1..].to_vec();

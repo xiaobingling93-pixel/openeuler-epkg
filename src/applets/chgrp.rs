@@ -2,6 +2,7 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::path::Path;
+use crate::applets::extract_reference_metadata;
 
 pub struct ChgrpOptions {
     pub group: String,
@@ -33,18 +34,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<ChgrpOptions> {
             return Err(eyre!("chgrp: missing operand"));
         }
         let ref_path = Path::new(ref_file);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(ref_path)
-                .map_err(|e| eyre!("chgrp: cannot stat '{}': {}", ref_file, e))?;
-            let gid = metadata.gid();
-            (gid.to_string(), args)
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(eyre!("chgrp: --reference not supported on this platform"));
-        }
+        let (_, gid, _) = extract_reference_metadata(ref_path)
+            .map_err(|e| eyre!("chgrp: {}", e))?;
+        (gid.to_string(), args)
     } else {
         let group = args[0].clone();
         let files = args[1..].to_vec();

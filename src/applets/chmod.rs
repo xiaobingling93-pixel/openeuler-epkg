@@ -3,6 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::path::Path;
+use crate::applets::extract_reference_metadata;
 use crate::posix::posix_chmod;
 
 pub struct ChmodOptions {
@@ -29,18 +30,9 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<ChmodOptions> {
             return Err(eyre!("chmod: missing operand"));
         }
         let ref_path = std::path::Path::new(ref_file);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(ref_path)
-                .map_err(|e| eyre!("chmod: cannot stat '{}': {}", ref_file, e))?;
-            let mode_bits = metadata.mode() & 0o7777;
-            (format!("{:o}", mode_bits), args)
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(eyre!("chmod: --reference not supported on this platform"));
-        }
+        let (_, _, mode) = extract_reference_metadata(ref_path)
+            .map_err(|e| eyre!("chmod: {}", e))?;
+        (format!("{:o}", mode), args)
     } else {
         let mode = args[0].clone();
         let files = args[1..].to_vec();
