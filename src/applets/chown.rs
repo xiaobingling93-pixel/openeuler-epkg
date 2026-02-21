@@ -13,15 +13,44 @@ pub struct ChownOptions {
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<ChownOptions> {
-    let owner = matches.get_one::<String>("owner")
-        .ok_or_else(|| eyre!("chown: missing operand"))?
-        .clone();
+    let recursive = matches.get_flag("recursive");
+    let reference = matches.get_one::<String>("reference").cloned();
 
-    let files: Vec<String> = matches.get_many::<String>("files")
+    let args: Vec<String> = matches.get_many::<String>("args")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
 
-    let recursive = matches.get_flag("recursive");
+    if args.is_empty() && reference.is_none() {
+        return Err(eyre!("chown: missing operand"));
+    }
+
+    let (owner, files) = if let Some(ref ref_file) = reference {
+        // --reference mode: get owner and group from reference file
+        if args.is_empty() {
+            return Err(eyre!("chown: missing operand"));
+        }
+        let ref_path = std::path::Path::new(ref_file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::metadata(ref_path)
+                .map_err(|e| eyre!("chown: cannot stat '{}': {}", ref_file, e))?;
+            let uid = metadata.uid();
+            let gid = metadata.gid();
+            (format!("{}:{}", uid, gid), args)
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(eyre!("chown: --reference not supported on this platform"));
+        }
+    } else {
+        let owner = args[0].clone();
+        let files = args[1..].to_vec();
+        if files.is_empty() {
+            return Err(eyre!("chown: missing operand"));
+        }
+        (owner, files)
+    };
 
     Ok(ChownOptions { owner, files, recursive })
 }
@@ -34,13 +63,13 @@ pub fn command() -> Command {
             .long("recursive")
             .help("Operate on files and directories recursively")
             .action(clap::ArgAction::SetTrue))
-        .arg(Arg::new("owner")
-            .help("Owner and optionally group: [user][:group]")
-            .required(true))
-        .arg(Arg::new("files")
+        .arg(Arg::new("reference")
+            .long("reference")
+            .help("Use RFILE's owner and group rather than specifying an OWNER value")
+            .value_name("RFILE"))
+        .arg(Arg::new("args")
             .num_args(1..)
-            .help("Files to change ownership of")
-            .required(true))
+            .help("OWNER and files (or just files with --reference)"))
 }
 
 fn parse_owner_spec(owner_spec: &str) -> Result<(Option<&str>, Option<&str>)> {
