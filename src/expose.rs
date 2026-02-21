@@ -293,7 +293,7 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
         let interpreter_in_env = Path::new(&interpreter_in_env);
 
         // Find and link the interpreter if needed
-        match find_link_interpreter(interpreter_in_env, interpreter_basename) {
+        match find_link_interpreter(interpreter_in_env, interpreter_basename, env_root) {
             Ok(()) => {},
             Err(e) => {
                 eprintln!("WARNING: script interpreter not found. Please install '{}' to make below script work:\n script_path: {}\n env_path: {}, error: {}",
@@ -322,24 +322,41 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
 }
 
 /// Find and link the appropriate interpreter if it doesn't exist
-fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) -> Result<()> {
-    if interpreter_in_env.exists() {
+fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str, env_root: &Path) -> Result<()> {
+    // Use the environment‑aware resolver to determine if the path is valid
+    if utils::resolve_symlink_in_env(interpreter_in_env, env_root).is_some() {
         return Ok(());
     }
 
-    // if the soft link is broken, delete it
+    // If the path exists as a symlink but resolve_symlink_in_env returned None,
+    // the symlink is broken (target does not exist in the environment).
     if let Ok(metadata) = lfs::symlink_metadata(interpreter_in_env) {
         if metadata.file_type().is_symlink() {
-            if fs::read_link(interpreter_in_env).map(|t| !t.exists()).unwrap_or(false) {
-                lfs::remove_file(interpreter_in_env)?
-            } else {
-                return Ok(());
-            }
+            // Read the target for logging before removal
+            let target = match fs::read_link(interpreter_in_env) {
+                Ok(t) => t.to_string_lossy().into_owned(),
+                Err(_) => "???".to_string(),
+            };
+            log::warn!(
+                "Removing broken symlink: {} -> {} (target not found in environment)",
+                interpreter_in_env.display(),
+                target
+            );
+            lfs::remove_file(interpreter_in_env)?;
+            // After removing broken symlink, continue to search for alternatives
         } else {
+            // Not a symlink (regular file or directory) - leave it alone
             return Ok(());
         }
     }
 
+    find_and_link_alternative_interpreter(interpreter_in_env, interpreter_basename)?;
+
+    Ok(())
+}
+
+/// Find and link an alternative interpreter when the expected one is missing
+fn find_and_link_alternative_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) -> Result<()> {
     // Get the parent directory to search in
     let parent = interpreter_in_env.parent()
         .ok_or_else(|| eyre::eyre!("Failed to get parent directory of {}", interpreter_in_env.display()))?;
