@@ -67,10 +67,14 @@ for os in $ALL_OS; do
     list2=$(epkg -e "$env_name" run bash -c 'cmd="$1"; "$cmd" list' -- "$epkg_cmd" | tail -n +5 | grep -v '^Total' | grep -v '^$' | sort)
     if [ "$list1" != "$list2" ]; then
         log "ERROR: epkg list output differs between direct and bash command in $env_name"
-        log "Direct output (first 10 lines):"
-        echo "$list1" | head -10 >&2
-        log "Bash command output (first 10 lines):"
-        echo "$list2" | head -10 >&2
+        # Show diff for easier debugging
+        diff_tmp1=$(mktemp)
+        diff_tmp2=$(mktemp)
+        echo "$list1" > "$diff_tmp1"
+        echo "$list2" > "$diff_tmp2"
+        log "Diff (direct vs bash command):"
+        diff -u "$diff_tmp1" "$diff_tmp2" >&2
+        rm -f "$diff_tmp1" "$diff_tmp2"
         error "epkg list output differs between direct and bash command in $env_name"
     fi
     log "epkg list via bash command matches direct output"
