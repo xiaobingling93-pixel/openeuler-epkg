@@ -548,8 +548,8 @@ pub struct RepoConfig {
 
 // Global repository index map. Key format: "repodata_name/arch" (e.g., "main/x86_64", "main/all")
 // to support separate repository indices for different architectures.
-static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
-        LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+static REPODATA_INDICE: LazyLock<std::sync::RwLock<BTreeMap<String, RepoIndex>>> =
+        LazyLock::new(|| std::sync::RwLock::new(BTreeMap::new()));
 
 // Global ENV_CONFIG and CHANNEL_CONFIGS using LazyLock
 static ENV_CONFIG: OnceLock<EnvConfig> = OnceLock::new();
@@ -632,12 +632,12 @@ pub fn channel_config_mut() -> std::sync::MutexGuard<'static, ChannelConfig> {
 }
 
 // use at package install time
-pub fn repodata_indice() -> std::sync::RwLockReadGuard<'static, HashMap<String, RepoIndex>> {
+pub fn repodata_indice() -> std::sync::RwLockReadGuard<'static, BTreeMap<String, RepoIndex>> {
     REPODATA_INDICE.read().unwrap_or_else(|e| e.into_inner())
 }
 
 // use at repo update time
-pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, HashMap<String, RepoIndex>> {
+pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, BTreeMap<String, RepoIndex>> {
     REPODATA_INDICE.write().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -650,7 +650,7 @@ pub struct RepoIndex {
     pub repo_dir_path: String,
     #[serde(default)]
     pub format: PackageFormat,
-    pub repo_shards: HashMap<String, RepoShard>, // key: shard name or id
+    pub repo_shards: BTreeMap<String, RepoShard>, // key: shard name or id
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

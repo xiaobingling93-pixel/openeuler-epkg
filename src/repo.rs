@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use crate::lfs;
 use std::path::Path;
@@ -948,7 +948,7 @@ fn save_repo_index_json(repo: &RepoRevise, packages_metafiles: Vec<PathBuf>) -> 
     let repo_dir = cloned[0].parent()
         .ok_or_else(|| eyre::eyre!("Invalid packages metafile path"))?;
 
-    let mut repo_shards = HashMap::new();
+    let mut repo_shards = BTreeMap::new();
 
     // Process each packages metafile
     for (i, packages_metafile) in packages_metafiles.iter().enumerate() {
