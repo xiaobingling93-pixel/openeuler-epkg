@@ -34,7 +34,7 @@ for os in $ALL_OS; do
 
     # Install bash
     log "Installing bash in $env_name"
-    epkg -e "$env_name" --assume-yes install bash || error "Failed to install bash in $env_name"
+    epkg -e "$env_name" --assume-yes install --no-install-essentials bash || error "Failed to install bash in $env_name"
 
     # Test /bin/sh
     test_sh "$env_name"
