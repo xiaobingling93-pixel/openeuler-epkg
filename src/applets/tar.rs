@@ -5,6 +5,7 @@ use color_eyre::eyre::eyre;
 use std::fs::File;
 use std::fs;
 use std::path::Path;
+use crate::lfs;
 use std::io;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -302,7 +303,8 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
 
     match entry_type {
         EntryType::Regular => {
-            let mut file = fs::File::create(&dest)?;
+            let mut file = lfs::file_create(&dest)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             let mut reader = entry.take(entry.header().size().unwrap_or(0));
             std::io::copy(&mut reader, &mut file)?;
             // Ensure the file is closed before setting permissions
@@ -313,13 +315,15 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let perms = fs::Permissions::from_mode(mode & 0o777);
-                    fs::set_permissions(&dest, perms)?;
+                    lfs::set_permissions(&dest, perms)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 }
             }
             Ok(())
         }
         EntryType::Directory => {
-            fs::create_dir_all(&dest)?;
+            lfs::create_dir_all(&dest)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             Ok(())
         }
         EntryType::Symlink => {
@@ -328,7 +332,8 @@ fn extract_entry<R: std::io::Read>(entry: &mut tar::Entry<R>, extract_path: &str
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "symlink entry missing link name"))?;
             #[cfg(unix)]
             {
-                std::os::unix::fs::symlink(&linkname, &dest)?;
+                lfs::symlink(&linkname, &dest)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             }
             #[cfg(not(unix))]
             {
@@ -379,7 +384,7 @@ fn maybe_extract_entry<R: std::io::Read>(
         if let Ok(metadata) = fs::metadata(&dest) {
             if metadata.is_dir() {
                 eprintln!("[tar] removing directory: {}", dest.display());
-                if let Err(e) = fs::remove_dir_all(&dest) {
+                if let Err(e) = lfs::remove_dir_all(&dest) {
                     eprintln!("[tar] remove_dir_all failed: {}", e);
                 }
             }
@@ -407,7 +412,7 @@ fn maybe_extract_entry<R: std::io::Read>(
         })?;
     // Ensure directories are created (tar may skip empty directories)
     if entry.header().entry_type() == tar::EntryType::Directory {
-        fs::create_dir_all(&dest).map_err(|e| eyre!("tar: cannot create directory '{}': {}", dest.display(), e))?;
+        lfs::create_dir_all(&dest)?;
     }
     Ok(true)
 }

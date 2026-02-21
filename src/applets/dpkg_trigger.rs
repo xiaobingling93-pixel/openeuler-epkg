@@ -4,6 +4,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process;
 use crate::deb_triggers::{activate_trigger, TRIGGERSDIR, TRIGGERSDEFERREDFILE};
+use crate::lfs;
 
 pub struct DpkgTriggerOptions {
     pub trigger_name: Option<String>,
@@ -40,7 +41,7 @@ fn handle_check_supported() -> ! {
 
     // Check if triggers system is available
     // dpkg checks if directory exists or Unincorp file exists
-    if triggers_dir.exists() || unincorp_file.exists() || std::fs::create_dir_all(&triggers_dir).is_ok() {
+    if triggers_dir.exists() || unincorp_file.exists() || lfs::create_dir_all(&triggers_dir).is_ok() {
         process::exit(0);
     } else {
         eprintln!("dpkg-trigger: triggers data directory not yet created");

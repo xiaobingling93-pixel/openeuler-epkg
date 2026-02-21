@@ -48,6 +48,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
+use crate::lfs;
 
 use crate::posix::{posix_getpasswd, posix_getgroup, posix_mkfifo};
 use crate::utils::set_permissions_from_mode;
@@ -593,8 +594,7 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     // Create directory if it doesn't exist
     log::info!("Directory exists? {}", full_path.exists());
     if !full_path.exists() {
-        fs::create_dir_all(&full_path)
-            .map_err(|e| eyre!("Failed to create directory {}: {}", full_path.display(), e))?;
+        lfs::create_dir_all(&full_path)?;
     }
 
     // Set permissions
@@ -625,8 +625,7 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&P
     // Remove existing file if + modifier is present
     if modifiers.append_or_force && full_path.exists() {
         if full_path.is_symlink() {
-            fs::remove_file(&full_path)
-                .map_err(|e| eyre!("Failed to remove existing symlink {}: {}", full_path.display(), e))?;
+            lfs::remove_file(&full_path)?;
         } else {
             // For L+, we might want to replace it, but let's be conservative
             return Ok(());
@@ -635,8 +634,7 @@ fn process_symlink_line(parts: &[String], modifiers: &Modifiers, root: Option<&P
 
     // Create symlink if it doesn't exist
     if !full_path.exists() {
-        std::os::unix::fs::symlink(target, &full_path)
-            .map_err(|e| eyre!("Failed to create symlink {} -> {}: {}", full_path.display(), target, e))?;
+        lfs::symlink(target, &full_path)?;
     }
 
     Ok(())
@@ -664,9 +662,7 @@ fn process_file_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
     let should_write = !file_exists || modifiers.append_or_force;
 
     if should_write {
-        fs::write(&full_path, content)
-            .map_err(|e| eyre!("Failed to {} file {}: {}",
-                if file_exists { "write to" } else { "create" }, full_path.display(), e))?;
+        lfs::write(&full_path, content)?;
     }
 
     // Set permissions if specified
@@ -727,16 +723,14 @@ fn process_remove_line(parts: &[String], remove_type: &str, _modifiers: &Modifie
         "r" => {
             // Remove file
             if full_path.is_file() {
-                fs::remove_file(&full_path)
-                    .map_err(|e| eyre!("Failed to remove file {}: {}", full_path.display(), e))?;
+                lfs::remove_file(&full_path)?;
             } else {
                 return Err(eyre!("Path {} is not a file (use R for directories)", full_path.display()));
             }
         }
         "R" => {
             // Recursively remove directory
-            fs::remove_dir_all(&full_path)
-                .map_err(|e| eyre!("Failed to remove directory {}: {}", full_path.display(), e))?;
+            lfs::remove_dir_all(&full_path)?;
         }
         _ => unreachable!(),
     }
@@ -763,8 +757,7 @@ fn process_write_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Pa
         return Err(eyre!("File {} does not exist (use f to create)", full_path.display()));
     }
 
-    fs::write(&full_path, content)
-        .map_err(|e| eyre!("Failed to write to file {}: {}", full_path.display(), e))?;
+    lfs::write(&full_path, content)?;
 
     Ok(())
 }
@@ -797,11 +790,9 @@ fn process_empty_directory_line(parts: &[String], _modifiers: &Modifiers, root: 
         let entry_path = entry.path();
 
         if entry_path.is_dir() {
-            fs::remove_dir_all(&entry_path)
-                .map_err(|e| eyre!("Failed to remove directory {}: {}", entry_path.display(), e))?;
+            lfs::remove_dir_all(&entry_path)?;
         } else {
-            fs::remove_file(&entry_path)
-                .map_err(|e| eyre!("Failed to remove file {}: {}", entry_path.display(), e))?;
+            lfs::remove_file(&entry_path)?;
         }
     }
 
@@ -942,8 +933,7 @@ fn extract_common_fields(parts: &[String]) -> (&str, &str, &str, &str) {
 fn ensure_parent_directory(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| eyre!("Failed to create parent directory for {}: {}", path.display(), e))?;
+            lfs::create_dir_all(parent)?;
         }
     }
     Ok(())

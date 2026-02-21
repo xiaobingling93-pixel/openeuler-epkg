@@ -1,8 +1,8 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs;
 use std::path::Path;
+use crate::lfs;
 
 pub struct RmOptions {
     pub files: Vec<String>,
@@ -59,20 +59,17 @@ fn remove_path(path: &Path, recursive: bool, force: bool) -> Result<()> {
 
     if metadata.file_type().is_symlink() {
         // Symlinks are removed as files, regardless of target
-        fs::remove_file(path)
-            .map_err(|e| eyre!("rm: cannot remove '{}': {}", path.display(), e))?;
+        lfs::remove_file(path)?;
     } else if metadata.file_type().is_dir() {
         // Directory
         if recursive {
-            fs::remove_dir_all(path)
-                .map_err(|e| eyre!("rm: cannot remove '{}': {}", path.display(), e))?;
+            lfs::remove_dir_all(path)?;
         } else {
             return Err(eyre!("rm: cannot remove '{}': Is a directory", path.display()));
         }
     } else {
         // Regular file or other type
-        fs::remove_file(path)
-            .map_err(|e| eyre!("rm: cannot remove '{}': {}", path.display(), e))?;
+        lfs::remove_file(path)?;
     }
 
     Ok(())

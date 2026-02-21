@@ -4,6 +4,7 @@ use color_eyre::eyre::eyre;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use crate::lfs;
 
 pub struct MkdirOptions {
     pub directories: Vec<String>,
@@ -57,8 +58,7 @@ fn set_directory_permissions(path: &Path, mode_str: &str) -> Result<()> {
         .map_err(|_| eyre!("mkdir: invalid mode '{}'", mode_str))?;
 
     let permissions = fs::Permissions::from_mode(octal_mode);
-    fs::set_permissions(path, permissions)
-        .map_err(|e| eyre!("mkdir: cannot set permissions on '{}': {}", path.display(), e))?;
+    lfs::set_permissions(path, permissions)?;
 
     Ok(())
 }
@@ -68,11 +68,9 @@ pub fn run(options: MkdirOptions) -> Result<()> {
         let path = Path::new(dir_path);
 
         if options.parents {
-            fs::create_dir_all(path)
-                .map_err(|e| eyre!("mkdir: cannot create directory '{}': {}", dir_path, e))?;
+            lfs::create_dir_all(path)?;
         } else {
-            fs::create_dir(path)
-                .map_err(|e| eyre!("mkdir: cannot create directory '{}': {}", dir_path, e))?;
+            lfs::create_dir(path)?;
         }
 
         // Set permissions if specified

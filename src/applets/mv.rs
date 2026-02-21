@@ -1,8 +1,8 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs;
 use std::path::Path;
+use crate::lfs;
 
 pub struct MvOptions {
     pub sources: Vec<String>,
@@ -90,17 +90,14 @@ fn move_file(src: &Path, dst: &Path, force: bool, no_clobber: bool) -> Result<()
         }
         // Force overwrite - remove destination first
         if dst.is_dir() {
-            fs::remove_dir_all(dst)
-                .map_err(|e| eyre!("mv: cannot remove directory '{}': {}", dst.display(), e))?;
+            lfs::remove_dir_all(dst)?;
         } else {
-            fs::remove_file(dst)
-                .map_err(|e| eyre!("mv: cannot remove file '{}': {}", dst.display(), e))?;
+            lfs::remove_file(dst)?;
         }
     }
 
     // Perform the move
-    fs::rename(src, dst)
-        .map_err(|e| eyre!("mv: cannot move '{}' to '{}': {}", src.display(), dst.display(), e))?;
+    lfs::rename(src, dst)?;
 
     Ok(())
 }

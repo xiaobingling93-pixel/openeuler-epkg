@@ -4,6 +4,7 @@ use color_eyre::eyre::eyre;
 use regex::Regex;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
+use crate::lfs;
 
 fn add_match_mode_args(cmd: Command) -> Command {
     cmd
@@ -310,7 +311,7 @@ fn display_name(path: &str) -> &str {
 
 fn expand_path(path: &std::path::Path, follow_symlinks: bool) -> Vec<String> {
     let mut result = Vec::new();
-    let metadata = match std::fs::symlink_metadata(path) {
+    let metadata = match lfs::symlink_metadata(path) {
         Ok(m) => m,
         Err(_) => return result,
     };
@@ -345,7 +346,7 @@ fn expand_path(path: &std::path::Path, follow_symlinks: bool) -> Vec<String> {
                             let file_name = entry.file_name();
                             // Build subpath using original symlink path as base
                             let subpath = path.join(&file_name);
-                            let sub_metadata = match std::fs::symlink_metadata(&subpath) {
+                            let sub_metadata = match lfs::symlink_metadata(&subpath) {
                                 Ok(m) => m,
                                 Err(_) => continue,
                             };
@@ -650,7 +651,7 @@ fn build_files_to_search(files: &[String], recursive: bool) -> (Vec<String>, boo
     for file_path in files {
         if recursive && file_path != "-" {
             let path = std::path::Path::new(file_path);
-            let metadata = std::fs::symlink_metadata(path).ok();
+            let metadata = lfs::symlink_metadata(path).ok();
             let is_symlink = metadata.as_ref().map(|m| m.file_type().is_symlink()).unwrap_or(false);
             let follow_symlinks = is_symlink; // follow symlinks only if the argument itself is a symlink
             let is_dir = if is_symlink && follow_symlinks {

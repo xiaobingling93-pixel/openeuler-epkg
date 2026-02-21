@@ -1,9 +1,9 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs;
 use std::path::Path;
 use pathdiff;
+use crate::lfs;
 
 pub struct LnOptions {
     pub target: String,
@@ -87,12 +87,10 @@ pub fn run(options: LnOptions) -> Result<()> {
         if let Ok(metadata) = link_path.symlink_metadata() {
             if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
                 // Remove symlink or regular file
-                fs::remove_file(link_path)
-                    .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
+                lfs::remove_file(link_path)?;
             } else {
                 // Remove directory (not a symlink)
-                fs::remove_dir_all(link_path)
-                    .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
+                lfs::remove_dir_all(link_path)?;
             }
         }
     }
@@ -101,8 +99,7 @@ pub fn run(options: LnOptions) -> Result<()> {
     if options.no_dereference && link_path.is_symlink() {
         // For no-dereference, we need to remove the symlink first if it exists
         if link_path.symlink_metadata().is_ok() {
-            fs::remove_file(link_path)
-                .map_err(|e| eyre!("ln: cannot remove '{}': {}", options.link_name, e))?;
+            lfs::remove_file(link_path)?;
         }
     }
 
@@ -116,11 +113,9 @@ pub fn run(options: LnOptions) -> Result<()> {
     };
 
     if options.symbolic {
-        std::os::unix::fs::symlink(&actual_target, link_path)
-            .map_err(|e| eyre!("ln: cannot create symbolic link '{}': {}", options.link_name, e))?;
+        lfs::symlink(&actual_target, link_path)?;
     } else {
-        fs::hard_link(&actual_target, link_path)
-            .map_err(|e| eyre!("ln: cannot create hard link '{}': {}", options.link_name, e))?;
+        lfs::hard_link(&actual_target, link_path)?;
     }
 
     // Handle verbose option

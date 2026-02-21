@@ -5,6 +5,7 @@ use regex::Regex;
 use std::borrow::Cow;
 use std::io;
 use std::collections::HashMap;
+use crate::lfs;
 
 pub struct SedOptions {
     pub scripts: Vec<String>,
@@ -1888,8 +1889,7 @@ fn run_inplace(
     } else {
         output
     };
-    std::fs::write(file_path, output)
-        .map_err(|e| eyre!("sed: cannot write '{}': {}", file_path, e))?;
+    lfs::write(file_path, output)?;
     Ok(())
 }
 

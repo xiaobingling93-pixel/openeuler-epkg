@@ -1,8 +1,8 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs;
 use std::path::Path;
+use crate::lfs;
 
 pub struct LinkOptions {
     pub file1: String,
@@ -37,8 +37,7 @@ pub fn run(options: LinkOptions) -> Result<()> {
     let file1_path = Path::new(&options.file1);
     let file2_path = Path::new(&options.file2);
 
-    fs::hard_link(file1_path, file2_path)
-        .map_err(|e| eyre!("link: cannot create link '{}' to '{}': {}", options.file2, options.file1, e))?;
+    lfs::hard_link(file1_path, file2_path)?;
 
     Ok(())
 }

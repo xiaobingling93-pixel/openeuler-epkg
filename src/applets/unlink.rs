@@ -1,8 +1,8 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs;
 use std::path::Path;
+use crate::lfs;
 
 pub struct UnlinkOptions {
     pub file: String,
@@ -26,7 +26,6 @@ pub fn command() -> Command {
 
 pub fn run(options: UnlinkOptions) -> Result<()> {
     let path = Path::new(&options.file);
-    fs::remove_file(path)
-        .map_err(|e| eyre!("unlink: cannot unlink '{}': {}", options.file, e))?;
+    lfs::remove_file(path)?;
     Ok(())
 }

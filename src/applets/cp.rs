@@ -3,8 +3,8 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::fs::File;
+use crate::lfs;
 use std::io;
-use std::os::unix::fs::symlink;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -306,8 +306,7 @@ pub fn preserve_attributes(src: &Path, dst: &Path, preserve_timestamps: bool) ->
 
     // Preserve permissions
     let permissions = metadata.permissions();
-    fs::set_permissions(dst, permissions)
-        .map_err(|e| eyre!("cp: cannot set permissions for '{}': {}", dst.display(), e))?;
+    lfs::set_permissions(dst, permissions)?;
 
     // Preserve timestamps if requested
     if preserve_timestamps {
@@ -334,11 +333,9 @@ pub fn preserve_attributes(_src: &Path, _dst: &Path, _preserve_timestamps: bool)
 fn force_remove_if_exists(dst: &Path, options: &CpOptions) -> Result<()> {
     if options.force && dst.exists() {
         if dst.is_dir() {
-            fs::remove_dir_all(dst)
-                .map_err(|e| eyre!("cp: cannot remove directory '{}': {}", dst.display(), e))?;
+            lfs::remove_dir_all(dst)?;
         } else {
-            fs::remove_file(dst)
-                .map_err(|e| eyre!("cp: cannot remove file '{}': {}", dst.display(), e))?;
+            lfs::remove_file(dst)?;
         }
     }
     Ok(())
@@ -385,8 +382,7 @@ fn create_symbolic_link_if_requested(src: &Path, dst: &Path, options: &CpOptions
         src.to_path_buf()
     };
 
-    symlink(&link_target, dst)
-        .map_err(|e| eyre!("cp: cannot create symlink '{}' -> '{}': {}", dst.display(), link_target.display(), e))?;
+    lfs::symlink(&link_target, dst)?;
 
     if options.verbose {
         eprintln!("'{}' -> '{}'", src.display(), dst.display());
@@ -400,8 +396,7 @@ fn create_hard_link_if_requested(src: &Path, dst: &Path, options: &CpOptions) ->
     if !options.link {
         return Ok(false);
     }
-    fs::hard_link(src, dst)
-        .map_err(|e| eyre!("cp: cannot create hard link '{}' to '{}': {}", dst.display(), src.display(), e))?;
+    lfs::hard_link(src, dst)?;
 
     if options.verbose {
         eprintln!("'{}' -> '{}'", src.display(), dst.display());
@@ -434,8 +429,7 @@ fn copy_based_on_file_type(
     preserve_symlink: bool,
 ) -> Result<()> {
     // Check if source is a symlink
-    let src_metadata = fs::symlink_metadata(src)
-        .map_err(|e| eyre!("cp: cannot access '{}': {}", src.display(), e))?;
+    let src_metadata = lfs::symlink_metadata(src)?;
 
     if src_metadata.file_type().is_symlink() {
         if preserve_symlink {
@@ -443,8 +437,7 @@ fn copy_based_on_file_type(
                 || {
                     let target = fs::read_link(src)
                         .map_err(|e| eyre!("cp: cannot read link '{}': {}", src.display(), e))?;
-                    symlink(&target, dst)
-                        .map_err(|e| eyre!("cp: cannot create symlink '{}' -> '{}': {}", dst.display(), target.display(), e))
+                    lfs::symlink(&target, dst)
                 },
                 src,
                 dst,
@@ -452,9 +445,7 @@ fn copy_based_on_file_type(
             )?;
         } else {
             copy_with_attributes(
-                || fs::copy(src, dst)
-                    .map_err(|e| eyre!("cp: cannot copy '{}' to '{}': {}", src.display(), dst.display(), e))
-                    .map(|_| ()),
+                || lfs::copy(src, dst).map(|_| ()),
                 src,
                 dst,
                 options,
@@ -462,9 +453,7 @@ fn copy_based_on_file_type(
         }
     } else if src_metadata.file_type().is_file() {
         copy_with_attributes(
-            || fs::copy(src, dst)
-                .map_err(|e| eyre!("cp: cannot copy '{}' to '{}': {}", src.display(), dst.display(), e))
-                .map(|_| ()),
+            || lfs::copy(src, dst).map(|_| ()),
             src,
             dst,
             options,
@@ -475,8 +464,7 @@ fn copy_based_on_file_type(
         // Device, fifo, etc. — copy by read/write to create a regular file
         let mut src_file = File::open(src)
             .map_err(|e| eyre!("cp: cannot open '{}' for reading: {}", src.display(), e))?;
-        let mut dst_file = File::create(dst)
-            .map_err(|e| eyre!("cp: cannot create '{}': {}", dst.display(), e))?;
+        let mut dst_file = lfs::file_create(dst)?;
         io::copy(&mut src_file, &mut dst_file)
             .map_err(|e| eyre!("cp: cannot copy '{}' to '{}': {}", src.display(), dst.display(), e))?;
 
@@ -533,20 +521,17 @@ pub fn copy_directory_recursive(
         if src_path.is_dir() {
             // Handle force for directories
             if options.force && dst_path.exists() && !dst_path.is_dir() {
-                fs::remove_file(&dst_path)
-                    .map_err(|e| eyre!("cp: cannot remove file '{}': {}", dst_path.display(), e))?;
+                lfs::remove_file(&dst_path)?;
             }
 
-            fs::create_dir_all(&dst_path)
-                .map_err(|e| eyre!("cp: cannot create directory '{}': {}", dst_path.display(), e))?;
+            lfs::create_dir_all(&dst_path)?;
 
             if options.preserve {
                 preserve_attributes(src_path, &dst_path, true)?;
             }
         } else {
             if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| eyre!("cp: cannot create directory '{}': {}", parent.display(), e))?;
+                lfs::create_dir_all(parent)?;
             }
             copy_file(
                 src_path,
@@ -568,7 +553,7 @@ pub fn copy_single_item(
     options: &CpOptions,
 ) -> Result<()> {
     // With -d/-P, a symlink to a directory is copied as a symlink, not treated as a directory
-    let is_symlink = fs::symlink_metadata(src).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+    let is_symlink = lfs::symlink_metadata(src).map(|m| m.file_type().is_symlink()).unwrap_or(false);
     let treat_as_dir = src.is_dir() && !(is_symlink && options.preserve_symlink_cmdline);
 
     if treat_as_dir && !options.recursive {
@@ -618,8 +603,7 @@ fn handle_parents_option(dest_path: &Path, options: &CpOptions) -> Result<bool> 
     }
     let dst_file = dest_path.join(src_path);
     if let Some(parent) = dst_file.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| eyre!("cp: cannot create directory '{}': {}", parent.display(), e))?;
+        lfs::create_dir_all(parent)?;
     }
     copy_file(src_path, &dst_file, options, false)?;
     Ok(true)
@@ -645,7 +629,7 @@ fn process_source(
     let dst_path = dest_path.join(dst_name);
 
     // Without -r, skip directories with a message (GNU/BusyBox behavior). With -d/-P, symlinks are copied as symlinks so don't omit them even if they point to a directory.
-    let is_symlink = fs::symlink_metadata(src_path).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+    let is_symlink = lfs::symlink_metadata(src_path).map(|m| m.file_type().is_symlink()).unwrap_or(false);
     let preserve = options.preserve_symlink_cmdline;
     if src_path.is_dir() && !options.recursive && !(is_symlink && preserve) {
         eprintln!("cp: omitting directory '{}'", src_path.display());
@@ -654,12 +638,11 @@ fn process_source(
     }
 
     if options.no_dereference_d || options.archive {
-        if let Ok(meta) = fs::symlink_metadata(src_path) {
+        if let Ok(meta) = lfs::symlink_metadata(src_path) {
             let key = (meta.dev(), meta.ino());
             if meta.is_file() && !meta.file_type().is_symlink() {
                 if let Some(existing) = hardlink_map.get(&key) {
-                    fs::hard_link(existing, &dst_path)
-                        .map_err(|e| eyre!("cp: cannot create hard link '{}' to '{}': {}", dst_path.display(), existing.display(), e))?;
+                    lfs::hard_link(existing, &dst_path)?;
                     return Ok(());
                 }
                 hardlink_map.insert(key, dst_path.clone());
@@ -677,8 +660,7 @@ fn handle_multiple_sources(dest_path: &Path, options: &CpOptions) -> Result<()> 
     }
 
     if !dest_path.exists() {
-        fs::create_dir_all(dest_path)
-            .map_err(|e| eyre!("cp: cannot create directory '{}': {}", dest_path.display(), e))?;
+        lfs::create_dir_all(dest_path)?;
     } else if !dest_path.is_dir() {
         return Err(eyre!("cp: target '{}' is not a directory", dest_path.display()));
     }

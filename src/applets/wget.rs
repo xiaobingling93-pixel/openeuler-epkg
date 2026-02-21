@@ -2,8 +2,8 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
-use std::fs;
 use std::path::{Path, PathBuf};
+use crate::lfs;
 
 use crate::utils;
 
@@ -84,8 +84,7 @@ fn prepare_output_directory(output_file: &Option<String>, prefix_dir: &Option<St
         let output_path = Path::new(output);
         if let Some(parent) = output_path.parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("wget: failed to create parent directory for '{}'", output))?;
+                lfs::create_dir_all(parent)?;
             }
         }
         // Return parent directory or current directory
@@ -98,8 +97,7 @@ fn prepare_output_directory(output_file: &Option<String>, prefix_dir: &Option<St
     if let Some(ref prefix) = prefix_dir {
         let dir = Path::new(prefix);
         if !dir.exists() {
-            fs::create_dir_all(dir)
-                .with_context(|| format!("wget: failed to create directory '{}'", prefix))?;
+            lfs::create_dir_all(dir)?;
         }
         if !dir.is_dir() {
             return Err(eyre::eyre!("wget: '-P' must specify a directory, got: '{}'", prefix));
@@ -137,12 +135,7 @@ fn link_downloaded_file(final_cached_path: &Path, output: &str) -> Result<()> {
     // Create parent directory if needed
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "download: failed to create parent directory for '{}'",
-                    out_path.display()
-                )
-            })?;
+            lfs::create_dir_all(parent)?;
         }
     }
 

@@ -1,9 +1,10 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::fs;
+use std::fs::Permissions;
 use std::os::unix::fs::{PermissionsExt, chown};
 use std::path::Path;
+use crate::lfs;
 
 pub struct InstallOptions {
     pub sources: Vec<String>,
@@ -121,16 +122,14 @@ fn set_permissions(path: &Path, mode_str: &str) -> Result<()> {
     let mode_val = u32::from_str_radix(mode_str, 8)
         .map_err(|_| eyre!("install: invalid mode '{}'", mode_str))?;
 
-    let permissions = std::fs::Permissions::from_mode(mode_val);
-    std::fs::set_permissions(path, permissions)
-        .map_err(|e| eyre!("install: cannot set permissions on '{}': {}", path.display(), e))?;
+    let permissions = Permissions::from_mode(mode_val);
+    lfs::set_permissions(path, permissions)?;
 
     Ok(())
 }
 
 fn create_directory_with_attrs(path: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
-    fs::create_dir_all(path)
-        .map_err(|e| eyre!("install: cannot create directory '{}': {}", path.display(), e))?;
+    lfs::create_dir_all(path)?;
     if let Some(mode) = mode {
         set_permissions(path, mode)?;
     }
@@ -141,11 +140,9 @@ fn create_directory_with_attrs(path: &Path, mode: Option<&str>, owner: Option<&s
 fn copy_file_with_attrs(src: &Path, dst: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
     // Special handling for /dev/null - create an empty file
     if src == Path::new("/dev/null") {
-        fs::File::create(dst)
-            .map_err(|e| eyre!("install: cannot create '{}': {}", dst.display(), e))?;
+        lfs::file_create(dst)?;
     } else {
-        fs::copy(src, dst)
-            .map_err(|e| eyre!("install: cannot copy '{}' to '{}': {}", src.display(), dst.display(), e))?;
+        lfs::copy(src, dst)?;
     }
     if let Some(mode) = mode {
         set_permissions(dst, mode)?;
@@ -168,8 +165,7 @@ fn copy_single_source(src: &Path, dest: &Path, mode: Option<&str>, owner: Option
 
 fn copy_multiple_sources(sources: &[String], dest: &Path, mode: Option<&str>, owner: Option<&str>, group: Option<&str>) -> Result<()> {
     if !dest.exists() {
-        fs::create_dir_all(dest)
-            .map_err(|e| eyre!("install: cannot create directory '{}': {}", dest.display(), e))?;
+        lfs::create_dir_all(dest)?;
     } else if !dest.is_dir() {
         return Err(eyre!("install: target '{}' is not a directory", dest.display()));
     }
