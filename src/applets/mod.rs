@@ -3,6 +3,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use color_eyre::eyre::Context;
 use std::path::Path;
+use std::sync::OnceLock;
 use crate::models::PackageFormat;
 use crate::utils::force_symlink;
 use crate::utils::handle_clap_error_with_cmdline;
@@ -17,11 +18,13 @@ include!("_modules_gen.rs");
 /// Auto-generated from applets directory at build time
 macro_rules! register_applets {
     ($(($module:ident, $cmd_name:literal)),* $(,)?) => {
+        static APPLETS: OnceLock<Vec<Command>> = OnceLock::new();
+
         /// Get all busybox subcommands
-        pub fn busybox_subcommands() -> Vec<Command> {
-            vec![
+        pub fn busybox_subcommands() -> &'static [Command] {
+            APPLETS.get_or_init(|| vec![
                 $($module::command(),)*
-            ]
+            ])
         }
 
         /// Execute a built-in command by name and matches

@@ -1246,8 +1246,6 @@ pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
 /// # Returns
 /// * `Result<()>` - Success or error from applet execution
 pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
-    debug!("command_busybox sub_matches: {:?}", sub_matches);
-
     // Handle --list flag
     if sub_matches.get_flag("list") {
         println!("{}", crate::applets::sorted_applet_names().join("\n"));
@@ -1260,7 +1258,6 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
      */
     match sub_matches.subcommand() {
         Some((cmd_name, cmd_matches)) => {
-            debug!("cmd_name: {}, cmd_matches: {:?}", cmd_name, cmd_matches);
             let known = crate::applets::busybox_subcommands()
                 .iter()
                 .any(|c| c.get_name() == cmd_name);
@@ -1289,7 +1286,7 @@ pub fn command_busybox(sub_matches: &clap::ArgMatches) -> Result<()> {
                     all_args.extend(args_vec.clone());
 
                     // Parse arguments using the applet's command parser
-                    match applet_cmd.try_get_matches_from(all_args) {
+                    match applet_cmd.clone().try_get_matches_from(all_args) {
                         Ok(parsed_matches) => {
                             crate::applets::exec_builtin_command(cmd_name, &parsed_matches)
                         }
