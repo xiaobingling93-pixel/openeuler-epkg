@@ -33,6 +33,19 @@ for test_dir in "$SCRIPT_DIR"/*/; do
             continue
         fi
 
+        # Skip build-from-source-test/test-build-from-source.sh
+        # because it depends on downloading which is slow and has no cache,
+        # and build system won't change frequently over time,
+        # and it's handled by test-dev.sh
+        if [ "$(basename "$test_script")" = "test-build-from-source.sh" ]; then
+            echo "========================================="
+            echo "Skipping slow download test: $(basename "$test_script")"
+            echo "Use ./test-dev.sh for build-from-source tests"
+            echo "========================================="
+            echo ""
+            continue
+        fi
+
         test_name=$(basename "$test_script")
         echo "========================================="
         echo "Running test: $test_name"
