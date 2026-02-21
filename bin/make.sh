@@ -15,6 +15,26 @@ BINARY_NAME=epkg
 DEV_ENV_BIN_DIR="$HOME/.epkg/envs/self/usr/bin"
 DEV_ENV_SRC_DIR="$HOME/.epkg/envs/self/usr/src/epkg"
 
+# Safe copy with handling for "Text file busy" error
+safe_cp() {
+    local src="$1"
+    local dst="$2"
+    local cp_output cp_status
+    cp_output=$(cp -v --update "$src" "$dst" 2>&1) && echo "$cp_output" || {
+        cp_status=$?
+        if echo "$cp_output" | grep -q "Text file busy"; then
+            if ! rm -v "$dst"; then
+                echo "Error: failed to remove busy file: $dst" >&2
+                return 1
+            fi
+            cp -v --update "$src" "$dst" || return $?
+        else
+            echo "$cp_output" >&2
+            return $cp_status
+        fi
+    }
+}
+
 # Detect OS and version
 detect_os() {
     if [[ -f /etc/os-release ]]; then
@@ -91,21 +111,11 @@ install_to_dev_env() {
         local src_rc="$PROJECT_ROOT/lib/epkg-rc.sh"
         local dst_rc="$DEV_ENV_SRC_DIR/lib/epkg-rc.sh"
         if [[ "$(readlink -f "$src_rc")" != "$(readlink -f "$dst_rc")" ]]; then
-            cp -v --update "$src_rc" "$dst_rc"
+            safe_cp "$src_rc" "$dst_rc"
         fi
     fi
 
-    local cp_output cp_status
-    cp_output=$(cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME" 2>&1) && echo "$cp_output" || {
-        cp_status=$?
-        if echo "$cp_output" | grep -q "Text file busy"; then
-            rm -v "$DEV_ENV_BIN_DIR/$BINARY_NAME" &&
-            cp -v --update "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
-        else
-            echo "$cp_output" >&2
-            return $cp_status
-        fi
-    }
+    safe_cp "$binary_path" "$DEV_ENV_BIN_DIR/$BINARY_NAME"
 }
 
 # Build Lua library for a specific architecture
@@ -444,7 +454,8 @@ build_static() {
 
     # Deploy
     mkdir -p "$OUTPUT_DIR"
-    cp "target/$rust_target/release/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
+    # Copy binary, handling "Text file busy" error
+    safe_cp "target/$rust_target/release/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
     echo "Generating checksum for $arch binary..."
     cd "$OUTPUT_DIR"
     sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
