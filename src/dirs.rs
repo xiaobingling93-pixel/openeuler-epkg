@@ -133,7 +133,7 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 /// Location is determined by InitOptions.shared_store:
 ///   - shared_store=false: $HOME/.epkg/envs/$env_name
 ///   - shared_store=true:
-///     - self:   /opt/epkg/envs/root/self
+///     - self:   /opt/epkg/envs/root/self (special env for package manager files only)
 ///     - others: /opt/epkg/envs/$USER/$env_name
 /// Supports both 'env_name' and 'owner/env_name' formats
 /// Note: EnvConfig.public only controls visibility/permissions, not location

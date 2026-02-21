@@ -654,6 +654,7 @@ fn update_version_in_contents(contents: &str, version: &str) -> String {
 
 pub fn remove_environment(name: &str) -> Result<()> {
     // Validate environment name
+    // 'self' environment contains package manager files; 'main' is the default private environment
     if name == SELF_ENV || name == MAIN_ENV {
         return Err(eyre::eyre!("Environment cannot be removed: '{}'", name));
     }
@@ -696,6 +697,8 @@ pub fn remove_environment(name: &str) -> Result<()> {
 
 pub fn activate_environment(name: &str) -> Result<()> {
     // Validate environment name
+    // 'self' environment is special: contains only package manager files (epkg, elf-loader)
+    // and is not used for regular package installations, thus cannot be activated
     if name == SELF_ENV {
         return Err(eyre::eyre!("Environment 'self' cannot be activated"));
     }
@@ -825,6 +828,7 @@ pub fn deactivate_environment() -> Result<()> {
 
 pub fn register_environment_for(name: &str, mut env_config: EnvConfig) -> Result<()> {
     // Validate environment name
+    // 'self' environment is for package manager files only, not for regular packages
     if name == SELF_ENV {
         return Err(eyre::eyre!("Environment 'self' cannot be registered"));
     }
@@ -915,7 +919,7 @@ fn override_env_config(env_config: &mut EnvConfig, name: &str, env_base: &Path, 
     // Note: env_config.public controls visibility/permissions, not location
     // Location is determined by InitOptions.shared_store (handled via dirs().user_envs)
 
-    // SELF_ENV.public = (always) true
+    // SELF_ENV.public = (always) true - self environment contains only package manager files
     // This simplifies setting and works better in case $HOME is accessible to others,
     // so other users can still manually access it.
     if name == SELF_ENV {

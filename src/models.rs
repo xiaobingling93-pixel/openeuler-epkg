@@ -24,7 +24,7 @@ pub const PURE_ENV_SUFFIX: char = '!';
 pub const DEFAULT_CHANNEL: &str = &"debian";
 pub const DEFAULT_COMMIT:  &str = &env!("EPKG_VERSION_TAG"); // epkg self install will download this commit from gitee
 
-pub const SELF_ENV: &str = &"self"; // holds epkg, elf-loader, package-manager source files
+pub const SELF_ENV: &str = &"self"; // holds epkg, elf-loader, package-manager source files; does NOT install regular packages
 pub const MAIN_ENV: &str = &"main"; // the default env for most operations, must be private
 
 // Link type for mirroring files from store to environment

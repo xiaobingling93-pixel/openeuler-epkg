@@ -128,9 +128,16 @@ fn main() -> Result<()> {
     let invoked_as_applet = crate::applets::is_invoked_as_applet();
     crate::models::init_config(invoked_as_applet)?;
 
-    // Gracefully exit instead of panic on half piping
-    // - epkg list --all | head
-    // - epkg busybox cat long-file | head
+    // SIGPIPE handling principles:
+    // 1. Package manager should ignore SIGPIPE and handle EPIPE explicitly
+    //    - Use with_sigpipe_handler(SIG_IGN) for pipe writes, check Errno::EPIPE
+    // 2. Children don't inherit SIGPIPE ignore setting by default
+    //    - Child processes use default SIGPIPE handling (SIG_DFL)
+    // 3. Scriptlets should use defaults (SIG_DFL) unless they have special needs
+    // 4. Don't force SIGPIPE setup on child processes - let them decide
+    //
+    // Set SIG_DFL for the main epkg process to allow graceful termination
+    // if writing to a closed pipe (e.g., epkg list --all | head).
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -1353,6 +1360,8 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
 
 fn parse_options_self(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
     use crate::utils;
+    // 'self' environment contains only package manager files (epkg, elf-loader)
+    // and is not used for regular package installations
     config.common.env_name = SELF_ENV.to_string();
     config.common.env_explicit = true;
     match sub_matches.subcommand() {

@@ -150,6 +150,9 @@ FHS files
 
 ## 'self' env layout
 
+The 'self' environment contains only package manager files (epkg, elf-loader, source code)
+and is not used for regular package installations.
+
 - on `epkg self install --store=shared`, auto run `epkg env create self --public`
   (store is shared == self env is public)
 

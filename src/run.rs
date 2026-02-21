@@ -40,6 +40,21 @@ pub struct RunOptions {
 }
 
 /// Temporarily set SIGPIPE handler
+///
+/// SIGPIPE handling principles:
+/// 1. Package manager should ignore SIGPIPE and handle EPIPE explicitly
+///    - This function is used when writing to child stdin pipes
+///    - EPIPE errors are checked explicitly (Errno::EPIPE)
+/// 2. Children don't inherit SIGPIPE ignore setting by default
+///    - Child processes are not forced to ignore SIGPIPE
+///    - They inherit default signal handling unless they change it
+/// 3. Scriptlets should use defaults (SIG_DFL) unless they have special needs
+///    - Child processes (including scriptlets) use default SIGPIPE handling
+/// 4. Don't force SIGPIPE setup on child processes - let them decide
+///    - Child processes can set their own SIGPIPE handling as needed
+///
+/// This function is used by the package manager to temporarily ignore SIGPIPE
+/// while performing pipe operations, then restore the previous handler.
 pub(crate) fn with_sigpipe_handler<F, R>(handler: usize, f: F) -> R
 where
     F: FnOnce() -> R,
@@ -105,8 +120,15 @@ fn handle_wait_status(wait_status: nix::sys::wait::WaitStatus, cmd_path: &Path, 
             Ok(())
         }
         WaitStatus::Signaled(_, signal, _) => {
-            debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
-            Err(eyre::eyre!("Command killed by signal {:?}", signal))
+            // SIGPIPE is expected when child writes to a closed pipe (e.g., rpm -qa | head)
+            // According to SIGPIPE handling principles, treat this as normal exit
+            if signal == Signal::SIGPIPE {
+                debug!("Child process terminated by SIGPIPE (broken pipe) - treating as normal exit (cmd: {})", cmd_path.display());
+                Ok(())
+            } else {
+                debug!("Child process killed by signal {:?} (cmd: {})", signal, cmd_path.display());
+                Err(eyre::eyre!("Command killed by signal {:?}", signal))
+            }
         }
         _ => {
             debug!("Child process ended with status: {:?} (cmd: {})", wait_status, cmd_path.display());
@@ -300,6 +322,7 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
                             Err(e) => {
                                 // EPIPE means child closed stdin (doesn't need input)
                                 // This is OK for hooks with NeedsTargets but scripts that ignore stdin
+                                // Following SIGPIPE principle 1: handle EPIPE explicitly
                                 if e == Errno::EPIPE {
                                     break;
                                 }
