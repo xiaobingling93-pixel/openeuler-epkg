@@ -281,12 +281,11 @@ install_rust_toolchain() {
         fi
     fi
 }
-# Clone required repositories
-install_repos() {
+# Clone required repositories (without building elf-loader dependencies)
+clone_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
-    cd elf-loader/src && make $mode-depends
 }
 
 # Unified dependency installer
@@ -312,7 +311,8 @@ install_depends() {
     install_rust_toolchain "$mode" "$current_arch"
 
     # Clone repositories
-    install_repos
+    clone_repos
+    cd elf-loader/src && make $mode-depends
 
     echo "Installation complete!"
 }
@@ -568,6 +568,9 @@ case $cmd in
     crossdev-depends)
         crossdev_depends
         ;;
+    clone-repos)
+        clone_repos
+        ;;
     test)
         run_tests
         ;;
@@ -587,6 +590,7 @@ case $cmd in
         echo "  static [<arch>]                      Build static binary (auto-detects arch if not specified)"
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
+        echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"
         echo "  test                                 Run module-level unit tests"
         echo "  clean                                Clean build artifacts"
         echo "  clean_all                            Clean all artifacts and distribution files"

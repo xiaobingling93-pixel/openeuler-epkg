@@ -37,6 +37,10 @@ dev-depends:
 crossdev-depends:
 	@$(PROJECT_ROOT)/bin/make.sh crossdev-depends
 
+# Clone required repositories (rpm-rs, resolvo, elf-loader)
+clone-repos:
+	@$(PROJECT_ROOT)/bin/make.sh clone-repos
+
 
 # Build static binaries for all architectures (sequentially to avoid Cargo lock conflicts)
 static-all:
@@ -83,4 +87,4 @@ clean:
 clean-all:
 	@$(PROJECT_ROOT)/bin/make.sh clean_all
 
-.PHONY: dev-depends crossdev-depends build release static static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all
+.PHONY: dev-depends crossdev-depends clone-repos build release static static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all
