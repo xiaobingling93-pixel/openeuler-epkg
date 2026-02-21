@@ -783,9 +783,106 @@ pub fn create_load_repoindex(
         repo_index.package_baseurl = baseurl;
     }
 
+    // Ensure repo index is up-to-date with metadata files
+    // This handles two critical cases:
+    // 1. When loading existing RepoIndex.json (no_revises=true): JSON may be stale
+    //    (e.g., filelists: null) while metadata files actually exist on disk
+    // 2. When creating new index (no_revises=false): ensures any pre-existing
+    //    metadata files are included (e.g., from previous partial processing)
+    update_repoindex_from_metadata(&repo, repo_dir, &mut repo_index)?;
+
     mmio::populate_repoindex_data(&repo, repo_index)
         .with_context(|| format!("Failed to populate repository index data for: {}", repo.repo_name))?;
 
+    Ok(())
+}
+
+/// Synchronizes repository index with on-disk metadata files.
+///
+/// PURPOSE:
+/// Ensures RepoIndex.json reflects current metadata state by scanning for
+/// .packages*.json files and loading corresponding .filelists*.json files.
+/// This handles cases where metadata files exist but RepoIndex.json is stale
+/// or has null filelists entries.
+///
+/// DATA FLOW:
+/// 1. Scan repo_dir for .packages*.json files (supports .packages.json and
+///    .packages-{arch}.json patterns)
+/// 2. For each packages metafile:
+///    - Derive shard key from filename (e.g., ".packages" → "packages")
+///    - Load PackagesFileInfo from JSON
+///    - Look for corresponding .filelists*.json file
+///    - If found, load FilelistsFileInfo from JSON
+///    - Create/update RepoShard in repo_index.repo_shards
+/// 3. Returns updated repo_index with synchronized metadata
+///
+/// WHY IT MATTERS:
+/// - Fixes bug where `epkg search --paths` fails due to filelists: null in RepoIndex.json
+/// - Handles stale RepoIndex.json that doesn't reflect existing metadata files
+/// - Works for both RPM (.packages.json) and Debian (.packages-{arch}.json) formats
+/// - Enables file/path search operations without unnecessary reprocessing
+fn update_repoindex_from_metadata(repo: &RepoRevise, repo_dir: &PathBuf, repo_index: &mut RepoIndex) -> Result<()> {
+    log::debug!("Updating repo index from metadata files for repository: {}", repo.repo_name);
+
+    // Scan for .packages.json files in repo directory
+    let mut packages_metafiles = Vec::new();
+    for entry in std::fs::read_dir(repo_dir)
+        .with_context(|| format!("Failed to read repo directory: {}", repo_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            if file_name.contains(".packages") && file_name.ends_with(".json") {
+                packages_metafiles.push(path);
+            }
+        }
+    }
+
+    if packages_metafiles.is_empty() {
+        log::debug!("No .packages.json files found in {}", repo_dir.display());
+        return Ok(());
+    }
+
+    // Process each packages metafile
+    for packages_metafile in packages_metafiles {
+        log::debug!("Processing packages metafile: {}", packages_metafile.display());
+
+        // Check if this shard already exists in repo_index
+        let key = packages_metafile.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.trim_start_matches('.').to_owned())
+            .unwrap_or_else(|| "packages".to_string());
+
+        // Load packages info
+        let packages_info: PackagesFileInfo = read_json_file(&packages_metafile)?;
+
+        // Try to load corresponding filelists if it exists
+        let mut filelists_info = None;
+        let filelists_metafile = packages_metafile.to_str()
+            .ok_or_else(|| eyre::eyre!("Invalid packages metafile path: {}", packages_metafile.display()))?
+            .replace(".packages", ".filelists");
+        if Path::new(&filelists_metafile).exists() {
+            log::debug!("Found filelists metafile: {}", filelists_metafile);
+            let filelists: FilelistsFileInfo = read_json_file(Path::new(&filelists_metafile))?;
+            filelists_info = Some(filelists);
+        } else {
+            log::debug!("Filelists metafile does not exist: {}", filelists_metafile);
+        }
+
+        // Update or create repo shard
+        let filelists_metafile_opt = filelists_info.as_ref().map(|_| filelists_metafile.clone());
+        let shard = RepoShard {
+            packages: packages_info,
+            filelists: filelists_info,
+            packages_metafile: packages_metafile.to_string_lossy().into_owned(),
+            filelists_metafile: filelists_metafile_opt,
+            ..Default::default()
+        };
+
+        repo_index.repo_shards.insert(key, shard);
+    }
+
+    log::debug!("Updated repo index from metadata files");
     Ok(())
 }
 

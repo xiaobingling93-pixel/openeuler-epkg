@@ -343,9 +343,16 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     let need_convert = if !output_path.exists() {
                         true // Output file doesn't exist, definitely need to convert
                     } else {
-                        // Output file exists, but check if RepoIndex.json exists
-                        let repoindex_path = repo_dir.join("RepoIndex.json");
-                        !repoindex_path.exists()
+                        // Output file exists, check if metadata JSON file exists
+                        let metadata_path = if is_packages {
+                            output_path.with_extension("json").to_str()
+                                .map(|s| s.replace("packages", ".packages"))
+                        } else {
+                            output_path.with_extension("").with_extension("json").to_str()
+                                .map(|s| s.replace("filelists", ".filelists"))
+                        };
+                        // If we can't determine metadata path or it doesn't exist, need to convert
+                        metadata_path.map(|p| !std::path::Path::new(&p).exists()).unwrap_or(true)
                     };
 
                     let mut package_baseurl = repo.index_url.clone();
