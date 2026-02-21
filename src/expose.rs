@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::symlink;
+use crate::lfs;
 use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
@@ -50,10 +50,9 @@ fn unexpose_package_ebin(env_root: &Path, pkgkey: &str) -> Result<()> {
 
             for relative_ebin_path_str in &pkg_info.ebin_links {
                 let ebin_path = env_root.join(relative_ebin_path_str);
-                if fs::symlink_metadata(&ebin_path).is_ok() {
+                if lfs::symlink_metadata(&ebin_path).is_ok() {
                     log::debug!("Removing ebin wrapper: {}", ebin_path.display());
-                    fs::remove_file(&ebin_path)
-                        .with_context(|| format!("Failed to remove ebin wrapper {}", ebin_path.display()))?;
+                    lfs::remove_file(&ebin_path)?;
                 } else {
                     log::warn!("Ebin wrapper listed in metadata not found for removal: {}", ebin_path.display());
                 }
@@ -80,14 +79,12 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
 
     // Create hardlink from elf-loader to target path (replace copy&replace)
     if target_path.exists() {
-        fs::remove_file(target_path)
-            .with_context(|| format!("Failed to remove existing file {}", target_path.display()))?;
+        lfs::remove_file(target_path)?;
     }
 
     // Create parent directory if it doesn't exist
     if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
+        lfs::create_dir_all(parent)?;
     }
 
     // Try hardlink first, fall back to copy if cross-device
@@ -331,10 +328,10 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
     }
 
     // if the soft link is broken, delete it
-    if let Ok(metadata) = fs::symlink_metadata(interpreter_in_env) {
+    if let Ok(metadata) = lfs::symlink_metadata(interpreter_in_env) {
         if metadata.file_type().is_symlink() {
             if fs::read_link(interpreter_in_env).map(|t| !t.exists()).unwrap_or(false) {
-                fs::remove_file(interpreter_in_env)?
+                lfs::remove_file(interpreter_in_env)?
             } else {
                 return Ok(());
             }
@@ -370,9 +367,7 @@ fn find_link_interpreter(interpreter_in_env: &Path, interpreter_basename: &str) 
         .ok_or_else(|| eyre::eyre!("No suitable interpreter found for '{}'", interpreter_basename))?;
 
     // Create a symlink from the found interpreter to the expected location
-    symlink(&target, interpreter_in_env)
-        .with_context(|| format!("Failed to create symlink from {} to {}",
-            target.display(), interpreter_in_env.display()))?;
+    lfs::symlink(&target, interpreter_in_env)?;
 
     Ok(())
 }
