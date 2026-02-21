@@ -234,7 +234,7 @@ get_package_manager_config() {
             # For dnf/yum, install cargo instead of rustup (rustup can be installed via curl if needed)
             packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel"
             # Crossdev packages may not be available on all distros
-            # no support "$mode" == "crossdev"
+            # Note: crossdev mode not supported for dnf/yum - cross-compilation tools not packaged
             ;;
         zypper)
             update_cmd="zypper refresh"
@@ -263,7 +263,7 @@ get_package_manager_config() {
 }
 
 # Install packages using detected package manager
-install_packages() {
+install_os_packages() {
     # Determine if we need sudo
     local SUDO
     if [[ $(id -u) -eq 0 ]]; then
@@ -315,15 +315,8 @@ install_rust_toolchain() {
         fi
     fi
 }
-# Clone required repositories (without building elf-loader dependencies)
-clone_repos() {
-    clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
-    clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
-    clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
-}
 
-# Unified dependency installer
-install_depends() {
+install_packages() {
     local mode="${1:-dev}"
     detect_os
     detect_package_manager
@@ -339,17 +332,30 @@ install_depends() {
     get_package_manager_config "$mode"
 
     # Install packages
-    install_packages
+    install_os_packages
 
     # Install Rust toolchain
     install_rust_toolchain "$mode" "$current_arch"
+}
 
-    # Clone repositories
+# Clone required repositories (without building elf-loader dependencies)
+clone_repos() {
+    clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
+    clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
+}
+
+# Unified dependency installer
+install_depends() {
+    install_packages "$@"
     clone_repos
-    cd elf-loader/src && make $mode-depends
+
+    # leave this to developers to run on-demand
+    # cd elf-loader/src && make $mode-depends
 
     echo "Installation complete!"
 }
+
 # Install development dependencies (current arch only)
 dev_depends() {
     install_depends dev
@@ -601,6 +607,12 @@ case $cmd in
         ;;
     crossdev-depends)
         crossdev_depends
+        ;;
+    dev-pkgs)
+        install_packages dev
+        ;;
+    crossdev-pkgs)
+        install_packages crossdev
         ;;
     clone-repos)
         clone_repos

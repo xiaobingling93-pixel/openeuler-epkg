@@ -19,20 +19,68 @@ else
     log "Could not detect OS from /etc/os-release"
 fi
 
-# Helper to build epkg from source in current environment (Docker container)
-build_epkg() {
-    log "Building epkg from source in current environment"
+# Helper function: install OS packages via dev-pkgs
+install_packages() {
+    log "Installing OS packages (git, wget, compilers, etc.)"
+    if ! $PROJECT_ROOT/bin/make.sh dev-pkgs; then
+        error "Failed to install OS packages"
+    fi
+    log "OS packages installed successfully"
+}
 
-    # Change to project root directory (mounted at same path as outside Docker)
-    cd "$PROJECT_ROOT" || error "Failed to cd to project root: $PROJECT_ROOT"
+# Helper function: clone project to writable directory
+clone_project_to_writable_dir() {
+    local BUILD_DIR GIT_URL
 
-    # Run bin/make.sh dev-depends to install build dependencies
-    log "Installing build dependencies"
-    if ! ./bin/make.sh dev-depends; then
-        error "Failed to install build dependencies"
+    # Create writable build directory (project is mounted read-only)
+    BUILD_DIR="${PERSISTENT_OPT_EPKG:-/opt/epkg}/build-$(date +%s)"
+    log "Creating writable build directory at $BUILD_DIR"
+    mkdir -p "$BUILD_DIR" || error "Failed to create build directory: $BUILD_DIR"
+
+    # Clone project to writable location using git
+    log "Cloning project to writable directory using git"
+
+    # Verify we have a git repository
+    if ! [ -d "$PROJECT_ROOT/.git" ]; then
+        error "Project directory is not a git repository: $PROJECT_ROOT"
     fi
 
-    # Build epkg using bin/make.sh
+    # Clone from local filesystem using file:// protocol
+    GIT_URL="file://$PROJECT_ROOT"
+    log "Cloning from local git repository: $GIT_URL"
+    if ! git clone "$GIT_URL" "$BUILD_DIR"; then
+        error "Failed to clone repository from $GIT_URL"
+    fi
+    log "Git clone successful"
+
+    # Change to writable build directory
+    cd "$BUILD_DIR" || error "Failed to cd to build directory: $BUILD_DIR"
+    PROJECT_ROOT="$BUILD_DIR"  # Update PROJECT_ROOT for subsequent operations
+    echo "$BUILD_DIR"  # Return build directory path
+}
+
+# Configure git safe.directory to avoid dubious ownership errors
+# Fixes:
+#+ git clone file:///c/epkg /opt/epkg/build-1771692286
+# Cloning into '/opt/epkg/build-1771692286'...
+# fatal: detected dubious ownership in repository at '/c/epkg/.git'
+# To add an exception for this directory, call:
+#
+#         git config --global --add safe.directory /c/epkg/.git
+configure_git_safe_directories() {
+    git config --global --add safe.directory $PROJECT_ROOT/.git
+}
+
+clone_repos() {
+    log "Cloning required repositories (rpm-rs, resolvo, elf-loader)"
+    if ! ./bin/make.sh clone-repos; then
+        error "Failed to clone required repositories"
+    fi
+    log "Repositories cloned successfully"
+}
+
+# Helper function: build epkg binary
+build_epkg_binary() {
     log "Running bin/make.sh build"
     if ! ./bin/make.sh build; then
         error "bin/make.sh build failed"
@@ -43,6 +91,24 @@ build_epkg() {
         error "Built binary not found at target/debug/epkg"
     fi
     log "Build successful"
+}
+
+# Helper to build epkg from source in current environment (Docker container)
+build_epkg() {
+    log "Building epkg from source in current environment"
+
+    install_packages
+
+    configure_git_safe_directories
+
+    # Step 2: Clone epkg project to writable directory
+    clone_project_to_writable_dir >/dev/null  # Build dir already set in PROJECT_ROOT
+
+    # Step 3: Clone resolvo, rpm-rs, elf-loader
+    clone_repos
+
+    # Step 4: Build the binary
+    build_epkg_binary
 }
 
 # Helper to self-install and test the built binary

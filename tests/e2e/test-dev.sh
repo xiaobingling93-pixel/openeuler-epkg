@@ -7,9 +7,17 @@ SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""
 PASSED_TESTS=""
 
+# docker pull hub.oepkgs.net/openeuler/openeuler:25.09
+# docker pull quay.io/openeuler/openeuler:25.09
+DOCKER_IMAGES="openeuler/openeuler:25.09"
+
+# docker pull hub.oepkgs.net/openeuler/openeuler
+# docker pull quay.io/openeuler/openeuler
+DOCKER_IMAGES="openeuler/openeuler"
+
 # List of Docker images to test build-from-source on
 # These should be official Docker Hub images that support building epkg
-DOCKER_IMAGES="openeuler ubuntu fedora archlinux"
+DOCKER_IMAGES="openeuler/openeuler fedora ubuntu archlinux"
 
 # Run build-from-source test on each Docker image
 for docker_image in $DOCKER_IMAGES; do
@@ -21,7 +29,7 @@ for docker_image in $DOCKER_IMAGES; do
     export DOCKER_IMAGE="$docker_image"
 
     # Run the build-from-source test
-    if "$SCRIPT_DIR/test-one.sh" "$SCRIPT_DIR/build-from-source-test/test-build-from-source.sh"; then
+    if "$SCRIPT_DIR/test-one.sh" -d "$SCRIPT_DIR/build-from-source-test/test-build-from-source.sh"; then
         echo "PASSED: $docker_image"
         PASSED_TESTS="$PASSED_TESTS $docker_image"
     else
