@@ -136,7 +136,8 @@ pub fn populate_repoindex_data(repo: &RepoRevise, mut repo_index: RepoIndex) -> 
 
     {
         let mut repodata_indice = repodata_indice_mut();
-        repodata_indice.insert(repo.repodata_name.clone(), repo_index);
+        // Key format: "repodata_name/arch" to separate indices by architecture
+        repodata_indice.insert(format!("{}/{}", repo.repodata_name, repo.arch), repo_index);
     }
     Ok(())
 }

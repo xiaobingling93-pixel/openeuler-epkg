@@ -212,7 +212,7 @@ pub fn parse_repodata_json(repo: &RepoRevise, _release_dir: &PathBuf) -> Result<
     // Use the standard get_repo_dir() - it now works correctly because repo.arch is "all" for noarch
     let repo_dir = dirs::get_repo_dir(&repo);
 
-    let output_path = repo_dir.join(format!("packages-{}.txt", effective_arch));
+    let output_path = repo_dir.join("packages.txt");
 
     let url = repo.index_url.clone();
     // Extract location as the relative path from the base URL (just the filename for conda)

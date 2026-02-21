@@ -288,14 +288,15 @@ pub fn parse_release_file(repo: &RepoRevise, content: &str, release_dir: &PathBu
                     let component_repo = crate::repo::RepoRevise {
                         repodata_name: repodata_name,
                         components: vec![component_name.clone()],
+                        arch: arch.clone(),
                         ..repo.clone()
                     };
 
                     let repo_dir = dirs::get_repo_dir(&component_repo);
                     let output_path = if is_packages {
-                        repo_dir.join(format!("packages-{}.txt", arch))
+                        repo_dir.join("packages.txt")
                     } else {
-                        repo_dir.join(format!("filelists-{}.gz", arch))
+                        repo_dir.join("filelists.gz")
                     };
 
                     // --- EXAMPLES FOR PATH AND URL CONSTRUCTION ---

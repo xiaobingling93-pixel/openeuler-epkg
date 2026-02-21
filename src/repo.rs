@@ -300,29 +300,31 @@ fn process_all_release_items(all_release_items: Vec<RepoReleaseItem>) -> Result<
     Ok(())
 }
 
-/// Group items by repository and create indexes
+/// Group items by repository and architecture, then create indexes
 fn create_repository_indexes(revises: Vec<RepoReleaseItem>, deduplicated_items: Vec<RepoReleaseItem>) -> Result<()> {
     log::debug!("Creating repository indexes for {} items", deduplicated_items.len());
 
-    // Group items by repository
-    let mut repo_items_map: std::collections::HashMap<String, Vec<RepoReleaseItem>> = std::collections::HashMap::new();
-    let mut revises_map: std::collections::HashMap<String, Vec<RepoReleaseItem>> = std::collections::HashMap::new();
+    // Group items by repository and architecture
+    let mut repo_items_map: std::collections::HashMap<(String, String), Vec<RepoReleaseItem>> = std::collections::HashMap::new();
+    let mut revises_map: std::collections::HashMap<(String, String), Vec<RepoReleaseItem>> = std::collections::HashMap::new();
     for revise in deduplicated_items.iter() {
-        repo_items_map.entry(revise.repo_revise.repodata_name.clone()).or_default().push(revise.clone());
+        let key = (revise.repo_revise.repodata_name.clone(), revise.repo_revise.arch.clone());
+        repo_items_map.entry(key).or_default().push(revise.clone());
     }
     for revise in revises.iter() {
-        revises_map.entry(revise.repo_revise.repodata_name.clone()).or_default().push(revise.clone());
+        let key = (revise.repo_revise.repodata_name.clone(), revise.repo_revise.arch.clone());
+        revises_map.entry(key).or_default().push(revise.clone());
     }
 
-    // Create repo indexes for each repository
-    for (repodata_name, release_items) in repo_items_map {
+    // Create repo indexes for each repository and architecture
+    for ((repodata_name, arch), release_items) in repo_items_map {
         if let Some(first_item) = release_items.first() {
             let repo = &first_item.repo_revise;
             // Use the standard get_repo_dir() - repo.arch is already set correctly (e.g., "all" for noarch)
             let repo_dir = dirs::get_repo_dir(repo);
-            let no_revises = !revises_map.contains_key(&repodata_name);
+            let no_revises = !revises_map.contains_key(&(repodata_name.clone(), arch.clone()));
             create_load_repoindex(repo, no_revises, &repo_dir, release_items.clone())
-                .with_context(|| format!("Failed to create and load repository index for: {}", repodata_name))?;
+                .with_context(|| format!("Failed to create and load repository index for: {} ({})", repodata_name, arch))?;
         }
     }
 
@@ -771,7 +773,7 @@ pub fn create_load_repoindex(
     release_items: Vec<RepoReleaseItem>,
 ) -> Result<()> {
     let mut repo_index: RepoIndex =
-        if no_revises {
+        if no_revises && repo_dir.join("RepoIndex.json").exists() {
             read_json_file(&repo_dir.join("RepoIndex.json"))
                 .with_context(|| format!("Failed to deserialize RepoIndex.json for repository: {}", repo.repo_name))?
         } else {
@@ -806,8 +808,7 @@ pub fn create_load_repoindex(
 /// or has null filelists entries.
 ///
 /// DATA FLOW:
-/// 1. Scan repo_dir for .packages*.json files (supports .packages.json and
-///    .packages-{arch}.json patterns)
+/// 1. Scan repo_dir for .packages.json files (arch suffixes removed in refactor)
 /// 2. For each packages metafile:
 ///    - Derive shard key from filename (e.g., ".packages" → "packages")
 ///    - Load PackagesFileInfo from JSON
@@ -819,10 +820,26 @@ pub fn create_load_repoindex(
 /// WHY IT MATTERS:
 /// - Fixes bug where `epkg search --paths` fails due to filelists: null in RepoIndex.json
 /// - Handles stale RepoIndex.json that doesn't reflect existing metadata files
-/// - Works for both RPM (.packages.json) and Debian (.packages-{arch}.json) formats
+/// - Works for RPM (.packages.json) and now Debian (.packages.json) formats after arch suffix removal
 /// - Enables file/path search operations without unnecessary reprocessing
 fn update_repoindex_from_metadata(repo: &RepoRevise, repo_dir: &PathBuf, repo_index: &mut RepoIndex) -> Result<()> {
     log::debug!("Updating repo index from metadata files for repository: {}", repo.repo_name);
+
+    // Clean up old metadata files with arch suffixes (after refactor to remove arch suffixes)
+    for entry in std::fs::read_dir(repo_dir)
+        .with_context(|| format!("Failed to read repo directory: {}", repo_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            // Delete old .packages-*.json and .filelists-*.json files (but keep .packages.json and .filelists.json)
+            if (file_name.starts_with(".packages-") && file_name.ends_with(".json")) ||
+               (file_name.starts_with(".filelists-") && file_name.ends_with(".json")) {
+                log::debug!("Deleting old metadata file with arch suffix: {}", path.display());
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 
     // Scan for .packages.json files in repo directory
     let mut packages_metafiles = Vec::new();
@@ -832,7 +849,7 @@ fn update_repoindex_from_metadata(repo: &RepoRevise, repo_dir: &PathBuf, repo_in
         let entry = entry?;
         let path = entry.path();
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-            if file_name.contains(".packages") && file_name.ends_with(".json") {
+            if file_name == ".packages.json" {
                 packages_metafiles.push(path);
             }
         }

@@ -546,6 +546,8 @@ pub struct RepoConfig {
     pub components: Vec<String>, // DEB specific: filter components from Release file
 }
 
+// Global repository index map. Key format: "repodata_name/arch" (e.g., "main/x86_64", "main/all")
+// to support separate repository indices for different architectures.
 static REPODATA_INDICE: LazyLock<std::sync::RwLock<HashMap<String, RepoIndex>>> =
         LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
@@ -641,7 +643,7 @@ pub fn repodata_indice_mut() -> std::sync::RwLockWriteGuard<'static, HashMap<Str
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RepoIndex {
-    pub repodata_name: String,
+    pub repodata_name: String, // Base repository name without architecture suffix (e.g., "main", "main-security")
     #[serde(skip)]
     pub package_baseurl: String,
     #[serde(skip)]
