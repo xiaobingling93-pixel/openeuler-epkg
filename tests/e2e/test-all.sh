@@ -1,16 +1,14 @@
 #!/bin/sh
-# Run all e2e tests
+# Run all e2e tests (excluding install-remove-upgrade tests)
+# Install-remove-upgrade tests are skipped because they are heavy weight
+# and their randomness accumulates cache on developer machines.
+# Use ./test-iur.sh for install-remove-upgrade tests with predefined matrix.
 
 . "$(dirname "$0")/host-vars.sh"
 
 SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""
 PASSED_TESTS=""
-
-(
-	cd $PROJECT_ROOT
-	make static-$ARCH
-)
 
 # Find all test scripts
 for test_dir in "$SCRIPT_DIR"/*/; do
@@ -20,6 +18,18 @@ for test_dir in "$SCRIPT_DIR"/*/; do
 
     for test_script in "$test_dir"test*.sh; do
         if [ ! -f "$test_script" ]; then
+            continue
+        fi
+
+        # Skip install-remove-upgrade tests as they are heavy weight
+        # and their randomness accumulates cache on developer machines
+        # Use test-iur.sh instead for predefined matrix testing
+        if [ "$(basename "$test_script")" = "test-install-remove-upgrade.sh" ]; then
+            echo "========================================="
+            echo "Skipping heavy test: $(basename "$test_script")"
+            echo "Use ./test-iur.sh for install-remove-upgrade tests"
+            echo "========================================="
+            echo ""
             continue
         fi
 

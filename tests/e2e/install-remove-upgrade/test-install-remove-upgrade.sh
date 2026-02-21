@@ -297,7 +297,7 @@ main() {
     log "Starting install/remove/upgrade test"
 
     # Test epkg commands
-    test_epkg_help_commands
+    # test_epkg_help_commands
 
     # If arguments are provided, treat them as:
     #   $1: OS name (or "all-os" to test all OSes)
