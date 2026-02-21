@@ -907,6 +907,7 @@ fn ensure_owner_permissions(_target_path: &Path, _required_mask: u32, _file_type
 
 /// Fix up environment links and remove system directories
 pub fn fixup_env_links(env_root: &Path) -> Result<()> {
+    log::trace!("fixup_env_links called for {}", env_root.display());
     // Prevent running and stalling on `systemctl --system daemon-reload`
     let _ = lfs::remove_dir(env_root.join("run/systemd/system"));
 
@@ -977,6 +978,7 @@ fn replace_symlinks_with_content(env_root: &Path) -> Result<()> {
 
 /// Create common symlinks for shell and utilities if they don't exist
 fn create_common_symlinks(env_root: &Path) -> Result<()> {
+    log::trace!("Creating common symlinks in {}", env_root.display());
     // List of symlinks to create: [(symlink, [possible_targets])]
     let symlinks: &[(&str, &[&str])] = &[
         ("usr/bin/sh", &["bash", "dash", "yash", "busybox"]),
@@ -995,15 +997,23 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
     ];
 
     for (link_name, possible_targets) in symlinks {
+        log::trace!("Checking symlink: {}", link_name);
         let link_path = env_root.join(link_name);
 
         // Skip if symlink already exists
-        if link_path.is_symlink() || link_path.exists() {
+        if link_path.is_symlink() {
+            log::debug!("Skipping {}: symlink already exists", link_path.display());
+            continue;
+        }
+        if link_path.exists() {
+            log::debug!("Skipping {}: file already exists", link_path.display());
             continue;
         }
 
         // Try each possible target until we find one that exists
+        let mut found = false;
         for target in *possible_targets {
+            log::trace!("  Trying target: {}", target);
             // Check if target exists within env_root, not host rootfs
             let target_check_path = if target.starts_with('/') {
                 // Absolute path: check in env_root
@@ -1012,15 +1022,22 @@ fn create_common_symlinks(env_root: &Path) -> Result<()> {
                 // Relative path: relative to symlink's parent directory within env_root
                 env_root.join(link_name).parent().unwrap().join(target)
             };
+            log::trace!("  Target check path: {}", target_check_path.display());
 
             if target_check_path.exists() {
+                log::trace!("  Target found at {}", target_check_path.display());
+                found = true;
                 if let Some(parent) = link_path.parent() {
                     lfs::create_dir_all(parent)?;
                 }
                 // Use the original target string for the symlink (relative or absolute as specified)
+                log::debug!("  Creating symlink {} -> {}", link_path.display(), target);
                 lfs::symlink(target, &link_path)?;
                 break;
             }
+        }
+        if !found {
+            log::trace!("  No suitable target found for {}", link_name);
         }
     }
     Ok(())
@@ -1072,7 +1089,6 @@ fn remove_files_by_patterns(env_root: &Path) -> Result<()> {
                     match path_result {
                         Ok(path) => {
                             if path.exists() {
-                                log::debug!("Removing file matching pattern '{}': {}", pattern, path.display());
                                 if let Err(e) = lfs::remove_file(&path) {
                                     log::warn!("Failed to remove file {}: {}", path.display(), e);
                                 }
