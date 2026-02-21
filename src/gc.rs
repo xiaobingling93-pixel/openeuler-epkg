@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use crate::lfs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use color_eyre::Result;
@@ -404,8 +405,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
         for file in downloads {
             if file.exists() {
                 println!("Removing old download file: {}", file.display());
-                fs::remove_file(file)
-                    .wrap_err_with(|| format!("Failed to remove file: {}", file.display()))?;
+                lfs::remove_file(file)?;
             }
         }
     }
@@ -446,8 +446,7 @@ fn execute_gc_plan(plan: &GcPlan) -> Result<()> {
                     .wrap_err_with(|| format!("Failed to remove directory: {}", item.display()))?;
             } else {
                 println!("Removing stale AUR build log: {}", item.display());
-                fs::remove_file(item)
-                    .wrap_err_with(|| format!("Failed to remove file: {}", item.display()))?;
+                lfs::remove_file(item)?;
             }
         }
     }

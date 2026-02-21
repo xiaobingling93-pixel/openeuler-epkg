@@ -1,4 +1,5 @@
 use std::fs;
+use crate::lfs;
 use std::path::{Path, PathBuf};
 use std::os::unix::fs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr};
@@ -51,13 +52,13 @@ pub fn create_new_generation_with_root(generations_root: &Path) -> Result<PathBu
     let new_generation = generations_root.join(new_id.to_string());
 
     // Create new generation directory
-    fs::create_dir_all(&new_generation)?;
+    lfs::create_dir_all(&new_generation)?;
 
     // FHS directories are now at root level
     // So only copy metadata files from current to new generation.
     // No need copy installed-packages.json since its JSON data will be
     // loaded from old generation dir and saved to new generation dir.
-    fs::copy(command_json, new_generation.join("command.json"))?;
+    lfs::copy(command_json, new_generation.join("command.json"))?;
 
     Ok(new_generation)
 }
@@ -66,7 +67,7 @@ pub fn update_current_generation_symlink_with_root(generations_root: &Path, new_
     let current_link = generations_root.join("current");
 
     if current_link.exists() {
-        fs::remove_file(&current_link)?;
+        lfs::remove_file(&current_link)?;
     }
 
     symlink(&new_generation.file_name().unwrap(), &current_link)?;
@@ -92,7 +93,7 @@ pub fn record_history(new_generation_path: &PathBuf, plan: Option<&crate::plan::
     };
 
     let json = serde_json::to_string_pretty(&command)?;
-    fs::write(&command_json, json)?;
+    lfs::write(&command_json, json)?;
 
     Ok(())
 }

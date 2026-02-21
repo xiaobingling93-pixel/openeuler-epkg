@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use color_eyre::eyre::{self, Result};
+use crate::lfs;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
 use crate::install::execute_installation_plan;
@@ -68,8 +69,7 @@ pub fn unlink_package(
             }
 
             // Remove file (include symlink)
-            log::trace!("Removing package file: {}", target_path.display());
-            fs::remove_file(&target_path)?;
+            lfs::remove_file(&target_path)?;
         }
     }
 

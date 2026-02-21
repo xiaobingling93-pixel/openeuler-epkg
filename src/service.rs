@@ -35,6 +35,7 @@
 //! configuration to use non-privileged ports (e.g., ports >= 1024) before starting the service.
 
 use std::fs;
+use crate::lfs;
 use std::path::{Path, PathBuf};
 use std::io::{BufRead, BufReader};
 use color_eyre::Result;
@@ -247,12 +248,10 @@ fn read_pid_from_file(pid_file: &Path) -> Result<Option<i32>> {
 fn write_pid_to_file(pid_file: &Path, pid: i32) -> Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = pid_file.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err(format!("Failed to create directory: {:?}", parent))?;
+        lfs::create_dir_all(parent)?;
     }
 
-    fs::write(pid_file, pid.to_string())
-        .wrap_err(format!("Failed to write PID file: {:?}", pid_file))?;
+    lfs::write(pid_file, pid.to_string())?;
 
     Ok(())
 }
@@ -401,7 +400,7 @@ fn stop_process_by_signal(pid: i32, service_name: &str) -> Result<()> {
 
 /// Clean up PID file after stopping service
 fn cleanup_pid_file(pid_file: &Path) {
-    let _ = fs::remove_file(pid_file);
+    let _ = lfs::remove_file(pid_file);
 }
 
 /// Stop a service daemon and clean up PID file

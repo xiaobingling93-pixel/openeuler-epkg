@@ -10,6 +10,7 @@ use nix::unistd;
 use crate::dirs::*;
 use crate::models::*;
 use crate::utils;
+use crate::lfs;
 
 #[derive(Debug)]
 pub struct DeinitPlan {
@@ -200,8 +201,7 @@ fn execute_deinit_plan(plan: &DeinitPlan) -> Result<()> {
     for symlink in &plan.symlinks_to_remove {
         if symlink.exists() {
             println!("Removing symlink: {}", symlink.display());
-            fs::remove_file(symlink)
-                .wrap_err_with(|| format!("Failed to remove symlink: {}", symlink.display()))?;
+            lfs::remove_file(symlink)?;
         }
     }
 
@@ -258,8 +258,7 @@ pub fn remove_epkg_from_rc_file(rc_file_path: &str) -> Result<String> {
     let new_content = new_lines.join("\n");
 
     // Write back the modified content
-    fs::write(path, &new_content)
-        .wrap_err_with(|| format!("Failed to write RC file: {}", rc_file_path))?;
+    lfs::write(path, &new_content)?;
 
     println!("Removed epkg from shell RC file: {}", rc_file_path);
     Ok(new_content)
@@ -273,7 +272,7 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
 
     // First, try normal deletion
-    let initial_result = fs::remove_dir_all(path);
+    let initial_result = lfs::remove_dir_all(path);
     if initial_result.is_ok() {
         return Ok(());
     }
@@ -303,7 +302,7 @@ pub fn force_remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     eprintln!("Retrying directory removal after permission fix...");
 
     // Retry deletion
-    match fs::remove_dir_all(path) {
+    match lfs::remove_dir_all(path) {
         Ok(_) => {
             eprintln!("Directory successfully removed after permission fix");
             Ok(())

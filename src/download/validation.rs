@@ -15,11 +15,11 @@
 // ============================================================================
 
 use std::{
-    fs,
     path::Path,
     sync::atomic::Ordering,
     time::SystemTime,
 };
+use crate::lfs;
 
 use color_eyre::eyre::{eyre, Result};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
@@ -55,7 +55,7 @@ pub fn validate_range_request_response(
         if response.status() != 206 {
             // Resume failed, restart from beginning
             if task.chunk_path.exists() {
-                fs::remove_file(&task.chunk_path)?;
+                lfs::remove_file(&task.chunk_path)?;
             }
             task.resumed_bytes.store(0, Ordering::Relaxed);
             log::debug!("Server doesn't support resume, restarting download for {}", task.chunk_path.display());

@@ -4,6 +4,7 @@
 
 use mlua::{Lua, Result as LuaResult, Table, Value, MultiValue};
 use crate::posix::*;
+use crate::lfs;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // Track whether fork() has been called (for exec() security check)
@@ -102,8 +103,6 @@ pub fn register_posix_extensions(lua: &Lua) -> LuaResult<()> {
 
 /// Register simple POSIX functions using macros
 fn register_simple_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaResult<()> {
-    use std::fs;
-
     // Helper macros that match C++ pushresult/pusherror behavior
     // Returns number on success, (nil, error_string, errno) on failure
 
@@ -166,16 +165,16 @@ fn register_simple_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
     posix_bind1!("mkfifo", path, posix_mkfifo(&path));
 
     // posix.rmdir(path) - remove directory
-    posix_bind1!("rmdir", path, fs::remove_dir(&path));
+    posix_bind1!("rmdir", path, lfs::remove_dir(&path));
 
     // posix.unlink(path) - remove file
-    posix_bind1!("unlink", path, fs::remove_file(&path));
+    posix_bind1!("unlink", path, lfs::remove_file(&path));
 
     // posix.link(oldpath, newpath) - create hard link
-    posix_bind2!("link", oldpath, newpath, fs::hard_link(&oldpath, &newpath));
+    posix_bind2!("link", oldpath, newpath, lfs::hard_link(&oldpath, &newpath));
 
     // posix.symlink(oldpath, newpath) - create symbolic link
-    posix_bind2!("symlink", oldpath, newpath, std::os::unix::fs::symlink(&oldpath, &newpath));
+    posix_bind2!("symlink", oldpath, newpath, lfs::symlink(&oldpath, &newpath));
 
     // posix.chdir(path) - change current directory
     posix_bind1!("chdir", path, std::env::set_current_dir(&path));

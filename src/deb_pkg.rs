@@ -9,6 +9,7 @@ use liblzma::read::XzDecoder;
 use color_eyre::Result;
 use color_eyre::eyre::{self, WrapErr};
 use crate::deb_repo::PACKAGE_KEY_MAPPING;
+use crate::lfs;
 
 /// Unpacks a Debian package to the specified directory
 pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Option<&str>) -> Result<()> {
@@ -16,9 +17,9 @@ pub fn unpack_package<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P, pkgkey: Opt
     let store_tmp_dir = store_tmp_dir.as_ref();
 
     // Create the required directory structure
-    fs::create_dir_all(store_tmp_dir.join("fs"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/deb"))?;
-    fs::create_dir_all(store_tmp_dir.join("info/install"))?;
+    lfs::create_dir_all(store_tmp_dir.join("fs"))?;
+    lfs::create_dir_all(store_tmp_dir.join("info/deb"))?;
+    lfs::create_dir_all(store_tmp_dir.join("info/install"))?;
 
     // Extract the AR archive and process tar files
     extract_ar_archive(deb_file, store_tmp_dir)?;
@@ -70,13 +71,13 @@ fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
         match identifier {
             "data.tar.gz" | "data.tar.xz" | "data.tar.zst" | "data.tar" => {
                 let temp_path = store_tmp_dir.join(identifier);
-                let mut temp_file = fs::File::create(&temp_path)?;
+                let mut temp_file = lfs::file_create(&temp_path)?;
                 io::copy(&mut entry, &mut temp_file)?;
                 data_tar_path = Some(temp_path);
             }
             "control.tar.gz" | "control.tar.xz" | "control.tar.zst" | "control.tar" => {
                 let temp_path = store_tmp_dir.join(identifier);
-                let mut temp_file = fs::File::create(&temp_path)?;
+                let mut temp_file = lfs::file_create(&temp_path)?;
                 io::copy(&mut entry, &mut temp_file)?;
                 control_tar_path = Some(temp_path);
             }
@@ -90,7 +91,7 @@ fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
     // Extract data.tar to fs/
     if let Some(data_tar) = data_tar_path {
         extract_tar(&data_tar, &store_tmp_dir.join("fs"))?;
-        fs::remove_file(&data_tar)?;
+        lfs::remove_file(&data_tar)?;
     } else {
         return Err(eyre::eyre!("No data.tar found in deb archive"));
     }
@@ -98,7 +99,7 @@ fn extract_ar_archive<P: AsRef<Path>>(deb_file: P, store_tmp_dir: P) -> Result<(
     // Extract control.tar to info/deb/
     if let Some(control_tar) = control_tar_path {
         extract_tar(&control_tar, &store_tmp_dir.join("info/deb"))?;
-        fs::remove_file(&control_tar)?;
+        lfs::remove_file(&control_tar)?;
     } else {
         return Err(eyre::eyre!("No control.tar found in deb archive"));
     }
@@ -111,7 +112,7 @@ fn extract_tar<P: AsRef<Path>>(tar_path: P, target_dir: P) -> Result<()> {
     let tar_path = tar_path.as_ref();
     let target_dir = target_dir.as_ref();
 
-    fs::create_dir_all(target_dir)?;
+    lfs::create_dir_all(target_dir)?;
 
     let file = fs::File::open(tar_path)?;
     let filename = tar_path.file_name()
@@ -260,7 +261,7 @@ mod tests {
 
         // Create required directory structure
         let deb_dir = store_tmp_dir.join("info/deb");
-        fs::create_dir_all(&deb_dir).unwrap();
+        lfs::create_dir_all(&deb_dir).unwrap();
 
         // Create a mock control file with multi-line Description
         let control_content = r#"Package: base-passwd
@@ -277,11 +278,11 @@ Architecture: all
 "#;
 
         let control_path = deb_dir.join("control");
-        fs::write(&control_path, control_content).unwrap();
+        lfs::write(&control_path, control_content).unwrap();
 
         // Create a mock deb file for SHA256 calculation
         let mock_deb_file = store_tmp_dir.join("mock.deb");
-        fs::write(&mock_deb_file, b"mock deb file content").unwrap();
+        lfs::write(&mock_deb_file, b"mock deb file content").unwrap();
 
         // Run the function - both arguments must be the same type
         let store_tmp_dir_buf = store_tmp_dir.to_path_buf();

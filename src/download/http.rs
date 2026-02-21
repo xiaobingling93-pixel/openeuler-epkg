@@ -26,6 +26,7 @@
 
 use color_eyre::eyre::{eyre, Result};
 use std::fs;
+use crate::lfs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use ureq::http;
@@ -470,7 +471,7 @@ pub(crate) fn finalize_chunk_download(
         log::info!("Download resulted in 0 bytes for {} - likely server issue (unreliable server like AUR), cleaning up and will retry", task.url);
         // Clean up the 0-byte file before returning error to trigger retry
         if task.chunk_path.exists() {
-            if let Err(e) = fs::remove_file(&task.chunk_path) {
+            if let Err(e) = lfs::remove_file(&task.chunk_path) {
                 log::warn!("Failed to remove 0-byte file {}: {}", task.chunk_path.display(), e);
             } else {
                 log::debug!("Cleaned up 0-byte file: {}", task.chunk_path.display());

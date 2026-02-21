@@ -16,6 +16,7 @@
 
 use color_eyre::eyre::{eyre, Result};
 use std::fs::{self, File, OpenOptions};
+use crate::lfs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::Ordering, mpsc::SyncSender as Sender};
 use super::types::*;
@@ -1399,7 +1400,7 @@ fn merge_completed_chunk(
         }
 
         // Remove the temporary part file now that we've processed it
-        if let Err(e) = fs::remove_file(&chunk_task.chunk_path) {
+        if let Err(e) = lfs::remove_file(&chunk_task.chunk_path) {
             log::warn!(
                 "Failed to clean up chunk file {}: {}",
                 chunk_task.chunk_path.display(),
@@ -1579,10 +1580,9 @@ fn append_file_to_file(source_path: &Path, target_path: &Path) -> Result<()> {
     // Create target file if it doesn't exist
     if !target_path.exists() {
         if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
+            lfs::create_dir_all(parent)?;
         }
-        File::create(target_path)?
-            .sync_all()?;
+        lfs::file_create(target_path)?.sync_all()?;
     }
 
     // Open source file for reading

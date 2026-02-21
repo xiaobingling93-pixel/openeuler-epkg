@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use crate::models::dirs;
 use color_eyre::eyre::{Context, Result, eyre};
 use std::fs;
+use crate::lfs;
 use ureq;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,8 +112,7 @@ fn get_default_gateway_from_proc() -> Result<String> {
 /// Get cache file path based on LAN hash
 fn get_cache_file_path(lan_hash: &str) -> Result<std::path::PathBuf> {
     let cache_dir = dirs().epkg_cache.join("iploc");
-    fs::create_dir_all(&cache_dir)
-        .with_context(|| format!("Failed to create cache directory: {}", cache_dir.display()))?;
+    lfs::create_dir_all(&cache_dir)?;
     Ok(cache_dir.join(format!("country_code_{}.json", lan_hash)))
 }
 
@@ -126,7 +126,7 @@ fn load_country_code_cache(lan_hash: &str) -> Option<String> {
         Some(cache.country_code)
     } else {
         // Clean up expired or invalid cache
-        let _ = fs::remove_file(&cache_file);
+        let _ = lfs::remove_file(&cache_file);
         None
     }
 }
@@ -152,8 +152,7 @@ fn save_country_code_cache(country_code: &str, lan_hash: &str) -> Result<()> {
     let pid = process::id();
     let tmp_path = cache_file.with_extension(format!("json.tmp.{}", pid));
     {
-        let mut f = fs::File::create(&tmp_path)
-            .with_context(|| format!("Failed to create temp cache file: {}", tmp_path.display()))?;
+        let mut f = lfs::file_create(&tmp_path)?;
         f.write_all(json.as_bytes())
             .with_context(|| format!("Failed to write to temp cache file: {}", tmp_path.display()))?;
         f.sync_all().ok();
@@ -164,12 +163,12 @@ fn save_country_code_cache(country_code: &str, lan_hash: &str) -> Result<()> {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // Another process won the race, treat as success
-            fs::remove_file(&tmp_path)?;
+            lfs::remove_file(&tmp_path)?;
             Ok(())
         }
         Err(e) => {
             // Clean up temp file on error
-            let _ = fs::remove_file(&tmp_path);
+            let _ = lfs::remove_file(&tmp_path);
             Err(e).with_context(|| format!("Failed to atomically move temp cache file to {}", cache_file.display()))
         }
     }

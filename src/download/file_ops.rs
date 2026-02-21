@@ -16,6 +16,7 @@
 
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use std::fs::{self, File, OpenOptions};
+use crate::lfs;
 use std::io;
 use std::os::unix::fs::symlink;
 use std::io::Seek;
@@ -108,8 +109,7 @@ pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
 
     // Ensure the parent directory exists
     if let Some(parent) = pid_file.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create parent directory for {}: {}", pid_file.display(), parent.display()))?;
+        lfs::create_dir_all(parent)?;
     }
 
     let pid = std::process::id();
@@ -122,10 +122,10 @@ pub(crate) fn create_pid_file(final_path: &Path) -> Result<PathBuf> {
 
     // Try to create the PID file atomically
     let temp_pid_file = get_temp_pid_file_path(final_path);
-    fs::write(&temp_pid_file, pid_content)?;
+    lfs::write(&temp_pid_file, pid_content)?;
 
     // Atomic rename
-    fs::rename(&temp_pid_file, &pid_file)?;
+    lfs::rename(&temp_pid_file, &pid_file)?;
 
     log::debug!("Created PID file: {}", pid_file.display());
     Ok(pid_file)
@@ -218,7 +218,7 @@ fn is_pid_file_active(pid_file: &Path) -> bool {
 /// Clean up PID file after download completion
 pub(crate) fn cleanup_pid_file(pid_file: &Path) -> Result<()> {
     if pid_file.exists() {
-        fs::remove_file(pid_file)?;
+        lfs::remove_file(pid_file)?;
         log::debug!("Cleaned up PID file: {}", pid_file.display());
     }
     Ok(())
@@ -352,8 +352,7 @@ pub(crate) fn finalize_file(task: &DownloadTask) -> Result<()> {
                 task.final_path.display()
             ));
         }
-        fs::remove_file(&task.final_path)
-            .with_context(|| format!("Failed to remove existing final file: {}", task.final_path.display()))?;
+        lfs::remove_file(&task.final_path)?;
     }
 
     if let Ok(metadata_guard) = task.serving_metadata.lock() {
@@ -372,9 +371,7 @@ pub(crate) fn finalize_file(task: &DownloadTask) -> Result<()> {
 
     // Perform the atomic rename operation
     log::debug!("Renaming {} to {}", task.chunk_path.display(), task.final_path.display());
-    fs::rename(&task.chunk_path, &task.final_path)
-        .with_context(|| format!("Failed to rename chunk file {} to final file {}",
-                                task.chunk_path.display(), task.final_path.display()))?;
+    lfs::rename(&task.chunk_path, &task.final_path)?;
 
     log::debug!("Successfully finalized file: {}", task.final_path.display());
     Ok(())
@@ -409,7 +406,7 @@ fn check_chunk_completion(task: &DownloadTask, existing_bytes: u64) -> Result<bo
         // Cleanup corrupted chunk file immediately, so that the next retry starts with a pristine
         // chunk file and does not pick up invalid bytes that could cause persistent size mismatches.
         if task.chunk_path.exists() {
-            match fs::remove_file(&task.chunk_path) {
+            match lfs::remove_file(&task.chunk_path) {
                 Ok(_) => log::debug!(
                     "check_chunk_completion: removed corrupt chunk file {} after size check",
                     task.chunk_path.display()
@@ -448,7 +445,7 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     if local_path.exists() && has_checksums {
         if validate_file_checksums(task, local_path).is_err() {
             log::debug!("Local file {} checksum mismatch, removing", local_path.display());
-            if let Err(e) = fs::remove_file(local_path) {
+            if let Err(e) = lfs::remove_file(local_path) {
                 log::warn!("Failed to remove local file {}: {}", local_path.display(), e);
             }
         } else {
@@ -487,7 +484,7 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
 
     // Create parent directory for symlink if needed
     if let Some(parent) = local_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
+        if let Err(e) = lfs::create_dir_all(parent) {
             log::warn!("Failed to create parent directory for symlink {}: {}", local_path.display(), e);
             return false;
         }
@@ -755,7 +752,7 @@ pub(crate) fn setup_download_file(task: &DownloadTask, existing_bytes: u64) -> R
 
     if existing_bytes == 0 {
         if let Some(parent) = chunk_path.parent() {
-            fs::create_dir_all(parent)
+            lfs::create_dir_all(parent)
                 .map_err(|e| DownloadError::DiskError {
                     details: format!("Failed to create directory '{}': {}", parent.display(), e)
                 })?;
@@ -824,9 +821,7 @@ pub(crate) fn check_existing_partfile(task: &DownloadTask) -> Result<(u64, bool)
                 &task.url
             );
             if chunk_path.exists() {
-                fs::remove_file(chunk_path).with_context(|| {
-                    format!("Failed to remove part file {} before fresh download", chunk_path.display())
-                })?;
+                lfs::remove_file(chunk_path)?;
             }
             let is_complete = check_chunk_completion(task, 0)?;
             return Ok((0, is_complete));
@@ -1033,7 +1028,7 @@ fn cleanup_related_part_files(task: &DownloadTask) -> Result<()> {
 fn cleanup_pget_status_file(task: &DownloadTask) -> Result<()> {
     let meta_path = task.meta_json_path();
     if meta_path.exists() {
-        fs::remove_file(&meta_path)?;
+        lfs::remove_file(&meta_path)?;
     }
     Ok(())
 }
@@ -1042,7 +1037,7 @@ fn cleanup_pget_status_file(task: &DownloadTask) -> Result<()> {
 pub(crate) fn cleanup_main_part_file(task: &DownloadTask) -> Result<()> {
     // Remove .part file
     if task.chunk_path.exists() {
-        fs::remove_file(&task.chunk_path)?;
+        lfs::remove_file(&task.chunk_path)?;
     }
 
     Ok(())
@@ -1063,7 +1058,7 @@ pub(crate) fn cleanup_chunk_files(task: &DownloadTask) -> Result<()> {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
                     if name.starts_with(&chunk_prefix) {
-                        if let Err(e) = fs::remove_file(entry.path()) {
+                        if let Err(e) = lfs::remove_file(entry.path()) {
                             log::warn!("Failed to remove file {}: {}", entry.path().display(), e);
                         }
                     }
