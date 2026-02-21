@@ -264,16 +264,24 @@ get_package_manager_config() {
 
 # Install packages using detected package manager
 install_packages() {
+    # Determine if we need sudo
+    local SUDO
+    if [[ $(id -u) -eq 0 ]]; then
+        SUDO=""
+    else
+        SUDO="sudo"
+    fi
+
     # Run update command
     if [[ -n "$update_cmd" ]]; then
         echo "Updating package lists..."
-        sudo $update_cmd || echo "Warning: Package update failed, continuing..."
+        $SUDO $update_cmd || echo "Warning: Package update failed, continuing..."
     fi
 
     # Install packages
     if [[ -n "$packages" ]]; then
         echo "Installing packages: $packages"
-        sudo $install_cmd $packages || {
+        $SUDO $install_cmd $packages || {
             echo "Error: Package installation failed"
             exit 1
         }
