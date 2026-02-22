@@ -137,7 +137,7 @@ pub fn get_default_generations_root() -> Result<PathBuf> {
 ///     - others: /opt/epkg/envs/$USER/$env_name
 /// Supports both 'env_name' and 'owner/env_name' formats
 /// Note: EnvConfig.public only controls visibility/permissions, not location
-fn get_env_base_path(env_name: &str) -> PathBuf {
+pub fn get_env_base_path(env_name: &str) -> PathBuf {
     if env_name.is_empty() {
         panic!("env_name is empty in get_env_base_path");
     }

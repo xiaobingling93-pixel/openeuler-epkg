@@ -660,8 +660,8 @@ pub fn remove_environment(name: &str) -> Result<()> {
         return Err(eyre::eyre!("Environment cannot be removed: '{}'", name));
     }
 
-    // Check if environment exists
-    let env_path = get_env_root(name.to_string())?;
+    // Resolve env path without loading config (config may be missing for non-existent env)
+    let env_path = get_env_base_path(name);
     if !env_path.exists() {
         return Err(eyre::eyre!("Environment does not exist: '{}'", name));
     }
