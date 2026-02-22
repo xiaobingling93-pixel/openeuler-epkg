@@ -82,47 +82,84 @@ pub fn url2site(url: &str) -> String {
 
 impl Mirrors {
     /// Find the best matching distro directory for a mirror
-    pub fn find_distro_dir(mirror: &crate::mirror::types::Mirror, distro: &str, arch: &str, repodata_name: &str) -> String {
+    pub fn find_distro_dir(
+        mirror: &crate::mirror::types::Mirror,
+        distro: &str,
+        arch: &str,
+        repodata_name: &str,
+    ) -> String {
         // Use distro_dirs from the global hashmap for the specific repodata_name
         let sorted_dirs = get_distro_dirs_for_repodata_name(repodata_name);
 
+        log::trace!("find_distro_dir for mirror {}: distro={}, arch={}, repodata_name={}, sorted_dirs.len()={}, mirror.distro_dirs={:?}",
+                   mirror.url, distro, arch, repodata_name, sorted_dirs.len(), mirror.distro_dirs);
+
         let mut found_dir = String::new();
+        let mut skipped_reasons = Vec::new();
+
         for item in &sorted_dirs {
             let item_lower = item.to_lowercase();
+            let mut skip_reason = None;
+
             if distro == "fedora" {
                 if item_lower.contains("alt") {
-                    continue;
-                }
-                if item_lower.contains("archive") {
-                    continue;
-                }
-                if arch == "x86_64" || arch == "aarch64" {
+                    skip_reason = Some("contains 'alt'");
+                } else if item_lower.contains("archive") {
+                    skip_reason = Some("contains 'archive'");
+                } else if arch == "x86_64" || arch == "aarch64" {
                     if item_lower.contains("secondary") {
-                        continue;
+                        skip_reason = Some("contains 'secondary' (x86_64/aarch64)");
                     }
                 } else {
                     if !item_lower.contains("secondary") {
-                        continue;
+                        skip_reason = Some("missing 'secondary' (non-x86_64/aarch64)");
                     }
                 }
             }
             if distro == "ubuntu" {
                 if arch == "x86_64" {
                     if item_lower.contains("ports") {
-                        continue;
+                        skip_reason = Some("contains 'ports' (x86_64)");
                     }
                 } else {
                     if !item_lower.contains("ports") {
-                        continue;
+                        skip_reason = Some("missing 'ports' (non-x86_64)");
                     }
                 }
             }
-            if let Some(orig_dir) = mirror.distro_dirs.iter().find(|dir| dir.eq_ignore_ascii_case(item)) {
+
+            if let Some(reason) = skip_reason {
+                skipped_reasons.push(format!("{}: {}", item, reason));
+                continue;
+            }
+
+            if let Some(orig_dir) = mirror
+                .distro_dirs
+                .iter()
+                .find(|dir| dir.eq_ignore_ascii_case(item))
+            {
                 // Use the original casing from the mirror itself to avoid wrong capitalisation
                 found_dir = orig_dir.clone();
+                log::trace!(
+                    "find_distro_dir for mirror {}: matched item '{}' -> orig_dir '{}'",
+                    mirror.url,
+                    item,
+                    orig_dir
+                );
                 break;
+            } else {
+                skipped_reasons.push(format!("{}: not in mirror.distro_dirs", item));
             }
         }
+
+        if found_dir.is_empty() && !skipped_reasons.is_empty() {
+            log::trace!(
+                "find_distro_dir for mirror {}: no match found. Skipped: {}",
+                mirror.url,
+                skipped_reasons.join(", ")
+            );
+        }
+
         found_dir
     }
 

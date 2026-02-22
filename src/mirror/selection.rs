@@ -124,16 +124,38 @@ impl Mirrors {
     }
 
     /// Filter mirrors based on availability and requirements and update available_mirrors
-    fn update_available_mirrors(&mut self, need_range: bool, distro: &str, arch: &str, raw_url: Option<&str>, repodata_name: &str) {
+    fn update_available_mirrors(
+        &mut self,
+        need_range: bool,
+        distro: &str,
+        arch: &str,
+        raw_url: Option<&str>,
+        repodata_name: &str,
+    ) {
+        log::debug!(
+            "update_available_mirrors: need_range={}, distro={}, arch={}, repodata_name={}",
+            need_range,
+            distro,
+            arch,
+            repodata_name
+        );
+
+        let mut filtered_stats = std::collections::HashMap::new();
+
         self.available_mirrors = self.mirrors.iter()
             .filter_map(|(site, mirror)| {
                 // Exclude mirrors with no_content, old_content, or no_online
                 if mirror.stats.no_content >= 3 || mirror.stats.old_content || mirror.stats.no_online {
+                    log::trace!("Excluding mirror {} due to: no_content={}, old_content={}, no_online={}",
+                               site, mirror.stats.no_content, mirror.stats.old_content, mirror.stats.no_online);
+                    *filtered_stats.entry("no_content/old_content/no_online").or_insert(0) += 1;
                     return None;
                 }
 
                 // If need_range is true, exclude mirrors with no_range=true
                 if need_range && mirror.stats.no_range {
+                    log::trace!("Excluding mirror {} due to: no_range=true (need_range={})", site, need_range);
+                    *filtered_stats.entry("no_range").or_insert(0) += 1;
                     return None;
                 }
 
@@ -141,6 +163,7 @@ impl Mirrors {
                 if let Some(url) = raw_url {
                     if mirror.should_skip_url(url) {
                         log::trace!("Skipping mirror {} for URL {} due to metadata conflicts", mirror.url, url);
+                        *filtered_stats.entry("metadata_conflicts").or_insert(0) += 1;
                         return None;
                     }
                 }
@@ -148,13 +171,25 @@ impl Mirrors {
                 // Check if this mirror can provide a valid distro directory
                 let distro_dir = Mirrors::find_distro_dir(mirror, distro, arch, repodata_name);
                 if distro_dir.is_empty() {
+                    log::trace!("Excluding mirror {} due to: no valid distro_dir found for distro={}, arch={}, repodata_name={}",
+                               site, distro, arch, repodata_name);
+                    *filtered_stats.entry("no_distro_dir").or_insert(0) += 1;
                     return None;
                 }
 
+                log::trace!("Mirror {} passed all filters, distro_dir={}", site, distro_dir);
                 Some(site.clone())
             })
             .collect();
 
+        if !filtered_stats.is_empty() {
+            log::debug!("Mirror filtering summary: {:?}", filtered_stats);
+        }
+        log::debug!(
+            "Available mirrors after filtering: {} out of {} total mirrors",
+            self.available_mirrors.len(),
+            self.mirrors.len()
+        );
 
         // Apply performance-based filtering during initialization
         self.filter_mirrors_by_performance();
