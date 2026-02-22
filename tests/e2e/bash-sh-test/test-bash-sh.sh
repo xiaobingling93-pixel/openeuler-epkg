@@ -35,6 +35,21 @@ install_bash() {
     epkg -e "$env_name" --assume-yes install --no-install-essentials bash || error "Failed to install bash in $env_name"
 }
 
+install_curl() {
+    local env_name="$1"
+    log "Installing curl in $env_name"
+    epkg -e "$env_name" --assume-yes install --no-install-essentials curl || error "Failed to install curl in $env_name"
+}
+
+test_curl_bing() {
+    local env_name="$1"
+    log "Testing curl -I https://bing.com/ in $env_name"
+    if ! epkg -e "$env_name" run curl -I https://bing.com/; then
+        error "curl -I https://bing.com/ failed in $env_name"
+    fi
+    log "curl -I https://bing.com/ succeeded in $env_name"
+}
+
 test_epkg_list_via_bash() {
     local env_name="$1"
     local os="$2"
@@ -153,6 +168,11 @@ for os in $ALL_OS; do
 
     # Test epkg search --paths /bin/bash (rpm/deb systems only)
     test_epkg_search_paths "$env_name" "$os"
+
+    # Install curl and test curl https://bing.com/
+    # This verifies ssl certs are properly installed.
+    install_curl "$env_name"
+    test_curl_bing "$env_name"
 
     # Clean up environment
     cleanup_env "$env_name"
