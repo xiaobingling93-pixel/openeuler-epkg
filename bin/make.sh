@@ -299,7 +299,7 @@ install_packages() {
     echo "Detected OS: $OS_ID $OS_VERSION"
     echo "Detected package manager: $PKG_MANAGER"
 
-    local current_arch=$(detect_arch)
+    local current_arch=$(arch)
     echo "Detected architecture: $current_arch"
 
     echo "Installing dependencies ($mode mode)..."
@@ -472,7 +472,7 @@ build() {
     echo "Building debug binary..."
 
     # Set up static Lua linking for glibc
-    local arch=$(detect_arch)
+    local arch=$(arch)
     local lua_lib_dir="$PROJECT_ROOT/target/lua-glibc-$arch"
 
     # Build Lua library if it doesn't exist
@@ -510,29 +510,7 @@ run_tests() {
     RUSTFLAGS="-A dead_code -A unused_imports -A unused_variables" cargo test
 }
 
-# Detect current system architecture
-detect_arch() {
-    local machine=$(uname -m)
-    case "$machine" in
-        x86_64|amd64)
-            echo "x86_64"
-            ;;
-        aarch64|arm64)
-            echo "aarch64"
-            ;;
-        riscv64)
-            echo "riscv64"
-            ;;
-        loongarch64)
-            echo "loongarch64"
-            ;;
-        *)
-            echo "Unsupported architecture: $machine" >&2
-            exit 1
-            ;;
-    esac
-}
-HOST_ARCH=$(detect_arch)
+HOST_ARCH=$(arch)
 
 is_native_arch() {
     local arch="$1"
@@ -588,7 +566,7 @@ get_arch() {
 
     if [[ -z "$provided_arch" ]]; then
         # Auto-detect current architecture
-        local arch=$(detect_arch)
+        local arch=$(arch)
         echo "Auto-detected architecture: $arch" >&2
         echo "$arch"
     else
