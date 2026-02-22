@@ -5,7 +5,12 @@
 
 # Check for debug mode flag
 INTERACTIVE=""
-if [ "$1" = "-dd" ]; then
+if [ "$1" = "-ddd" ]; then
+    INTERACTIVE="2"
+    export RUST_LOG=trace
+    export RUST_BACKTRACE=1
+    shift
+elif [ "$1" = "-dd" ]; then
     INTERACTIVE="2"
     export RUST_LOG=debug
     export RUST_BACKTRACE=1
@@ -16,7 +21,7 @@ elif [ "$1" = "-d" ] || [ "$1" = "--debug" ]; then
 fi
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 [-d|--debug|-dd] <test_script> [additional_args...]" >&2
+    echo "Usage: $0 [-d|--debug|-dd|-ddd] <test_script> [additional_args...]" >&2
     exit 1
 fi
 

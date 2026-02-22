@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run all e2e tests (excluding build-from-source and install-remove-upgrade tests).
-# Supports debug mode with -d/-dd flags.
+# Supports debug mode with -d/-dd/-ddd flags.
 
 . "$(dirname "$0")/host-vars.sh"
 . "$(dirname "$0")/lib.sh"
@@ -15,7 +15,7 @@ case $? in
         exit 1
         ;;
     2)
-        echo "Usage: $0 [-d|--debug|-dd]"
+        echo "Usage: $0 [-d|--debug|-dd|-ddd]"
         echo "Run all e2e tests (excluding build-from-source and install-remove-upgrade tests)."
         exit 0
         ;;

@@ -146,9 +146,9 @@ error() {
     exit 1
 }
 
-# Parse debug flags (-d, --debug, -dd) and shift arguments
+# Parse debug flags (-d, --debug, -dd, -ddd) and shift arguments
 # Usage: parse_debug_flags "$@"
-# Sets DEBUG_FLAG to "", "-d", or "-dd"
+# Sets DEBUG_FLAG to "", "-d", "-dd" or "-ddd"
 # Sets PARSE_DEBUG_FLAGS_REMAINING to remaining arguments (space-separated)
 # Returns:
 #   0 - success
@@ -162,6 +162,9 @@ parse_debug_flags() {
             -h|--help)
                 PARSE_DEBUG_FLAGS_REMAINING=""
                 return 2
+                ;;
+            -ddd)
+                DEBUG_FLAG="-ddd"
                 ;;
             -dd)
                 DEBUG_FLAG="-dd"
