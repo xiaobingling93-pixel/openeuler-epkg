@@ -27,21 +27,25 @@ test_sh() {
     log "/bin/sh is usable in $env_name"
 }
 
-# Main test loop
-for os in $ALL_OS; do
-    log "Testing OS: $os"
-    create_env "$os"
+# Functions for the main loop
 
-    # Install bash
+install_bash() {
+    local env_name="$1"
     log "Installing bash in $env_name"
     epkg -e "$env_name" --assume-yes install --no-install-essentials bash || error "Failed to install bash in $env_name"
+}
 
-    # Test /bin/sh
-    test_sh "$env_name"
+test_epkg_list_via_bash() {
+    local env_name="$1"
+    local os="$2"
+    local epkg_cmd list1 list2 diff_tmp1 diff_tmp2
 
-    # Test that epkg can auto-detect environment when run inside via 'epkg run'
-    # Requirement: epkg should read /etc/epkg/env.yaml to determine active environment
-    # without needing EPKG_ACTIVE_ENV or -e flag when executed inside the environment namespace.
+    # Compare output (skip headers, separator, and total line) - skip for conda
+    if [ "$os" = "conda" ]; then
+        log "Skipping epkg list comparison for conda (epkg run runs in host OS not environment)"
+        return
+    fi
+
     log "Testing epkg list via bash command in $env_name"
     # Determine epkg command to use inside environment
     if epkg -e "$env_name" run bash -c "command -v epkg" >/dev/null 2>&1; then
@@ -79,8 +83,11 @@ for os in $ALL_OS; do
         error "epkg list output differs between direct and bash command in $env_name"
     fi
     log "epkg list via bash command matches direct output"
+}
 
-    # Test package manager queries for bash
+test_package_manager_queries() {
+    local env_name="$1"
+    local os="$2"
     case "$os" in
         openeuler|fedora)
             log "Testing rpm -q -a for bash in $env_name"
@@ -95,14 +102,19 @@ for os in $ALL_OS; do
             fi
             ;;
     esac
+}
 
-    # Test epkg info bash
+test_epkg_info_bash() {
+    local env_name="$1"
     log "Testing epkg info bash in $env_name"
     if ! epkg -e "$env_name" info bash >/dev/null 2>&1; then
         error "epkg info bash failed in $env_name"
     fi
+}
 
-    # Test epkg search --paths /bin/bash (rpm/deb systems only)
+test_epkg_search_paths() {
+    local env_name="$1"
+    local os="$2"
     case "$os" in
         openeuler|debian) # only test one for each format, since the filelist downloads for search are time consuming
             log "Testing epkg search --paths /bin/bash in $env_name"
@@ -111,10 +123,39 @@ for os in $ALL_OS; do
             fi
             ;;
     esac
+}
 
-    # Clean up environment
+cleanup_env() {
+    local env_name="$1"
     log "Removing environment $env_name"
     epkg --assume-yes env remove "$env_name" 2>/dev/null || true
+}
+
+# Main test loop
+for os in $ALL_OS; do
+    log "Testing OS: $os"
+    create_env "$os"
+
+    # Install bash
+    install_bash "$env_name"
+
+    # Test /bin/sh
+    test_sh "$env_name"
+
+    # Test epkg list via bash command
+    test_epkg_list_via_bash "$env_name" "$os"
+
+    # Test package manager queries for bash
+    test_package_manager_queries "$env_name" "$os"
+
+    # Test epkg info bash
+    test_epkg_info_bash "$env_name"
+
+    # Test epkg search --paths /bin/bash (rpm/deb systems only)
+    test_epkg_search_paths "$env_name" "$os"
+
+    # Clean up environment
+    cleanup_env "$env_name"
 done
 
 log "All OSes passed bash installation and /bin/sh usability test"
