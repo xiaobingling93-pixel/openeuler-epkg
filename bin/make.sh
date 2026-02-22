@@ -168,31 +168,7 @@ build_and_deploy_lua() {
 
 set_lua_compiler() {
     # Deduce compiler based on architecture and library type
-    case "$lib_type" in
-        musl)
-            case "$arch" in
-                x86_64)
-                    compiler="musl-gcc"
-                    ;;
-                aarch64|riscv64|loongarch64)
-                    compiler="$arch-linux-gnu-gcc"
-                    ;;
-                *)
-                    echo "Unknown architecture: $arch"
-                    exit 1
-                    ;;
-            esac
-            ;;
-        glibc)
-            # For glibc builds, use system gcc (cross-compilers not needed for same arch)
-            compiler="gcc"
-            ;;
-        *)
-            echo "Unknown library type: $lib_type (must be 'musl' or 'glibc')"
-            exit 1
-            ;;
-    esac
-
+    compiler=$(get_c_compiler "$arch" "$lib_type")
     echo "Building Lua library for $arch ($lib_type) using $compiler..."
 }
 
@@ -405,47 +381,42 @@ get_rust_target() {
 # Export linker variable for architecture
 export_linker_var() {
     local arch="$1"
-    case "$arch" in
-        x86_64)
-            # No linker var needed for x86_64
-            ;;
-        aarch64)
-            export "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
-            ;;
-        riscv64)
-            export "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
-            ;;
-        loongarch64)
-            export "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_MUSL_LINKER=$arch-linux-gnu-gcc"
-            ;;
-        *)
-            echo "Unknown architecture: $arch" >&2
-            exit 1
-            ;;
-    esac
+    local cross_compiler=$(get_cross_compiler "$arch")
+    if [[ -n "$cross_compiler" ]]; then
+        local rust_target=$(get_rust_target "$arch")
+        local target_var=$(echo "${rust_target//-/_}" | tr '[:lower:]' '[:upper:]')
+        export "CARGO_TARGET_${target_var}_LINKER=$cross_compiler"
+    fi
 }
 
 # Get Rust flags for architecture
 get_rustflags() {
     local arch="$1"
     local common_opts=
-    local common_cross_opts="$common_opts -C linker=$arch-linux-gnu-gcc -C link-arg=-lgcc -C link-arg=-lc"
     case "$arch" in
-        x86_64)
-            # Disable PIE to avoid relocation issues with Lua static library
-            echo "$common_opts"
-            ;;
-        aarch64)
-            echo "$common_cross_opts"
-            ;;
-        riscv64|loongarch64)
-            echo "$common_cross_opts -C link-arg=-lm"
+        x86_64|aarch64|riscv64|loongarch64)
+            # Valid architecture
             ;;
         *)
             echo "Unknown architecture: $arch" >&2
             exit 1
             ;;
     esac
+
+    local cross_compiler=$(get_cross_compiler "$arch")
+    if [[ -z "$cross_compiler" ]]; then
+        # Native compilation or x86_64: no cross-compiler linker needed
+        echo "$common_opts"
+        return
+    fi
+
+    local cross_opts="$common_opts -C linker=$cross_compiler -C link-arg=-lgcc -C link-arg=-lc"
+    case "$arch" in
+        riscv64|loongarch64)
+            cross_opts="$cross_opts -C link-arg=-lm"
+            ;;
+    esac
+    echo "$cross_opts"
 }
 
 # Build static binary for a specific architecture
@@ -467,18 +438,7 @@ build_static() {
     export_linker_var "$arch"
 
     # Set C compiler for mlua-sys build
-    case "$arch" in
-        x86_64)
-            export CC="musl-gcc"
-            ;;
-        aarch64|riscv64|loongarch64)
-            export CC="$arch-linux-gnu-gcc"
-            ;;
-        *)
-            echo "Unknown architecture: $arch" >&2
-            exit 1
-            ;;
-    esac
+    export CC=$(get_c_compiler "$arch" "musl")
     export CFLAGS="-D_FILE_OFFSET_BITS=64 -U_LARGEFILE64_SOURCE"
     # Set target-specific CFLAGS for cc crate (hyphens to underscores)
     local target_var="${rust_target//-/_}"
@@ -502,7 +462,7 @@ build_static() {
     echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
 
     # Install to dev environment if this is the native architecture
-    if [[ "$arch" == "$(detect_arch)" ]]; then
+    if is_native_arch "$arch"; then
         install_to_dev_env "$PROJECT_ROOT/target/$rust_target/release/$BINARY_NAME"
     fi
 }
@@ -568,6 +528,55 @@ detect_arch() {
             ;;
         *)
             echo "Unsupported architecture: $machine" >&2
+            exit 1
+            ;;
+    esac
+}
+HOST_ARCH=$(detect_arch)
+
+is_native_arch() {
+    local arch="$1"
+    [[ "$arch" == "$HOST_ARCH" ]]
+}
+
+get_cross_compiler() {
+    local arch="$1"
+    if [[ "$arch" == "x86_64" ]] || is_native_arch "$arch"; then
+        # No cross-compiler needed for x86_64 or native builds
+        echo ""
+    else
+        echo "$arch-linux-gnu-gcc"
+    fi
+}
+
+get_c_compiler() {
+    local arch="$1"
+    local lib_type="${2:-musl}"
+    case "$lib_type" in
+        musl)
+            case "$arch" in
+                x86_64)
+                    echo "musl-gcc"
+                    ;;
+                aarch64|riscv64|loongarch64)
+                    local cross_compiler=$(get_cross_compiler "$arch")
+                    if [[ -z "$cross_compiler" ]]; then
+                        echo "gcc"
+                    else
+                        echo "$cross_compiler"
+                    fi
+                    ;;
+                *)
+                    echo "Unknown architecture: $arch" >&2
+                    exit 1
+                    ;;
+            esac
+            ;;
+        glibc)
+            echo "gcc"
+            ;;
+        *)
+            echo "Unknown library type: $lib_type (must be 'musl' or 'glibc')" >&2
             exit 1
             ;;
     esac
