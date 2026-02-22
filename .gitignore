@@ -21,3 +21,12 @@ tests/e2e/reproduce/
 
 # Auto-generated files
 /src/applets/_modules_gen.rs
+
+/.cargo/
+/.claude/
+/.cursor/
+
+/scripts/__pycache__/
+
+# temp files
+/?
