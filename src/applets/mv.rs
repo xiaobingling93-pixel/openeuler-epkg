@@ -1,7 +1,10 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+use std::io::{self, IsTerminal};
 use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use crate::lfs;
 
 pub struct MvOptions {
@@ -77,18 +80,46 @@ pub fn command() -> Command {
             .required(false))
 }
 
+/// Check if the path is writable (user write bit set). Used for POSIX/GNU-style
+/// prompt when overwriting an unwritable file and stdin is a TTY.
+#[cfg(unix)]
+fn is_writable(path: &Path) -> bool {
+    path.metadata()
+        .map(|m| (m.permissions().mode() & 0o200) != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_writable(path: &Path) -> bool {
+    path.metadata()
+        .map(|m| !m.permissions().readonly())
+        .unwrap_or(false)
+}
+
+/// Prompt for overwrite confirmation; returns error if user declines.
+fn prompt_overwrite(dst: &Path) -> Result<()> {
+    eprint!("mv: overwrite '{}'? ", dst.display());
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).map_err(|e| eyre!("{}", e))?;
+    let line = line.trim();
+    if !line.starts_with('y') && !line.starts_with('Y') && !line.eq_ignore_ascii_case("yes") {
+        return Err(eyre!("mv: not overwriting"));
+    }
+    Ok(())
+}
+
 fn move_file(src: &Path, dst: &Path, force: bool, no_clobber: bool) -> Result<()> {
-    // Check if destination exists
+    // Check if destination exists (match uutils/coreutils rename() overwrite behavior)
     if dst.exists() {
         if no_clobber {
             // Skip if no-clobber is enabled
             return Ok(());
         }
-        if !force {
-            // Fail if not forcing and destination exists
-            return Err(eyre!("mv: '{}' already exists", dst.display()));
+        // Without -f (default): prompt only when destination not writable and stdin is TTY (POSIX)
+        if !force && !is_writable(dst) && io::stdin().is_terminal() {
+            prompt_overwrite(dst)?;
         }
-        // Force overwrite - remove destination first
+        // Overwrite: remove destination then rename
         if dst.is_dir() {
             lfs::remove_dir_all(dst)?;
         } else {
