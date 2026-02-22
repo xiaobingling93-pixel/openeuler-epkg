@@ -102,7 +102,7 @@ build_epkg() {
     configure_git_safe_directories
 
     # Step 2: Clone epkg project to writable directory
-    clone_project_to_writable_dir >/dev/null  # Build dir already set in PROJECT_ROOT
+    clone_project_to_writable_dir
 
     # Step 3: Clone resolvo, rpm-rs, elf-loader
     clone_repos
@@ -130,9 +130,48 @@ test_built_epkg() {
     log "Installed epkg works correctly"
 }
 
+# Build static binary via make.sh static (requires Lua musl lib first)
+build_static_binary() {
+    log "Building Lua musl library for static build"
+    if ! ./bin/make.sh lua; then
+        error "bin/make.sh lua failed"
+    fi
+    log "Running bin/make.sh static"
+    if ! ./bin/make.sh static; then
+        error "bin/make.sh static failed"
+    fi
+    log "Static build successful"
+}
+
+# Verify dist/epkg-$(arch) exists and works
+test_static_binary() {
+    cd "$PROJECT_ROOT" || error "Failed to cd to project root: $PROJECT_ROOT"
+    ARCH=$(arch)
+    STATIC_BIN="dist/epkg-$ARCH"
+    if ! test -f "$STATIC_BIN"; then
+        error "Static binary not found at $STATIC_BIN"
+    fi
+    if ! test -x "$STATIC_BIN"; then
+        error "Static binary $STATIC_BIN is not executable"
+    fi
+    log "Verifying static binary $STATIC_BIN runs"
+    if ! "$STATIC_BIN" --version; then
+        error "Static binary $STATIC_BIN --version failed"
+    fi
+    log "Verifying static binary works (epkg info)"
+    if ! "$STATIC_BIN" info bash; then
+        error "Static binary $STATIC_BIN info bash failed"
+    fi
+    log "Static binary dist/epkg-$ARCH works correctly"
+}
+
 # Main test - build in current Docker container environment
 log "Testing build-from-source in current Docker container environment"
 build_epkg
 test_built_epkg
+
+log "Testing make.sh static and dist/epkg-$(arch)"
+build_static_binary
+test_static_binary
 
 log "Build-from-source test passed in Docker container"
