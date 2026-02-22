@@ -490,7 +490,7 @@ build_static() {
     fi
 
     # Build the binary
-    cargo build --release --target "$rust_target"
+    cargo build --release --target "$rust_target" --ignore-rust-version
 
     # Deploy
     mkdir -p "$OUTPUT_DIR"
@@ -528,7 +528,7 @@ build() {
     export LUA_LINK=static
     export LUA_NO_PKG_CONFIG=1
 
-    cargo build
+    cargo build --ignore-rust-version
 
     echo "Development build completed. Binary is in $PROJECT_ROOT/target/debug/$BINARY_NAME"
 
@@ -538,7 +538,7 @@ build() {
 # Build release binary
 build_release() {
     echo "Building release binary..."
-    cargo build --release
+    cargo build --release --ignore-rust-version
 
     echo "Release build completed. Binary is in $PROJECT_ROOT/target/release/$BINARY_NAME"
 

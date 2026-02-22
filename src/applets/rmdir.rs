@@ -3,6 +3,17 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::fs;
 use std::path::Path;
+use libc;
+
+#[cfg(unix)]
+fn is_directory_not_empty_error(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ENOTEMPTY)
+}
+
+#[cfg(not(unix))]
+fn is_directory_not_empty_error(_e: &std::io::Error) -> bool {
+    false
+}
 
 pub struct RmdirOptions {
     pub directories: Vec<String>,
@@ -51,7 +62,7 @@ fn remove_directory(path: &Path, parents: bool, ignore_fail_on_non_empty: bool) 
             match fs::remove_dir(&current_path) {
                 Ok(()) => {},
                 Err(e) => {
-                    if ignore_fail_on_non_empty && e.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+                    if ignore_fail_on_non_empty && is_directory_not_empty_error(&e) {
                         // Ignore the error for non-empty directories
                     } else {
                         return Err(eyre!("rmdir: failed to remove '{}': {}", current_path.display(), e));
@@ -70,7 +81,7 @@ fn remove_directory(path: &Path, parents: bool, ignore_fail_on_non_empty: bool) 
         match fs::remove_dir(path) {
             Ok(()) => {},
             Err(e) => {
-                if ignore_fail_on_non_empty && e.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+                if ignore_fail_on_non_empty && is_directory_not_empty_error(&e) {
                     // Ignore the error for non-empty directories
                 } else {
                     return Err(eyre!("rmdir: failed to remove '{}': {}", path.display(), e));

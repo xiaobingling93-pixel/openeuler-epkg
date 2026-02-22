@@ -9,6 +9,7 @@ use nix::{self};
 use nix::unistd::{fork, ForkResult};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use std::time::{SystemTime, UNIX_EPOCH};
 use users::{get_current_uid, get_effective_uid};
 use color_eyre::eyre::{self, Result};
 use serde::{Deserialize, Serialize};
@@ -263,11 +264,14 @@ impl PrivilegedClient {
 }
 
 fn create_random_socket_path() -> PathBuf {
-    let mut rng = StdRng::from_entropy();
+    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
+        ^ (get_effective_uid() as u64)
+        ^ (std::process::id() as u64);
+    let mut rng = StdRng::seed_from_u64(seed);
     PathBuf::from(format!(
         "/tmp/epkg-{}-{:x}.sock",
         get_effective_uid(),
-        rng.gen::<u64>()
+        rng.random::<u64>()
     ))
 }
 

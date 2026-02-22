@@ -6,6 +6,7 @@ use std::collections::{HashSet, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use std::time::{SystemTime, UNIX_EPOCH};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
@@ -735,7 +736,9 @@ pub fn activate_environment(name: &str) -> Result<()> {
 
     // Handle session path
     let session_path = original_session_path.unwrap_or_else(|| {
-        let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), StdRng::from_entropy().gen::<u32>());
+        let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64 ^ (std::process::id() as u64);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let path = format!("/tmp/deactivate-{}-{:08x}", std::process::id(), rng.random::<u32>());
         println!("export EPKG_SESSION_PATH=\"{}\"", path);
         script.push_str(&format!("unset EPKG_SESSION_PATH\n"));
         path

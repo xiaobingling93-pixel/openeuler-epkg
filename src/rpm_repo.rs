@@ -5,6 +5,7 @@ use std::io::Read;
 use color_eyre::eyre::{self, eyre, WrapErr, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use quick_xml::escape;
 use crate::models::*;
 use crate::repo::{RepoRevise, RepoReleaseItem};
 use regex::Regex;
@@ -144,10 +145,9 @@ pub fn parse_repomd_file(repo: &RepoRevise, content: &str, _release_dir: &PathBu
             }
             Ok(Event::Text(e)) => {
                 if in_data {
-                    let text = e.unescape()
+                    let text = escape::unescape(&String::from_utf8_lossy(e.as_ref()))
                         .map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e))
                         .unwrap_or_default()
-                        .to_string()
                         .trim()
                         .to_string();
 
@@ -562,9 +562,9 @@ impl<'a> StreamingXmlProcessor<'a> {
 
     fn handle_text_event(&mut self, e: &quick_xml::events::BytesText) -> Result<()> {
         if !self.current_tag.is_empty() {
-            match e.unescape().map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e)) {
+            match escape::unescape(&String::from_utf8_lossy(e.as_ref())).map_err(|e| eyre!("XML unescape error: Failed to unescape XML text: {}", e)) {
                 Ok(text) => {
-                    let text_str = text.to_string().trim().to_string();
+                    let text_str = text.trim().to_string();
                     if !text_str.is_empty() {
                         // Use PACKAGE_KEY_MAPPING for common fields
                         if let Some(mapped_key) = PACKAGE_KEY_MAPPING.get(self.current_tag.as_str()) {
