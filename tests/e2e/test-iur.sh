@@ -1,33 +1,25 @@
 #!/bin/sh
 # Run install-remove-upgrade tests with predefined matrix
-# This script runs heavy-weight install/remove/upgrade tests that are
-# skipped from test-all.sh to avoid accumulating cache on developer machines
 # Supports debug mode with -d/-dd flags.
 
 . "$(dirname "$0")/host-vars.sh"
+. "$(dirname "$0")/lib.sh"
 
 # Parse command line flags
-DEBUG_FLAG=""
-while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do
-    case "$1" in
-        -h|--help)
-            echo "Usage: $0 [-d|--debug|-dd]"
-            echo "Run install-remove-upgrade tests with predefined matrix."
-            exit 0
-            ;;
-        -dd)
-            DEBUG_FLAG="-dd"
-            ;;
-        -d|--debug)
-            DEBUG_FLAG="-d"
-            ;;
-        *)
-            echo "Unknown option: $1" >&2
-            exit 1
-            ;;
-    esac
-    shift
-done
+parse_debug_flags "$@"
+case $? in
+    0)
+        eval set -- "$PARSE_DEBUG_FLAGS_REMAINING"
+        ;;
+    1)
+        exit 1
+        ;;
+    2)
+        echo "Usage: $0 [-d|--debug|-dd]"
+        echo "Run install-remove-upgrade tests with predefined matrix."
+        exit 0
+        ;;
+esac
 
 SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""

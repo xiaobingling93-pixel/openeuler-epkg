@@ -1,10 +1,25 @@
 #!/bin/sh
-# Run all e2e tests (excluding install-remove-upgrade tests)
-# Install-remove-upgrade tests are skipped because they are heavy weight
-# and their randomness accumulates cache on developer machines.
-# Use ./test-iur.sh for install-remove-upgrade tests with predefined matrix.
+# Run all e2e tests (excluding build-from-source and install-remove-upgrade tests).
+# Supports debug mode with -d/-dd flags.
 
 . "$(dirname "$0")/host-vars.sh"
+. "$(dirname "$0")/lib.sh"
+
+# Parse command line flags
+parse_debug_flags "$@"
+case $? in
+    0)
+        eval set -- "$PARSE_DEBUG_FLAGS_REMAINING"
+        ;;
+    1)
+        exit 1
+        ;;
+    2)
+        echo "Usage: $0 [-d|--debug|-dd]"
+        echo "Run all e2e tests (excluding build-from-source and install-remove-upgrade tests)."
+        exit 0
+        ;;
+esac
 
 SCRIPT_DIR="$(dirname "$0")"
 FAILED_TESTS=""
@@ -51,7 +66,7 @@ for test_dir in "$SCRIPT_DIR"/*/; do
         echo "Running test: $test_name"
         echo "========================================="
 
-        if "$SCRIPT_DIR/test-one.sh" "$test_script"; then
+        if "$SCRIPT_DIR/test-one.sh" $DEBUG_FLAG "$test_script"; then
             echo "PASSED: $test_name"
             PASSED_TESTS="$PASSED_TESTS $test_name"
         else

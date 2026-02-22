@@ -146,4 +146,40 @@ error() {
     exit 1
 }
 
+# Parse debug flags (-d, --debug, -dd) and shift arguments
+# Usage: parse_debug_flags "$@"
+# Sets DEBUG_FLAG to "", "-d", or "-dd"
+# Sets PARSE_DEBUG_FLAGS_REMAINING to remaining arguments (space-separated)
+# Returns:
+#   0 - success
+#   1 - unknown option
+#   2 - help requested (-h or --help)
+parse_debug_flags() {
+    DEBUG_FLAG=""
+    local _remaining=""
+    while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do
+        case "$1" in
+            -h|--help)
+                PARSE_DEBUG_FLAGS_REMAINING=""
+                return 2
+                ;;
+            -dd)
+                DEBUG_FLAG="-dd"
+                ;;
+            -d|--debug)
+                DEBUG_FLAG="-d"
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                PARSE_DEBUG_FLAGS_REMAINING=""
+                return 1
+                ;;
+        esac
+        shift
+    done
+    # Store remaining arguments
+    PARSE_DEBUG_FLAGS_REMAINING="$*"
+    return 0
+}
+
 [ -n "$INTERACTIVE" ] && set -x
