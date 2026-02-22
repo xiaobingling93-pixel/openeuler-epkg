@@ -397,14 +397,11 @@ pub fn is_running_as_root() -> bool {
 
 /// Determine shared_store mode based on the decision sequence:
 /// 1. private if !is_running_as_root
-/// 2. private if current_exe starts with /home/
-/// 3. public  if current_exe starts with /opt/epkg/
-/// 4. public  if running as root and /opt/epkg/store/ exists
-/// 5. private if $HOME/.epkg/store/ exists
-/// 6. public  if /opt/epkg/store/ exists
-/// 7. error and abort otherwise
+/// 2. public  if running as root and /opt/epkg/envs/ exists
+/// 3. private if $HOME/.epkg/envs/ exists
+/// 4. public  if /opt/epkg/envs/ exists
+/// 5. otherwise: neither envs exists, default to private (false)
 pub fn determine_shared_store() -> Result<bool> {
-    use std::env;
     use std::path::Path;
     use crate::dirs::get_home;
 
@@ -412,42 +409,35 @@ pub fn determine_shared_store() -> Result<bool> {
 
     // Rule 1: If no root permission, set to private
     if !is_root {
+        log::trace!("determine_shared_store: rule 1 -> private (not root)");
         return Ok(false);
     }
 
-    // Rule 2: If current_exe starts with /home/, set to private
-    let current_exe = env::current_exe()
-        .wrap_err("Failed to get current executable path")?;
-    let current_exe_str = current_exe.to_string_lossy();
-    if current_exe_str.starts_with("/home/") {
-        return Ok(false);
-    }
-
-    // Rule 3: If current_exe starts with /opt/epkg/, set to public
-    if current_exe_str.starts_with("/opt/epkg/") {
-        return Ok(true);
-    }
-
-    // Rule 4: If running as root and /opt/epkg/envs/ exists, set to public
+    // Rule 2: If running as root and /opt/epkg/envs/ exists, set to public
     let opt_envs = Path::new("/opt/epkg/envs");
     let has_opt_envs = opt_envs.exists();
     if is_root && has_opt_envs {
+        log::trace!("determine_shared_store: rule 2 -> public (root and /opt/epkg/envs exists)");
         return Ok(true);
     }
 
-    // Rule 5: If $HOME/.epkg/envs/ exists, set to private
+    // Rule 3: If $HOME/.epkg/envs/ exists, set to private
     let home = get_home()?;
     let home_envs = Path::new(&home).join(".epkg/envs");
-    if home_envs.exists() {
+    let home_envs_exists = home_envs.exists();
+    if home_envs_exists {
+        log::trace!("determine_shared_store: rule 3 -> private ({} exists)", home_envs.display());
         return Ok(false);
     }
 
-    // Rule 6: If /opt/epkg/envs/ exists, set to public
+    // Rule 4: If /opt/epkg/envs/ exists, set to public
     if has_opt_envs {
+        log::trace!("determine_shared_store: rule 4 -> public (/opt/epkg/envs exists)");
         return Ok(true);
     }
 
-    // Rule 7: Otherwise: neither envs exists, default to private (false)
+    // Rule 5: Otherwise: neither envs exists, default to private (false)
+    log::trace!("determine_shared_store: rule 5 -> private (neither envs exists)");
     Ok(false)
 }
 

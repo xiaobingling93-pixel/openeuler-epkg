@@ -18,6 +18,7 @@ elif [ -n "$TZ" ] && [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
     echo "Warning: TZ=$TZ but zoneinfo file not found, timezone may not work correctly"
 fi
 
+echo Removing /opt/epkg/envs
 rm -fr /opt/epkg/envs
 
 # Initialize epkg
