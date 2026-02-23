@@ -37,26 +37,30 @@ use crate::dirs;
 fn validate_file_checksums(task: &DownloadTask, path: &Path) -> Result<()> {
     let path_str = path.to_str().ok_or_else(|| eyre!("Invalid UTF-8 in path: {}", path.display()))?;
     if let Some(ref expected) = task.sha256sum {
-        let actual = utils::compute_file_sha256(path_str)?;
-        if actual.to_lowercase() != expected.to_lowercase() {
-            return Err(eyre!(
-                "SHA256 mismatch for {}: expected {}, got {}",
-                path.display(),
-                expected,
-                actual
-            ));
+        if !expected.is_empty() {
+            let actual = utils::compute_file_sha256(path_str)?;
+            if actual.to_lowercase() != expected.to_lowercase() {
+                return Err(eyre!(
+                    "SHA256 mismatch for {}: expected {}, got {}",
+                    path.display(),
+                    expected,
+                    actual
+                ));
+            }
         }
     }
     if let Some(ref base64_or_hex) = task.sha1sum {
-        let actual = utils::compute_file_sha1(path_str)?;
-        let expected_hex = utils::normalize_sha1(base64_or_hex)?;
-        if actual.to_lowercase() != expected_hex.to_lowercase() {
-            return Err(eyre!(
-                "SHA1 mismatch for {}: expected {}, got {}",
-                path.display(),
-                expected_hex,
-                actual
-            ));
+        if !base64_or_hex.is_empty() {
+            let actual = utils::compute_file_sha1(path_str)?;
+            let expected_hex = utils::normalize_sha1(base64_or_hex)?;
+            if actual.to_lowercase() != expected_hex.to_lowercase() {
+                return Err(eyre!(
+                    "SHA1 mismatch for {}: expected {}, got {}",
+                    path.display(),
+                    expected_hex,
+                    actual
+                ));
+            }
         }
     }
     Ok(())

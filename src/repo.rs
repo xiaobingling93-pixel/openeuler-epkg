@@ -738,8 +738,16 @@ fn download_and_process_item(revise: &RepoReleaseItem, repo_dir: &PathBuf) -> Re
     } else {
         DownloadFlags::empty()
     };
-    let sha256sum = if revise.hash_type == "SHA256" { Some(revise.hash.clone()) } else { None };
-    let sha1sum = if revise.hash_type == "SHA1" { Some(revise.hash.clone()) } else { None };
+    let sha256sum = if revise.hash_type == "SHA256" && !revise.hash.is_empty() {
+        Some(revise.hash.clone())
+    } else {
+        None
+    };
+    let sha1sum = if revise.hash_type == "SHA1" && !revise.hash.is_empty() {
+        Some(revise.hash.clone())
+    } else {
+        None
+    };
     let task = DownloadTask::with_size(
         revise.url.clone(),
         if revise.size > 0 { Some(revise.size as u64) } else { None },
