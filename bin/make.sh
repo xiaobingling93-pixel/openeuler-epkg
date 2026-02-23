@@ -419,14 +419,15 @@ get_rustflags() {
     echo "$cross_opts"
 }
 
-# Build static binary for a specific architecture
-# Usage: build_static [<arch>]
+# Build static binary for a specific architecture with mode (debug/release)
+# Usage: build_static <arch> <mode>
 build_static() {
     local arch=$(get_arch "$1")
+    local mode="$2"
     local rust_target=$(get_rust_target "$arch")
     local rustflags=$(get_rustflags "$arch")
 
-    echo "Building $arch binary..."
+    echo "Building $arch binary ($mode)..."
 
     # Export environment variables directly
     export LUA_LIB_NAME=lua
@@ -450,29 +451,54 @@ build_static() {
     fi
 
     # Build the binary
-    cargo build --release --target "$rust_target" --ignore-rust-version
+    if [[ "$mode" == "release" ]]; then
+        cargo build --release --target "$rust_target" --ignore-rust-version
+        local build_dir="release"
+    else
+        cargo build --target "$rust_target" --ignore-rust-version
+        local build_dir="debug"
+    fi
 
-    # Deploy
-    mkdir -p "$OUTPUT_DIR"
-    # Copy binary, handling "Text file busy" error
-    safe_cp "target/$rust_target/release/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
-    echo "Generating checksum for $arch binary..."
-    cd "$OUTPUT_DIR"
-    sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
-    echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
+    # Deploy only for release mode
+    if [[ "$mode" == "release" ]]; then
+        mkdir -p "$OUTPUT_DIR"
+        # Copy binary, handling "Text file busy" error
+        safe_cp "target/$rust_target/$build_dir/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
+        echo "Generating checksum for $arch binary..."
+        cd "$OUTPUT_DIR"
+        sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
+        echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
+    fi
 
     # Install to dev environment if this is the native architecture
     if is_native_arch "$arch"; then
-        install_to_dev_env "$PROJECT_ROOT/target/$rust_target/release/$BINARY_NAME"
+        # The static/dynamic executable file sizes are similar:
+        #
+        # wfg /c/epkg% ll target/debug/epkg
+        # -rwxr-xr-x 2 wfg wfg 156M 2026-02-23 15:54 target/debug/epkg
+        # wfg /c/epkg% ll target/x86_64-unknown-linux-musl/debug/epkg
+        # -rwxrwxr-x 2 wfg wfg 152M 2026-02-23 17:12 target/x86_64-unknown-linux-musl/debug/epkg
+        # wfg /c/epkg% ldd target/x86_64-unknown-linux-musl/debug/epkg
+        #         statically linked
+        # wfg /c/epkg% ldd target/debug/epkg
+        #         linux-vdso.so.1 (0x00007f0b433a9000)
+        #         /lib/$LIB/liblsp.so => /lib/lib/x86_64-linux-gnu/liblsp.so (0x00007f0b41000000)
+        #         libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f0b43348000)
+        #         libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f0b43258000)
+        #         libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f0b4120b000)
+        #         /lib64/ld-linux-x86-64.so.2 (0x00007f0b433ab000)
+        #         libdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007f0b43253000)
+        #
+        # Also copy to target/$mode/ dir for easy access.
+        cp -vfs "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" target/$mode/epkg
+        install_to_dev_env "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME"
     fi
 }
 
-# Build development binary
-build() {
-    echo "Building debug binary..."
 
-    # Set up static Lua linking for glibc
-    local arch=$(arch)
+# Setup glibc Lua static linking
+setup_glibc_lua() {
+    local arch="${HOST_ARCH:-$(arch)}"
     local lua_lib_dir="$PROJECT_ROOT/target/lua-glibc-$arch"
 
     # Build Lua library if it doesn't exist
@@ -487,6 +513,14 @@ build() {
     export LUA_LIB="$lua_lib_dir"
     export LUA_LINK=static
     export LUA_NO_PKG_CONFIG=1
+}
+
+# Build development binary
+build() {
+    echo "Building debug binary..."
+
+    # Set up static Lua linking for glibc
+    setup_glibc_lua
 
     cargo build --ignore-rust-version
 
@@ -498,6 +532,10 @@ build() {
 # Build release binary
 build_release() {
     echo "Building release binary..."
+
+    # Set up static Lua linking for glibc
+    setup_glibc_lua
+
     cargo build --release --ignore-rust-version
 
     echo "Release build completed. Binary is in $PROJECT_ROOT/target/release/$BINARY_NAME"
@@ -577,17 +615,20 @@ get_arch() {
 cmd="${1:-build}"
 # Main dispatcher
 case $cmd in
-    build)
-        build
-        ;;
     lua|build_lua_lib)
         build_lua_lib "$2"
         ;;
-    release|build_release)
-        build_release
+    static-debug|static)  # default in Makefile
+        build_static "$2" debug
         ;;
-    static|build_static)
-        build_static "$2"
+    static-release)
+        build_static "$2" release
+        ;;
+    build)
+        build
+        ;;
+    release)  # not used in Makefile
+        build_release
         ;;
     dev-depends)
         dev_depends
@@ -619,8 +660,10 @@ case $cmd in
         echo "Commands:"
         echo "  build                                Build development binary (default)"
         echo "  lua [<arch>]                         Build Lua library for architecture (auto-detects if not specified)"
-        echo "  release                              Build release binary"
-        echo "  static [<arch>]                      Build static binary (auto-detects arch if not specified)"
+        echo "  release                              Build release binary (dynamic linking)"
+        echo "  static [<arch>]                      Build static debug binary (auto-detects arch if not specified)"
+        echo "  static-debug [<arch>]                Build static debug binary"
+        echo "  static-release [<arch>]              Build static release binary"
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"

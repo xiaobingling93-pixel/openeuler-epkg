@@ -18,16 +18,19 @@ endif
 # Detect host architecture
 HOST_ARCH := $(shell uname -m | sed -e 's/amd64/x86_64/' -e 's/arm64/aarch64/')
 
-# Default target (development build for local use)
-build:
-	@$(PROJECT_ROOT)/bin/make.sh build
+# Default target is
+# - development build (fast)
+# - static build (necessary for running applets inside various env)
+static: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
+	@$(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH)
 
 # Release build target
-release:
-	@$(PROJECT_ROOT)/bin/make.sh release
+release: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
+	@$(PROJECT_ROOT)/bin/make.sh static-release $(HOST_ARCH)
 
-# Static build for detected host architecture
-static: static-$(HOST_ARCH)
+# Development build with dynamic linking, only useful for run in local host rootfs 
+build:
+	@$(PROJECT_ROOT)/bin/make.sh build
 
 # Install development dependencies (current arch only)
 dev-depends:
@@ -41,25 +44,23 @@ crossdev-depends:
 clone-repos:
 	@$(PROJECT_ROOT)/bin/make.sh clone-repos
 
+# Build release binaries for all architectures (sequentially to avoid Cargo lock conflicts)
+release-all:
+	$(MAKE) release-x86_64
+	$(MAKE) release-aarch64
+	$(MAKE) release-riscv64
+	$(MAKE) release-loongarch64
 
-# Build static binaries for all architectures (sequentially to avoid Cargo lock conflicts)
-static-all:
-	$(MAKE) static-x86_64
-	$(MAKE) static-aarch64
-	$(MAKE) static-riscv64
-	$(MAKE) static-loongarch64
-
-# Build static binary for a specific architecture
-define build_static
-static-$(1): $(PROJECT_ROOT)/target/lua-musl-$(1)/liblua.a
-	@$(PROJECT_ROOT)/bin/make.sh static $(1)
+# Build release binary for a specific architecture
+define build_release
+release-$(1): $(PROJECT_ROOT)/target/lua-musl-$(1)/liblua.a
+	@$(PROJECT_ROOT)/bin/make.sh static-release $(1)
 endef
 
-# Define static targets for each architecture
-$(eval $(call build_static,x86_64))
-$(eval $(call build_static,aarch64))
-$(eval $(call build_static,riscv64))
-$(eval $(call build_static,loongarch64))
+$(eval $(call build_release,x86_64))
+$(eval $(call build_release,aarch64))
+$(eval $(call build_release,riscv64))
+$(eval $(call build_release,loongarch64))
 
 
 # Build Lua library for a specific architecture
@@ -87,4 +88,4 @@ clean:
 clean-all:
 	@$(PROJECT_ROOT)/bin/make.sh clean_all
 
-.PHONY: dev-depends crossdev-depends clone-repos build release static static-all static-x86_64 static-aarch64 static-riscv64 static-loongarch64 test clean clean-all
+.PHONY: dev-depends crossdev-depends clone-repos build static release release-all release-x86_64 release-aarch64 release-riscv64 release-loongarch64 test clean clean-all

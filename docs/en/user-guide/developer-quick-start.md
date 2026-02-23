@@ -12,25 +12,12 @@ make dev-depends
 
 ## 2. Build and install epkg
 
-### Standard build (env glibc >= host glibc, so the host-build epkg may also run inside env)
-
 ```bash
 make
 target/debug/epkg self install
 ```
 
 Then start a new shell (or `source ~/.bashrc`) so PATH is updated.
-
-### Static build (env Alpine)
-
-For envs with Alpine (musl) or old glibc:
-
-```bash
-make static
-dist/epkg-$(arch) self install
-```
-
-Then start a new shell.
 
 ## 3. Development loop
 

@@ -12,25 +12,12 @@ make dev-depends
 
 ## 2. 构建并安装 epkg
 
-### 标准构建（环境 glibc >= 主机 glibc，因此主机构建的 epkg 也可以在环境内运行）
-
 ```bash
 make
 target/debug/epkg self install
 ```
 
 然后启动一个新的 shell（或 `source ~/.bashrc`）以更新 PATH。
-
-### 静态构建（Alpine 环境）
-
-对于使用 Alpine（musl）或旧版 glibc 的环境：
-
-```bash
-make static
-dist/epkg-$(arch) self install
-```
-
-然后启动一个新的 shell。
 
 ## 3. 开发循环
 

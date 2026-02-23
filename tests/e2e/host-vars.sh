@@ -16,7 +16,7 @@ esac
 
 # If EPKG_BINARY doesn't exist, build it automatically
 if [ ! -x "$EPKG_BINARY" ]; then
-	make -C $PROJECT_ROOT static-$ARCH
+	make -C $PROJECT_ROOT release-$ARCH
 fi
 
 # Mount entire /opt/epkg/ as a single mount point to avoid cross-device link errors
