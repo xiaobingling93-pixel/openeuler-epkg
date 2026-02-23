@@ -6,8 +6,6 @@ distro_dirs:
 - archlinux-pkgbuild
 - archlinux-mirror
 - archmirror
-- archlinuxarm
-- archlinuxcn
 - ArchLinux
 - Archlinux
 - archlinux

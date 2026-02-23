@@ -1,0 +1,15 @@
+format: pacman
+distro: archlinux
+distro_dirs:
+- archlinuxarm
+versions:
+- "latest"
+repos:
+  core:
+  extra:
+  community:
+  aur:
+index_url: $mirror/$arch/$repo/$repo.files.tar.gz
+
+# Example index_url:
+# https://cdnmirror.com/archlinuxarm/aarch64/core/core.db.tar.gz

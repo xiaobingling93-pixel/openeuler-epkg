@@ -7,3 +7,6 @@ versions:
 repos:
   archlinuxcn:
 index_url: $mirror/$arch/archlinuxcn.files.tar.gz
+
+# Example index_url:
+# http://mirrors.hit.edu.cn/archlinuxcn/x86_64/archlinuxcn.db.tar.gz
