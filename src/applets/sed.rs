@@ -795,13 +795,12 @@ fn parse_command(script: &str, extended_regex: bool) -> Result<(AddressedCommand
                     after = &after[1..];
                 }
                 let text = after.trim_end();
-                if text.is_empty() {
-                    return Err(eyre!("sed: missing text for i command"));
-                }
+                // Allow empty text for consistency with a command (e.g. -e '1i\' with no following -e).
                 let unescaped = unescape_append_insert_text(text);
                 Ok(Some((SedCommand::Insert(unescaped), "")))
             }
             'a' => {
+                // Allow empty text for "$a\" idiom (ensure file ends with newline; GNU sed extension).
                 let mut after = cmd[1..].trim_start_matches(|c| c == ' ' || c == '\t');
                 if after.starts_with('\\') {
                     after = &after[1..];
@@ -810,9 +809,6 @@ fn parse_command(script: &str, extended_regex: bool) -> Result<(AddressedCommand
                     after = &after[1..];
                 }
                 let text = after.trim_end();
-                if text.is_empty() {
-                    return Err(eyre!("sed: missing text for a command"));
-                }
                 let unescaped = unescape_append_insert_text(text);
                 Ok(Some((SedCommand::Append(unescaped), "")))
             }
@@ -1875,7 +1871,9 @@ fn run_inplace(
             }
             processed_lines.push(processed);
             for text in &appends {
-                processed_lines.push(text.clone());
+                if !text.is_empty() {
+                    processed_lines.push(text.clone());
+                }
             }
         }
         if should_quit {
@@ -2294,6 +2292,10 @@ fn emit_line_output(
         }
     }
     for text in appends {
+        if text.is_empty() {
+            // Empty append (e.g. "$a\") only ensures line/newline; do not print an extra line.
+            continue;
+        }
         maybe_newline_before(last_puts_char);
         println!("{}", text);
         *last_puts_char = '\n';
