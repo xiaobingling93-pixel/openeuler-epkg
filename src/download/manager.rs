@@ -156,25 +156,28 @@ impl DownloadManager {
                 return Err(eyre!("Download cancelled by user"));
             }
 
-            let tasks = self.tasks.lock()
-                .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
-            if let Some(task) = tasks.get(&task_url) {
-                let status = task.get_status();
-                match status {
-                    DownloadStatus::Completed => {
-                        let final_path = Some(task.final_path.clone());
-                        return Ok((status, final_path));
-                    }
-                    DownloadStatus::Failed(_) => {
-                        return Ok((status, None));
-                    }
-                    _ => {}
-                }
-            } else {
-                drop(tasks);
+            // Take a clone of the task under the lock, then release it before get_status().
+            // Holding manager.tasks while calling task.get_status() can deadlock with the
+            // processing thread (see wait_for_any_task).
+            let task_ref = {
+                let tasks = self.tasks.lock()
+                    .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
+                tasks.get(&task_url).map(Arc::clone)
+            };
+            let Some(task) = task_ref else {
                 return Err(eyre!("Task with URL {} not found", task_url));
+            };
+            let status = task.get_status();
+            match status {
+                DownloadStatus::Completed => {
+                    let final_path = Some(task.final_path.clone());
+                    return Ok((status, final_path));
+                }
+                DownloadStatus::Failed(_) => {
+                    return Ok((status, None));
+                }
+                _ => {}
             }
-            drop(tasks);
             thread::sleep(Duration::from_millis(WAIT_TASK_DURATION_MS));
         }
     }
@@ -191,25 +194,30 @@ impl DownloadManager {
                 return Err(eyre!("Download cancelled by user"));
             }
 
-            let tasks = self.tasks.lock()
-                .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
+            // Collect task refs under the lock, then release it before calling get_status().
+            // Holding manager.tasks while calling task.get_status() (which locks task.status)
+            // can deadlock with the processing thread that needs manager.tasks in
+            // iterate_3level_tasks / process_pending_master_tasks.
+            let to_check: Vec<(String, Arc<DownloadTask>)> = {
+                let tasks = self.tasks.lock()
+                    .map_err(|e| eyre!("Failed to lock tasks mutex: {}", e))?;
+                task_urls.iter()
+                    .filter_map(|url| tasks.get(url).map(|t| (url.clone(), Arc::clone(t))))
+                    .collect()
+            };
 
-            // Check if any of the specified tasks have completed
-            for task_url in task_urls {
-                if let Some(task) = tasks.get(task_url) {
-                    match task.get_status() {
-                        DownloadStatus::Completed => {
-                            return Ok(Some(task_url.clone()));
-                        }
-                        DownloadStatus::Failed(err) => {
-                            return Err(eyre!("Download failed for {}: {}", task_url, err));
-                        }
-                        _ => {} // Still downloading or pending
+            for (task_url, task) in &to_check {
+                match task.get_status() {
+                    DownloadStatus::Completed => {
+                        return Ok(Some(task_url.clone()));
                     }
+                    DownloadStatus::Failed(err) => {
+                        return Err(eyre!("Download failed for {}: {}", task_url, err));
+                    }
+                    _ => {} // Still downloading or pending
                 }
             }
 
-            drop(tasks);
             thread::sleep(Duration::from_millis(WAIT_TASK_DURATION_MS));
         }
     }
