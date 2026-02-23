@@ -5,10 +5,22 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+/*
+ * Status (upstream dpkg-divert alignment):
+ * - Implemented and aligned: --add (default --divert <path>.distrib), --remove, --list,
+ *   --listpackage (prints LOCAL for local diversions), --truename, --package, --divert,
+ *   --rename/--no-rename, filename checks (absolute, no newlines), reject divert-to-self
+ *   and directories, remove requires --divert to match when specified.
+ * - Not implemented: --local, --admindir/--instdir/--root, --test, shared-diversion
+ *   skip on remove, fnmatch glob for --list.
+ */
+
 #[derive(Debug, Clone)]
 pub struct DpkgDivertOptions {
     pub add: bool,
     pub remove: bool,
+    pub list: bool,
+    pub list_glob: Option<String>,
     pub listpackage: Option<String>,
     pub truename: Option<String>,
     pub rename: bool,
@@ -91,25 +103,71 @@ fn find_diversion<'a>(records: &'a [DiversionRecord], path: &str) -> Option<&'a 
         .find(|r| r.original == path || r.diverted == path)
 }
 
-fn listpackage(path: &str) -> i32 {
+/// Upstream: filename must be absolute and must not contain newlines.
+fn check_filename(filename: &str, what: &str) -> Result<()> {
+    if !filename.starts_with('/') {
+        return Err(eyre!(
+            "dpkg-divert: error: {} \"{}\" is not absolute",
+            what,
+            filename
+        ));
+    }
+    if filename.contains('\n') {
+        return Err(eyre!("dpkg-divert: error: {} may not contain newlines", what));
+    }
+    Ok(())
+}
+
+fn listpackage(path: &str) -> Result<i32> {
+    check_filename(path, "filename")?;
     let records = load_diversions();
     if let Some(r) = find_diversion(&records, path) {
         if let Some(pkg) = &r.package {
             println!("{}", pkg);
+        } else {
+            println!("LOCAL");
         }
-        0
+        Ok(0)
     } else {
-        // Upstream prints empty output but success when no diversion exists.
-        0
+        Ok(0)
     }
 }
 
-fn truename(path: &str) -> i32 {
+fn truename(path: &str) -> Result<i32> {
+    check_filename(path, "filename")?;
     let records = load_diversions();
     if let Some(r) = find_diversion(&records, path) {
         println!("{}", r.diverted);
     } else {
         println!("{}", path);
+    }
+    Ok(0)
+}
+
+fn diversion_describe(r: &DiversionRecord) -> String {
+    if let Some(pkg) = &r.package {
+        format!(
+            "diversion of {} to {} by {}",
+            r.original, r.diverted, pkg
+        )
+    } else {
+        format!("local diversion of {} to {}", r.original, r.diverted)
+    }
+}
+
+fn list_diversions(glob: Option<&str>) -> i32 {
+    let records = load_diversions();
+    let show_all = glob.map_or(true, |g| g == "*" || g.is_empty());
+    let pat = glob.unwrap_or("");
+    for r in &records {
+        if show_all {
+            println!("{}", diversion_describe(r));
+        } else if r.original.contains(pat)
+            || r.diverted.contains(pat)
+            || r.package.as_deref().map_or(false, |p| p.contains(pat))
+        {
+            println!("{}", diversion_describe(r));
+        }
     }
     0
 }
@@ -124,15 +182,26 @@ fn add_diversion(opts: &DpkgDivertOptions) -> Result<i32> {
         }
     };
 
+    check_filename(&path, "filename")?;
+
     let divert_to = match &opts.divert {
-        Some(d) => d.clone(),
-        None => {
-            // Upstream defaults to adding .distrib; we keep it simple and require explicit --divert
-            return Err(eyre!(
-                "dpkg-divert: error: --divert is required with --add in epkg"
-            ));
+        Some(d) => {
+            check_filename(d, "divert-to")?;
+            d.clone()
         }
+        None => format!("{}.distrib", path),
     };
+
+    if path == divert_to {
+        return Err(eyre!(
+            "dpkg-divert: error: cannot divert file '{}' to itself",
+            path
+        ));
+    }
+
+    if Path::new(&path).is_dir() {
+        return Err(eyre!("dpkg-divert: error: cannot divert directories"));
+    }
 
     let mut records = load_diversions();
 
@@ -191,6 +260,8 @@ fn remove_diversion(opts: &DpkgDivertOptions) -> Result<i32> {
         }
     };
 
+    check_filename(&path, "filename")?;
+
     let mut records = load_diversions();
     let mut idx = None;
     for (i, r) in records.iter().enumerate() {
@@ -206,12 +277,22 @@ fn remove_diversion(opts: &DpkgDivertOptions) -> Result<i32> {
     }
 
     let Some(i) = idx else {
-        // Nothing to remove – match Debian behavior and succeed silently.
         return Ok(0);
     };
 
-    let record = records.remove(i);
+    let record = &records[i];
+    if let Some(ref d) = opts.divert {
+        if d != &record.diverted {
+            eprintln!(
+                "dpkg-divert: error: mismatch on divert-to\n  when removing '{}'\n  found '{}'",
+                path,
+                diversion_describe(record)
+            );
+            return Ok(2);
+        }
+    }
 
+    let record = records.remove(i);
     let do_rename_back = record.rename && !opts.no_rename;
     if do_rename_back {
         let src = Path::new(&record.diverted);
@@ -239,6 +320,8 @@ fn remove_diversion(opts: &DpkgDivertOptions) -> Result<i32> {
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgDivertOptions> {
     let add = matches.get_flag("add");
     let remove = matches.get_flag("remove");
+    let list = matches.contains_id("list");
+    let list_glob = matches.get_one::<String>("list").cloned();
     let listpackage = matches.get_one::<String>("listpackage").cloned();
     let truename = matches.get_one::<String>("truename").cloned();
     let rename = matches.get_flag("rename");
@@ -254,6 +337,8 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgDivertOptions> {
     Ok(DpkgDivertOptions {
         add,
         remove,
+        list,
+        list_glob,
         listpackage,
         truename,
         rename,
@@ -279,6 +364,13 @@ pub fn command() -> Command {
                 .long("remove")
                 .action(clap::ArgAction::SetTrue)
                 .help("Remove a diversion"),
+        )
+        .arg(
+            Arg::new("list")
+                .long("list")
+                .num_args(0..=1)
+                .value_name("GLOB")
+                .help("Show file diversions (optional glob pattern)"),
         )
         .arg(
             Arg::new("listpackage")
@@ -331,9 +423,16 @@ pub fn command() -> Command {
 }
 
 pub fn run(options: DpkgDivertOptions) -> Result<()> {
-    // Handle query-style commands first; they do not modify state.
+    if options.list {
+        let code = list_diversions(options.list_glob.as_deref());
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
     if let Some(path) = options.listpackage.as_deref() {
-        let code = listpackage(path);
+        let code = listpackage(path)?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -341,14 +440,13 @@ pub fn run(options: DpkgDivertOptions) -> Result<()> {
     }
 
     if let Some(path) = options.truename.as_deref() {
-        let code = truename(path);
+        let code = truename(path)?;
         if code != 0 {
             std::process::exit(code);
         }
         return Ok(());
     }
 
-    // Modification commands
     if options.add {
         let code = add_diversion(&options)?;
         if code != 0 {
@@ -367,7 +465,7 @@ pub fn run(options: DpkgDivertOptions) -> Result<()> {
 
     if !options.quiet {
         eprintln!("dpkg-divert: error: no action specified");
-        eprintln!("Usage: dpkg-divert [--add|--remove|--listpackage|--truename] [options] FILE...");
+        eprintln!("Usage: dpkg-divert [--add|--remove|--list|--listpackage|--truename] [options] FILE...");
     }
     std::process::exit(2);
 }
