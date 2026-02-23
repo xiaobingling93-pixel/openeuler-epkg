@@ -105,6 +105,7 @@ use color_eyre::eyre::WrapErr;
 use clap::{arg, Command};
 use ctrlc;
 use env_logger;
+use log::LevelFilter;
 use log;
 use console::Term;
 use list::ListScope;
@@ -185,6 +186,7 @@ fn main() -> Result<()> {
 #[cfg(not(test))]
 fn setup_logging() {
     env_logger::Builder::from_default_env()
+        .filter_module("ureq_proto", LevelFilter::Warn)
         .format(|buf, record| {
             writeln!(
                 buf,
