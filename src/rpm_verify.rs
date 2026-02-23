@@ -421,11 +421,11 @@ pub fn verify_rpm_extraction(rpm_file_path: &Path, epkg_extracted_fs_dir: &Path)
     }
 
     if !utils::command_exists("rpm2archive") {
-        log::warn!("Verification skipped: 'rpm2archive' command not found in PATH.");
+        log::info!("Verification skipped: 'rpm2archive' command not found in PATH.");
         return Ok(());
     }
     if !utils::command_exists("tar") {
-        log::warn!("Verification skipped: 'tar' command not found in PATH.");
+        log::info!("Verification skipped: 'tar' command not found in PATH.");
         return Ok(());
     }
     log::debug!("rpm2archive and tar found.");
