@@ -41,6 +41,11 @@ pub fn extend_repodata_name2distro_dirs(channel_config: &ChannelConfig, repos: &
     let mut hashmap = REPODATA_NAME2DISTRO_DIRS.lock()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to lock repodata_name2distro_dirs: {}", e))?;
 
+    // Example output for sources/openeuler.yaml
+    // repodata_name2distro_dirs[update] = ["openEuler", "openeuler.org", "openeuler"]
+    // repodata_name2distro_dirs[everything] = ["openEuler", "openeuler.org", "openeuler"]
+    // repodata_name2distro_dirs[EPOL/main] = ["openEuler", "openeuler.org", "openeuler"]
+    // repodata_name2distro_dirs[EPOL/update/main] = ["openEuler", "openeuler.org", "openeuler"]
     for repo in repos {
         hashmap.insert(repo.repodata_name.clone(), channel_config.distro_dirs.clone());
         log::debug!("repodata_name2distro_dirs[{}] = {:?}", repo.repodata_name.clone(), channel_config.distro_dirs.clone());
@@ -133,10 +138,7 @@ impl Mirrors {
                 continue;
             }
 
-            if let Some(orig_dir) = mirror
-                .distro_dirs
-                .iter()
-                .find(|dir| dir.eq_ignore_ascii_case(item))
+            if let Some(orig_dir) = mirror.distro_dirs.get(item)
             {
                 // Use the original casing from the mirror itself to avoid wrong capitalisation
                 found_dir = orig_dir.clone();

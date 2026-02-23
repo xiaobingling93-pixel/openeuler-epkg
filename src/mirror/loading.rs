@@ -122,7 +122,6 @@ fn apply_channel_config_filtering(
     // Get the union of all distro_dirs from all channel configs
     let mut all_distro_dirs = HashSet::new();
     for config in channel_configs() {
-        log::trace!("Channel config: distro={}, distro_dirs={:?}", config.distro, config.distro_dirs);
         all_distro_dirs.extend(config.distro_dirs.iter().cloned());
     }
     let distro_dirs: Vec<String> = all_distro_dirs.into_iter().collect();

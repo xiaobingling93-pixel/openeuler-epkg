@@ -129,6 +129,36 @@ fn process_channel_config(mut channel_config: ChannelConfig, main_config: Option
     merge_channel_defaults_into_repos(&mut channel_config);
     interpolate_channel_urls(&mut channel_config);
 
+    if main_config.is_none() { // it's the first/main config
+        // Add the distro name (e.g. "fedora") into distro_dirs. Required for Fedora; see below.
+        //
+        // Problem: Fedora mirrors use inconsistent top-level paths. Upstream uses
+        // fedora/linux/ (e.g. download.fedoraproject.org/pub/fedora/linux). Many mirrors
+        // simplify to fedora/ (e.g. mirrors.tuna.tsinghua.edu.cn/fedora). So we see both:
+        //   - .../fedora/releases/..., .../fedora/updates/...
+        //   - .../fedora/linux/releases/..., .../fedora/linux/updates/...
+        //
+        // Source of truth: We rely on scripts/mirror/input/mirrors-fedora.html (from
+        // Mirrormanager) as the single input; it lists the actual base URLs, e.g.:
+        //   Fedora Linux  <a href="https://mirrors.tuna.tsinghua.edu.cn/fedora">https</a>
+        //   Fedora Linux  <a href="http://ftp.sh.cvut.cz/fedora/linux">http</a>
+        //
+        // Why sources/fedora.yaml omits "fedora" from distro_dirs: ls_mirrors.py discovers
+        // mirrors by listing top-level dirs on each site. If "fedora" were in distro_dirs,
+        // it would pick any site that has a top-level "fedora" dir and assume a uniform
+        // layout -- but some sites use fedora/ and others fedora/linux/, so discovery must
+        // use the explicit path suffixes from the HTML (e.g. fedora/linux, fedora-secondary).
+        // Hence sources/fedora.yaml only lists those suffixes (fedora/linux, fedora/..., etc.)
+        // and does not list the bare "fedora" entry.
+        //
+        // Why we insert "fedora" here: When matching mirrors and resolving paths (e.g.
+        // resolve_mirror_path, local_subdir for $mirror/...), we must accept mirrors whose
+        // base path is literally "fedora" (e.g. tuna). So we add the distro name back into
+        // distro_dirs for the main config, so that those mirrors are considered and
+        // local_subdir becomes "fedora" where appropriate.
+        channel_config.distro_dirs.push(channel_config.distro.clone());
+    }
+
     // Sort distro_dirs by length once during deserialization
     channel_config.distro_dirs.sort_by(|a, b| a.len().cmp(&b.len()));
 
