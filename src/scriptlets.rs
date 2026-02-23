@@ -682,8 +682,13 @@ pub fn run_scriptlet(
                     continue;
                 }
 
-                // Prepare script arguments: [script_path, param1, param2, ...]
-                let mut script_args = vec![script_path.to_string_lossy().to_string()];
+                // For Deb, use resolved path so debconf frontend sees .../postinst and finds sibling templates
+                let script_path_to_run: std::path::PathBuf = if package_format == PackageFormat::Deb {
+                    std::fs::canonicalize(&script_path).unwrap_or_else(|_| script_path.clone())
+                } else {
+                    script_path.clone()
+                };
+                let mut script_args = vec![script_path_to_run.to_string_lossy().to_string()];
                 script_args.extend(params.clone());
 
                 // Create RunOptions for scriptlet execution with namespace isolation

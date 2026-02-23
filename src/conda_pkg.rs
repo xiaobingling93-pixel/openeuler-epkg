@@ -429,7 +429,7 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
     let conda_info_dir = store_tmp_dir.join("info/conda");
     let install_dir = store_tmp_dir.join("info/install");
 
-    crate::utils::copy_scriptlets_by_mapping(&SCRIPT_MAPPING, &conda_info_dir, &install_dir, true)?;
+    crate::utils::copy_scriptlets_by_mapping(&SCRIPT_MAPPING, &conda_info_dir, &install_dir, false)?;
 
     Ok(())
 }

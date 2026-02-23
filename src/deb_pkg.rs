@@ -151,7 +151,8 @@ fn create_scriptlets<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
         ("postrm", "post_uninstall.sh"),
     ].into_iter().collect();
 
-    crate::utils::copy_scriptlets_by_mapping(&scriptlet_mapping, &deb_dir, &install_dir, false)?;
+    // Symlink so debconf frontend sees .../postinst (and sibling templates) when script runs
+    crate::utils::copy_scriptlets_by_mapping(&scriptlet_mapping, &deb_dir, &install_dir, true)?;
 
     Ok(())
 }

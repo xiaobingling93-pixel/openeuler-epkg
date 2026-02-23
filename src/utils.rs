@@ -1168,19 +1168,19 @@ pub fn write_scriptlet_content<P: AsRef<Path>>(target: P, content: &[u8]) -> Res
     Ok(())
 }
 
-/// Process scriptlets from a mapping, copying them from source directory to target directory
-/// This is a common pattern used by deb_pkg, conda_pkg, and apk_pkg
+/// Process scriptlets from a mapping, copying or symlinking them from source directory to target directory.
+/// Used by deb_pkg (symlink so debconf frontend finds templates), conda_pkg, and apk_pkg (copy).
 ///
 /// # Arguments
 /// * `mapping` - HashMap mapping package-specific scriptlet names to common scriptlet names
 /// * `source_dir` - Directory containing the source scriptlet files
 /// * `target_dir` - Directory where common scriptlet files should be written
-/// * `enable_logging` - If true, log when scriptlets are found and created
+/// * `use_symlink` - If true, create symlinks (target -> relative path to source); if false, copy files
 pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
     mapping: &std::collections::HashMap<&str, &str>,
     source_dir: P,
     target_dir: P,
-    enable_logging: bool,
+    use_symlink: bool,
 ) -> Result<()> {
     let source_dir = source_dir.as_ref();
     let target_dir = target_dir.as_ref();
@@ -1188,12 +1188,21 @@ pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
     for (package_script, common_script) in mapping {
         let source_path = source_dir.join(package_script);
         if source_path.exists() {
-            if enable_logging {
-                log::debug!("Found scriptlet: {}", package_script);
-            }
+            log::debug!("Found scriptlet: {}", package_script);
             let target_path = target_dir.join(common_script);
-            copy_scriptlet_file(&source_path, &target_path)?;
-            if enable_logging {
+            if use_symlink {
+                let rel = pathdiff::diff_paths(&source_path, target_dir).unwrap_or_else(|| {
+                    let base = source_dir.file_name().and_then(|o| o.to_str()).unwrap_or("deb");
+                    PathBuf::from(format!("../{}/{}", base, package_script))
+                });
+                if lfs::symlink_metadata(&target_path).is_ok() {
+                    lfs::remove_file(&target_path)?;
+                }
+                log::debug!("Creating symlink: {} -> {}", target_path.display(), rel.display());
+                lfs::symlink(rel, &target_path)?;
+                log::debug!("Created script symlink: {} -> {}", common_script, package_script);
+            } else {
+                copy_scriptlet_file(&source_path, &target_path)?;
                 log::debug!("Created script: {} -> {}", package_script, common_script);
             }
         }
