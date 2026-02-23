@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
 use crate::models::{InstalledPackageInfo, PACKAGE_CACHE, PackageFormat};
+use std::sync::Arc;
 use crate::plan::InstallationPlan;
-use crate::hooks::HookWhen;
+use crate::hooks::{Hook, HookWhen};
 
 // Constants matching dpkg's structure
 pub const TRIGGERSDIR: &str = "var/lib/dpkg/triggers";
@@ -573,20 +574,59 @@ fn separate_unincorp_triggers(
     Ok((triggers_to_consume, triggers_remaining))
 }
 
+/*
+ * Trigger name → hook lookup for Unincorp execution
+ *
+ * Hooks are stored in plan.hooks_by_name under two shapes:
+ * - Global hook: key = base name (e.g. "update-ca-certificates").
+ * - Package hook (when no global exists): key = base_name + "-" + pkgkey
+ *   (e.g. "update-ca-certificates-ca-certificates__20250419__all").
+ *
+ * So we look up by exact trigger-derived name first; if missing, we collect
+ * any key that equals the name or starts with "name-", and prefer the hook
+ * from a package in the current batch (newly installed).
+ */
+/// Find a hook for a trigger by base name. Package hooks are registered as "base_name-pkgkey";
+/// this looks up exact name first, then any key starting with "base_name-", preferring a hook
+/// from a package in the current batch (newly installed).
+fn find_hook_for_trigger<'a>(
+    plan: &'a InstallationPlan,
+    hook_name: &str,
+) -> Option<&'a Arc<Hook>> {
+    if let Some(hook) = plan.hooks_by_name.get(hook_name) {
+        return Some(hook);
+    }
+    let prefix = format!("{}-", hook_name);
+    let candidates: Vec<&Arc<Hook>> = plan
+        .hooks_by_name
+        .iter()
+        .filter(|(k, _)| k.as_str() == hook_name || k.starts_with(&prefix))
+        .map(|(_, h)| h)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+    // Prefer hook from a package in the current batch (newly installed)
+    candidates
+        .iter()
+        .find(|h| h.pkgkey.as_ref().map_or(false, |pk| plan.batch.new_pkgkeys.contains(pk)))
+        .copied()
+        .or_else(|| Some(candidates[0]))
+}
+
 /// Directly find and execute hooks for unincorp triggers without modifying the plan
 /// For each trigger name, finds the hook by name and executes it directly
 fn run_unincorp_trigger_hooks(
     plan: &InstallationPlan,
     triggers_to_process: &HashMap<String, Vec<String>>,
 ) -> Result<()> {
-    // Process each trigger name
     for trigger_name in triggers_to_process.keys() {
-        // Convert trigger name to hook name (filename)
         let hook_name = trigger_name_to_filename(trigger_name);
 
-        // Find the hook by name
-        if let Some(hook) = plan.hooks_by_name.get(&hook_name) {
-            // Execute the hook with the trigger name as matched_targets
+        if let Some(hook) = find_hook_for_trigger(plan, &hook_name) {
             let matched_targets = vec![trigger_name.clone()];
             crate::hooks::execute_hook(hook.as_ref(), plan, &matched_targets)?;
         } else {

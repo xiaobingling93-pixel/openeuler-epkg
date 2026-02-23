@@ -1056,6 +1056,8 @@ pub fn load_batch_hooks(plan: &mut InstallationPlan) -> Result<()> {
     // Build hooks_by_when and hooks_by_pkgkey indices from hooks_by_name
     build_hook_indices(plan);
 
+    log::trace!("hooks after batch load: {:#?}", plan.hooks_by_name);
+
     Ok(())
 }
 
