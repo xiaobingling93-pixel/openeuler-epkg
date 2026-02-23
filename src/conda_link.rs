@@ -152,19 +152,49 @@ fn parse_paths_entry(path_entry: &Value) -> Result<PathsEntry> {
     let size_in_bytes = path_entry.get("size_in_bytes")
         .and_then(|v| v.as_u64());
 
+    // Support both rattler-style flattened schema:
+    //   "file_mode": "binary",
+    //   "prefix_placeholder": "/croot/…/_h_env_placehold…"
+    // and older/object schema:
+    //   "prefix_placeholder": { "placeholder": "...", "file_mode": "binary" }
     let prefix_placeholder = path_entry.get("prefix_placeholder")
         .and_then(|v| {
-            let placeholder = v.get("placeholder")?.as_str()?.to_string();
-            let file_mode_str = v.get("file_mode").and_then(|m| m.as_str()).unwrap_or("text");
-            let file_mode = if file_mode_str == "binary" {
-                FileMode::Binary
-            } else {
-                FileMode::Text
-            };
-            Some(PrefixPlaceholder {
-                placeholder,
-                file_mode,
-            })
+            match v {
+                // Flattened schema: value is a string, file_mode is a sibling key
+                Value::String(s) => {
+                    let file_mode_str = path_entry
+                        .get("file_mode")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("text");
+                    let file_mode = if file_mode_str == "binary" {
+                        FileMode::Binary
+                    } else {
+                        FileMode::Text
+                    };
+                    Some(PrefixPlaceholder {
+                        placeholder: s.to_string(),
+                        file_mode,
+                    })
+                }
+                // Object schema: value contains both placeholder and file_mode
+                Value::Object(map) => {
+                    let placeholder = map.get("placeholder")?.as_str()?.to_string();
+                    let file_mode_str = map
+                        .get("file_mode")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("text");
+                    let file_mode = if file_mode_str == "binary" {
+                        FileMode::Binary
+                    } else {
+                        FileMode::Text
+                    };
+                    Some(PrefixPlaceholder {
+                        placeholder,
+                        file_mode,
+                    })
+                }
+                _ => None,
+            }
         });
 
     let no_link = path_entry.get("no_link")
