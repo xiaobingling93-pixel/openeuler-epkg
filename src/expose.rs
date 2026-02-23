@@ -302,10 +302,13 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
             }
         }
 
-        // Example: store_interpreter = "/home/wfg/.epkg/store/twktsyye3ksj068w2fx9pz5fefwy70mw__bash__5.2.15__9.oe2403/fs/usr/bin/bash"
-        // Create the wrapper
-        let store_interpreter = fs::canonicalize(interpreter_in_env)
-            .with_context(|| format!("Failed to resolve interpreter path: {}", interpreter_in_env.display()))?;
+        // Resolve to a path within the env first (e.g. env_root/usr/bin/yash), then canonicalize.
+        // Using canonicalize(interpreter_in_env) would follow bin/sh -> /usr/bin/yash and fail with
+        // ENOENT in containers where only env_root/usr/bin/yash exists.
+        let path_to_canonicalize = utils::resolve_symlink_in_env(interpreter_in_env, env_root)
+            .unwrap_or_else(|| interpreter_in_env.to_path_buf());
+        let store_interpreter = fs::canonicalize(&path_to_canonicalize)
+            .with_context(|| format!("Failed to resolve interpreter path: {}", path_to_canonicalize.display()))?;
 
         log::debug!("handle_elf params: env_interpreter={:?}, env_root={:?}, store_interpreter={:?}, interpreter_in_env={:?}",
             env_interpreter, env_root, store_interpreter, interpreter_in_env);
@@ -363,8 +366,8 @@ fn find_and_link_alternative_interpreter(interpreter_in_env: &Path, interpreter_
 
     // Find candidate interpreters based on the type
     let targets = match interpreter_basename {
-        // For shell scripts, look for bash or dash as alternatives
-        "sh" => glob::glob(&format!("{}/{{bash,dash}}", parent.display()))
+        // For shell scripts, look for bash, dash, or yash as alternatives (e.g. Alpine uses yash for sh)
+        "sh" => glob::glob(&format!("{}/{{bash,dash,yash,busybox}}", parent.display()))
             .with_context(|| "Failed to glob for shell interpreters")?,
 
         // For other interpreters (python, ruby etc), look for versioned variants
