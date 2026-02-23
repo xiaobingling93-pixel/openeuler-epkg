@@ -1045,7 +1045,10 @@ fn execute_idmap_for_parent(uid: Uid, gid: Gid, opt_user: &Option<String>) -> Re
                 return Ok(());
             }
             Err(e) => {
-                warn!("newuidmap/newgidmap failed: {}, falling back to simple mapping", e);
+                warn!(
+                    "newuidmap/newgidmap failed: {} (if 'Operation not permitted', check /etc/subuid and /etc/subgid for your user, or run as root). Falling back to simple UID/GID mapping.",
+                    e
+                );
                 execute_simple_idmap_for_parent(parent_pid, uid_raw, gid_raw)?;
             }
         }

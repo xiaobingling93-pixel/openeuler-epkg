@@ -5,8 +5,11 @@ use crate::deb_triggers::setup_deb_env_vars;
 use crate::rpm_triggers::setup_rpm_env_vars;
 use crate::package;
 use crate::run::{RunOptions, setup_namespace_and_mounts, with_sigpipe_handler};
-use nix::unistd::{fork, ForkResult};
-use nix::sys::wait::{waitpid, WaitStatus};
+use nix::unistd::{fork, ForkResult, Pid};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::sys::signal::{kill, Signal};
+use std::time::{Duration, Instant};
+use std::thread;
 use crate::shebang::strip_shebang;
 use crate::utils;
 use libc;
@@ -428,21 +431,55 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     }
 }
 
+/// Max time to wait for a scriptlet child before killing it (avoids blocking install forever).
+const SCRIPTLET_TIMEOUT_SECS: u64 = 100;
+
+/// After this many seconds we warn once that the scriptlet may be blocked.
+const SCRIPTLET_BLOCKED_WARN_SECS: u64 = 10;
+
 /// Fork and execute a closure in the child process.
 /// Returns Ok(()) if child exits successfully, otherwise returns an error.
-fn fork_and_call<F>(f: F) -> Result<()>
+/// If the child does not exit within SCRIPTLET_TIMEOUT_SECS, it is killed and an error is returned.
+/// script_path is shown in the "scriptlet may be blocked" warning.
+fn fork_and_call<F>(script_path: &std::path::Path, f: F) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child }) => {
             with_sigpipe_handler(libc::SIG_IGN, || {
-                match waitpid(child, None) {
-                    Ok(WaitStatus::Exited(_, 0)) => Ok(()),
-                    Ok(WaitStatus::Exited(_, code)) => Err(eyre!("child exited with code {}", code)),
-                    Ok(WaitStatus::Signaled(_, signal, _)) => Err(eyre!("child killed by signal {:?}", signal)),
-                    Ok(_) => Err(eyre!("child ended with unexpected status")),
-                    Err(e) => Err(eyre!("failed to wait for child: {}", e)),
+                let start = Instant::now();
+                let deadline = start + Duration::from_secs(SCRIPTLET_TIMEOUT_SECS);
+                let mut warned_blocked = false;
+                loop {
+                    match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::Exited(_, 0)) => return Ok(()),
+                        Ok(WaitStatus::Exited(_, code)) => {
+                            return Err(eyre!("child exited with code {}", code));
+                        }
+                        Ok(WaitStatus::Signaled(_, signal, _)) => {
+                            return Err(eyre!("child killed by signal {:?}", signal));
+                        }
+                        Ok(WaitStatus::StillAlive) | Ok(_) => {}
+                        Err(e) => return Err(eyre!("failed to wait for child: {}", e)),
+                    }
+                    let elapsed_secs = start.elapsed().as_secs();
+                    if elapsed_secs >= SCRIPTLET_BLOCKED_WARN_SECS && !warned_blocked {
+                        warned_blocked = true;
+                        println!(
+                            "scriptlet may be blocked (running for {}s). Will kill after {}s if it doesn't finish. Script: {}",
+                            elapsed_secs, SCRIPTLET_TIMEOUT_SECS, script_path.display()
+                        );
+                    }
+                    if Instant::now() >= deadline {
+                        let _ = kill(Pid::from_raw(child.as_raw()), Signal::SIGKILL);
+                        let _ = waitpid(child, None);
+                        return Err(eyre!(
+                            "scriptlet did not finish within {}s, killed",
+                            SCRIPTLET_TIMEOUT_SECS
+                        ));
+                    }
+                    thread::sleep(Duration::from_secs(1));
                 }
             })
         }
@@ -602,7 +639,7 @@ pub fn run_scriptlet(
 
                     // Run embedded Lua inside a forked child with namespace + mount setup,
                     // so that operations like ldconfig affect the environment, not the host.
-                    let result = fork_and_call(|| {
+                    let result = fork_and_call(&script_path, || {
                         let run_options = RunOptions {
                             chdir_to_env_root: true,
                             ..Default::default()
