@@ -27,7 +27,7 @@ This directory contains end-to-end tests for the epkg package manager.
 
 - Docker installed and running
 - epkg binary built at `target/debug/epkg`
-- Static epkg binaries in `dist/` directory (for bare-rootfs test)
+- Static epkg binary from `make static` at `target/<triple>/debug/epkg` (e.g. `target/x86_64-unknown-linux-musl/debug/epkg`; for bare-rootfs test)
 
 ## Usage
 

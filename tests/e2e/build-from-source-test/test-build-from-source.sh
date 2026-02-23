@@ -143,11 +143,18 @@ build_static_binary() {
     log "Static build successful"
 }
 
-# Verify dist/epkg-$(arch) exists and works
+# Verify target/<rust_target>/debug/epkg exists and works (make static output)
 test_static_binary() {
     cd "$PROJECT_ROOT" || error "Failed to cd to project root: $PROJECT_ROOT"
     ARCH=$(arch)
-    STATIC_BIN="dist/epkg-$ARCH"
+    case "$ARCH" in
+        x86_64) RUST_TARGET=x86_64-unknown-linux-musl ;;
+        aarch64) RUST_TARGET=aarch64-unknown-linux-musl ;;
+        riscv64) RUST_TARGET=riscv64gc-unknown-linux-musl ;;
+        loongarch64) RUST_TARGET=loongarch64-unknown-linux-musl ;;
+        *) error "Unsupported arch for static binary: $ARCH" ;;
+    esac
+    STATIC_BIN="target/$RUST_TARGET/debug/epkg"
     if ! test -f "$STATIC_BIN"; then
         error "Static binary not found at $STATIC_BIN"
     fi
@@ -162,7 +169,7 @@ test_static_binary() {
     if ! "$STATIC_BIN" info bash; then
         error "Static binary $STATIC_BIN info bash failed"
     fi
-    log "Static binary dist/epkg-$ARCH works correctly"
+    log "Static binary $STATIC_BIN works correctly"
 }
 
 # Main test - build in current Docker container environment
@@ -170,7 +177,7 @@ log "Testing build-from-source in current Docker container environment"
 build_epkg
 test_built_epkg
 
-log "Testing make.sh static and dist/epkg-$(arch)"
+log "Testing make.sh static and target/<triple>/debug/epkg"
 build_static_binary
 test_static_binary
 
