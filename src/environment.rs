@@ -328,61 +328,6 @@ fn create_environment_dirs(env_root: &Path, pkg_format: &PackageFormat, env_conf
     Ok(())
 }
 
-/// Ensure SSL certificates are available in environment
-fn ensure_ssl_certificates(env_root: &Path) -> Result<()> {
-    // Common SSL certificate bundle paths on different distributions
-    let common_bundles = [
-        "/etc/ssl/certs/ca-certificates.crt",      // Debian, Ubuntu
-        "/etc/pki/tls/certs/ca-bundle.crt",        // Fedora, RHEL, CentOS
-        "/etc/ssl/ca-bundle.pem",                  // Alpine?
-        "/etc/pki/tls/cacert.pem",                 // Some distributions
-        "/etc/ssl/certs.pem",                      // Others
-    ];
-
-    let env_cert_dir = env_root.join("etc/ssl/certs");
-    let env_pki_dir = env_root.join("etc/pki/tls/certs");
-
-    // Create directories if they don't exist
-    if !env_cert_dir.exists() {
-        fs::create_dir_all(&env_cert_dir)?;
-    }
-    if !env_pki_dir.exists() {
-        fs::create_dir_all(&env_pki_dir)?;
-    }
-
-    // Try to copy any available host certificate bundle to environment
-    for host_bundle in common_bundles.iter() {
-        let host_path = Path::new(host_bundle);
-        if host_path.exists() {
-            // Determine corresponding environment path
-            let env_bundle = if host_bundle.contains("/pki/tls/") {
-                env_root.join(host_bundle.strip_prefix("/").unwrap())
-            } else {
-                // For /etc/ssl/certs/ca-certificates.crt, place in env's /etc/ssl/certs/
-                env_root.join("etc/ssl/certs").join(host_path.file_name().unwrap())
-            };
-
-            if !env_bundle.exists() {
-                log::trace!("Copying host SSL certificate bundle {} -> {}", host_path.display(), env_bundle.display());
-                if let Err(e) = fs::copy(host_path, &env_bundle) {
-                    warn!("Failed to copy SSL certificate bundle {}: {}", host_path.display(), e);
-                }
-            }
-            break; // Copy only the first available bundle
-        }
-    }
-
-    // Also ensure /etc/ca-certificates.conf exists (needed for update-ca-certificates)
-    let host_ca_conf = Path::new("/etc/ca-certificates.conf");
-    let env_ca_conf = env_root.join("etc/ca-certificates.conf");
-    if host_ca_conf.exists() && !env_ca_conf.exists() {
-        log::trace!("Copying host ca-certificates.conf {} -> {}", host_ca_conf.display(), env_ca_conf.display());
-        fs::copy(host_ca_conf, &env_ca_conf)?;
-    }
-
-    Ok(())
-}
-
 // These symlinks must be created and available before running scriptlets.
 // If the distro provides the commands, they'll overwrite symlink to our implementation.
 fn create_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
@@ -530,9 +475,6 @@ pub fn create_environment(env_name: &str) -> Result<()> {
     // Initialize environment config and get package format
     let (env_config, pkg_format, channel_config) = initialize_environment_config(env_name, &env_root, &env_base)?;
     create_environment_dirs(&env_root, &pkg_format, &env_config, &channel_config)?;
-
-    // Ensure SSL certificates are available
-    ensure_ssl_certificates(&env_root)?;
 
     // Create world.json with default no-install packages
     create_default_world_json(&env_root, &pkg_format)?;
