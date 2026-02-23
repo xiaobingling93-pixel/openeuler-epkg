@@ -278,9 +278,14 @@ pub enum DownloadError {
     TooManyRequests,
     /// Network connectivity or timeout issues
     Network { details: String },
-    /// Content validation failed (size mismatch, corrupted data, etc.)
+    /// Content validation failed where the on-disk or received content clearly
+    /// violates expected constraints (e.g. oversized, inconsistent, or corrupt).
     #[allow(dead_code)]
     ContentValidation { expected: String, actual: String },
+    /// Content is valid but incomplete (e.g. truncated download); a resume
+    /// attempt from the current size is appropriate.
+    #[allow(dead_code)]
+    ContentIncomplete { expected: u64, actual: u64 },
     /// Mirror selection or resolution failed
     MirrorResolution { details: String },
     /// Server returned unexpected response
@@ -299,6 +304,9 @@ impl std::fmt::Display for DownloadError {
             DownloadError::Network { details } => write!(f, "Network error: {}", details),
 
             DownloadError::ContentValidation { expected, actual } => write!(f, "Content validation failed: expected {}, got {}", expected, actual),
+            DownloadError::ContentIncomplete { expected, actual } => {
+                write!(f, "Content incomplete: expected {} bytes, have {} bytes", expected, actual)
+            },
             DownloadError::MirrorResolution { details } => write!(f, "Mirror resolution failed: {}", details),
             DownloadError::UnexpectedResponse { code, details } => {
                 write!(f, "Unexpected HTTP response {}: {}", code, details)

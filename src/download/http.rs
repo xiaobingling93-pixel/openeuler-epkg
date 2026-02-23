@@ -498,10 +498,21 @@ pub(crate) fn validate_download_size(downloaded: u64, total_size: u64, part_path
             total_size,
             part_path.display()
         );
+
+        if downloaded < total_size {
+            // Truncated but otherwise valid; allow a future retry to resume.
+            return Err(DownloadError::ContentIncomplete {
+                expected: total_size,
+                actual: downloaded,
+            }
+            .into());
+        }
+
         return Err(DownloadError::ContentValidation {
             expected: format!("{} bytes", total_size),
-            actual: format!("{} bytes", downloaded)
-        }.into());
+            actual: format!("{} bytes", downloaded),
+        }
+        .into());
     }
     Ok(())
 }

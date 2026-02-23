@@ -852,12 +852,22 @@ pub(crate) fn validate_chunk_file_boundaries(task: &DownloadTask, chunk_append_o
             chunk_size,
             task.url
         );
-        return Err(eyre!(
-            "Chunk append offset mismatch: {} bytes != {} bytes for {}",
-            chunk_append_offset,
-            chunk_size,
-            task.chunk_path.display()
-        ));
+
+        if chunk_append_offset < chunk_size {
+            // Short/truncated chunk – treat as resumable incomplete content.
+            return Err(DownloadError::ContentIncomplete {
+                expected: chunk_size,
+                actual: chunk_append_offset,
+            }
+            .into());
+        }
+
+        // Larger-than-expected content is considered corruption.
+        return Err(DownloadError::ContentValidation {
+            expected: format!("{} bytes", chunk_size),
+            actual: format!("{} bytes (append offset)", chunk_append_offset),
+        }
+        .into());
     }
 
     // Validate that the actual file size on disk matches the expected chunk size
@@ -871,10 +881,20 @@ pub(crate) fn validate_chunk_file_boundaries(task: &DownloadTask, chunk_append_o
                 chunk_size,
                 task.url
             );
+
+            if actual_file_size < chunk_size {
+                return Err(DownloadError::ContentIncomplete {
+                    expected: chunk_size,
+                    actual: actual_file_size,
+                }
+                .into());
+            }
+
             return Err(DownloadError::ContentValidation {
                 expected: format!("{} bytes", chunk_size),
-                actual: format!("{} bytes", actual_file_size)
-            }.into());
+                actual: format!("{} bytes", actual_file_size),
+            }
+            .into());
         }
     } else {
         log::warn!(
@@ -1428,7 +1448,25 @@ fn handle_failed_chunk(
     let current_attempt = chunk_task.attempt_number.load(Ordering::SeqCst);
 
     if current_attempt < parent_task.max_retries {
-        // Retry the chunk: increment attempt number and reset status to Pending
+        // Only remove .part when the error indicates corrupt/inconsistent state (e.g. byte count
+        // mismatch). For incomplete (e.g. "offset mismatch" with fewer bytes), keep the file so
+        // the next attempt resumes from current offset instead of re-downloading from 0.
+        let remove_part = error.contains("byte count mismatch");
+        if remove_part && chunk_task.chunk_path.exists() {
+            match lfs::remove_file(&chunk_task.chunk_path) {
+                Ok(_) => log::debug!(
+                    "handle_failed_chunk: removed partial {} so retry starts fresh",
+                    chunk_task.chunk_path.display()
+                ),
+                Err(e) => log::warn!(
+                    "handle_failed_chunk: failed to remove partial {}: {}",
+                    chunk_task.chunk_path.display(),
+                    e
+                ),
+            }
+            chunk_task.resumed_bytes.store(0, Ordering::Relaxed);
+            chunk_task.received_bytes.store(0, Ordering::Relaxed);
+        }
         chunk_task.attempt_number.fetch_add(1, Ordering::SeqCst);
 
         if let Ok(mut status) = chunk_task.status.lock() {
