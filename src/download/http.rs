@@ -407,7 +407,7 @@ pub(crate) fn process_chunk_download_stream(
                 }
                 Err(e) => {
                     // Channel is disconnected (receiver dropped)
-                    log::warn!("Data channel disconnected for {}: {}", task.url, e);
+                    log::warn!("Data channel disconnected for {}: {}", task.get_resolved_url(), e);
                     // Don't retry since channel is broken - receiver is gone
                 }
             }
