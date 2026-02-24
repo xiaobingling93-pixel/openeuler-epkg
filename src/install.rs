@@ -22,6 +22,7 @@ use crate::history::{create_new_generation_with_root, record_history, update_cur
 use crate::transaction::run_transaction_batch;
 use crate::aur::{build_and_install_aur_packages, is_aur_package};
 use crate::download::{enqueue_package_downloads, get_package_file_path};
+use crate::lfs;
 
 /// Installs specified packages and their dependencies.
 pub fn install_packages(package_specs: Vec<String>) -> Result<InstallationPlan> {
@@ -218,6 +219,10 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     let env_root = plan.env_root.clone();
     let store_root = plan.store_root.clone();
     let download_cache = dirs().epkg_downloads_cache.clone();
+
+    // Ensure store and download cache exist so statvfs can report correct fsid/space
+    lfs::create_dir_all(&store_root)?;
+    lfs::create_dir_all(&download_cache)?;
 
     // Get filesystem info for all mount points and store in plan
     plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
