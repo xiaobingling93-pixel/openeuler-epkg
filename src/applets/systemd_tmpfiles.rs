@@ -40,21 +40,20 @@
 //! - /usr/lib/tmpfiles.d/ (configuration examples)
 //! - /var/lib/dpkg/info% grep systemd-tmpfiles *post*
 
+use crate::lfs;
 use clap::{Arg, Command};
-use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use color_eyre::eyre::WrapErr;
+use color_eyre::Result;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
-use crate::lfs;
 
-use crate::posix::{posix_getpasswd, posix_getgroup, posix_mkfifo};
-use crate::utils::set_permissions_from_mode;
-use crate::applets::systemd_sysusers::apply_root;
 use crate::applets::cp::copy_single_item;
-use crate::run::{RunOptions, setup_namespace_and_mounts};
+use crate::applets::systemd_sysusers::apply_root;
+use crate::posix::{posix_getgroup, posix_getpasswd, posix_mkfifo};
+use crate::utils::set_permissions_from_mode;
 use glob::glob;
 use walkdir::WalkDir;
 
@@ -219,27 +218,12 @@ pub fn run(options: SystemdTmpfilesOptions) -> Result<()> {
     let do_clean = options.clean || (!options.create && !options.clean && !options.remove);
     let do_remove = options.remove;
 
-    // If --root is specified (and not "/"), set up namespace and mounts so we can operate as root inside the environment.
-    // When root is "/", we are already on the root; skip setup to avoid creating /opt_real and permission errors.
-    if let Some(root) = &options.root {
-        if root.as_os_str() != "/" {
-            let run_options = RunOptions {
-                ..Default::default()
-            };
-            setup_namespace_and_mounts(root, &run_options)?;
-        }
-    }
-
-    // After namespace setup, we are inside the environment root mounted over /
-    // So we should not prefix paths with root anymore
-    let effective_root = None;
-
     // Always call find_default_config_files to get full paths to config files
     // It handles both explicit config files (relative/absolute) and default scanning
-    let config_files = find_default_config_files(effective_root, &options.config_files, TMPFILES_DIRS)?;
+    let config_files = find_default_config_files(options.root.as_deref(), &options.config_files, TMPFILES_DIRS)?;
 
     for config_file in config_files {
-        process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, effective_root)?;
+        process_config_file(&config_file, do_create, do_clean, do_remove, options.boot, options.root.as_deref())?;
     }
 
     Ok(())

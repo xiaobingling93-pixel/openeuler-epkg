@@ -154,6 +154,43 @@ epkg -e alpine run htop --version
 epkg --root /tmp/myproject/.eenv run jq --version
 ```
 
+## `epkg run` 的沙箱模式
+
+在环境中运行命令时，epkg 可以在每个环境的根文件系统之上增加额外的隔离：
+
+- **env**（默认）— 使用用户命名空间和挂载命名空间，并将环境通过 bind 挂载到 `/usr`、`/etc`、`/var`、`/run` 等。提供兼容性隔离，并非强安全边界。
+- **fs** — 通过 `pivot_root` 将环境目录作为新根；在其下挂载 proc、tmpfs（/tmp、/dev）等伪文件系统。更强的文件系统隔离。
+- **vm** — 在轻量级虚拟机内运行命令，环境根通过 virtiofs 共享。设计与依赖（VMM、内核、virtiofsd）见 `docs/design-notes/sandbox-vmm.md`。
+
+可按命令选择沙箱模式：
+
+```bash
+epkg -e mydebian run --sandbox=env bash
+epkg -e mydebian run --sandbox=fs    python3 script.py
+epkg -e mydebian run --sandbox=vm    bash
+```
+
+也可在 `env_root/etc/epkg/env.yaml` 中为该环境设置**默认沙箱**：
+
+```bash
+# 将此环境的默认沙箱设为 fs
+epkg -e mydebian env config set sandbox.sandbox_mode fs
+
+# 之后，直接执行 `epkg -e mydebian run <cmd>` 将使用 fs，除非用 --sandbox 覆盖
+epkg -e mydebian run bash
+```
+
+用户级默认值可在 `~/.epkg/config/options.yaml` 中设置（同样使用 `sandbox.sandbox_mode`）。命令行 `--sandbox` 会覆盖上述两者。
+
+沙箱依赖宿主机上的用户命名空间及 `newuidmap`/`newgidmap`，可安装最小依赖集：
+
+```bash
+cd /c/epkg
+./bin/make.sh sandbox-depends
+```
+
+会为当前发行版安装相应的 `uidmap`/`shadow`/`shadow-uidmap` 等包；用户命名空间相关错误详见[故障排除](troubleshooting.md)。
+
 ## 公共环境（共享存储）
 
 当 epkg 与**共享**存储一起使用时（例如 root 使用 `/opt/epkg`），环境可以是**公共**的。其他用户可以：

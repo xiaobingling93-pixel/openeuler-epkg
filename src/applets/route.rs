@@ -167,19 +167,16 @@ fn add_route(target: &Target, gateway: Option<Ipv4Addr>, interface: Option<&str>
         rt.rt_flags |= libc::RTF_GATEWAY as u16;
     }
 
-    // Set interface if provided
+    // Set interface if provided. rt_dev is a pointer; we must point it at a valid buffer.
+    let mut rt_dev_buf = [0u8; libc::IFNAMSIZ];
     if let Some(iface) = interface {
         let ifname_bytes = iface.as_bytes();
         if ifname_bytes.len() >= libc::IFNAMSIZ {
+            log::debug!("route: interface name too long: {}", iface);
             return Err(eyre!("interface name too long"));
         }
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                ifname_bytes.as_ptr(),
-                rt.rt_dev as *mut u8,
-                ifname_bytes.len(),
-            );
-        }
+        rt_dev_buf[..ifname_bytes.len()].copy_from_slice(ifname_bytes);
+        rt.rt_dev = rt_dev_buf.as_mut_ptr() as *mut libc::c_char;
         rt.rt_flags |= libc::RTF_UP as u16;
     }
 
@@ -204,15 +201,21 @@ fn add_route(target: &Target, gateway: Option<Ipv4Addr>, interface: Option<&str>
     }
 
     if unsafe { libc::ioctl(sock_fd.as_raw_fd(), libc::SIOCADDRT.try_into().unwrap(), &rt) } < 0 {
-        return Err(eyre!("SIOCADDRT failed: {}", std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        log::debug!("route: SIOCADDRT failed: {} (target={:?} gw={:?} dev={:?})", e, target, gateway, interface);
+        return Err(eyre!("SIOCADDRT failed: {}", e));
     }
 
     Ok(())
 }
 
 pub fn run(options: RouteOptions) -> Result<()> {
+    log::debug!("route: {:?} {:?} gw={:?} dev={:?}", options.operation, options.target, options.gateway, options.interface);
     match options.operation {
         Operation::Add => add_route(&options.target, options.gateway, options.interface.as_deref()),
-        Operation::Delete => Err(eyre!("route delete not yet implemented")),
+        Operation::Delete => {
+            log::debug!("route: delete not yet implemented (target={:?} gw={:?} dev={:?})", options.target, options.gateway, options.interface);
+            Err(eyre!("route delete not yet implemented"))
+        }
     }
 }

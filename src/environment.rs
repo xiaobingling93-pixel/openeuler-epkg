@@ -943,19 +943,32 @@ pub fn set_environment_config(name: &str, value: &str) -> Result<()> {
     // Split name by dots to handle nested fields
     let parts: Vec<&str> = name.split('.').collect();
 
-    // Validate that we're only setting top-level fields
-    if parts.len() != 1 {
-        return Err(eyre::eyre!("Can only set top-level configuration keys"));
-    }
+    match parts.as_slice() {
+        // Top-level scalar fields
+        ["name"] => config.name = value.to_string(),
+        ["env_base"] => config.env_base = value.to_string(),
+        ["env_root"] => config.env_root = value.to_string(),
+        ["public"] => config.public = value.parse()?,
+        ["register_to_path"] => config.register_to_path = value.parse()?,
+        ["register_path_order"] => config.register_path_order = value.parse()?,
 
-    match parts[0] {
-        "name" => config.name = value.to_string(),
-        "env_base" => config.env_base = value.to_string(),
-        "env_root" => config.env_root = value.to_string(),
-        "public" => config.public = value.parse()?,
-        "register_to_path" => config.register_to_path = value.parse()?,
-        "register_path_order" => config.register_path_order = value.parse()?,
-        _ => return Err(eyre::eyre!("Unknown configuration key: {}", parts[0]))
+        // Environment variables: env_vars.FOO or legacy env_var.FOO from design notes
+        ["env_vars", key] | ["env_var", key] => {
+            config.env_vars.insert((*key).to_string(), value.to_string());
+        }
+
+        // Sandbox options: sandbox.sandbox_mode
+        ["sandbox", "sandbox_mode"] => {
+            config.sandbox.sandbox_mode = Some(value.parse()?);
+        }
+
+        // Unknown or unsupported keys
+        [top, ..] => {
+            return Err(eyre::eyre!("Unknown or unsupported configuration key: {}", top));
+        }
+        [] => {
+            return Err(eyre::eyre!("Configuration key cannot be empty"));
+        }
     }
 
     // Save the updated config

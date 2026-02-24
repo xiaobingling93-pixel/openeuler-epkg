@@ -5,6 +5,9 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::Arc;
+use nix::sched::CloneFlags;
+use nix::unistd::{Uid, Gid};
+use std::os::fd::OwnedFd;
 #[cfg(not(test))]
 use crate::parse_cmdline;
 #[cfg(not(test))]
@@ -350,6 +353,156 @@ pub struct GenerationCommand {
     pub del_exposes: Vec<String>,
 }
 
+/// Sandbox mode for `epkg run`: env (environment overlay, no security), fs (filesystem/container isolation), or vm (virtual machine isolation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxMode {
+    #[default]
+    Env,
+    Fs,
+    Vm,
+}
+
+/// Strategy for creating namespaces for sandboxing. This controls whether we
+/// create namespaces in-place in the current process using `unshare()`, or in
+/// a dedicated child using `clone()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NamespaceStrategy {
+    /// Use unshare() in the current process (no extra fork/clone at entry).
+    Unshare,
+    /// Use clone() to create a dedicated child process with namespaces.
+    #[default]
+    Clone,
+}
+
+impl std::str::FromStr for SandboxMode {
+    type Err = eyre::Report;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "env" => Ok(SandboxMode::Env),
+            "fs" => Ok(SandboxMode::Fs),
+            "vm" => Ok(SandboxMode::Vm),
+            _ => Err(eyre::eyre!("Invalid sandbox mode '{}', expected env, fs, or vm", s)),
+        }
+    }
+}
+
+
+/// Mount specification for flexible mount operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MountSpec {
+    #[serde(default)]
+    pub source: String,
+
+    pub target: String,
+
+    #[serde(default)]
+    pub fs_type: String, // Empty string for bind/remount operations
+
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub try_only: bool,
+
+    #[serde(default)]
+    pub flags: u64,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid_map: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub euid_map: Option<u32>,
+}
+
+impl MountSpec {
+    /// Convert flags to MsFlags
+    pub fn ms_flags(&self) -> nix::mount::MsFlags {
+        nix::mount::MsFlags::from_bits_truncate(self.flags)
+    }
+}
+
+/// Sandbox options for configuring sandbox mode and mount directories.
+/// Used at multiple configuration levels with priority-based merging:
+///
+/// Priority order (highest to lowest):
+/// 1. RunOptions.sandbox - CLI input / per-run settings
+/// 2. EPKGConfig.sandbox - User defaults (~/.config/epkg/options.yaml)
+/// 3. EnvConfig.sandbox - Environment defaults (env_root/etc/epkg/env.yaml)
+///
+/// Merging behavior:
+/// - sandbox_mode: Override (higher priority wins)
+/// - mount_specs: Additive (combined from all levels)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_mode: Option<SandboxMode>,
+
+    /// Optional strategy for namespace creation. When None, a mode-specific
+    /// default is used (currently `clone` for most callers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace_strategy: Option<NamespaceStrategy>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mount_specs: Vec<String>,
+}
+
+impl SandboxOptions {
+    fn is_empty(&self) -> bool {
+        self.sandbox_mode.is_none()
+            && self.namespace_strategy.is_none()
+            && self.mount_specs.is_empty()
+    }
+}
+
+/// Configuration for unified process creation flow.
+#[derive(Debug, Clone)]
+pub struct ProcessCreationConfig {
+    pub namespace_strategy: NamespaceStrategy,
+    pub sandbox_mode: SandboxMode,
+    /// Namespace flags for clone() or unshare()
+    pub namespace_flags: CloneFlags,
+    pub needs_uid_mapping: bool,
+    pub mount_spec_strings: Vec<String>,
+}
+
+/// Unified context for all child processes.
+#[derive(Debug)]
+pub struct UnifiedChildContext {
+    // Common fields
+    pub env_root: PathBuf,
+    pub run_options: RunOptions,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    #[allow(dead_code)]
+    pub stdin_read_fd: Option<i32>,
+
+    // Mode-specific configuration
+    pub sandbox_mode: SandboxMode,
+
+    // Sync pipe for parent-child coordination
+    // Note: This is the read end for the child to wait on mapping completion.
+    // The write end is owned by the parent.
+    pub sync_read_fd: Option<OwnedFd>,
+
+    // Mount specifications (pre-parsed)
+    #[allow(dead_code)]
+    pub mount_specs: Vec<MountSpec>,
+
+    // UID/GID mapping info
+    pub uid: Uid,
+    pub gid: Gid,
+    pub euid: Uid,
+    pub user: Option<String>,
+
+    /// When set, VM mode uses this pre-created virtiofsd socket (virtiofsd was
+    /// started in the parent before entering the user namespace to avoid
+    /// virtiofsd's setgroups() failing; see GitLab virtio-fs/virtiofsd#36).
+    pub vm_socket_path: Option<PathBuf>,
+
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[derive(Default)]
 #[derive(Clone)]
@@ -371,6 +524,9 @@ pub struct EnvConfig {
 
     #[serde(default)]
     pub link: LinkType,
+
+    #[serde(default, skip_serializing_if = "SandboxOptions::is_empty")]
+    pub sandbox: SandboxOptions,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -771,6 +927,9 @@ pub struct EPKGConfig {
     #[serde(default)]
     pub history: HistoryOptions,
 
+    #[serde(default)]
+    pub sandbox: SandboxOptions,
+
     #[serde(skip)]
     pub service: ServiceOptions,
     #[serde(skip)]
@@ -987,6 +1146,7 @@ pub struct EPKGDirs {
     // Base directories
     pub opt_epkg: PathBuf,
     pub home_epkg: PathBuf,
+    pub home_cache: PathBuf,
 
     // Subdirectories
 

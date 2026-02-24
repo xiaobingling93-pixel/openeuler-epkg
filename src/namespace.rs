@@ -1,0 +1,713 @@
+use color_eyre::eyre;
+use color_eyre::Result;
+use libc::{c_int, c_void, prctl, PR_CAPBSET_DROP, sethostname};
+use log::{debug, trace, warn};
+use nix::sched::{unshare, CloneFlags};
+use nix::unistd::{fork, geteuid, getuid, getgid, ForkResult, Gid, Uid, Pid};
+use std::fs;
+
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::ptr;
+use std::panic::Location;
+
+use crate::dirs;
+use crate::mount::*;
+use crate::models::{SandboxMode, ProcessCreationConfig, UnifiedChildContext, NamespaceStrategy};
+use crate::RunOptions;
+use crate::idmap::{IdMapSync, execute_idmap_for_parent, check_user_namespace_support, wait_for_idmap_sync};
+
+/// Convert a host-side absolute path to a guest-side path.
+/// If `host_path` is inside `env_root`, strip the env_root prefix and prepend "/".
+/// Otherwise return the path unchanged.
+fn convert_host_path_to_guest_path(host_path: &Path, env_root: &Path) -> PathBuf {
+    if let Ok(stripped) = host_path.strip_prefix(env_root) {
+        Path::new("/").join(stripped)
+    } else {
+        host_path.to_path_buf()
+    }
+}
+
+// ============================================================================
+// CALL GRAPH & CRITICAL PHASES
+// ============================================================================
+//
+// High-level flow (entry point from run.rs):
+//   fork_and_execute() → fork_and_execute_raw() → prepare_and_create_process()
+//
+// prepare_and_create_process():
+//   ├── determine_process_config()  → ProcessCreationConfig
+//   ├── build_unified_context()     → UnifiedChildContext
+//   └── create_process_with_namespaces()
+//
+// create_process_with_namespaces():
+//   ├── IdMapSync setup (two cases):
+//   │   1. Clone strategy: parent maps child (IdMapSync)
+//   │   2. Unshare strategy: forked helper maps parent (IdMapSync)
+//   └── Calls either:
+//       • create_process_via_unshare()   (Unshare strategy)
+//       • create_process_via_clone()     (Clone strategy)
+//
+// ============================================================================
+// Unshare Strategy (namespace_strategy = Unshare)
+// ============================================================================
+//
+// create_process_via_unshare(config, context, _id_sync)
+// ├── unshare_namespaces_with_idmap(clone_flags, uid, gid, &user)
+// │   ├── If CLONE_NEWUSER:
+// │   │   └── unshare_with_user_ns_and_idmap()
+// │   │       ├── fork()
+// │   │       │   ├── Parent: unshare_with_error_handling()
+// │   │       │   │         → sync.perform_mapping_and_signal() (helper maps parent)
+// │   │       │   └── Child: wait_for_mapping() → execute_idmap_for_parent()
+// │   │       └── Parent waits for child exit
+// │   └── Else:
+// │       └── unshare_namespaces_simple() → unshare_with_error_handling()
+// └── child_mount_and_exec(Box::new(context))
+//     ├── mount_batch_specs()
+//     ├── sandbox-mode specific setup (pivot_root for Fs, etc.)
+//     └── prepare_and_execute_command()
+//
+// Note: For Unshare strategy, namespaces are created before child_mount_and_exec().
+//
+// ============================================================================
+// Clone Strategy (namespace_strategy = Clone)
+// ============================================================================
+//
+// create_process_via_clone()
+// ├── libc::clone(raw_flags = namespace_flags.bits() | SIGCHLD)
+// ├── unified_child_main() (child entry)
+// │   └── child_setup_with_namespaces()
+// │       ├── wait_for_idmap_sync()          ← waits for parent mapping
+// │       └── child_mount_and_exec()         → mounts and exec
+// └── Parent: id_sync.perform_mapping_and_signal() (maps child)
+//
+// Note: Namespaces are always created at clone time (create_namespaces_at_clone = true).
+//       For Fs mode, namespace_flags includes all namespaces (full_namespace_flags).
+//       For Env/Vm modes, namespace_flags includes basic namespaces (mount+user if non-root).
+//
+// ============================================================================
+// ID Mapping Coordination
+// ============================================================================
+//
+// • Unshare strategy: Uses forked helper child to map parent (IdMapSync)
+// • Clone strategy: Parent maps child (IdMapSync)
+// • All mappings eventually call execute_idmap_for_pid() → newuidmap/newgidmap or simple fallback
+//
+// ============================================================================
+// Mount Setup
+// ============================================================================
+//
+// • Mount specs parsed in build_unified_context() via parse_mount_specs()
+// • Executed in child_mount_and_exec() via mount_batch_specs()
+// • Sandbox-mode‑specific mounts added in determine_process_config()
+// • Order: make‑private/rslave mounts first, then compatibility, then user specs
+//
+// ============================================================================
+
+
+/// Unshare namespaces with ID mapping coordination (replaces create_namespaces_inner)
+fn unshare_namespaces_with_idmap(
+    clone_flags: CloneFlags,
+    uid: Uid,
+    gid: Gid,
+    opt_user: &Option<String>,
+    allow_setgroups: bool,
+) -> Result<()> {
+    if let Err(e) = check_user_namespace_support() {
+        warn!("User namespace check failed: {}", e);
+    }
+
+    trace!("Creating namespaces with flags: {:?}", clone_flags);
+
+    // Handle user mapping if we need to create user namespace
+    if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+        unshare_with_user_ns_and_idmap(clone_flags, uid, gid, opt_user, allow_setgroups)
+    } else {
+        unshare_namespaces_simple(clone_flags)
+    }
+}
+
+/// Unshare namespaces with user namespace and ID mapping coordination via IdMapSync
+fn unshare_with_user_ns_and_idmap(
+    clone_flags: CloneFlags,
+    uid: Uid,
+    gid: Gid,
+    opt_user: &Option<String>,
+    allow_setgroups: bool,
+) -> Result<()> {
+    // Fork a child process to handle newuidmap/newgidmap execution
+    // Using unified IdMapSync protocol
+    let sync = IdMapSync::new(nix::unistd::getpid())?; // child maps parent
+
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            // Parent: unshare namespaces, then signal child to perform mapping
+            unshare_with_error_handling(clone_flags)?;
+            trace!("Successfully created namespaces");
+
+            // Signal child to proceed with ID mapping
+            sync.perform_mapping_and_signal(uid, gid, opt_user, allow_setgroups)?;
+
+            // Wait for child to exit
+            match nix::sys::wait::waitpid(child, None) {
+                Ok(wait_status) => {
+                    use nix::sys::wait::WaitStatus;
+                    match wait_status {
+                        WaitStatus::Exited(_, exit_code) => {
+                            if exit_code != 0 {
+                                return Err(eyre::eyre!(
+                                    "ID mapping child failed with exit code {}",
+                                    exit_code
+                                ));
+                            }
+                            trace!("ID mapping child completed successfully");
+                            Ok(())
+                        }
+                        WaitStatus::Signaled(_, signal, _) => {
+                            return Err(eyre::eyre!(
+                                "ID mapping child killed by signal {:?}",
+                                signal
+                            ));
+                        }
+                        _ => {
+                            return Err(eyre::eyre!(
+                                "ID mapping child ended with unexpected status: {:?}",
+                                wait_status
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(eyre::eyre!("Failed to wait for ID mapping child: {}", e));
+                }
+            }
+        }
+        Ok(ForkResult::Child) => {
+            // Child: wait for sync signal, then perform mapping
+            sync.wait_for_mapping()?;
+            trace!("Child received sync signal, proceeding with ID mapping");
+            execute_idmap_for_parent(uid, gid, opt_user, allow_setgroups)?;
+            std::process::exit(0);
+        }
+        Err(e) => {
+            return Err(eyre::eyre!("Failed to fork ID mapping child: {}", e));
+        }
+    }
+}
+
+/// Unshare namespaces without user namespace (simple case)
+fn unshare_namespaces_simple(clone_flags: CloneFlags) -> Result<()> {
+    // No user namespace needed, just unshare
+    unshare_with_error_handling(clone_flags)?;
+    trace!("Successfully created namespaces");
+    Ok(())
+}
+
+/// Returns basic namespace flags (CLONE_NEWNS) with CLONE_NEWUSER added if not root.
+fn basic_namespace_flags() -> CloneFlags {
+    let mut flags = CloneFlags::CLONE_NEWNS;
+    if !geteuid().is_root() {
+        flags |= CloneFlags::CLONE_NEWUSER;
+    }
+    flags
+}
+
+/// Returns full namespace flags for Fs mode with Clone strategy.
+fn full_namespace_flags() -> CloneFlags {
+    let mut flags = basic_namespace_flags() | CloneFlags::CLONE_NEWPID;
+    flags |= CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWIPC | CloneFlags::CLONE_NEWNET;
+    flags |= CloneFlags::CLONE_NEWCGROUP;
+    flags
+}
+
+/// Determine if UID mapping is needed based on namespace flags and root status.
+fn needs_uid_mapping(namespace_flags: CloneFlags) -> bool {
+    namespace_flags.contains(CloneFlags::CLONE_NEWUSER) && !geteuid().is_root()
+}
+
+/// Determine unified process creation configuration from run options.
+pub fn determine_process_config(env_root: &Path, run_options: &RunOptions) -> ProcessCreationConfig {
+    use crate::models::{SandboxMode, NamespaceStrategy, ProcessCreationConfig};
+
+    let sandbox_mode = run_options.effective_sandbox.sandbox_mode.unwrap_or(SandboxMode::Env);
+    let namespace_strategy = if run_options.skip_namespace_isolation {
+        NamespaceStrategy::Unshare
+    } else {
+        run_options.effective_sandbox.namespace_strategy.unwrap_or(NamespaceStrategy::Clone)
+    };
+
+    let namespace_flags = if run_options.skip_namespace_isolation {
+        // No namespaces when isolation is skipped
+        CloneFlags::empty()
+    } else {
+        match (sandbox_mode, namespace_strategy) {
+            (SandboxMode::Fs, NamespaceStrategy::Clone) => {
+                // Fs mode uses clone with all namespaces at once
+                full_namespace_flags()
+            }
+            (_, NamespaceStrategy::Clone) => {
+                // Other modes with Clone strategy: create namespaces at clone time
+                basic_namespace_flags()
+            }
+            (_, NamespaceStrategy::Unshare) => {
+                // Unshare strategy: flags for unshare() call
+                basic_namespace_flags()
+            }
+        }
+    };
+
+    let needs_uid_mapping = needs_uid_mapping(namespace_flags);
+
+    // Start with empty mount spec strings
+    let mut mount_spec_strings = Vec::new();
+
+    if !run_options.skip_namespace_isolation {
+        // Add sandbox-mode specific mount specifications (skip when no isolation)
+        match sandbox_mode {
+            SandboxMode::Env => mount_spec_strings.extend(env_mount_spec_strings(env_root, run_options)),
+            SandboxMode::Fs => mount_spec_strings.extend(fs_mount_spec_strings()),
+            SandboxMode::Vm => mount_spec_strings.extend(vm_mount_spec_strings()),
+        }
+
+        // Add user-provided mount specifications
+        mount_spec_strings.extend(run_options.effective_sandbox.mount_specs.iter().cloned());
+    }
+
+    ProcessCreationConfig {
+        namespace_strategy,
+        sandbox_mode,
+        namespace_flags,
+        needs_uid_mapping,
+        mount_spec_strings,
+    }
+}
+
+/// Build a UnifiedChildContext from environment root, run options, and config.
+pub fn build_unified_context(
+    env_root: &Path,
+    run_options: &RunOptions,
+    config: &ProcessCreationConfig,
+    command: PathBuf,
+    args: Vec<String>,
+    stdin_read_fd: Option<i32>,
+) -> Result<UnifiedChildContext> {
+    let uid = getuid();
+    let gid = getgid();
+    let euid = geteuid();
+    let user = run_options.user.clone();
+
+    // Parse mount specs
+    let mount_specs = crate::mount::parse_mount_specs(
+        &config.mount_spec_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+    );
+
+    Ok(UnifiedChildContext {
+        env_root: env_root.to_path_buf(),
+        run_options: run_options.clone(),
+        command,
+        args,
+        stdin_read_fd,
+        sandbox_mode: config.sandbox_mode,
+        sync_read_fd: None, // will be set later if needed
+        mount_specs,
+        uid,
+        gid,
+        euid,
+        user,
+        vm_socket_path: None,
+    })
+}
+
+/// Create process with namespace isolation using one of two strategies:
+/// 1. Unshare: unshare namespaces, forked helper maps parent IDs
+/// 2. Clone with namespaces at clone time: clone with namespace flags, parent maps child IDs
+/// Returns child PID on success.
+pub fn create_process_with_namespaces(
+    config: &ProcessCreationConfig,
+    context: UnifiedChildContext,
+) -> Result<Pid> {
+    // Create sync pipe if uid mapping needed and requires parent-child coordination
+    let create_namespaces_at_clone = config.namespace_strategy == NamespaceStrategy::Clone;
+    let id_sync = if config.needs_uid_mapping {
+        if create_namespaces_at_clone {
+            // Clone strategy with namespaces at clone time: parent maps child
+            // Target PID will be set after clone returns child PID
+            let target_pid = Pid::from_raw(0); // placeholder, updated after clone
+            Some(IdMapSync::new(target_pid)?) // parent mapping child
+        } else if config.namespace_strategy == NamespaceStrategy::Unshare {
+            // Unshare strategy: forked helper maps parent
+            let target_pid = nix::unistd::getpid();
+            Some(IdMapSync::new(target_pid)?) // forked helper mapping parent
+        } else {
+            // This should never happen: Clone strategy without namespaces at clone time
+            // (dropped strategy #3)
+            None
+        }
+    } else {
+        None
+    };
+
+    // Update context with sync fd if needed
+    let mut context = context;
+    if let Some(ref sync) = id_sync {
+        context.sync_read_fd = Some(sync.read_fd().try_clone()?);
+    }
+
+    match config.namespace_strategy {
+        NamespaceStrategy::Unshare => {
+            create_process_via_unshare(config, context, id_sync)
+        }
+        NamespaceStrategy::Clone => {
+            create_process_via_clone(config, context, id_sync)
+        }
+    }
+}
+
+/// Implement Clone strategy: create child via clone() with namespace flags.
+/// Namespaces are created at clone time, parent maps child IDs if needed.
+/// Child entry point is unified_child_main() → child_setup_with_namespaces().
+fn create_process_via_clone(
+    config: &ProcessCreationConfig,
+    context: UnifiedChildContext,
+    mut id_sync: Option<IdMapSync>,
+) -> Result<Pid> {
+    // Allocate stack for clone child (1MB, grows down)
+    const STACK_SIZE: usize = 1024 * 1024;
+    let stack = vec![0u8; STACK_SIZE];
+    let stack_top = unsafe { stack.as_ptr().add(STACK_SIZE) as *mut c_void };
+
+    // Prepare raw flags for libc::clone
+    let raw_flags = config.namespace_flags.bits() as u64 | libc::SIGCHLD as u64;
+
+    // Capture uid/gid/user before moving context into box
+    let uid = context.uid;
+    let gid = context.gid;
+    let user = context.user.clone();
+
+    // Box context to pass to child
+    let context_ptr = Box::into_raw(Box::new(context));
+
+    unsafe {
+        let pid = libc::clone(
+            unified_child_main as extern "C" fn(*mut c_void) -> c_int,
+            stack_top,
+            raw_flags as c_int,
+            context_ptr as *mut c_void,
+            ptr::null_mut::<c_int>(), // parent_tid
+            ptr::null_mut::<c_int>(), // child_tid
+            ptr::null_mut::<c_int>(), // tls
+        );
+
+        if pid < 0 {
+            drop(Box::from_raw(context_ptr));
+            return Err(eyre::eyre!(
+                "Failed to clone process: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let child_pid = Pid::from_raw(pid);
+
+        // Perform UID mapping if needed (for clone with namespaces at clone time)
+        if let Some(ref mut sync) = id_sync {
+            // Update sync target to actual child PID
+            sync.set_target_pid(child_pid);
+            let allow_setgroups = config.sandbox_mode == SandboxMode::Vm;
+            sync.perform_mapping_and_signal(uid, gid, &user, allow_setgroups)?;
+        }
+
+        Ok(child_pid)
+    }
+}
+
+/// Implement Unshare strategy: create namespaces via unshare(), then mount and exec.
+/// Namespaces are created by unshare_namespaces_with_idmap() which also handles ID mapping.
+/// After namespaces are ready, calls child_mount_and_exec() for mounts and command execution.
+/// When namespace_flags is empty (e.g. skip_namespace_isolation), skips unshare and goes straight to mount/exec.
+fn create_process_via_unshare(
+    config: &ProcessCreationConfig,
+    context: UnifiedChildContext,
+    _id_sync: Option<IdMapSync>,
+) -> Result<Pid> {
+    // For Unshare strategy, we either:
+    // 1. Call unshare() directly and exec (replaces current process)
+    // 2. Fork first, then unshare() in child (preserves parent)
+
+    // Implementation similar to current create_namespaces_inner()
+    // but integrated with unified context and sync protocol
+
+    let clone_flags = config.namespace_flags;
+    if !clone_flags.is_empty() {
+        let allow_setgroups = config.sandbox_mode == SandboxMode::Vm;
+        unshare_namespaces_with_idmap(clone_flags, context.uid, context.gid, &context.user, allow_setgroups)?;
+    }
+
+    let context = context;
+
+    // Now execute in child context (replaces current process)
+    // Note: For Unshare strategy, this function may not return
+
+    // It should set up mounts and exec the command, never returning.
+    // Will call prepare_and_execute_command() which exec's on success.
+    child_mount_and_exec(Box::new(context))?;
+
+    // If we reach here, exec failed and error was propagated.
+    // Return a dummy PID (never actually used).
+    Ok(Pid::from_raw(0))
+}
+
+/// Single child entry point for unified flow.
+extern "C" fn unified_child_main(arg: *mut c_void) -> c_int {
+    unsafe {
+        let context = Box::from_raw(arg as *mut UnifiedChildContext);
+        match child_setup_with_namespaces(context) {
+            Ok(()) => 0,
+            Err(e) => {
+                debug!(
+                    "Failed in child setup: {} (sandbox pivot_root/mount/exec path)",
+                    e
+                );
+                eprintln!("Failed in child setup: {}", e);
+                1
+            }
+        }
+    }
+}
+
+/// Child-side setup for Clone strategy: wait for parent ID mapping if needed,
+/// then mount and exec.
+/// Called from unified_child_main() for Clone strategy.
+fn child_setup_with_namespaces(context: Box<UnifiedChildContext>) -> Result<()> {
+    // Wait for uid mapping if needed (for clone with namespaces at clone time)
+    if let Some(ref sync_fd) = context.sync_read_fd {
+        wait_for_idmap_sync(sync_fd)?;
+    }
+
+    child_mount_and_exec(context)
+}
+
+/// Mount specifications, perform sandbox-mode specific setup, and execute command.
+/// Used by both Unshare strategy (after namespaces created) and Clone strategy
+/// (after child_setup_with_namespaces()).
+fn child_mount_and_exec(mut context: Box<UnifiedChildContext>) -> Result<()> {
+    // Mount all specifications
+    crate::mount::mount_batch_specs(&context.mount_specs, &context.env_root, context.sandbox_mode)?;
+
+    // Setup mounts based on sandbox mode
+    match context.sandbox_mode {
+        SandboxMode::Env => {},
+        SandboxMode::Fs => {
+            // Fs mode specific setup (pivot root, etc.)
+            perform_fs_sandbox_tasks(&context)?;
+
+            // After pivot_root, adjust command path to be relative to new root
+            // The command path was resolved relative to env_root on the host (e.g., /opt/epkg/envs/root/sandbox-debian/usr/bin/ls).
+            // After pivot_root, the root filesystem becomes env_root, so we need to strip the env_root prefix.
+            let guest_command = convert_host_path_to_guest_path(&context.command, &context.env_root);
+            if guest_command != context.command {
+                trace!("Fs sandbox: adjusting command path from {} to {} after pivot", context.command.display(), guest_command.display());
+                context.command = guest_command;
+            }
+        }
+        SandboxMode::Vm => {
+            // Vm mode will run command in its own way
+            let guest_command = convert_host_path_to_guest_path(&context.command, &context.env_root);
+            return crate::qemu::run_command_in_qemu(
+                &context.env_root,
+                &context.run_options,
+                &guest_command,
+                context.vm_socket_path.as_deref(),
+            );
+        }
+    }
+
+    // Execute command
+    prepare_and_execute_command(
+        &context.command,
+        &context.args,
+        &context.run_options.env_vars,
+        context.run_options.chdir_to_env_root,
+    )
+}
+
+// Helper function for Fs mode setup
+fn perform_fs_sandbox_tasks(context: &UnifiedChildContext) -> Result<()> {
+    // Create oldroot directory for pivot_root
+    let oldroot = context.env_root.join("oldroot");
+    fs::create_dir_all(&oldroot)
+        .map_err(|e| eyre::eyre!("Failed to create oldroot directory: {}", e))?;
+
+    // Setup /dev symlinks and directories (like bwrap)
+    setup_sandbox_dev_tree(&context.env_root)?;
+
+    // Pivot into sandbox and drop capabilities
+    pivot_into_sandbox_and_drop_caps(&context.env_root, &oldroot, context.euid)?;
+
+    Ok(())
+}
+
+
+/// Drop all capabilities from the bounding set (like bwrap's PR_CAPBSET_DROP).
+fn drop_all_capabilities() {
+    // Drop capabilities 0..=40 (CAP_CHECKPOINT_RESTORE)
+    for cap in 0..=40 {
+        unsafe {
+            // prctl returns 0 on success, -1 on error; ignore errors
+            let _ = prctl(PR_CAPBSET_DROP, cap as libc::c_ulong, 0, 0, 0);
+        }
+    }
+    trace!("Dropped all capability bounding set entries");
+}
+
+/// Create /dev symlinks and directories (like bwrap).
+fn setup_sandbox_dev_tree(env_root: &Path) -> Result<()> {
+    crate::mount::ensure_dev_symlinks(&env_root.join("dev"))
+}
+
+/// Pivot into filesystem/container sandbox and drop capabilities via nested user namespace
+fn pivot_into_sandbox_and_drop_caps(new_root_base: &Path, oldroot: &Path, _euid: Uid) -> Result<()> {
+    // Set hostname to "sandbox" (like bwrap) for UTS isolation
+    unsafe {
+        let hostname = b"sandbox\0";
+        if sethostname(hostname.as_ptr() as *const _, hostname.len() - 1) < 0 {
+            warn!("Failed to set hostname: {}. Continuing.", std::io::Error::last_os_error());
+        }
+    }
+
+    pivot_to_sandbox(new_root_base, oldroot)?;
+
+    // After pivot, drop capabilities by entering a nested user namespace
+    // Always create user namespace (even as root) to drop capabilities
+    match unshare_with_error_handling(CloneFlags::CLONE_NEWUSER) {
+        Ok(()) => {
+            debug!("Clone child: entered nested user namespace (dropped capabilities)");
+            drop_all_capabilities();
+        }
+        Err(e) => warn!("Failed to create nested user namespace after pivot: {}. Continuing.", e),
+    }
+    Ok(())
+}
+
+/// Prepare environment variables and execute command
+fn prepare_and_execute_command(command: &Path, args: &[String], env_vars: &std::collections::HashMap<String, String>, chdir_to_env_root: bool) -> Result<()> {
+    // Change to environment root directory if requested
+    if chdir_to_env_root {
+        if let Err(e) = std::env::set_current_dir("/") {
+            return Err(eyre::eyre!("Failed to change dir to /: {}", e));
+        }
+    }
+
+    // Prepare environment variables
+    let mut env_vars = env_vars.clone();
+    env_vars.insert("LC_ALL".to_string(), "C".to_string());
+    env_vars.insert("LANG".to_string(), "C".to_string());
+    env_vars.insert("LC_CTYPE".to_string(), "C".to_string());
+    env_vars.insert("LC_COLLATE".to_string(), "C".to_string());
+
+    // Execute the command
+    debug!("Clone child executing: {} {:?}", command.display(), args);
+    let err = std::process::Command::new(command)
+        .args(args)
+        .envs(&env_vars)
+        .exec();
+    // exec only returns on error
+    Err(eyre::eyre!("Failed to execute command: {}", err))
+}
+
+
+/// Mounts for the "Env" sandbox mode
+fn env_mount_spec_strings(env_root: &Path, run_options: &RunOptions) -> Vec<String> {
+    use nix::unistd::{getuid, geteuid};
+    let uid = getuid();
+    let euid = geteuid();
+    let mut specs = Vec::new();
+
+    // If we're root and using Unshare strategy (no user namespace),
+    // make mounts private before other mounts.
+    if euid.is_root() && run_options.effective_sandbox.namespace_strategy == Some(NamespaceStrategy::Unshare) {
+        specs.push("make-rprivate://".to_string());  // use "//" for host dir
+    }
+
+    // Add traditional layout compatibility mounts (must be before /usr mount)
+    match crate::mount::mount_traditional_host_compatibility(env_root) {
+        Ok(mut cspecs) => specs.append(&mut cspecs),
+        Err(e) => warn!("Failed to generate traditional layout compatibility mounts: {}", e),
+    }
+
+    // Add /opt/epkg isolation mounts
+    match crate::mount::mount_opt_epkg_isolation(euid, uid, env_root) {
+        Ok(mut ospecs) => specs.append(&mut ospecs),
+        Err(e) => warn!("Failed to generate /opt/epkg isolation mounts: {}", e),
+    }
+
+    // Add standard environment mount specifications
+    specs.extend(crate::mount::MOUNT_SPECS_ENV.iter().map(|s| s.to_string()));
+
+    // Add /root mount for non-root users
+    if !uid.is_root() {
+        specs.push("@/root://root".to_string());
+    }
+
+    specs
+}
+
+fn fs_mount_spec_strings() -> Vec<String> {
+    let mut specs: Vec<String> = Vec::new();
+
+    // Make mount propagation slave (like bwrap's MS_REC|MS_SILENT|MS_SLAVE on /)
+    specs.insert(0, "make-rslave://:silent".to_string());  // use "//" for host dir
+
+    specs.extend(crate::mount::pseudo_fs_mount_spec_strings().iter().map(|s| s.to_string()));
+    add_epkg_mount_spec_strings(&mut specs);
+
+    specs
+}
+
+fn vm_mount_spec_strings() -> Vec<String> {
+    let mut spec_strings = Vec::new();
+
+    add_epkg_mount_spec_strings(&mut spec_strings);
+    // Mount host /lib/modules read-only for kernel module loading (e.g., virtio_net).
+    // This replaces the earlier virtiofsd-based approach.
+    spec_strings.push("/lib/modules:ro,try".to_string());
+
+    spec_strings
+}
+
+/// Add mount for epkg binary dir so guest init can find epkg for vm-daemon.
+/// When epkg is outside self env (e.g. target/debug), bind-mount its dir into env.
+fn add_epkg_bin_dir_mount(spec_strings: &mut Vec<String>) {
+    let Ok(epkg_exe) = std::env::current_exe() else { return };
+    let epkg_bin_dir = match epkg_exe.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return,
+    };
+
+    // Skip if epkg is already inside self env (e.g. installed via epkg install)
+    if epkg_bin_dir.starts_with(dirs().home_epkg.clone()) {
+        return;
+    }
+    if epkg_bin_dir.starts_with(dirs().opt_epkg.clone()) {
+        return;
+    }
+
+    spec_strings.push(format!("{}:ro", epkg_bin_dir.display().to_string()));
+}
+
+fn add_epkg_mount_spec_strings(spec_strings: &mut Vec<String>) {
+    spec_strings.push(format!("{}:try", dirs().home_epkg.display()));
+    spec_strings.push(format!("{}:try", dirs().home_cache.display()));
+    spec_strings.push(format!("{}:try", dirs().opt_epkg.display()));
+    add_epkg_bin_dir_mount(spec_strings);
+}
+
+/// Execute unshare with comprehensive error handling
+#[track_caller]
+fn unshare_with_error_handling(clone_flags: CloneFlags) -> Result<()> {
+    unshare(clone_flags).map_err(|e| {
+        let location = Location::caller();
+        eyre::eyre!("unshare() failed at {}:{}: {}: {}", location.file(), location.line(), e, e.desc())
+    })
+}
+

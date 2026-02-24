@@ -34,7 +34,7 @@ base64 = { version = "0.22", default-features = false }
 glob = { version = "0.3", default-features = false }
 dirs = { version = "6.0", default-features = false }
 indicatif = { version = "0.18", default-features = false }
-nix = { version = "0.31", features = ["process", "user", "fs", "signal", "sched", "mount", "dir"], default-features = false }
+nix = { version = "0.31", features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot"], default-features = false }
 users = { version = "0.11", default-features = false }
 crossbeam-channel = { version = "0.5", features = ["std"], default-features = false }
 rayon = { version = "1.11", default-features = false }

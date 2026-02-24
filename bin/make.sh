@@ -199,36 +199,111 @@ get_package_manager_config() {
         apt)
             update_cmd="apt-get update"
             install_cmd="apt-get install -y"
-            packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
-            if [[ "$mode" == "crossdev" ]]; then
-                packages="$packages gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
-            fi
+            case "$mode" in
+                dev)
+                    packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
+                    ;;
+                crossdev)
+                    packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
+                    ;;
+                sandbox)
+                    # Tools for user namespace UID/GID mapping and sandbox helpers
+                    # newuidmap/newgidmap live in uidmap on Debian/Ubuntu
+                    packages="uidmap"
+                    ;;
+                qemu)
+                    # QEMU system emulator and virtiofs daemon
+                    # qemu-system-x86 provides qemu-system-x86_64 on Debian/Ubuntu
+                    # virtiofsd is available as a separate package on newer releases
+                    packages="qemu-system-x86 virtiofsd"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
             ;;
         dnf|yum)
             update_cmd="$PKG_MANAGER update -y"
             install_cmd="$PKG_MANAGER install -y"
-            # For dnf/yum, install cargo instead of rustup (rustup can be installed via curl if needed)
-            packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel"
-            # Crossdev packages may not be available on all distros
-            # Note: crossdev mode not supported for dnf/yum - cross-compilation tools not packaged
+            case "$mode" in
+                dev|crossdev)
+                    # For dnf/yum, install cargo instead of rustup (rustup can be installed via curl if needed)
+                    # Crossdev packages may not be available on all distros
+                    # Note: crossdev mode not supported for dnf/yum - cross-compilation tools not packaged
+                    packages="cargo gcc openssl-devel musl-gcc libstdc++-static lua-devel"
+                    ;;
+                sandbox)
+                    # newuidmap/newgidmap are shipped by shadow-utils on Fedora/RHEL
+                    packages="shadow-utils"
+                    ;;
+                qemu)
+                    # qemu-system-x86_64 and virtiofs daemon
+                    packages="qemu-system-x86_64 qemu-virtiofsd"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
             ;;
         zypper)
             update_cmd="zypper refresh"
             install_cmd="zypper install -y"
-            packages="rustup gcc openssl-devel musl-gcc lua-devel"
-            # Crossdev packages may not be available
+            case "$mode" in
+                dev|crossdev)
+                    packages="rustup gcc openssl-devel musl-gcc lua-devel"
+                    # Crossdev packages may not be available
+                    ;;
+                sandbox)
+                    # shadow provides newuidmap/newgidmap on openSUSE
+                    packages="shadow"
+                    ;;
+                qemu)
+                    # QEMU system emulator and virtiofs daemon on openSUSE
+                    packages="qemu-x86 qemu-virtiofsd"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
             ;;
         pacman)
             update_cmd="pacman -Sy"
             install_cmd="pacman -S --noconfirm"
-            packages="rustup base-devel openssl musl lua"
-            # Crossdev packages: aarch64-linux-gnu-gcc, riscv64-linux-gnu-gcc, loongarch64-linux-gnu-gcc (from AUR)
+            case "$mode" in
+                dev|crossdev)
+                    packages="rustup base-devel openssl musl lua"
+                    # Crossdev packages: aarch64-linux-gnu-gcc, riscv64-linux-gnu-gcc, loongarch64-linux-gnu-gcc (from AUR)
+                    ;;
+                sandbox)
+                    # shadow provides newuidmap/newgidmap on Arch
+                    packages="shadow"
+                    ;;
+                qemu)
+                    # Arch packages: qemu-desktop (includes qemu-system-x86_64) and virtiofsd (if packaged separately)
+                    # Users may need to adjust package names on derivatives.
+                    packages="qemu-desktop virtiofsd"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
             ;;
         apk)
             update_cmd="apk update"
             install_cmd="apk add"
-            packages="rustup build-base openssl-dev musl-dev lua-dev"
-            # Crossdev packages: cross-compile tools may be in community repos
+            case "$mode" in
+                dev|crossdev)
+                    packages="rustup build-base openssl-dev musl-dev lua-dev"
+                    # Crossdev packages: cross-compile tools may be in community repos
+                    ;;
+                sandbox)
+                    # shadow-uidmap provides newuidmap/newgidmap on Alpine
+                    packages="shadow-uidmap"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
             ;;
         *)
             echo "Unsupported package manager: $PKG_MANAGER"
@@ -309,9 +384,6 @@ install_packages() {
 
     # Install packages
     install_os_packages
-
-    # Install Rust toolchain
-    install_rust_toolchain "$mode" "$current_arch"
 }
 
 # Clone required repositories (without building elf-loader dependencies)
@@ -324,6 +396,10 @@ clone_repos() {
 # Unified dependency installer
 install_depends() {
     install_packages "$@"
+
+    # Install Rust toolchain for dev/crossdev modes
+    install_rust_toolchain "$mode" "$current_arch"
+
     clone_repos
 
     # leave this to developers to run on-demand
@@ -644,6 +720,15 @@ case $cmd in
     crossdev-pkgs)
         install_packages crossdev
         ;;
+    qemu-pkgs)
+        # Install VMM (QEMU + virtiofsd) host dependencies for --sandbox=vm
+        install_packages qemu
+        ;;
+    sandbox-pkgs)
+        # Install sandbox-related host dependencies (user namespaces, uid/gid mapping tools)
+        # They are standard utils that are normally already installed, so no callers for this
+        install_packages sandbox
+        ;;
     clone-repos)
         clone_repos
         ;;
@@ -669,6 +754,8 @@ case $cmd in
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"
+        echo "  qemu-pkgs                            Install qemu dependency packages"
+        echo "  sandbox-pkgs                         Install sandbox dependency packages"
         echo "  test                                 Run module-level unit tests"
         echo "  clean                                Clean build artifacts"
         echo "  clean_all                            Clean all artifacts and distribution files"

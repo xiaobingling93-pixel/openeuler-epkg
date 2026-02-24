@@ -6,6 +6,19 @@ if [ -z "$E2E_DIR" ]; then
     . "$(dirname "$0")/vars.sh"
 fi
 
+# Set PROJECT_ROOT based on E2E_DIR (needed for common.sh)
+if [ -z "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="${E2E_DIR%/tests/e2e*}"
+    # If pattern didn't match, fall back to parent of tests/
+    if [ "$PROJECT_ROOT" = "$E2E_DIR" ]; then
+        PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"
+    fi
+    export PROJECT_ROOT
+fi
+
+# Source common.sh for shared functions like parse_debug_flags
+. "$PROJECT_ROOT/tests/common.sh"
+
 # Log and run epkg command
 epkg() {
     local cmd="epkg $*"
@@ -146,43 +159,5 @@ error() {
     exit 1
 }
 
-# Parse debug flags (-d, --debug, -dd, -ddd) and shift arguments
-# Usage: parse_debug_flags "$@"
-# Sets DEBUG_FLAG to "", "-d", "-dd" or "-ddd"
-# Sets PARSE_DEBUG_FLAGS_REMAINING to remaining arguments (space-separated)
-# Returns:
-#   0 - success
-#   1 - unknown option
-#   2 - help requested (-h or --help)
-parse_debug_flags() {
-    DEBUG_FLAG=""
-    local _remaining=""
-    while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do
-        case "$1" in
-            -h|--help)
-                PARSE_DEBUG_FLAGS_REMAINING=""
-                return 2
-                ;;
-            -ddd)
-                DEBUG_FLAG="-ddd"
-                ;;
-            -dd)
-                DEBUG_FLAG="-dd"
-                ;;
-            -d|--debug)
-                DEBUG_FLAG="-d"
-                ;;
-            *)
-                echo "Unknown option: $1" >&2
-                PARSE_DEBUG_FLAGS_REMAINING=""
-                return 1
-                ;;
-        esac
-        shift
-    done
-    # Store remaining arguments
-    PARSE_DEBUG_FLAGS_REMAINING="$*"
-    return 0
-}
 
 [ -n "$INTERACTIVE" ] && set -x

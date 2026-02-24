@@ -12,54 +12,19 @@ use crate::userdb;
 use color_eyre::eyre::{self};
 use color_eyre::Result;
 
-/// Search for a `.eenv` directory starting from `start_path` and moving upward.
-/// Searches start_path/.eenv, then parent directories up to root or 100 levels.
-/// Returns the first existing `.eenv` directory path, or None if not found.
-pub fn find_nearest_dot_eenv(start_path: &Path) -> Option<PathBuf> {
-    // Convert relative start path to absolute if possible
-    let mut current = if start_path.is_absolute() {
-        start_path.to_path_buf()
-    } else {
-        // Try to get absolute path by joining with current directory
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(start_path),
-            Err(_) => start_path.to_path_buf(), // fallback to relative
-        }
-    };
-    log::debug!("find_nearest_dot_eenv: start_path='{}', current='{}'",
-                start_path.display(), current.display());
-    let mut depth = 0;
-    while depth < 10 {
-        let dot_eenv = current.join(".eenv");
-        log::debug!("find_nearest_dot_eenv: checking {} (depth={})", dot_eenv.display(), depth);
-        if dot_eenv.exists() && dot_eenv.is_dir() {
-            log::debug!("find_nearest_dot_eenv: found .eenv at {}", dot_eenv.display());
-            return Some(dot_eenv);
-        }
-        // Move to parent directory
-        if !current.pop() {
-            log::debug!("find_nearest_dot_eenv: cannot move up further, stopping");
-            break;
-        }
-        depth += 1;
-    }
-    log::debug!("find_nearest_dot_eenv: no .eenv found");
-    None
-}
-
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
         let opt_epkg = PathBuf::from("/opt/epkg");
         let home = get_home()?;
         let home_epkg = PathBuf::from(&home).join(".epkg");
-        let private_cache = PathBuf::from(&home).join(".cache/epkg");
+        let home_cache = PathBuf::from(&home).join(".cache/epkg");
 
         let (epkg_store, epkg_cache) = if options.init.shared_store {
             // Shared store/cache live under /opt/epkg
             (opt_epkg.join("store"), opt_epkg.join("cache"))
         } else {
-            // Non-shared store uses user home, cache uses private_cache
-            (home_epkg.join("store"), private_cache.clone())
+            // Non-shared store uses user home, cache uses home_cache
+            (home_epkg.join("store"), home_cache.clone())
         };
 
         // Get username - if it fails, the error will propagate upward
@@ -78,12 +43,13 @@ impl EPKGDirs {
             epkg_cache.join("aur_builds").join(&username)
         } else {
             // $HOME/.cache/epkg/aur_builds
-            private_cache.join("aur_builds")
+            home_cache.join("aur_builds")
         };
 
         Ok(Self {
             opt_epkg,
             home_epkg,
+            home_cache,
             user_envs,
             user_aur_builds,
             epkg_downloads_cache: epkg_cache.join("downloads"),
@@ -526,4 +492,38 @@ where
     }
 
     Ok(())
+}
+
+/// Search for a `.eenv` directory starting from `start_path` and moving upward.
+/// Searches start_path/.eenv, then parent directories up to root or 100 levels.
+/// Returns the first existing `.eenv` directory path, or None if not found.
+pub fn find_nearest_dot_eenv(start_path: &Path) -> Option<PathBuf> {
+    // Convert relative start path to absolute if possible
+    let mut current = if start_path.is_absolute() {
+        start_path.to_path_buf()
+    } else {
+        // Try to get absolute path by joining with current directory
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(start_path),
+            Err(_) => start_path.to_path_buf(), // fallback to relative
+        }
+    };
+    log::debug!("find_nearest_dot_eenv: start_path='{}', current='{}'",
+                start_path.display(), current.display());
+    let mut depth = 0;
+    while depth < 10 {
+        let dot_eenv = current.join(".eenv");
+        log::trace!("find_nearest_dot_eenv: checking {} (depth={})", dot_eenv.display(), depth);
+        if dot_eenv.exists() && dot_eenv.is_dir() {
+            log::debug!("find_nearest_dot_eenv: found .eenv at {}", dot_eenv.display());
+            return Some(dot_eenv);
+        }
+        // Move to parent directory
+        if !current.pop() {
+            break;
+        }
+        depth += 1;
+    }
+    log::trace!("find_nearest_dot_eenv: no .eenv found");
+    None
 }

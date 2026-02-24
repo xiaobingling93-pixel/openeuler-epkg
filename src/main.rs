@@ -66,6 +66,11 @@ mod rpm_triggers;
 mod lua;
 mod risks;
 mod run;
+mod namespace;
+mod idmap;
+mod mount;
+mod qemu;
+mod vm_client;
 mod applets;
 mod info;
 mod list;
@@ -102,7 +107,7 @@ use crate::run::{command_run, command_busybox, RunOptions};
 use color_eyre::Result;
 use color_eyre::eyre;
 use color_eyre::eyre::WrapErr;
-use clap::{arg, Command};
+use clap::{arg, ArgAction, Command};
 use ctrlc;
 use env_logger;
 use log::LevelFilter;
@@ -117,17 +122,29 @@ fn main() -> Result<()> {
         .display_location_section(true)             // Show file:line:column
         .theme(color_eyre::config::Theme::dark())   // Use dark theme for better contrast
         .install()?;
-    setup_logging();
-    setup_ctrlc();
 
     let argv: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    #[cfg(target_os = "linux")]
+    if argv.first().map(|a| std::path::Path::new(a).file_name()) == Some(Some(std::ffi::OsStr::new("init"))) {
+        crate::applets::init::early_init_rust_log_from_cmdline();
+    }
+    setup_logging();
+
+    log::info!("{}", env!("EPKG_VERSION_INFO"));
+    if cfg!(debug_assertions) {
+        log::info!("debug build: {} exe={}",
+            env!("BUILD_TIME"),
+            std::env::current_exe().as_ref().map(|p| p.display().to_string()).unwrap_or_else(|_| "<unknown>".to_string()));
+    }
+
     log::debug!("argv[{}]: {:?}", argv.len(), argv);
 
     // Init CONFIG (and CLAP_MATCHES) for either applet or epkg main invocation
     let invoked_as_applet = crate::applets::is_invoked_as_applet();
-    crate::models::init_config(invoked_as_applet)?;
+    init_config(invoked_as_applet)?;
+    setup_ctrlc();
 
     // SIGPIPE handling principles:
     // 1. Package manager should ignore SIGPIPE and handle EPIPE explicitly
@@ -206,31 +223,41 @@ fn setup_logging() {
 
 #[cfg(not(test))]
 fn setup_ctrlc() {
+    // Only enable debug Ctrl-C handler in debug builds
+    if !cfg!(debug_assertions) {
+        return;
+    }
+
+    // Skip for `epkg run` so child processes (e.g. VM client) can install their own handler.
+    if config().subcommand == EpkgCommand::Run {
+        return;
+    }
+
     // Enable backtrace collection if RUST_BACKTRACE is set
-    if !std::env::var("RUST_BACKTRACE").is_ok() {
+    if std::env::var("RUST_BACKTRACE").is_err() {
         return;
     }
 
     // Set up Ctrl-C handler with better debugging info
     ctrlc::set_handler(move || {
-        println!("\nReceived Ctrl-C! Cancelling downloads and collecting thread backtraces...");
+        eprintln!("\nReceived Ctrl-C! Cancelling downloads and collecting thread backtraces...");
 
         // Cancel all pending downloads first
         crate::download::cancel_downloads();
 
         // Print current command and process info
         let args: Vec<String> = std::env::args().collect();
-        println!("Command: {}", args.join(" "));
-        println!("Process ID: {}", std::process::id());
-        println!("Current directory: {:?}", std::env::current_dir().unwrap_or_default());
-        println!("Elapsed time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default());
+        eprintln!("Command: {}", args.join(" "));
+        eprintln!("Process ID: {}", std::process::id());
+        eprintln!("Current directory: {:?}", std::env::current_dir().unwrap_or_default());
+        eprintln!("Elapsed time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default());
 
         // Dump mirror performance stats if available
         if let Ok(mirrors_guard) = crate::mirror::MIRRORS.try_lock() {
-            println!("\nMirror performance statistics:");
+            eprintln!("\nMirror performance statistics:");
             crate::mirror::dump_mirror_performance_stats(&mirrors_guard, true);
         } else {
-            println!("\nCould not access mirror statistics (lock contention)");
+            eprintln!("\nCould not access mirror statistics (lock contention)");
         }
 
         crate::download::DOWNLOAD_MANAGER.dump_all_tasks();
@@ -239,15 +266,15 @@ fn setup_ctrlc() {
         print_all_thread_backtraces();
 
         // Show some system info that might be helpful
-        println!("\nEnvironment variables of interest:");
+        eprintln!("\nEnvironment variables of interest:");
         for (key, value) in std::env::vars() {
             if key.starts_with("RUST_") || key.starts_with("EPKG_") || key.starts_with("CARGO_") {
-                println!("  {}={}", key, value);
+                eprintln!("  {}={}", key, value);
             }
         }
 
         // Exit gracefully
-        println!("\nExiting due to Ctrl-C...");
+        eprintln!("\nExiting due to Ctrl-C...");
         std::process::exit(130); // Standard exit code for SIGINT
     }).expect("Failed to set Ctrl-C handler");
 }
@@ -268,16 +295,16 @@ fn print_all_thread_backtraces() {
     // Instead, get the actual kernel stack traces of all threads
 
     // Try to get detailed runtime information
-    println!("\n=== Runtime Information ===");
+    eprintln!("\n=== Runtime Information ===");
 
     // Show memory usage and thread info
     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        println!("Process status:");
+        eprintln!("Process status:");
         for line in status.lines() {
             if line.starts_with("VmRSS:") || line.starts_with("VmSize:") ||
                line.starts_with("Threads:") || line.starts_with("State:") ||
                line.starts_with("PPid:") || line.starts_with("TracerPid:") {
-                println!("  {}", line);
+                eprintln!("  {}", line);
             }
         }
     }
@@ -293,12 +320,12 @@ fn print_all_thread_backtraces() {
                 }
             }
         }
-        println!("Open file descriptors ({}):", fds.len());
+        eprintln!("Open file descriptors ({}):", fds.len());
         for fd in fds.iter().take(20) { // Show first 20 FDs
-            println!("  {}", fd);
+            eprintln!("  {}", fd);
         }
         if fds.len() > 20 {
-            println!("  ... and {} more", fds.len() - 20);
+            eprintln!("  ... and {} more", fds.len() - 20);
         }
     }
 
@@ -308,10 +335,10 @@ fn print_all_thread_backtraces() {
         if let Some(header) = lines.next() {
             let connections: Vec<_> = lines.take(10).collect();
             if !connections.is_empty() {
-                println!("Active TCP connections:");
-                println!("  {}", header); // Show the header explaining columns
+                eprintln!("Active TCP connections:");
+                eprintln!("  {}", header); // Show the header explaining columns
                 for conn in connections {
-                    println!("  {}", conn);
+                    eprintln!("  {}", conn);
                 }
             }
         }
@@ -319,12 +346,12 @@ fn print_all_thread_backtraces() {
 
     try_print_backtrace();
 
-    println!("\n=== Debugging Tips ===");
-    println!("To get more detailed debugging information:");
-    println!("1. Attach gdb: gdb -p $(pidof epkg)");
-    println!("2. Use strace: strace -p $(pidof epkg)");
-    println!("3. Run with: RUST_LOG=debug RUST_BACKTRACE=full {}", std::env::args().collect::<Vec<_>>().join(" "));
-    println!("4. Check system logs: journalctl --since '1 minute ago' --grep epkg");
+    eprintln!("\n=== Debugging Tips ===");
+    eprintln!("To get more detailed debugging information:");
+    eprintln!("1. Attach gdb: gdb -p $(pidof epkg)");
+    eprintln!("2. Use strace: strace -p $(pidof epkg)");
+    eprintln!("3. Run with: RUST_LOG=debug RUST_BACKTRACE=full {}", std::env::args().collect::<Vec<_>>().join(" "));
+    eprintln!("4. Check system logs: journalctl --since '1 minute ago' --grep epkg");
 }
 
 fn try_print_backtrace() {
@@ -336,13 +363,13 @@ fn try_print_backtrace() {
     }
 
     let pid = std::process::id();
-    println!("=== Attempting to get userspace backtraces ===");
+    eprintln!("=== Attempting to get userspace backtraces ===");
 
     // Try kernel stack trace first - this is always safe and never hangs
     if let Ok(stack) = std::fs::read_to_string(format!("/proc/{}/stack", pid)) {
         if !stack.trim().is_empty() {
-            println!("Kernel stack trace:");
-            println!("{}", stack);
+            eprintln!("Kernel stack trace:");
+            eprintln!("{}", stack);
         }
     }
 
@@ -355,8 +382,8 @@ fn try_print_backtrace() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if !stdout.trim().is_empty() {
-                println!("eu-stack output:");
-                println!("{}", stdout);
+                eprintln!("eu-stack output:");
+                eprintln!("{}", stdout);
                 return; // Successfully got stack trace
             }
         }
@@ -370,8 +397,8 @@ fn try_print_backtrace() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if !stdout.trim().is_empty() {
-                println!("pstack output:");
-                println!("{}", stdout);
+                eprintln!("pstack output:");
+                eprintln!("{}", stdout);
                 return; // Successfully got stack trace
             }
         }
@@ -461,7 +488,7 @@ OPTIONS:
   -v, --verbose                     Verbose operation, show debug messages
   -y, --assume-yes                  Automatically answer yes to all prompts
       --assume-no                   Automatically answer no to all prompts
-  -m, --ignore-missing              Ignore missing packages
+      --ignore-missing              Ignore missing packages
       --metadata-expire <SECONDS>   Metadata expiration time in seconds (0=never, -1=always)
       --proxy <URL>                 HTTP proxy URL (e.g., http://proxy.example.com:8080)
       --retry <NUMBER>              Number of retries for download tasks
@@ -705,9 +732,9 @@ fn add_search_and_gc_subcommands(cmd: Command) -> Command {
                 .about("Search for packages and files")
                 .after_help(
 r#"Examples:
-  epkg search --files '.desktop'       # match literal substring
-  epkg search --files '*.desktop'      # glob pattern, produces fewer results: file name must end with .desktop
-  epkg search --paths '**/*.desktop'   # glob pattern, produces same results
+  epkg search --files ".desktop"       # match literal substring
+  epkg search --files "*.desktop"      # glob pattern, produces fewer results: file name must end with .desktop
+  epkg search --paths "**/*.desktop"   # glob pattern, produces same results
   epkg search --paths '\.desktop$' -x  # regex pattern, produces same results
 
 Note: Output order may vary between runs due to parallel optimization (results shown as found).
@@ -734,6 +761,20 @@ fn add_run_subcommand(cmd: Command) -> Command {
             Command::new("run")
                 .about("Run command in environment namespace")
                 .arg_required_else_help(true)
+                .arg(arg!(-m --mount <SPEC> "Mount specification (JSON or Docker-like: [HOST_DIR|FS_TYPE:]SANDBOX_DIR[:OPTIONS])").value_name("SPEC").action(ArgAction::Append))
+                .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
+                .arg(arg!(--sandbox <MODE> "Sandbox mode: env (default), fs, or vm").value_parser(["env", "fs", "vm"]))
+                .arg(
+                    arg!(--"namespace-strategy" <STRATEGY> "Namespace creation strategy: clone (default) or unshare (no extra child)")
+                        .value_parser(["clone", "unshare"])
+                )
+                .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
+                .arg(arg!(-t --tty "Allocate a pseudo-TTY (force PTY allocation)").conflicts_with("no-tty"))
+                .arg(arg!(-T --"no-tty" "Disable pseudo-TTY allocation (force no PTY)").conflicts_with("tty"))
+                .arg(arg!(<command> "Command to execute"))
+                .arg(arg!([args] ... "Arguments to pass to the command (use '--' to separate from epkg options)"))
+                .allow_hyphen_values(true)
+                .trailing_var_arg(true)
                 .after_long_help(
 r#"ENVIRONMENT SELECTION (in order of precedence):
 1. Explicit selection via command line flags:
@@ -756,6 +797,40 @@ r#"ENVIRONMENT SELECTION (in order of precedence):
 
 Use '--' to separate epkg options from command arguments when needed.
 
+MOUNT SPECIFICATION:
+Mount specification (JSON or Docker-like syntax):
+• -m, --mount <SPEC>           Mount specification (can be repeated)
+
+Syntax: [<HOST_DIR|FS_TYPE>:]SANDBOX_DIR[:OPTIONS]
+• HOST_DIR: Absolute host path (may start with '@' for env_root substitution)
+• FS_TYPE: Pseudo filesystem type (tmpfs, proc, devtmpfs, devpts, mqueue, etc.) or "remount"
+• SANDBOX_DIR: Absolute path inside sandbox (may start with '@' for env_root substitution)
+• OPTIONS: Comma-separated key=value pairs and flags (ro, try, recursive, silent, etc.)
+
+Path format rules:
+• Leading '/' → absolute host path (e.g., /usr means the host's /usr)
+• Leading '@' → substitute with environment root (e.g., @/tmp means $env_root/tmp)
+• Paths must be absolute (start with '/' or '@'). Relative paths are not allowed.
+
+Examples:
+  # Bind mount host /data and /config to sandbox /data, /config
+  epkg run -m /data -m /config node app.js
+
+  # Bind mount host /usr read‑only, skip if source missing
+  epkg run -m /usr:ro,try python
+
+  # Mount tmpfs on sandbox /tmp
+  epkg run -m tmpfs:/tmp:mode=0755 bash
+
+  # Mount proc filesystem on sandbox /proc
+  epkg run -m proc:/proc bash
+
+  # Remount existing mount as read-only
+  epkg run -m remount:/sys/kernel/security:ro bash
+
+  # Advanced mount specification (JSON)
+  epkg run -m '{"target":"/sys/kernel/security","flags":32768,"options":"ro"}' bash
+
 EXAMPLES:
   # Run command with auto-detected environment
   epkg run ./script.sh              # Searches for .eenv in script's directory
@@ -767,18 +842,11 @@ EXAMPLES:
   epkg run -r /path/to/env bash
 
   # Run with additional mounts and user
-  epkg run -M /data,/config -u appuser node server.js
+  epkg run -m /data:/data -m /config:/config -u appuser node server.js
 
   # Separate epkg options from command arguments
   epkg run -- jq --jq-option        # Use '--' when command arguments start with '-'
 "#)
-                .arg(arg!(-M --mount <DIRS> "Comma-separated list of additional directories to mount"))
-                .arg(arg!(-u --user <USER> "Run as specified user (username or UID)"))
-                .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
-                .arg(arg!(<command> "Command to execute"))
-                .arg(arg!([args] ... "Arguments to pass to the command (use '--' to separate from epkg options)"))
-                .allow_hyphen_values(true)
-                .trailing_var_arg(true)
         )
 }
 
@@ -1276,7 +1344,7 @@ fn try_apply_explicit_env_root(config: &mut EPKGConfig) -> Result<bool> {
             ));
         }
         if !config.common.env_name.is_empty() {
-            println!("Both options '-e {}' and '-r {}' are given, using -r for selecting environment.",
+            eprintln!("Both options '-e {}' and '-r {}' are given, using -r for selecting environment.",
                 config.common.env_name,
                 config.common.env_root);
         }
@@ -1426,7 +1494,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
         Some(("convert",    sub_matches))  =>  parse_options_convert(&mut config, sub_matches).expect("Failed to parse convert options"),
-        Some(("run",        sub_matches))  =>  parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
+        Some(("run",        sub_matches))  =>  crate::run::parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
         Some(("service",    sub_matches))  =>  parse_options_service(&mut config, sub_matches).expect("Failed to parse service options"),
         _ => {} // No subcommand or unknown subcommand
@@ -1658,44 +1726,6 @@ fn parse_options_convert(_config: &mut EPKGConfig, _sub_matches: &clap::ArgMatch
     Ok(())
 }
 
-fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
-    // Parse mount directories
-    let mount_dirs = if let Some(mount_str) = sub_matches.get_one::<String>("mount") {
-        mount_str.split(',').map(|s| s.trim().to_string()).collect()
-    } else {
-        Vec::new()
-    };
-
-    let user = sub_matches.get_one::<String>("user").cloned();
-
-    let command = sub_matches.get_one::<String>("command")
-        .ok_or_else(|| eyre::eyre!("Command is required"))?
-        .clone();
-
-    let args: Vec<String> = if let Some(args_iter) = sub_matches.get_many::<String>("args") {
-        args_iter.cloned().collect()
-    } else {
-        Vec::new()
-    };
-
-    let timeout = if let Some(timeout_str) = sub_matches.get_one::<String>("timeout") {
-        timeout_str.parse::<u64>()
-            .map_err(|e| eyre::eyre!("Invalid timeout value '{}': {}", timeout_str, e))?
-    } else {
-        0 // Default: no timeout
-    };
-
-    options.run = RunOptions {
-        mount_dirs,
-        user,
-        command,
-        args,
-        timeout,
-        ..Default::default()
-    };
-
-    Ok(())
-}
 
 fn parse_options_search(config: &mut EPKGConfig, sub_matches: &clap::ArgMatches) -> Result<()> {
     let options = search::SearchOptions {
@@ -1893,11 +1923,11 @@ fn command_unpack(sub_matches: &clap::ArgMatches) -> Result<()> {
         match crate::store::unpack_packages(files) {
             Ok(final_dirs) => {
                 if final_dirs.is_empty() {
-                    println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
+                    eprintln!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                 } else {
                     for final_dir in &final_dirs {
                         // Print both the final directory path and the pkgline (directory name)
-                        println!("{}", final_dir.display());
+                        eprintln!("{}", final_dir.display());
                     }
                 }
             }
@@ -1928,7 +1958,7 @@ fn command_convert(sub_matches: &clap::ArgMatches) -> Result<()> {
         match crate::store::unpack_packages(files) {
             Ok(final_dirs) => {
                 if final_dirs.is_empty() {
-                    println!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
+                    eprintln!("No packages were unpacked by the store. This might indicate issues with the provided files or empty input.");
                 } else {
                     for final_dir in &final_dirs {
                         // Compress the package using the final directory path

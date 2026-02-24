@@ -1,18 +1,19 @@
-use color_eyre::eyre::{Result, eyre};
-use crate::models::{InstalledPackageInfo, PackageFormat};
-use crate::plan::InstallationPlan;
 use crate::deb_triggers::setup_deb_env_vars;
-use crate::rpm_triggers::setup_rpm_env_vars;
+use crate::models::{InstalledPackageInfo, PackageFormat};
+use crate::namespace::setup_namespace_and_mounts;
 use crate::package;
-use crate::run::{RunOptions, setup_namespace_and_mounts, with_sigpipe_handler};
-use nix::unistd::{fork, ForkResult, Pid};
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::sys::signal::{kill, Signal};
-use std::time::{Duration, Instant};
-use std::thread;
+use crate::plan::InstallationPlan;
+use crate::rpm_triggers::setup_rpm_env_vars;
+use crate::run::{with_sigpipe_handler, RunOptions};
 use crate::shebang::strip_shebang;
 use crate::utils;
+use color_eyre::eyre::{eyre, Result};
 use libc;
+use nix::sys::signal::{kill, Signal};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{fork, ForkResult, Pid};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {

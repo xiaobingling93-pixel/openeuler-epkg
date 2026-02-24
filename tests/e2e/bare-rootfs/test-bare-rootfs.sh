@@ -14,7 +14,7 @@ TAR_TMP=$(mktemp) || error "Failed to create temporary tar"
 # Create an empty tar archive from empty directory
 tar -C "$TAR_DIR" -cf "$TAR_TMP" . 2>/dev/null || error "Failed to create empty tar"
 # Import the empty tar as a Docker image (creates a scratch-based image)
-docker import "$TAR_TMP" epkg-scratch-temp >/dev/null 2>&1 || error "Failed to import image"
+docker import "$TAR_TMP" epkg-scratch-temp || error "Failed to import image"
 rm -rf "$TAR_DIR" "$TAR_TMP"
 
 # Start a long-running docker container with sleep to persist state

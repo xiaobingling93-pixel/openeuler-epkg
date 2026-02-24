@@ -4,6 +4,7 @@ use color_eyre::eyre::eyre;
 use std::fs::OpenOptions;
 use std::io::Seek;
 use std::path::Path;
+use crate::utils::{split_number_and_suffix, apply_suffix};
 
 pub struct TruncateOptions {
     pub size: Option<String>,
@@ -81,71 +82,8 @@ enum SizeModifier {
     RoundUp,  // '%'
 }
 
-fn split_number_and_suffix(size_part: &str) -> (&str, Option<&str>) {
-    // Parse suffix (K, M, G, etc. or KB, MB, etc.)
-    if size_part.len() >= 2 {
-        let last_two = &size_part[size_part.len() - 2..];
-        match last_two {
-            "KB" | "MB" | "GB" | "TB" | "PB" | "EB" | "ZB" | "YB" | "RB" | "QB" |
-            "KiB" | "MiB" | "GiB" | "TiB" | "PiB" | "EiB" | "ZiB" | "YiB" => {
-                let num_str = &size_part[..size_part.len() - last_two.len()];
-                (num_str, Some(last_two))
-            }
-            _ => {
-                if let Some(last_char) = size_part.chars().last() {
-                    match last_char {
-                        'K' | 'M' | 'G' | 'T' | 'P' | 'E' | 'Z' | 'Y' | 'R' | 'Q' => {
-                            let num_str = &size_part[..size_part.len() - 1];
-                            (num_str, Some(&size_part[size_part.len() - 1..]))
-                        }
-                        _ => (size_part, None),
-                    }
-                } else {
-                    (size_part, None)
-                }
-            }
-        }
-    } else if let Some(last_char) = size_part.chars().last() {
-        match last_char {
-            'K' | 'M' | 'G' | 'T' | 'P' | 'E' | 'Z' | 'Y' | 'R' | 'Q' => {
-                let num_str = &size_part[..size_part.len() - 1];
-                (num_str, Some(&size_part[size_part.len() - 1..]))
-            }
-            _ => (size_part, None),
-        }
-    } else {
-        (size_part, None)
-    }
-}
 
 #[allow(dead_code)]
-fn apply_suffix(number: i64, suffix: Option<&str>, size_str: &str) -> Result<i64> {
-    let bytes = match suffix {
-        Some("K") | Some("KiB") => number * 1024,
-        Some("M") | Some("MiB") => number * 1024 * 1024,
-        Some("G") | Some("GiB") => number * 1024 * 1024 * 1024,
-        Some("T") | Some("TiB") => number * 1024_i64.pow(4),
-        Some("P") | Some("PiB") => number * 1024_i64.pow(5),
-        Some("E") | Some("EiB") => number * 1024_i64.pow(6),
-        Some("Z") | Some("ZiB") => number * 1024_i64.pow(7),
-        Some("Y") | Some("YiB") => number * 1024_i64.pow(8),
-        Some("R") => number * 1024_i64.pow(9),
-        Some("Q") => number * 1024_i64.pow(10),
-        Some("KB") => number * 1000,
-        Some("MB") => number * 1000 * 1000,
-        Some("GB") => number * 1000_i64.pow(3),
-        Some("TB") => number * 1000_i64.pow(4),
-        Some("PB") => number * 1000_i64.pow(5),
-        Some("EB") => number * 1000_i64.pow(6),
-        Some("ZB") => number * 1000_i64.pow(7),
-        Some("YB") => number * 1000_i64.pow(8),
-        Some("RB") => number * 1000_i64.pow(9),
-        Some("QB") => number * 1000_i64.pow(10),
-        None => number,
-        _ => return Err(eyre!("truncate: invalid size suffix in '{}'", size_str)),
-    };
-    Ok(bytes)
-}
 
 fn parse_size(size_str: &str) -> Result<(i64, SizeModifier)> {
     if size_str.is_empty() {

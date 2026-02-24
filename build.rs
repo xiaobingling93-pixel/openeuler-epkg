@@ -6,8 +6,9 @@ fn main() {
     // Get git commit hash
     let git_hash = get_git_hash();
 
-    // Get build date using time crate
+    // Get build date and full build time using time crate
     let build_date = get_build_date();
+    let build_time = get_build_time();
 
     let epkg_version_info = format!("version {} (build date {}, commit {})",
                                     env!("CARGO_PKG_VERSION"),
@@ -17,6 +18,7 @@ fn main() {
     // Set environment variables for the build
     println!("cargo:rustc-env=GIT_HASH={}", git_hash);
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
+    println!("cargo:rustc-env=BUILD_TIME={}", build_time);
     println!("cargo:rustc-env=EPKG_VERSION_TAG=v{}", env!("CARGO_PKG_VERSION"));
     println!("cargo:rustc-env=EPKG_VERSION_INFO={}", epkg_version_info);
 
@@ -135,4 +137,15 @@ fn get_build_date() -> String {
     OffsetDateTime::now_utc()
         .format(&time::format_description::parse("[year]-[month]-[day]").unwrap())
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn get_build_time() -> String {
+    use time::OffsetDateTime;
+
+    let format = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]")
+        .unwrap();
+    OffsetDateTime::now_local()
+        .ok()
+        .and_then(|t| t.format(&format).ok())
+        .unwrap_or_else(|| "unknown".to_string())
 }

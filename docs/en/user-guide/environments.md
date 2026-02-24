@@ -154,6 +154,43 @@ epkg -e alpine run htop --version
 epkg --root /tmp/myproject/.eenv run jq --version
 ```
 
+## Sandbox modes for `epkg run`
+
+When you run commands inside an environment, epkg can add extra isolation on top of the per‑env root filesystem:
+
+- **env** (default) — User and mount namespaces with bind mounts of the environment over `/usr`, `/etc`, `/var`, `/run`, etc. Provides isolation for compatibility; not a strong security boundary.
+- **fs** — The environment becomes the new root via `pivot_root`; proc, tmpfs (/tmp, /dev), and other pseudo-filesystems are mounted under it. Stronger filesystem isolation.
+- **vm** — Run the command inside a lightweight VM with the environment root shared via virtiofs. See `docs/design-notes/sandbox-vmm.md` for design and dependencies (VMM, kernel, virtiofsd).
+
+You select the sandbox mode per command:
+
+```bash
+epkg -e mydebian run --sandbox=env bash
+epkg -e mydebian run --sandbox=fs  python3 script.py
+epkg -e mydebian run --sandbox=vm  bash
+```
+
+Or set a **per‑env default** in `env_root/etc/epkg/env.yaml` via:
+
+```bash
+# Make fs the default sandbox for this env
+epkg -e mydebian env config set sandbox.sandbox_mode fs
+
+# After that, plain `epkg -e mydebian run <cmd>` uses fs unless you override --sandbox
+epkg -e mydebian run bash
+```
+
+User-level defaults can be set in `~/.epkg/config/options.yaml` (same `sandbox.sandbox_mode` key). CLI `--sandbox` overrides both.
+
+For the host‑side tools that sandboxing relies on (user namespaces and `newuidmap`/`newgidmap`), install a minimal set with:
+
+```bash
+cd /c/epkg
+./bin/make.sh sandbox-depends
+```
+
+This pulls in the appropriate `uidmap`/`shadow`/`shadow-uidmap` package for your distro; see the [Troubleshooting](troubleshooting.md) guide for user‑namespace errors.
+
 ## Public environments (shared store)
 
 When epkg is used with a **shared** store (e.g. root with `/opt/epkg`), environments can be **public**. Other users can then:

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre;
+use color_eyre::eyre::eyre;
 use base64::Engine;
 use sha1::Sha1;
 use sha2::digest::Digest;
@@ -488,11 +489,25 @@ pub fn command_exists(command_name: &str) -> bool {
 /// Searches for an executable command in a predefined list of common paths.
 /// Returns the full path to the command if found and executable, otherwise None.
 pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
+    // If command contains a slash, treat it as a direct path
+    if command_name.contains('/') {
+        let path = Path::new(command_name);
+        if path.exists() {
+            if let Ok(metadata) = fs::metadata(path) {
+                if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
+                    return Some(path.to_path_buf());
+                }
+            }
+        }
+        return None;
+    }
+
     let common_paths = [
         "/usr/local/sbin",
         "/usr/local/bin",
         "/usr/sbin",
         "/usr/bin",
+        "/usr/libexec",
         "/sbin",
         "/bin",
         // Add other paths if necessary, e.g., from $HOME/.local/bin
@@ -1513,6 +1528,113 @@ pub fn handle_clap_error_with_cmdline(e: clap::Error, cmdline: String) -> ! {
     }
 }
 
+/// Split a size string into numeric part and suffix (if any).
+/// Returns (number_str, suffix_option).
+/// Supports suffixes: K, M, G, T, P, E, Z, Y, R, Q and their binary counterparts (KiB, MiB, etc.)
+pub(crate) fn split_number_and_suffix(size_part: &str) -> (&str, Option<&str>) {
+    // Parse suffix (K, M, G, etc. or KB, MB, etc.) case-insensitively.
+    // Check for three-letter binary suffixes first (KiB, MiB, etc.)
+    if size_part.len() >= 3 {
+        let last_three = &size_part[size_part.len() - 3..];
+        let last_three_upper = last_three.to_uppercase();
+        match last_three_upper.as_str() {
+            "KIB" | "MIB" | "GIB" | "TIB" | "PIB" | "EIB" | "ZIB" | "YIB" => {
+                let num_str = &size_part[..size_part.len() - last_three.len()];
+                return (num_str, Some(last_three));
+            }
+            _ => {}
+        }
+    }
+    // Check for two-letter decimal suffixes (KB, MB, etc.)
+    if size_part.len() >= 2 {
+        let last_two = &size_part[size_part.len() - 2..];
+        let last_two_upper = last_two.to_uppercase();
+        match last_two_upper.as_str() {
+            "KB" | "MB" | "GB" | "TB" | "PB" | "EB" | "ZB" | "YB" | "RB" | "QB" => {
+                let num_str = &size_part[..size_part.len() - last_two.len()];
+                return (num_str, Some(last_two));
+            }
+            _ => {}
+        }
+    }
+    // Check for single-letter suffixes (K, M, G, etc.)
+    if let Some(last_char) = size_part.chars().last() {
+        let last_char_upper = last_char.to_ascii_uppercase();
+        match last_char_upper {
+            'K' | 'M' | 'G' | 'T' | 'P' | 'E' | 'Z' | 'Y' | 'R' | 'Q' => {
+                let num_str = &size_part[..size_part.len() - 1];
+                return (num_str, Some(&size_part[size_part.len() - 1..]));
+            }
+            _ => {}
+        }
+    }
+    // No suffix
+    (size_part, None)
+}
+
+/// Apply a size suffix to a numeric value, returning bytes.
+/// Supports both binary (KiB, MiB, etc.) and decimal (KB, MB, etc.) suffixes.
+/// Suffix matching is case-insensitive.
+pub(crate) fn apply_suffix(number: i64, suffix: Option<&str>, size_str: &str) -> Result<i64> {
+    let bytes = match suffix {
+        Some(s) => {
+            let s_upper = s.to_uppercase();
+            match s_upper.as_str() {
+                "K" | "KIB" => number * 1024,
+                "M" | "MIB" => number * 1024 * 1024,
+                "G" | "GIB" => number * 1024 * 1024 * 1024,
+                "T" | "TIB" => number * 1024_i64.pow(4),
+                "P" | "PIB" => number * 1024_i64.pow(5),
+                "E" | "EIB" => number * 1024_i64.pow(6),
+                "Z" | "ZIB" => number * 1024_i64.pow(7),
+                "Y" | "YIB" => number * 1024_i64.pow(8),
+                "R" => number * 1024_i64.pow(9),
+                "Q" => number * 1024_i64.pow(10),
+                "KB" => number * 1000,
+                "MB" => number * 1000 * 1000,
+                "GB" => number * 1000_i64.pow(3),
+                "TB" => number * 1000_i64.pow(4),
+                "PB" => number * 1000_i64.pow(5),
+                "EB" => number * 1000_i64.pow(6),
+                "ZB" => number * 1000_i64.pow(7),
+                "YB" => number * 1000_i64.pow(8),
+                "RB" => number * 1000_i64.pow(9),
+                "QB" => number * 1000_i64.pow(10),
+                _ => return Err(eyre!("invalid size suffix in '{}'", size_str)),
+            }
+        }
+        None => number,
+    };
+    Ok(bytes)
+}
+
+/// Parse a human-readable size string into bytes.
+/// Supports suffixes: K, M, G, T, P, E, Z, Y, R, Q and their binary counterparts (KiB, MiB, etc.)
+/// Returns the number of bytes as i64.
+#[allow(dead_code)]
+pub fn parse_size_bytes(size_str: &str) -> Result<i64> {
+    if size_str.is_empty() {
+        return Err(eyre!("invalid size '{}'", size_str));
+    }
+    let (number_str, suffix) = split_number_and_suffix(size_str);
+    let number = number_str.parse::<i64>()
+        .map_err(|e| eyre!("invalid size '{}': {}", size_str, e))?;
+    apply_suffix(number, suffix, size_str)
+}
+
+/// Parse a human-readable size string into bytes, returning None on error.
+/// This is a convenience wrapper around parse_size_bytes for callers that prefer Option.
+#[allow(dead_code)]
+pub fn parse_size_bytes_opt(size_str: &str) -> Option<u64> {
+    parse_size_bytes(size_str).ok().and_then(|n| {
+        if n >= 0 {
+            Some(n as u64)
+        } else {
+            None
+        }
+    })
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1529,5 +1651,28 @@ mod tests {
         let hex = normalize_sha1(package_txt_base64).expect("normalize_sha1");
         assert_eq!(hex.len(), 40, "SHA1 hex must be 40 chars");
         assert_eq!(hex, "43519c9911c952ab8333ed24fa3e5fdf6f92f4d4");
+    }
+
+    #[test]
+    fn test_parse_size_bytes() {
+        // Test basic suffixes
+        assert_eq!(parse_size_bytes("1024").unwrap(), 1024);
+        assert_eq!(parse_size_bytes("1K").unwrap(), 1024);
+        assert_eq!(parse_size_bytes("1KB").unwrap(), 1000);
+        assert_eq!(parse_size_bytes("1KiB").unwrap(), 1024);
+        assert_eq!(parse_size_bytes("1M").unwrap(), 1024*1024);
+        assert_eq!(parse_size_bytes("1MB").unwrap(), 1000*1000);
+        assert_eq!(parse_size_bytes("1MiB").unwrap(), 1024*1024);
+        // Test case-insensitivity
+        assert_eq!(parse_size_bytes("1k").unwrap(), 1024);
+        assert_eq!(parse_size_bytes("1kb").unwrap(), 1000);
+        assert_eq!(parse_size_bytes("1kib").unwrap(), 1024);
+        // Test large suffixes
+        assert_eq!(parse_size_bytes("1G").unwrap(), 1024*1024*1024);
+        assert_eq!(parse_size_bytes("1T").unwrap(), 1024_i64.pow(4));
+        // Test error cases
+        assert!(parse_size_bytes("").is_err());
+        assert!(parse_size_bytes("abc").is_err());
+        assert!(parse_size_bytes("1X").is_err());
     }
 }

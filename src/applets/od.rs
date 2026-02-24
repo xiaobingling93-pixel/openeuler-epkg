@@ -170,7 +170,8 @@ pub fn command() -> Command {
             .long("format")
             .value_name("TYPE")
             .help("Select output format or formats")
-            .action(clap::ArgAction::Append));
+            .action(clap::ArgAction::Append))
+        .arg(Arg::new("help").long("help").action(clap::ArgAction::Help));
 
     // Traditional format specifications
     for arg in traditional_format_args() {

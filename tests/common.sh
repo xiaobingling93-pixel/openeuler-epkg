@@ -34,3 +34,42 @@ set_color_names() {
     YELLOW='\033[1;33m'
     NC='\033[0m' # No Color
 }
+
+# Parse debug flags (-d, --debug, -dd, -ddd) and shift arguments
+# Usage: parse_debug_flags "$@"
+# Sets DEBUG_FLAG to "", "-d", "-dd" or "-ddd"
+# Sets PARSE_DEBUG_FLAGS_REMAINING to remaining arguments (space-separated)
+# Returns:
+#   0 - success
+#   1 - unknown option
+#   2 - help requested (-h or --help)
+parse_debug_flags() {
+    DEBUG_FLAG=""
+    local _remaining=""
+    while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do
+        case "$1" in
+            -h|--help)
+                PARSE_DEBUG_FLAGS_REMAINING=""
+                return 2
+                ;;
+            -ddd)
+                DEBUG_FLAG="-ddd"
+                ;;
+            -dd)
+                DEBUG_FLAG="-dd"
+                ;;
+            -d|--debug)
+                DEBUG_FLAG="-d"
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                PARSE_DEBUG_FLAGS_REMAINING=""
+                return 1
+                ;;
+        esac
+        shift
+    done
+    # Store remaining arguments
+    PARSE_DEBUG_FLAGS_REMAINING="$*"
+    return 0
+}

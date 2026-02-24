@@ -77,11 +77,11 @@ pub fn command() -> Command {
 }
 
 fn set_interface_address(interface: &str, addr: Ipv4Addr, netmask: Option<Ipv4Addr>) -> Result<()> {
-    // Create a socket for ioctl operations
     use std::os::fd::AsRawFd;
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
     if sock < 0 {
-        return Err(eyre!("socket creation failed: {}", std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        return Err(eyre!("socket creation failed: {}", e));
     }
     let sock_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(sock) };
 
@@ -117,7 +117,9 @@ fn set_interface_address(interface: &str, addr: Ipv4Addr, netmask: Option<Ipv4Ad
         );
     }
     if unsafe { libc::ioctl(sock_fd.as_raw_fd(), libc::SIOCSIFADDR.try_into().unwrap(), &ifr) } < 0 {
-        return Err(eyre!("SIOCSIFADDR failed: {}", std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        log::debug!("ifconfig: SIOCSIFADDR {} failed: {}", interface, e);
+        return Err(eyre!("SIOCSIFADDR failed on {}: {}", interface, e));
     }
 
     // Set netmask if provided
@@ -137,7 +139,9 @@ fn set_interface_address(interface: &str, addr: Ipv4Addr, netmask: Option<Ipv4Ad
             );
         }
         if unsafe { libc::ioctl(sock_fd.as_raw_fd(), libc::SIOCSIFNETMASK.try_into().unwrap(), &ifr) } < 0 {
-            return Err(eyre!("SIOCSIFNETMASK failed: {}", std::io::Error::last_os_error()));
+            let e = std::io::Error::last_os_error();
+            log::debug!("ifconfig: SIOCSIFNETMASK {} failed: {}", interface, e);
+            return Err(eyre!("SIOCSIFNETMASK failed on {}: {}", interface, e));
         }
     }
 
@@ -148,7 +152,8 @@ fn set_interface_flags(interface: &str, up: bool) -> Result<()> {
     use std::os::fd::AsRawFd;
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
     if sock < 0 {
-        return Err(eyre!("socket creation failed: {}", std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        return Err(eyre!("socket creation failed: {}", e));
     }
     let sock_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(sock) };
 
@@ -167,9 +172,10 @@ fn set_interface_flags(interface: &str, up: bool) -> Result<()> {
 
     // Get current flags
     if unsafe { libc::ioctl(sock_fd.as_raw_fd(), libc::SIOCGIFFLAGS.try_into().unwrap(), &ifr) } < 0 {
-        return Err(eyre!("SIOCGIFFLAGS failed: {}", std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        log::debug!("ifconfig: SIOCGIFFLAGS {} failed: {}", interface, e);
+        return Err(eyre!("SIOCGIFFLAGS failed on {}: {} (device may not exist)", interface, e));
     }
-
     let flags = unsafe { ifr.ifr_ifru.ifru_flags };
     let new_flags = if up {
         flags | libc::IFF_UP as i16
@@ -179,13 +185,16 @@ fn set_interface_flags(interface: &str, up: bool) -> Result<()> {
     ifr.ifr_ifru.ifru_flags = new_flags as _;
 
     if unsafe { libc::ioctl(sock_fd.as_raw_fd(), libc::SIOCSIFFLAGS.try_into().unwrap(), &ifr) } < 0 {
-        return Err(eyre!("SIOCSIFFLAGS failed: {}", std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        log::debug!("ifconfig: SIOCSIFFLAGS {} failed: {}", interface, e);
+        return Err(eyre!("SIOCSIFFLAGS failed on {}: {}", interface, e));
     }
-
     Ok(())
 }
 
 pub fn run(options: IfconfigOptions) -> Result<()> {
+    log::debug!("ifconfig: {} addr={:?} netmask={:?} up={} down={}",
+        options.interface, options.address, options.netmask, options.up, options.down);
     if let Some(addr) = options.address {
         set_interface_address(&options.interface, addr, options.netmask)?;
     }
@@ -195,6 +204,5 @@ pub fn run(options: IfconfigOptions) -> Result<()> {
     } else if options.down {
         set_interface_flags(&options.interface, false)?;
     }
-
     Ok(())
 }
