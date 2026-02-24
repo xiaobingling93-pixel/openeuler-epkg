@@ -465,9 +465,10 @@ build_static() {
         # Copy binary, handling "Text file busy" error
         safe_cp "target/$rust_target/$build_dir/$BINARY_NAME" "$OUTPUT_DIR/$BINARY_NAME-$arch"
         echo "Generating checksum for $arch binary..."
-        cd "$OUTPUT_DIR"
+        pushd "$OUTPUT_DIR" >/dev/null
         sha256sum "$BINARY_NAME-$arch" > "$BINARY_NAME-$arch.sha256"
         echo "$arch release completed: $PROJECT_ROOT/$OUTPUT_DIR/$BINARY_NAME-$arch"
+        popd >/dev/null
     fi
 
     # Install to dev environment if this is the native architecture
@@ -490,6 +491,7 @@ build_static() {
         #         libdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007f0b43253000)
         #
         # Also copy to target/$mode/ dir for easy access.
+        mkdir -p "target/$mode"
         cp -vfs "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME" target/$mode/epkg
         install_to_dev_env "$PROJECT_ROOT/target/$rust_target/$build_dir/$BINARY_NAME"
     fi
