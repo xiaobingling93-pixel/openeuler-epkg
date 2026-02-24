@@ -260,7 +260,7 @@ fn execute_in_child(env_root: &Path, run_options: &RunOptions, cmd_path: &Path) 
     let mut env_vars = run_options.env_vars.clone();
 
     // Set locale to C to avoid Perl locale warnings
-    env_vars.insert("LANG".to_string(), "C".to_string());
+    env_vars.insert("LC_ALL".to_string(), "C".to_string());
 
     // Execute the command - this replaces the current process
     if let Err(e) = exec_command(&final_cmd_path, &run_options.args, Some(&env_vars)) {
