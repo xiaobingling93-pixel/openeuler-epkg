@@ -1,3 +1,15 @@
+//! dpkg-statoverride applet: override file ownership and mode in the database.
+//!
+//! Status vs upstream (dpkg src/statoverride/main.c):
+//! - Implemented: --add owner group mode path, --remove path, --list [FILE], --update;
+//!   database at /var/lib/dpkg/statoverride; list/add/remove semantics; --update applies
+//!   chown/chmod best-effort. Exit codes: list=1 when no match, remove=2 when no override.
+//! - Aligned: path cleanup (trim trailing slashes); --list with no arg lists all;
+//!   --add errors if override already exists; path must not contain newlines; owner/group
+//!   must exist on add. --remove takes single positional path (index 1).
+//! - Not implemented: --admindir/--instdir/--root, --force/--quiet, glob patterns for
+//!   --list (upstream uses fnmatch), atomic write/backup, SELinux set_context.
+
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -9,6 +21,7 @@ use users::{get_group_by_name, get_user_by_name};
 
 #[derive(Debug, Clone)]
 pub struct DpkgStatOverrideOptions {
+    pub list_requested: bool,
     pub list: Option<String>,
     pub add: bool,
     pub remove: bool,
@@ -29,6 +42,15 @@ struct StatOverrideRecord {
 
 fn db_path() -> PathBuf {
     PathBuf::from("/var/lib/dpkg/statoverride")
+}
+
+/// Trim trailing slashes and /. from path (upstream path_trim_slash_slashdot).
+fn path_cleanup(path: &str) -> String {
+    let mut s = path.trim_end_matches('/').to_string();
+    if s.ends_with("/.") {
+        s.truncate(s.len().saturating_sub(2));
+    }
+    s
 }
 
 fn load_overrides() -> Vec<StatOverrideRecord> {
@@ -82,16 +104,24 @@ fn save_overrides(records: &[StatOverrideRecord]) -> Result<()> {
     Ok(())
 }
 
-fn list_override(path: &str) -> i32 {
+/// List overrides: if path is None list all (upstream --list with no arg); else list that path.
+/// Returns 0 if at least one line printed, 1 otherwise.
+fn list_overrides(path: Option<&str>) -> i32 {
     let records = load_overrides();
+    let path = path.map(path_cleanup);
+    let mut n = 0usize;
     for r in records {
-        if r.path == path {
+        let match_path = path.as_ref().map_or(true, |p| r.path == *p);
+        if match_path {
             println!("{} {} {:04o} {}", r.owner, r.group, r.mode, r.path);
-            return 0;
+            n += 1;
         }
     }
-    // Upstream prints nothing and exits 1 when no override exists.
-    1
+    if n > 0 {
+        0
+    } else {
+        1
+    }
 }
 
 fn chown_if_possible(owner: &str, group: &str, path: &Path) {
@@ -140,7 +170,7 @@ fn add_override(opts: &DpkgStatOverrideOptions) -> Result<i32> {
         }
     };
     let mode = u32::from_str_radix(&mode_str, 8).unwrap_or(0o755);
-    let path = match &opts.path {
+    let path_raw = match &opts.path {
         Some(p) => p.clone(),
         None => {
             return Err(eyre!(
@@ -148,10 +178,25 @@ fn add_override(opts: &DpkgStatOverrideOptions) -> Result<i32> {
             ));
         }
     };
+    if path_raw.contains('\n') {
+        return Err(eyre!("dpkg-statoverride: error: path may not contain newlines"));
+    }
+    let path = path_cleanup(&path_raw);
+
+    if get_user_by_name(&owner).is_none() {
+        return Err(eyre!("dpkg-statoverride: error: user '{}' does not exist", owner));
+    }
+    if get_group_by_name(&group).is_none() {
+        return Err(eyre!("dpkg-statoverride: error: group '{}' does not exist", group));
+    }
 
     let mut records = load_overrides();
-    // Replace any existing override for this path.
-    records.retain(|r| r.path != path);
+    if records.iter().any(|r| r.path == path) {
+        return Err(eyre!(
+            "dpkg-statoverride: error: an override for '{}' already exists; aborting",
+            path
+        ));
+    }
     records.push(StatOverrideRecord {
         owner: owner.clone(),
         group: group.clone(),
@@ -173,7 +218,7 @@ fn add_override(opts: &DpkgStatOverrideOptions) -> Result<i32> {
 
 fn remove_override(opts: &DpkgStatOverrideOptions) -> Result<i32> {
     let path = match &opts.path {
-        Some(p) => p.clone(),
+        Some(p) => path_cleanup(p),
         None => {
             return Err(eyre!(
                 "dpkg-statoverride: error: --remove requires path argument"
@@ -184,15 +229,14 @@ fn remove_override(opts: &DpkgStatOverrideOptions) -> Result<i32> {
     let before = records.len();
     records.retain(|r| r.path != path);
     if records.len() == before {
-        // Nothing removed; upstream exits 1 in this case.
-        return Ok(1);
+        return Ok(2);
     }
     save_overrides(&records)?;
     Ok(0)
 }
 
 pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgStatOverrideOptions> {
-    // dpkg-statoverride syntax is positional for add/remove; we keep a small, explicit subset.
+    let list_requested = matches.contains_id("list");
     let list = matches.get_one::<String>("list").cloned();
     let add = matches.get_flag("add");
     let remove = matches.get_flag("remove");
@@ -201,9 +245,14 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgStatOverrideOptio
     let owner = matches.get_one::<String>("owner").cloned();
     let group = matches.get_one::<String>("group").cloned();
     let mode = matches.get_one::<String>("mode").cloned();
-    let path = matches.get_one::<String>("path").cloned();
+    let path = if remove {
+        matches.get_one::<String>("remove_path").cloned()
+    } else {
+        matches.get_one::<String>("path").cloned()
+    };
 
     Ok(DpkgStatOverrideOptions {
+        list_requested,
         list,
         add,
         remove,
@@ -222,7 +271,8 @@ pub fn command() -> Command {
             Arg::new("list")
                 .long("list")
                 .value_name("FILE")
-                .help("List any override for FILE"),
+                .num_args(0..=1)
+                .help("List overrides (all if no FILE, else for FILE)"),
         )
         .arg(
             Arg::new("add")
@@ -266,11 +316,17 @@ pub fn command() -> Command {
                 .value_name("FILE")
                 .index(4),
         )
+        .arg(
+            Arg::new("remove_path")
+                .value_name("FILE")
+                .requires("remove")
+                .index(1),
+        )
 }
 
 pub fn run(options: DpkgStatOverrideOptions) -> Result<()> {
-    if let Some(path) = options.list.as_deref() {
-        let code = list_override(path);
+    if options.list_requested {
+        let code = list_overrides(options.list.as_deref());
         if code != 0 {
             std::process::exit(code);
         }
@@ -295,7 +351,7 @@ pub fn run(options: DpkgStatOverrideOptions) -> Result<()> {
 
     eprintln!("dpkg-statoverride: error: no action specified");
     eprintln!("Usage:");
-    eprintln!("  dpkg-statoverride --list FILE");
+    eprintln!("  dpkg-statoverride --list [FILE]");
     eprintln!("  dpkg-statoverride --add [--update] OWNER GROUP MODE FILE");
     eprintln!("  dpkg-statoverride --remove FILE");
     std::process::exit(2);
