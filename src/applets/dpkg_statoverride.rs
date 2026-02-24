@@ -242,11 +242,12 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgStatOverrideOptio
     let remove = matches.get_flag("remove");
     let update = matches.get_flag("update");
 
-    let owner = matches.get_one::<String>("owner").cloned();
+    let pos1 = matches.get_one::<String>("owner_or_remove_path").cloned();
+    let owner = if add { pos1.clone() } else { None };
     let group = matches.get_one::<String>("group").cloned();
     let mode = matches.get_one::<String>("mode").cloned();
     let path = if remove {
-        matches.get_one::<String>("remove_path").cloned()
+        pos1
     } else {
         matches.get_one::<String>("path").cloned()
     };
@@ -292,11 +293,11 @@ pub fn command() -> Command {
                 .action(clap::ArgAction::SetTrue)
                 .help("Immediately apply changes to the filesystem (best-effort)"),
         )
-        // For --add/--remove we take simple positional fields: owner group mode path.
+        // For --add: positionals are owner(1) group(2) mode(3) path(4). For --remove: path(1).
+        // Use a single arg at index 1 to avoid clap panic (owner and remove_path cannot share index).
         .arg(
-            Arg::new("owner")
-                .value_name("OWNER")
-                .requires("add")
+            Arg::new("owner_or_remove_path")
+                .value_name("OWNER_OR_FILE")
                 .index(1),
         )
         .arg(
@@ -314,13 +315,8 @@ pub fn command() -> Command {
         .arg(
             Arg::new("path")
                 .value_name("FILE")
+                .requires("add")
                 .index(4),
-        )
-        .arg(
-            Arg::new("remove_path")
-                .value_name("FILE")
-                .requires("remove")
-                .index(1),
         )
 }
 

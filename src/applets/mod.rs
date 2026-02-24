@@ -216,6 +216,15 @@ pub fn handle_applet_invocation() -> Result<Option<()>> {
     }
     args.insert(0, std::ffi::OsString::from(applet_name.as_str()));
 
+    // dpkg-maintscript-helper is called from maintscripts as: helper rm_conffile ... -- "$1" "$2" ...
+    // Clap treats "--" as end of options and drops following args for the positional, so script
+    // args (e.g. "install") would be lost. Run from raw argv so "--" and script args are preserved.
+    if applet_name == "dpkg-maintscript-helper" {
+        let options = crate::applets::dpkg_maintscript_helper::options_from_raw_args(&args[1..]);
+        crate::applets::dpkg_maintscript_helper::run(options)?;
+        return Ok(Some(()));
+    }
+
     // Try to parse arguments - handle help requests specially
     let cmdline = args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
     let matches = match applet_cmd.clone().try_get_matches_from(args) {

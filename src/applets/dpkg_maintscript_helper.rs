@@ -32,6 +32,19 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<DpkgMaintscriptHelper
     Ok(DpkgMaintscriptHelperOptions { subcommand, args })
 }
 
+/// Build options from raw argv (e.g. from env::args_os). Use this when invoking as an
+/// applet so that "--" and script args after it are preserved; clap consumes "--" and
+/// drops following args for the positional, which breaks maintscript calls like
+/// `dpkg-maintscript-helper rm_conffile ... -- install`.
+pub fn options_from_raw_args(raw_args: &[std::ffi::OsString]) -> DpkgMaintscriptHelperOptions {
+    let args: Vec<String> = raw_args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let subcommand = args.first().cloned();
+    DpkgMaintscriptHelperOptions { subcommand, args }
+}
+
 pub fn command() -> Command {
     Command::new("dpkg-maintscript-helper")
         .about("Helper for maintainer scripts (rm_conffile, mv_conffile, symlink_to_dir, dir_to_symlink)")

@@ -200,7 +200,10 @@ fn add_diversion(opts: &DpkgDivertOptions) -> Result<i32> {
     }
 
     if Path::new(&path).is_dir() {
-        return Err(eyre!("dpkg-divert: error: cannot divert directories"));
+        return Err(eyre!(
+            "dpkg-divert: error: cannot divert directory: '{}' -> '{}'",
+            path, divert_to
+        ));
     }
 
     let mut records = load_diversions();
