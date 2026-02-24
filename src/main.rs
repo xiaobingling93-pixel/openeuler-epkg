@@ -1114,6 +1114,8 @@ fn env_name_from_path(dir: &str) -> String {
 
 /// Load env.yaml from a path (either env root dir, or "/" when config is at /etc/epkg/env.yaml)
 /// and apply to config and ENV_CONFIG so get_env_config_path() and env_config() use it.
+/// Set in_env_root only when loading from "/" (we're inside the env); when loading from -r PATH
+/// we're on the host selecting that env, so run must still do namespace/mounts (same as -e).
 fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -> Result<()> {
     let config_path = if env_root_or_etc == Path::new("/") {
         PathBuf::from("/etc/epkg/env.yaml")
@@ -1127,7 +1129,9 @@ fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -
     config.common.env_name = env_config_data.name.clone();
     config.common.env_root = env_config_data.env_root.clone();
     config.common.env_explicit = true;
-    config.common.in_env_root = true;
+    // Only set in_env_root when we're inside the env (loading from /etc/epkg/env.yaml).
+    // With -r PATH we're on the host; run must do namespace isolation so -r and -e are equivalent.
+    config.common.in_env_root = env_root_or_etc == Path::new("/");
     let _ = set_env_config(env_config_data);
     Ok(())
 }
@@ -1247,73 +1251,117 @@ fn try_detect_environment_from_env_yaml(config: &mut EPKGConfig) -> Result<bool>
         return Ok(false);
     }
     apply_env_config_from_path(Path::new("/"), config)?;
+    log::debug!("env: from /etc/epkg/env.yaml -> {}", config.common.env_name);
     Ok(true)
 }
 
-fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
-    // Explicit -r: load env from path and apply so get_env_config_path / env_config() use it
-    if !config.common.env_root.is_empty() {
+/// Handle explicit -r (env_root): load env config from path or set in_env_root for create.
+/// Returns Ok(true) if environment was determined (caller should return), Ok(false) if env_root was empty.
+fn try_apply_explicit_env_root(config: &mut EPKGConfig) -> Result<bool> {
+    if config.common.env_root.is_empty() {
+        return Ok(false);
+    }
+    let env_root_path = config.common.env_root.clone();
+    let config_path = if env_root_path == "/" {
+        PathBuf::from("/etc/epkg/env.yaml")
+    } else {
+        PathBuf::from(&env_root_path).join("etc/epkg/env.yaml")
+    };
+    let is_env_create = config.subcommand == EpkgCommand::EnvCreate;
+    if config_path.exists() {
+        if is_env_create {
+            return Err(eyre::eyre!(
+                "Environment already exists at path: {}",
+                env_root_path
+            ));
+        }
         if !config.common.env_name.is_empty() {
             println!("Both options '-e {}' and '-r {}' are given, using -r for selecting environment.",
                 config.common.env_name,
                 config.common.env_root);
         }
-        let env_root_path = config.common.env_root.clone();
         apply_env_config_from_path(Path::new(&env_root_path), config)?;
+        log::debug!("env: explicit -r {} -> {}", env_root_path, config.common.env_name);
+    } else if is_env_create && !config.common.env_name.is_empty() {
+        // Do not set in_env_root: we're on the host creating the env; get_env_config_path must
+        // resolve to env_root/etc/epkg/env.yaml so serialize_env_config writes the config there.
+        log::debug!("env: explicit -r for create name={} root={}", config.common.env_name, env_root_path);
+    } else {
+        return Err(eyre::eyre!("Environment config not found: {}", config_path.display()));
+    }
+    Ok(true)
+}
+
+/// Apply EPKG_ACTIVE_ENV / EPKG_ENV_ROOT if set. Returns true if environment was set.
+fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
+    let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") else {
+        return false;
+    };
+    config.common.env_name = active_env.trim_end_matches(':').to_string();
+    config.common.env_explicit = true;
+    if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
+        config.common.env_root = env_root;
+        config.common.in_env_root = true;
+    }
+    log::debug!("env: from EPKG_ACTIVE_ENV -> {}", config.common.env_name);
+    true
+}
+
+/// Detect environment from run command (.eenv or registered envs). Returns Ok(true) if env_name was set.
+fn try_env_from_run_command(config: &mut EPKGConfig) -> Result<bool> {
+    if config.run.command.is_empty() || config.subcommand != EpkgCommand::Run {
+        return Ok(false);
+    }
+    let command = config.run.command.clone();
+    let (is_path, search_dir) = determine_command_path_info(&command);
+    if let Some(dot_eenv) = find_nearest_dot_eenv(&search_dir) {
+        set_env_name_by_path(&dot_eenv, config)?;
+        log::debug!("env: from run command .eenv at {} -> {}", dot_eenv.display(), config.common.env_name);
+    } else if !is_path {
+        search_registered_envs(&command, config);
+        if !config.common.env_name.is_empty() {
+            log::debug!("env: from run command (registered) -> {}", config.common.env_name);
+        }
+    }
+    Ok(!config.common.env_name.is_empty())
+}
+
+/// Detect environment from .eenv in current working directory. Returns Ok(true) if found and set.
+fn try_env_from_cwd_dot_eenv(config: &mut EPKGConfig) -> Result<bool> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(false);
+    };
+    let Some(dot_eenv) = find_nearest_dot_eenv(&cwd) else {
+        return Ok(false);
+    };
+    set_env_name_by_path(&dot_eenv, config)?;
+    log::debug!("env: from cwd .eenv at {} -> {}", dot_eenv.display(), config.common.env_name);
+    Ok(true)
+}
+
+fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
+    if try_apply_explicit_env_root(config)? {
         return Ok(());
     }
-
-    // When running inside an env (e.g. 'epkg run -e ENV cmd' child): /etc is bind-mounted
-    // to env_root/etc, so /etc/epkg/env.yaml identifies the env. Try this before using
-    // env_name from config file so the run-selected env wins.
     if try_detect_environment_from_env_yaml(config)? {
         return Ok(());
     }
-
     if !config.common.env_name.is_empty() {
+        log::debug!("env: using existing env_name -> {}", config.common.env_name);
         return Ok(());
     }
-
-    if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
-        config.common.env_name = active_env.trim_end_matches(':').to_string();
-        config.common.env_explicit = true;
-        if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
-            config.common.env_root = env_root;
-            config.common.in_env_root = true;
-        }
+    if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
-
-    // Environment detection based on run command (for 'epkg run' subcommand)
-    if !config.run.command.is_empty() && config.subcommand == EpkgCommand::Run {
-        let command = config.run.command.clone();
-        let (is_path, search_dir) = determine_command_path_info(&command);
-
-        // Search for .eenv directory
-        if let Some(dot_eenv) = find_nearest_dot_eenv(&search_dir) {
-            set_env_name_by_path(&dot_eenv, config)?;
-        } else if !is_path {
-            // Command not a path, no .eenv found: search registered environments
-            search_registered_envs(&command, config);
-        }
-
-        if !config.common.env_name.is_empty() {
-            return Ok(());
-        }
+    if try_env_from_run_command(config)? {
+        return Ok(());
     }
-
-    // Try to find .eenv in current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(dot_eenv) = find_nearest_dot_eenv(&cwd) {
-            set_env_name_by_path(&dot_eenv, config)?;
-            return Ok(());
-        }
+    if try_env_from_cwd_dot_eenv(config)? {
+        return Ok(());
     }
-
-    // If environment still not determined, proceed with standard fallbacks
+    log::debug!("env: fallback to MAIN_ENV -> {}", MAIN_ENV);
     config.common.env_name = MAIN_ENV.to_string();
     config.common.env_explicit = false;
-
     Ok(())
 }
 

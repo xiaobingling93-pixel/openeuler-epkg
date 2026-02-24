@@ -83,6 +83,7 @@ pub fn try_light_init() -> Result<()> {
         | EpkgCommand::Remove
         | EpkgCommand::Run
         | EpkgCommand::Busybox
+        | EpkgCommand::EnvPath
         | EpkgCommand::None
     ) {
         return Ok(());
