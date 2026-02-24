@@ -142,6 +142,7 @@ epkg env deactivate
 - **-e, --env ENV_NAME** — 名称（例如 `main`、`alpine`），或在共享存储中为 `owner/envname`。
 - **-r, --root DIR** — 环境的根目录（例如在 `env create --root /path` 之后）。
 
+如果两者同时指定，优先使用 `-r`。
 如果两者都未给出，epkg 会查找 .eenv/ 环境，使用**已激活**环境，或**已注册**环境（对于 `run`，使用 PATH 中提供命令的第一个环境），或者回退到 **main**。
 
 示例：

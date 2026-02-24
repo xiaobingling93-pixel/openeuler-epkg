@@ -1112,6 +1112,26 @@ fn env_name_from_path(dir: &str) -> String {
     }
 }
 
+/// Load env.yaml from a path (either env root dir, or "/" when config is at /etc/epkg/env.yaml)
+/// and apply to config and ENV_CONFIG so get_env_config_path() and env_config() use it.
+fn apply_env_config_from_path(env_root_or_etc: &Path, config: &mut EPKGConfig) -> Result<()> {
+    let config_path = if env_root_or_etc == Path::new("/") {
+        PathBuf::from("/etc/epkg/env.yaml")
+    } else {
+        env_root_or_etc.join("etc/epkg/env.yaml")
+    };
+    if !config_path.exists() {
+        return Err(eyre::eyre!("Environment config not found: {}", config_path.display()));
+    }
+    let env_config_data = read_yaml_file::<EnvConfig>(&config_path)?;
+    config.common.env_name = env_config_data.name.clone();
+    config.common.env_root = env_config_data.env_root.clone();
+    config.common.env_explicit = true;
+    config.common.in_env_root = true;
+    let _ = set_env_config(env_config_data);
+    Ok(())
+}
+
 /// Resolve a filesystem dir to an environment's canonical name.
 ///
 /// This function expects a filesystem dir to an environment root directory
@@ -1157,7 +1177,8 @@ pub fn resolve_env_root(env_root: &str) -> Result<String> {
 /// - `-r, --root <PATH>`: sets `config.common.env_root` to the provided dir
 ///   and marks the environment as explicitly selected (`env_explicit = true`)
 ///
-/// The `-e` flag is checked first; if both flags are present, `-e` takes precedence.
+/// The `-r` flag is checked first; if both flags are present, `-r` takes precedence
+/// since it provides more info in apply_env_config_from_path().
 ///
 /// Returns `true` if either flag was present (environment explicitly selected),
 /// `false` otherwise.
@@ -1219,41 +1240,47 @@ fn determine_environment_explicit(matches: &clap::ArgMatches, config: &mut EPKGC
 /// - `epkg run python` → searches registered environments for 'python' command
 /// - `epkg run /usr/local/bin/myapp` → searches for `.eenv` in `/usr/local/bin`
 /// - `epkg run -e myenv python` → explicit environment, this function not invoked
-/// Try to detect environment from /etc/epkg/env.yaml (when running inside an environment)
+/// Try to detect environment from /etc/epkg/env.yaml (when running inside an environment).
 /// Returns Ok(true) if environment detected and config updated, Ok(false) if file doesn't exist.
 fn try_detect_environment_from_env_yaml(config: &mut EPKGConfig) -> Result<bool> {
-    let env_yaml_path = Path::new("/etc/epkg/env.yaml");
-    if !env_yaml_path.exists() {
+    if !Path::new("/etc/epkg/env.yaml").exists() {
         return Ok(false);
     }
-    let env_config_data = read_yaml_file::<EnvConfig>(env_yaml_path)?;
-    let env_name = env_config_data.name.clone();
-    config.common.env_name = env_name;
-    config.common.env_root = env_config_data.env_root.clone();
-    config.common.env_explicit = true;
-    config.common.in_env_root = true;
-    // Store the loaded config in ENV_CONFIG to avoid double loading later
-    let _ = set_env_config(env_config_data);
+    apply_env_config_from_path(Path::new("/"), config)?;
     Ok(true)
 }
 
 fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
-    if !config.common.env_name.is_empty() {
+    // Explicit -r: load env from path and apply so get_env_config_path / env_config() use it
+    if !config.common.env_root.is_empty() {
+        if !config.common.env_name.is_empty() {
+            println!("Both options '-e {}' and '-r {}' are given, using -r for selecting environment.",
+                config.common.env_name,
+                config.common.env_root);
+        }
+        let env_root_path = config.common.env_root.clone();
+        apply_env_config_from_path(Path::new(&env_root_path), config)?;
         return Ok(());
     }
-    if !config.common.env_root.is_empty() {
-        config.common.env_name = resolve_env_root(&config.common.env_root)?;
+
+    // When running inside an env (e.g. 'epkg run -e ENV cmd' child): /etc is bind-mounted
+    // to env_root/etc, so /etc/epkg/env.yaml identifies the env. Try this before using
+    // env_name from config file so the run-selected env wins.
+    if try_detect_environment_from_env_yaml(config)? {
+        return Ok(());
+    }
+
+    if !config.common.env_name.is_empty() {
         return Ok(());
     }
 
     if let Ok(active_env) = env::var("EPKG_ACTIVE_ENV") {
         config.common.env_name = active_env.trim_end_matches(':').to_string();
         config.common.env_explicit = true;
-        return Ok(());
-    } 
-
-    // epkg may be run inside an env, try /etc/epkg/env.yaml
-    if try_detect_environment_from_env_yaml(config)? {
+        if let Ok(env_root) = env::var("EPKG_ENV_ROOT") {
+            config.common.env_root = env_root;
+            config.common.in_env_root = true;
+        }
         return Ok(());
     }
 

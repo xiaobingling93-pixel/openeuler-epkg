@@ -142,6 +142,7 @@ For any command that operates on an environment, you can specify it with:
 - **-e, --env ENV_NAME** — Name (e.g. `main`, `alpine`) or, in shared store, `owner/envname`.
 - **-r, --root DIR** — Root directory of the env (e.g. after `env create --root /path`).
 
+If both are present, `-r` takes precedence.
 If neither is given, epkg finds .eenv/ env, uses the **activated** env, or the **registered** envs (for `run`, the first env in PATH that provides the command), or falls back to **main**.
 
 Examples:
