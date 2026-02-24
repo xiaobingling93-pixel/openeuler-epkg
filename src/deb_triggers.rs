@@ -631,6 +631,9 @@ fn run_unincorp_trigger_hooks(
             crate::hooks::execute_hook(hook.as_ref(), plan, &matched_targets)?;
         } else {
             log::warn!("No hook found for trigger '{}' (hook name: '{}')", trigger_name, hook_name);
+            let mut available: Vec<&str> = plan.hooks_by_name.keys().map(String::as_str).collect();
+            available.sort();
+            log::debug!("Available hooks: {:?}", available);
         }
     }
 
