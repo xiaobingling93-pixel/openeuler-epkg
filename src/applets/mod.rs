@@ -245,6 +245,7 @@ fn is_sbin_command(cmd_name: &str) -> bool {
         "useradd", "userdel", "usermod",
         "groupadd", "groupdel",
         "adduser", "addgroup", "deluser", "delgroup",
+        "ifconfig", "route", "mount", "umount",
     ];
     sbin_commands.contains(&cmd_name)
 }
