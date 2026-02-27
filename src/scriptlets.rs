@@ -1,19 +1,10 @@
 use crate::deb_triggers::setup_deb_env_vars;
 use crate::models::{InstalledPackageInfo, PackageFormat};
-use crate::namespace::setup_namespace_and_mounts;
 use crate::package;
 use crate::plan::InstallationPlan;
 use crate::rpm_triggers::setup_rpm_env_vars;
-use crate::run::{with_sigpipe_handler, RunOptions};
-use crate::shebang::strip_shebang;
 use crate::utils;
 use color_eyre::eyre::{eyre, Result};
-use libc;
-use nix::sys::signal::{kill, Signal};
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{fork, ForkResult, Pid};
-use std::thread;
-use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScriptletType {
@@ -412,16 +403,13 @@ pub fn setup_conda_env_vars(
     env_vars.insert("PKG_BUILDNUM".to_string(), build_num);
 }
 
-/// Special marker for embedded Lua interpreter
-const EMBEDDED_LUA: &str = "<embedded-lua>";
-
 /// Get interpreters to try for a given script file extension
 /// For .lua files, try embedded Lua first, then external lua interpreter
 pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     if script_name.ends_with(".sh") {
         vec!["bash", "sh"]
     } else if script_name.ends_with(".lua") {
-        vec![EMBEDDED_LUA, "lua"]  // Try embedded Lua first
+        vec!["rpmlua", "lua"]  // Try embedded Lua first
     } else if script_name.ends_with(".py") {
         vec!["python3", "python"]
     } else if script_name.ends_with(".pl") {
@@ -430,104 +418,6 @@ pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
         // Default to shell interpreters for unknown extensions
         vec!["bash", "sh"]
     }
-}
-
-/// Max time to wait for a scriptlet child before killing it (avoids blocking install forever).
-const SCRIPTLET_TIMEOUT_SECS: u64 = 100;
-
-/// After this many seconds we warn once that the scriptlet may be blocked.
-const SCRIPTLET_BLOCKED_WARN_SECS: u64 = 10;
-
-/// Fork and execute a closure in the child process.
-/// Returns Ok(()) if child exits successfully, otherwise returns an error.
-/// If the child does not exit within SCRIPTLET_TIMEOUT_SECS, it is killed and an error is returned.
-/// script_path is shown in the "scriptlet may be blocked" warning.
-fn fork_and_call<F>(script_path: &std::path::Path, f: F) -> Result<()>
-where
-    F: FnOnce() -> Result<()>,
-{
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { child }) => {
-            with_sigpipe_handler(libc::SIG_IGN, || {
-                let start = Instant::now();
-                let deadline = start + Duration::from_secs(SCRIPTLET_TIMEOUT_SECS);
-                let mut warned_blocked = false;
-                loop {
-                    match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
-                        Ok(WaitStatus::Exited(_, 0)) => return Ok(()),
-                        Ok(WaitStatus::Exited(_, code)) => {
-                            return Err(eyre!("child exited with code {}", code));
-                        }
-                        Ok(WaitStatus::Signaled(_, signal, _)) => {
-                            return Err(eyre!("child killed by signal {:?}", signal));
-                        }
-                        Ok(WaitStatus::StillAlive) | Ok(_) => {}
-                        Err(e) => return Err(eyre!("failed to wait for child: {}", e)),
-                    }
-                    let elapsed_secs = start.elapsed().as_secs();
-                    if elapsed_secs >= SCRIPTLET_BLOCKED_WARN_SECS && !warned_blocked {
-                        warned_blocked = true;
-                        println!(
-                            "scriptlet may be blocked (running for {}s). Will kill after {}s if it doesn't finish. Script: {}",
-                            elapsed_secs, SCRIPTLET_TIMEOUT_SECS, script_path.display()
-                        );
-                    }
-                    if Instant::now() >= deadline {
-                        let _ = kill(Pid::from_raw(child.as_raw()), Signal::SIGKILL);
-                        let _ = waitpid(child, None);
-                        return Err(eyre!(
-                            "scriptlet did not finish within {}s, killed",
-                            SCRIPTLET_TIMEOUT_SECS
-                        ));
-                    }
-                    thread::sleep(Duration::from_secs(1));
-                }
-            })
-        }
-        Ok(ForkResult::Child) => {
-            match f() {
-                Ok(()) => std::process::exit(0),
-                Err(_) => std::process::exit(1),
-            }
-        }
-        Err(e) => Err(eyre!("fork failed: {}", e)),
-    }
-}
-
-/// Execute Lua scriptlet using embedded Lua interpreter.
-/// Uses the global cached Lua state with extensions pre-registered.
-fn execute_lua_scriptlet(
-    script_path: &std::path::Path,
-    args: &[String],
-    env_root: &std::path::Path,
-) -> Result<()> {
-    // Get the global cached Lua state (with extensions pre-registered)
-    let lua = crate::lua::get_cached_lua_state();
-
-    // Read script content
-    let script_content = std::fs::read_to_string(script_path)
-        .map_err(|e| eyre!("Failed to read Lua scriptlet {}: {}", script_path.display(), e))?;
-    let stripped_content = strip_shebang(&script_content);
-
-    // Setup scriptlet environment (arg table) - this changes per scriptlet
-    crate::lua::setup_arg_table(&lua, args)
-        .map_err(|e| eyre!("Failed to setup scriptlet environment: {}", e))?;
-
-    // Change working directory to env_root
-    std::env::set_current_dir(env_root)
-        .map_err(|e| eyre!("Failed to change directory to {}: {}", env_root.display(), e))?;
-
-    // Execute the script
-    let script_name = script_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("<lua>");
-
-    lua.load(stripped_content)
-        .set_name(script_name)
-        .exec()
-        .map_err(|e| eyre!("Lua scriptlet execution failed: {}", e))?;
-
-    Ok(())
 }
 
 /// Run transaction scriptlets for multiple packages
@@ -625,52 +515,6 @@ pub fn run_scriptlet(
             let params = scriptlet_type.get_script_params(package_format, is_upgrade, old_version.as_deref(), new_version.as_deref());
 
             for interpreter in interpreters {
-                // Check if this is embedded Lua
-                if interpreter == EMBEDDED_LUA {
-                    // Prepare script arguments for Lua (1-indexed: arg[1], arg[2], ...)
-                    // arg[1] is typically empty or scriptlet name
-                    // arg[2] is the first parameter (package count for RPM)
-                    let mut lua_args = vec!["".to_string()]; // arg[1] - usually empty
-                    lua_args.extend(params.clone());
-
-                    log::debug!(
-                        "Trying embedded Lua interpreter for scriptlet {}",
-                        script_path.display()
-                    );
-
-                    // Run embedded Lua inside a forked child with namespace + mount setup,
-                    // so that operations like ldconfig affect the environment, not the host.
-                    let result = fork_and_call(&script_path, || {
-                        let run_options = RunOptions {
-                            chdir_to_env_root: true,
-                            ..Default::default()
-                        };
-                        setup_namespace_and_mounts(&env_root, &run_options)?;
-                        execute_lua_scriptlet(&script_path, &lua_args, &env_root)
-                    });
-
-                    match result {
-                        Ok(()) => {
-                            log::debug!(
-                                "{:?} scriptlet completed successfully for package {} using embedded Lua",
-                                scriptlet_type,
-                                pkgkey
-                            );
-                            script_executed = true;
-                            break; // Successfully executed
-                        }
-                        Err(e) => {
-                            log::debug!(
-                                "Failed to execute {:?} scriptlet for package {} using embedded Lua: {}, trying next interpreter",
-                                scriptlet_type,
-                                pkgkey,
-                                e
-                            );
-                            continue; // Try external lua interpreter
-                        }
-                    }
-                }
-
                 // Scriptlets run in namespace isolation, so only environment paths are accessible.
                 // System paths (/usr/bin/*) are not available since we're in a chroot environment.
                 // We validate symlinks properly to handle cases where environment symlinks point to valid targets.
