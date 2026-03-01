@@ -70,6 +70,11 @@ pub fn try_light_init() -> Result<()> {
         return Ok(());
     }
 
+    // When running inside an environment (e.g. chroot), do not try to create the main env.
+    if config().common.in_env_root {
+        return Ok(());
+    }
+
     if matches!(config().subcommand,
           EpkgCommand::Unpack
         | EpkgCommand::Convert
