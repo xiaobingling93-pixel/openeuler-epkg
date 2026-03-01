@@ -2,6 +2,104 @@
 
 ---
 
+## [v0.2.3] – 2026-03-01
+
+### Added
+
+#### Sandbox System
+- **Comprehensive sandbox architecture** – Three isolation levels (env/fs/vm) with unified process creation framework.
+- **Filesystem sandbox (`--sandbox=fs`)** – Full container isolation via pivot_root into tmpfs-based root; proc, sysfs, tmpfs, devtmpfs/devpts, mqueue; capability dropping.
+- **Virtual machine sandbox (`--sandbox=vm`)** – QEMU-based hardware virtualization with virtiofs shared filesystem; JSON command protocol (host vm_client ↔ guest vm_daemon); PTY and non-PTY execution modes.
+- **Flexible mount specification** – Docker-like syntax `[HOST|FS_TYPE:]SANDBOX_DIR[:OPTIONS]` (bind, tmpfs, proc, remount, `@` `env_root` substitution); automatic source existence checking with `try` fallback.
+- **Configuration hierarchy** – CLI `--sandbox` > `~/.config/epkg/options.yaml` > `$env_root/etc/epkg/env.yaml`; mount specs additive across levels.
+- **Guest init and vm_daemon** – PID 1 init: mounts, network (10.0.2.15/24), kernel cmdline parsing, command/vm_daemon fork; vm_daemon: TCP server, JSON Lines protocol, PTY/pipes, Base64 binary, auto poweroff.
+- **Kernel module applets** – `insmod` (finit_module/init_module, compressed .ko); `modprobe` (modules.dep parsing, recursive deps, fs glob fallback) for VM guest `virtio_net`.
+- **Build targets** – `make.sh` `qemu-pkgs` (QEMU+virtiofsd), `sandbox-pkgs` (newuidmap/newgidmap); per-mode package lists for major distros.
+- **Documentation** – `docs/design-notes/sandbox-vmm.md`; user-guide sandbox sections (en/zh).
+
+#### New Applets
+- **Debian/DPKG** – `dpkg` (status/list via dpkg-query or PACKAGE_CACHE, --compare-versions), `dpkg-divert` (--listpackage, --truename, --add/--remove, diversions DB), `dpkg-statoverride` (--list, --add/--remove), `dpkg-maintscript-helper` (rm_conffile, mv_conffile, symlink_to_dir, dir_to_symlink), `deb-systemd-helper` (enable/disable/unmask/purge/update-state/was-enabled), `update-alternatives` (--install/--remove/--auto/--display/--list/--query), `dpkg-realpath` (--root).
+- **System and initrd** – `uname` (-s/-n/-r/-v/-m/-a via posix_uname), `mktemp` (-d, -u, -p, --suffix, template rules), `df` (-P/-k/-m/-h/-T/-i/-B/-a, /proc/mounts, statfs), `mount`/`umount`/`mountpoint` (initrd options: -t, -o, --bind, --rbind, -f/-l/-a), `ifconfig`/`route` (legacy ioctl, IPv4, SIOCSIFADDR/SIOCADDRT).
+
+#### Applet Enhancements
+- **chmod/chown** – `--reference=RFILE` to copy mode/owner from another file; shared `extract_reference_metadata()` in applets.
+- **sed** – Empty text for append/insert (`$a\`, `i\`) allowed; match GNU behavior for ensure-newline idiom.
+- **mv** – Overwrite existing destination by default (POSIX/GNU); -n no-clobber; -f skips prompt when not writable.
+- **od** – Added --help flag.
+- **truncate** – Size parsing utilities extracted to `src/utils.rs`.
+- **Applet error handling** – `try_get_matches_from` + `handle_clap_error_with_cmdline()` for consistent error prefix when invoked via symlinks.
+- **busybox_subcommands()** – Cached with `OnceLock<Vec<Command>>` to avoid repeated allocations.
+
+#### Environment & Run
+- **CommonOptions.in_env_root** – Flag when config is loaded from inside env (e.g. /etc/epkg/env.yaml); used for env_config path and light_init skip.
+- **env_config path inside namespace** – `get_env_config_path()` reads from /etc/epkg/env.yaml when `in_env_root`; ENV_CONFIG cache when inside env.
+- **Run env detection** – Reorder `determine_environment_final()` to try /etc/epkg/env.yaml before config env_name; `apply_env_config_from_path()` for -r path and run-selected env.
+- **LC_ALL=C** – Use LC_ALL instead of LANG for command env to avoid setlocale warnings (e.g. debianutils update-shells).
+- **env create --root** – Write config to `$env_root/etc/epkg/env.yaml`; skip light_init for create; -e/-r equivalence for run (namespace/mounts when -r path).
+- **try_light_init skip** – Skip when `in_env_root` (avoid "Environment already exists" inside chroot); skip for `EpkgCommand::EnvPath`.
+
+#### Testing & E2E
+- **test-one.sh** – Renamed from test.sh; -d/-dd/-ddd debug (RUST_LOG, sh -x); `parse_debug_flags()` in lib.sh.
+- **test-iur.sh** – Install-remove-upgrade tests with predefined OS/package matrix; skipped in test-all.sh; -d/-dd support.
+- **test-dev.sh** – Build-from-source across Docker images (openeuler, ubuntu, fedora, archlinux); git safe.directory, clone to writable dir.
+- **test-sandbox-run.sh** – Automated env/fs sandbox CLI and config tests.
+- **test-vm-sandbox.sh** – VM integration test (echo, whoami, ls, QEMU log checks); -d/-dd/-ddd.
+- **test-bash-sh** – Install curl and test https://bing.com/; skip epkg list for conda; limit search --paths to one OS per format; unified diff on list mismatch; bash -c epkg list.
+- **Static binary paths** – host-vars.sh and build-from-source test use `target/$RUST_TARGET/debug/epkg`; build_static_binary() and test_static_binary() in e2e.
+- **common.sh** – Shared `parse_debug_flags()` for sandbox tests.
+
+#### Scriptlets & Maintainer Scripts
+- **Scriptlet timeout** – 100s timeout and kill for stuck scriptlets; warn after 10s if blocked; newuidmap/newgidmap error hints.
+- **Deb scriptlet layout** – Symlink scriptlets (post_install.sh → ../deb/postinst) so debconf sees postinst path and loads templates; resolve script path with canonicalize for $0; fixes ca-certificates postinst exit 10 and missing CA bundle.
+- **dpkg-maintscript-helper** – Full rm_conffile, mv_conffile, symlink_to_dir, dir_to_symlink with version checks, DPKG_ROOT, abort/purge handling.
+
+#### Other
+- **find-long-fns.py** – Script for long function analysis.
+- **.gitignore** – Additional patterns.
+- **BUILD_TIME** – Full timestamp and timezone in build.rs for debug builds.
+
+### Changed
+- **Makefile / make.sh** – Default `make` = static debug; `make release` = static release (static binaries); `make build` = dynamic debug; `make release-x86_64` / `release-aarch64` / `release-all` for cross-compilation; `make dev-depends` installs git/wget; avoid sudo when root; simplify detect_arch to arch; native aarch64 musl via is_native_arch() and get_cross_compiler().
+- **build_static()** – pushd/popd around checksum step; mkdir -p target/$mode before cp -vfs for symlink when using --target.
+- **Cargo** – Updated/downgraded crate versions for rustc 1.82 (openEuler 24.03-LTS); `cargo build --ignore-rust-version`; Cargo.lock and build fixes.
+- **Logging** – `ureq_proto` capped at Warn in setup_logging() so RUST_LOG=trace is usable.
+- **Repo iteration** – `repodata_indice` and `RepoIndex::repo_shards` use BTreeMap for deterministic `epkg list` output.
+- **Shared store logic** – Simplified; no executable-path rules; root + envs dir existence only; debug logging.
+- **E2E** – build-from-source-test skipped in test-all.sh; test-dev.sh runs it; clone to /opt/epkg/build-xxx, git safe.directory; dev-pkgs/crossdev-pkgs split.
+- **docs** – Search vs list output stability note (search may vary, list sorted); package-operations en/zh.
+- **environment** – curl needs e2fsprogs in openEuler (libcom_err); nested config key support (env_vars.FOO, sandbox.sandbox_mode); dirs.rs home_cache, find_nearest_dot_eenv.
+- **systemd_tmpfiles** – Removed namespace setup (responsibility separation).
+- **main.rs** – Early logging for init applet; improved Ctrl-C handler.
+
+### Fixed
+- **init** – Skip light_init when running inside environment (try_light_init when in_env_root); avoids "Environment already exists" in chroot.
+- **scriptlets** – Remove embedded Lua and namespace dependency from scriptlet execution.
+- **install** – Create store_root and download_cache dirs before get_filesystem_info() so statvfs succeeds on first install (avoids fsid=0 and hardlink→symlink downgrade).
+- **deb_triggers** – Resolve Unincorp trigger hooks by base name and batch preference (find_hook_for_trigger); log available hooks at DEBUG when no hook found.
+- **Conda** – Honor rattler prefix_placeholder schema (flattened string + file_mode sibling); skip checksum validation when expected is empty (repodata items with hash_type but no hash).
+- **Download** – Treat truncated downloads as ContentIncomplete (resumable) not corrupt; do not delete .part on incomplete; chunk offset mismatch keeps file for resume; avoid deadlock between wait loop and processing thread (do not hold manager.tasks and task.status together).
+- **Mirror** – Fedora mirror selection: re-insert "fedora" in distro_dirs for matching/path resolution; eq_ignore_ascii_case → exact match for distro_dirs.
+- **Expose** – Resolve script interpreter inside env with resolve_symlink_in_env before canonicalize (avoids ENOENT for sh→yash when only env usr/bin/yash exists); add yash to alternative interpreters for sh.
+- **env remove** – Use get_env_base_path() instead of get_env_root() to avoid panic when env does not exist (config file missing).
+- **dpkg_divert / dpkg_statoverride** – Align with upstream (path cleanup, --list [FILE], exit codes, add/remove validation, --list [GLOB] for divert).
+- **rpm_verify** – Quiet unnecessary log warn.
+- **Source** – Arch Linux and archlinuxcn mirror/config updates (fix 404 for gmp etc.).
+- **E2E** – build-from-source and bare-rootfs static binary path; git safe.directory and clone to writable dir; conda epkg list comparison skipped.
+
+### Removed
+- **Environment SSL from host** – Reverted "populate /etc/ssl/certs from host"; each distro installs its own SSL certs (ca-certificates scriptlet fix used instead).
+
+### Design / Architecture
+- **models.rs** – SandboxMode, NamespaceStrategy, MountSpec, SandboxOptions, ProcessCreationConfig, UnifiedChildContext; ENV_CONFIG for in-env config cache.
+- **Unified process creation** – fork_and_execute() → prepare_run_options_for_command, determine_process_config(), build_unified_context(), create_process_with_namespaces(); NamespaceStrategy × SandboxMode; IdMapSync pipe; child_setup_with_namespaces, child_mount_and_exec, mount_batch_specs(); Vm path via qemu::run_command_in_qemu().
+- **New modules** – src/mount.rs (MountSpec, parse_mount_spec), src/namespace.rs, src/idmap.rs, src/qemu.rs, src/vm_client.rs, src/utils.rs (size parsing, resolve_symlink_in_env); applets: init.rs, vm_daemon.rs, insmod, modprobe, df, mount, umount, mountpoint, ifconfig, route, uname, deb_systemd_helper, update_alternatives, dpkg_realpath, mktemp; dpkg, dpkg_divert, dpkg_statoverride, dpkg_maintscript_helper.
+- **dirs.rs** – get_env_config_path() in_env_root branch; get_env_base_path() public; home_cache, find_nearest_dot_eenv.
+
+### Statistics
+- **124 files changed, 14486 insertions(+), 2350 deletions(-)**
+
+---
+
 ## [v0.2.2] – 2026-02-20
 
 ### Added
