@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use crate::posix::{posix_stat, PosixError};
+use crate::applets::{format_list_columns, terminal_width, visible_width_ansi};
 use users::{get_user_by_uid, get_group_by_gid};
 use libc;
 use std::io::IsTerminal;
@@ -900,6 +901,32 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
         println!("total {}", total_kblocks);
     }
 
+    if options.one {
+        // One entry per line
+        for entry in entries {
+            let mut formatted = format_name(entry.name.as_bytes(), options);
+            if options.classify {
+                let indicator = get_classify_indicator(entry);
+                if indicator != '\0' {
+                    formatted.push(indicator);
+                }
+            }
+            let colored_name = options.colorize_name(entry, &formatted);
+            if options.size_blocks {
+                let blocks = blocks_kb(entry.metadata.blocks());
+                println!("{:>width$} {}", blocks, colored_name, width = block_width);
+            } else {
+                println!("{}", colored_name);
+            }
+        }
+        return Ok(());
+    }
+
+    // Column layout: adapt to terminal width
+    let width = terminal_width();
+    let mut items = Vec::with_capacity(entries.len());
+    let mut widths = Vec::with_capacity(entries.len());
+
     for entry in entries {
         let mut formatted = format_name(entry.name.as_bytes(), options);
         if options.classify {
@@ -909,12 +936,20 @@ fn print_short_format(entries: &[FileEntry], options: &LsOptions) -> Result<()> 
             }
         }
         let colored_name = options.colorize_name(entry, &formatted);
-        if options.size_blocks {
+        let display = if options.size_blocks {
             let blocks = blocks_kb(entry.metadata.blocks());
-            println!("{:>width$} {}", blocks, colored_name, width = block_width);
+            format!("{:>width$} {}", blocks, colored_name, width = block_width)
         } else {
-            println!("{}", colored_name);
-        }
+            colored_name
+        };
+        let visible = visible_width_ansi(&display);
+        items.push(display);
+        widths.push(visible);
+    }
+
+    let out = format_list_columns(&items, &widths, width);
+    if !out.is_empty() {
+        println!("{}", out);
     }
     Ok(())
 }

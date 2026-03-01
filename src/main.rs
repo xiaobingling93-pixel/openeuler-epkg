@@ -112,7 +112,6 @@ use ctrlc;
 use env_logger;
 use log::LevelFilter;
 use log;
-use console::Term;
 use list::ListScope;
 
 #[cfg(not(test))]
@@ -852,9 +851,8 @@ EXAMPLES:
 
 fn add_busybox_subcommand(cmd: Command) -> Command {
 
-    // Determine terminal width for compact formatting
-    let term_width = Term::stdout().size().1;
-    let width = if term_width > 0 { term_width as usize } else { 80 };
+    let width = crate::applets::terminal_width();
+    let width = if width == 0 { 80 } else { width };
 
     // Format commands list for help output (compact, wrapped to terminal width)
     let mut commands_list = String::new();

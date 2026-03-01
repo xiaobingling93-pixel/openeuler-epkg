@@ -2,6 +2,7 @@ use clap::Command;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use color_eyre::eyre::Context;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::OnceLock;
 use crate::models::PackageFormat;
@@ -59,45 +60,168 @@ pub fn sorted_applet_names() -> Vec<String> {
     names
 }
 
-/// Format applet names into compact lines wrapped at given width
-pub fn format_applet_list_compact(width: usize) -> String {
-    let names = sorted_applet_names();
-    if names.is_empty() {
+/// Terminal width in columns when stdout is a TTY; 0 otherwise (caller should use 1 column, like upstream ls).
+pub fn terminal_width() -> usize {
+    if !std::io::stdout().is_terminal() {
+        return 0;
+    }
+    let cols = console::Term::stdout().size().1;
+    if cols > 0 { cols as usize } else { 0 }
+}
+
+// Compact output helpers: both use (items, widths, term_width). Flow = comma-separated wrap; columns = ls-style grid.
+
+/// Format a list of strings into column layout (column-major order, padded to fit term width).
+/// Uses per-column widths (like GNU ls) so more columns fit; each column is as wide as its longest entry.
+/// When term_width is 0 (not a TTY), uses 1 column (one entry per line), matching upstream ls.
+pub fn format_list_columns(items: &[String], widths: &[usize], term_width: usize) -> String {
+    if items.is_empty() {
         return String::new();
     }
+    let n_items = items.len();
+    let max_w = widths.iter().copied().max().unwrap_or(0);
 
-    let indent = "    "; // 4 spaces
+    let (n_cols, col_widths) = if term_width == 0 {
+        (1, vec![max_w])
+    } else {
+        // Find largest n_cols such that sum(per-column max widths) + (n_cols-1)*2 (gaps) <= term_width
+        const GAP: usize = 2;
+        let mut best_n_cols = 1;
+        let mut best_col_widths = vec![max_w];
+
+        for n_cols_candidate in 1..=n_items {
+            let n_rows = (n_items + n_cols_candidate - 1) / n_cols_candidate;
+            let mut cw: Vec<usize> = vec![0; n_cols_candidate];
+            for c in 0..n_cols_candidate {
+                for r in 0..n_rows {
+                    let idx = r + c * n_rows;
+                    if idx < n_items {
+                        cw[c] = cw[c].max(widths[idx]);
+                    }
+                }
+            }
+            let total = cw.iter().sum::<usize>() + n_cols_candidate.saturating_sub(1) * GAP;
+            if total <= term_width {
+                best_n_cols = n_cols_candidate;
+                best_col_widths = cw;
+            } else {
+                break;
+            }
+        }
+        (best_n_cols, best_col_widths)
+    };
+
+    let n_rows = (n_items + n_cols - 1) / n_cols;
+    let mut out = String::new();
+    for row in 0..n_rows {
+        for c in 0..n_cols {
+            let idx = row + c * n_rows;
+            if idx >= n_items {
+                break;
+            }
+            let s = &items[idx];
+            let w = widths[idx];
+            out.push_str(s);
+            let padding = col_widths[c].saturating_sub(w);
+            for _ in 0..padding {
+                out.push(' ');
+            }
+            if c + 1 < n_cols {
+                out.push_str("  ");
+            }
+        }
+        if row + 1 < n_rows {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Format a list of strings in flow style: comma-separated, wrapping at term_width with indent on new lines.
+/// Used for help text (e.g. applet list). `widths` are visible widths of each item.
+/// If trailing_comma is true, each line ends with a comma (upstream busybox style).
+fn format_list_compact_flow(
+    items: &[String],
+    widths: &[usize],
+    term_width: usize,
+    separator: &str,
+    indent: &str,
+    trailing_comma: bool,
+) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let comma_extra = if trailing_comma { 1 } else { 0 };
     let mut result = String::new();
     let mut line = String::new();
+    let mut line_display_len = 0usize;
 
-    for (i, name) in names.iter().enumerate() {
-        let separator = if i == 0 { "" } else { ", " };
-        let needed = separator.len() + name.len();
+    for (i, item) in items.iter().enumerate() {
+        let need_sep = i > 0;
+        let needed = if need_sep { separator.len() + widths[i] } else { widths[i] };
 
         if line.is_empty() {
-            // First applet on a new line
             line.push_str(indent);
-            line.push_str(name);
-        } else if line.len() + needed <= width {
-            // Fits on current line
+            line.push_str(item);
+            line_display_len = indent.len() + widths[i];
+        } else if term_width > 0 && line_display_len + comma_extra + needed <= term_width {
             line.push_str(separator);
-            line.push_str(name);
+            line.push_str(item);
+            line_display_len += needed;
         } else {
-            // Start new line
             result.push_str(&line);
+            if trailing_comma {
+                result.push(',');
+            }
             result.push('\n');
             line.clear();
             line.push_str(indent);
-            line.push_str(name);
+            line.push_str(item);
+            line_display_len = indent.len() + widths[i];
         }
     }
 
     if !line.is_empty() {
         result.push_str(&line);
+        if trailing_comma {
+            result.push(',');
+        }
         result.push('\n');
     }
-
     result
+}
+
+/// Visible character width of a string, ignoring ANSI escape sequences.
+pub fn visible_width_ansi(s: &str) -> usize {
+    let mut len = 0;
+    let mut i = 0;
+    let b = s.as_bytes();
+    while i < b.len() {
+        if b[i] == 0x1b && i + 1 < b.len() && b[i + 1] == b'[' {
+            i += 2;
+            while i < b.len() && b[i] != b'm' {
+                i += 1;
+            }
+            if i < b.len() {
+                i += 1;
+            }
+            continue;
+        }
+        len += 1;
+        i += 1;
+    }
+    len
+}
+
+/// Format applet names into compact lines wrapped at given width (flow style: comma-separated).
+/// Each line ends with a trailing comma to match upstream busybox.
+pub fn format_applet_list_compact(width: usize) -> String {
+    let names = sorted_applet_names();
+    if names.is_empty() {
+        return String::new();
+    }
+    let widths: Vec<usize> = names.iter().map(|s| s.len()).collect();
+    format_list_compact_flow(&names, &widths, width, ", ", "    ", true)
 }
 
 /// Extract UID, GID, and mode bits from a reference file
