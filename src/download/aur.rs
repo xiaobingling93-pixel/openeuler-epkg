@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use color_eyre::eyre::{eyre, Result, WrapErr};
 
 use crate::dirs;
+#[cfg(unix)]
 use crate::run;
 use crate::utils;
 
@@ -29,6 +30,7 @@ pub const AUR_DOMAIN: &str = "aur.archlinux.org";
 ///
 /// Returns Ok(()) if URL is AUR and git download was successful.
 /// Returns Err if URL is not AUR or git is not available (caller should fall back to regular download).
+#[cfg(unix)]
 pub fn handle_aur_git_download(
     url: &str,
 ) -> Result<()> {
@@ -69,6 +71,7 @@ pub fn handle_aur_git_download(
 
 /// Find git command, preferring host OS over environment
 /// Returns (git_path, is_host_git)
+#[cfg(unix)]
 pub fn find_git_command() -> Result<(PathBuf, bool)> {
     // Try host OS first
     if let Some(git_path) = utils::find_command_in_paths("git") {
@@ -84,6 +87,7 @@ pub fn find_git_command() -> Result<(PathBuf, bool)> {
 }
 
 /// Clone or fetch AUR git repository
+#[cfg(unix)]
 pub fn clone_or_fetch_aur_repo(
     git_path: &std::path::Path,
     pkgbase: &str,

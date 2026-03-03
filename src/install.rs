@@ -9,6 +9,8 @@ use crate::mmio;
 use crate::store;
 use crate::utils;
 use crate::package;
+#[cfg(unix)]
+use crate::risks;
 use crate::download;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
@@ -18,9 +20,16 @@ use crate::repo::sync_channel_metadata;
 use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_packages_to_delta_world, create_delta_world_from_specs};
 use crate::depends::resolve_and_install_packages;
 use crate::plan::prompt_and_confirm_install_plan;
+#[cfg(unix)]
 use crate::history::{create_new_generation_with_root, record_history, update_current_generation_symlink_with_root};
+#[cfg(unix)]
 use crate::transaction::run_transaction_batch;
-use crate::aur::{build_and_install_aur_packages, is_aur_package};
+#[cfg(unix)]
+use crate::deb_triggers;
+#[cfg(unix)]
+use crate::aur::is_aur_package;
+#[cfg(unix)]
+use crate::aur::build_and_install_aur_packages;
 use crate::download::{enqueue_package_downloads, get_package_file_path};
 use crate::lfs;
 
@@ -149,7 +158,7 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
         // Extract caHash from the pkgline (directory name)
         // Format: {ca_hash}__{pkgname}__{version}__{arch}
         let pkgline = final_dir.file_name()
-            .and_then(|n| n.to_str())
+            .and_then(|n: &std::ffi::OsStr| n.to_str())
             .ok_or_else(|| eyre::eyre!("Invalid package directory name: {}", final_dir.display()))?;
         let parsed_pkgline = package::parse_pkgline(pkgline)
             .with_context(|| format!("Failed to parse pkgline: {}", pkgline))?;
@@ -204,7 +213,10 @@ fn process_local_package_files(local_files: Vec<String>) -> Result<Vec<String>> 
 /// The target environment is determined by config().common.env_name.
 pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<InstallationPlan> {
     // Calculate download requirements and store in plan before prompting
-    crate::risks::calculate_plan_sizes(&mut plan)?;
+    #[cfg(unix)]
+    {
+        crate::risks::calculate_plan_sizes(&mut plan)?;
+    }
 
     // --- USER PROMPT AND PRE-EXECUTION CHECKS ---
     let go_on = prompt_and_confirm_install_plan(&plan)?;
@@ -225,9 +237,18 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     lfs::create_dir_all(&download_cache)?;
 
     // Get filesystem info for all mount points and store in plan
-    plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
-    plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
-    plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
+    #[cfg(unix)]
+    {
+        plan.env_root_fs = crate::risks::get_filesystem_info(&env_root);
+    }
+    #[cfg(unix)]
+    {
+        plan.store_root_fs = crate::risks::get_filesystem_info(&store_root);
+    }
+    #[cfg(unix)]
+    {
+        plan.download_cache_fs = crate::risks::get_filesystem_info(&download_cache);
+    }
 
     // Copy link type from EnvConfig to InstallationPlan
     // Downgrade hardlink to symlink if store and env are on different filesystems
@@ -236,9 +257,12 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     compute_link_type_and_reflink(&mut plan)?;
 
     // Validate transaction (disk space, conflicts, etc.)
-    if let Err(e) = crate::risks::check_disk_space_for_plan(&plan, &store_root, &download_cache) {
-        log::warn!("Transaction validation failed: {}", e);
-        // Continue anyway - validation is advisory for now
+    #[cfg(unix)]
+    {
+        if let Err(e) = crate::risks::check_disk_space_for_plan(&plan, &store_root, &download_cache) {
+            log::warn!("Transaction validation failed: {}", e);
+            // Continue anyway - validation is advisory for now
+        }
     }
 
     // Execute installations and upgrades (also processes removals via run_transaction_batch)
@@ -248,12 +272,15 @@ pub fn execute_installation_plan(mut plan: InstallationPlan) -> Result<Installat
     // of session_info).
     update_skipped_reinstalls_metadata(&plan)?;
 
-    let generations_root = dirs::get_default_generations_root()?;
-    let new_generation = create_new_generation_with_root(&generations_root)?;
-    record_history(&new_generation, Some(&plan))?;
-    save_installed_packages(&new_generation)?;
-    save_world(&new_generation)?;
-    update_current_generation_symlink_with_root(&generations_root, new_generation)?;
+    #[cfg(unix)]
+    {
+        let generations_root = dirs::get_default_generations_root()?;
+        let new_generation = create_new_generation_with_root(&generations_root)?;
+        record_history(&new_generation, Some(&plan))?;
+        save_installed_packages(&new_generation)?;
+        save_world(&new_generation)?;
+        update_current_generation_symlink_with_root(&generations_root, new_generation)?;
+    }
 
     Ok(plan)
 }
@@ -269,31 +296,55 @@ fn execute_installations(plan: &mut InstallationPlan) -> Result<()> {
     let aur_packages = download_and_unpack_packages(plan)?;
 
     // Step 2a: Check risks for all packages before linking
-    crate::risks::validate_before_linking(plan)
-        .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
+    #[cfg(unix)]
+    {
+        crate::risks::validate_before_linking(plan)
+            .with_context(|| "Risk check failed - aborting before any linking to keep environment clean")?;
+    }
+    #[cfg(not(unix))]
+    {
+        // Risk checking not supported on this platform
+    }
 
     // Step 2b: Link all packages (after risk checks pass)
     link_packages(plan)?;
 
     // Build trigger indices used by hooks/trigger mapping.
-    crate::deb_triggers::load_initial_deb_triggers(plan)?;
+    #[cfg(unix)]
+    {
+        crate::deb_triggers::load_initial_deb_triggers(plan)?;
+    }
 
     // Load initial hooks (from installed packages and etc/pacman.d/hooks/)
-    crate::hooks::load_initial_hooks(plan)?;
+    #[cfg(unix)]
+    {
+        crate::hooks::load_initial_hooks(plan)?;
+    }
+    #[cfg(not(unix))]
+    {
+        // Hooks not supported on this platform
+    }
 
     // Step 3: Process upgrades and fresh installations
     // Set is_first flag for the first batch
     plan.batch.is_first = true;
-    run_transaction_batch(plan)?;
+    #[cfg(unix)]
+    {
+        run_transaction_batch(plan)?;
+    }
 
     // Step 4: Build and install AUR packages (build with makepkg)
-    if !aur_packages.is_empty() {
-        // Will call run_transaction_batch() once for each round of build
-        build_and_install_aur_packages(plan, &aur_packages)?;
+    #[cfg(unix)]
+    {
+        if !aur_packages.is_empty() {
+            // Will call run_transaction_batch() once for each round of build
+            build_and_install_aur_packages(plan, &aur_packages)?;
+        }
     }
 
     // Step 5: update X11 desktop database
     // expose_packages(plan)?; // Now done earlier in run_action() PackageAction::ExposeExecutables branch
+    #[cfg(unix)]
     crate::xdesktop::update_desktop_databases(&plan.env_root, &plan.desktop_integration_occurred);
 
     Ok(())
@@ -449,7 +500,12 @@ fn wait_downloads_and_unpack(
                     let pkgkey = pkgkey.clone();
 
                     // Check if this is an AUR package
-                    if is_aur_package(&pkgkey) {
+                    #[cfg(unix)]
+                    let is_aur = is_aur_package(&pkgkey);
+                    #[cfg(not(unix))]
+                    let is_aur = false;
+
+                    if is_aur {
                         // For AUR packages, just add to aur_packages (they will be built later)
                         if let Some(package_info) = packages_to_install.get(&pkgkey) {
                             aur_packages.insert(pkgkey, Arc::clone(package_info));

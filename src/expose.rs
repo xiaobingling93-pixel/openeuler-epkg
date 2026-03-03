@@ -15,6 +15,7 @@ use crate::models::PACKAGE_CACHE;
 use crate::package_cache::map_pkgline2filelist;
 use crate::utils;
 use crate::utils::FileType;
+#[cfg(unix)]
 use crate::xdesktop;
 use crate::dirs;
 use crate::link::{hard_link_or_copy, replace_existing_symlink1, create_symlink2};
@@ -414,10 +415,12 @@ pub fn unexpose_package(plan: &mut InstallationPlan, env_root: &Path, pkgkey: &s
     if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
         let info_mut = Arc::make_mut(installed_package_info_mut);
         // Remove desktop integration links based on stored xdesktop_links info
-        xdesktop::unexpose_package_xdesktop(&info_mut.xdesktop_links, env_root, &mut plan.desktop_integration_occurred)?;
-
-        // Update the package info to clear xdesktop links and mark as not exposed
-        info_mut.xdesktop_links.clear();
+        #[cfg(unix)]
+        {
+            xdesktop::unexpose_package_xdesktop(&info_mut.xdesktop_links, env_root, &mut plan.desktop_integration_occurred)?;
+            // Update the package info to clear xdesktop links
+            info_mut.xdesktop_links.clear();
+        }
         info_mut.ebin_exposure = false;
     }
 
@@ -447,13 +450,19 @@ pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: 
         .with_context(|| format!("Failed to expose package {}", pkgkey))?;
 
     // Desktop integration
+    #[cfg(unix)]
     let xdesktop_links = xdesktop::expose_package_xdesktop(&plan.env_root, &filelist, &mut plan.desktop_integration_occurred)?;
+    #[cfg(not(unix))]
+    let xdesktop_links = Vec::new();
 
     // Update the package info with the new links
     if let Some(installed_package_info_mut) = PACKAGE_CACHE.installed_packages.write().unwrap().get_mut(pkgkey) {
         let info_mut = Arc::make_mut(installed_package_info_mut);
         info_mut.ebin_links = ebin_links;
-        info_mut.xdesktop_links = xdesktop_links;
+        #[cfg(unix)]
+        {
+            info_mut.xdesktop_links = xdesktop_links;
+        }
         info_mut.ebin_exposure = true;
     } else {
         log::warn!("expose_package_operations: pkgkey '{}' not found in installed_packages. Links not stored.", pkgkey);

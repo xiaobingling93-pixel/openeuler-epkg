@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use color_eyre::eyre;
 use color_eyre::Result;
 use libc::{c_int, c_void, prctl, PR_CAPBSET_DROP, sethostname};

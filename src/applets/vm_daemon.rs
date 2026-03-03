@@ -109,6 +109,7 @@
 //! - `base64`: Binary-safe encoding for PTY data
 //! - `color_eyre`: Error handling
 //!
+#![cfg(target_os = "linux")]
 
 use clap::{Arg, Command};
 use color_eyre::Result;

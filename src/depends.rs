@@ -5,6 +5,7 @@ use crate::models::*;
 use crate::models::PACKAGE_CACHE;
 use crate::resolve::provider::GenericDependencyProvider;
 use crate::resolve::types::{DependFieldFlags, NameType, SolverMatchSpec};
+#[cfg(unix)]
 use crate::aur::is_aur_package;
 use crate::world::{remove_from_no_install, get_no_install_set};
 use crate::io::load_installed_packages;
@@ -334,15 +335,18 @@ fn resolve_dependencies_adding_makepkg_deps(
     // Check if any resolved package is an AUR package and whether any of them is a *-git package
     let mut has_aur_packages = false;
     let mut has_git_aur = false;
-    for pkgkey in all_packages_for_session.keys() {
-        if is_aur_package(pkgkey) {
-            has_aur_packages = true;
+    #[cfg(unix)]
+    {
+        for pkgkey in all_packages_for_session.keys() {
+            if is_aur_package(pkgkey) {
+                has_aur_packages = true;
 
-            // Extract pkgname from pkgkey and check for '-git' suffix
-            if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
-                if pkgname.ends_with("-git") {
-                    has_git_aur = true;
-                    break;
+                // Extract pkgname from pkgkey and check for '-git' suffix
+                if let Ok(pkgname) = crate::package::pkgkey2pkgname(pkgkey) {
+                    if pkgname.ends_with("-git") {
+                        has_git_aur = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1294,6 +1298,7 @@ fn create_installed_package_info(
         bdepends: bdepends_list,
         rbdepends: merged_rbdepends,
         ebin_links: Vec::new(),
+        #[cfg(unix)]
         xdesktop_links: Vec::new(),
         pending_triggers: Vec::new(),
         triggers_awaited: false,

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Standalone Rust implementations of POSIX functions
 // These can be tested independently and reused outside of Lua bindings
 //
@@ -210,7 +211,7 @@ pub fn mode_munch(mode: &mut u32, mode_str: &str) -> Result<(), PosixError> {
 
 fn rwxrwxrwx(mode: &mut u32, mode_str: &str) -> Result<(), PosixError> {
     let mut tmp_mode = *mode;
-    tmp_mode &= !(libc::S_ISUID | libc::S_ISGID); // Turn off suid and sgid flags
+    tmp_mode &= !((libc::S_ISUID as u32) | (libc::S_ISGID as u32)); // Turn off suid and sgid flags
 
     let chars: Vec<char> = mode_str.chars().take(9).collect();
     if chars.len() != 9 {
@@ -218,15 +219,15 @@ fn rwxrwxrwx(mode: &mut u32, mode_str: &str) -> Result<(), PosixError> {
     }
 
     let modesel = [
-        ('r', libc::S_IRUSR, 0),
-        ('w', libc::S_IWUSR, 1),
-        ('x', libc::S_IXUSR, 2),
-        ('r', libc::S_IRGRP, 3),
-        ('w', libc::S_IWGRP, 4),
-        ('x', libc::S_IXGRP, 5),
-        ('r', libc::S_IROTH, 6),
-        ('w', libc::S_IWOTH, 7),
-        ('x', libc::S_IXOTH, 8),
+        ('r', libc::S_IRUSR as u32, 0),
+        ('w', libc::S_IWUSR as u32, 1),
+        ('x', libc::S_IXUSR as u32, 2),
+        ('r', libc::S_IRGRP as u32, 3),
+        ('w', libc::S_IWGRP as u32, 4),
+        ('x', libc::S_IXGRP as u32, 5),
+        ('r', libc::S_IROTH as u32, 6),
+        ('w', libc::S_IWOTH as u32, 7),
+        ('x', libc::S_IXOTH as u32, 8),
     ];
 
     for (i, ch) in chars.iter().enumerate() {
@@ -235,10 +236,10 @@ fn rwxrwxrwx(mode: &mut u32, mode_str: &str) -> Result<(), PosixError> {
             c if c == expected_ch => tmp_mode |= bit,
             '-' => tmp_mode &= !bit,
             's' if pos == 2 => {
-                tmp_mode |= libc::S_ISUID | libc::S_IXUSR;
+                tmp_mode |= (libc::S_ISUID as u32) | (libc::S_IXUSR as u32);
             }
             's' if pos == 5 => {
-                tmp_mode |= libc::S_ISGID | libc::S_IXGRP;
+                tmp_mode |= (libc::S_ISGID as u32) | (libc::S_IXGRP as u32);
             }
             _ => return Err(PosixError::InvalidArgument(format!("bad rwxrwxrwx mode change at position {}", i))),
         }
@@ -323,15 +324,15 @@ pub struct PosixStat {
 fn modechopper(mode: u32) -> String {
     let mut result = String::with_capacity(9);
     let modesel = [
-        (libc::S_IRUSR, 'r'),
-        (libc::S_IWUSR, 'w'),
-        (libc::S_IXUSR, 'x'),
-        (libc::S_IRGRP, 'r'),
-        (libc::S_IWGRP, 'w'),
-        (libc::S_IXGRP, 'x'),
-        (libc::S_IROTH, 'r'),
-        (libc::S_IWOTH, 'w'),
-        (libc::S_IXOTH, 'x'),
+        (libc::S_IRUSR as u32, 'r'),
+        (libc::S_IWUSR as u32, 'w'),
+        (libc::S_IXUSR as u32, 'x'),
+        (libc::S_IRGRP as u32, 'r'),
+        (libc::S_IWGRP as u32, 'w'),
+        (libc::S_IXGRP as u32, 'x'),
+        (libc::S_IROTH as u32, 'r'),
+        (libc::S_IWOTH as u32, 'w'),
+        (libc::S_IXOTH as u32, 'x'),
     ];
 
     for (bit, ch) in modesel.iter() {
@@ -344,11 +345,11 @@ fn modechopper(mode: u32) -> String {
 
     // Handle suid and sgid flags
     let mut chars: Vec<char> = result.chars().collect();
-    if mode & libc::S_ISUID != 0 {
-        chars[2] = if mode & libc::S_IXUSR != 0 { 's' } else { 'S' };
+    if mode & libc::S_ISUID as u32 != 0 {
+        chars[2] = if mode & libc::S_IXUSR as u32 != 0 { 's' } else { 'S' };
     }
-    if mode & libc::S_ISGID != 0 {
-        chars[5] = if mode & libc::S_IXGRP != 0 { 's' } else { 'S' };
+    if mode & libc::S_ISGID as u32 != 0 {
+        chars[5] = if mode & libc::S_IXGRP as u32 != 0 { 's' } else { 'S' };
     }
 
     chars.into_iter().collect()
@@ -356,7 +357,7 @@ fn modechopper(mode: u32) -> String {
 
 fn filetype(mode: u32) -> &'static str {
     use libc::{S_IFMT, S_IFREG, S_IFLNK, S_IFDIR, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK};
-    let file_type = mode & S_IFMT as u32;
+    let file_type = mode & (S_IFMT as u32);
     if file_type == S_IFREG as u32 {
         "regular"
     } else if file_type == S_IFLNK as u32 {
@@ -419,7 +420,7 @@ pub fn posix_umask(mask: Option<&str>) -> PosixResult<String> {
         let new_mode = (new_mode & 0o777) as libc::mode_t;
         // Set the new umask (umask expects the complement)
         unsafe { libc::umask(!new_mode) };
-        Ok(modechopper(new_mode))
+        Ok(modechopper(new_mode as u32))
     } else {
         // Restore the original umask
         unsafe { libc::umask(current_umask) };
@@ -492,6 +493,7 @@ pub fn posix_ttyname(fd: i32) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn posix_ctermid() -> String {
     // L_ctermid is typically 1024 on most systems
     let mut buf = vec![0u8; 1024];
@@ -501,6 +503,12 @@ pub fn posix_ctermid() -> String {
     } else {
         unsafe { std::ffi::CStr::from_ptr(ctermid_str).to_string_lossy().to_string() }
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn posix_ctermid() -> String {
+    // Stub for non-Linux platforms
+    String::new()
 }
 
 /// Helper function to wrap libc::getlogin as Option<String>
@@ -557,7 +565,10 @@ pub fn posix_statfs(path: &str) -> PosixResult<PosixStatFs> {
         f_bavail:  st.f_bavail  as u64,
         f_files:   st.f_files   as u64,
         f_ffree:   st.f_ffree   as u64,
+        #[cfg(target_os = "linux")]
         f_namelen: st.f_namelen as u64,
+        #[cfg(not(target_os = "linux"))]
+        f_namelen: 0,
         // fsid encoding is platform-specific; extract from f_fsid
         f_fsid: {
             #[cfg(target_os = "linux")]
@@ -715,7 +726,7 @@ pub struct PosixTimes {
 pub fn posix_times() -> PosixResult<PosixTimes> {
     let mut tms = std::mem::MaybeUninit::<libc::tms>::uninit();
     let elapsed = unsafe { libc::times(tms.as_mut_ptr()) };
-    if elapsed == -1 {
+    if elapsed == (!0 as libc::clock_t) {
         return Err(PosixError::Io(io::Error::last_os_error()));
     }
     let tms = unsafe { tms.assume_init() };

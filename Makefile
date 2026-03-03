@@ -75,6 +75,13 @@ $(eval $(call build_lua_lib,aarch64))
 $(eval $(call build_lua_lib,riscv64))
 $(eval $(call build_lua_lib,loongarch64))
 
+# Cross-compilation to macOS (default aarch64)
+cross-macos:
+	@$(PROJECT_ROOT)/bin/make.sh cross-macos
+
+# Cross-compilation to Windows (default x86_64)
+cross-windows:
+	@$(PROJECT_ROOT)/bin/make.sh cross-windows
 
 # Run tests (module-level unit tests)
 test:
@@ -88,4 +95,4 @@ clean:
 clean-all:
 	@$(PROJECT_ROOT)/bin/make.sh clean_all
 
-.PHONY: dev-depends crossdev-depends clone-repos build static release release-all release-x86_64 release-aarch64 release-riscv64 release-loongarch64 test clean clean-all
+.PHONY: dev-depends crossdev-depends clone-repos build static release release-all release-x86_64 release-aarch64 release-riscv64 release-loongarch64 cross-macos cross-windows test clean clean-all

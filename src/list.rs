@@ -1,3 +1,4 @@
+
 use crate::models::*;
 use crate::mmio;
 use crate::models::PACKAGE_CACHE;
@@ -357,6 +358,7 @@ fn scan_packages_mmap(
     repodata_name: &str,
     local_items: &mut Vec<PackageListItem>,
 ) -> Result<usize> {
+    #[cfg(target_os = "linux")]
     use libc::{madvise, c_void, MADV_DONTNEED};
     let data = file_mapper.data();
     let mut count = 0;
@@ -370,7 +372,9 @@ fn scan_packages_mmap(
     let mut size: u32 = 0;
     let mut installed_size: u32 = 0;
     let mut nr_found_fields = 0;
+    #[cfg(target_os = "linux")]
     let mut last_advised = 0;
+    #[cfg(target_os = "linux")]
     const MMAP_DROP_GRANULARITY: usize = 2 * 1024 * 1024; // 2MB
     while pos < data.len() {
         // If we are at the start of a package, use Finder to jump to next 'pkgname: '
@@ -440,15 +444,18 @@ fn scan_packages_mmap(
                 nr_found_fields = 0;
             }
         }
-        // Drop past mmap pages by 2MB-aligned granularity
-        let next_advisable = (pos / MMAP_DROP_GRANULARITY) * MMAP_DROP_GRANULARITY;
-        if next_advisable > last_advised {
-            let advise_ptr = unsafe { data.as_ptr().add(last_advised) as *mut c_void };
-            let advise_len = next_advisable - last_advised;
-            unsafe {
-                madvise(advise_ptr, advise_len, MADV_DONTNEED);
+        #[cfg(target_os = "linux")]
+        {
+            // Drop past mmap pages by 2MB-aligned granularity
+            let next_advisable = (pos / MMAP_DROP_GRANULARITY) * MMAP_DROP_GRANULARITY;
+            if next_advisable > last_advised {
+                let advise_ptr = unsafe { data.as_ptr().add(last_advised) as *mut c_void };
+                let advise_len = next_advisable - last_advised;
+                unsafe {
+                    madvise(advise_ptr, advise_len, MADV_DONTNEED);
+                }
+                last_advised = next_advisable;
             }
-            last_advised = next_advisable;
         }
     }
     Ok(count)

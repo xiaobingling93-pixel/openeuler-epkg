@@ -2,9 +2,13 @@ use clap::{Arg, Command};
 use color_eyre::Result;
 use std::env;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use crate::run::is_executable;
 
+#[cfg(unix)]
 const DEFAULT_PATH: &str = "/sbin:/usr/sbin:/bin:/usr/bin";
+#[cfg(windows)]
+const DEFAULT_PATH: &str = "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
 
 pub struct WhichOptions {
     pub commands: Vec<String>,
@@ -29,9 +33,21 @@ pub fn command() -> Command {
 
 fn find_command_in_path(command: &str) -> Option<String> {
     // If command contains a slash, treat as direct path
-    if command.contains('/') {
+    #[cfg(unix)]
+    let has_path_separator = command.contains('/');
+    #[cfg(windows)]
+    let has_path_separator = command.contains('/') || command.contains('\\');
+    #[cfg(not(any(unix, windows)))]
+    let has_path_separator = command.contains('/');
+
+    if has_path_separator {
         let path = Path::new(command);
-        if path.exists() && path.is_file() && is_executable(path).ok()? {
+        if path.exists() && path.is_file() && {
+            #[cfg(unix)]
+            { is_executable(path).ok()? }
+            #[cfg(not(unix))]
+            { true } // On non-Unix, assume any file is executable
+        } {
             return Some(command.to_string());
         }
         return None;
@@ -41,12 +57,28 @@ fn find_command_in_path(command: &str) -> Option<String> {
     let path_dirs: Vec<PathBuf> = if let Some(paths) = env::var_os("PATH") {
         env::split_paths(&paths).collect()
     } else {
-        DEFAULT_PATH.split(':').map(PathBuf::from).collect()
+        #[cfg(unix)]
+        {
+            DEFAULT_PATH.split(':').map(PathBuf::from).collect()
+        }
+        #[cfg(windows)]
+        {
+            DEFAULT_PATH.split(';').map(PathBuf::from).collect()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Vec::new()
+        }
     };
 
     for path_dir in path_dirs {
         let full_path = path_dir.join(command);
-        if full_path.exists() && full_path.is_file() && is_executable(&full_path).ok()? {
+        if full_path.exists() && full_path.is_file() && {
+            #[cfg(unix)]
+            { is_executable(&full_path).ok()? }
+            #[cfg(not(unix))]
+            { true } // On non-Unix, assume any file is executable
+        } {
             return Some(full_path.to_string_lossy().to_string());
         }
     }

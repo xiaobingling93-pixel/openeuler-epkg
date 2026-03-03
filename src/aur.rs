@@ -13,7 +13,10 @@ use crate::models::*;
 use crate::packages_stream;
 use crate::repo::{RepoReleaseItem, RepoRevise, should_refresh_release_file, ReleaseStatus};
 use crate::download::get_package_file_path;
+#[cfg(unix)]
 use crate::transaction::run_transaction_batch;
+#[cfg(unix)]
+use crate::run;
 
 
 /// Base URL for AUR package snapshots
@@ -415,6 +418,7 @@ fn extract_aur_source(
 
 /// Run makepkg to build the AUR package
 /// Returns Ok(()) on success, Err on failure
+#[cfg(unix)]
 fn run_makepkg(
     pkgbase: &str,
     pkg_build_dir: &Path,
@@ -663,6 +667,7 @@ fn find_and_verify_built_packages(
 ///    (`fixup_installed_packages_values()`).
 /// 6. Processing AUR installation results so subsequent rounds and expose operations use pkgkeys
 ///    that match what is stored in `installed_packages` (`postinstall_built_aur_round()`).
+#[cfg(unix)]
 pub fn build_and_install_aur_packages(
     plan: &mut crate::plan::InstallationPlan,
     aur_packages: &InstalledPackagesMap,
@@ -1357,6 +1362,7 @@ fn find_pkgbuild(dir: &Path) -> Result<PathBuf> {
 }
 
 /// Find built package files (handles SPLITPKG)
+#[cfg(unix)]
 pub fn find_built_package(dir: &Path, pkgbase: &str, version: &str) -> Result<Vec<PathBuf>> {
     let mut built = Vec::new();
     for entry in std::fs::read_dir(dir)? {

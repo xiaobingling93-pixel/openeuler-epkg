@@ -2,22 +2,78 @@
 
 This guide gets you building epkg from source and running your first commands in a development setup.
 
+**Supported platforms:** Linux (x86_64, aarch64, riscv64, loongarch64), macOS (x86_64, arm64), and Windows (x86_64, arm64).
+
 ## 1. Install build dependencies
 
+### Linux (Debian/Ubuntu, Fedora, openSUSE, Arch, Alpine)
 ```bash
 git clone https://atomgit.com/openeuler/epkg
 cd epkg
 make dev-depends
 ```
 
+### macOS (with Homebrew)
+```bash
+git clone https://atomgit.com/openeuler/epkg
+cd epkg
+make dev-depends
+```
+The script will install Rust, Lua, OpenSSL, and other dependencies via Homebrew.
+
+### Windows (with Chocolatey or Scoop)
+```bash
+git clone https://atomgit.com/openeuler/epkg
+cd epkg
+make dev-depends
+```
+The script will install Rust, Lua, OpenSSL, and other dependencies via Chocolatey (preferred) or Scoop.
+
+> **Note:** On non‑Linux platforms, the `epkg run` and `epkg service` commands are not available due to missing Linux kernel namespaces. Package management (install, remove, upgrade, etc.) works normally.
+
 ## 2. Build and install epkg
 
+### Linux (default)
 ```bash
 make
 target/debug/epkg self install
 ```
 
-Then start a new shell (or `source ~/.bashrc`) so PATH is updated.
+### macOS / Windows
+```bash
+make
+```
+The binary is built with dynamic linking (Lua, OpenSSL). On macOS you can install it with:
+```bash
+target/debug/epkg self install
+```
+On Windows, you may need to adjust permissions or install manually.
+
+Then start a new shell (or `source ~/.bashrc` / restart your terminal) so PATH is updated.
+
+### Cross‑compilation from Linux
+
+You can build epkg for macOS (Apple Silicon) or Windows from a Linux host:
+
+**Prerequisites:**
+- **macOS (aarch64‑apple‑darwin):** Install [osxcross](https://github.com/tpoechtrager/osxcross) and place the macOS SDK in `/c/rust/osxcross` (default location used by the build script). The `make cross-macos` command will attempt to detect osxcross and guide you through installation if missing.
+- **Windows (x86_64‑pc‑windows‑msvc):** Install `mingw‑w64` package:
+  ```bash
+  sudo apt install mingw-w64  # Debian/Ubuntu
+  ```
+  The `make cross-windows` command will detect mingw‑w64 and guide you through installation if missing.
+
+**Build:**
+```bash
+# macOS (Apple Silicon)
+make cross-macos aarch64
+
+# Windows (x86_64)
+make cross-windows x86_64
+```
+The resulting binaries are in `target/<triple>/release/epkg`.
+
+**Note:** Cross‑compilation uses the same codebase with conditional compilation for platform‑specific features. Linux‑only applets (e.g., mount, umount, modprobe, vm‑daemon) are automatically disabled on non‑Linux targets.
 
 ## 3. Development loop
 

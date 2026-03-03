@@ -11,7 +11,7 @@ use color_eyre::eyre::{self, Result, WrapErr};
 use crate::dirs::*;
 use crate::models::{self, *};
 use crate::models::PACKAGE_CACHE;
-use crate::history::get_current_generation_id;
+#[cfg(unix)] use crate::history::get_current_generation_id;
 use crate::lfs;
 
 pub const CHANNEL_SEPARATOR: char = '-';
@@ -363,13 +363,19 @@ fn load_system_repositories(channel_configs: &mut Vec<ChannelConfig>, env_root: 
     let main_config = channel_configs.first().cloned();
 
     // Load Deb system repositories
-    if let Ok(system_channel_configs) = crate::deb_sources::load_deb_system_repos(env_root, &config().common.arch) {
-        update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
+    #[cfg(unix)]
+    {
+        if let Ok(system_channel_configs) = crate::deb_sources::load_deb_system_repos(env_root, &config().common.arch) {
+            update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
+        }
     }
 
     // Load RPM system repositories
-    if let Ok(system_channel_configs) = crate::rpm_sources::load_rpm_system_repos(env_root) {
-        update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
+    #[cfg(unix)]
+    {
+        if let Ok(system_channel_configs) = crate::rpm_sources::load_rpm_system_repos(env_root) {
+            update_system_channel_configs(system_channel_configs, channel_configs, main_config.as_ref())?;
+        }
     }
 
     Ok(())
@@ -571,7 +577,10 @@ pub fn load_installed_packages() -> Result<()> {
     if !PACKAGE_CACHE.installed_packages.read().unwrap().is_empty() {
         return Ok(());
     }
+    #[cfg(unix)]
     let generation_id = get_current_generation_id()?;
+    #[cfg(not(unix))]
+    let generation_id = 1u32;
     let packages = read_installed_packages(&config().common.env_name, generation_id)?;
     let mut installed = PACKAGE_CACHE.installed_packages.write().unwrap();
     for (k, v) in packages {
@@ -621,7 +630,10 @@ pub fn read_world(env: &str, generation_id: u32) -> Result<HashMap<String, Strin
 }
 
 pub fn load_world() -> Result<()> {
+    #[cfg(unix)]
     let generation_id = get_current_generation_id()?;
+    #[cfg(not(unix))]
+    let generation_id = 1u32;
     let world = read_world(&config().common.env_name, generation_id)?;
     let mut cache_world = PACKAGE_CACHE.world.write().unwrap();
     cache_world.clear();

@@ -9,6 +9,7 @@
 //! - Responses can be JSON or plain text (fallback)
 //! - PTY mode uses a streaming protocol with base64-encoded data
 //! - Supports terminal resizing, signal forwarding, and raw terminal mode
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read, Write, IsTerminal};
 use std::net::TcpStream;

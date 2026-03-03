@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -158,8 +160,8 @@ fn compute_device_info(metadata: &fs::Metadata) -> (u64, u64, u32, u32) {
     let blocks = metadata.blocks();
     let blksize = metadata.blksize();
     let dev = metadata.dev();
-    let major = libc::major(dev);
-    let minor = libc::minor(dev);
+    let major = libc::major(dev as libc::dev_t) as u32;
+    let minor = libc::minor(dev as libc::dev_t) as u32;
     (blocks, blksize, major, minor)
 }
 

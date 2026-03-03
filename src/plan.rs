@@ -11,8 +11,9 @@ use color_eyre::eyre::WrapErr;
 use crate::models::{PACKAGE_CACHE, InstalledPackageInfo, InstalledPackagesMap, LinkType, PackageFormat, channel_config};
 use crate::package;
 use crate::mmio;
-use crate::aur::is_aur_package;
+#[cfg(unix)] use crate::aur::is_aur_package;
 use crate::dirs;
+#[cfg(unix)]
 use crate::hooks::{Hook, HookWhen};
 
 /// Package operation flags
@@ -144,8 +145,11 @@ pub struct InstallationPlan {
     pub batch: InstallBatch,
 
     // Hook data structures (indexed for efficient lookup)
+    #[cfg(unix)]
     pub hooks_by_when: HashMap<HookWhen, Vec<Arc<Hook>>>,
+    #[cfg(unix)]
     pub hooks_by_pkgkey: HashMap<String, Vec<Arc<Hook>>>,
+    #[cfg(unix)]
     pub hooks_by_name: HashMap<String, Arc<Hook>>,
 
     /// Debian explicit trigger interests (non-file triggers)
@@ -161,6 +165,7 @@ pub struct InstallationPlan {
     pub deb_activate_triggers_by_name: HashMap<String, Vec<String>>,
 
     /// Desktop integration flags tracking which types occurred during expose operations
+    #[cfg(unix)]
     pub desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags,
 }
 
@@ -215,14 +220,18 @@ impl Default for InstallationPlan {
             store_root: PathBuf::new(),
             package_format: PackageFormat::default(),
             batch: InstallBatch::default(),
+            #[cfg(unix)]
             hooks_by_when: HashMap::new(),
+            #[cfg(unix)]
             hooks_by_pkgkey: HashMap::new(),
+            #[cfg(unix)]
             hooks_by_name: HashMap::new(),
             installed: HashSet::new(),
             deb_explicit_triggers_by_pkg: HashMap::new(),
             deb_explicit_triggers_by_name: HashMap::new(),
             deb_activate_triggers_by_pkg: HashMap::new(),
             deb_activate_triggers_by_name: HashMap::new(),
+            #[cfg(unix)]
             desktop_integration_occurred: crate::xdesktop::DesktopIntegrationFlags::default(),
         }
     }
@@ -281,6 +290,7 @@ pub fn calculate_op_flags(
             if !new_pkg_info.pkgline.is_empty() {
                 flags |= op_flags::IN_STORE;
             }
+            #[cfg(unix)]
             if is_aur_package(pkgkey) {
                 flags |= op_flags::IS_AUR;
             }
@@ -685,9 +695,10 @@ pub fn find_upgrade_target(
         Ok(parts) => parts,
         Err(_) => return (false, String::new()),
     };
-
+#[cfg(unix)]
     let is_aur = is_aur_package(new_pkgkey);
-
+#[cfg(not(unix))]
+    let is_aur = false;
     for (old_pkgkey, _) in installed.iter() {
         if old_pkgkey == new_pkgkey {
             continue;

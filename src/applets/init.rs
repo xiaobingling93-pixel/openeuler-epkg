@@ -5,6 +5,7 @@
 //! possible failure point we add `log::debug!` (or eprintln where logging is not yet available)
 //! with rich context: what we were doing, paths, errno, and which step failed. Do not fail
 //! silently; keep this file step-by-step debuggable.
+#![cfg(target_os = "linux")]
 
 use clap::Command as ClapCommand;
 use color_eyre::Result;

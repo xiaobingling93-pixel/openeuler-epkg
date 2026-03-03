@@ -165,9 +165,9 @@ epkg --root /tmp/myproject/.eenv run jq --version
 可按命令选择沙箱模式：
 
 ```bash
-epkg -e mydebian run --sandbox=env bash
-epkg -e mydebian run --sandbox=fs    python3 script.py
-epkg -e mydebian run --sandbox=vm    bash
+epkg -e mydebian run --sandbox=env  bash
+epkg -e mydebian run --sandbox=fs   python3 script.py
+epkg -e mydebian run --sandbox=vm   bash
 ```
 
 也可在 `env_root/etc/epkg/env.yaml` 中为该环境设置**默认沙箱**：

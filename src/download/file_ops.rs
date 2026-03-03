@@ -18,7 +18,6 @@ use color_eyre::eyre::{eyre, Result, WrapErr};
 use std::fs::{self, File, OpenOptions};
 use crate::lfs;
 use std::io;
-use std::os::unix::fs::symlink;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -495,9 +494,9 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     }
 
     // Create symlink from local path to global path
-    match symlink(&global_path, local_path) {
+    match lfs::symlink(&global_path, local_path) {
         Ok(_) => log::debug!("Symlinked {} -> {}", local_path.display(), global_path.display()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+        Err(e) if e.downcast_ref::<std::io::Error>().map_or(false, |io_err| io_err.kind() == io::ErrorKind::AlreadyExists) => {
             // File already exists (maybe created by another process)
             log::debug!("File already exists at {}, skipping symlink", local_path.display());
             return false;
@@ -512,9 +511,9 @@ fn try_symlink_from_global_cache(task: &DownloadTask) -> bool {
     let global_meta_path = utils::append_suffix(&global_path, "etag.json");
     let local_meta_path = utils::append_suffix(local_path, "etag.json");
     if global_meta_path.exists() && !local_meta_path.exists() {
-        match symlink(&global_meta_path, &local_meta_path) {
+        match lfs::symlink(&global_meta_path, &local_meta_path) {
             Ok(_) => log::debug!("Symlinked metadata {} -> {}", local_meta_path.display(), global_meta_path.display()),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            Err(e) if e.downcast_ref::<std::io::Error>().map_or(false, |io_err| io_err.kind() == io::ErrorKind::AlreadyExists) => {
                 log::debug!("Metadata file already exists at {}, skipping symlink", local_meta_path.display());
             }
             Err(e) => {

@@ -16,13 +16,18 @@ use tar::Archive;
 use flate2::read::GzDecoder;
 use liblzma;
 use zstd;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt; // For checking execute permissions
+#[cfg(unix)]
 use nix::unistd;
+#[cfg(unix)]
 use nix::sys::signal::kill;
+#[cfg(unix)]
 use nix::sys::signal::Signal;
 #[cfg(unix)]
 use users::{get_current_uid, get_effective_uid};
 use crate::models;
+#[cfg(unix)]
 use crate::userdb;
 use crate::lfs;
 use crate::mtree::{self, MtreeFileInfo};
@@ -392,8 +397,14 @@ pub fn extract_tar_gz(tar_path: &Path, dest_dir: &Path) -> Result<()> {
 /// Returns `true` if the process is running with effective root privileges.
 /// This checks the effective user ID (euid), which determines the process's
 /// current permissions. For the real user ID, see `get_current_uid()`.
+#[cfg(unix)]
 pub fn is_running_as_root() -> bool {
     unistd::geteuid().is_root()
+}
+
+#[cfg(not(unix))]
+pub fn is_running_as_root() -> bool {
+    false
 }
 
 /// Determine shared_store mode based on the decision sequence:
@@ -482,12 +493,14 @@ pub fn get_home_from_uid() -> Result<String> {
     Err(color_eyre::eyre::eyre!("get_home_from_uid() not supported on this platform"))
 }
 
+#[cfg(unix)]
 pub fn command_exists(command_name: &str) -> bool {
     find_command_in_paths(command_name).is_some()
 }
 
 /// Searches for an executable command in a predefined list of common paths.
 /// Returns the full path to the command if found and executable, otherwise None.
+#[cfg(unix)]
 pub fn find_command_in_paths(command_name: &str) -> Option<PathBuf> {
     // If command contains a slash, treat it as a direct path
     if command_name.contains('/') {
@@ -1226,6 +1239,7 @@ pub fn copy_scriptlets_by_mapping<P: AsRef<Path>>(
     Ok(())
 }
 
+#[cfg(unix)]
 macro_rules! signal_map {
     ($map:expr, $(($name:expr, $signal:expr)),* $(,)?) => {
         $(
@@ -1234,6 +1248,7 @@ macro_rules! signal_map {
     };
 }
 
+#[cfg(unix)]
 lazy_static::lazy_static! {
     static ref SIGNAL_NAME_MAP: HashMap<&'static str, Signal> = {
         let mut map = HashMap::new();
@@ -1266,9 +1281,13 @@ lazy_static::lazy_static! {
             ("PROF",    Signal::SIGPROF),
             ("WINCH",   Signal::SIGWINCH),
             ("IO",      Signal::SIGIO),
-            ("PWR",     Signal::SIGPWR),
-            ("SYS",     Signal::SIGSYS),
         );
+        // Linux-only signals
+        #[cfg(target_os = "linux")]
+        {
+            map.insert("PWR", Signal::SIGPWR);
+            map.insert("SYS", Signal::SIGSYS);
+        }
         map
     };
 }
@@ -1277,6 +1296,7 @@ lazy_static::lazy_static! {
 ///
 /// Supports standard signal names (HUP, INT, TERM, etc. - with or without SIG prefix),
 /// numeric values, and real-time signals (RTMIN+x, RTMAX-x, SIGRTMIN+x, SIGRTMAX-x formats)
+#[cfg(unix)]
 pub fn parse_signal(signal_str: &str) -> Result<Signal> {
     let mut lookup_str = signal_str.to_uppercase();
 
@@ -1290,7 +1310,8 @@ pub fn parse_signal(signal_str: &str) -> Result<Signal> {
         return Ok(signal);
     }
 
-    // Handle real-time signals like RTMIN+x or RTMAX-x (SIG prefix already stripped)
+    // Handle real-time signals like RTMIN+x or RTMAX-x (SIG prefix already stripped) - Linux only
+    #[cfg(target_os = "linux")]
     if let Some(rt_signal) = parse_realtime_signal(&lookup_str) {
         return Ok(rt_signal);
     }
@@ -1303,6 +1324,7 @@ pub fn parse_signal(signal_str: &str) -> Result<Signal> {
 }
 
 /// Parse real-time signal specifications (RTMIN+x, RTMAX-x, etc.)
+#[cfg(target_os = "linux")]
 fn parse_realtime_signal(signal_str: &str) -> Option<Signal> {
     let upper = signal_str.to_uppercase();
 
@@ -1328,16 +1350,23 @@ fn parse_realtime_signal(signal_str: &str) -> Option<Signal> {
 }
 
 /// Check if a string represents a valid signal name
+#[cfg(unix)]
 pub fn is_signal_name(name: &str) -> bool {
     // Try parsing - if it succeeds, it's a valid signal
     parse_signal(name).is_ok()
 }
 
 /// Send a signal to a process by PID
+#[cfg(unix)]
 pub fn kill_process(pid: i32, signal: Signal, command_name: &str) -> Result<()> {
     kill(unistd::Pid::from_raw(pid), signal)
         .map_err(|e| color_eyre::eyre::eyre!("{}: ({}) - {}: {}", command_name, pid, signal as i32, e))?;
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn kill_process(_pid: i32, _signal: i32, command_name: &str) -> Result<()> {
+    Err(color_eyre::eyre::eyre!("kill_process() not supported on this platform: {}", command_name))
 }
 
 /// Get process name from /proc/<pid>/comm
@@ -1345,6 +1374,7 @@ pub fn kill_process(pid: i32, signal: Signal, command_name: &str) -> Result<()> 
 /// Uses the comm file instead of cmdline because comm is visible to all users,
 /// while cmdline may not be readable due to process permissions (e.g., setuid).
 /// Note that comm is limited to 16 bytes (including null terminator).
+#[cfg(unix)]
 pub fn get_process_name(pid: u32) -> Option<String> {
     let comm_path = format!("/proc/{}/comm", pid);
     if let Ok(content) = fs::read_to_string(&comm_path) {
@@ -1359,10 +1389,16 @@ pub fn get_process_name(pid: u32) -> Option<String> {
     }
 }
 
+#[cfg(not(unix))]
+pub fn get_process_name(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Get full command line from /proc/<pid>/cmdline
 ///
 /// Returns the complete command line with null bytes replaced by spaces.
 /// This may fail if cmdline is not readable (e.g., due to process permissions).
+#[cfg(unix)]
 pub fn get_process_cmdline(pid: u32) -> Option<String> {
     let cmdline_path = format!("/proc/{}/cmdline", pid);
     if let Ok(content) = fs::read_to_string(&cmdline_path) {
@@ -1377,7 +1413,13 @@ pub fn get_process_cmdline(pid: u32) -> Option<String> {
     }
 }
 
+#[cfg(not(unix))]
+pub fn get_process_cmdline(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Get the executable path from /proc/<pid>/exe symlink
+#[cfg(unix)]
 pub fn get_process_exe(pid: u32) -> Option<String> {
     let exe_path = format!("/proc/{}/exe", pid);
     if let Ok(target) = std::fs::read_link(&exe_path) {
@@ -1387,12 +1429,24 @@ pub fn get_process_exe(pid: u32) -> Option<String> {
     }
 }
 
+#[cfg(not(unix))]
+pub fn get_process_exe(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Check if a process exists by checking /proc/<pid> directory
+#[cfg(unix)]
 pub fn process_exists(pid: u32) -> bool {
     Path::new(&format!("/proc/{}", pid)).exists()
 }
 
+#[cfg(not(unix))]
+pub fn process_exists(_pid: u32) -> bool {
+    false
+}
+
 /// Iterator over all processes in /proc
+#[cfg(unix)]
 pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
     let proc_dir = Path::new("/proc");
     if !proc_dir.exists() {
@@ -1416,6 +1470,11 @@ pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
         });
 
     Ok(entries)
+}
+
+#[cfg(not(unix))]
+pub fn iterate_processes() -> Result<impl Iterator<Item = Result<u32>>> {
+    Ok(std::iter::empty())
 }
 
 /// Rename a directory, falling back to copy+remove on cross-device errors
@@ -1442,12 +1501,19 @@ pub fn rename_or_copy_dir(src: &Path, dst: &Path) -> Result<()> {
             // EXDEV: Invalid cross-device link - fall back to copy + remove
             log::debug!("Cross-device rename not work, using copy+remove fallback: {} -> {}",
                        src.display(), dst.display());
-            let mut cp_options = crate::applets::cp::CpOptions::default();
-            cp_options.archive = true; // cp -a
-            cp_options.force = true; // force overwrite
-            cp_options.compute_derived();
-            crate::applets::cp::copy_directory_recursive(src, dst, &cp_options)
-                .wrap_err_with(|| format!("Failed to copy directory from {} to {}", src.display(), dst.display()))?;
+            #[cfg(unix)]
+            {
+                let mut cp_options = crate::applets::cp::CpOptions::default();
+                cp_options.archive = true; // cp -a
+                cp_options.force = true; // force overwrite
+                cp_options.compute_derived();
+                crate::applets::cp::copy_directory_recursive(src, dst, &cp_options)
+                    .wrap_err_with(|| format!("Failed to copy directory from {} to {}", src.display(), dst.display()))?;
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(eyre::eyre!("Cross-device move not supported on this platform"));
+            }
             lfs::remove_dir_all(src)?;
             log::debug!("Successfully copied and removed directory {} -> {}", src.display(), dst.display());
             Ok(())

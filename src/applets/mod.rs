@@ -18,13 +18,13 @@ include!("_modules_gen.rs");
 /// Macro to register applet commands
 /// Auto-generated from applets directory at build time
 macro_rules! register_applets {
-    ($(($module:ident, $cmd_name:literal)),* $(,)?) => {
+    ($( $(#[$cfg:meta])* ($module:ident, $cmd_name:literal) ),* $(,)?) => {
         static APPLETS: OnceLock<Vec<Command>> = OnceLock::new();
 
         /// Get all busybox subcommands
         pub fn busybox_subcommands() -> &'static [Command] {
             APPLETS.get_or_init(|| vec![
-                $($module::command(),)*
+                $( $(#[$cfg])* $module::command(), )*
             ])
         }
 
@@ -33,6 +33,7 @@ macro_rules! register_applets {
         pub fn exec_builtin_command(cmd_name: &str, matches: &clap::ArgMatches) -> Result<()> {
             match cmd_name {
                 $(
+                    $(#[$cfg])*
                     $cmd_name => {
                         let options = $module::parse_options(matches)?;
                         $module::run(options)

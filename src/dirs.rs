@@ -8,10 +8,12 @@ use std::os::unix::fs::PermissionsExt;
 use crate::models::*;
 use crate::repo::RepoRevise;
 use crate::utils;
+#[cfg(unix)]
 use crate::userdb;
 use color_eyre::eyre::{self};
 use color_eyre::Result;
 
+#[cfg(unix)]
 impl EPKGDirs {
     pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
         let opt_epkg = PathBuf::from("/opt/epkg");
@@ -40,6 +42,61 @@ impl EPKGDirs {
 
         let user_aur_builds = if options.init.shared_store {
             // /opt/epkg/cache/aur_builds/$USER
+            epkg_cache.join("aur_builds").join(&username)
+        } else {
+            // $HOME/.cache/epkg/aur_builds
+            home_cache.join("aur_builds")
+        };
+
+        Ok(Self {
+            opt_epkg,
+            home_epkg,
+            home_cache,
+            user_envs,
+            user_aur_builds,
+            epkg_downloads_cache: epkg_cache.join("downloads"),
+            epkg_channels_cache: epkg_cache.join("channels"),
+            epkg_store,
+            epkg_cache,
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl EPKGDirs {
+    pub fn build_dirs(options: &EPKGConfig) -> Result<Self> {
+        // Windows/macOS (non-Unix) stub implementation
+        // For now, use dummy paths
+        let opt_epkg = PathBuf::from("C:/epkg"); // placeholder
+        let home = env::var("USERPROFILE")
+            .or_else(|_| env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        let home_epkg = PathBuf::from(&home).join(".epkg");
+        let home_cache = PathBuf::from(&home).join(".cache/epkg");
+
+        let (epkg_store, epkg_cache) = if options.init.shared_store {
+            // Shared store/cache live under opt_epkg
+            (opt_epkg.join("store"), opt_epkg.join("cache"))
+        } else {
+            // Non-shared store uses user home, cache uses home_cache
+            (home_epkg.join("store"), home_cache.clone())
+        };
+
+        // Get username
+        let username = env::var("USERNAME")
+            .or_else(|_| env::var("USER"))
+            .unwrap_or_else(|_| "user".to_string());
+
+        let user_envs = if options.init.shared_store {
+            // opt_epkg/envs/$USER
+            opt_epkg.join(format!("envs/{}", username))
+        } else {
+            // $HOME/.epkg/envs
+            home_epkg.join("envs")
+        };
+
+        let user_aur_builds = if options.init.shared_store {
+            // opt_epkg/cache/aur_builds/$USER
             epkg_cache.join("aur_builds").join(&username)
         } else {
             // $HOME/.cache/epkg/aur_builds
@@ -220,6 +277,7 @@ pub fn get_home() -> Result<String> {
     // Try HOME environment variable first (only when not setuid)
     if let Ok(home) = env::var("HOME") {
         // fixup bare docker HOME=/
+        #[cfg(unix)]
         if home == "/" && utils::is_running_as_root() {
             return Ok("/root".to_string());
         }
@@ -228,6 +286,7 @@ pub fn get_home() -> Result<String> {
     }
 
     // bare docker may have HOME=/
+    #[cfg(unix)]
     if utils::is_running_as_root() {
         return Ok("/root".to_string());
     }
@@ -280,11 +339,11 @@ fn is_shell_installed(shell_name: &str) -> bool {
     ];
 
     for path in &shell_paths {
-        if let Ok(metadata) = fs::metadata(path) {
+        if let Ok(_metadata) = fs::metadata(path) {
             // Check if the file is executable
             #[cfg(unix)]
             {
-                if metadata.permissions().mode() & 0o111 != 0 {
+                if _metadata.permissions().mode() & 0o111 != 0 {
                     return true;
                 }
             }

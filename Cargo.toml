@@ -12,6 +12,9 @@ opt-level = "z"  # Optimize for size.
 # strip = true
 # panic = "abort"
 
+# [patch.crates-io]
+# vm-memory = { version = "0.18.0" }
+
 [dependencies]
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 quick-xml = { version = "0.39", default-features = false }
@@ -25,7 +28,7 @@ tar = { version = "0.4", default-features = false }
 zstd = { version = "0.13", default-features = false }
 flate2 = { version = "1.1", features = ["zlib-rs"], default-features = false }
 liblzma = { version = "0.4", features = ["parallel"], default-features = false }
-bzip2 = { version = "0.6", default-features = true }
+bzip2 = { version = "=0.5.2", default-features = true }
 zip = { version = "7.2", default-features = false }
 sha1 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
@@ -34,8 +37,6 @@ base64 = { version = "0.22", default-features = false }
 glob = { version = "0.3", default-features = false }
 dirs = { version = "6.0", default-features = false }
 indicatif = { version = "0.18", default-features = false }
-nix = { version = "0.31", features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot"], default-features = false }
-users = { version = "0.11", default-features = false }
 crossbeam-channel = { version = "0.5", features = ["std"], default-features = false }
 rayon = { version = "1.11", default-features = false }
 pathdiff = { version = "0.2.3", default-features = false }
@@ -52,7 +53,7 @@ getrandom = { version = "0.3.4", default-features = false }
 shlex = "1.3"
 # color-eyre = { version = "0.6", features = ["capture-spantrace"], default-features = false }
 filetime = "0.2"
-ctrlc = "3.5"      # For handling Ctrl-C cleanly
+ctrlc = "3.2"      # For handling Ctrl-C cleanly
 memmap2 = "0.9"
 num_cpus = "1.17"
 sys-info = "0.9"
@@ -66,9 +67,38 @@ resolvo = { version = "0.10.1", path = "resolvo" }
 time = { version = "=0.3.44", features = ["formatting", "local-offset", "macros", "parsing"] }
 rand = { version = "=0.9", features = ["std", "std_rng"], default-features = false }
 mlua = { version = "=0.11.5", features = ["lua54", "send"] }
-mlua-sys = "=0.9"
+mlua-sys = { version = "=0.9", features = ["vendored"] }
 versions = "=6.3"
 deranged = "=0.5.7"
+
+[target.'cfg(target_os = "linux")'.dependencies.nix]
+version = "=0.30.1"
+features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot"]
+default-features = false
+
+[target.'cfg(not(target_os = "linux"))'.dependencies.nix]
+version = "=0.30.1"
+features = ["process", "user", "fs", "signal", "dir", "term", "poll"]
+default-features = false
+
+[target.'cfg(unix)'.dependencies.users]
+version = "0.11"
+default-features = false
+
+[target.'cfg(target_os = "linux")'.dependencies.msb_krun]
+version = "0.1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies.vm-memory]
+version = "=0.18.0"
+
+[target.'cfg(target_os = "linux")'.dependencies.hashbrown]
+version = "=0.16.1"
+
+[target.'cfg(target_os = "linux")'.dependencies.itertools]
+version = "=0.14.0"
+
+[target.'cfg(target_os = "linux")'.dependencies.foldhash]
+version = "=0.2.0"
 
 # Optional but recommended for better progress bars
 [dependencies.console]

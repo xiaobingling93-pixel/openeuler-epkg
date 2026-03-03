@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use std::env;
 use std::fs;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -6,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::models::*;
+#[cfg(target_os = "linux")]
 use crate::namespace::{determine_process_config, build_unified_context, create_process_with_namespaces};
 use crate::utils;
 use crate::utils::is_suid;
@@ -208,6 +210,7 @@ fn resolve_command_path(env_root: &Path, run_options: &RunOptions) -> Result<Pat
     }
 }
 
+#[cfg(target_os = "linux")]
 fn prepare_and_create_process(
     env_root: &Path,
     run_options: &RunOptions,
@@ -275,6 +278,7 @@ fn prepare_and_create_process(
 /// Returns:
 /// - Ok(Some(pid)) for background processes (run_options.background = true)
 /// - Ok(None) for foreground processes (waits for completion)
+#[cfg(target_os = "linux")]
 pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     // Clone run_options to allow preparation
     let mut prepared_opts = run_options.clone();
@@ -284,6 +288,15 @@ pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Opt
     fork_and_execute_raw(env_root, &prepared_opts)
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn fork_and_execute(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+    use color_eyre::eyre;
+    // Tier 2: Simple fork+exec without namespace isolation
+    // For now, just return an error
+    Err(eyre::eyre!("fork_and_execute not implemented for this platform"))
+}
+
+#[cfg(target_os = "linux")]
 fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
     // Create stdin pipe if needed (same logic as original fork_and_execute)
     let stdin_bytes = run_options.stdin.as_ref().map(|v| v.as_slice());
@@ -329,6 +342,12 @@ fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Opt
         wait_for_child_with_timeout(child_pid, &cmd_path, run_options)?;
         Ok(None)
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fork_and_execute_raw(env_root: &Path, run_options: &RunOptions) -> Result<Option<i32>> {
+    use color_eyre::eyre;
+    Err(eyre::eyre!("fork_and_execute_raw not implemented for this platform"))
 }
 
 /// Check if a file is executable
@@ -485,6 +504,7 @@ fn create_stdin_pipe_if_needed(run_options: &RunOptions) -> Result<(Option<Owned
 }
 
 /// Execute command with environment PATH lookup and namespace isolation
+#[cfg(target_os = "linux")]
 pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
     let run_options = config().run.clone();
 
@@ -496,6 +516,12 @@ pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
 
     fork_and_execute(&env_root, &run_options)?;
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn command_run(_sub_matches: &clap::ArgMatches) -> Result<()> {
+    use color_eyre::eyre;
+    Err(eyre::eyre!("epkg run is not supported on this platform. Use Linux or run inside a Linux VM."))
 }
 
 /// Execute built-in command (busybox-style)

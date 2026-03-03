@@ -1,3 +1,4 @@
+
 use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -5,8 +6,13 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use nix::sched::CloneFlags;
+#[cfg(unix)]
 use nix::unistd::{Uid, Gid};
+#[cfg(target_os = "linux")]
+use nix::mount::MsFlags;
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
 #[cfg(not(test))]
 use crate::parse_cmdline;
@@ -15,7 +21,7 @@ use crate::parse_cmdline_from;
 use crate::parse_options_common;
 use crate::parse_options_subcommand;
 use crate::search::SearchOptions;
-use crate::run::RunOptions;
+#[cfg(unix)] use crate::run::RunOptions;
 use color_eyre::Result;
 use color_eyre::eyre;
 #[cfg(not(test))]
@@ -295,6 +301,7 @@ pub struct InstalledPackageInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")] // for backward compatibility with older installed-packages.json
     pub ebin_links: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg(unix)]
     pub xdesktop_links: Vec<String>,
 
     // Debian trigger state management
@@ -322,6 +329,7 @@ impl Default for InstalledPackageInfo {
             bdepends: BTreeSet::new(),
             rbdepends: BTreeSet::new(),
             ebin_links: Vec::new(),
+            #[cfg(unix)]
             xdesktop_links: Vec::new(),
             pending_triggers: Vec::new(),
             triggers_awaited: false,
@@ -391,6 +399,7 @@ impl std::str::FromStr for SandboxMode {
 
 /// Mount specification for flexible mount operations.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg(target_os = "linux")]
 pub struct MountSpec {
     #[serde(default)]
     pub source: String,
@@ -416,10 +425,11 @@ pub struct MountSpec {
     pub euid_map: Option<u32>,
 }
 
+#[cfg(target_os = "linux")]
 impl MountSpec {
     /// Convert flags to MsFlags
-    pub fn ms_flags(&self) -> nix::mount::MsFlags {
-        nix::mount::MsFlags::from_bits_truncate(self.flags)
+    pub fn ms_flags(&self) -> MsFlags {
+        MsFlags::from_bits_truncate(self.flags)
     }
 }
 
@@ -462,6 +472,7 @@ pub struct ProcessCreationConfig {
     pub namespace_strategy: NamespaceStrategy,
     pub sandbox_mode: SandboxMode,
     /// Namespace flags for clone() or unshare()
+    #[cfg(target_os = "linux")]
     pub namespace_flags: CloneFlags,
     pub needs_uid_mapping: bool,
     pub mount_spec_strings: Vec<String>,
@@ -472,7 +483,7 @@ pub struct ProcessCreationConfig {
 pub struct UnifiedChildContext {
     // Common fields
     pub env_root: PathBuf,
-    pub run_options: RunOptions,
+    #[cfg(unix)] pub run_options: RunOptions,
     pub command: PathBuf,
     pub args: Vec<String>,
     #[allow(dead_code)]
@@ -484,15 +495,20 @@ pub struct UnifiedChildContext {
     // Sync pipe for parent-child coordination
     // Note: This is the read end for the child to wait on mapping completion.
     // The write end is owned by the parent.
+    #[cfg(unix)]
     pub sync_read_fd: Option<OwnedFd>,
 
     // Mount specifications (pre-parsed)
     #[allow(dead_code)]
+    #[cfg(target_os = "linux")]
     pub mount_specs: Vec<MountSpec>,
 
     // UID/GID mapping info
+    #[cfg(unix)]
     pub uid: Uid,
+    #[cfg(unix)]
     pub gid: Gid,
+    #[cfg(unix)]
     pub euid: Uid,
     pub user: Option<String>,
 
@@ -933,7 +949,7 @@ pub struct EPKGConfig {
     #[serde(skip)]
     pub service: ServiceOptions,
     #[serde(skip)]
-    pub run: RunOptions,
+    #[cfg(unix)] pub run: RunOptions,
 
     #[serde(skip)]
     pub config_file: String,

@@ -14,22 +14,31 @@ mod provides;
 mod install;
 mod upgrade;
 mod remove;
+#[cfg(unix)]
 mod hash;
+#[cfg(unix)]
 mod ipc;
 mod store;
 mod package_cache;
 mod link;
 mod expose;
+#[cfg(unix)]
 mod xdesktop;
+#[cfg(unix)]
 mod transaction;
 mod world;
 mod utils;
 mod mtree;
+#[cfg(unix)]
 mod posix;
-mod history;
+#[cfg(unix)] mod history;
+#[cfg(unix)]
 mod environment;
+#[cfg(unix)]
 mod deinit;
+#[cfg(unix)]
 mod init;
+#[cfg(unix)]
 mod path;
 mod repo;
 mod mmio;
@@ -38,44 +47,68 @@ mod location;
 mod package;
 mod packages_stream;
 mod index_html;
+#[cfg(unix)]
 mod deb_repo;
+#[cfg(unix)]
 mod deb_pkg;
+#[cfg(unix)]
 mod deb_sources;
+#[cfg(unix)]
 mod rpm_repo;
+#[cfg(unix)]
 mod rpm_pkg;
+#[cfg(unix)]
 mod rpm_sources;
+#[cfg(unix)]
 mod apk_repo;
+#[cfg(unix)]
 mod apk_pkg;
 mod arch_repo;
 mod arch_pkg;
+#[cfg(unix)]
 mod aur;
 mod conda_repo;
 mod conda_pkg;
 mod conda_link;
 mod shebang;
 mod version_constraint;
+#[cfg(unix)]
 mod epkg;
 mod parse_version;
 mod plan;
 mod version_compare;
 mod scriptlets;
+#[cfg(unix)]
 mod hooks;
+#[cfg(unix)]
 mod userdb;
+#[cfg(unix)]
 mod deb_triggers;
+#[cfg(unix)]
 mod rpm_triggers;
+#[cfg(unix)]
 mod lua;
+#[cfg(unix)]
 mod risks;
+#[cfg(unix)]
 mod run;
+#[cfg(unix)]
 mod namespace;
+#[cfg(unix)]
 mod idmap;
+#[cfg(unix)]
 mod mount;
+#[cfg(unix)]
 mod qemu;
+#[cfg(unix)]
 mod vm_client;
 mod applets;
 mod info;
 mod list;
 mod search;
+#[cfg(unix)]
 mod gc;
+#[cfg(unix)]
 mod service;
 
 #[cfg(debug_assertions)]
@@ -91,18 +124,24 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use crate::models::*;
 use crate::dirs::*;
-use crate::environment::*;
+#[cfg(unix)] use crate::environment::*;
 use crate::io::edit_environment_config;
 use crate::io::load_installed_packages;
 use crate::io::read_yaml_file;
+#[cfg(unix)]
 use crate::path::update_path;
+#[cfg(unix)]
 use crate::repo::sync_channel_metadata;
 use crate::list::list_packages_with_scope;
+#[cfg(unix)]
 use crate::install::install_packages;
 use crate::upgrade::upgrade_packages;
 use crate::remove::remove_packages;
+#[cfg(unix)]
 use crate::history::{print_history, rollback_history};
-use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
+#[cfg(unix)] use crate::init::{install_epkg, try_light_init, light_init, upgrade_epkg};
+#[cfg(unix)]
+#[cfg(unix)]
 use crate::run::{command_run, command_busybox, RunOptions};
 use color_eyre::Result;
 use color_eyre::eyre;
@@ -155,6 +194,7 @@ fn main() -> Result<()> {
     //
     // Set SIG_DFL for the main epkg process to allow graceful termination
     // if writing to a closed pipe (e.g., epkg list --all | head).
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -169,6 +209,7 @@ fn main() -> Result<()> {
 
     log::trace!("Application starting with config: {:#?}", &*config());
 
+    #[cfg(unix)]
     try_light_init()?;
 
     let matches = clap_matches();
@@ -186,9 +227,13 @@ fn main() -> Result<()> {
         Some(("repo",       sub_matches))  =>  command_repo(sub_matches)?,
         Some(("hash",       sub_matches))  =>  command_hash(sub_matches)?,
         Some(("build",      sub_matches))  =>  command_build(sub_matches)?,
+        #[cfg(unix)]
         Some(("unpack",     sub_matches))  =>  command_unpack(&sub_matches)?,
+        #[cfg(unix)]
         Some(("convert",    sub_matches))  =>  command_convert(&sub_matches)?,
+        #[cfg(unix)]
         Some(("run",        sub_matches))  =>  command_run(sub_matches)?,
+        #[cfg(unix)]
         Some(("busybox",    sub_matches))  =>  command_busybox(sub_matches)?,
         Some(("search",     sub_matches))  =>  command_search(sub_matches)?,
         Some(("gc",         sub_matches))  =>  command_gc(sub_matches)?,
@@ -1374,6 +1419,7 @@ fn try_env_from_epkg_activenv(config: &mut EPKGConfig) -> bool {
 }
 
 /// Detect environment from run command (.eenv or registered envs). Returns Ok(true) if env_name was set.
+#[cfg(unix)]
 fn try_env_from_run_command(config: &mut EPKGConfig) -> Result<bool> {
     if config.run.command.is_empty() || config.subcommand != EpkgCommand::Run {
         return Ok(false);
@@ -1384,6 +1430,7 @@ fn try_env_from_run_command(config: &mut EPKGConfig) -> Result<bool> {
         set_env_name_by_path(&dot_eenv, config)?;
         log::debug!("env: from run command .eenv at {} -> {}", dot_eenv.display(), config.common.env_name);
     } else if !is_path {
+        #[cfg(unix)]
         search_registered_envs(&command, config);
         if !config.common.env_name.is_empty() {
             log::debug!("env: from run command (registered) -> {}", config.common.env_name);
@@ -1419,8 +1466,11 @@ fn determine_environment_final(config: &mut EPKGConfig) -> Result<()> {
     if try_env_from_epkg_activenv(config) {
         return Ok(());
     }
-    if try_env_from_run_command(config)? {
-        return Ok(());
+    #[cfg(unix)]
+    {
+        if try_env_from_run_command(config)? {
+            return Ok(());
+        }
     }
     if try_env_from_cwd_dot_eenv(config)? {
         return Ok(());
@@ -1467,6 +1517,7 @@ fn set_env_name_by_path(dot_eenv: &Path, options: &mut EPKGConfig) -> Result<()>
     Ok(())
 }
 
+#[cfg(unix)]
 fn search_registered_envs(command: &str, options: &mut EPKGConfig) {
     if let Ok(Some((env_name, env_root))) = find_command_in_registered_envs(command) {
         // Command found in a registered environment
@@ -1492,6 +1543,7 @@ pub fn parse_options_subcommand(matches: &clap::ArgMatches, mut config: EPKGConf
         Some(("build",      sub_matches))  =>  parse_options_build(&mut config, sub_matches).expect("Failed to parse build options"),
         Some(("unpack",     sub_matches))  =>  parse_options_unpack(&mut config, sub_matches).expect("Failed to parse unpack options"),
         Some(("convert",    sub_matches))  =>  parse_options_convert(&mut config, sub_matches).expect("Failed to parse convert options"),
+        #[cfg(unix)]
         Some(("run",        sub_matches))  =>  crate::run::parse_options_run(&mut config, sub_matches).expect("Failed to parse run options"),
         Some(("search",     sub_matches))  =>  parse_options_search(&mut config, sub_matches).expect("Failed to parse search options"),
         Some(("service",    sub_matches))  =>  parse_options_service(&mut config, sub_matches).expect("Failed to parse service options"),
@@ -1804,6 +1856,7 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
         .map(|s| s.as_str())
         .unwrap_or("");
 
+    #[cfg(unix)]
     sync_channel_metadata()?;
     list_packages_with_scope(scope, pattern)?;
     Ok(())
@@ -1811,6 +1864,7 @@ fn command_list(sub_matches: &clap::ArgMatches) -> Result<()> {
 
 fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
     // First call sync_channel_metadata to prepare data
+    #[cfg(unix)]
     sync_channel_metadata()?;
 
     // Load installed packages info
@@ -1843,7 +1897,10 @@ fn command_info(sub_matches: &clap::ArgMatches) -> Result<()> {
 fn command_install(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_specs) = sub_matches.get_many::<String>("PACKAGE_SPEC") {
         let packages_vec: Vec<String> = package_specs.cloned().collect();
+        #[cfg(unix)]
         install_packages(packages_vec).map(|_| ())?;
+        #[cfg(not(unix))]
+        return Err(color_eyre::eyre::eyre!("Install command not supported on this platform"));
     }
     Ok(())
 }
@@ -1877,6 +1934,7 @@ fn command_restore(sub_matches: &clap::ArgMatches) -> Result<()> {
 }
 
 fn command_update(_sub_matches: &clap::ArgMatches) -> Result<()> {
+    #[cfg(unix)]
     sync_channel_metadata()?;
     Ok(())
 }
@@ -1888,6 +1946,7 @@ fn command_repo(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_hash(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_store_dirs) = sub_matches.get_many::<String>("PACKAGE_STORE_DIR") {
         for dir in package_store_dirs {
@@ -1914,6 +1973,7 @@ fn command_build(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_unpack(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
         let files: Vec<String> = package_files_iter.cloned().collect();
@@ -1942,6 +2002,7 @@ fn command_unpack(sub_matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn command_convert(sub_matches: &clap::ArgMatches) -> Result<()> {
     if let Some(package_files_iter) = sub_matches.get_many::<String>("PACKAGE_FILE") {
         let files: Vec<String> = package_files_iter.cloned().collect();
@@ -2000,20 +2061,24 @@ fn command_self(sub_matches: &clap::ArgMatches) -> Result<()> {
     match sub_matches.subcommand() {
         Some(("install", _sub_matches)) => {
             if find_env_base(SELF_ENV).is_none() {
+                #[cfg(unix)]
                 install_epkg()?;
             }
 
             if find_env_base(MAIN_ENV).is_none() {
+                #[cfg(unix)]
                 light_init()?;
             } else {
                 eprintln!("epkg was already initialized for current user");
             }
         }
         Some(("upgrade", _sub_matches)) => {
+            #[cfg(unix)]
             upgrade_epkg()?;
         }
         Some(("remove", sub_matches)) => {
             if let Some(scope) = sub_matches.get_one::<String>("scope") {
+                #[cfg(unix)]
                 deinit::deinit_epkg(scope)?;
             }
         }

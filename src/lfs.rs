@@ -6,12 +6,19 @@ use color_eyre::eyre::{eyre, WrapErr};
 use color_eyre::Result;
 
 /// Create a symbolic link.
+#[cfg(unix)]
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    use std::os::unix::fs::symlink;
     let original = original.as_ref();
     let link = link.as_ref();
     log::trace!("creating symlink: {} -> {}", link.display(), original.display());
-    std::os::unix::fs::symlink(original, link)
+    symlink(original, link)
         .wrap_err_with(|| format!("Failed to create symlink from {} to {}", link.display(), original.display()))
+}
+
+#[cfg(windows)]
+pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(_original: P, _link: Q) -> Result<()> {
+    Err(color_eyre::eyre::eyre!("symlink not implemented for Windows yet"))
 }
 
 /// Create a hard link.
@@ -226,5 +233,29 @@ pub fn is_symlink(path: &Path) -> bool {
     match symlink_metadata(path) {
         Ok(metadata) => metadata.file_type().is_symlink(),
         Err(_) => false,
+    }
+}
+
+/// Touch a file to update its modification time (set to current time)
+#[cfg(unix)]
+pub fn touch(path: &Path) -> Result<()> {
+    use crate::posix::posix_utime;
+    posix_utime(path, None, None)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to touch file {}: {:?}", path.display(), e))
+}
+
+#[cfg(windows)]
+pub fn touch(path: &Path) -> Result<()> {
+    // On Windows, we can't easily update file times without opening the file
+    // For now, just try to open the file in read-write mode which will update access time
+    match std::fs::OpenOptions::new().write(true).read(true).open(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // File doesn't exist, create it
+            std::fs::File::create(path)
+                .wrap_err_with(|| format!("Failed to create file {}", path.display()))?;
+            Ok(())
+        }
+        Err(e) => Err(color_eyre::eyre::eyre!("Failed to touch file {}: {}", path.display(), e)),
     }
 }

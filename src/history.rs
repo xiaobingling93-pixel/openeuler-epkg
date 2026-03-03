@@ -1,7 +1,8 @@
+#![cfg(unix)]
 use std::fs;
 use crate::lfs;
 use std::path::{Path, PathBuf};
-use std::os::unix::fs::symlink;
+use crate::lfs::symlink;
 use color_eyre::eyre::{self, Result, WrapErr};
 use time::OffsetDateTime;
 use time::macros::format_description;

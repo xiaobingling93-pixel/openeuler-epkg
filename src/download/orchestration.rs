@@ -235,8 +235,11 @@ pub(crate) fn download_task(
     }
 
     // Handle AUR git downloads if URL matches AUR pattern and git is available
-    if let Ok(()) = handle_aur_git_download(url) {
-        return Ok(());
+    #[cfg(unix)]
+    {
+        if let Ok(()) = handle_aur_git_download(url) {
+            return Ok(());
+        }
     }
 
     // Create PID file for process coordination

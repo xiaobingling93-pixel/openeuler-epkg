@@ -1,20 +1,21 @@
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::fs;
 use crate::lfs;
 use std::io::{self, Read};
 use std::path::Path;
-use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
+#[cfg(unix)] use std::os::unix::fs::{PermissionsExt, FileTypeExt, MetadataExt};
 use tar::Archive;
 use zstd::stream::Decoder;
-use nix::unistd;
+#[cfg(unix)] use nix::unistd;
 use color_eyre::Result;
 use color_eyre::eyre::{self, eyre, WrapErr};
 use walkdir::WalkDir;
 use uuid::Uuid;
 use crate::models::{dirs, Package, PackageFormat, InstalledPackageInfo};
 use crate::package;
-use crate::userdb;
+#[cfg(unix)] use crate::userdb;
 use crate::mtree::escape_mtree_path;
 use log;
 
@@ -248,8 +249,11 @@ pub fn unpack_mv_package(
 
     // Calculate content-addressable hash
     let store_tmp_dir_str = store_tmp_dir.to_str().ok_or_else(|| eyre::eyre!("Invalid UTF-8 in temporary directory path: {}", store_tmp_dir.display()))?;
+    #[cfg(unix)]
     let ca_hash_real = crate::hash::epkg_store_hash(store_tmp_dir_str)
         .wrap_err_with(|| format!("Failed to calculate content-addressable hash for directory: {}", store_tmp_dir.display()))?;
+    #[cfg(not(unix))]
+    let ca_hash_real = "unknown".to_string(); // TODO: implement cross-platform hash
 
     // Read package.txt to get package name and version
     let package_txt_path = store_tmp_dir.join("info/package.txt");
@@ -333,12 +337,15 @@ fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkg
         .wrap_err_with(|| format!("Failed to detect package format for: {}", package_file.display()))?;
 
     match format {
+        #[cfg(unix)]
         PackageFormat::Deb => {
             crate::deb_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
+        #[cfg(unix)]
         PackageFormat::Rpm => {
             crate::rpm_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
+        #[cfg(unix)]
         PackageFormat::Apk => {
             crate::apk_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
@@ -348,6 +355,7 @@ fn general_unpack_package<P: AsRef<Path>>(package_file: P, store_tmp_dir: P, pkg
         PackageFormat::Conda => {
             crate::conda_pkg::unpack_package(package_file, store_tmp_dir, pkgkey)?
         }
+        #[cfg(unix)]
         PackageFormat::Epkg => {
             // Handle existing .epkg format
             crate::epkg::unpack_package(package_file, store_tmp_dir)?
@@ -411,9 +419,12 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             attrs.push("type=file".to_string());
 
             // Add mode if not default (644)
-            let mode = metadata.permissions().mode() & 0o777;
-            if mode != 0o644 {
-                attrs.push(format!("mode={:o}", mode));
+            #[cfg(unix)]
+            {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode != 0o644 {
+                    attrs.push(format!("mode={:o}", mode));
+                }
             }
 
             // Add SHA256 hash for regular files
@@ -427,9 +438,12 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
 
 
             // Add mode if not default (755)
-            let mode = metadata.permissions().mode() & 0o777;
-            if mode != 0o755 {
-                attrs.push(format!("mode={:o}", mode));
+            #[cfg(unix)]
+            {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode != 0o755 {
+                    attrs.push(format!("mode={:o}", mode));
+                }
             }
         } else if file_type.is_symlink() {
             attrs.push("type=link".to_string());
@@ -450,32 +464,38 @@ pub fn create_filelist_txt<P: AsRef<Path>>(store_tmp_dir: P) -> Result<()> {
             }
         } else {
             // Handle special files
-            if metadata.file_type().is_char_device() {
-                attrs.push("type=char".to_string());
-            } else if metadata.file_type().is_block_device() {
-                attrs.push("type=block".to_string());
-            } else if metadata.file_type().is_fifo() {
-                attrs.push("type=fifo".to_string());
-            } else if metadata.file_type().is_socket() {
-                attrs.push("type=socket".to_string());
+            #[cfg(unix)]
+            {
+                if metadata.file_type().is_char_device() {
+                    attrs.push("type=char".to_string());
+                } else if metadata.file_type().is_block_device() {
+                    attrs.push("type=block".to_string());
+                } else if metadata.file_type().is_fifo() {
+                    attrs.push("type=fifo".to_string());
+                } else if metadata.file_type().is_socket() {
+                    attrs.push("type=socket".to_string());
+                }
             }
         }
 
         // Add owner/group if not root
-        let uid = metadata.uid();
-        let gid = metadata.gid();
-        let euid = unistd::geteuid();
-        let egid = unistd::getegid();
+        #[cfg(unix)]
+        {
+            let uid = metadata.uid();
+            let gid = metadata.gid();
+            let euid = unistd::geteuid();
+            let egid = unistd::getegid();
 
-        if uid != 0 && uid != euid.as_raw() {
-            if let Ok(username) = userdb::get_username_by_uid(uid, None) {
-                attrs.push(format!("uname={}", username));
+            if uid != 0 && uid != euid.as_raw() {
+                if let Ok(username) = userdb::get_username_by_uid(uid, None) {
+                    attrs.push(format!("uname={}", username));
+                }
             }
-        }
 
-        if gid != 0 && gid != egid.as_raw() {
-            if let Ok(groupname) = userdb::get_groupname_by_gid(gid, None) {
-                attrs.push(format!("gname={}", groupname));
+            if gid != 0 && gid != egid.as_raw() {
+                if let Ok(groupname) = userdb::get_groupname_by_gid(gid, None) {
+                    attrs.push(format!("gname={}", groupname));
+                }
             }
         }
 

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use std::path::Path;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

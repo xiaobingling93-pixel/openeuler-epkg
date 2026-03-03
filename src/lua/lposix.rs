@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Lua bindings for POSIX functions
 //
 // Compatible with /c/rpm-software-management/rpm/rpmio/lposix.cc
@@ -11,6 +12,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // C++ version uses extern int _rpmlua_have_forked
 // This is a per-process flag, so we use a static AtomicBool
 static HAVE_FORKED: AtomicBool = AtomicBool::new(false);
+
+// Platform-specific errno location
+#[cfg(target_os = "linux")]
+unsafe fn errno_location() -> *mut libc::c_int {
+    libc::__errno_location()
+}
+#[cfg(target_os = "macos")]
+unsafe fn errno_location() -> *mut libc::c_int {
+    libc::__error()
+}
 
 /// Helper to match C++ pushresult behavior: returns number on success, (nil, error_string, errno) on failure
 /// Uses Value::Integer instead of Value::Number (RPM uses Number for legacy Lua compatibility).
@@ -43,7 +54,7 @@ pub(crate) fn pusherror(lua: &Lua, info: Option<&str>) -> LuaResult<MultiValue> 
 /// This is used by rpm.spawn() to return exit codes/signals as error numbers
 /// Uses Value::Integer for error codes (see pushresult() for Integer/Number trade-offs).
 pub(crate) fn pusherror_with_code(lua: &Lua, info: Option<&str>, code: Option<i32>) -> LuaResult<MultiValue> {
-    let error_code = code.unwrap_or_else(|| unsafe { *libc::__errno_location() });
+    let error_code = code.unwrap_or_else(|| unsafe { *errno_location() });
     let error_string = if let Some(i) = info {
         if code.is_none() {
             // When using errno (syscall error), match C++ pusherror behavior:
@@ -580,7 +591,7 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
     // C++ version returns (string, number) - matching Perrno() at line 172-177
     // Uses Value::Integer instead of Value::Number (see pushresult() for Integer/Number trade-offs).
     posix_table.set("errno", lua.create_function(|lua, ()| -> LuaResult<mlua::MultiValue> {
-        let errno = unsafe { *libc::__errno_location() };
+        let errno = unsafe { *errno_location() };
         let err_msg = unsafe {
             let c_str = libc::strerror(errno);
             std::ffi::CStr::from_ptr(c_str).to_string_lossy().to_string()
@@ -851,10 +862,10 @@ fn register_system_posix_functions(lua: &Lua, posix_table: &mut Table) -> LuaRes
 
         let result = if fd >= 0 && fd != target_fd {
             // Save errno in case close() modifies it
-            let saved_errno = unsafe { *libc::__errno_location() };
+            let saved_errno = unsafe { *errno_location() };
             let r = unsafe { libc::dup2(fd, target_fd) };
             unsafe { libc::close(fd) };
-            unsafe { *libc::__errno_location() = saved_errno };
+            unsafe { *errno_location() = saved_errno };
             r
         } else {
             fd

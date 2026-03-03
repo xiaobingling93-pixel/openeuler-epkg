@@ -9,7 +9,40 @@ RUST_TARGET_X86_64=x86_64-unknown-linux-musl
 RUST_TARGET_AARCH64=aarch64-unknown-linux-musl
 RUST_TARGET_RISCV64=riscv64gc-unknown-linux-musl
 RUST_TARGET_LOONGARCH64=loongarch64-unknown-linux-musl
+RUST_TARGET_X86_64_DARWIN=x86_64-apple-darwin
+RUST_TARGET_AARCH64_DARWIN=aarch64-apple-darwin
+# Using GNU target for mingw-w64 toolchain
+RUST_TARGET_X86_64_WINDOWS=x86_64-pc-windows-gnu
+RUST_TARGET_AARCH64_WINDOWS=aarch64-pc-windows-gnu
 BINARY_NAME=epkg
+
+# Cross-platform architecture detection
+detect_native_arch() {
+    local uname_m=$(uname -m)
+    case "$uname_m" in
+        x86_64|amd64)
+            echo "x86_64"
+            ;;
+        i386|i686)
+            echo "x86_64"  # map 32-bit to 64-bit for simplicity
+            ;;
+        arm64|aarch64)
+            echo "aarch64"
+            ;;
+        armv7l|armv8l)
+            echo "arm"     # not supported, but map
+            ;;
+        riscv64)
+            echo "riscv64"
+            ;;
+        loongarch64)
+            echo "loongarch64"
+            ;;
+        *)
+            echo "$uname_m"
+            ;;
+    esac
+}
 
 # Development environment paths
 DEV_ENV_BIN_DIR="$HOME/.epkg/envs/self/usr/bin"
@@ -37,13 +70,35 @@ safe_cp() {
 
 # Detect OS and version
 detect_os() {
-    if [[ -f /etc/os-release ]]; then
-        OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-        OS_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-    else
-        OS_ID="unknown"
-        OS_VERSION="unknown"
-    fi
+    local uname_s=$(uname -s)
+    case "$uname_s" in
+        Linux)
+            OS_FAMILY="linux"
+            if [[ -f /etc/os-release ]]; then
+                OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+                OS_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+            else
+                OS_ID="linux"
+                OS_VERSION="unknown"
+            fi
+            ;;
+        Darwin)
+            OS_FAMILY="darwin"
+            OS_ID="darwin"
+            OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
+            ;;
+        CYGWIN*|MINGW*|MSYS*)
+            OS_FAMILY="windows"
+            OS_ID="windows"
+            OS_VERSION="unknown"
+            ;;
+        *)
+            OS_FAMILY="unknown"
+            OS_ID="unknown"
+            OS_VERSION="unknown"
+            ;;
+    esac
+    echo "Detected OS: $OS_FAMILY $OS_ID $OS_VERSION"
 }
 
 has_cmd()
@@ -53,18 +108,45 @@ has_cmd()
 
 # Detect package manager
 detect_package_manager() {
-    # Detect available package manager
-    if   has_cmd apt;       then PKG_MANAGER="apt"
-    elif has_cmd dnf;       then PKG_MANAGER="dnf"
-    elif has_cmd yum;       then PKG_MANAGER="yum"
-    elif has_cmd zypper;    then PKG_MANAGER="zypper"
-    elif has_cmd pacman;    then PKG_MANAGER="pacman"
-    elif has_cmd apk;       then PKG_MANAGER="apk"
-    else
-        PKG_MANAGER="unknown"
-        echo "Warning: Could not detect package manager"
-        exit 1
-    fi
+    # Detect available package manager based on OS family
+    case "$OS_FAMILY" in
+        linux)
+            if   has_cmd apt;       then PKG_MANAGER="apt"
+            elif has_cmd dnf;       then PKG_MANAGER="dnf"
+            elif has_cmd yum;       then PKG_MANAGER="yum"
+            elif has_cmd zypper;    then PKG_MANAGER="zypper"
+            elif has_cmd pacman;    then PKG_MANAGER="pacman"
+            elif has_cmd apk;       then PKG_MANAGER="apk"
+            else
+                PKG_MANAGER="unknown"
+                echo "Warning: Could not detect Linux package manager"
+                exit 1
+            fi
+            ;;
+        darwin)
+            if has_cmd brew; then
+                PKG_MANAGER="brew"
+            else
+                PKG_MANAGER="unknown"
+                echo "Warning: Homebrew not found. Some dependencies may need manual installation."
+                # Do not exit, as we can still try to build with system tools
+            fi
+            ;;
+        windows)
+            if has_cmd choco; then
+                PKG_MANAGER="choco"
+            elif has_cmd scoop; then
+                PKG_MANAGER="scoop"
+            else
+                PKG_MANAGER="unknown"
+                echo "Warning: No package manager detected (choco/scoop). Some dependencies may need manual installation."
+            fi
+            ;;
+        *)
+            PKG_MANAGER="unknown"
+            echo "Warning: Unknown OS family, cannot detect package manager"
+            ;;
+    esac
     echo "Detected package manager: $PKG_MANAGER"
 }
 
@@ -204,7 +286,7 @@ get_package_manager_config() {
                     packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev"
                     ;;
                 crossdev)
-                    packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu"
+                    packages="rustup build-essential libssl-dev musl-tools liblua5.4-dev gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu gcc-mingw-w64-x86-64 xar libxar-dev clang cmake libxml2-dev fuse3 libfuse3-dev liblzma-dev libbz2-dev zlib1g-dev llvm-dev uuid-dev"
                     ;;
                 sandbox)
                     # Tools for user namespace UID/GID mapping and sandbox helpers
@@ -305,6 +387,62 @@ get_package_manager_config() {
                     ;;
             esac
             ;;
+        brew)
+            update_cmd="brew update"
+            install_cmd="brew install"
+            case "$mode" in
+                dev|crossdev)
+                    packages="rustup lua openssl pkg-config"
+                    ;;
+                sandbox)
+                    # No sandbox packages needed on macOS
+                    packages=""
+                    ;;
+                qemu)
+                    # QEMU optional
+                    packages="qemu"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
+            ;;
+        choco)
+            update_cmd="choco update -y"
+            install_cmd="choco install -y"
+            case "$mode" in
+                dev|crossdev)
+                    packages="rustup lua openssl git wget"
+                    ;;
+                sandbox)
+                    packages=""
+                    ;;
+                qemu)
+                    packages="qemu"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
+            ;;
+        scoop)
+            update_cmd="scoop update"
+            install_cmd="scoop install"
+            case "$mode" in
+                dev|crossdev)
+                    packages="rustup lua openssl git wget"
+                    ;;
+                sandbox)
+                    packages=""
+                    ;;
+                qemu)
+                    packages="qemu"
+                    ;;
+                *)
+                    packages=""
+                    ;;
+            esac
+            ;;
         *)
             echo "Unsupported package manager: $PKG_MANAGER"
             exit 1
@@ -391,6 +529,16 @@ clone_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
+
+    [[ "$mode" = "crossdev" ]] && {
+        clone_or_update_repo "https://github.com/tpoechtrager/osxcross.git"
+        (
+            cd osxcross/tarballs
+            wget https://github.com/joseluisq/macosx-sdks/releases/download/26.1/sha256sum.txt
+            wget https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz
+            sha256sum -c sha256sum.txt
+        )
+    }
 }
 
 # Unified dependency installer
@@ -597,8 +745,16 @@ setup_glibc_lua() {
 build() {
     echo "Building debug binary..."
 
-    # Set up static Lua linking for glibc
-    setup_glibc_lua
+    # Detect OS to adjust Lua linking
+    detect_os
+    if [[ "$OS_FAMILY" == "linux" ]]; then
+        # Set up static Lua linking for glibc (Linux only)
+        setup_glibc_lua
+    else
+        # On macOS/Windows, use dynamic linking via pkg-config
+        export LUA_LINK=dynamic
+        unset LUA_NO_PKG_CONFIG 2>/dev/null || true
+    fi
 
     cargo build --ignore-rust-version
 
@@ -611,8 +767,16 @@ build() {
 build_release() {
     echo "Building release binary..."
 
-    # Set up static Lua linking for glibc
-    setup_glibc_lua
+    # Detect OS to adjust Lua linking
+    detect_os
+    if [[ "$OS_FAMILY" == "linux" ]]; then
+        # Set up static Lua linking for glibc (Linux only)
+        setup_glibc_lua
+    else
+        # On macOS/Windows, use dynamic linking via pkg-config
+        export LUA_LINK=dynamic
+        unset LUA_NO_PKG_CONFIG 2>/dev/null || true
+    fi
 
     cargo build --release --ignore-rust-version
 
@@ -621,12 +785,65 @@ build_release() {
     install_to_dev_env "$PROJECT_ROOT/target/release/$BINARY_NAME"
 }
 
+# Cross-compilation to macOS
+cross-macos() {
+    local arch="${1:-aarch64}"
+    local target=""
+    case "$arch" in
+        x86_64) target="$RUST_TARGET_X86_64_DARWIN" ;;
+        aarch64) target="$RUST_TARGET_AARCH64_DARWIN" ;;
+        *) echo "Unsupported architecture for macOS: $arch"; exit 1 ;;
+    esac
+
+    echo "Building for macOS ($arch)..."
+    # Install Rust target if needed
+    if has_cmd rustup; then
+        rustup target add "$target"
+    fi
+
+    # Setup cross-compilation environment
+    setup_cross_env "$target"
+
+    # Lua dynamic linking
+    export LUA_LINK=dynamic
+    unset LUA_NO_PKG_CONFIG 2>/dev/null || true
+
+    cargo build --release --target "$target" --ignore-rust-version
+
+    echo "Cross-compilation to macOS completed. Binary is in target/$target/release/$BINARY_NAME"
+}
+
+# Cross-compilation to Windows
+cross-windows() {
+    local arch="${1:-x86_64}"
+    local target=""
+    case "$arch" in
+        x86_64) target="$RUST_TARGET_X86_64_WINDOWS" ;;
+        aarch64) target="$RUST_TARGET_AARCH64_WINDOWS" ;;
+        *) echo "Unsupported architecture for Windows: $arch"; exit 1 ;;
+    esac
+
+    echo "Building for Windows ($arch)..."
+    if has_cmd rustup; then
+        rustup target add "$target"
+    fi
+
+    setup_cross_env "$target"
+
+    export LUA_LINK=dynamic
+    unset LUA_NO_PKG_CONFIG 2>/dev/null || true
+
+    cargo build --release --target "$target" --ignore-rust-version
+
+    echo "Cross-compilation to Windows completed. Binary is in target/$target/release/$BINARY_NAME"
+}
+
 # Run tests (module-level unit tests)
 run_tests() {
     RUSTFLAGS="-A dead_code -A unused_imports -A unused_variables" cargo test
 }
 
-HOST_ARCH=$(arch)
+HOST_ARCH=$(detect_native_arch)
 
 is_native_arch() {
     local arch="$1"
@@ -682,12 +899,200 @@ get_arch() {
 
     if [[ -z "$provided_arch" ]]; then
         # Auto-detect current architecture
-        local arch=$(arch)
+        local arch=$(detect_native_arch)
         echo "Auto-detected architecture: $arch" >&2
         echo "$arch"
     else
         echo "$provided_arch"
     fi
+}
+
+# Detect cross-compilation toolchains
+detect_osxcross() {
+    local osxcross_dir=""
+    for dir in "/opt/osxcross" "$HOME/osxcross" "$HOME/.osxcross" "/c/rust/osxcross"; do
+        # Check for universal compiler first, then architecture-specific compilers
+        # Try target/bin first (where osxcross installs after building)
+        if [[ -d "$dir/target/bin" ]]; then
+            # Check for any OSXCross compiler (o64-clang, *-apple-darwin*-clang)
+            local found=false
+            if [[ -f "$dir/target/bin/o64-clang" ]]; then
+                found=true
+            elif compgen -G "$dir/target/bin/*-apple-darwin*-clang" >/dev/null; then
+                found=true
+            fi
+            if $found; then
+                osxcross_dir="$dir/target"
+                break
+            fi
+        fi
+        # Fallback to bin (older installations or symlinks)
+        if [[ -d "$dir/bin" ]]; then
+            local found=false
+            if [[ -f "$dir/bin/o64-clang" ]]; then
+                found=true
+            elif compgen -G "$dir/bin/*-apple-darwin*-clang" >/dev/null; then
+                found=true
+            fi
+            if $found; then
+                osxcross_dir="$dir"
+                break
+            fi
+        fi
+    done
+    if [[ -n "$osxcross_dir" ]]; then
+        echo "$osxcross_dir"
+        return 0
+    fi
+
+    # Check if osxcross directory exists but not built
+    for dir in "/opt/osxcross" "$HOME/osxcross" "$HOME/.osxcross" "/c/rust/osxcross"; do
+        if [[ -d "$dir" && -f "$dir/build.sh" ]]; then
+            # Check for SDK tarball
+            local sdk_tarball=""
+            if [[ -f "$dir/tarballs/MacOSX26.1.sdk.tar.xz" ]]; then
+                sdk_tarball="$dir/tarballs/MacOSX26.1.sdk.tar.xz"
+            elif [[ -f "$dir/MacOSX26.1.sdk.tar.xz" ]]; then
+                sdk_tarball="$dir/MacOSX26.1.sdk.tar.xz"
+            fi
+            if [[ -n "$sdk_tarball" ]]; then
+                echo "Warning: osxcross found at $dir but not built. SDK tarball: $sdk_tarball" >&2
+                echo "Run 'cd $dir && ./build.sh' to build osxcross." >&2
+            fi
+        fi
+    done
+    return 1
+}
+
+detect_mingw() {
+    if has_cmd x86_64-w64-mingw32-gcc; then
+        echo "x86_64-w64-mingw32"
+        return 0
+    fi
+    return 1
+}
+
+# Get Rust target for architecture and OS
+get_rust_target_for_platform() {
+    local arch="$1"
+    local os="$2"  # linux, darwin, windows
+    case "$os" in
+        linux)
+            case "$arch" in
+                x86_64) echo "$RUST_TARGET_X86_64" ;;
+                aarch64) echo "$RUST_TARGET_AARCH64" ;;
+                riscv64) echo "$RUST_TARGET_RISCV64" ;;
+                loongarch64) echo "$RUST_TARGET_LOONGARCH64" ;;
+                *) echo "" ;;
+            esac
+            ;;
+        darwin)
+            case "$arch" in
+                x86_64) echo "$RUST_TARGET_X86_64_DARWIN" ;;
+                aarch64) echo "$RUST_TARGET_AARCH64_DARWIN" ;;
+                *) echo "" ;;
+            esac
+            ;;
+        windows)
+            case "$arch" in
+                x86_64) echo "$RUST_TARGET_X86_64_WINDOWS" ;;
+                aarch64) echo "$RUST_TARGET_AARCH64_WINDOWS" ;;
+                *) echo "" ;;
+            esac
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# Setup environment for cross-compilation
+setup_cross_env() {
+    local target="$1"
+    local arch="${target%%-*}"
+    local os=""
+    if [[ "$target" == *"apple-darwin"* ]]; then
+        os="darwin"
+    elif [[ "$target" == *"pc-windows-"* ]]; then
+        os="windows"
+    else
+        os="linux"
+    fi
+
+    # Clear previous environment
+    unset CC CFLAGS LUA_LIB LUA_LINK LUA_NO_PKG_CONFIG RUSTFLAGS
+    unset CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER
+    unset CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER
+    unset CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER
+    unset CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER
+    unset CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER
+    unset CARGO_TARGET_AARCH64_PC_WINDOWS_GNU_LINKER
+
+    # Common for all targets
+    export LUA_LINK=dynamic
+    export LUA_NO_PKG_CONFIG=1
+    export PKG_CONFIG_ALLOW_CROSS=1
+
+    case "$os" in
+        darwin)
+            local osxcross_dir=$(detect_osxcross)
+            if [[ -n "$osxcross_dir" ]]; then
+                export PATH="$osxcross_dir/bin:$PATH"
+                # Find the actual compiler binary (may have version suffix like aarch64-apple-darwin25.1-clang)
+                local cc_name=""
+                # Try architecture-specific compiler first
+                local pattern="$arch-apple-darwin*-clang"
+                local match=$(compgen -G "$osxcross_dir/bin/$pattern" 2>/dev/null | head -1)
+                if [[ -n "$match" && -f "$match" ]]; then
+                    cc_name="$(basename "$match")"
+                elif [[ "$arch" == "x86_64" && -f "$osxcross_dir/bin/o64-clang" ]]; then
+                    cc_name="o64-clang"
+                else
+                    cc_name="$arch-apple-darwin-clang"
+                fi
+                export CC="$cc_name"
+                # Set target-specific linker
+                local target_var=$(echo "${target//-/_}" | tr '[:lower:]' '[:upper:]')
+                export "CARGO_TARGET_${target_var}_LINKER=$cc_name"
+                # SDK path for osxcross
+                local sdk_path=""
+                if [[ -L "$osxcross_dir/SDK/MacOSX.sdk" ]]; then
+                    sdk_path="$osxcross_dir/SDK/MacOSX.sdk"
+                else
+                    # Find the first MacOSX*.sdk directory
+                    local sdk_dir
+                    for sdk_dir in "$osxcross_dir/SDK"/MacOSX*.sdk; do
+                        if [[ -d "$sdk_dir" ]]; then
+                            sdk_path="$sdk_dir"
+                            break
+                        fi
+                    done
+                fi
+                if [[ -n "$sdk_path" ]]; then
+                    export SDK_PATH="$sdk_path"
+                    export LIBRARY_PATH="$sdk_path/usr/lib"
+                else
+                    echo "Warning: Could not find macOS SDK in $osxcross_dir/SDK"
+                fi
+            else
+                echo "Warning: osxcross not found, using system clang (may not work)"
+                export CC="clang"
+            fi
+            ;;
+        windows)
+            local mingw_prefix=$(detect_mingw)
+            if [[ -n "$mingw_prefix" ]]; then
+                export CC="${mingw_prefix}-gcc"
+                local target_var=$(echo "${target//-/_}" | tr '[:lower:]' '[:upper:]')
+                export "CARGO_TARGET_${target_var}_LINKER=${mingw_prefix}-gcc"
+            else
+                echo "Warning: mingw-w64 not found, using default (may not work)"
+            fi
+            ;;
+        linux)
+            # Already handled by build_static
+            ;;
+    esac
 }
 
 cmd="${1:-build}"
@@ -732,6 +1137,12 @@ case $cmd in
     clone-repos)
         clone_repos
         ;;
+    cross-macos)
+        cross-macos "$2"
+        ;;
+    cross-windows)
+        cross-windows "$2"
+        ;;
     test)
         run_tests
         ;;
@@ -754,6 +1165,8 @@ case $cmd in
         echo "  dev-depends                          Install development dependencies (current arch only)"
         echo "  crossdev-depends                     Install cross-development dependencies (all arch cross-compilers)"
         echo "  clone-repos                          Clone required repositories (rpm-rs, resolvo, elf-loader)"
+        echo "  cross-macos [<arch>]                 Cross-compile to macOS (aarch64 default, or x86_64)"
+        echo "  cross-windows [<arch>]               Cross-compile to Windows (x86_64 or aarch64)"
         echo "  qemu-pkgs                            Install qemu dependency packages"
         echo "  sandbox-pkgs                         Install sandbox dependency packages"
         echo "  test                                 Run module-level unit tests"

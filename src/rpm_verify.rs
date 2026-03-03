@@ -1,6 +1,7 @@
 // src/rpm_verify.rs
 // Only compile this module in debug builds for verification purposes
-#![cfg(debug_assertions)]
+// Also only available on Unix systems (uses Unix-specific metadata extensions)
+#![cfg(all(unix, debug_assertions))]
 
 use std::collections::HashMap;
 use std::fs::{self, File, Metadata as StdMetadata};
