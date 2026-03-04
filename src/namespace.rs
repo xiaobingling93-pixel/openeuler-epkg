@@ -617,17 +617,17 @@ fn prepare_and_execute_command(command: &Path, args: &[String], env_vars: &std::
 
 
 /// Mounts for the "Env" sandbox mode
-fn env_mount_spec_strings(env_root: &Path, run_options: &RunOptions) -> Vec<String> {
+fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Vec<String> {
     use nix::unistd::{getuid, geteuid};
     let uid = getuid();
     let euid = geteuid();
     let mut specs = Vec::new();
 
-    // If we're root and using Unshare strategy (no user namespace),
-    // make mounts private before other mounts.
-    if euid.is_root() && run_options.effective_sandbox.namespace_strategy == Some(NamespaceStrategy::Unshare) {
-        specs.push("make-rprivate://".to_string());  // use "//" for host dir
-    }
+    // Always make mounts private to prevent mount leaks to parent namespace.
+    // This ensures that when epkg exits, Linux automatically cleans up all mounts.
+    // Without this, recursive bind mounts (especially /opt/epkg) can leak and
+    // create thousands of nested mount points if interrupted (Ctrl+C, timeout, etc).
+    specs.push("make-rprivate://".to_string());  // use "//" for host dir
 
     // Add traditional layout compatibility mounts (must be before /usr mount)
     match crate::mount::mount_traditional_host_compatibility(env_root) {
