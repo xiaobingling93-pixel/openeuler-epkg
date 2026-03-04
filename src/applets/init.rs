@@ -392,15 +392,40 @@ fn try_load_module(name: &str) -> bool {
 /// Returns error if network setup fails (caller may fallback to /bin/sh).
 #[cfg(target_os = "linux")]
 fn setup_network_for_vm_daemon() -> Result<(), String> {
-    log::debug!("init: loading virtio_net module for vm-daemon");
-    // Load virtio_net and dependencies
-    try_load_module("failover");
-    try_load_module("net_failover");
-    let net_loaded = try_load_module("virtio_net");
-    if net_loaded {
-        log::debug!("init: virtio_net module loaded");
-    } else {
-        log::debug!("init: virtio_net not available (kernel may have it built-in or need /lib/modules)");
+    log::debug!("init: checking virtio_net module / interfaces for vm-daemon");
+
+    // Fast path: if we already see a non-loopback interface, assume the kernel
+    // (or initramfs) has brought up virtio networking and skip modprobe noise.
+    let net_dir = std::path::Path::new("/sys/class/net");
+    if net_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(net_dir) {
+            let has_non_lo = entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .any(|name| name != "lo");
+            if has_non_lo {
+                log::debug!("init: non-loopback interface already present, skipping virtio_net modprobe");
+            } else if std::path::Path::new("/lib/modules").exists() {
+                // Only attempt modprobe when /lib/modules exists; on minimal or
+                // libkrunfw-based systems there may be no module tree at all.
+                log::debug!("init: no non-loopback interface yet, trying virtio_net modprobe");
+                try_load_module("failover");
+                try_load_module("net_failover");
+                let net_loaded = try_load_module("virtio_net");
+                if net_loaded {
+                    log::debug!("init: virtio_net module loaded");
+                } else {
+                    log::debug!(
+                        "init: virtio_net modprobe failed (kernel may have it built-in or no /lib/modules tree)"
+                    );
+                }
+            } else {
+                log::debug!(
+                    "init: /lib/modules missing and no non-loopback interface yet; \
+                     assuming built-in virtio_net or delayed network bring-up"
+                );
+            }
+        }
     }
 
     log::debug!("init: configuring network for vm-daemon");

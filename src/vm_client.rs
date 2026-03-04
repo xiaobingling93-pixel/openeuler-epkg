@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write, IsTerminal};
 use std::net::TcpStream;
 use std::time::Duration;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use color_eyre::eyre;
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ use ctrlc;
 use lazy_static::lazy_static;
 use nix::sys::signal::{signal, Signal, SigHandler};
 use nix::sys::termios;
+use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
@@ -75,10 +76,63 @@ fn connect_with_retry(max_retries: u32) -> Result<TcpStream> {
         }
     }
     Err(eyre::eyre!(
-        "Failed to connect to guest TCP server after {} retries: {}",
+        "Failed to connect to guest TCP server after {} retries: {}. \
+         If the guest is slow to boot, check ~/.cache/epkg/vmm-logs/latest-qemu.log",
         max_retries,
         last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
     ))
+}
+
+/// Connect to guest vsock server with retry logic.
+fn connect_vsock_with_retry(port: u32, max_retries: u32) -> Result<TcpStream> {
+    let mut retry_count = 0;
+    let mut last_error = None;
+    while retry_count < max_retries {
+        match connect_vsock_once(port) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                last_error = Some(e);
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+    Err(eyre::eyre!(
+        "Failed to connect to guest vsock server on port {} after {} retries: {}",
+        port,
+        max_retries,
+        last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connection failed"))
+    ))
+}
+
+/// Single vsock connect attempt, returns a TcpStream wrapper over AF_VSOCK fd.
+fn connect_vsock_once(port: u32) -> std::io::Result<TcpStream> {
+    // Use a fixed guest CID (3) matching the QEMU vsock configuration.
+    const GUEST_CID: u32 = 3;
+    let fd = socket::socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?;
+    let addr = VsockAddr::new(GUEST_CID, port);
+    let raw_fd = fd.as_raw_fd();
+    match socket::connect(raw_fd, &addr) {
+        Ok(()) => {
+            // SAFETY: fd is a valid, connected AF_VSOCK stream socket; TcpStream only
+            // relies on the underlying fd for read/write/dup, which works for vsock too.
+            let stream = unsafe { TcpStream::from_raw_fd(raw_fd) };
+            Ok(stream)
+        }
+        Err(e) => {
+            // On error, close fd and propagate as io::Error
+            let _ = socket::shutdown(raw_fd, socket::Shutdown::Both);
+            Err(std::io::Error::from(e))
+        }
+    }
 }
 
 /// Build JSON command request for guest execution.
@@ -115,7 +169,7 @@ pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Resu
     };
     log::debug!("vm_client: use_pty={:?}, should_use_pty={}", use_pty, should_use_pty);
     // Connect to guest TCP server with retry
-    let mut stream = connect_with_retry(30)?;
+    let mut stream = connect_with_retry(60)?;
     log::debug!("vm_client: TCP connected, sending command {:?}", cmd_parts);
 
     // Build and send JSON request
@@ -126,6 +180,31 @@ pub fn send_command_via_tcp(cmd_parts: &[String], use_pty: Option<bool>) -> Resu
     log::debug!("vm_client: request sent ({} bytes), pty={}", request_json.len(), should_use_pty);
 
     // Use streaming protocol for both PTY and non-PTY modes
+    handle_streaming(&mut stream, should_use_pty)
+}
+
+/// Helper to send a command via vsock to the guest VM.
+/// If `use_pty` is `None`, defaults to no PTY. Use `Some(true)` to force PTY, `Some(false)` to force no PTY.
+pub fn send_command_via_vsock(cmd_parts: &[String], use_pty: Option<bool>, port: u32) -> Result<i32> {
+    let should_use_pty = match use_pty {
+        Some(true) => true,
+        Some(false) | None => false,
+    };
+    log::debug!("vm_client: use_pty={:?}, should_use_pty={} (vsock port {})", use_pty, should_use_pty, port);
+    let mut stream = connect_vsock_with_retry(port, 30)?;
+    log::debug!("vm_client: vsock connected, sending command {:?}", cmd_parts);
+
+    let request = build_command_request(cmd_parts, should_use_pty);
+    let request_json = serde_json::to_vec(&request)?;
+    stream.write_all(&request_json)?;
+    stream.write_all(b"\n")?;
+    log::debug!(
+        "vm_client: vsock request sent ({} bytes), pty={}, port={}",
+        request_json.len(),
+        should_use_pty,
+        port
+    );
+
     handle_streaming(&mut stream, should_use_pty)
 }
 

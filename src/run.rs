@@ -35,10 +35,28 @@ pub struct RunOptions {
     pub background: bool, // Run in background and return PID instead of waiting
     pub redirect_stdio: bool, // Redirect stdin/stdout/stderr to /dev/null for daemon processes
     pub use_pty: Option<bool>, // None=auto-detect (isatty(stdin)), Some(true)=force PTY, Some(false)=force no-PTY
+
+    /// Optional external kernel image for VM backends that support it (e.g. libkrun, qemu).
+    /// Can be provided via `--kernel`.
+    pub kernel: Option<String>,
+    /// Optional extra kernel arguments for VM backends that support them.
+    /// Can be provided via `--kernel-args` for `epkg run`.
+    pub kernel_args: Option<String>,
+
+    /// Optional override for VM vCPU count (applies to VM backends).
+    /// Can be provided via `--cpus` for `epkg run`.
+    pub vm_cpus: Option<u8>,
+    /// Optional override for VM memory size in MiB (applies to VM backends).
+    /// Can be provided via `--memory` for `epkg run`.
+    pub vm_memory_mib: Option<u32>,
+
     /// Input sandbox options from CLI or caller
     pub sandbox: crate::models::SandboxOptions,
     /// Effective sandbox options (merged from all configuration levels)
     pub effective_sandbox: crate::models::SandboxOptions,
+    /// Preferred VMM backend order for SandboxMode::Vm.
+    /// Example: ["libkrun", "qemu"] or ["qemu"].
+    pub vmm_order: Vec<String>,
 }
 
 /// Temporarily set SIGPIPE handler
@@ -67,6 +85,115 @@ where
         libc::signal(libc::SIGPIPE, old_handler);
         result
     }
+}
+
+/// Resolve kernel path for VM backends (libkrun, qemu). Order: run_options.kernel, then
+/// default (envs/self/boot/kernel from `epkg self install`), then host /boot auto-detect.
+pub fn resolve_vm_kernel_path(run_options: &RunOptions) -> Result<String> {
+    let kernel = run_options
+        .kernel
+        .clone()
+        .or_else(crate::init::default_kernel_path_if_exists)
+        .or_else(|| find_kernel_image().ok())
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "No kernel image for VM. Use '--kernel /path/to/kernel', run 'epkg self install', or ensure a kernel exists in /boot."
+            )
+        })?;
+    if !Path::new(&kernel).exists() {
+        return Err(eyre::eyre!("Kernel image not found at {}", kernel));
+    }
+    Ok(kernel)
+}
+
+/// Resolve vCPU count for VM backends.
+///
+/// Source precedence:
+/// 1. RunOptions.vm_cpus (from --cpus)
+/// 2. EPKG_VM_CPUS (u8)
+/// 3. Default: 2 vCPUs
+pub fn resolve_vm_cpus(run_options: &RunOptions) -> u8 {
+    if let Some(cpus) = run_options.vm_cpus {
+        return cpus;
+    }
+    env::var("EPKG_VM_CPUS")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .unwrap_or(2)
+}
+
+/// Resolve VM memory size in MiB for VM backends.
+///
+/// Source precedence:
+/// 1. RunOptions.vm_memory_mib (from --memory, already normalized to MiB)
+/// 2. EPKG_VM_MEMORY as a human-readable size (e.g. "2048M", "2G") via parse_size_bytes_opt
+/// 3. EPKG_VM_MEMORY parsed as plain MiB (u32) for backward compatibility
+/// 4. Default: 2048 MiB
+pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
+    if let Some(mib) = run_options.vm_memory_mib {
+        return mib;
+    }
+    env::var("EPKG_VM_MEMORY")
+        .ok()
+        .and_then(|s| {
+            if let Some(bytes) = crate::utils::parse_size_bytes_opt(&s) {
+                Some((bytes / (1024 * 1024)) as u32)
+            } else {
+                s.parse::<u32>().ok()
+            }
+        })
+        .unwrap_or(2048)
+}
+
+/// Minimum MiB required for libkrun: kernel is loaded at 0x8000_0000 (2 GiB), so RAM must be
+/// at least 2048 MiB + kernel size.
+#[allow(dead_code)]
+const LIBKRUN_KERNEL_LOAD_MIB: u32 = 2048;
+#[allow(dead_code)]
+const LIBKRUN_MEMORY_SLACK_MIB: u32 = 64;
+
+/// Round up VM memory for libkrun so the kernel fits. Libkrun loads the kernel at 2 GiB;
+/// total RAM must be >= 2048 MiB + kernel_size. No extra floor (HostAddressNotAvailable
+/// is a host address-space layout issue, not lack of RAM).
+#[allow(dead_code)]
+pub fn round_up_vm_memory_for_libkrun(requested_mib: u32, kernel_path: &str) -> u32 {
+    let kernel_size_mib = fs::metadata(kernel_path)
+        .ok()
+        .map(|m| (m.len() as u32 + (1024 * 1024) - 1) / (1024 * 1024))
+        .unwrap_or(128);
+    let min_mib = LIBKRUN_KERNEL_LOAD_MIB
+        .saturating_add(kernel_size_mib)
+        .saturating_add(LIBKRUN_MEMORY_SLACK_MIB);
+    std::cmp::max(requested_mib, min_mib)
+}
+
+/// Try to find a kernel image in common /boot locations.
+fn find_kernel_image() -> Result<String> {
+    let uname = crate::posix::posix_uname()
+        .map_err(|e| eyre::eyre!("Failed to get kernel release: {:?}", e))?;
+    let release = uname.release;
+    let candidates = [
+        format!("/boot/vmlinuz-{}", release),
+        "/boot/vmlinuz".to_string(),
+        format!("/boot/kernel-{}", release),
+        "/boot/kernel".to_string(),
+        format!("/boot/bzImage-{}", release),
+        "/boot/bzImage".to_string(),
+        format!("/boot/Image-{}", release),
+        "/boot/Image".to_string(),
+        format!("/boot/vmlinux-{}", release),
+        "/boot/vmlinux".to_string(),
+    ];
+    for candidate in &candidates {
+        if fs::metadata(candidate).is_ok() {
+            return Ok(candidate.clone());
+        }
+    }
+    Err(eyre::eyre!(
+        "No kernel image found in /boot/. Tried: {}. \
+         Use '--kernel /path/to/kernel' to specify a guest kernel image.",
+        candidates.join(", ")
+    ))
 }
 
 #[allow(dead_code)]
@@ -647,6 +774,15 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         .ok_or_else(|| eyre::eyre!("Command is required"))?
         .clone();
 
+    if command.starts_with('-') {
+        return Err(eyre::eyre!(
+            "Command looks like an option ('{}'). Put the command after options, e.g. \
+             epkg run --sandbox=vm --vmm=qemu --no-tty -- whoami \
+             or epkg run whoami --sandbox=vm --vmm=qemu --no-tty",
+            command
+        ));
+    }
+
     let args: Vec<String> = if let Some(args_iter) = sub_matches.get_many::<String>("args") {
         args_iter.cloned().collect()
     } else {
@@ -659,6 +795,51 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
     } else {
         0 // Default: no timeout
     };
+
+    let kernel = sub_matches
+        .get_one::<String>("kernel")
+        .cloned();
+
+    let vm_cpus = if let Some(cpus_str) = sub_matches.get_one::<String>("cpus") {
+        Some(
+            cpus_str
+                .parse::<u8>()
+                .map_err(|e| eyre::eyre!("Invalid --cpus value '{}': {}", cpus_str, e))?,
+        )
+    } else {
+        None
+    };
+
+    let vm_memory_mib = if let Some(mem_str) = sub_matches.get_one::<String>("memory") {
+        let mib = if let Some(bytes) = crate::utils::parse_size_bytes_opt(mem_str) {
+            (bytes / (1024 * 1024)) as u32
+        } else {
+            mem_str.parse::<u32>().map_err(|e| {
+                eyre::eyre!(
+                    "Invalid --memory value '{}': {} (expected size like 2048M or MiB integer)",
+                    mem_str,
+                    e
+                )
+            })?
+        };
+        Some(mib)
+    } else {
+        None
+    };
+
+    let kernel_args = sub_matches
+        .get_one::<String>("kernel-args")
+        .cloned();
+
+    let vmm_order = sub_matches
+        .get_one::<String>("vmm")
+        .map(|s| {
+            s.split(',')
+                .map(|part| part.trim().to_lowercase())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     let sandbox_mode = sub_matches
         .get_one::<String>("sandbox")
@@ -692,8 +873,13 @@ pub fn parse_options_run(options: &mut EPKGConfig, sub_matches: &clap::ArgMatche
         command,
         args,
         timeout,
+        kernel,
+        vm_cpus,
+        vm_memory_mib,
+        kernel_args,
         use_pty,
         sandbox,
+        vmm_order,
         ..Default::default()
     };
 

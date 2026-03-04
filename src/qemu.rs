@@ -3,32 +3,15 @@ use std::path::Path;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use crate::posix::posix_uname;
 use crate::run::RunOptions;
 use crate::vm_client;
 use color_eyre::eyre;
 use color_eyre::Result;
 use crate::models::dirs;
 
-// Default QEMU VM memory size in MB (configurable via EPKG_VM_MEMORY)
-const DEFAULT_VM_MEMORY_MB: u32 = 2048;
-
-/// Parse VMM memory size from environment variable or use default
-fn parse_vmm_memory() -> u32 {
-    std::env::var("EPKG_VM_MEMORY")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_VM_MEMORY_MB)
-}
-
-/// Parse VMM configuration from environment variables
-fn parse_vmm_config() -> Result<(String, Option<String>, String, String, String)> {
-    let kernel = std::env::var("EPKG_VM_KERNEL")
-        .or_else(|_| find_kernel_image())?;
-    // Validate kernel image exists
-    if !Path::new(&kernel).exists() {
-        return Err(eyre::eyre!("Kernel image not found at {} (from EPKG_VM_KERNEL)", kernel));
-    }
+/// Parse VMM configuration (kernel via run::resolve_vm_kernel_path; initrd, qemu, etc. from env).
+fn parse_vmm_config(run_options: &RunOptions) -> Result<(String, Option<String>, String, String, String)> {
+    let kernel = crate::run::resolve_vm_kernel_path(run_options)?;
     let initrd = std::env::var("EPKG_VM_INITRD").ok();
     let qemu_bin = std::env::var("EPKG_VM_QEMU").unwrap_or_else(|_| "qemu-system-x86_64".to_string());
     let virtiofsd_bin = std::env::var("EPKG_VM_VIRTIOFSD")
@@ -40,8 +23,30 @@ fn parse_vmm_config() -> Result<(String, Option<String>, String, String, String)
             virtiofsd_bin
         ))?;
     let virtiofsd_bin = virtiofsd_path.to_string_lossy().to_string();
-    let extra_qemu_args = std::env::var("EPKG_VM_EXTRA_ARGS").unwrap_or_default();
+    // QEMU-specific extra kernel cmdline arguments. Prefer CLI --kernel-args,
+    // then EPKG_QEMU_EXTRA_ARGS, then legacy EPKG_VM_EXTRA_ARGS.
+    let env_extra = std::env::var("EPKG_QEMU_EXTRA_ARGS")
+        .or_else(|_| std::env::var("EPKG_VM_EXTRA_ARGS"))
+        .unwrap_or_default();
+    let extra_qemu_args = if let Some(cli_args) = &run_options.kernel_args {
+        if env_extra.is_empty() {
+            cli_args.clone()
+        } else {
+            format!("{} {}", env_extra, cli_args)
+        }
+    } else {
+        env_extra
+    };
     Ok((kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args))
+}
+
+/// Ensure the VMM log directory exists so that e.g. tail ~/.cache/epkg/vmm-logs/latest-qemu.log
+/// can be used after at least one QEMU run. Call this when entering the VM path.
+pub(crate) fn ensure_vmm_log_dir() -> Result<()> {
+    let base_log_dir = dirs().epkg_cache.join("vmm-logs");
+    std::fs::create_dir_all(&base_log_dir)
+        .map_err(|e| eyre::eyre!("Failed to create VMM log directory: {}", e))?;
+    Ok(())
 }
 
 /// Create a PID-based log file with symlink for a given log name.
@@ -203,18 +208,20 @@ fn wait_for_virtiofsd_socket(
     }
 }
 
-/// Build QEMU command line for starting the VM
+/// Build QEMU command line for starting the VM.
+/// When init_cmd is Some (cmdline mode), it is percent-encoded and appended as epkg.init_cmd=...
 fn build_qemu_command(
     kernel: &str,
     initrd: &Option<String>,
     qemu_bin: &str,
     socket_path: &std::path::Path,
     mount_tag: &str,
-    use_tcp: bool,
-    init_cmd: &str,
+    use_vsock: bool,
     extra_qemu_args: &str,
     serial_log_path: &std::path::Path,
+    vm_cpus: u8,
     vm_memory_mb: u32,
+    init_cmd: Option<&str>,
 ) -> std::process::Command {
     use std::process::Command;
 
@@ -223,7 +230,7 @@ fn build_qemu_command(
         .arg("-enable-kvm")
         .arg("-cpu").arg("host")
         .arg("-m").arg(vm_memory_mb.to_string())
-        .arg("-smp").arg("2")
+        .arg("-smp").arg(vm_cpus.to_string())
         .arg("-no-reboot")
         .arg("-nographic")
         .arg("-serial").arg(format!("file:{}", serial_log_path.display()))
@@ -249,12 +256,22 @@ fn build_qemu_command(
         .arg(format!("vhost-user-fs-pci,queue-size=1024,chardev=char0,tag={}", mount_tag));
 
 
-    // Add user networking for guest-host communication
+    // Add user networking for guest-host communication (for normal guest networking).
+    // Control-plane uses either TCP hostfwd (legacy) or vsock depending on env vars.
+    // romfile="" disables the virtio-net option ROM (iPXE) so SeaBIOS boots the -kernel directly.
     qemu_cmd
         .arg("-netdev")
         .arg("user,id=net0,hostfwd=tcp::10000-:10000")
         .arg("-device")
-        .arg("virtio-net-pci,netdev=net0");
+        .arg("virtio-net-pci,netdev=net0,romfile=");
+
+    // Optional virtio-vsock device for vsock-based control plane.
+    if use_vsock {
+        // Guest CID 3 matches the host-side vm_client vsock connector.
+        qemu_cmd
+            .arg("-device")
+            .arg("vhost-vsock-pci,guest-cid=3");
+    }
 
     // Kernel cmdline: console, panic, root filesystem, and epkg init parameters
     // init=/bin/init: kernel runs epkg init (bin->usr/bin, init at usr/bin/init)
@@ -263,14 +280,16 @@ fn build_qemu_command(
         "console=ttyS0 panic=1 root={} rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576",
         mount_tag
     );
-    if !use_tcp {
-        // Pass command via kernel cmdline in non-TCP mode
-        append_args.push_str(&format!(" epkg.init_cmd={}", init_cmd));
-    }
     // Pass host RUST_LOG into guest so init can enable debug logging
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
         if !rust_log.is_empty() {
             append_args.push_str(&format!(" epkg.rust_log={}", percent_encode(&rust_log)));
+        }
+    }
+    // Cmdline mode: pass command to init via kernel cmdline (init reads epkg.init_cmd from /proc/cmdline)
+    if let Some(cmd) = init_cmd {
+        if !cmd.is_empty() {
+            append_args.push_str(&format!(" epkg.init_cmd={}", cmd));
         }
     }
     if !extra_qemu_args.is_empty() {
@@ -302,17 +321,19 @@ fn setup_virtiofsd_socket(
 
 /// Spawn QEMU process with configured command line.
 /// Returns the spawned child process.
+/// init_cmd: when Some (cmdline mode), passed as epkg.init_cmd=... in kernel -append.
 fn spawn_qemu(
     kernel: &str,
     initrd: &Option<String>,
     qemu_bin: &str,
     socket_path: &Path,
     mount_tag: &str,
-    use_tcp: bool,
-    init_cmd: &str,
+    use_vsock: bool,
     extra_qemu_args: &str,
     qemu_log_path: &Path,
+    vm_cpus: u8,
     vm_memory_mb: u32,
+    init_cmd: Option<&str>,
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
@@ -322,11 +343,12 @@ fn spawn_qemu(
         qemu_bin,
         socket_path,
         mount_tag,
-        use_tcp,
-        init_cmd,
+        use_vsock,
         extra_qemu_args,
         qemu_log_path,
+        vm_cpus,
         vm_memory_mb,
+        init_cmd,
     );
 
     // Conditionally log QEMU output based on RUST_LOG level
@@ -370,15 +392,35 @@ fn spawn_qemu(
 }
 
 /// Handle guest communication and wait for exit code.
-/// In TCP mode: send command via TCP and get command exit code.
-/// In non-TCP mode: wait for QEMU to exit and get its exit code.
+/// Control-channel mode (TCP or vsock): send command and get exit code.
+/// Cmdline mode: command was passed via kernel cmdline; wait for QEMU to exit.
 fn handle_guest_execution(
     qemu_child: &mut std::process::Child,
-    use_tcp: bool,
+    use_control_channel: bool,
+    use_vsock: bool,
     cmd_parts: &[String],
     use_pty: Option<bool>,
 ) -> Result<i32> {
-    if use_tcp {
+    if use_vsock {
+        // Vsock control plane: connect directly to guest vsock port 10000.
+        match vm_client::send_command_via_vsock(cmd_parts, use_pty, 10000) {
+            Ok(cmd_exit_code) => {
+                let _ = qemu_child
+                    .wait()
+                    .map_err(|e| eyre::eyre!("Failed to wait for QEMU process: {}", e))?;
+                Ok(cmd_exit_code)
+            }
+            Err(e) => {
+                if let Err(kill_err) = qemu_child.kill() {
+                    log::debug!("Failed to kill QEMU process: {}", kill_err);
+                }
+                if let Err(wait_err) = qemu_child.wait() {
+                    log::debug!("Failed to wait for QEMU process: {}", wait_err);
+                }
+                Err(e)
+            }
+        }
+    } else if use_control_channel {
         match vm_client::send_command_via_tcp(cmd_parts, use_pty) {
             Ok(cmd_exit_code) => {
                 let _ = qemu_child
@@ -423,7 +465,7 @@ pub fn run_command_in_qemu(
     guest_cmd_path: &Path,
     existing_socket_path: Option<&Path>,
 ) -> Result<()> {
-    let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config()?;
+    let (kernel, initrd, qemu_bin, virtiofsd_bin, extra_qemu_args) = parse_vmm_config(run_options)?;
 
     if let Err(e) = ensure_guest_init_binary(env_root) {
         log::warn!(
@@ -434,8 +476,12 @@ pub fn run_command_in_qemu(
     }
 
     let (cmd_parts, init_cmd) = build_guest_command(&guest_cmd_path, &run_options.args)?;
-    let use_tcp               = std::env::var("EPKG_VM_NO_TCP").is_err();
-    let vm_memory_mb          = parse_vmm_memory();
+    // Cmdline mode: init runs command from kernel cmdline; no vm-daemon. Set EPKG_VM_NO_DAEMON=1.
+    let use_cmdline_mode = std::env::var("EPKG_VM_NO_DAEMON").is_ok();
+    let use_vsock = !use_cmdline_mode && std::env::var("EPKG_VM_VSOCK").is_ok();
+    let use_control_channel = !use_cmdline_mode && !use_vsock;
+    let vm_cpus = crate::run::resolve_vm_cpus(run_options);
+    let vm_memory_mb = crate::run::resolve_vm_memory_mib(run_options);
     let (qemu_log_path, virtiofsd_log_path) = setup_vmm_logs()?;
 
     let (virtiofsd_guard, socket_path) = setup_virtiofsd_socket(
@@ -446,22 +492,29 @@ pub fn run_command_in_qemu(
     )?;
 
     let mount_tag = "epkg_env";
+    let init_cmd_append = if use_cmdline_mode {
+        Some(init_cmd.as_str())
+    } else {
+        None
+    };
     let mut qemu_child = spawn_qemu(
         &kernel,
         &initrd,
         &qemu_bin,
         &socket_path,
         mount_tag,
-        use_tcp,
-        &init_cmd,
+        use_vsock,
         &extra_qemu_args,
         &qemu_log_path,
+        vm_cpus,
         vm_memory_mb,
+        init_cmd_append,
     )?;
 
     let exit_code = handle_guest_execution(
         &mut qemu_child,
-        use_tcp,
+        use_control_channel,
+        use_vsock,
         &cmd_parts,
         run_options.use_pty,
     )?;
@@ -545,40 +598,6 @@ fn ensure_guest_init_binary(env_root: &Path) -> Result<()> {
         .map_err(|e| eyre::eyre!("Failed to create vm-daemon symlink: {}", e))?;
 
     Ok(())
-}
-
-/// Try to find a kernel image in common locations
-fn find_kernel_image() -> Result<String> {
-
-    // Get kernel release
-    let uname = posix_uname().map_err(|e| eyre::eyre!("Failed to get kernel release: {:?}", e))?;
-    let release = uname.release;
-
-    // Common kernel image paths to check
-    let candidates = [
-        format!("/boot/vmlinuz-{}", release),
-        "/boot/vmlinuz".to_string(),
-        format!("/boot/kernel-{}", release),
-        "/boot/kernel".to_string(),
-        format!("/boot/bzImage-{}", release),
-        "/boot/bzImage".to_string(),
-        format!("/boot/Image-{}", release),
-        "/boot/Image".to_string(),
-        format!("/boot/vmlinux-{}", release),
-        "/boot/vmlinux".to_string(),
-    ];
-
-    for candidate in &candidates {
-        if fs::metadata(candidate).is_ok() {
-            return Ok(candidate.clone());
-        }
-    }
-
-    Err(eyre::eyre!(
-        "No kernel image found in /boot/. Tried: {}. \
-         Please set EPKG_VM_KERNEL environment variable to the path of a guest kernel image.",
-        candidates.join(", ")
-    ))
 }
 
 /// Percent-encode a string for kernel command line transmission

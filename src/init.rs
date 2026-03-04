@@ -22,10 +22,12 @@ use crate::utils;
 use crate::environment::{create_environment, register_environment_for};
 use crate::lfs;
 
-pub const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
-pub const GITEE_OWNER:      &str = &"wu_fengguang";
-pub const REPO_EPKG:        &str = &"epkg";
-pub const REPO_ELF_LOADER:  &str = &"elf-loader";
+const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
+const GITEE_OWNER:      &str = &"wu_fengguang";
+const REPO_EPKG:        &str = &"epkg";
+const REPO_ELF_LOADER:  &str = &"elf-loader";
+#[allow(dead_code)]
+const LIBKRUNFW_GITHUB_RELEASES: &str = &"https://github.com/containers/libkrunfw/releases";
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -204,6 +206,15 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
         ]);
     }
 
+    // Download libkrunfw if built with libkrun feature
+    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    {
+        if let Some(ref libkrunfw_url) = init_plan.libkrunfw_url {
+            println!("Downloading libkrunfw from {}", libkrunfw_url);
+            urls.push(libkrunfw_url.clone());
+        }
+    }
+
     if urls.is_empty() {
         return Ok(());
     }
@@ -237,6 +248,16 @@ fn download_package_manager_files(init_plan: &InitPlan) -> Result<()> {
 
     if init_plan.need_download_epkg_src && !init_plan.epkg_src_path.exists() {
         return Err(eyre::eyre!("Failed to download epkg source code tar file from {}", init_plan.epkg_src_url));
+    }
+
+    // Extract and install libkrunfw if downloaded
+    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    {
+        if let Some(ref libkrunfw_path) = init_plan.libkrunfw_path {
+            if libkrunfw_path.exists() {
+                install_libkrunfw_runtime(libkrunfw_path)?;
+            }
+        }
     }
 
     Ok(())
@@ -660,6 +681,11 @@ struct InitPlan {
     using_local_repo: bool,
     // Local elf-loader info
     local_elf_loader_path: Option<std::path::PathBuf>,
+    // libkrunfw info (only used when built with libkrun feature)
+    #[allow(dead_code)]
+    libkrunfw_url: Option<String>,
+    #[allow(dead_code)]
+    libkrunfw_path: Option<std::path::PathBuf>,
 }
 
 /// Fetch the latest release information from Gitee API
@@ -794,6 +820,201 @@ fn get_current_epkg_version_info() -> Result<EpkgVersionInfo> {
     })
 }
 
+/// Install libkrunfw runtime libraries from downloaded tarball and extract default kernel image.
+/// The kernel is read from the KERNEL_BUNDLE symbol in the .so and written to
+/// envs/self/boot/kernel for use when --kernel is not specified.
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn install_libkrunfw_runtime(tarball_path: &Path) -> Result<()> {
+    println!("Installing libkrunfw runtime libraries...");
+
+    // Create temporary extraction directory
+    let tmp_dir = dirs().epkg_downloads_cache.join("libkrunfw-tmp");
+    if tmp_dir.exists() {
+        lfs::remove_dir_all(&tmp_dir)?;
+    }
+    lfs::create_dir_all(&tmp_dir)?;
+
+    // Extract tarball using our own extract_tar_gz
+    utils::extract_tar_gz(tarball_path, &tmp_dir)
+        .context("Failed to extract libkrunfw tarball")?;
+
+    // Find lib64 directory in extracted content
+    let lib64_dir = tmp_dir.join("lib64");
+    if !lib64_dir.exists() {
+        return Err(eyre::eyre!("Expected lib64 directory not found in libkrunfw tarball"));
+    }
+
+    // Install to self env lib directory and extract kernel from first .so that has KERNEL_BUNDLE
+    let self_env_root = dirs().user_envs.join(SELF_ENV);
+    let usr_lib = self_env_root.join("usr/lib");
+    lfs::create_dir_all(&usr_lib)?;
+
+    let mut kernel_extracted = false;
+
+    for entry in fs::read_dir(&lib64_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if let Some(name) = path.file_name() {
+            if let Some(name_str) = name.to_str() {
+                if name_str.starts_with("libkrunfw") {
+                    let dest = usr_lib.join(name);
+                    lfs::copy(&path, &dest)?;
+                    println!("  Installed: {}", name_str);
+                    if !kernel_extracted {
+                        if let Ok(()) = extract_kernel_from_libkrunfw_so(&path, &self_env_root) {
+                            kernel_extracted = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if kernel_extracted {
+        println!("  Default kernel image extracted to self/boot");
+    }
+
+    // Clean up temporary directory
+    lfs::remove_dir_all(&tmp_dir)?;
+
+    Ok(())
+}
+
+/// Extract the KERNEL_BUNDLE symbol from a libkrunfw .so and write to envs/self/boot/kernel.
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn extract_kernel_from_libkrunfw_so(so_path: &Path, self_env_root: &Path) -> Result<()> {
+    use object::Object;
+    use object::ObjectSymbol;
+    use object::read::ObjectSection;
+
+    let data = fs::read(so_path).context("Failed to read libkrunfw .so")?;
+    let file = object::File::parse(&*data).context("Failed to parse libkrunfw .so as ELF")?;
+
+    let mut sym_addr = None;
+    let mut sym_size = None;
+    for symbol in file.symbols() {
+        if let Ok(name) = symbol.name() {
+            if name == "KERNEL_BUNDLE" {
+                sym_addr = Some(symbol.address());
+                sym_size = Some(symbol.size());
+                break;
+            }
+        }
+    }
+    let (addr, size) = match (sym_addr, sym_size) {
+        (Some(a), Some(s)) if s > 0 => (a, s),
+        _ => return Err(eyre::eyre!("KERNEL_BUNDLE symbol not found in {}", so_path.display())),
+    };
+
+    // Find section containing this address and get the bytes (segments may not expose data_range in this object version)
+    let kernel_data: Vec<u8> = file
+        .sections()
+        .find_map(|sec| sec.data_range(addr, size).ok().flatten())
+        .map(|s| s.to_vec())
+        .ok_or_else(|| eyre::eyre!("Could not read KERNEL_BUNDLE data from {}", so_path.display()))?;
+
+    let kernel_dir = self_env_root.join("boot");
+    lfs::create_dir_all(&kernel_dir)?;
+
+    // If we can get kernel release (uname -r style), save as kernel-<version> and symlink kernel -> it
+    let version = parse_linux_version_from_kernel_image(&kernel_data);
+    let (named_path, link_path) = if let Some(ref v) = version {
+        let name = format!("kernel-{}", v);
+        (kernel_dir.join(&name), Some(kernel_dir.join("kernel")))
+    } else {
+        (kernel_dir.join("kernel"), None)
+    };
+    fs::write(&named_path, &kernel_data).context("Failed to write default kernel image")?;
+    if let Some(link) = link_path {
+        let _ = fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(named_path.file_name().unwrap(), &link)
+            .context("Failed to create kernel symlink")?;
+        log::debug!("Extracted kernel to {} ({} bytes), kernel -> {}", named_path.display(), kernel_data.len(), link.display());
+    } else {
+        log::debug!("Extracted kernel to {} ({} bytes)", named_path.display(), kernel_data.len());
+    }
+    Ok(())
+}
+
+/// Parse "Linux version X.Y.Z..." from kernel image bytes (same as uname -r prefix).
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn parse_linux_version_from_kernel_image(data: &[u8]) -> Option<String> {
+    const PREFIX: &[u8] = b"Linux version ";
+    let i = data.windows(PREFIX.len()).position(|w| w == PREFIX)?;
+    let rest = &data[i + PREFIX.len()..];
+    let end = rest.iter().position(|&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')?;
+    let version = std::str::from_utf8(&rest[..end]).ok()?;
+    let sanitized: String = version
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+        .collect();
+    if sanitized.is_empty() { None } else { Some(sanitized) }
+}
+
+/// Path to the default VM kernel image (from libkrunfw, written during `epkg self install`). Shared by libkrun and qemu.
+fn default_kernel_path() -> PathBuf {
+    dirs().user_envs.join(SELF_ENV).join("boot").join("kernel")
+}
+
+/// Returns the default kernel path as a string if the file exists; otherwise None. Used by libkrun and qemu.
+pub fn default_kernel_path_if_exists() -> Option<String> {
+    let default = default_kernel_path();
+    if default.exists() {
+        default.into_os_string().into_string().ok()
+    } else {
+        None
+    }
+}
+
+/// Get libkrunfw download URL for the current architecture
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+fn get_libkrunfw_url() -> Result<Option<String>> {
+    let arch = &config().common.arch;
+
+    // Check if libkrunfw is available for this architecture
+    let libkrunfw_filename = match arch.as_str() {
+        "x86_64" => "libkrunfw-x86_64.tgz",
+        "aarch64" => "libkrunfw-aarch64.tgz",
+        "riscv64" => "libkrunfw-riscv64.tgz",
+        "loongarch64" => {
+            eprintln!("Warning: libkrunfw not available for loongarch64, libkrun feature won't be usable");
+            return Ok(None);
+        }
+        _ => {
+            eprintln!("Warning: libkrunfw not available for {}, libkrun feature won't be usable", arch);
+            return Ok(None);
+        }
+    };
+
+    // Fetch latest release tag from GitHub API
+    let api_url = "https://api.github.com/repos/containers/libkrunfw/releases/latest";
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+
+    let mut response = agent.get(api_url).call()
+        .context("Failed to fetch libkrunfw release info from GitHub")?;
+
+    if response.status() != 200 {
+        return Err(eyre::eyre!("Failed to fetch libkrunfw release: HTTP {}", response.status()));
+    }
+
+    let body = response.body_mut().read_to_string()
+        .context("Failed to read libkrunfw release response")?;
+
+    let release: serde_json::Value = serde_json::from_str(&body)
+        .context("Failed to parse libkrunfw release JSON")?;
+
+    let tag = release["tag_name"].as_str()
+        .ok_or_else(|| eyre::eyre!("Failed to get tag_name from libkrunfw release"))?;
+
+    let url = format!("{}/download/{}/{}", LIBKRUNFW_GITHUB_RELEASES, tag, libkrunfw_filename);
+    Ok(Some(url))
+}
+
 /// Check for updates and return initialization plan
 fn check_for_updates() -> Result<InitPlan> {
     println!("Checking for updates...");
@@ -855,6 +1076,25 @@ fn check_for_updates() -> Result<InitPlan> {
     let need_download_epkg_src = !using_local_repo;
     let need_download_elf_loader = !has_local_elf_loader;
 
+    // Get libkrunfw URL and path if built with libkrun feature
+    #[cfg(all(feature = "libkrun", target_os = "linux"))]
+    let (libkrunfw_url, libkrunfw_path) = {
+        match get_libkrunfw_url() {
+            Ok(Some(url)) => {
+                let path = mirror::Mirrors::remote_url_to_path(&url, &epkg_download_dir, "epkg")?;
+                (Some(url), Some(path))
+            }
+            Ok(None) => (None, None),
+            Err(e) => {
+                log::warn!("Failed to get libkrunfw URL: {}", e);
+                (None, None)
+            }
+        }
+    };
+
+    #[cfg(not(all(feature = "libkrun", target_os = "linux")))]
+    let (libkrunfw_url, libkrunfw_path) = (None, None);
+
     Ok(InitPlan {
         current: current_version,
         new: new_version,
@@ -873,6 +1113,8 @@ fn check_for_updates() -> Result<InitPlan> {
         need_download_elf_loader,
         using_local_repo,
         local_elf_loader_path: if has_local_elf_loader { Some(local_elf_loader_path) } else { None },
+        libkrunfw_url,
+        libkrunfw_path,
     })
 }
 

@@ -154,13 +154,13 @@ epkg -e alpine run htop --version
 epkg --root /tmp/myproject/.eenv run jq --version
 ```
 
-## Sandbox modes for `epkg run`
+## Sandbox modes and VMM selection for `epkg run`
 
 When you run commands inside an environment, epkg can add extra isolation on top of the per‑env root filesystem:
 
 - **env** (default) — User and mount namespaces with bind mounts of the environment over `/usr`, `/etc`, `/var`, `/run`, etc. Provides isolation for compatibility; not a strong security boundary.
 - **fs** — The environment becomes the new root via `pivot_root`; proc, tmpfs (/tmp, /dev), and other pseudo-filesystems are mounted under it. Stronger filesystem isolation.
-- **vm** — Run the command inside a lightweight VM with the environment root shared via virtiofs. See `docs/design-notes/sandbox-vmm.md` for design and dependencies (VMM, kernel, virtiofsd).
+- **vm** — Run the command inside a lightweight VM with the environment root shared via virtiofs. See `docs/design-notes/sandbox-vmm.md` for design and dependencies (VMM, kernel, virtiofsd, optional libkrun).
 
 You select the sandbox mode per command:
 
@@ -190,6 +190,33 @@ cd /c/epkg
 ```
 
 This pulls in the appropriate `uidmap`/`shadow`/`shadow-uidmap` package for your distro; see the [Troubleshooting](troubleshooting.md) guide for user‑namespace errors.
+
+### Choosing a VMM backend (`--vmm`)
+
+When you use `--sandbox=vm`, epkg can try multiple VMM backends in order. Use
+the `--vmm` option on `epkg run` to specify a comma-separated preference list:
+
+```bash
+# Prefer libkrun, fall back to QEMU
+epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+
+# Force QEMU even if libkrun support is compiled in
+epkg -e myenv run --sandbox=vm --vmm=qemu bash
+```
+
+Backend names:
+
+- **libkrun** — libkrun-based microVM backend (only available when epkg is built
+  with the `libkrun` feature and libkrunfw is installed in the env).
+- **qemu** — QEMU + virtiofs backend.
+
+If `--vmm` is omitted:
+
+- With `libkrun` enabled at build time, the default order is `libkrun,qemu`.
+- Without `libkrun`, the default order is `qemu` only.
+
+If a backend fails (for example missing binaries or misconfiguration), epkg
+logs a warning and automatically tries the next backend in the list.
 
 ## Public environments (shared store)
 

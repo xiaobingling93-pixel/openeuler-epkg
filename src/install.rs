@@ -9,8 +9,6 @@ use crate::mmio;
 use crate::store;
 use crate::utils;
 use crate::package;
-#[cfg(unix)]
-use crate::risks;
 use crate::download;
 use crate::plan::InstallationPlan;
 use crate::models::PACKAGE_CACHE;
@@ -21,11 +19,12 @@ use crate::world::{apply_no_install_changes, apply_delta_world, add_essential_pa
 use crate::depends::resolve_and_install_packages;
 use crate::plan::prompt_and_confirm_install_plan;
 #[cfg(unix)]
+#[allow(unused_imports)]
+use crate::{risks, deb_triggers};
+#[cfg(unix)]
 use crate::history::{create_new_generation_with_root, record_history, update_current_generation_symlink_with_root};
 #[cfg(unix)]
 use crate::transaction::run_transaction_batch;
-#[cfg(unix)]
-use crate::deb_triggers;
 #[cfg(unix)]
 use crate::aur::is_aur_package;
 #[cfg(unix)]

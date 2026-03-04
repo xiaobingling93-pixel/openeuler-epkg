@@ -16,9 +16,9 @@ When you use `epkg run --sandbox=vm`, epkg runs the command inside a lightweight
 ## Overview
 
 - **Launcher**: epkg (on the host) starts **virtiofsd** to share the environment root directory, then starts a **QEMU** VM with a kernel (and optional initrd). The guest root is the virtiofs mount (tag `epkg_env`). Both virtiofsd and QEMU run **inside user/mount namespaces** similar to the **fs** sandbox mode, with the same UID/GID mapping (uidmap); only VM mode allows setgroups in the gid_map so virtiofsd can run.
-- **Init**: The kernel boots with `init=/bin/init`, where `/bin/init` is a symlink to the epkg binary. epkg runs as the **init** applet: it mounts `/proc`, `/sys`, `/tmp`, sets up `/dev` (devtmpfs or tmpfs + minimal nodes, devpts), then either runs the user command (non-TCP mode) or starts **vm-daemon** (TCP mode).
-- **TCP mode** (default): No command is passed via kernel cmdline. Init brings up the network (virtio_net, QEMU user networking), then execs **vm-daemon**. vm-daemon listens on TCP port 10000 (forwarded by QEMU). The host connects, sends a JSON command request, and receives stdout/stderr/exit over the same connection. After the command finishes, the daemon powers off the guest.
-- **Non-TCP mode** (`EPKG_VM_NO_TCP=1`): The command is passed via kernel cmdline (`epkg.init_cmd=...`, percent-encoded). Init execs that command directly. The host waits for QEMU to exit; the guest process exit code becomes the run exit code.
+- **Init**: The kernel boots with `init=/bin/init`, where `/bin/init` is a symlink to the epkg binary. epkg runs as the **init** applet: it mounts `/proc`, `/sys`, `/tmp`, sets up `/dev` (devtmpfs or tmpfs + minimal nodes, devpts), then either runs the user command (**cmdline mode**) or starts **vm-daemon** (control-channel mode).
+- **Control-channel mode** (default): No command is passed via kernel cmdline. Init brings up the network (virtio_net, QEMU user networking), then execs **vm-daemon**. vm-daemon listens on TCP port 10000 (or vsock when `EPKG_VM_VSOCK` is set). The host connects, sends a JSON command request, and receives stdout/stderr/exit over the same connection. After the command finishes, the daemon powers off the guest.
+- **Cmdline mode** (`EPKG_VM_NO_DAEMON=1`): The command is passed via kernel cmdline (`epkg.init_cmd=...`, percent-encoded). Init execs that command directly (no vm-daemon). The host waits for QEMU to exit; the guest process exit code becomes the run exit code.
 
 ### High-level architecture
 
@@ -56,11 +56,11 @@ flowchart LR
 2. **virtiofsd**: epkg spawns **virtiofsd** (inside the namespace described above) with `--shared-dir <env_root>`, `--socket-path <tmpdir>/vhostqemu.sock`, `--cache auto`, `--inode-file-handles=prefer`, `--sandbox none`. The daemon's stdout/stderr are redirected to a log file under the epkg cache.
 3. **QEMU**: epkg builds a QEMU command line that:
    - Uses `-kernel` (and optionally `-initrd`) from `EPKG_VM_KERNEL` / `EPKG_VM_INITRD`, or a kernel found under `/boot`.
-   - Passes `-enable-kvm`, `-cpu host`, `-m` (memory from `EPKG_VM_MEMORY`, default 2048 MB), `-smp 2`, `-no-reboot`, `-nographic`.
+   - Passes `-enable-kvm`, `-cpu host`, `-m` (memory from `EPKG_VM_MEMORY` or `--memory`, default 2048 MiB; libkrun auto round-up so kernel fits), `-smp`, `-no-reboot`, `-nographic`.
    - Uses a **memory-backend-file** in `/dev/shm` (required for virtiofs).
    - Adds a **vhost-user-fs** device with the virtiofsd socket and tag `epkg_env`.
-   - Adds **virtio-net** with user networking and `hostfwd=tcp::10000-:10000` (for TCP mode).
-   - Appends kernel cmdline: `console=ttyS0 panic=1 root=epkg_env rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576`, plus `epkg.init_cmd=...` in non-TCP mode, and `epkg.rust_log=...` when `RUST_LOG` is set on the host.
+   - Adds **virtio-net** with user networking and `hostfwd=tcp::10000-:10000` (for control-channel mode).
+   - Appends kernel cmdline: `console=ttyS0 panic=1 root=epkg_env rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576`, plus `epkg.init_cmd=...` in cmdline mode, and `epkg.rust_log=...` when `RUST_LOG` is set on the host.
 4. **Guest init binary**: Before starting QEMU, epkg ensures the environment root has `/usr/bin/init` and `/usr/bin/vm-daemon` (symlinks or copies to the epkg binary so the guest can run `epkg init` and `epkg vm-daemon`). If epkg is outside the env (e.g. `target/debug/epkg`), the host bind-mounts the epkg binary directory into the env so the guest can find it.
 5. **Host mounts for VM**: In addition to the virtiofs share, the host applies mount specs that include the epkg binary directory (when outside the env), `~/.epkg`, `~/.cache`, `/opt/epkg` (try), and `/lib/modules` (ro, try) so the guest can load e.g. `virtio_net`.
 
@@ -79,9 +79,9 @@ flowchart LR
 4. **chdir**: If `cwd` is set, `chdir(cwd)`.
 5. **Command**:
    - If a command string is set: parse with shlex and `exec` it (with `/bin/sh -i` fallback on parse failure). If exec fails, try `/bin/sh -i`; if that fails, power off.
-   - If no command (TCP mode): Configure network (load `virtio_net`, discover interface, set IP 10.0.2.15/24, default route via 10.0.2.2), then `exec` vm-daemon.
+   - If no command (control-channel mode): Configure network (load `virtio_net`, discover interface, set IP 10.0.2.15/24, default route via 10.0.2.2), then `exec` vm-daemon.
 
-### vm-daemon (guest, TCP mode only)
+### vm-daemon (guest, control-channel mode only)
 
 - Listens on `0.0.0.0:10000`. Accepts **one** connection per VM lifetime.
 - Reads one newline-terminated JSON **request** (e.g. `{"command":["/usr/bin/ls","/"], "pty": false}`).
@@ -109,14 +109,14 @@ flowchart LR
 
 ## Execution paths summary
 
-| Mode    | Command from host      | Guest init                | Guest runs           | Host gets exit code from   |
-|---------|------------------------|---------------------------|----------------------|----------------------------|
-| TCP     | `epkg run --sandbox=vm …` | No cmd in cmdline         | vm-daemon → command  | TCP `exit` message          |
-| Non-TCP | `EPKG_VM_NO_TCP=1 epkg run --sandbox=vm …` | `epkg.init_cmd=...` in cmdline | Command directly     | QEMU process exit code     |
+| Mode              | Command from host      | Guest init                | Guest runs           | Host gets exit code from   |
+|-------------------|------------------------|---------------------------|----------------------|----------------------------|
+| Control-channel   | `epkg run --sandbox=vm …` | No cmd in cmdline         | vm-daemon → command  | TCP/vsock `exit` message   |
+| Cmdline           | `EPKG_VM_NO_DAEMON=1 epkg run --sandbox=vm …` | `epkg.init_cmd=...` in cmdline | Command directly     | QEMU process exit code     |
 
-TCP mode supports interactive use (PTY) and streaming output; non-TCP avoids network setup in the guest and is simpler for single-shot commands when cmdline length is acceptable.
+Control-channel mode supports interactive use (PTY) and streaming output; cmdline mode avoids network setup in the guest and is simpler for single-shot commands when cmdline length is acceptable.
 
-### TCP mode sequence (simplified)
+### Control-channel mode sequence (simplified)
 
 ```mermaid
 sequenceDiagram
@@ -143,7 +143,7 @@ sequenceDiagram
   H-->>U: exit code
 ```
 
-### Non-TCP mode sequence (simplified)
+### Cmdline mode sequence (simplified)
 
 ```mermaid
 sequenceDiagram
@@ -154,7 +154,7 @@ sequenceDiagram
   participant I as init (guest)
   participant C as user command
 
-  U->>H: EPKG_VM_NO_TCP=1 epkg run --sandbox=vm ls /
+  U->>H: EPKG_VM_NO_DAEMON=1 epkg run --sandbox=vm ls /
   H->>V: spawn
   H->>Q: spawn (kernel + epkg.init_cmd=...)
   Q->>I: boot, init=/bin/init
@@ -175,11 +175,39 @@ sequenceDiagram
 | Interactive shell (PTY) | `epkg -e myenv run --sandbox=vm --tty bash` |
 | Run one command, see output | `epkg -e myenv run --sandbox=vm ls /` |
 | Capture output in a variable | `out=$(epkg -e myenv run --sandbox=vm --no-tty cat /etc/os-release)` |
-| Non-TCP (no guest network) | `EPKG_VM_NO_TCP=1 epkg -e myenv run --sandbox=vm ls /` |
+| Cmdline (no guest network) | `EPKG_VM_NO_DAEMON=1 epkg -e myenv run --sandbox=vm ls /` |
 | With timeout (avoid hang) | `timeout 30 epkg -e myenv run --sandbox=vm python3 script.py` |
 | Debug host and guest | `RUST_LOG=debug epkg -e myenv run --sandbox=vm --tty bash` |
 
-### Example: JSON request (TCP mode)
+### Selecting the VMM backend (`--vmm`)
+
+When `--sandbox=vm` is used, epkg can try multiple VMM backends in order. The
+`--vmm` option takes a comma-separated list of backend names:
+
+- `libkrun` — libkrun-based microVM backend (available when epkg is built with the
+  `libkrun` Cargo feature, and libkrunfw is installed in the env).
+- `qemu` — QEMU + virtiofs backend described in this document.
+
+Examples:
+
+```bash
+# Prefer libkrun, fall back to QEMU if libkrun is unavailable or fails
+epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+
+# Force QEMU even if epkg was built with libkrun support
+epkg -e myenv run --sandbox=vm --vmm=qemu bash
+```
+
+If `--vmm` is not specified:
+
+- When epkg is built **with** the `libkrun` feature, the default order is
+  `libkrun,qemu` (try libkrun first, then QEMU).
+- When built **without** `libkrun`, the default is `qemu` only.
+
+If a backend in the list is not available (e.g. feature disabled, missing
+binary, or runtime error), epkg logs a warning and tries the next backend.
+
+### Example: JSON request (control-channel mode)
 
 The host sends a single newline-terminated JSON object to the guest vm-daemon. Example for a non-PTY run:
 
@@ -193,15 +221,15 @@ Example for an interactive PTY run (with terminal size):
 {"command":["/usr/bin/bash"],"cwd":null,"env":{},"stdin":"","pty":true,"terminal":{"rows":24,"cols":80}}
 ```
 
-### Example: Kernel cmdline (TCP vs non-TCP)
+### Example: Kernel cmdline (control-channel vs cmdline mode)
 
-**TCP mode** — no command in cmdline; init will start vm-daemon:
+**Control-channel mode** — no command in cmdline; init will start vm-daemon:
 
 ```
 console=ttyS0 panic=1 root=epkg_env rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576 epkg.rust_log=debug
 ```
 
-**Non-TCP mode** — command is percent-encoded in `epkg.init_cmd`:
+**Cmdline mode** — command is percent-encoded in `epkg.init_cmd`:
 
 ```
 console=ttyS0 panic=1 root=epkg_env rootfstype=virtiofs init=/bin/init sysctl.fs.file-max=1048576 epkg.init_cmd=%2Fusr%2Fbin%2Fls%20%2F
@@ -226,7 +254,7 @@ ls -la ~/.cache/epkg/vmm-logs/*.stdout.log ~/.cache/epkg/vmm-logs/*.stderr.log
 - **virtiofsd** (usually from the same QEMU/virtiofs package). Must be on PATH or set `EPKG_VM_VIRTIOFSD`.
 - **Kernel**: A Linux kernel the guest can boot. By default epkg looks under `/boot` for a host kernel (e.g. `vmlinuz-$(uname -r)`); you can set `EPKG_VM_KERNEL` to a path. For production you may use a minimal guest kernel and optional initrd.
 - **Optional initrd**: `EPKG_VM_INITRD` to pass an initrd to QEMU.
-- **Modules in guest**: For TCP mode the guest needs network; init loads `virtio_net` (and its dependencies `failover/net_failover`). The host mounts `/lib/modules` into the env so the guest can load modules (see `vm_mount_spec_strings`).
+- **Modules in guest**: For control-channel mode the guest needs network; init loads `virtio_net` (and its dependencies `failover/net_failover`). The host mounts `/lib/modules` into the env so the guest can load modules (see `vm_mount_spec_strings`).
 
 ## Environment variables
 
@@ -236,9 +264,9 @@ ls -la ~/.cache/epkg/vmm-logs/*.stdout.log ~/.cache/epkg/vmm-logs/*.stderr.log
 | `EPKG_VM_INITRD`      | Optional path to initrd. |
 | `EPKG_VM_QEMU`        | QEMU binary (default: `qemu-system-x86_64`). |
 | `EPKG_VM_VIRTIOFSD`   | virtiofsd binary (default: `virtiofsd`). |
-| `EPKG_VM_MEMORY`      | Guest RAM in MB (default: 2048). |
-| `EPKG_VM_EXTRA_ARGS`  | Extra arguments appended to the kernel cmdline. |
-| `EPKG_VM_NO_TCP`      | If set, use non-TCP mode (command via kernel cmdline). |
+| `EPKG_VM_MEMORY`      | Guest RAM in MiB or size (e.g. 2G). Default: 2048. For libkrun, memory is auto round-up so kernel fits (kernel loads at 2 GiB). |
+| `EPKG_QEMU_EXTRA_ARGS` | Extra arguments appended to the QEMU kernel cmdline (legacy: `EPKG_VM_EXTRA_ARGS`). |
+| `EPKG_VM_NO_DAEMON`    | If set, use cmdline mode: init runs command from kernel cmdline, no vm-daemon. |
 | `RUST_LOG`            | If set, passed into guest as `epkg.rust_log` for init/vm-daemon logging. |
 
 ## Logs and debugging

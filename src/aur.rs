@@ -16,6 +16,7 @@ use crate::download::get_package_file_path;
 #[cfg(unix)]
 use crate::transaction::run_transaction_batch;
 #[cfg(unix)]
+#[allow(unused_imports)]
 use crate::run;
 
 

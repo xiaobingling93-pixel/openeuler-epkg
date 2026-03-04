@@ -1,7 +1,9 @@
 # Cargo build
 /elf-loader/
-/rpm-rs/
 /resolvo/
+/rpm-rs/
+/krun/
+
 /busybox/
 /target/
 /dist/

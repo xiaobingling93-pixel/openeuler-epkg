@@ -4,6 +4,9 @@ description = "epkg package manager"
 version = "0.2.3"
 edition = "2021"
 
+[features]
+libkrun = ["dep:libkrun", "dep:object"]
+
 # https://github.com/johnthagen/min-sized-rust
 [profile.release]
 lto = true
@@ -62,6 +65,7 @@ rkyv = { version = "0.8", features = ["std", "alloc", "bytecheck"] }
 rancor = "0.1"
 md-5 = "0.10"
 resolvo = { version = "0.10.1", path = "resolvo" }
+libkrun = { path = "krun/libkrun/src/libkrun", optional = true }
 
 # Pin these versions: higher version will need edition 2024
 time = { version = "=0.3.44", features = ["formatting", "local-offset", "macros", "parsing"] }
@@ -73,7 +77,7 @@ deranged = "=0.5.7"
 
 [target.'cfg(target_os = "linux")'.dependencies.nix]
 version = "=0.30.1"
-features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot"]
+features = ["process", "user", "fs", "signal", "sched", "mount", "dir", "term", "poll", "reboot", "socket"]
 default-features = false
 
 [target.'cfg(not(target_os = "linux"))'.dependencies.nix]
@@ -84,12 +88,6 @@ default-features = false
 [target.'cfg(unix)'.dependencies.users]
 version = "0.11"
 default-features = false
-
-[target.'cfg(target_os = "linux")'.dependencies.msb_krun]
-version = "0.1.0"
-
-[target.'cfg(target_os = "linux")'.dependencies.vm-memory]
-version = "=0.18.0"
 
 [target.'cfg(target_os = "linux")'.dependencies.hashbrown]
 version = "=0.16.1"
@@ -114,6 +112,13 @@ default-features = false
 path = "rpm-rs" # Replaced version = "0.17"
 default-features = false
 features = ["zstd-compression", "xz-compression"]
+
+# ELF parsing (extract kernel from libkrunfw .so when feature libkrun is enabled)
+[dependencies.object]
+version = "0.37"
+default-features = false
+features = ["read"]
+optional = true
 
 # https://docs.rs/color-eyre/latest/color_eyre/#improving-perf-on-debug-builds
 [profile.dev.package.backtrace]

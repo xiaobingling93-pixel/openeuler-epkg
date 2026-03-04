@@ -22,7 +22,13 @@ HOST_ARCH := $(shell uname -m | sed -e 's/amd64/x86_64/' -e 's/arm64/aarch64/')
 # - development build (fast)
 # - static build (necessary for running applets inside various env)
 static: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
-	@$(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH)
+	@EPKG_CARGO_FEATURES="$(FEATURES)" $(PROJECT_ROOT)/bin/make.sh static-debug $(HOST_ARCH)
+
+# Static build with libkrun integrated (Cargo --features libkrun) and
+# libkrunfw unpacked into the self env so the libkrun backend can run
+# without extra manual steps on the host.
+static-libkrun: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a
+	@EPKG_CARGO_FEATURES="libkrun$(if $(FEATURES),,$(FEATURES))" $(PROJECT_ROOT)/bin/make.sh static-libkrun $(HOST_ARCH)
 
 # Release build target
 release: $(PROJECT_ROOT)/target/lua-musl-$(HOST_ARCH)/liblua.a

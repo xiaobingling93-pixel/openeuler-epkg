@@ -100,6 +100,8 @@ mod idmap;
 mod mount;
 #[cfg(unix)]
 mod qemu;
+#[cfg(all(feature = "libkrun", target_os = "linux"))]
+mod libkrun;
 #[cfg(unix)]
 mod vm_client;
 mod applets;
@@ -811,6 +813,26 @@ fn add_run_subcommand(cmd: Command) -> Command {
                 .arg(
                     arg!(--"namespace-strategy" <STRATEGY> "Namespace creation strategy: clone (default) or unshare (no extra child)")
                         .value_parser(["clone", "unshare"])
+                )
+                .arg(
+                    arg!(--vmm <ORDER> "Preferred VMM backend order for --sandbox=vm (comma-separated, e.g. 'libkrun,qemu' or 'qemu')")
+                        .value_parser(clap::value_parser!(String))
+                )
+                .arg(
+                    arg!(--kernel <KERNEL> "External kernel image to use for VM sandbox backends")
+                        .value_parser(clap::value_parser!(String))
+                )
+                .arg(
+                    arg!(--"kernel-args" <ARGS> "Extra kernel command line arguments for VM backends")
+                        .value_parser(clap::value_parser!(String))
+                )
+                .arg(
+                    arg!(--cpus <CPUS> "Number of virtual CPUs for --sandbox=vm")
+                        .value_parser(clap::value_parser!(String))
+                )
+                .arg(
+                    arg!(--memory <SIZE> "Virtual memory size for --sandbox=vm (e.g. 2048M, 2G)")
+                        .value_parser(clap::value_parser!(String))
                 )
                 .arg(arg!(--timeout <SECONDS> "Timeout in seconds (0 = no timeout)").value_parser(clap::value_parser!(String)))
                 .arg(arg!(-t --tty "Allocate a pseudo-TTY (force PTY allocation)").conflicts_with("no-tty"))

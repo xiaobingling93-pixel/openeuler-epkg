@@ -117,7 +117,7 @@ use color_eyre::eyre::eyre;
 use serde::Deserialize;
 use serde_json;
 use libc;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::io::{Read, Write};
 use std::process::Command as StdCommand;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
@@ -127,6 +127,7 @@ use nix::unistd::{fork, ForkResult, dup2, setsid, close, Pid};
 use nix::sys::reboot;
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use std::os::fd::{OwnedFd, AsRawFd, BorrowedFd, FromRawFd};
+use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, VsockAddr, Backlog};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crate::vm_client::StreamMessage;
@@ -277,7 +278,7 @@ pub fn parse_options(matches: &clap::ArgMatches) -> Result<VmDaemonOptions> {
 
 pub fn command() -> Command {
     Command::new("vm-daemon")
-        .about("TCP server for VM guest command execution")
+        .about("Server for VM guest command execution (TCP or vsock)")
         .arg(
             Arg::new("port")
                 .short('p')
@@ -930,7 +931,70 @@ fn handle_connection(mut stream: TcpStream) -> Result<bool> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn run_vsock_server() -> Result<()> {
+    use std::os::fd::FromRawFd;
+
+    // Fixed vsock port matching host/client side.
+    const VSOCK_PORT: u32 = 10000;
+
+    let fd = socket::socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?;
+    let addr = VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT);
+    let raw_fd = fd.as_raw_fd();
+    socket::bind(raw_fd, &addr)?;
+    socket::listen(&fd, Backlog::new(1)?)?;
+
+    eprintln!("vm-daemon starting (vsock)");
+    eprintln!("vsock server listening on cid=ANY port={}", VSOCK_PORT);
+    log::debug!("vm-daemon vsock listening on port {}", VSOCK_PORT);
+
+    match socket::accept(raw_fd) {
+        Ok(client_fd) => {
+            let stream = unsafe { TcpStream::from_raw_fd(client_fd) };
+            log::debug!("vm-daemon vsock: accepted connection");
+            match handle_connection(stream) {
+                Ok(_) => {
+                    log::debug!("Command processed, powering off guest (vsock)");
+                    let _ = reboot::reboot(reboot::RebootMode::RB_POWER_OFF);
+                    log::debug!("reboot(RB_POWER_OFF) failed (should not return)");
+                    Ok(())
+                }
+                Err(e) => {
+                    log::debug!("Error handling vsock connection: {}", e);
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            log::debug!("vsock accept failed: {}", e);
+            Err(eyre!("vsock accept failed: {}", e))
+        }
+    }
+}
+
 pub fn run(options: VmDaemonOptions) -> Result<()> {
+    // When EPKG_VM_VSOCK is set, prefer vsock-based control plane.
+    let use_vsock = std::env::var("EPKG_VM_VSOCK").is_ok();
+
+    if use_vsock {
+        #[cfg(target_os = "linux")]
+        {
+            return run_vsock_server();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err(eyre!("vm-daemon vsock mode not supported on this platform"));
+        }
+    }
+
+    // Default: TCP listener as before.
+    use std::net::TcpListener;
+
     let listener = TcpListener::bind(format!("{}:{}", options.host, options.port))
         .map_err(|e| eyre!("Failed to bind TCP listener: {}", e))?;
 

@@ -154,13 +154,13 @@ epkg -e alpine run htop --version
 epkg --root /tmp/myproject/.eenv run jq --version
 ```
 
-## `epkg run` 的沙箱模式
+## `epkg run` 的沙箱模式与 VMM 选择
 
 在环境中运行命令时，epkg 可以在每个环境的根文件系统之上增加额外的隔离：
 
 - **env**（默认）— 使用用户命名空间和挂载命名空间，并将环境通过 bind 挂载到 `/usr`、`/etc`、`/var`、`/run` 等。提供兼容性隔离，并非强安全边界。
 - **fs** — 通过 `pivot_root` 将环境目录作为新根；在其下挂载 proc、tmpfs（/tmp、/dev）等伪文件系统。更强的文件系统隔离。
-- **vm** — 在轻量级虚拟机内运行命令，环境根通过 virtiofs 共享。设计与依赖（VMM、内核、virtiofsd）见 `docs/design-notes/sandbox-vmm.md`。
+- **vm** — 在轻量级虚拟机内运行命令，环境根通过 virtiofs 共享。设计与依赖（VMM、内核、virtiofsd、可选 libkrun）见 `docs/design-notes/sandbox-vmm.md`。
 
 可按命令选择沙箱模式：
 
@@ -190,6 +190,32 @@ cd /c/epkg
 ```
 
 会为当前发行版安装相应的 `uidmap`/`shadow`/`shadow-uidmap` 等包；用户命名空间相关错误详见[故障排除](troubleshooting.md)。
+
+### 选择 VMM 后端（`--vmm`）
+
+当使用 `--sandbox=vm` 时，epkg 可以按顺序尝试多个 VMM 后端。通过
+`epkg run` 的 `--vmm` 选项传入逗号分隔的优先级列表：
+
+```bash
+# 优先使用 libkrun，失败时回退到 QEMU
+epkg -e myenv run --sandbox=vm --vmm=libkrun,qemu bash
+
+# 即使已编译 libkrun 支持，也强制只使用 QEMU
+epkg -e myenv run --sandbox=vm --vmm=qemu bash
+```
+
+后端名称：
+
+- **libkrun** — 基于 libkrun 的 microVM 后端（仅在构建 epkg 时启用了
+  `libkrun` Cargo feature 且环境中已安装 libkrunfw 时可用）。
+- **qemu** — QEMU + virtiofs 后端。
+
+如果未显式指定 `--vmm`：
+
+- 构建时启用了 `libkrun` 时，默认顺序为 `libkrun,qemu`。
+- 未启用 `libkrun` 时，默认仅为 `qemu`。
+
+如果某个后端不可用或运行失败（例如缺少二进制、配置错误），epkg 会输出告警并自动尝试列表中的下一个后端。
 
 ## 公共环境（共享存储）
 
