@@ -89,6 +89,8 @@ setup_sandbox_layout() {
     make_own_dir "$HOME"
     make_own_dir "$HOME/.config"
     make_own_dir "$HOME/.local/share"
+    make_own_dir "$HOME/.local/libclang"
+    make_own_dir "$HOME/.local/lib"
 
     ln -sf ../run       "$SANDBOX_ROOT/var/run"
     ln -sf usr/lib      "$SANDBOX_ROOT/lib"
@@ -115,6 +117,8 @@ setup_core_fs() {
 # --- System dirs and config (read-only) ---
 mount_system_config() {
     mount_ro /usr
+    mount_ro /boot
+    mount_ro /lib/modules
     mount_ro /etc/resolv.conf
     mount_ro /etc/nsswitch.conf
     mount_ro /etc/localtime
@@ -126,6 +130,7 @@ mount_system_config() {
     mount_ro /etc/group
     mount_ro /etc/subuid
     mount_ro /etc/subgid
+    mount_ro /etc/manpath.config
     mount_ro /etc/ld.so.cache
     mount_ro /etc/login.defs
     mount_ro /etc/default/
@@ -171,6 +176,8 @@ mount_user_env() {
     mount_ro "$HOME/.gitconfig"
     mount_rw "$HOME/.cargo"
     mount_ro "$HOME/.rustup"
+    mount_rw "$HOME/.local/libclang"
+    mount_rw "$HOME/.local/lib"
 
     # Interactive shell environment
     mount_rw "$HOME/.zshrc"         # rw, since may be modified by `epkg self install` or remove
@@ -196,6 +203,11 @@ mount_ide_config() {
 
     mount_rw "$HOME/.claude"
     mount_rw "$HOME/.claude.json"
+
+    mount_rw "$HOME/.local/share/opencode"
+    mount_rw "$HOME/.local/state/opencode"
+    mount_rw "$HOME/.cache/opencode"
+    mount_rw "$HOME/.config/opencode"
 }
 
 # --- epkg state and project (incl. 3rd-party source trees) ---
@@ -203,8 +215,12 @@ mount_epkg_and_project() {
     mount_rw "$HOME/.epkg"
     mount_rw "$HOME/.cache/epkg"
     mount_rw /opt/epkg
+    mount_rw /c/compass-ci/
+    mount_rw /c/lkp-tests/
     mount_ro /c/os/
     mount_ro /c/rust/
+    mount_rw /c/rust/osxcross
+    mount_rw /c/rust/libkrun
     mount_ro /c/package-managers/
     mount_ro /c/rpm-software-management/
     mount_rw "$PROJECT_DIR"
