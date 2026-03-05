@@ -26,6 +26,7 @@ const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
 const GITEE_OWNER:      &str = &"wu_fengguang";
 const REPO_EPKG:        &str = &"epkg";
 const REPO_ELF_LOADER:  &str = &"elf-loader";
+#[allow(dead_code)]
 const REPO_LIBKRUNFW:   &str = &"libkrunfw";
 
 fn print_banner() {
