@@ -146,6 +146,9 @@ fn unshare_with_user_ns_and_idmap(
             unshare_with_error_handling(clone_flags)?;
             trace!("Successfully created namespaces");
 
+            // Immediately set mount propagation to private to prevent mount leaks
+            set_mount_propagation_private_if_needed(clone_flags)?;
+
             // Signal child to proceed with ID mapping
             sync.perform_mapping_and_signal(uid, gid, opt_user, allow_setgroups)?;
 
@@ -196,11 +199,29 @@ fn unshare_with_user_ns_and_idmap(
     }
 }
 
+/// Set mount propagation to private immediately after creating mount namespace.
+/// This prevents any mount operations from leaking to parent namespace.
+/// Must be called immediately after unshare(CLONE_NEWNS) before any other mount operations.
+fn set_mount_propagation_private_if_needed(clone_flags: CloneFlags) -> Result<()> {
+    if clone_flags.contains(CloneFlags::CLONE_NEWNS) {
+        use nix::mount::{mount, MsFlags};
+        let flags = MsFlags::MS_REC | MsFlags::MS_PRIVATE | MsFlags::from_bits_truncate(libc::MS_SILENT);
+        mount(Some("none"), "/", Some(""), flags, Some(""))
+            .map_err(|e| eyre::eyre!("Failed to set private mount propagation immediately after unshare: {}", e))?;
+        trace!("Set mount propagation to private immediately after creating mount namespace");
+    }
+    Ok(())
+}
+
 /// Unshare namespaces without user namespace (simple case)
 fn unshare_namespaces_simple(clone_flags: CloneFlags) -> Result<()> {
     // No user namespace needed, just unshare
     unshare_with_error_handling(clone_flags)?;
     trace!("Successfully created namespaces");
+
+    // Immediately set mount propagation to private to prevent mount leaks
+    set_mount_propagation_private_if_needed(clone_flags)?;
+
     Ok(())
 }
 
