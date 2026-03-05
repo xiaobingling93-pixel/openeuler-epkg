@@ -518,7 +518,9 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
     }
 
     for path_dir in dirs {
+        trace!("find_command_in_env_path: checking path_dir={}", path_dir);
         // Skip paths ending with "/ebin"
+        // ebin contains elf-loader binaries for running from host, not from inside environment
         if path_dir.ends_with("/ebin") {
             continue;
         }
@@ -526,6 +528,7 @@ pub fn find_command_in_env_path(cmd_name: &str, env_root: &Path) -> Result<PathB
         // Check if this path is within the environment root
         let rel_path = path_dir.strip_prefix("/").unwrap_or(path_dir);
         let cmd_path = env_root.join(rel_path).join(cmd_name);
+        trace!("find_command_in_env_path: cmd_path={:?}", cmd_path);
 
         if is_executable_within_env(&cmd_path, env_root)? {
             // Check if this command is under the env_root prefix

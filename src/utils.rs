@@ -724,11 +724,23 @@ pub fn to_absolute_path(dir: &str) -> String {
 /// The resolved path is guaranteed to be within `env_root` (or `None`). Relative symlinks
 /// containing `..` components that would escape the environment root are rejected.
 pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    resolve_symlink_in_env_recursive(symlink_path, env_root, 0)
+}
+
+fn resolve_symlink_in_env_recursive(symlink_path: &std::path::Path, env_root: &std::path::Path, depth: usize) -> Option<std::path::PathBuf> {
+    log::trace!("resolve_symlink_in_env_recursive: symlink_path={:?}, env_root={:?}, depth={}", symlink_path, env_root, depth);
+    // Prevent infinite recursion
+    if depth > 20 {
+        log::trace!("resolve_symlink_in_env_recursive: depth limit exceeded");
+        return None;
+    }
+
     // First check if the symlink file itself exists (as a regular file or symlink)
     if symlink_path.exists() && !symlink_path.is_symlink() {
         // It's a regular file, not a symlink
         // Example: ~/.epkg/envs/alpine/usr/bin/bash is a regular executable file
         // Return: Some(~/.epkg/envs/alpine/usr/bin/bash) - the resolved target path (same as input)
+        log::trace!("resolve_symlink_in_env_recursive: regular file, returning {:?}", symlink_path);
         return Some(symlink_path.to_path_buf());
     }
 
@@ -736,6 +748,7 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
     if let Ok(link_target) = std::fs::read_link(symlink_path) {
 
         if link_target.is_absolute() {
+            log::trace!("resolve_symlink_in_env_recursive: absolute symlink target={:?}", link_target);
             // For system paths, map them into the environment root
             // This avoids checking host system paths that might coincidentally exist
             // Example: ~/.epkg/envs/alpine/usr/bin/sh -> /usr/bin/bash -> Some(~/.epkg/envs/alpine/usr/bin/bash)
@@ -747,10 +760,21 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
                                  link_target.starts_with("/lib32") ||
                                  link_target.starts_with("/libx32");
             let is_mounted_path = link_target.starts_with("/etc");
+            log::trace!("resolve_symlink_in_env_recursive: is_system_path={}, is_mounted_path={}", is_system_path, is_mounted_path);
             if is_system_path || is_mounted_path {
                 let target_in_env = env_root.join(link_target.strip_prefix("/").unwrap_or(&link_target));
+                log::trace!("resolve_symlink_in_env_recursive: mapped to target_in_env={:?}", target_in_env);
                 if target_in_env.exists() {
+                    log::trace!("resolve_symlink_in_env_recursive: target_in_env exists");
+                    if target_in_env.is_symlink() {
+                        log::trace!("resolve_symlink_in_env_recursive: target_in_env is symlink, recursing");
+                        // Recursively resolve within environment
+                        return resolve_symlink_in_env_recursive(&target_in_env, env_root, depth + 1);
+                    }
+                    log::trace!("resolve_symlink_in_env_recursive: system/mounted path resolved to regular file, returning {:?}", target_in_env);
                     return Some(target_in_env);
+                } else {
+                    log::trace!("resolve_symlink_in_env_recursive: target_in_env does not exist");
                 }
             }
 
@@ -773,7 +797,10 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
 
             // For other absolute paths, assume env fs is the same with host, so detect in host
             if link_target.exists() {
+                log::trace!("resolve_symlink_in_env_recursive: other absolute path exists on host, returning {:?}", link_target);
                 return Some(link_target);
+            } else {
+                log::trace!("resolve_symlink_in_env_recursive: other absolute path does not exist on host");
             }
         } else {
             // Relative symlink: resolve relative to the symlink's directory
@@ -781,12 +808,18 @@ pub fn resolve_symlink_in_env(symlink_path: &std::path::Path, env_root: &std::pa
             let symlink_dir = symlink_path.parent()?;
             let resolved_path = symlink_dir.join(&link_target);
             if resolved_path.exists() {
+                if resolved_path.is_symlink() {
+                    // Recursively resolve within environment
+                    return resolve_symlink_in_env_recursive(&resolved_path, env_root, depth + 1);
+                }
+                log::trace!("resolve_symlink_in_env_recursive: relative symlink resolved to regular file, returning {:?}", resolved_path);
                 return Some(resolved_path);
             }
         }
     }
 
     // Return: None - symlink_path doesn't exist on host, symlink target doesn't exist in environment, or symlink couldn't be read
+    log::trace!("resolve_symlink_in_env_recursive: no resolution found for {:?}", symlink_path);
     None
 }
 
