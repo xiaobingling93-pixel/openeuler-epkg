@@ -704,6 +704,8 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
     } else {
         env_root.join("opt_real")
     };
+    debug!("mount_opt_epkg_isolation: env_root={}, opt_real_path={}, is_public_env={}",
+           env_root.display(), opt_real_path.display(), env_root.starts_with("/opt/epkg"));
 
     // Ensure the opt_real directory exists (for private environments,
     // or as a safety check for public environments where it was already created)
@@ -719,6 +721,7 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
     // Store whether /opt/epkg existed BEFORE mounting env_root/opt over /opt
     // This is critical because after mounting, /opt/epkg will be hidden
     let opt_epkg_existed = opt_epkg_path.exists();
+    trace!("mount_opt_epkg_isolation: /opt/epkg exists? {} (before mount)", opt_epkg_existed);
 
     let mut specs = Vec::new();
 
@@ -753,6 +756,7 @@ pub(crate) fn mount_opt_epkg_isolation(euid: Uid, uid: Uid, env_root: &Path) -> 
             specs.push(format!("{}://opt/epkg", opt_real_path.display()));
         }
     }
+    trace!("mount_opt_epkg_isolation: generated {} mount specs: {:?}", specs.len(), specs);
 
     Ok(specs)
 }
@@ -841,9 +845,13 @@ pub(crate) fn pivot_to_sandbox(new_root_base: &Path, oldroot: &Path) -> Result<(
 
 /// Batch mount flexible mounts from MountSpec vector
 pub(crate) fn mount_batch_specs(mount_specs: &[MountSpec], env_root: &Path, sandbox_mode: SandboxMode) -> Result<()> {
-    for spec in mount_specs {
+    debug!("mount_batch_specs: starting batch of {} mount specs", mount_specs.len());
+    for (i, spec) in mount_specs.iter().enumerate() {
+        trace!("mount_batch_specs: [{}/{}] mounting spec: source={:?}, target={:?}, fs_type={:?}, flags={:?}, try_only={}",
+               i+1, mount_specs.len(), spec.source, spec.target, spec.fs_type, spec.flags, spec.try_only);
         mount_spec(spec, env_root, sandbox_mode)?;
     }
+    debug!("mount_batch_specs: completed successfully");
     Ok(())
 }
 

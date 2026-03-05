@@ -118,12 +118,15 @@ fn unshare_namespaces_with_idmap(
         warn!("User namespace check failed: {}", e);
     }
 
-    trace!("Creating namespaces with flags: {:?}", clone_flags);
+    debug!("unshare_namespaces_with_idmap called: clone_flags={:?}, contains CLONE_NEWUSER={}",
+           clone_flags, clone_flags.contains(CloneFlags::CLONE_NEWUSER));
 
     // Handle user mapping if we need to create user namespace
     if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+        debug!("unshare_namespaces_with_idmap: calling unshare_with_user_ns_and_idmap");
         unshare_with_user_ns_and_idmap(clone_flags, uid, gid, opt_user, allow_setgroups)
     } else {
+        debug!("unshare_namespaces_with_idmap: calling unshare_namespaces_simple");
         unshare_namespaces_simple(clone_flags)
     }
 }
@@ -203,21 +206,27 @@ fn unshare_with_user_ns_and_idmap(
 /// This prevents any mount operations from leaking to parent namespace.
 /// Must be called immediately after unshare(CLONE_NEWNS) before any other mount operations.
 fn set_mount_propagation_private_if_needed(clone_flags: CloneFlags) -> Result<()> {
+    debug!("set_mount_propagation_private_if_needed called: clone_flags={:?}, contains CLONE_NEWNS={}",
+           clone_flags, clone_flags.contains(CloneFlags::CLONE_NEWNS));
     if clone_flags.contains(CloneFlags::CLONE_NEWNS) {
         use nix::mount::{mount, MsFlags};
         let flags = MsFlags::MS_REC | MsFlags::MS_PRIVATE | MsFlags::from_bits_truncate(libc::MS_SILENT);
+        debug!("Setting mount propagation to private with flags: {:?}", flags);
         mount(Some("none"), "/", Some(""), flags, Some(""))
             .map_err(|e| eyre::eyre!("Failed to set private mount propagation immediately after unshare: {}", e))?;
-        trace!("Set mount propagation to private immediately after creating mount namespace");
+        debug!("Set mount propagation to private immediately after creating mount namespace");
+    } else {
+        debug!("SKIP set mount propagation to private (CLONE_NEWNS not in clone_flags)");
     }
     Ok(())
 }
 
 /// Unshare namespaces without user namespace (simple case)
 fn unshare_namespaces_simple(clone_flags: CloneFlags) -> Result<()> {
+    debug!("unshare_namespaces_simple called: clone_flags={:?}", clone_flags);
     // No user namespace needed, just unshare
     unshare_with_error_handling(clone_flags)?;
-    trace!("Successfully created namespaces");
+    debug!("Successfully created namespaces via unshare");
 
     // Immediately set mount propagation to private to prevent mount leaks
     set_mount_propagation_private_if_needed(clone_flags)?;
@@ -508,10 +517,59 @@ fn child_setup_with_namespaces(context: Box<UnifiedChildContext>) -> Result<()> 
     child_mount_and_exec(context)
 }
 
+/// Ensure mount propagation is set to private to prevent mount leaks.
+/// This should be called as early as possible after entering a mount namespace.
+fn ensure_mount_propagation_private() -> Result<()> {
+    use nix::mount::{mount, MsFlags};
+    use nix::errno::Errno;
+
+    let flags = MsFlags::MS_REC | MsFlags::MS_PRIVATE | MsFlags::from_bits_truncate(libc::MS_SILENT);
+    debug!("ensure_mount_propagation_private: attempting to set private propagation with flags: {:?}", flags);
+
+    match mount(Some("none"), "/", Some(""), flags, Some("")) {
+        Ok(()) => {
+            Ok(())
+        }
+        Err(e) => {
+            // Check if we're already in private propagation or if error is recoverable
+            match e {
+                Errno::EINVAL => {
+                    // EINVAL could mean we're already in the desired state or invalid arguments
+                    // This is relatively safe to continue
+                    debug!("ensure_mount_propagation_private: mount() returned EINVAL, assuming already in private propagation or invalid flags");
+                    Ok(())
+                }
+                Errno::EPERM => {
+                    // EPERM is critical - we lack CAP_SYS_ADMIN or other permissions
+                    // This is unsafe to continue with mount operations
+                    warn!("ensure_mount_propagation_private: failed with EPERM - cannot set private propagation, mount operations may leak!");
+                    // Return error to prevent unsafe mount operations
+                    Err(eyre::eyre!("Cannot ensure private mount propagation: EPERM (missing CAP_SYS_ADMIN?)"))
+                }
+                Errno::EACCES => {
+                    // EACCES - access denied (block device? read-only?)
+                    warn!("ensure_mount_propagation_private: failed with EACCES - cannot access mount point");
+                    Err(eyre::eyre!("Cannot ensure private mount propagation: EACCES"))
+                }
+                _ => {
+                    // Other errors - log warning but decide based on context
+                    warn!("ensure_mount_propagation_private: failed to set private propagation: {} (error: {:?})", e, e);
+                    // For other errors, we might still continue, but this is risky
+                    // Returning error to be safe
+                    Err(eyre::eyre!("Cannot ensure private mount propagation: {}", e))
+                }
+            }
+        }
+    }
+}
+
 /// Mount specifications, perform sandbox-mode specific setup, and execute command.
 /// Used by both Unshare strategy (after namespaces created) and Clone strategy
 /// (after child_setup_with_namespaces()).
 fn child_mount_and_exec(mut context: Box<UnifiedChildContext>) -> Result<()> {
+    // Ensure mount propagation is private before any mounts (critical for preventing leaks)
+    ensure_mount_propagation_private()?;
+
     // Mount all specifications
     crate::mount::mount_batch_specs(&context.mount_specs, &context.env_root, context.sandbox_mode)?;
 
