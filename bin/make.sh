@@ -699,7 +699,7 @@ clone_repos() {
     clone_or_update_repo "https://gitee.com/wu_fengguang/rpm-rs"
     clone_or_update_repo "https://gitee.com/wu_fengguang/resolvo"
     clone_or_update_repo "https://gitee.com/wu_fengguang/elf-loader"
-    clone_or_update_repo "https://gitee.com/wu_fengguang/krun"
+    clone_or_update_repo "https://atomgit.com/wu_fengguang/krun"
     (
         cd krun
         clone_or_update_repo "https://gitee.com/wu_fengguang/libkrun"
