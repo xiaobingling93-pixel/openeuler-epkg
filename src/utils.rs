@@ -162,13 +162,18 @@ pub fn truncate_display(s: &str, max_len: usize) -> String {
 pub fn get_file_type(file: &Path) -> Result<(FileType, String)> {
     const ELF_MAGIC: &[u8] = &[0x7f, b'E', b'L', b'F'];
 
-    // Check Symbolic link first
-    if lfs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
-        return Ok((FileType::Symlink, String::new()));
-    }
+    // For symlinks, follow the link and check the target's type
+    let file_to_check = if lfs::symlink_metadata(&file).map_or(false, |metadata| metadata.file_type().is_symlink()) {
+        match fs::canonicalize(file) {
+            Ok(target) => target,
+            Err(_) => return Ok((FileType::Symlink, String::new())),
+        }
+    } else {
+        file.to_path_buf()
+    };
 
     // Read file contents for other checks
-    let mut file = fs::File::open(file)?;
+    let mut file = fs::File::open(&file_to_check)?;
     // Check ELF 64-bit LSB
     let mut buffer = vec![0;4];
     if let Ok(_) = file.read_exact(&mut buffer) {
