@@ -54,24 +54,26 @@ use std::path::{Path, PathBuf};
 use crate::applets::cp::copy_single_item;
 use crate::applets::systemd_sysusers::apply_root;
 use crate::posix::{posix_getgroup, posix_getpasswd, posix_mkfifo};
-use crate::utils::{is_running_as_root, set_permissions_from_mode};
+use crate::utils::set_permissions_from_mode;
 use glob::glob;
 use walkdir::WalkDir;
 
 /// Wrapper around set_permissions_from_mode that skips permission denied errors
-/// when running as non-root, matching systemd-tmpfiles behavior.
+/// for special files (e.g., sysfs, procfs) that don't support permission changes.
+/// This matches systemd-tmpfiles behavior.
 fn set_permissions_from_mode_skip<P: AsRef<Path>>(path: P, mode: u32) -> Result<()> {
     match set_permissions_from_mode(&path, mode) {
         Ok(()) => Ok(()),
         Err(e) => {
-            // Skip permission denied errors when running as non-root
-            if !is_running_as_root() {
-                for cause in e.chain() {
-                    if let Some(io_error) = cause.downcast_ref::<std::io::Error>() {
-                        if io_error.kind() == ErrorKind::PermissionDenied {
-                            log::warn!("Cannot set permissions on {}: permission denied (running as non-root, skipping)", path.as_ref().display());
-                            return Ok(());
-                        }
+            // Check if this is a permission denied error
+            // We check this regardless of is_running_as_root() because:
+            // 1. In user namespaces, euid may be 0 but we lack actual capabilities
+            // 2. Some special files (sysfs, procfs) don't support chmod even for root
+            for cause in e.chain() {
+                if let Some(io_error) = cause.downcast_ref::<std::io::Error>() {
+                    if io_error.kind() == ErrorKind::PermissionDenied {
+                        log::warn!("Cannot set permissions on {}: permission denied (skipping)", path.as_ref().display());
+                        return Ok(());
                     }
                 }
             }
@@ -996,10 +998,11 @@ fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> R
         match chown(path, uid, gid) {
             Ok(()) => Ok(()),
             Err(e) => {
-                // Skip permission denied errors when running as non-root
-                // This matches systemd-tmpfiles behavior where operations requiring root are skipped
-                if !is_running_as_root() && e.kind() == ErrorKind::PermissionDenied {
-                    log::warn!("Cannot change ownership of {}: permission denied (running as non-root, skipping)", path.display());
+                // Skip permission denied errors
+                // This handles both non-root users and user namespaces where euid=0
+                // but we lack actual capabilities to change ownership
+                if e.kind() == ErrorKind::PermissionDenied {
+                    log::warn!("Cannot change ownership of {}: permission denied (skipping)", path.display());
                     return Ok(());
                 }
                 Err(eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))
