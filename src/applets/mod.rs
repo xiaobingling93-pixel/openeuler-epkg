@@ -15,6 +15,12 @@ use crate::utils::handle_clap_error_with_cmdline;
 // This file is generated in src/applets/ so modules can be found
 include!("_modules_gen.rs");
 
+// Applet invocation patterns:
+// 1. Direct symlink: ln -s /path/to/epkg whoami && ./whoami
+// 2. Via busybox multicall: epkg busybox whoami
+// 3. NOT: epkg whoami (epkg itself doesn't have subcommands)
+// The handle_applet_invocation() function implements this logic.
+
 /// Macro to register applet commands
 /// Auto-generated from applets directory at build time
 macro_rules! register_applets {

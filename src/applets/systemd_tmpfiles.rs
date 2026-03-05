@@ -47,15 +47,38 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 use std::collections::HashMap;
 use std::fs;
+use std::io::ErrorKind;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 
 use crate::applets::cp::copy_single_item;
 use crate::applets::systemd_sysusers::apply_root;
 use crate::posix::{posix_getgroup, posix_getpasswd, posix_mkfifo};
-use crate::utils::set_permissions_from_mode;
+use crate::utils::{is_running_as_root, set_permissions_from_mode};
 use glob::glob;
 use walkdir::WalkDir;
+
+/// Wrapper around set_permissions_from_mode that skips permission denied errors
+/// when running as non-root, matching systemd-tmpfiles behavior.
+fn set_permissions_from_mode_skip<P: AsRef<Path>>(path: P, mode: u32) -> Result<()> {
+    match set_permissions_from_mode(&path, mode) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Skip permission denied errors when running as non-root
+            if !is_running_as_root() {
+                for cause in e.chain() {
+                    if let Some(io_error) = cause.downcast_ref::<std::io::Error>() {
+                        if io_error.kind() == ErrorKind::PermissionDenied {
+                            log::warn!("Cannot set permissions on {}: permission denied (running as non-root, skipping)", path.as_ref().display());
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
 
 const TMPFILES_DIRS: &[&str] = &[
     "/etc/tmpfiles.d",
@@ -582,7 +605,7 @@ fn process_directory_line(parts: &[String], _modifiers: &Modifiers, do_create: b
     }
 
     // Set permissions
-    set_permissions_from_mode(&full_path, mode)?;
+    set_permissions_from_mode_skip(&full_path, mode)?;
 
     // Set ownership if specified
     set_ownership_if_specified(&full_path, user_str, group_str)?;
@@ -652,7 +675,7 @@ fn process_file_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
     // Set permissions if specified
     if mode_str != "-" {
         let mode = parse_mode_with_default(mode_str, 0)?;
-        set_permissions_from_mode(&full_path, mode)?;
+        set_permissions_from_mode_skip(&full_path, mode)?;
     }
 
     // Set ownership if specified
@@ -683,7 +706,7 @@ fn process_pipe_line(parts: &[String], _modifiers: &Modifiers, root: Option<&Pat
 
     // Set permissions (always, since posix_mkfifo creates with 0o777)
     let mode = parse_mode_with_default(mode_str, 0o644)?;
-    set_permissions_from_mode(&full_path, mode)?;
+    set_permissions_from_mode_skip(&full_path, mode)?;
 
     // Set ownership if specified
     set_ownership_if_specified(&full_path, user_str, group_str)?;
@@ -834,7 +857,7 @@ fn process_copy_line(parts: &[String], modifiers: &Modifiers, root: Option<&Path
     // Set permissions if specified
     if mode_str != "-" {
         let mode = parse_mode_with_default(mode_str, 0)?;
-        set_permissions_from_mode(&full_path, mode)?;
+        set_permissions_from_mode_skip(&full_path, mode)?;
     }
 
     // Set ownership if specified
@@ -863,7 +886,7 @@ fn process_attribute_line(parts: &[String], modifiers: &Modifiers, root: Option<
         // Set permissions if specified
         if mode_str != "-" {
             let mode = parse_mode_with_default(mode_str, 0)?;
-            set_permissions_from_mode(path, mode)?;
+            set_permissions_from_mode_skip(path, mode)?;
         }
         // Set ownership if specified
         set_ownership_if_specified(path, user_str, group_str)?;
@@ -970,8 +993,18 @@ fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> R
             Some(parse_group(group_str)?)
         };
 
-        chown(path, uid, gid)
-            .map_err(|e| eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))?;
+        match chown(path, uid, gid) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Skip permission denied errors when running as non-root
+                // This matches systemd-tmpfiles behavior where operations requiring root are skipped
+                if !is_running_as_root() && e.kind() == ErrorKind::PermissionDenied {
+                    log::warn!("Cannot change ownership of {}: permission denied (running as non-root, skipping)", path.display());
+                    return Ok(());
+                }
+                Err(eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))
+            }
+        }?;
     }
     Ok(())
 }
