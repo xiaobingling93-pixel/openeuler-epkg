@@ -306,7 +306,8 @@ pub fn determine_script_extension(scriptlet: &rpm::Scriptlet, script_content: &s
                 // Shebang needed for:
                 // - Path-based interpreters (starts with '/')
                 // - Scripting language interpreters (extension determined)
-                if interpreter.starts_with("/") || !extension.is_empty() {
+                // Skip shebang for Lua scripts (extension "lua") because rpmlua will be called directly
+                if (interpreter.starts_with("/") || !extension.is_empty()) && extension != "lua" {
                     let shebang = if interpreter.starts_with("/") {
                         // Path-based interpreter: use full program vector
                         format!("#!{}\n", program_dedup.join(" "))

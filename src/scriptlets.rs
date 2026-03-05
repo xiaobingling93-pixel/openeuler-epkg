@@ -404,12 +404,12 @@ pub fn setup_conda_env_vars(
 }
 
 /// Get interpreters to try for a given script file extension
-/// For .lua files, try embedded Lua first, then external lua interpreter
+/// For .lua files, use external lua interpreter rpmlua
 pub fn get_interpreters_for_script(script_name: &str) -> Vec<&'static str> {
     if script_name.ends_with(".sh") {
         vec!["bash", "sh"]
     } else if script_name.ends_with(".lua") {
-        vec!["rpmlua", "lua"]  // Try embedded Lua first
+        vec!["rpmlua"]
     } else if script_name.ends_with(".py") {
         vec!["python3", "python"]
     } else if script_name.ends_with(".pl") {

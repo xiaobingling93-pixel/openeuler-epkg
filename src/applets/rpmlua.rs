@@ -110,7 +110,17 @@ fn run_script(
 
     // Wrap script with local opt, arg = ...; prefix (as in reference implementation)
     let stripped_script = strip_shebang(script);
-    let wrapped_script = format!("local opt, arg = ...; {}", stripped_script);
+    // Defensive fallback: if shebang still present, strip first line manually
+    let final_script = if stripped_script.trim_start().starts_with("#!") {
+        if let Some(pos) = stripped_script.find('\n') {
+            &stripped_script[pos+1..]
+        } else {
+            ""
+        }
+    } else {
+        stripped_script
+    };
+    let wrapped_script = format!("local opt, arg = ...; {}", final_script);
 
     // Load the script as a function
     let func: mlua::Function = lua.load(&wrapped_script)
