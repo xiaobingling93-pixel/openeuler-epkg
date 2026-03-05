@@ -26,8 +26,7 @@ const GITEE_API_BASE:   &str = &"https://gitee.com/api/v5";
 const GITEE_OWNER:      &str = &"wu_fengguang";
 const REPO_EPKG:        &str = &"epkg";
 const REPO_ELF_LOADER:  &str = &"elf-loader";
-#[allow(dead_code)]
-const LIBKRUNFW_GITHUB_RELEASES: &str = &"https://github.com/containers/libkrunfw/releases";
+const REPO_LIBKRUNFW:   &str = &"libkrunfw";
 
 fn print_banner() {
     println!(r#"         ____  _  ______   "#);
@@ -987,31 +986,10 @@ fn get_libkrunfw_url() -> Result<Option<String>> {
         }
     };
 
-    // Fetch latest release tag from GitHub API
-    let api_url = "https://api.github.com/repos/containers/libkrunfw/releases/latest";
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(std::time::Duration::from_secs(15)))
-        .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
-        .build()
-        .into();
+    // Fetch latest release from Gitee
+    let release = fetch_latest_release(GITEE_OWNER, REPO_LIBKRUNFW)?;
 
-    let mut response = agent.get(api_url).call()
-        .context("Failed to fetch libkrunfw release info from GitHub")?;
-
-    if response.status() != 200 {
-        return Err(eyre::eyre!("Failed to fetch libkrunfw release: HTTP {}", response.status()));
-    }
-
-    let body = response.body_mut().read_to_string()
-        .context("Failed to read libkrunfw release response")?;
-
-    let release: serde_json::Value = serde_json::from_str(&body)
-        .context("Failed to parse libkrunfw release JSON")?;
-
-    let tag = release["tag_name"].as_str()
-        .ok_or_else(|| eyre::eyre!("Failed to get tag_name from libkrunfw release"))?;
-
-    let url = format!("{}/download/{}/{}", LIBKRUNFW_GITHUB_RELEASES, tag, libkrunfw_filename);
+    let url = format!("https://gitee.com/{}/{}/releases/download/{}/{}", GITEE_OWNER, REPO_LIBKRUNFW, release.tag_name, libkrunfw_filename);
     Ok(Some(url))
 }
 
