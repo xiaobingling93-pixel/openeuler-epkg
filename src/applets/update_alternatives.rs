@@ -7,6 +7,7 @@
 use clap::{Arg, Command};
 use color_eyre::Result;
 use color_eyre::eyre::{eyre, WrapErr};
+use pathdiff;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -51,6 +52,36 @@ fn root_join(root: &Path, p: &str) -> PathBuf {
     } else {
         root.join(p_trim)
     }
+}
+
+/// Create a relative target path for a symlink within an environment root
+///
+/// Given a target path (relative to root) and the symlink location,
+/// computes a relative path from symlink to target.
+/// Example:
+/// - root: /home/wfg/.epkg/envs/oe
+/// - target_str: /usr/lib/golang/bin/go
+/// - link_path: /home/wfg/.epkg/envs/oe/etc/alternatives/go
+/// - Returns: ../../../usr/lib/golang/bin/go
+fn make_relative_target(root: &Path, target_str: &str, link_path: &Path) -> PathBuf {
+    let target_path = root_join(root, target_str);
+    let link_dir = link_path.parent().unwrap_or(Path::new("."));
+    pathdiff::diff_paths(&target_path, link_dir)
+        .unwrap_or_else(|| target_path.clone())
+}
+
+/// Make an existing path relative to a symlink location
+///
+/// Given an already-computed target path and symlink location,
+/// computes relative path.
+/// Example:
+/// - target_path: /home/wfg/.epkg/envs/oe/etc/alternatives/go
+/// - link_path: /home/wfg/.epkg/envs/oe/usr/bin/go
+/// - Returns: ../etc/alternatives/go
+fn make_relative_existing(target_path: &Path, link_path: &Path) -> PathBuf {
+    let link_dir = link_path.parent().unwrap_or(Path::new("."));
+    pathdiff::diff_paths(target_path, link_dir)
+        .unwrap_or_else(|| target_path.to_path_buf())
 }
 
 struct SlaveLink {
@@ -179,6 +210,9 @@ fn apply_alternative(
     choice_path: &str,
     force: bool,
 ) -> Result<()> {
+    // Create symlinks with relative paths so they work both inside and outside chroot.
+    // Absolute symlinks like /usr/lib/golang/bin/go would point to host root when viewed
+    // from outside the environment root. Relative symlinks work in both contexts.
     let alt_name_path = root_join(root, &format!("{}/{}", altdir, a.master_name));
     let choice = a.choices.iter().find(|c| c.master_file == choice_path)
         .ok_or_else(|| eyre!("choice not found: {}", choice_path))?;
@@ -189,9 +223,11 @@ fn apply_alternative(
     if alt_name_path.exists() {
         fs::remove_file(&alt_name_path).wrap_err("remove old alt link")?;
     }
+    // Compute target path relative to root, then make it relative to symlink location
+    let relative_target = make_relative_target(root, choice_path, &alt_name_path);
     #[cfg(unix)]
-    std::os::unix::fs::symlink(choice_path, &alt_name_path)
-        .wrap_err_with(|| format!("symlink {} -> {}", alt_name_path.display(), choice_path))?;
+    std::os::unix::fs::symlink(&relative_target, &alt_name_path)
+        .wrap_err_with(|| format!("symlink {} -> {}", alt_name_path.display(), relative_target.display()))?;
 
     let master_link_full = root_join(root, &a.master_link);
     if master_link_full.exists() {
@@ -204,8 +240,11 @@ fn apply_alternative(
         fs::create_dir_all(parent).wrap_err("create link parent")?;
     }
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&alt_name_path, &master_link_full)
-        .wrap_err_with(|| format!("symlink {} -> {}", a.master_link, alt_name_path.display()))?;
+    {
+        let alt_name_relative = make_relative_existing(&alt_name_path, &master_link_full);
+        std::os::unix::fs::symlink(&alt_name_relative, &master_link_full)
+            .wrap_err_with(|| format!("symlink {} -> {}", a.master_link, alt_name_relative.display()))?;
+    }
 
     for sl in &a.slaves {
         if let Some(spath) = choice.slave_files.get(&sl.name) {
@@ -218,7 +257,10 @@ fn apply_alternative(
                 fs::remove_file(&slave_alt).ok();
             }
             #[cfg(unix)]
-            std::os::unix::fs::symlink(spath, &slave_alt).ok();
+            {
+                let slave_relative = make_relative_target(root, spath, &slave_alt);
+                std::os::unix::fs::symlink(&slave_relative, &slave_alt).ok();
+            }
             if slave_link_full.exists() {
                 if !force && !slave_link_full.is_symlink() {
                     continue;
@@ -229,7 +271,10 @@ fn apply_alternative(
                 fs::create_dir_all(p).ok();
             }
             #[cfg(unix)]
-            std::os::unix::fs::symlink(&slave_alt, &slave_link_full).ok();
+            {
+                let slave_alt_relative = make_relative_existing(&slave_alt, &slave_link_full);
+                std::os::unix::fs::symlink(&slave_alt_relative, &slave_link_full).ok();
+            }
         }
     }
     Ok(())
