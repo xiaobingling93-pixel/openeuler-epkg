@@ -655,8 +655,11 @@ fn env_mount_spec_strings(env_root: &Path, _run_options: &RunOptions) -> Vec<Str
 fn fs_mount_spec_strings() -> Vec<String> {
     let mut specs: Vec<String> = Vec::new();
 
-    // Make mount propagation slave (like bwrap's MS_REC|MS_SILENT|MS_SLAVE on /)
-    specs.insert(0, "make-rslave://:silent".to_string());  // use "//" for host dir
+    // Always make mounts private to prevent mount leaks to parent namespace.
+    // This ensures that when epkg exits, Linux automatically cleans up all mounts.
+    // Without this, bind mounts (especially /opt/epkg) can leak and create
+    // thousands of nested mount points if interrupted (Ctrl+C, timeout, etc).
+    specs.insert(0, "make-rprivate://:silent".to_string());  // use "//" for host dir
 
     specs.extend(crate::mount::pseudo_fs_mount_spec_strings().iter().map(|s| s.to_string()));
     add_epkg_mount_spec_strings(&mut specs);
@@ -666,6 +669,10 @@ fn fs_mount_spec_strings() -> Vec<String> {
 
 fn vm_mount_spec_strings() -> Vec<String> {
     let mut spec_strings = Vec::new();
+
+    // Always make mounts private to prevent mount leaks to parent namespace.
+    // This ensures that when epkg exits, Linux automatically cleans up all mounts.
+    spec_strings.push("make-rprivate://".to_string());
 
     add_epkg_mount_spec_strings(&mut spec_strings);
     // Mount host /lib/modules read-only for kernel module loading (e.g., virtio_net).
