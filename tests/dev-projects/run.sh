@@ -53,6 +53,8 @@ log "Starting dev-projects test (OS: ${SELECT_OS:-all}, test: ${SELECT_TEST:-all
 
 TIMEOUT_LANG=300
 FAILED=0
+FAILED_OS=""
+FAILED_LANG=""
 
 for os in $ALL_OS; do
     should_run_os "$os" || continue
@@ -70,6 +72,10 @@ for os in $ALL_OS; do
         log "Running test $lang on $os (env=$ENV_NAME)"
         if ! run_with_timeout "$TIMEOUT_LANG" "$script"; then
             log "Test $lang failed for $os (env left for debug: $ENV_NAME)"
+            if [ "$FAILED" -eq 0 ]; then
+                FAILED_OS="$os"
+                FAILED_LANG="$lang"
+            fi
             FAILED=1
         fi
     done
@@ -78,6 +84,10 @@ for os in $ALL_OS; do
 done
 
 if [ $FAILED -eq 1 ]; then
-    error "Test cmd failed: $ORIG_CMD"
+    if [ -n "$FAILED_OS" ] && [ -n "$FAILED_LANG" ]; then
+        error "Lang test failed; reproduce with: $0 -o $FAILED_OS -t $FAILED_LANG"
+    else
+        error "Lang test failed; reproduce with: $ORIG_CMD"
+    fi
 fi
 log "All dev-projects tests passed"
