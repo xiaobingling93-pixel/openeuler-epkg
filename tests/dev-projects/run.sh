@@ -38,11 +38,10 @@ set_color_names
 export EPKG_BIN GREEN YELLOW NC
 
 case "${DEBUG_FLAG:-}" in
-    -ddd) export RUST_LOG=trace RUST_BACKTRACE=1; INTERACTIVE=2; set -x ;;
-    -dd)  export RUST_LOG=debug RUST_BACKTRACE=1; INTERACTIVE=2 ;;
-    -d)   export RUST_LOG=debug; INTERACTIVE=1 ;;
+    -ddd) export RUST_LOG=trace RUST_BACKTRACE=1; set -x ;;
+    -dd)  export RUST_LOG=debug RUST_BACKTRACE=1; set -x ;;
+    -d)   set -x ;;
 esac
-export INTERACTIVE
 
 parse_run_args "$@" || exit 1
 

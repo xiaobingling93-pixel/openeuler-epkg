@@ -58,10 +58,6 @@ log() {
 
 error() {
     echo -e "${RED}[ERROR]${NC} $*" >&2
-    if [ -n "${INTERACTIVE:-}" ]; then
-        echo "Press Enter to continue (or Ctrl+C to exit)..." >&2
-        read -r _
-    fi
     exit 1
 }
 
