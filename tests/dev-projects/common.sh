@@ -79,12 +79,12 @@ check_cmd() {
     "$EPKG_BIN" -e "$ENV_NAME" run -- "$@"
 }
 
-# Run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
+# Direct run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
 run_ebin() {
     [ -z "${ENV_ROOT:-}" ] && return 0
     bin=$1
     shift
-    run "$ENV_ROOT/ebin/$bin" "$@"
+    "$ENV_ROOT/ebin/$bin" "$@" || exit
 }
 
 # Run ebin binary only if it exists (for optional names, e.g. pip3 vs pip).
@@ -93,7 +93,7 @@ run_ebin_if() {
     bin=$1
     [ ! -x "$ENV_ROOT/ebin/$bin" ] && return 0
     shift
-    run "$ENV_ROOT/ebin/$bin" "$@"
+    "$ENV_ROOT/ebin/$bin" "$@" || exit
 }
 
 # Call when this language is not available on this OS (exit 0)
