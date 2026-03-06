@@ -560,7 +560,7 @@ fn convert_initial_packages_to_requirements(
     for (pkgname, constraint_str) in delta_world {
         // Check if package/capability exists when ignore_missing is enabled
         if ignore_missing && !check_package_or_capability_exists(pkgname) {
-            log::warn!(
+            log::info!(
                 "Package/capability '{}' not found, skipping (ignore_missing=true)",
                 pkgname
             );
