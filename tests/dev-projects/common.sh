@@ -25,6 +25,10 @@ _check_log_and_fail() {
     if [ ! -f "$log_file" ]; then
         return 0
     fi
+
+    # Note on "no_exit=true, continuing" logs: scriptlet failures explicitly allowed,
+    # since they are mostly non-fatal in end users POV, but our tests shall be
+    # more strict, trying to catch & fix them all
     local error_pattern='Error:|Warning:|WARN|exited with code'
     if grep -qE "$error_pattern" "$log_file"; then
         echo "" >&2

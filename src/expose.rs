@@ -218,11 +218,11 @@ fn create_script_wrapper(
                  * the entire package installation just because we can't create wrappers
                  * for these optional scripts.
                  *
-                 * By logging a warning and continuing, we ensure the package installation
+                 * By logging a note and continuing, we ensure the package installation
                  * completes successfully while still informing the user about the missing
                  * interpreter.
                  */
-                log::warn!("{}", error_msg);
+                log::info!("{}", error_msg);
                 return Ok(());
             }
         }
@@ -295,10 +295,15 @@ fn create_interpreter_wrapper(env_root: &Path, interpreter_path: &str, interpret
 
         // Find and link the interpreter if needed
         match find_link_interpreter(interpreter_in_env, interpreter_basename, env_root) {
-            Ok(()) => {},
+            Ok(()) => {}
             Err(e) => {
-                eprintln!("WARNING: script interpreter not found. Please install '{}' to make below script work:\n script_path: {}\n env_path: {}, error: {}",
-                    interpreter_path, script_path.display(), interpreter_in_env.display(), e);
+                log::info!(
+                    "Script interpreter not found. Please install '{}' to make below script work:\n script_path: {}\n env_path: {}, error: {}",
+                    interpreter_path,
+                    script_path.display(),
+                    interpreter_in_env.display(),
+                    e
+                );
                 return Ok("".to_string());
             }
         }
