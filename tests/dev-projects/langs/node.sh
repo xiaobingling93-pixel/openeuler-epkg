@@ -6,8 +6,9 @@
 run_install nodejs npm node
 check_cmd node --version || lang_skip "no node package for OS=$OS"
 
+run_ebin npx --version
+run_ebin npm --version
 run_ebin node --version
-run_ebin_if npm --version
 
 run node -e "console.log(1+1)"
 run node -e "console.log('ok')"
