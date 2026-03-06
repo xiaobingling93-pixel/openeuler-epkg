@@ -145,10 +145,10 @@ pub fn resolve_vm_memory_mib(run_options: &RunOptions) -> u32 {
         .unwrap_or(2048)
 }
 
-/// Minimum MiB required for libkrun: kernel is loaded at 0x8000_0000 (2 GiB), so RAM must be
-/// at least 2048 MiB + kernel size.
+/// Minimum MiB required for libkrun: kernel is loaded at 0x2000_0000 (512 MiB), so RAM must be
+/// at least 512 MiB + kernel size.
 #[allow(dead_code)]
-const LIBKRUN_KERNEL_LOAD_MIB: u32 = 2048;
+const LIBKRUN_KERNEL_LOAD_MIB: u32 = 512;
 #[allow(dead_code)]
 const LIBKRUN_MEMORY_SLACK_MIB: u32 = 64;
 
