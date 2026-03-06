@@ -12,7 +12,7 @@ run /bin/sh -c 'mkdir -p /tmp/rustproj/src && cd /tmp/rustproj && echo "[package
 run /bin/sh -c 'cd /tmp/rustproj && cargo build && cargo run' | grep -q ok
 run /bin/sh -c 'cd /tmp/rustproj && cargo add rand && echo "fn main() { println!(\"{}\", rand::random::<u32>()); }" > src/main.rs && cargo run' | grep -q .
 # Exercise ebin for cargo (build in rustproj)
-if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/usr/ebin/cargo" ]; then
-    run /bin/sh -c 'cd /tmp/rustproj && '"$ENV_ROOT"'/usr/ebin/cargo build'
+if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/cargo" ]; then
+    run /bin/sh -c 'cd /tmp/rustproj && '"$ENV_ROOT"'/ebin/cargo build'
 fi
 lang_ok

@@ -34,7 +34,7 @@ Your ~/.bashrc or ~/.zshrc
 source $HOME/.epkg/envs/self/profile-current/usr/src/epkg/lib/epkg-rc.sh
 =>
 1) set PATH
-PATH=$HOME/.epkg/envs/main/profile-current/usr/ebin:...
+PATH=$HOME/.epkg/envs/main/profile-current/ebin:...
 
 2) define epkg() shell builtin function
 - run external rust epkg

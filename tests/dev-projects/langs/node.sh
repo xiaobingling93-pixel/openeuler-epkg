@@ -18,7 +18,7 @@ run /bin/sh -c 'cd /tmp/nodeproj && node index.js' | grep -q hello
 run /bin/sh -c 'cd /tmp/nodeproj && npm init -y && npm install lodash' && run node -e "require('lodash'); console.log('ok')" | grep -q ok || true
 # Exercise ebin for npm (install in a second dir)
 run /bin/sh -c 'mkdir -p /tmp/nodeproj2 && cd /tmp/nodeproj2 && npm init -y'
-if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/usr/ebin/npm" ]; then
-    run /bin/sh -c 'cd /tmp/nodeproj2 && '"$ENV_ROOT"'/usr/ebin/npm install lodash'
+if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/npm" ]; then
+    run /bin/sh -c 'cd /tmp/nodeproj2 && '"$ENV_ROOT"'/ebin/npm install lodash'
 fi
 lang_ok

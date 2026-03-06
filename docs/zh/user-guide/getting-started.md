@@ -84,7 +84,7 @@ epkg env create alpine-env -c alpine-3.23
 epkg env register debian-env
 epkg env register alpine-env
 # 现在两个环境的二进制文件都在 PATH 中，按注册顺序
-export PATH="$HOME/.epkg/envs/debian-env/usr/ebin:$HOME/.epkg/envs/alpine-env/usr/ebin:..."
+export PATH="$HOME/.epkg/envs/debian-env/ebin:$HOME/.epkg/envs/alpine-env/ebin:..."
 ```
 
 ### 项目特定环境

@@ -250,7 +250,7 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     lfs::create_dir_all(env_root.join("root"))?;
     lfs::create_dir_all(env_root.join("ebin"))?;     // for script interpreters,
                                                     // won't go to PATH
-    lfs::create_dir_all(env_root.join("usr/ebin"))?;
+    lfs::create_dir_all(env_root.join("ebin"))?;
     // usr/sbin creation is delayed to create_environment_dirs() (may be symlink on Fedora)
     lfs::create_dir_all(env_root.join("usr/bin"))?;
     lfs::create_dir_all(env_root.join("usr/lib"))?;

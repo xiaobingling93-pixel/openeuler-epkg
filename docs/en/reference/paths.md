@@ -20,7 +20,7 @@ When epkg is installed for a single user (e.g. `epkg self install` as non-root, 
 
 Within an environment root (e.g. `$HOME/.epkg/envs/main/`):
 
-- **usr/** — Installed package files (bin, lib, share, etc.); **usr/ebin/** holds symlinks (or wrappers) for exposed commands so they appear on PATH when the env is registered.
+- **usr/** — Installed package files (bin, lib, share, etc.); **ebin/** holds symlinks (or wrappers) for exposed commands so they appear on PATH when the env is registered.
 - **etc/** — Environment-specific config (e.g. `etc/epkg/`).
 - **var/** — Variable data if needed by packages.
 
@@ -65,7 +65,7 @@ When you install a package:
 1. Package file is downloaded to **cache**
 2. Package is unpacked and stored in **store** (content-addressed)
 3. Environment links to store entries (not copies)
-4. Binaries are exposed in `env/usr/ebin/`
+4. Binaries are exposed in `env/ebin/`
 
 This design enables:
 - **Deduplication** — Same package content shared across environments

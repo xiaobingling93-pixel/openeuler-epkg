@@ -155,7 +155,7 @@ fn create_ebin_wrapper(env_root: &Path, fs_file_absolute: &Path, fs_file_relativ
         .with_context(|| format!("Failed to determine file type for {}", fs_file_absolute.display()))?;
     let basename = fs_file_relative.file_name()
         .ok_or_else(|| eyre::eyre!("Failed to get filename for {}", fs_file_relative.display()))?;
-    let ebin_path = env_root.join("usr/ebin").join(basename);
+    let ebin_path = env_root.join("ebin").join(basename);
 
     log::debug!(
         "Creating ebin wrapper: ebin_path={}, fs_file_absolute={}, fs_file_relative={}, file_type={:?}, first_line={:?}",

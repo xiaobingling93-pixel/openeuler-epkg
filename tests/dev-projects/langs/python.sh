@@ -20,11 +20,11 @@ fi
 # Exercise ebin for pip (exposed as pip3 or pip)
 run_ebin_if pip3 --version
 run_ebin_if pip --version
-if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/usr/ebin/pip3" ]; then
-    run "$ENV_ROOT/usr/ebin/pip3" install --break-system-packages six || run "$ENV_ROOT/usr/ebin/pip3" install six
+if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/pip3" ]; then
+    run "$ENV_ROOT/ebin/pip3" install --break-system-packages six || run "$ENV_ROOT/ebin/pip3" install six
     run python3 -c "import six; print(six.__version__)" | grep -q .
-elif [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/usr/ebin/pip" ]; then
-    run "$ENV_ROOT/usr/ebin/pip" install six
+elif [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/pip" ]; then
+    run "$ENV_ROOT/ebin/pip" install six
     run python3 -c "import six; print(six.__version__)" | grep -q .
 fi
 lang_ok

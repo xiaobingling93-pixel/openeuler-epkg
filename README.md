@@ -7,8 +7,8 @@ A lightweight, multi-source package manager for Linux. Create isolated **environ
 ```yaml
 # Conceptually
 host: openeuler | centos | debian | ...
-  env1: openeuler   → PATH += $env_root/usr/ebin
-  env2: ubuntu      → PATH += $env_root/usr/ebin
+  env1: openeuler   → PATH += $env_root/ebin
+  env2: ubuntu      → PATH += $env_root/ebin
 ```
 
 ## Use cases
@@ -80,7 +80,7 @@ Details: [Paths and layout](docs/en/reference/paths.md).
 ## How it works (brief)
 
 - **`epkg run`** runs a command in the environment’s namespace (mount + user namespaces). The env’s `usr`, `etc`, `var` are bind-mounted so installed binaries and scriptlets run correctly.
-- **Install flow**: Resolve (SAT solver) → Download+Unpack → Link (store → env) → Scriptlets → Triggers → Expose binaries to `usr/ebin/` for PATH.
+- **Install flow**: Resolve (SAT solver) → Download+Unpack → Link (store → env) → Scriptlets → Triggers → Expose binaries to `ebin/` for PATH.
 
 ## Build from source
 

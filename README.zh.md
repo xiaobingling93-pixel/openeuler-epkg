@@ -7,8 +7,8 @@
 ```yaml
 # 概念示意
 host: openeuler | centos | debian | ...
-  env1: openeuler   → PATH += $env_root/usr/ebin
-  env2: ubuntu      → PATH += $env_root/usr/ebin
+  env1: openeuler   → PATH += $env_root/ebin
+  env2: ubuntu      → PATH += $env_root/ebin
 ```
 
 ## 使用场景
@@ -93,7 +93,7 @@ epkg -e myenv run bash
 ## 工作原理（简要）
 
 - **`epkg run`** 在环境的命名空间（挂载 + 用户命名空间）中运行命令。环境的 `usr`、`etc`、`var` 被绑定挂载，以便已安装的二进制文件和脚本正确运行。
-- **安装流程**: 解析（SAT 求解器）→ 下载+解包 → 链接（存储 → 环境）→ 脚本 → 触发器 → 将二进制文件暴露到 `usr/ebin/` 以供 PATH 查找。
+- **安装流程**: 解析（SAT 求解器）→ 下载+解包 → 链接（存储 → 环境）→ 脚本 → 触发器 → 将二进制文件暴露到 `ebin/` 以供 PATH 查找。
 
 ## 从源码构建
 

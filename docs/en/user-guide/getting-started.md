@@ -84,7 +84,7 @@ epkg env create alpine-env -c alpine-3.23
 epkg env register debian-env
 epkg env register alpine-env
 # Now both envs' binaries are in PATH, in register order
-export PATH="$HOME/.epkg/envs/debian-env/usr/ebin:$HOME/.epkg/envs/alpine-env/usr/ebin:..."
+export PATH="$HOME/.epkg/envs/debian-env/ebin:$HOME/.epkg/envs/alpine-env/ebin:..."
 ```
 
 ### Project-specific environment

@@ -8,8 +8,8 @@
 - gc support: all env can be auto found/tracked/managed
 - rollback: record generations and switch to them
 - GRUB boot to history generations of / env
-- register: prepend/append `$env_root/usr/ebin` to $PATH in order of path-order (lower number = earlier), 效果类似于`uv tool`
-- activate: a) --stack: append $env to `$EPKG_ACTIVE_ENV` + prepend `$env_root/usr/ebin` to $PATH;
+- register: prepend/append `$env_root/ebin` to $PATH in order of path-order (lower number = earlier), 效果类似于`uv tool`
+- activate: a) --stack: append $env to `$EPKG_ACTIVE_ENV` + prepend `$env_root/ebin` to $PATH;
             b) non-stack: deactivate `$EPKG_ACTIVE_ENV` first
 - choot: `chroot $env_root; PATH=$env_root/usr/sbin:$env_root/usr/bin`
 - paths: auto setup paths on activate / register
@@ -73,7 +73,7 @@ $ epkg activate aaa
 # action1: write out export vars, the caller shell should eval lines starting with "; "
 echo '; export EPKG_SESSION_PATH="$(mktemp deactivate-XXXXXXXXXX)"' if $EPKG_SESSION_PATH not exist
 echo '; export EPKG_ACTIVE_ENV="aaa"'
-echo '; export PATH=/path/to/aaa/usr/ebin:$PATH'
+echo '; export PATH=/path/to/aaa/ebin:$PATH'
 
 # action2: write out deactivate shell for run by later "epkg deactivate"
 echo '
@@ -87,19 +87,19 @@ echo '
 $ epkg activate bbb --stack
 =>
 echo '; export EPKG_ACTIVE_ENV="bbb:aaa"'
-echo '; export PATH=/path/to/bbb/usr/ebin:/path/to/aaa/usr/ebin:$PATH'
+echo '; export PATH=/path/to/bbb/ebin:/path/to/aaa/ebin:$PATH'
 echo '; export USER_VAR_TO_SET_ON_ACTIVATE="FOO"'
 
 echo '
 ; export EPKG_ACTIVE_ENV="aaa"
-; export PATH=/path/to/aaa/usr/ebin:$ORIGIN_PATH
+; export PATH=/path/to/aaa/ebin:$ORIGIN_PATH
 ' > $EPKG_SESSION_PATH-bbb.sh
 
 $ epkg deactivate
 => found EPKG_ACTIVE_ENV="bbb:aaa", got/remove first part "bbb"
 => show vars in $EPKG_SESSION_PATH-bbb.sh then remove the file
 echo '; export EPKG_ACTIVE_ENV="aaa"'
-echo '; export PATH=/path/to/aaa/usr/ebin:$ORIGIN_PATH'
+echo '; export PATH=/path/to/aaa/ebin:$ORIGIN_PATH'
 
 $ epkg deactivate
 => show vars in $EPKG_SESSION_PATH-aaa.sh then remove the file
@@ -180,13 +180,13 @@ Example private self env dir layout:
 When install an application (e.g. rust) in an epkg env, the below will be setup
 in order to run the installed rustc:
 ```
-PATH=~/.epkg/envs/main/usr/ebin:$ORIGIN_PATH
+PATH=~/.epkg/envs/main/ebin:$ORIGIN_PATH
 
 # symlink from $env_root/FHS to epkg store file
 ~/.epkg/envs/main/usr/bin/rustc -> /opt/epkg/store/0a0tk9nvmydhpebc4jwnwbhzvaz21s74__rust__1.77.0__3.oe2403/fs/usr/bin/rustc
 
 # entry-point wrapper
-~/.epkg/envs/main/usr/ebin/rustc
+~/.epkg/envs/main/ebin/rustc
 
 # unmodified ELF binary by x2epkg from RPM
 /opt/epkg/store/0a0tk9nvmydhpebc4jwnwbhzvaz21s74__rust__1.77.0__3.oe2403/fs/usr/bin/rustc
@@ -216,7 +216,7 @@ coreutils binaries) in the environment. So `epkg install` will
 
 rustc example setup:
 ```
-cp ~/.epkg/envs/self/usr/bin/elf-loader ~/.epkg/envs/main/usr/ebin/rustc
+cp ~/.epkg/envs/self/usr/bin/elf-loader ~/.epkg/envs/main/ebin/rustc
 binary replace content of env_root="{{SOURCE_ENV_DIR LONG0 LONG1 LONG2 ..." to env_root="~/.epkg/envs/main"
 binary replace content of target_elf_path="{{TARGET_ELF_PATH LONG0 LONG1 LONG2 ..." to target_elf_path="/opt/epkg/store/0a0tk9nvmydhpebc4jwnwbhzvaz21s74__rust__1.77.0__3.oe2403/fs/usr/bin/rustc"
 ```
@@ -234,21 +234,21 @@ To create an executable wrapper for a shell-bang script in `$env_root/usr/bin/`,
     ...
 
 # entry-point wrapper
-~/.epkg/envs/main/usr/ebin/sh -> bash
-~/.epkg/envs/main/usr/ebin/bash
-~/.epkg/envs/main/usr/ebin/zcat
-    #!~/.epkg/envs/main/usr/ebin/sh
+~/.epkg/envs/main/ebin/sh -> bash
+~/.epkg/envs/main/ebin/bash
+~/.epkg/envs/main/ebin/zcat
+    #!~/.epkg/envs/main/ebin/sh
     ...
 ```
 
 ```
 cd $env_root  # ~/.epkg/envs/main
 shell_bang_line=$(head -n1 usr/bin/zcat)
-env_shell_bang_line=$(replace the interpreter path in $shell_bang_line to its env wrapper path)  # ~/.epkg/envs/main/usr/ebin/bash
+env_shell_bang_line=$(replace the interpreter path in $shell_bang_line to its env wrapper path)  # ~/.epkg/envs/main/ebin/bash
 
-echo "$env_shell_bang_line" > usr/ebin/zcat
-echo "language_specific_exec" >> usr/ebin/zcat
-chmod +x usr/ebin/zcat
+echo "$env_shell_bang_line" > ebin/zcat
+echo "language_specific_exec" >> ebin/zcat
+chmod +x ebin/zcat
 ```
 
 where `language_specific_exec` should transfer execution from one script to

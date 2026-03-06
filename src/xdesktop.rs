@@ -15,7 +15,7 @@
 //!
 //!  - Source: $env_root/usr/share/applications/*.desktop
 //!  - Target: ~/.local/share/applications/
-//!  - Adjustments: Modify Exec field to point to ebin wrapper ($env_root/usr/ebin/<app>)
+//!  - Adjustments: Modify Exec field to point to ebin wrapper ($env_root/ebin/<app>)
 //!  - Update: Run update-desktop-database ~/.local/share/applications
 //!
 //!  2. Icon Theme Integration
@@ -75,7 +75,7 @@ fn adjust_exec_line(exec_line: &str, env_root: &Path) -> Result<String> {
         .unwrap_or_else(|| command.to_string());
 
     // Check if ebin wrapper exists
-    let ebin_wrapper = env_root.join("usr/ebin").join(&binary_name);
+    let ebin_wrapper = env_root.join("ebin").join(&binary_name);
     let new_command = if ebin_wrapper.exists() {
         ebin_wrapper.to_string_lossy().to_string()
     } else {

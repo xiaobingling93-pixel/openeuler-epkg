@@ -1,6 +1,6 @@
 # Environments
 
-Environments are isolated roots: each has a channel (e.g. debian, alpine, fedora with optional version), its own set of installed packages, and a directory `usr/ebin` where exposed binaries are linked. You can **register** environments so their `usr/ebin` is added to your PATH, or use **activate** for the current shell only.
+Environments are isolated roots: each has a channel (e.g. debian, alpine, fedora with optional version), its own set of installed packages, and a directory `ebin` where exposed binaries are linked. You can **register** environments so their `ebin` is added to your PATH, or use **activate** for the current shell only.
 
 ## List environments
 
@@ -77,7 +77,7 @@ If the env is registered, it is unregistered first. Example:
 
 ## Register and unregister
 
-**Register** adds the environment’s `usr/ebin` to your default PATH (persisted across shells). **Unregister** removes it.
+**Register** adds the environment’s `ebin` to your default PATH (persisted across shells). **Unregister** removes it.
 
 ```bash
 epkg env register [ENV_NAME] [--path-order N]
@@ -91,10 +91,10 @@ Example:
 ```bash
 epkg env register myalpine
 # Registering environment 'myalpine' with PATH order 100
-# export PATH="/home/user/.epkg/envs/myalpine/usr/ebin:/home/user/.epkg/envs/main/usr/ebin:..."
+# export PATH="/home/user/.epkg/envs/myalpine/ebin:/home/user/.epkg/envs/main/ebin:..."
 
 epkg env unregister myalpine
-# export PATH="/home/user/.epkg/envs/main/usr/ebin:..."
+# export PATH="/home/user/.epkg/envs/main/ebin:..."
 # Environment 'myalpine' has been unregistered.
 ```
 
@@ -122,7 +122,7 @@ After activate, the shell’s PATH is updated so the activated env is preferred.
 
   ```bash
   epkg env path
-  # export PATH="/home/user/.epkg/envs/main/usr/ebin:..."
+  # export PATH="/home/user/.epkg/envs/main/ebin:..."
   ```
 
 - **Config** — View or edit per-env config:

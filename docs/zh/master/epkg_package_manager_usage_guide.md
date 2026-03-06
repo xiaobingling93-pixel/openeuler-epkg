@@ -95,7 +95,7 @@ update-alternatives: using /usr/bin/which.debianutils to provide /usr/bin/which 
 update-alternatives: using /usr/share/man/man7/bash-builtins.7.gz to provide /usr/share/man/man7/builtins.7.gz (builtins.7.gz) in auto mode
 update-alternatives: using /usr/sbin/rmt-tar to provide /usr/sbin/rmt (rmt) in auto mode
 update-alternatives: using /bin/more to provide /usr/bin/pager (pager) in auto mode
-Exposed package commands to /root/.epkg/envs/t1/usr/ebin:
+Exposed package commands to /root/.epkg/envs/t1/ebin:
 htop__3.4.1-4__arm64                 htop
 Installation successful - Total packages: 66, ebin packages: 1
 ```
@@ -104,7 +104,7 @@ Installation successful - Total packages: 66, ebin packages: 1
 
 ```bash
 [root@51bc2f1c8444 /]# which htop
-/root/.epkg/envs/main/usr/ebin/htop
+/root/.epkg/envs/main/ebin/htop
 [root@51bc2f1c8444 /]# htop
 ```
 
@@ -126,7 +126,7 @@ Creating environment 't2' in /root/.epkg/envs/t2
 export EPKG_SESSION_PATH="/tmp/deactivate-2794-9b8beb08"
 # Activate environment 't2'
 export EPKG_ACTIVE_ENV=t2
-export PATH="/root/.epkg/envs/t2/usr/ebin:/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/t2/ebin:/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
 在该环境中安装软件：
@@ -149,7 +149,7 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 ```bash
 [root@51bc2f1c8444 ~]# which gcc
-/root/.epkg/envs/t2/usr/ebin/gcc
+/root/.epkg/envs/t2/ebin/gcc
 [root@51bc2f1c8444 ~]# cat hello.c
 #include <stdio.h>
 
@@ -204,7 +204,7 @@ update-alternatives: using /usr/sbin/rmt-tar to provide /usr/sbin/rmt (rmt) in a
 update-alternatives: using /usr/share/man/man7/bash-builtins.7.gz to provide /usr/share/man/man7/builtins.7.gz (builtins.7.gz) in auto mode
 update-alternatives: using /usr/bin/which.debianutils to provide /usr/bin/which (which) in auto mode
 update-alternatives: using /bin/more to provide /usr/bin/pager (pager) in auto mode
-Exposed package commands to /root/.epkg/envs/t1/usr/ebin:
+Exposed package commands to /root/.epkg/envs/t1/ebin:
 gcc__4:14.2.0-1__arm64               c89-gcc c99-gcc
 Installation successful - Total packages: 94, ebin packages: 4
 
@@ -226,7 +226,7 @@ Packages to be freshly installed:
 [00:00:00] [==========] 0 B/s        (0s) Downloaded /opt/epkg/cache/downloads/fedora/updates/42/Everything/aarch64/Packages/l/libsemanage-3.8.1-2.fc42.aarch64.rpm
 [00:00:00] [==========] 0 B/s        (0s) Downloaded /opt/epkg/cache/downloads/fedora/updates/42/Everything/aarch64/Packages/l/libgcc-15.1.1-2.fc42.aarch64.rpm
 [00:00:00] [==========] 0 B/s        (0s) Downloaded /opt/epkg/cache/downloads/fedora/updates/42/Everything/aarch64/Packages/c/crypto-policies-20250707-1.gitad370a8.fc42.noarch.rpm
-[00:00:00] [==========] 0 B/s        (0s) Downloaded /opt/epkg/cache/downloads/fedora/releases/42/Everything/aarch64/os/Packages/n/ncurses-base-6.5-5.20250125.fc42.noarch.rpmExposed package commands to /root/.epkg/envs/t2/usr/ebin:
+[00:00:00] [==========] 0 B/s        (0s) Downloaded /opt/epkg/cache/downloads/fedora/releases/42/Everything/aarch64/os/Packages/n/ncurses-base-6.5-5.20250125.fc42.noarch.rpmExposed package commands to /root/.epkg/envs/t2/ebin:
 cpp__15.1.1-2.fc42__aarch64          cpp cc1
 gcc__15.1.1-2.fc42__aarch64          aarch64-redhat-linux-gcc aarch64-redhat-linux-gcc-15 c89 c99 gcc gcc-ar gcc-nm gcc-ranlib gcov gcov-dump gcov-tool lto-dump collect2 lto-wrapper lto1
 Installation successful - Total packages: 91, ebin packages: 8
@@ -237,10 +237,10 @@ Installation successful - Total packages: 91, ebin packages: 8
 ```bash
 [root@51bc2f1c8444 /]# epkg env register t1
 # Registering environment 't1' with priority 10
-export PATH="/root/.epkg/envs/t1/usr/ebin:/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/t1/ebin:/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [root@51bc2f1c8444 /]# epkg env register t2
 # Registering environment 't2' with priority 10
-export PATH="/root/.epkg/envs/t1/usr/ebin:/root/.epkg/envs/main/usr/ebin:/root/.epkg/envs/t2/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/t1/ebin:/root/.epkg/envs/main/ebin:/root/.epkg/envs/t2/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 [root@51bc2f1c8444 /]# epkg env list
 Environment      Type        Owner       Status
@@ -250,7 +250,7 @@ t1               private                 registered
 t2               private                 registered
 
 [root@51bc2f1c8444 /]# epkg env path
-export PATH="/root/.epkg/envs/t1/usr/ebin:/root/.epkg/envs/main/usr/ebin:/root/.epkg/envs/t2/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/t1/ebin:/root/.epkg/envs/main/ebin:/root/.epkg/envs/t2/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
 从上面PATH可以看出，包含了`t1`和`t2`两个环境的目录，如果安装不同软件，可以直接查找执行。如果为同一软件，可以通过`epkg run -e ENV`的方式来执行。
@@ -318,11 +318,11 @@ Downloading elf-loader from https://repo.oepkgs.net/openeuler/epkg/rootfs/
 [00:00:00] [==========] 425 B/s      (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64.sha256
 [00:00:02] [==========] 0 B/s        (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/master.tar.gz
 [00:00:00] [==========] 258.65 KiB/s (0s) Downloaded /home/duan/.cache/epkg/downloads/epkg/elf-loader-aarch64                                                                                                         Extracting epkg source code to: /home/duan/.epkg/envs/self/usr/src
-Creating symlink: /home/duan/.epkg/envs/self/main/usr/ebin/epkg -> /home/duan/.epkg/envs/self/usr/bin/epkg
+Creating symlink: /home/duan/.epkg/envs/self/main/ebin/epkg -> /home/duan/.epkg/envs/self/usr/bin/epkg
 Creating environment 'self' in /home/duan/.epkg/envs/self
 Creating environment 'main' in /home/duan/.epkg/envs/main
 # Registering environment 'main' with priority 10
-export PATH="/home/duan/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/home/duan/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Updating shell RC file: /home/duan/.bashrc
 Notice: for changes to take effect, close and re-open your current shell.
 ```
@@ -360,7 +360,7 @@ update-alternatives: using /usr/bin/which.debianutils to provide /usr/bin/which 
 update-alternatives: using /bin/more to provide /usr/bin/pager (pager) in auto mode
 update-alternatives: using /usr/sbin/rmt-tar to provide /usr/sbin/rmt (rmt) in auto mode
 update-alternatives: using /usr/share/man/man7/bash-builtins.7.gz to provide /usr/share/man/man7/builtins.7.gz (builtins.7.gz) in auto mode
-Exposed package commands to /home/duan/.epkg/envs/main/usr/ebin:
+Exposed package commands to /home/duan/.epkg/envs/main/ebin:
 tree__2.2.1-1__arm64                 tree
 Installation successful - Total packages: 65, ebin packages: 1
 ```
@@ -369,7 +369,7 @@ Installation successful - Total packages: 65, ebin packages: 1
 
 ```bash
 [duan@51bc2f1c8444 ~]$ which tree
-/home/duan/.epkg/envs/main/usr/ebin/tree
+/home/duan/.epkg/envs/main/ebin/tree
 [duan@51bc2f1c8444 ~]$ tree
 .
 `-- epkg-installer.sh
@@ -715,14 +715,14 @@ main环境仍为默认环境。
 ```bash
 [root@51bc2f1c8444 /]# epkg env register t1
 # Registering environment 't1' with priority 10
-export PATH="/root/.epkg/envs/t1/usr/ebin:/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/t1/ebin:/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
 ### epkg env unregister：注销指定环境
 
 ```bash
 [root@51bc2f1c8444 /]# epkg env unregister t1
-export PATH="/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Environment 't1' has been unregistered.
 ```
 
@@ -735,7 +735,7 @@ export PATH="/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/
 export EPKG_SESSION_PATH="/tmp/deactivate-1465-8d5b532e"
 # Activate environment 't1'
 export EPKG_ACTIVE_ENV=t1
-export PATH="/root/.epkg/envs/t1/usr/ebin:/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/t1/ebin:/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
 ### epkg env deactivate：退出当前激活环境
@@ -746,14 +746,14 @@ unset EPKG_SESSION_PATH
 unset EPKG_ACTIVE_ENV
 
 # Deactivate environment 't1'
-export PATH="/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
 ### epkg env path：查看当前env下的PATH
 
 ```bash
 [root@51bc2f1c8444 ~]# epkg env path
-export PATH="/root/.epkg/envs/main/usr/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/root/.epkg/envs/main/ebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
 ### epkg env config：查看或配置当前环境
@@ -851,7 +851,7 @@ update-alternatives: using /usr/bin/which.debianutils to provide /usr/bin/which 
 update-alternatives: using /usr/share/man/man7/bash-builtins.7.gz to provide /usr/share/man/man7/builtins.7.gz (builtins.7.gz) in auto mode
 update-alternatives: using /usr/sbin/rmt-tar to provide /usr/sbin/rmt (rmt) in auto mode
 update-alternatives: using /bin/more to provide /usr/bin/pager (pager) in auto mode
-Exposed package commands to /root/.epkg/envs/t1/usr/ebin:
+Exposed package commands to /root/.epkg/envs/t1/ebin:
 htop__3.4.1-4__arm64                 htop
 Installation successful - Total packages: 66, ebin packages: 1
 ```

@@ -1,6 +1,6 @@
 # 环境管理
 
-环境是相互隔离的根目录：每个环境有一个 channel（例如 debian、alpine、fedora，可选版本）、自己的一组已安装包，以及一个目录 `usr/ebin`，其中链接了暴露的二进制文件。您可以**注册**环境，将其 `usr/ebin` 添加到 PATH 中，或者只在当前 shell 中**激活**一个环境。
+环境是相互隔离的根目录：每个环境有一个 channel（例如 debian、alpine、fedora，可选版本）、自己的一组已安装包，以及一个目录 `ebin`，其中链接了暴露的二进制文件。您可以**注册**环境，将其 `ebin` 添加到 PATH 中，或者只在当前 shell 中**激活**一个环境。
 
 ## 列出环境
 
@@ -77,7 +77,7 @@ epkg env remove [ENV_NAME]
 
 ## 注册和取消注册
 
-**注册**将环境的 `usr/ebin` 添加到您的默认 PATH（跨 shell 持久化）。**取消注册**将其移除。
+**注册**将环境的 `ebin` 添加到您的默认 PATH（跨 shell 持久化）。**取消注册**将其移除。
 
 ```bash
 epkg env register [ENV_NAME] [--path-order N]
@@ -91,10 +91,10 @@ epkg env unregister [ENV_NAME]
 ```bash
 epkg env register myalpine
 # Registering environment 'myalpine' with PATH order 100
-# export PATH="/home/user/.epkg/envs/myalpine/usr/ebin:/home/user/.epkg/envs/main/usr/ebin:..."
+# export PATH="/home/user/.epkg/envs/myalpine/ebin:/home/user/.epkg/envs/main/ebin:..."
 
 epkg env unregister myalpine
-# export PATH="/home/user/.epkg/envs/main/usr/ebin:..."
+# export PATH="/home/user/.epkg/envs/main/ebin:..."
 # Environment 'myalpine' has been unregistered.
 ```
 
@@ -122,7 +122,7 @@ epkg env deactivate
 
   ```bash
   epkg env path
-  # export PATH="/home/user/.epkg/envs/main/usr/ebin:..."
+  # export PATH="/home/user/.epkg/envs/main/ebin:..."
   ```
 
 - **Config** — 查看或编辑每个环境的配置：

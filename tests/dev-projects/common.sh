@@ -2,7 +2,7 @@
 # Sourced by langs/*.sh. Provides run(), run_install(), check_cmd(), lang_skip(), lang_ok().
 # When sourced from langs/foo.sh, $0 is the lang script: LANG_NAME and SCRIPT_DIR are set from it.
 # Requires ENV_NAME, EPKG_BIN (and optionally OS, ENV_ROOT). From run.sh we export ENV_NAME, ENV_ROOT, OS.
-# ENV_ROOT is used by run_ebin/run_ebin_if to exercise usr/ebin/<tool> (exposed binaries). Standalone:
+# ENV_ROOT is used by run_ebin/run_ebin_if to exercise ebin/<tool> (exposed binaries). Standalone:
 #   ENV_NAME=dev-alpine ENV_ROOT=$HOME/.epkg/envs/dev-alpine OS=alpine EPKG_BIN=/path/to/epkg ./langs/c.sh
 
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -78,21 +78,21 @@ check_cmd() {
     "$EPKG_BIN" -e "$ENV_NAME" run -- "$@"
 }
 
-# Run the exposed binary at env usr/ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
+# Run the exposed binary at env ebin/<name> (exercises ebin wrappers). No-op if ENV_ROOT unset.
 run_ebin() {
     [ -z "${ENV_ROOT:-}" ] && return 0
     bin=$1
     shift
-    run "$ENV_ROOT/usr/ebin/$bin" "$@"
+    run "$ENV_ROOT/ebin/$bin" "$@"
 }
 
 # Run ebin binary only if it exists (for optional names, e.g. pip3 vs pip).
 run_ebin_if() {
     [ -z "${ENV_ROOT:-}" ] && return 0
     bin=$1
-    [ ! -x "$ENV_ROOT/usr/ebin/$bin" ] && return 0
+    [ ! -x "$ENV_ROOT/ebin/$bin" ] && return 0
     shift
-    run "$ENV_ROOT/usr/ebin/$bin" "$@"
+    run "$ENV_ROOT/ebin/$bin" "$@"
 }
 
 # Call when this language is not available on this OS (exit 0)

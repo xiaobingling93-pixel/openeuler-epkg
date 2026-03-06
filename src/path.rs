@@ -66,7 +66,7 @@ fn get_active_env_paths(active_env: &str, pure: bool) -> Result<Vec<String>> {
     }
 
     // Add ebin path
-    let ebin_path = env_root.join("usr/ebin");
+    let ebin_path = env_root.join("ebin");
     if ebin_path.exists() {
         path_components.push(ebin_path.display().to_string());
     }
@@ -94,7 +94,7 @@ fn get_registered_env_paths() -> Result<Vec<String>> {
     let mut append: Vec<(i32, String, String)> = Vec::new();
 
     for config in registered_env_configs() {
-        let ebin_path = Path::new(&config.env_root).join("usr/ebin");
+        let ebin_path = Path::new(&config.env_root).join("ebin");
         if !ebin_path.exists() {
             continue;
         }
