@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# OS list for tests that iterate over multiple distros (sandbox dev-projects, e2e, etc.)
+ALL_OS="openeuler fedora debian ubuntu alpine archlinux conda"
+
 # Find and set epkg binary path
 set_epkg_bin() {
     # Find epkg binary - try multiple locations

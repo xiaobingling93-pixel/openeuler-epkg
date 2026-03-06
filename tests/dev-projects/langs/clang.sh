@@ -1,0 +1,13 @@
+#!/bin/sh
+# Minimal C project with clang: build and run.
+
+. "$(dirname "$0")/../common.sh"
+
+run_install build-base clang llvm build-essential clang
+check_cmd clang --version || lang_skip "no clang for OS=$OS"
+
+run_ebin clang --version
+
+run /bin/sh -c 'mkdir -p /tmp/clangproj && cd /tmp/clangproj && printf "%s\n" "#include <stdio.h>" "int main(void) { puts(\"ok\"); return 0; }" > main.c'
+run /bin/sh -c 'cd /tmp/clangproj && clang -o hello main.c && ./hello' | grep -q ok
+lang_ok
