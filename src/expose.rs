@@ -133,9 +133,12 @@ fn create_ebin_wrappers(env_root: &Path, store_fs_dir: &Path, fs_files: &[crate:
         if fs_file_info.is_dir() {
             continue;
         }
-        let mode = fs_file_info.mode.unwrap_or(0o644);
-        if mode & 0o111 == 0 {
-            continue;
+        // Symlinks may not have mode; skip mode check for them
+        if !fs_file_info.is_link() {
+            let mode = fs_file_info.mode.unwrap_or(0o644);
+            if mode & 0o111 == 0 {
+                continue;
+            }
         }
 
         // Construct absolute path by joining store_fs_dir with the relative path
