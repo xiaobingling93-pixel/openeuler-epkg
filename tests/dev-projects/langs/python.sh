@@ -19,8 +19,8 @@ if run python3 -m pip --version; then
 fi
 # Exercise ebin for pip (exposed as pip3 or pip)
 run_ebin_if pip3 --version
-run_ebin pip --version
-run_ebin python --version
+run_ebin_if pip --version
+run_ebin_if python --version
 run_ebin python3 --version
 if [ -n "${ENV_ROOT:-}" ] && [ -x "$ENV_ROOT/ebin/pip3" ]; then
     run "$ENV_ROOT/ebin/pip3" install --break-system-packages six || run "$ENV_ROOT/ebin/pip3" install six

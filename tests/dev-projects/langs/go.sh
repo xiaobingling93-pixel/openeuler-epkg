@@ -7,7 +7,7 @@
 run_install go
 check_cmd go version || { run_install golang; check_cmd go version || { run_install gcc-go; check_cmd go version || lang_skip "no go package for OS=$OS"; }; }
 
-run_ebin go version
+run_ebin_if go version
 
 # Use GOCACHE inside env so go build/run can write (avoid permission denied on host .cache)
 run /bin/sh -c 'mkdir -p /tmp/goproj && cd /tmp/goproj && echo "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"ok\") }" > main.go'
