@@ -18,7 +18,7 @@ use crate::utils::FileType;
 #[cfg(unix)]
 use crate::xdesktop;
 use crate::dirs;
-use crate::link::{hard_link_or_copy, replace_existing_symlink1, create_symlink2};
+use crate::link::{hard_link_or_copy, bin_file_exists, create_symlink2};
 use log;
 
 // Create ebin wrappers.
@@ -97,10 +97,13 @@ fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()>
             target_path.display()
         ))?;
 
-    let has_symlink1 = replace_existing_symlink1(target_path, fs_file)
-        .with_context(|| format!("Failed to ensure symlink1 for {}", target_path.display()))?;
-
-    if !has_symlink1 {
+    // Only create symlink2 if bin/<program> file doesn't exist (any file type, any target).
+    // We don't care whether bin/<program> is a symlink or what it points to;
+    // if it exists, elf-loader will attempt to use it, and we avoid creating
+    // a redundant hidden symlink.
+    let has_bin_file = bin_file_exists(target_path, fs_file)
+        .with_context(|| format!("Failed to check bin file for {}", target_path.display()))?;
+    if !has_bin_file {
         create_symlink2(target_path, fs_file)
             .with_context(|| format!("Failed to ensure symlink2 for {}", target_path.display()))?;
     }

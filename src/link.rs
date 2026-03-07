@@ -322,42 +322,15 @@ pub fn compute_link_type_and_reflink(
     Ok(())
 }
 
-// symlink1 = target_path.replace("ebin", "bin")
-pub fn replace_existing_symlink1(target_path: &Path, fs_file: &Path) -> Result<bool> {
+// Check if bin/<program> file exists (any file type, any target).
+// We only care that a file exists at that path, regardless of whether it's a symlink
+// or what it points to. When running from host, this file is inside the env mount;
+// we don't need to validate that its target exists on the host filesystem.
+pub fn bin_file_exists(target_path: &Path, _fs_file: &Path) -> Result<bool> {
     let target_path_str = target_path.to_string_lossy();
-    let symlink1_path = PathBuf::from(target_path_str.replace("/ebin/", "/bin/"));
-
-    if !symlink1_path.exists() {
-        return Ok(false);
-    }
-
-    // Check if symlink1 points to fs_file
-    match fs::read_link(&symlink1_path) {
-        Ok(current_target) => {
-            if current_target == fs_file {
-                // symlink1 already points to the correct target or has been updated
-                return Ok(true);
-            }
-
-            log::debug!("symlink1 {} exists but points to {:?}, updating to point to {:?}",
-                       symlink1_path.display(), current_target, fs_file);
-            // Remove existing symlink and create new one
-            lfs::remove_file(&symlink1_path)?;
-
-            // Create parent directory if it doesn't exist
-            if let Some(parent) = symlink1_path.parent() {
-                lfs::create_dir_all(parent)?;
-            }
-
-            lfs::symlink(fs_file, &symlink1_path)?;
-            Ok(true)
-        }
-        Err(_) => {
-            // symlink1 exists but is not a symlink (regular file/directory)
-            // Don't modify it, indicate that symlink2 is needed
-            Ok(false)
-        }
-    }
+    let bin_path = PathBuf::from(target_path_str.replace("/ebin/", "/bin/"));
+    // Use symlink_metadata to check existence without following symlinks
+    Ok(lfs::symlink_metadata(&bin_path).is_ok())
 }
 
 // Create symlink2: "{dirname(target_path)}/.{filename(target_path)}" -> fs_file
