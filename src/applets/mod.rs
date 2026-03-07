@@ -399,8 +399,17 @@ fn is_musl_build() -> bool {
 /// Create symlinks for all registered applets in the environment
 /// This automatically discovers all applets and places them in the appropriate directory (bin or sbin)
 pub fn create_all_applet_symlinks(env_root: &Path, pkg_format: &PackageFormat) -> Result<()> {
-    let epkg_exe = std::env::current_exe()
-        .with_context(|| "Failed to get current executable path")?;
+    // First try to use the epkg binary symlink within the environment
+    let epkg_exe = env_root.join("usr/bin/epkg");
+    let epkg_exe = if epkg_exe.exists() {
+        log::debug!("Using epkg binary symlink at {}", epkg_exe.display());
+        epkg_exe
+    } else {
+        let current_exe = std::env::current_exe()
+            .with_context(|| "Failed to get current executable path")?;
+        log::debug!("Using current executable at {}", current_exe.display());
+        current_exe
+    };
 
     // On Alpine (APK format) with a glibc-linked epkg binary, the binary will
     // not run at all. All static builds currently use musl, so only create

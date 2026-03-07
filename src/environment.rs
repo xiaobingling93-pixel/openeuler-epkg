@@ -253,6 +253,23 @@ fn create_environment_dirs_early(env_root: &Path) -> Result<()> {
     lfs::create_dir_all(env_root.join("ebin"))?;
     // usr/sbin creation is delayed to create_environment_dirs() (may be symlink on Fedora)
     lfs::create_dir_all(env_root.join("usr/bin"))?;
+    // Ensure usr/bin/epkg exists, pointing to a stable epkg binary (e.g., in self environment)
+    let epkg_symlink = env_root.join("usr/bin/epkg");
+    if !epkg_symlink.exists() {
+        // Try to find epkg binary in self environment
+        if let Some(self_env_root) = find_env_root(SELF_ENV) {
+            let self_epkg = self_env_root.join("usr/bin/epkg");
+            if self_epkg.exists() {
+                // Create relative symlink from env_root/usr/bin/epkg to self_epkg
+                // Compute relative path from env_root/usr/bin to self_epkg
+                let relative = pathdiff::diff_paths(&self_epkg, env_root.join("usr/bin"))
+                    .unwrap_or(self_epkg);
+                log::debug!("Creating epkg symlink {} -> {}", epkg_symlink.display(), relative.display());
+                force_symlink(&relative, &epkg_symlink)
+                    .with_context(|| format!("Failed to create epkg symlink in {}", epkg_symlink.display()))?;
+            }
+        }
+    }
     lfs::create_dir_all(env_root.join("usr/lib"))?;
     lfs::create_dir_all(env_root.join("usr/local/bin"))?;
     lfs::create_dir_all(env_root.join("var"))?;
