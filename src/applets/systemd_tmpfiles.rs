@@ -987,31 +987,50 @@ fn set_ownership_if_specified(path: &Path, user_str: &str, group_str: &str) -> R
         let uid = if user_str == "-" {
             None
         } else {
-            Some(parse_user(user_str)?)
+            let parsed_uid = parse_user(user_str)?;
+            // Skip ownership change if user doesn't exist (0xFFFFFFFF = INVALID_UID)
+            // This matches systemd-tmpfiles behavior - it warns but continues
+            if parsed_uid == 0xFFFFFFFF {
+                log::debug!("Skipping ownership change for {} - user {} doesn't exist", path.display(), user_str);
+                return Ok(());
+            }
+            Some(parsed_uid)
         };
         let gid = if group_str == "-" {
             None
         } else {
-            Some(parse_group(group_str)?)
+            let parsed_gid = parse_group(group_str)?;
+            // Skip ownership change if group doesn't exist (0xFFFFFFFF = INVALID_GID)
+            if parsed_gid == 0xFFFFFFFF {
+                log::debug!("Skipping ownership change for {} - group {} doesn't exist", path.display(), group_str);
+                return Ok(());
+            }
+            Some(parsed_gid)
         };
 
-        match chown(path, uid, gid) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                // Skip permission denied errors
-                // This handles both non-root users and user namespaces where euid=0
-                // but we lack actual capabilities to change ownership
-                if e.kind() == ErrorKind::PermissionDenied {
-                    log::warn!("Cannot change ownership of {}: permission denied (skipping)", path.display());
-                    return Ok(());
+        // Only attempt chown if we have something to set
+        if uid.is_some() || gid.is_some() {
+            match chown(path, uid, gid) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    // Skip permission denied errors
+                    // This handles both non-root users and user namespaces where euid=0
+                    // but we lack actual capabilities to change ownership
+                    if e.kind() == ErrorKind::PermissionDenied {
+                        log::warn!("Cannot change ownership of {}: permission denied (skipping)", path.display());
+                        return Ok(());
+                    }
+                    Err(eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))
                 }
-                Err(eyre!("Failed to change ownership of {} to uid={:?}, gid={:?}: {}", path.display(), uid, gid, e))
-            }
-        }?;
+            }?;
+        }
     }
     Ok(())
 }
 
+/// Parse user string to UID.
+/// If user doesn't exist in /etc/passwd, returns Ok(0xFFFFFFFF) which systemd-tmpfiles
+/// will skip with a warning (matching real systemd behavior).
 fn parse_user(user_str: &str) -> Result<u32> {
     // Try to parse as numeric UID first
     if let Ok(uid) = user_str.parse::<u32>() {
@@ -1021,10 +1040,18 @@ fn parse_user(user_str: &str) -> Result<u32> {
     // Try to look up user by name
     match posix_getpasswd(Some(user_str), None) {
         Ok(passwd) => Ok(passwd.uid),
-        Err(_) => Err(eyre!("Unknown user: {} (check /etc/passwd or use numeric UID)", user_str)),
+        Err(_) => {
+            // User doesn't exist. Return_SPECIAL_UID to skip with warning.
+            // This matches systemd-tmpfiles behavior - it warns but continues.
+            log::warn!("Unknown user: {} ( continuing with special UID)", user_str);
+            Ok(0xFFFFFFFF) // INVALID_UID - systemd will skip this
+        }
     }
 }
 
+/// Parse group string to GID.
+/// If group doesn't exist in /etc/group, returns Ok(0xFFFFFFFF) which systemd-tmpfiles
+/// will skip with a warning (matching real systemd behavior).
 fn parse_group(group_str: &str) -> Result<u32> {
     // Try to parse as numeric GID first
     if let Ok(gid) = group_str.parse::<u32>() {
@@ -1034,6 +1061,10 @@ fn parse_group(group_str: &str) -> Result<u32> {
     // Try to look up group by name
     match posix_getgroup(Some(group_str), None) {
         Ok(group) => Ok(group.gid),
-        Err(_) => Err(eyre!("Unknown group: {} (check /etc/group or use numeric GID)", group_str)),
+        Err(_) => {
+            // Group doesn't exist. Return SPECIAL_GID to skip with warning.
+            log::warn!("Unknown group: {} (continuing with special GID)", group_str);
+            Ok(0xFFFFFFFF) // INVALID_GID - systemd will skip this
+        }
     }
 }
