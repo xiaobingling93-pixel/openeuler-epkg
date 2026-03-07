@@ -111,7 +111,7 @@ impl GenericDependencyProvider {
                 if ignore_missing
                     && !self.check_package_or_capability_exists(&normalized_capability)
                 {
-                    log::warn!(
+                    log::info!(
                         "[RESOLVO] Package/capability '{}' not found, skipping (ignore_missing=true)",
                         normalized_capability
                     );
