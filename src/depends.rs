@@ -1,6 +1,7 @@
 use std::collections::{HashMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use color_eyre::Result;
+use color_eyre::eyre;
 use crate::models::*;
 use crate::models::PACKAGE_CACHE;
 use crate::resolve::provider::GenericDependencyProvider;
@@ -417,6 +418,18 @@ pub fn resolve_and_install_packages(
         };
         println!("{}", empty_msg);
         return Ok(InstallationPlan::default());
+    }
+
+    // If all_packages_for_session is not empty but all packages are already installed,
+    // we might still need to expose some packages with ebin_exposure=true
+    // In this case, packages_to_expose will not be empty after extend_ebin_by_source
+    // but all_packages_for_session might contain only packages that are already installed
+    // (skipped_reinstalls case)
+    if all_packages_for_session.is_empty() && !packages_to_expose.is_empty() {
+        // This should not normally happen since packages_to_expose comes from all_packages_for_session
+        // But let's handle it for robustness
+        let msg = format!("Error: {} packages need exposure but no packages resolved", packages_to_expose.len());
+        return Err(eyre::eyre!(msg));
     }
 
     let plan = prepare_installation_plan(&all_packages_for_session, None)?;

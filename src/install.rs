@@ -426,25 +426,58 @@ fn link_packages(plan: &mut InstallationPlan) -> Result<()> {
 #[allow(dead_code)]
 fn expose_packages(plan: &mut InstallationPlan) -> Result<()> {
     // Collect pkgkeys that need exposure to avoid borrowing issues
-    let pkgkeys_to_expose: Vec<String> = plan.ordered_operations
-        .iter()
-        .filter(|op| op.should_expose())
-        .filter_map(|op| op.new_pkgkey.clone())
-        .collect();
+    // Include both new/updated packages and skipped reinstalls with ebin_exposure=true
+    let mut pkgkeys_to_expose: Vec<String> = Vec::new();
+
+    // First, collect from ordered_operations
+    pkgkeys_to_expose.extend(
+        plan.ordered_operations
+            .iter()
+            .filter(|op| op.should_expose())
+            .filter_map(|op| op.new_pkgkey.clone())
+    );
+
+    // Also expose skipped reinstalls that have ebin_exposure=true
+    // These are packages already installed but user requested (e.g., "cargo" was already installed
+    // but requested again; the ebin wrapper might need updating)
+    for (pkgkey, info) in plan.skipped_reinstalls.iter() {
+        if info.ebin_exposure {
+            pkgkeys_to_expose.push(pkgkey.clone());
+        }
+    }
+
+    // Remove duplicates while preserving order
+    let mut seen = std::collections::HashSet::new();
+    pkgkeys_to_expose.retain(|k| seen.insert(k.clone()));
 
     for pkgkey in pkgkeys_to_expose {
         log::info!("Exposing package: {}", pkgkey);
 
         // Get the package info to find the store_fs_dir
-        if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
-            let store_fs_dir = plan.store_root.join(&package_info.pkgline).join("fs");
-            crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
+        // First try new packages, then skipped reinstalls
+        let store_fs_dir = if let Some(package_info) = crate::plan::pkgkey2new_pkg_info(plan, &pkgkey) {
+            plan.store_root.join(&package_info.pkgline).join("fs")
+        } else if let Some(installed_info) = get_skipped_reinstall_pkg_info(plan, &pkgkey) {
+            plan.store_root.join(&installed_info.pkgline).join("fs")
         } else {
             log::warn!("Package {} not found in plan for exposure", pkgkey);
-        }
+            continue;
+        };
+
+        crate::expose::expose_package(plan, &store_fs_dir, &pkgkey)?;
     }
 
     Ok(())
+}
+
+/// Helper to get package info from skipped_reinstalls
+fn get_skipped_reinstall_pkg_info(
+    plan: &InstallationPlan,
+    pkgkey: &str,
+) -> Option<crate::models::InstalledPackageInfo> {
+    plan.skipped_reinstalls
+        .get(pkgkey)
+        .map(|arc| (**arc).clone())
 }
 
 /// Update metadata for packages that were already installed but involved in this session

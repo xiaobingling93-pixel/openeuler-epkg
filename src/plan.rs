@@ -284,8 +284,10 @@ pub fn calculate_op_flags(
     // SHOULD_EXPOSE: new package should be exposed if it has ebin_exposure
     if let Some(pkgkey) = new_pkgkey {
         if let Some(new_pkg_info) = pkgkey2new_pkg_info(plan, pkgkey) {
+            log::info!("calculate_op_flags for {}: ebin_exposure={}", pkgkey, new_pkg_info.ebin_exposure);
             if new_pkg_info.ebin_exposure {
                 flags |= op_flags::SHOULD_EXPOSE;
+                log::info!("  Set SHOULD_EXPOSE for {}", pkgkey);
             }
             if !new_pkg_info.pkgline.is_empty() {
                 flags |= op_flags::IN_STORE;
@@ -294,6 +296,8 @@ pub fn calculate_op_flags(
             if is_aur_package(pkgkey) {
                 flags |= op_flags::IS_AUR;
             }
+        } else {
+            log::info!("calculate_op_flags for {}: pkgkey2new_pkg_info returned None", pkgkey);
         }
     }
 

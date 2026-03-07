@@ -73,14 +73,22 @@ fn unexpose_package_ebin(env_root: &Path, pkgkey: &str) -> Result<()> {
 
 /// Handle ELF binary with elf-loader wrapper (non-conda environments)
 fn handle_elf(target_path: &Path, env_root: &Path, fs_file: &Path) -> Result<()> {
+    log::info!("handle_elf: target_path={}, fs_file={}", target_path.display(), fs_file.display());
+
     let self_env_root = dirs::find_env_root(SELF_ENV)
         .ok_or_else(|| eyre::eyre!("Self environment not found"))?;
 
     let elf_loader_path = self_env_root.join("usr/bin/elf-loader");
+    log::info!("  elf_loader_path={}", elf_loader_path.display());
 
     // Create hardlink from elf-loader to target path (replace copy&replace)
     if target_path.exists() {
-        lfs::remove_file(target_path)?;
+        log::info!("  Target exists, removing...");
+        if let Err(e) = lfs::remove_file(target_path) {
+            log::error!("  Failed to remove file: {}", e);
+            return Err(e);
+        }
+        log::info!("  Removed existing target");
     }
 
     // Create parent directory if it doesn't exist
@@ -440,7 +448,14 @@ pub fn unexpose_package(plan: &mut InstallationPlan, env_root: &Path, pkgkey: &s
 
 /// Handle expose operations for a single package
 pub fn expose_package(plan: &mut InstallationPlan, store_fs_dir: &Path, pkgkey: &str) -> Result<()> {
-    log::debug!("Exposing package: {}", pkgkey);
+    log::debug!("Exposing package: {} (store_fs_dir: {})", pkgkey, store_fs_dir.display());
+
+    // Check if pkgkey is in new_pkgs
+    if let Some(info) = crate::plan::pkgkey2new_pkg_info(plan, pkgkey) {
+        log::debug!("  Found in new_pkgs: ebin_exposure={}", info.ebin_exposure);
+    } else {
+        log::debug!("  NOT found in new_pkgs!");
+    }
 
     // Use the updated package info from installed_packages which has the correct pkgline
     let installed_pkg_info = PACKAGE_CACHE.installed_packages.read().unwrap().get(pkgkey)
